@@ -20,6 +20,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.parse.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.DemotionConfig;
@@ -495,7 +496,7 @@ public final class StorageFactory {
         return dhtClient.fold(() -> new TierBuild.DhtBuild(Option.empty(), Option.empty()),
                               client -> {
                                   var readGate = Promise.<Unit> promise();
-                                  var dht = DhtStorageTier.dhtStorageTier(client, dhtKeyPrefix, readGate);
+                                  var dht = DhtStorageTier.dhtStorageTier(client, dhtKeyPrefix, name, readGate);
                                   var tier = keyring.<StorageTier> fold(() -> dht, ring -> EncryptingStorageTier.wrap(dht, ring));
                                   var check = new DhtMarkerCheck(name, dhtKeyPrefix, keyring, readGate);
 
@@ -514,9 +515,18 @@ public final class StorageFactory {
     /// reads for this namespace; on failure the gate is left unresolved, which is safe because a
     /// failed `start()` aborts the whole node before anything could observe it.
     static Promise<Unit> verifyDhtMarker(DHTClient client, DhtMarkerCheck check) {
+        return verifyDhtMarker(client, check, DHT_MARKER_TIMEOUT);
+    }
+
+    /// #858 C2 test seam: lets a test bound the marker get/put far below the 30s production default,
+    /// so "a never-resolving DHT client yields the timeout cause" is provable in milliseconds. Mirrors
+    /// `MavenProtocolRoutesTimeoutTest`'s injected `SHORT_TIMEOUT` for the same reason. Package-private
+    /// -- only `StorageFactoryEncryptionTest` (same package) needs it; [#verifyDhtMarker] above is the
+    /// production entry point, fixed at [#DHT_MARKER_TIMEOUT].
+    static Promise<Unit> verifyDhtMarker(DHTClient client, DhtMarkerCheck check, org.pragmatica.lang.io.TimeSpan timeout) {
         return check.effectiveKeyring()
-                    .fold(() -> refuseIfDhtEncryptedWithoutKeyring(client, check.dhtKeyPrefix(), check.instanceName()),
-                          ring -> writeDhtMarker(client, check.dhtKeyPrefix(), ring))
+                    .fold(() -> refuseIfDhtEncryptedWithoutKeyring(client, check.dhtKeyPrefix(), check.instanceName(), timeout),
+                          ring -> writeDhtMarker(client, check.dhtKeyPrefix(), check.instanceName(), ring, timeout))
                     .onSuccess(_ -> check.readGate().resolve(Result.success(unit())));
     }
 
@@ -538,10 +548,28 @@ public final class StorageFactory {
                                                 .fold(cause -> Promise.<Unit> failure(cause), _ -> Promise.UNIT));
     }
 
-    private static Promise<Unit> writeDhtMarker(DHTClient client, String dhtKeyPrefix, EncryptionKeyring ring) {
+    private static Promise<Unit> writeDhtMarker(DHTClient client, String dhtKeyPrefix, String instanceName, EncryptionKeyring ring,
+                                                 org.pragmatica.lang.io.TimeSpan timeout) {
         return client.put(dhtKeyPrefix + "/" + EncryptingStorageTier.MARKER_FILE_NAME,
                           ring.activeKeyId().getBytes(StandardCharsets.UTF_8))
-                     .timeout(DHT_MARKER_TIMEOUT);
+                     .timeout(timeout)
+                     .mapError(cause -> remapMarkerTimeout(cause, instanceName, timeout));
+    }
+
+    /// #858 C2: `.timeout()` is safe to call directly on these two chains -- unlike
+    /// `DhtStorageTier#admission`'s `readGate` -- because `client.put`/`client.get` return a fresh,
+    /// single-use, non-shared promise per call; there is no second reader who could observe a
+    /// timeout-vs-real-result race on the same promise.
+    ///
+    /// Two distinct causes, never conflated: a marker get/put that itself times out after formation
+    /// means `start()` never learned whether a marker exists, so it fails on THIS cause
+    /// ([EncryptionError.DhtMarkerCheckTimedOut]) -- never [EncryptionError.EncryptedTierRequiresKeyring],
+    /// which means the opposite: the marker WAS read successfully and named a key id absent from the
+    /// configured keyring.
+    private static Cause remapMarkerTimeout(Cause cause, String instanceName, org.pragmatica.lang.io.TimeSpan timeout) {
+        return cause instanceof CoreError.Timeout
+               ? new EncryptionError.DhtMarkerCheckTimedOut(instanceName, timeout.millis())
+               : cause;
     }
 
     /// #858: the DHT-namespace reverse direction of [#writeDhtMarker], mirroring
@@ -549,13 +577,15 @@ public final class StorageFactory {
     /// this DHT namespace was never encrypted and a bare tier is legitimate; its presence means
     /// blocks under `dhtKeyPrefix` are ciphertext, and a bare tier over them would silently hand back
     /// framed `AEC1...` bytes as content on every read.
-    private static Promise<Unit> refuseIfDhtEncryptedWithoutKeyring(DHTClient client, String dhtKeyPrefix, String instanceName) {
+    private static Promise<Unit> refuseIfDhtEncryptedWithoutKeyring(DHTClient client, String dhtKeyPrefix, String instanceName,
+                                                                     org.pragmatica.lang.io.TimeSpan timeout) {
         return client.get(dhtKeyPrefix + "/" + EncryptingStorageTier.MARKER_FILE_NAME)
                      .flatMap(marker -> marker.fold(() -> Promise.success(unit()),
                                                     bytes -> Promise.<Unit> failure(new EncryptionError.EncryptedTierRequiresKeyring(instanceName,
                                                                                                                                       new String(bytes,
                                                                                                                                                  StandardCharsets.UTF_8)))))
-                     .timeout(DHT_MARKER_TIMEOUT);
+                     .timeout(timeout)
+                     .mapError(cause -> remapMarkerTimeout(cause, instanceName, timeout));
     }
 
     private static Result<TierBuild> handleDiskTierUnavailable(String name,

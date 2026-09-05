@@ -20,6 +20,7 @@ import org.pragmatica.dht.Partition;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.BlockEncryptor;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.EncryptingStorageTier;
@@ -32,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #253: proves `StorageFactory` wires [org.pragmatica.storage.EncryptingStorageTier] around the
 /// tiers the per-instance config actually asks for -- and around no others.
@@ -60,6 +62,10 @@ class StorageFactoryEncryptionTest {
     private static final String INSTANCE = "vault";
     private static final String NODE_ID = "node-1";
     private static final String ARTIFACTS = "artifacts";
+    /// #858 C2 test seam bound -- far below the 30s production `DHT_MARKER_TIMEOUT` so the
+    /// never-responding-client test proves the timeout cause in milliseconds. Mirrors
+    /// `MavenProtocolRoutesTimeoutTest`'s injected `SHORT_TIMEOUT`.
+    private static final TimeSpan SHORT_MARKER_TIMEOUT = timeSpan(150).millis();
 
     @TempDir
     Path tempDir;
@@ -464,6 +470,16 @@ class StorageFactoryEncryptionTest {
                                      Option.some(dhtClient),
                                      Option.some(singleKeyRing("key-1")));
 
+        // #858: `createAll` performs no DHT I/O any more -- the marker is written only when
+        // `StorageFactory.verifyDhtMarker` runs post-formation, exactly as `AetherNode.start()`
+        // does. Without this call the reboot below would find no marker at all (absent -> success),
+        // never reaching the keyring-mismatch this test pins.
+        seeded.get(INSTANCE)
+              .dhtMarkerCheck()
+              .onPresent(check -> StorageFactory.verifyDhtMarker(dhtClient, check)
+                                                 .await()
+                                                 .onFailure(cause -> fail("writing the DHT marker on first boot failed: " + cause.message())));
+
         writeThrough(seeded.get(INSTANCE));
 
         var reboot = createAllOrFail(Map.of(INSTANCE, storageConfigAt(brokenDiskPath, false)),
@@ -483,6 +499,34 @@ class StorageFactoryEncryptionTest {
                                                                 + "must fail closed, not silently resolve the read gate "
                                                                 + "over existing ciphertext"))
                                            .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class)));
+    }
+
+    /// #858 C2: two distinct causes must never be conflated. Marker get/put timing out after
+    /// formation (this test: the DHT client itself never answers) means `start()` never learned
+    /// whether a marker exists at all -- fails on `EncryptionError.DhtMarkerCheckTimedOut`. That is
+    /// the opposite situation from `EncryptedTierRequiresKeyring` (the marker WAS read successfully
+    /// and named a key id absent from the keyring): a never-resolving DHT client must never be
+    /// misreported as that cause. Uses the package-private `verifyDhtMarker(..., timeout)` test seam
+    /// (mirrors `MavenProtocolRoutesTimeoutTest`'s injected `SHORT_TIMEOUT`) so this proves the bound
+    /// in milliseconds rather than waiting out the real 30s `DHT_MARKER_TIMEOUT`.
+    @Test
+    void verifyDhtMarker_fails_withDhtMarkerCheckTimedOut_whenDhtClientNeverResponds() {
+        var neverRespondingClient = new NeverRespondingDHTClient();
+        var seeded = createAllOrFail(Map.of(INSTANCE, storageConfigAt(tempDir.resolve("vault-hang"), false)),
+                                     Option.some(neverRespondingClient),
+                                     Option.none());
+
+        var check = seeded.get(INSTANCE).dhtMarkerCheck();
+
+        assertThat(check.isPresent()).as("an instance with a DHT tier must always carry a marker check for "
+                                         + "AetherNode.start() to verify post-formation")
+                                     .isTrue();
+
+        check.onPresent(c -> StorageFactory.verifyDhtMarker(neverRespondingClient, c, SHORT_MARKER_TIMEOUT)
+                                           .await()
+                                           .onSuccess(_ -> fail("a marker check whose DHT round trip never resolves must "
+                                                                + "not succeed"))
+                                           .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.DhtMarkerCheckTimedOut.class)));
     }
 
     /// #253 SHOULD-FIX #1 (2026-09-04 ruling): the legacy/forward-direction counterpart to the test
@@ -577,6 +621,38 @@ class StorageFactoryEncryptionTest {
 
         private static String keyString(byte[] key) {
             return new String(key, StandardCharsets.UTF_8);
+        }
+    }
+
+    /// #858 C2: a `DHTClient` whose round trip never resolves, so `verifyDhtMarker`'s `.timeout(...)`
+    /// is the only thing that ever completes the call -- proving the timeout cause fires on a hung
+    /// client rather than only on an explicit test-injected failure. Mirrors
+    /// `MavenProtocolRoutesTimeoutTest`'s `neverResolvingHandler()` idiom (`Promise.promise()`, never
+    /// resolved).
+    private static final class NeverRespondingDHTClient implements DHTClient {
+        @Override
+        public Promise<Option<byte[]>> get(byte[] key) {
+            return Promise.promise(); // never resolves
+        }
+
+        @Override
+        public Promise<Unit> put(byte[] key, byte[] value) {
+            return Promise.promise(); // never resolves
+        }
+
+        @Override
+        public Promise<Boolean> remove(byte[] key) {
+            return Promise.promise(); // never invoked on this path; kept unresolved for consistency
+        }
+
+        @Override
+        public Promise<Boolean> exists(byte[] key) {
+            return Promise.promise(); // never invoked on this path; kept unresolved for consistency
+        }
+
+        @Override
+        public Partition partitionFor(byte[] key) {
+            return null;
         }
     }
 }
