@@ -24,6 +24,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.storage.StorageError;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,6 +52,14 @@ public final class MavenProtocolRoutes implements RouteHandler {
     /// (timeout tests, dev-mode tests). SECURE by default: the #520 relaxation must be opted into
     /// explicitly, never inherited by a caller that simply did not know about it.
     private static final BooleanSupplier SECURITY_ENABLED = () -> true;
+    /// #874/#875: `StorageError.TierNotAdmitted` means a request reached a DHT-backed tier before
+    /// its post-formation marker check ([org.pragmatica.aether.node.StorageFactory#verifyDhtMarker])
+    /// resolved the admission gate -- transient by construction, not a server defect, and the check
+    /// itself resolves in well under a second on a live cluster. `1` is a deliberately small,
+    /// unmeasured retry hint [design intent — unverified]: it need only beat `mvn deploy`'s own
+    /// "do not retry a 500" default so a CI deploy racing a node restart backs off and succeeds on
+    /// its own retry instead of failing hard.
+    private static final int TIER_NOT_ADMITTED_RETRY_AFTER_SECONDS = 1;
 
     /// Security-relevant bypass notices (#520). Both name the artifact, the posture that admitted it,
     /// and what an operator must change — a WARN nobody can read past without understanding it.
@@ -265,6 +274,13 @@ public final class MavenProtocolRoutes implements RouteHandler {
     private void sendFailureResponse(ResponseWriter response, Cause cause) {
         if (cause instanceof CoreError.Timeout) {
             response.error(HttpStatus.GATEWAY_TIMEOUT, cause.message());
+
+            return;
+        }
+
+        if (cause instanceof StorageError.TierNotAdmitted) {
+            response.header("Retry-After", String.valueOf(TIER_NOT_ADMITTED_RETRY_AFTER_SECONDS));
+            response.error(HttpStatus.SERVICE_UNAVAILABLE, cause.message());
 
             return;
         }

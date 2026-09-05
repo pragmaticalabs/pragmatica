@@ -1921,14 +1921,14 @@ When `--non-interactive` is set without `--target`, the command applies `--targe
 Emit a deployment-manifest template with `aether.cluster` and `aether.node-id` labels pre-set. Operators get a working starting point that's correct-by-construction — no chance of forgetting to label containers, which would otherwise leave cross-cluster tooling unable to distinguish two clusters sharing infrastructure.
 
 ```bash
-aether cluster scaffold --name <cluster-name> --format docker-compose [--nodes N] [--image IMG] \
+aether cluster scaffold --name <cluster-name> --template docker-compose [--nodes N] [--image IMG] \
                         [--mgmt-port-base 5150] [--app-port-base 8070] [--cluster-port 6000] > compose.yml
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
-| `--format` | Output format. Currently `docker-compose` |
+| `--template` | Output template. Currently `docker-compose` |
 | `--nodes` | Compose-fixed node count (default 5) |
 | `--image` | Container image (default `aether-node:local`) |
 | `--mgmt-port-base` | Host port base for management API (default 5150) |
@@ -1937,7 +1937,7 @@ aether cluster scaffold --name <cluster-name> --format docker-compose [--nodes N
 
 Example:
 ```bash
-aether cluster scaffold --name us-prod --format docker-compose --nodes 5 > compose.yml
+aether cluster scaffold --name us-prod --template docker-compose --nodes 5 > compose.yml
 docker compose -f compose.yml up -d
 ```
 
@@ -2088,6 +2088,8 @@ Example output:
 
 Show whether CTM auto-heal (deficit-driven replacement provisioning) is currently enabled. Operator-controlled gate, distinct from the failure-driven circuit breaker.
 
+The toggle is a durable cluster fact (#685), stored in the consensus-replicated KV, not in the leader process's memory — a leader failover no longer reverts an operator's disable. **A read reflects the log applied LOCALLY; the disable becomes visible on a node when that node applies the committed Put — bounded by consensus latency, not zero; a node behind on apply answers the previous value until then.**
+
 ```bash
 aether cluster topology auto-heal status
 ```
@@ -2099,7 +2101,7 @@ Example output:
 
 ### `aether cluster topology auto-heal disable`
 
-Disable CTM auto-heal — `handleDeficit` becomes a no-op until re-enabled. Use during disruption-budget testing, planned maintenance windows, or scenarios where the cluster must not automatically rebuild after node loss. Already-in-flight provisioning attempts continue to completion.
+Disable CTM auto-heal — `handleDeficit` becomes a no-op until re-enabled. Use during disruption-budget testing, planned maintenance windows, or scenarios where the cluster must not automatically rebuild after node loss. Already-in-flight provisioning attempts continue to completion. Writes through the consensus-backed command path (see the staleness note under `status`); a same-state call (per this node's local, possibly stale view) still writes through unconditionally rather than short-circuiting.
 
 ```bash
 aether cluster topology auto-heal disable
@@ -2112,7 +2114,7 @@ Example output:
 
 ### `aether cluster topology auto-heal enable`
 
-Re-enable CTM auto-heal. If a deficit is pending, the next reconcile picks it up immediately.
+Re-enable CTM auto-heal. If a deficit is pending, the next reconcile picks it up immediately on the node applying the write. Writes through the consensus-backed command path (see the staleness note under `status`); a same-state call (per this node's local, possibly stale view) still writes through unconditionally rather than short-circuiting.
 
 ```bash
 aether cluster topology auto-heal enable

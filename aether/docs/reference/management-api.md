@@ -641,6 +641,13 @@ List HTTP routes registered on the connected node.
 }
 ```
 
+### GET /api/v1/nodes/routes/{id}
+
+Per-node variant of `/api/v1/nodes/routes`. The request lands on any node and is forwarded to the
+node identified by `{id}` (via the standard `nodeIdParam(0)` forwarding pattern shared with
+`/api/v1/nodes/status/{id}`, `/api/v1/nodes/endpoint/{id}`, etc.). Response shape matches `GET
+/api/v1/nodes/routes`.
+
 ### GET /api/v1/routes
 
 List HTTP routes across the cluster.
@@ -1373,6 +1380,13 @@ Get per-node CPU and heap metrics.
   }
 ]
 ```
+
+### GET /api/v1/nodes/metrics/{id}
+
+Per-node variant of `/api/v1/nodes/metrics`. The request lands on any node and is forwarded to
+the node identified by `{id}` (via the standard `nodeIdParam(0)` forwarding pattern shared with
+`/api/v1/nodes/status/{id}`, `/api/v1/nodes/routes/{id}`, etc.). Response shape matches `GET
+/api/v1/nodes/metrics`.
 
 ### GET /api/v1/artifacts/metrics
 
@@ -3051,6 +3065,16 @@ DERIVED from it — the sum of the `core` entries — rather than stored alongsi
 cannot drift. It is retained because most consumers only need the total, but it cannot say where
 those cores live, which is what `POST /api/v1/cluster/scale` needs in a multi-source cluster.
 
+**Not Found (404, changed 2026-09-04, #837).** No cluster configuration is stored yet (e.g. right
+after a `docker compose down -v` volume wipe, before the first `aether cluster bootstrap`). This
+used to answer HTTP 500 — a bare, statusless internal cause defaulted to the server-error status
+rather than naming the actual condition. Absence of a resource on a GET is a 404, not a server
+failure:
+```json
+{"detail": "No cluster configuration stored"}
+```
+Recovery: `aether cluster bootstrap <aether-cluster.toml>`.
+
 ### GET /api/v1/cluster/provisioning
 
 Provisioning diagnostics — answers "why is a core-membership deficit being or not being filled?" without log-scraping. Combines the leader's end-of-pass reconcile decision snapshot, the provisioning circuit-breaker state, and the most recent provisioning failure. Surfaced only on the leader that owns a Cluster Topology Manager; on any other node a `leader: false` body with zeroed counters and an explanatory `lastReason` is returned (the numeric fields are not meaningful in that case).
@@ -3126,6 +3150,17 @@ Get aggregated cluster status including node health, slice deployment info, and 
 }
 ```
 Per-node fields: `kvState` is the node's heartbeat-reported readiness (`SYNCING` / `READY` / `DRAINING`) as cached by the leader from the leader↔node heartbeat. Despite the legacy field name, this value is **never** read from, stored in, or committed to the KV-Store — it is node-authoritative and presence/heartbeat-derived; empty string when the leader has not yet received a heartbeat. `derivedStatus` is the operator-visible projection of presence (SWIM/QUIC) ∪ heartbeat-readiness ∪ quorum. See `aether/docs/specs/membership-architecture-v2-spec.md`.
+
+**Not Found (404, changed 2026-09-04, #837).** Status is assembled from the stored cluster config
+plus live node/membership data; with no config stored (e.g. right after a volume wipe, before the
+first bootstrap) there is no honest way to fill `clusterName`, `desiredVersion`, or
+`desiredCoreCount` — fabricating them, or adding a new "config absent" flag alongside the existing
+fields, would misrepresent a response this route has never returned before. This previously
+answered HTTP 500 for the same reason as `GET /api/v1/cluster/config` above (see its 404 note):
+```json
+{"detail": "No cluster configuration stored"}
+```
+Recovery: `aether cluster bootstrap <aether-cluster.toml>`.
 
 ### POST /api/v1/cluster/config
 
@@ -3277,6 +3312,8 @@ Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixi
 
 Snapshot of the CTM auto-heal toggle. When `enabled=false`, `handleDeficit` is a no-op — deficit-driven replacement provisioning is halted until re-enabled. Operator-controlled gate, distinct from the failure-driven circuit breaker. Use during disruption-budget testing, planned maintenance windows, or any scenario where the cluster should not automatically rebuild after node loss.
 
+The toggle is a durable cluster fact (#685): it is stored as a typed record (`AutoHealStateKey` / `AutoHealStateValue`) in the consensus-replicated KV, not in the leader process's memory. `status` always answers from that record — an absent key (a fresh cluster, or one that has never had auto-heal touched) means enabled, matching the pre-#685 default. **A read reflects the log applied LOCALLY; the disable becomes visible on a node when that node applies the committed Put — bounded by consensus latency, not zero; a node behind on apply answers the previous value until then.** [mechanism: read-through against `KVStore.getTyped`; unit-proven by `ClusterTopologyManagerAutoHealDurabilityTest` — two independent `ClusterTopologyManager` instances over one shared `KVStore`, one instance disabling while the other, which never received the call, observes it]. A redundant toggle call (requesting the value this node's local, possibly-stale view already believes) still writes through unconditionally rather than short-circuiting on that local read. In particular, a leader failover no longer reverts an operator's disable: the newly-elected leader's CTM reads the same durable record the previous leader wrote, instead of starting from a fresh in-memory default.
+
 **RBAC:** ADMIN · **Routing:** LEADER
 
 **Response:**
@@ -3288,7 +3325,7 @@ Snapshot of the CTM auto-heal toggle. When `enabled=false`, `handleDeficit` is a
 
 ### POST /api/v1/cluster/topology/auto-heal/enable
 
-Re-enable CTM auto-heal. If a deficit exists at the time of the call, the next reconcile picks it up immediately (no scheduled poll wait). Returns the prior `enabled` state for the audit log.
+Re-enable CTM auto-heal. Writes `AutoHealStateValue(enabled=true, reason)` through the same consensus-backed command path as other topology mutations; every node converges on it once it applies the committed Put (see the staleness note under `GET .../auto-heal`). If a deficit exists at the time of the call, the next reconcile picks it up immediately (no scheduled poll wait) on the node applying the write. Returns the prior `enabled` state, as observed by this node's local (possibly stale) view, for the audit log. A same-state call (already enabled, by that local view) still writes through unconditionally — the write is never skipped on a local-read shortcut, since that read can lag the durable value (#685 review round 1).
 
 **RBAC:** ADMIN · **Routing:** LEADER
 
@@ -3302,7 +3339,7 @@ Re-enable CTM auto-heal. If a deficit exists at the time of the call, the next r
 
 ### POST /api/v1/cluster/topology/auto-heal/disable
 
-Disable CTM auto-heal. The change applies immediately to the next `handleDeficit` invocation — already-in-flight provisioning attempts continue to completion. Returns the prior `enabled` state for the audit log.
+Disable CTM auto-heal. Writes `AutoHealStateValue(enabled=false, reason)` through the same consensus-backed command path as other topology mutations; already-in-flight provisioning attempts on any node continue to completion. Returns the prior `enabled` state, as observed by this node's local (possibly stale) view, for the audit log. A same-state call (already disabled, by that local view) still writes through unconditionally — the write is never skipped on a local-read shortcut, since that read can lag the durable value (#685 review round 1). The disable survives a leader failover (#685) — see the staleness note under `GET .../auto-heal`.
 
 **RBAC:** ADMIN · **Routing:** LEADER
 
@@ -3341,6 +3378,16 @@ Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store 
 {
   "error": "Cluster is already at version 0.26.0"
 }
+```
+
+**Conflicts (HTTP 409, changed 2026-09-04, #837).** No cluster config is stored yet (e.g. right
+after a `docker compose down -v` volume wipe and fresh bootstrap). An upgrade request cannot create
+one: it carries only `targetVersion`, not the cluster name, topology, or deployment settings a
+config requires — mirroring `POST /api/v1/cluster/scale`'s identical refusal (see its Conflicts
+section above). This previously answered HTTP 500. The response names the missing recovery
+command:
+```json
+{"detail": "No cluster configuration stored. ... Run 'aether cluster bootstrap <aether-cluster.toml>' first, then retry 'aether cluster upgrade --version 0.26.0'."}
 ```
 
 ---
@@ -3917,6 +3964,7 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | GET | `/api/v1/slices/status` | Slice Management |
 | GET | `/api/v1/slices/config/{id}` | Slice Management |
 | GET | `/api/v1/nodes/routes` | Slice Management (per-node) |
+| GET | `/api/v1/nodes/routes/{id}` | Slice Management (per-node) |
 | GET | `/api/v1/routes` | Slice Management (cluster-wide) |
 | POST | `/api/v1/scale` | Slice Management |
 | POST | `/api/v1/blueprints` | Blueprint Management |
@@ -3936,6 +3984,7 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | GET | `/api/v1/metrics/timeouts` | Metrics |
 | POST | `/api/v1/metrics/backfill` | Metrics (dev-mode only) |
 | GET | `/api/v1/nodes/metrics` | Metrics |
+| GET | `/api/v1/nodes/metrics/{id}` | Metrics |
 | GET | `/api/v1/artifacts/metrics` | Metrics |
 | GET | `/api/v1/invocations/metrics` | Metrics |
 | GET | `/api/v1/invocations/metrics/slow` | Metrics |
@@ -5087,12 +5136,15 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
 
 **Guarantee.** At-least-once delivery per partition, conditional on the slice being `ACTIVE` on at least one live node. Duplicates arise from redelivery after a handler failure under `RETRY`, from the reconcile-tick window during an ownership or placement change (old and new assignee may both deliver), and from resuming at the last checkpoint (≤1000 events or ≤30s of progress) rather than the last delivered offset after an ungraceful move — a graceful detach flushes the exact cursor. Not effectively-once: there is no fencing token on delivery, and two transiently-divergent assignment views can both deliver and both write the cursor, last write winning.
 
+**Redelivery contract on cursor commit failure (#654).** A cursor commit is a consensus write and can fail, or simply not settle before a graceful detach needs to proceed — detach bounds the final flush to 5 seconds and treats a commit that has not settled within that bound as failed for the shutdown, even if it later succeeds. On the consumer's next attach it resumes from its LAST COMMITTED offset [mechanism: `loadCursorAndStart` unconditionally fetches and applies the last committed offset before starting delivery] and redelivers every event since — consumers must be idempotent. On failover to another node the consumer resumes from the last CONSENSUS-PUBLISHED checkpoint, not the failed-over-from node's local one — that local cursor is unreadable from any other node, so a lost publish means redelivery from that older, cluster-visible point, at least once (#488, #654 round 2). Every such failure — the local commit itself failing, or the local commit succeeding while the consensus checkpoint publish is the one that fails or does not settle — is counted in `cursorCommitFailureCount` and, while the consumer stays attached, the detail is visible on that partition's `lastCursorCommitFailure`, prefixed `local commit:` or `checkpoint publish:` so an operator never mistakes one for the other. Operator recovery: none needed for an isolated failure at one shutdown — that is ordinary at-least-once behavior; a sustained rise in `cursorCommitFailureCount` across restarts, rather than an isolated one, is the signal worth investigating (consensus write path health) [design intent — unverified].
+
 **Cross-artifact group collision (#545).** `SubscriptionKey`/`ConsumerKey` are `(stream, partition, consumer group)` — deliberately WITHOUT the artifact, because that is the correct identity for "which physical consumer serializes reads for this group." Two DIFFERENT artifacts declaring the same `(stream, consumer group)` therefore collide at that key: sharing one group across different artifacts is not supported in this release, and neither declaration consumes until the collision is resolved (rename the group, or remove one of the conflicting declarations). `diagnostic` on BOTH colliding entries names every artifact involved, the stream, and the group — this endpoint is the only place that names it. Two VERSIONS of the SAME artifact sharing a group is NOT this case — that is the intended blue-green upgrade collapse, and consumption continues uninterrupted through it. **`GET /api/v1/blueprints/status/{id}` carries no hint of this collision**: a slice can be fully `DEPLOYED` while its declarative consumer sits idle on one, since the collision is a stream-registration fact, not a slice-instance fact.
 
 **Response:**
 ```json
 {
   "attachedSubscriptions": 2,
+  "cursorCommitFailureCount": 0,
   "consumers": [
     {
       "stream": "orders",
@@ -5105,8 +5157,8 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
       "sliceDeployedLocally": true,
       "eventTypePublishable": true,
       "assignedPartitions": [
-        {"partition": 0, "committedOffset": 42, "stalled": false},
-        {"partition": 2, "committedOffset": 17, "stalled": false}
+        {"partition": 0, "committedOffset": 42, "stalled": false, "lastCursorCommitFailure": ""},
+        {"partition": 2, "committedOffset": 17, "stalled": false, "lastCursorCommitFailure": ""}
       ],
       "partitionAssignments": [
         {"partition": 0, "consumerNode": "node-1", "ownerNode": "node-1"},
@@ -5127,6 +5179,7 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
 | Field | Description |
 |-------|-------------|
 | `attachedSubscriptions` | Subscriptions actually attached ON THIS NODE — the number of partitions assigned here, not the stream's partition count |
+| `cursorCommitFailureCount` | Node-wide count of cursor commits — final flush at detach, or periodic checkpoint — that failed or did not settle within their bound (#654). Monotonic for the life of the node's runtime; keeps counting a failure after the consumer that produced it detaches |
 | `consumers[].stream` | Stream the consumer is declared against |
 | `consumers[].configSection` | The `[streams.X]` section in the slice's `resources.toml` |
 | `consumers[].artifact` | Artifact declaring the consumer |
@@ -5136,7 +5189,7 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
 | `consumers[].eventType` | Declared event type |
 | `consumers[].sliceDeployedLocally` | Whether the declaring slice is loaded on THIS node |
 | `consumers[].eventTypePublishable` | Whether the slice's own codec registry knows the event type (#526). **Absent when this node cannot know** — the probe needs the slice's codec, which only a node hosting the slice has |
-| `consumers[].assignedPartitions` | Live subscriptions on this node: `partition`, `committedOffset` (next offset to read — one past the last delivered), `stalled` |
+| `consumers[].assignedPartitions` | Live subscriptions on this node: `partition`, `committedOffset` (next offset to read — one past the last delivered), `stalled`, `lastCursorCommitFailure` (this partition's most recent cursor commit failure detail while attached; empty when its last commit succeeded, #654; prefixed `local commit:` when the node-local write itself failed or `checkpoint publish:` when the local write succeeded but the consensus checkpoint publish was the one recovered, #654 round 2) |
 | `consumers[].unassignedPartitions` | **The loud gap:** partitions no node can consume because the slice is `ACTIVE` nowhere. Absent when there is no gap. It is NOT a gap for this node to lack the slice — since #535 the owner need not host it. During a deploy the same emptiness is reported as "not being consumed YET" in `diagnostic` rather than as a gap |
 | `consumers[].partitionAssignments` | Full partition→node map: `consumerNode` (who consumes it), `ownerNode` (who owns it). Reads are forwarded whenever they differ. Either is `null` during the bootstrap window; `consumerNode` is also `null` when nothing can consume |
 | `consumers[].diagnostic` | Operator-facing explanation of whichever condition applies — including a #545 cross-artifact group collision, which names every colliding artifact, the stream, and the group on BOTH entries; empty when the consumer is healthy and reading locally |

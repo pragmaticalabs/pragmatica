@@ -101,7 +101,7 @@ class ClusterScaffoldCommand implements Callable<Integer> {
         record UnsupportedFormat(String format) implements ScaffoldError {
             @Override
             public String message() {
-                return "Unsupported --format '" + format + "' (supported: docker-compose)";
+                return "Unsupported --template '" + format + "' (supported: docker-compose)";
             }
         }
 

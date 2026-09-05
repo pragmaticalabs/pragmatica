@@ -13,8 +13,10 @@ import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AutoHealStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
@@ -112,7 +114,9 @@ class ClusterTopologyManagerActuatorTest {
                                                             clusterStore::apply,
                                                             () -> ClusterPhase.NORMAL,
                                                             drainCommandSinkCalls::add,
-                                                            _ -> {});
+                                                            _ -> {},
+                                                            Option::none,
+                                                            clusterStore::autoHealState);
     }
 
     @Test
@@ -453,9 +457,9 @@ class ClusterTopologyManagerActuatorTest {
     @Test
     void setAutoHealEnabled_toggleReturnsPriorState() {
         assertThat(ctm.isAutoHealEnabled()).isTrue();
-        assertThat(ctm.setAutoHealEnabled(false, "test-disable")).isTrue();
+        assertThat(ctm.setAutoHealEnabled(false, "test-disable").await().unwrap()).isTrue();
         assertThat(ctm.isAutoHealEnabled()).isFalse();
-        assertThat(ctm.setAutoHealEnabled(true, "test-enable")).isFalse();
+        assertThat(ctm.setAutoHealEnabled(true, "test-enable").await().unwrap()).isFalse();
         assertThat(ctm.isAutoHealEnabled()).isTrue();
     }
 
@@ -501,6 +505,7 @@ class ClusterTopologyManagerActuatorTest {
 
     private static final class RecordingClusterStore {
         private final AtomicReference<Option<ClusterConfigValue>> current = new AtomicReference<>(Option.none());
+        private final AtomicReference<Option<AutoHealStateValue>> autoHealState = new AtomicReference<>(Option.none());
         private final ConcurrentHashMap<ProvisioningSlotKey, ProvisioningSlotValue> slotKv = new ConcurrentHashMap<>();
 
         void seed(int coreCount) {
@@ -511,6 +516,10 @@ class ClusterTopologyManagerActuatorTest {
 
         Option<ClusterConfigValue> current() {
             return current.get();
+        }
+
+        Option<AutoHealStateValue> autoHealState() {
+            return autoHealState.get();
         }
 
         long currentVersion() {
@@ -539,6 +548,8 @@ class ClusterTopologyManagerActuatorTest {
                 slotKv.put(psk, psv);
             } else if (put.key() instanceof ClusterConfigKey && put.value() instanceof ClusterConfigValue cv) {
                 current.set(Option.some(cv));
+            } else if (put.key() instanceof AutoHealStateKey && put.value() instanceof AutoHealStateValue ahv) {
+                autoHealState.set(Option.some(ahv));
             }
         }
 

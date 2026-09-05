@@ -22,4 +22,16 @@ import org.pragmatica.lang.Unit;
 public interface ConsumerCursorStore {
     Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset);
     Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition);
+
+    /// #654 round 2: a store composed of sub-stages (e.g. the node's cluster-aware store, which
+    /// chains a consensus checkpoint publish after the local commit) may recover an inner stage's
+    /// failure rather than fail `commit(...)` itself, per its own documented rule for what a
+    /// sub-stage failure is allowed to do to the outer result. When it does, it reports the detail
+    /// here so the runtime still counts and surfaces the failure even though `commit(...)`'s Promise
+    /// settled successfully. The runtime reads this immediately after `commit(...)` resolves — it
+    /// reflects only the most recent attempt for this key, not an accumulating log. A store with no
+    /// such sub-stages (e.g. the plain local store) always returns [Option#empty].
+    default Option<String> lastRecoveredFailure(String consumerGroup, String streamName, int partition) {
+        return Option.empty();
+    }
 }

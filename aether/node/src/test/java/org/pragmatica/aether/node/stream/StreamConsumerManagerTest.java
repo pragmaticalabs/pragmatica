@@ -939,8 +939,14 @@ class StreamConsumerManagerTest {
                                                                        entry.getValue(),
                                                                        0L,
                                                                        false,
-                                                                       IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED))
+                                                                       IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
+                                                                       Option.none()))
                                 .toList();
+        }
+
+        @Override
+        public long cursorCommitFailureCount() {
+            return 0;
         }
 
         @Override
@@ -1204,6 +1210,11 @@ class StreamConsumerManagerTest {
             @Override
             public List<SubscriptionSnapshot> subscriptions() {
                 return List.of();
+            }
+
+            @Override
+            public long cursorCommitFailureCount() {
+                return 0;
             }
 
             @Override

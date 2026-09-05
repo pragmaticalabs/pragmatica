@@ -287,6 +287,30 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #837: `POST /api/cluster/upgrade` against a cluster with no stored config (same
+    /// post-volume-wipe state #335/#835 fixed for scale) used to route through
+    /// `ClusterConfigRoutes.lookupClusterConfig()`, which folded absence into the bare,
+    /// statusless `ConfigNotFoundError` — a 500 that read like server failure. An
+    /// `UpgradeRequest` carries only a target version: none of the cluster name, distribution
+    /// strategy, zones, or deployment settings a `ClusterConfigValue` requires, so there is no
+    /// more an honest bootstrap-on-upgrade here than there was a bootstrap-on-scale. Same fix
+    /// shape as `NoConfigToScale`: name the actual recovery instead of guessing or 500ing.
+    record NoConfigToUpgrade(String targetVersion) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "No cluster configuration stored. An upgrade request cannot create one — it "
+                 + "carries only a target version, not the cluster name, topology, or deployment "
+                 + "settings a config requires. Run 'aether cluster bootstrap <aether-cluster.toml>' "
+                 + "first, then retry 'aether cluster upgrade --version " + targetVersion
+                 + "'.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
     record ImmutableFieldChange(String field) implements ClusterConfigError {
         @Override
         public String message() {

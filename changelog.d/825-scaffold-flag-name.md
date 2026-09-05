@@ -1,0 +1,2 @@
+### Fixed (2026-09-05 — #825: cluster scaffold docs/header still said `--format`, flag is `--template`)
+- **`aether cluster scaffold`'s generated compose-file header comment and `cli.md` named a `--format` flag that picocli never registered** — the real `@Option` on `ClusterScaffoldCommand` is `--template` `[mechanism: ClusterScaffoldCommand.java:33]`. Fixed the header comment in `DockerComposeTemplate.java` and every `cli.md` occurrence (usage line, options table, example) to say `--template`.

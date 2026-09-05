@@ -476,6 +476,16 @@ public interface SystemTags {
         pin(table, 1672, "org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus");
         pin(table, 1673, "org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue");
 
+        // durable operator auto-heal disable/enable flag (#685 review round 1 BLOCKING 1) [base 1674]
+        // — same situation as the deployment-outcome pair above: both natural homes (AetherKey block
+        // 1088..1137, AetherValue block 1600..1659) are full, so these take the next free slot after
+        // the highest pinned tag. Missing pins here are a boot-breaker, not a soft failure:
+        // `SliceCodec.systemCodec` throws for a hash-derived (unpinned) tag, so `NodeCodecs.nodeCodecs()`
+        // throws at startup and no node boots. `SystemCodecPinningTest` is the instrument that catches
+        // this class of gap — see its history in aether/node for why a stubbed serializer cannot.
+        pin(table, 1674, "org.pragmatica.aether.slice.kvstore.AetherKey.AutoHealStateKey");
+        pin(table, 1675, "org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue");
+
         // ---- 2112..16383 RESERVED ----
         rejectDuplicateTags(table);
 

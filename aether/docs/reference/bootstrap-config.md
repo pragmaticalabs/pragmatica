@@ -116,7 +116,7 @@ If `[cluster.core]` is absent entirely, `min`/`max` are unset (no bound) and `ma
 | Field | Type | Default | Required | Notes |
 |---|---|---|---|---|
 | `type` | string | — | **yes** | `cloud` \| `ssh` \| `forge` \| `docker`. |
-| `provider` | string | — | no | `hetzner` \| `aws` \| `gcp` \| `azure`. **Silently discarded if unrecognized** — see Gaps/silent-wrong-state below. |
+| `provider` | string | — | no | `hetzner` \| `aws` \| `gcp` \| `azure`. **Rejected loudly if unrecognized** — `ClusterBootstrapConfigParser.parseProvider` (`ClusterBootstrapConfigParser.java:242-250`) returns a `ParseFailed` naming the bad value and the valid provider names; parsing aborts rather than silently dropping the field. |
 | `credentials` | string | — | no (required by cloud providers at deploy time) | Supports `${env:VAR}` interpolation. |
 | `region` | string | — | no | Provider-specific. |
 | `zone` | string | — | no | Single zone; mutually informative with `zones`. |

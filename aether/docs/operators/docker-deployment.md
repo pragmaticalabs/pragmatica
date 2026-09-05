@@ -123,7 +123,7 @@ networks:
 | `CLUSTER_PEERS` | (required) | Cluster peer list |
 | `AETHER_CLUSTER_NAME` | (required) | Cluster name; boot aborts if unset. Lowercase DNS-label format (`[a-z]([-a-z0-9]{0,61}[a-z0-9])?`), e.g. `aether-dev` |
 | `AETHER_CLUSTER_SECRET` | (required) | Shared secret used to generate TLS certificates; boot aborts if unset and no `cluster_secret` is configured in the `[tls]` TOML section |
-| `JAVA_OPTS` | `-Xmx256m` | JVM options |
+| `JAVA_OPTS` | `-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true` | JVM options |
 
 ### Peer List Format
 
@@ -143,7 +143,7 @@ node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090
 | `FORGE_PORT` | 8888 | Dashboard port |
 | `CLUSTER_SIZE` | 5 | Simulated cluster size |
 | `LOAD_RATE` | 1000 | Requests per second |
-| `JAVA_OPTS` | `-Xmx1g` | JVM options |
+| `JAVA_OPTS` | `-Xmx1g -XX:+UseZGC` | JVM options |
 
 ## Running Individual Containers
 
@@ -185,8 +185,8 @@ docker run -d --name node3 --network aether-net \
 Containers include health checks:
 
 ```dockerfile
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
-    CMD wget --spider -q http://localhost:8080/health/live || exit 1
+HEALTHCHECK --interval=10s --timeout=5s --start-period=45s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:${MANAGEMENT_PORT}/health/live || exit 1
 ```
 
 Check health status:

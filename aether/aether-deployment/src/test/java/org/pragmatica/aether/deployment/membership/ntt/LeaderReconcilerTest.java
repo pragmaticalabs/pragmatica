@@ -2367,8 +2367,8 @@ class LeaderReconcilerTest {
         }
 
         @Override
-        public boolean setAutoHealEnabled(boolean enabled, String reason) {
-            return autoHealEnabled.getAndSet(enabled);
+        public Promise<Boolean> setAutoHealEnabled(boolean enabled, String reason) {
+            return Promise.success(autoHealEnabled.getAndSet(enabled));
         }
 
         @Override
