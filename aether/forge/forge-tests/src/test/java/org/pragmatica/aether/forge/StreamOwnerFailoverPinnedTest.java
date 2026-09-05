@@ -59,9 +59,17 @@ class StreamOwnerFailoverPinnedTest extends AbstractStreamOwnerFailover {
 
     @Override
     void pinMembership(EmberCluster cluster) {
+        // #685 review round 1 SHOULD-FIX 3 — `setAutoHealEnabled` writes through consensus KV and can
+        // fail; discarding its Promise (as this call used to) makes that failure invisible and lets the
+        // test proceed as if every node were pinned when one might not be. Await it, bounded, and fail
+        // the test on failure — a pin that silently does not pin is worse than no pin.
         cluster.allNodes()
                .forEach(node -> node.clusterTopologyManager()
-                                    .onPresent(ctm -> ctm.setAutoHealEnabled(false, PIN_REASON)));
+                                    .onPresent(ctm -> ctm.setAutoHealEnabled(false, PIN_REASON)
+                                                         .await()
+                                                         .onFailure(cause -> {
+                                                             throw new AssertionError("auto-heal pin failed: " + cause.message());
+                                                         })));
     }
 
     @Override

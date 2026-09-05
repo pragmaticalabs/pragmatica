@@ -324,8 +324,8 @@ class ClusterConfigApplierTest {
         }
 
         @Override
-        public boolean setAutoHealEnabled(boolean enabled, String reason) {
-            return true;
+        public Promise<Boolean> setAutoHealEnabled(boolean enabled, String reason) {
+            return Promise.success(true);
         }
 
         @Override

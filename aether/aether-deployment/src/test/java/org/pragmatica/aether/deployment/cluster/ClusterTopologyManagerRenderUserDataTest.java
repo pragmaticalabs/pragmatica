@@ -195,7 +195,8 @@ class ClusterTopologyManagerRenderUserDataTest {
                                                                         () -> ClusterPhase.NORMAL,
                                                                         ignored -> {},
                                                                         ignored -> {},
-                                                                        () -> Option.some(leaderResolved));
+                                                                        () -> Option.some(leaderResolved),
+                                                                        Option::none);
         ctmWithKeys.activate();
 
         var result = ctmWithKeys.provisionReplacement(nodeId("node-r3").unwrap(),

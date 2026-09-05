@@ -882,6 +882,28 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Durable record of the operator's cluster-wide auto-heal enable/disable flag (#685), keyed by
+    /// [AetherKey.AutoHealStateKey]. A read reflects the log applied LOCALLY: the disable becomes
+    /// visible on a node when that node applies the committed Put — bounded by consensus latency, not
+    /// zero; a node behind on apply answers the previous value until then. Absence of a record for the
+    /// singleton key means auto-heal is enabled (the pre-#685 default) — never persisted as an explicit
+    /// "enabled" record.
+    record AutoHealStateValue(boolean enabled, String reason, long updatedAt) implements AetherValue {
+        public AutoHealStateValue {
+            if (reason == null) {
+                reason = "";
+            }
+        }
+
+        public static AutoHealStateValue autoHealStateValue(boolean enabled, String reason) {
+            return new AutoHealStateValue(enabled, reason, System.currentTimeMillis());
+        }
+
+        public static AutoHealStateValue autoHealStateValue(boolean enabled, String reason, long updatedAt) {
+            return new AutoHealStateValue(enabled, reason, updatedAt);
+        }
+    }
+
     @Codec
     enum ProvisioningSource {
         CTM,
