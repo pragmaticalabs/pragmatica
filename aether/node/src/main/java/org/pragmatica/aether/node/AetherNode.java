@@ -1495,6 +1495,16 @@ public interface AetherNode extends ManageableNode {
         var artifactStorage = Objects.requireNonNull(storageSetups.get("artifacts"),
                                                      "storageSetups missing \"artifacts\" after createAll succeeded -- invariant violated")
                                      .instance();
+        // #783: same invariant as "artifacts" above -- `createAll` synthesizes a "content" entry
+        // whenever `[storage.content]` wasn't explicit, so its absence here would mean
+        // `baseStorageSetupsResult` should already have failed at the guard above. Replaces the old
+        // keyring-less `StorageFactory.defaultContentStorage(dhtClientOption)` call at the
+        // `registerRuntimeExtensions` site below, which built ContentStore's StorageInstance entirely
+        // outside `storageSetups` -- no MetadataStore, no demotion/GC, never encrypted (#250/#803,
+        // #253's WARN at that site is retired along with it).
+        var contentStorage = Objects.requireNonNull(storageSetups.get("content"),
+                                                    "storageSetups missing \"content\" after createAll succeeded -- invariant violated")
+                                    .instance();
         var artifactStore = ArtifactStore.artifactStore(dhtClient, artifactStorage);
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
         var repositories = repositoryFactory.createAll(config.sliceConfig());
@@ -2619,23 +2629,11 @@ public interface AetherNode extends ManageableNode {
                                                                              clusterNode.leaderManager());
 
         resourceProviderSetup.spiProvider()
-                             .onPresent(spi -> {
-                                            // #253 ruling (2026-09-04): the `content` instance below is
-                                            // provisioned via the keyring-less `defaultContentStorage` (see
-                                            // #783 note at compositeDemotionManager/compositeGarbageCollector
-                                            // below) -- so when a node-wide keyring IS configured, its
-                                            // coverage silently excludes this instance. Named here, at boot,
-                                            // so the gap is operator-visible and not only documented.
-                                            storageKeyring.onPresent(_ -> LOG.warn("Storage encryption is configured "
-                                                                                  + "([storage.encryption]) but the 'content' "
-                                                                                  + "storage instance is NOT covered (#783): "
-                                                                                  + "its blocks are stored in plaintext"));
-                                            registerRuntimeExtensions(spi,
-                                                                      topicSubscriptionRegistry,
-                                                                      sliceInvoker,
-                                                                      cacheDhtClient,
-                                                                      StorageFactory.defaultContentStorage(dhtClientOption));
-                                        });
+                             .onPresent(spi -> registerRuntimeExtensions(spi,
+                                                                         topicSubscriptionRegistry,
+                                                                         sliceInvoker,
+                                                                         cacheDhtClient,
+                                                                         contentStorage));
         var selfAddress = findSelfAddress(config);
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
                                                                                             selfAddress,
@@ -2697,12 +2695,14 @@ public interface AetherNode extends ManageableNode {
         // TTMManager, RollbackManager, AbTestManager, DeploymentManager, StorageAdapter, StreamingCoordinator)
         // are leader-pinned via their toggle*OnLeaderChange routes in collectRouteEntries / allEntries below.
         // #250: real demotion + GC, fanned out across every storage setup this node holds via
-        // StorageFactory.composite* -- currently `artifacts` and `streams` (`storageSetups`, built
-        // above). The `content` tier is NOT covered: `defaultContentStorage` (registered above via
-        // registerRuntimeExtensions) provisions a bare StorageInstance for ContentStore outside
-        // `storageSetups`, so it never reaches compositeDemotionManager/compositeGarbageCollector
-        // and gets no demotion or GC from this driver (#783). Leader-pinned activation below
-        // (toggleStorageOnLeaderChange) is unchanged — only the no-op stand-in is replaced. Both
+        // StorageFactory.composite* -- `artifacts`, `content` and `streams` (`storageSetups`, built
+        // above). #783: `content` used to be built by a separate keyring-less
+        // `defaultContentStorage` call entirely outside `storageSetups`, so it never reached
+        // compositeDemotionManager/compositeGarbageCollector and got no demotion or GC from this
+        // driver; it is now synthesized through the same `createAll` path as `artifacts` (see the
+        // `contentStorage` invariant comment above) and is covered like every other entry. Leader-
+        // pinned activation below (toggleStorageOnLeaderChange) is unchanged — only the no-op
+        // stand-in is replaced. Both
         // DefaultDemotionManager and DefaultStorageGarbageCollector self-gate on their internal
         // `active` flag, so the periodic driver below can call demote()/collectGarbage()
         // unconditionally on every node (leader or not) and it safely no-ops until this node's

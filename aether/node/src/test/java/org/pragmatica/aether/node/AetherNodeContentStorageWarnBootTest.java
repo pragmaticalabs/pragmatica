@@ -49,12 +49,18 @@ import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
-/// #253 ruling (2026-09-04): when a node-wide storage-encryption keyring is configured, the `content`
-/// storage instance (provisioned via the keyring-less `StorageFactory.defaultContentStorage`, see
-/// #783) must not silently stay unencrypted -- `AetherNode.assembleNode` logs a boot-time WARN naming
-/// the gap. This pins that WARN through the REAL boot path (`AetherNode.aetherNode`, not an extracted
-/// helper), unlike `AetherNodeStorageEncryptionBootTest`, whose scope is deliberately the FAST-FAIL
-/// paths that return before the keyring is even resolved.
+/// #783 fix (2026-09-04): the `content` storage instance used to be provisioned via a separate,
+/// keyring-less `StorageFactory.defaultContentStorage` call, entirely outside the config/keyring-aware
+/// `createAll` path -- so `AetherNode.assembleNode` logged a boot-time WARN (added by #830) naming the
+/// gap whenever a node-wide keyring was configured. `content` is now synthesized through `createAll`
+/// exactly like `artifacts` (see `StorageFactory.defaultContentConfig`), so it IS covered
+/// (`encrypted = keyring.isPresent()` unless an explicit `[storage.content]` section overrides it) and
+/// the WARN is retired along with the gap it named. This pins the WARN's ABSENCE through the REAL boot
+/// path (`AetherNode.aetherNode`, not an extracted helper), unlike `AetherNodeStorageEncryptionBootTest`,
+/// whose scope is deliberately the FAST-FAIL paths that return before the keyring is even resolved.
+/// Red-before: re-adding the retired WARN call at its old site (`resourceProviderSetup.spiProvider()
+/// .onPresent(...)` in `AetherNode.assembleNode`) must turn `assembleNode_doesNotWarnOnContentStorage_
+/// whenKeyringConfigured` red.
 ///
 /// Unlike `AetherNodeStorageEncryptionBootTest#minimalConfig`, whose `coreNodes = List.of()` is legal
 /// only because `AetherNodeConfig#validate` skips its "at least one core node" check under
@@ -63,7 +69,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// config capable of both server and client contexts, since the encryption config and
 /// `SecretsProvider` are made to actually RESOLVE and execution runs past the fast-fail tests'
 /// short-circuit into real assembly: real port binds, real component wiring, and the
-/// `resourceProviderSetup.spiProvider().onPresent(...)` block where the WARN fires.
+/// `resourceProviderSetup.spiProvider().onPresent(...)` block where the WARN used to fire.
 ///
 /// Log-capture strategy follows `DelegatedStorageAdapterTest` / `ClusterTopologyManagerCasLossLoggingTest`:
 /// a programmatic log4j2 appender on `AetherNode`'s own logger, asserting on captured WARN messages.
@@ -115,7 +121,7 @@ class AetherNodeContentStorageWarnBootTest {
 
     @Test
     @Timeout(value = 60, unit = SECONDS)
-    void assembleNode_warnsOnContentStorageGap_whenKeyringConfigured() {
+    void assembleNode_doesNotWarnOnContentStorage_whenKeyringConfigured() {
         SecretsProvider provider = path -> Promise.success(Map.of(SECRET_PATH, VALID_AES256_KEY).get(path));
         var encryption = Option.some(StorageEncryptionConfig.storageEncryptionConfig(Map.of("k1", "${secrets:" + SECRET_PATH + "}"),
                                                                                        "k1",
@@ -126,8 +132,10 @@ class AetherNodeContentStorageWarnBootTest {
                           .unwrap();
 
         assertThat(appender.capturedWarns())
-                .as("a configured keyring must surface the content-instance coverage gap at boot, citing #783")
-                .anyMatch(msg -> msg.contains(CONTENT_STORAGE_WARN_FRAGMENT));
+                .as("#783: `content` is now synthesized through the same config/keyring-aware `createAll` "
+                    + "path as every other instance, so a configured keyring covers it too -- there is no "
+                    + "more coverage gap left to warn about")
+                .noneMatch(msg -> msg.contains(CONTENT_STORAGE_WARN_FRAGMENT));
     }
 
     @Test
@@ -139,7 +147,7 @@ class AetherNodeContentStorageWarnBootTest {
                           .unwrap();
 
         assertThat(appender.capturedWarns())
-                .as("with no node-wide keyring there is nothing un-covered to warn about")
+                .as("with no node-wide keyring there was never anything to warn about, before or after #783")
                 .noneMatch(msg -> msg.contains(CONTENT_STORAGE_WARN_FRAGMENT));
     }
 
@@ -154,14 +162,15 @@ class AetherNodeContentStorageWarnBootTest {
     ///   communication); `TlsConfig.selfSignedServer()` is server-only and `QuicSslContextFactory`
     ///   rejects it for the client side. `TlsConfig.selfSignedMutual()` carries both an identity and
     ///   an (insecure, dev-only) trust-all anchor, satisfying both.
-    /// - The WARN itself is nested inside `resourceProviderSetup.spiProvider().onPresent(...)`
-    ///   in `AetherNode.assembleNode`, because `defaultContentStorage` -- the keyring-less `content`
-    ///   instance the WARN is about -- is ONLY provisioned via `registerRuntimeExtensions` in that
-    ///   same branch (confirmed: it has no other call site). `spiProvider` is populated only when
-    ///   `config.configProvider()` is non-empty (`createResourceProviderFacade`), so this config
-    ///   supplies a minimal empty `ConfigurationProvider` -- any content works, only presence matters.
-    ///   That path also sets `ConfigService`/`ResourceProvider` process-wide static singletons, hence
-    ///   the explicit `.clear()` calls in `tearDown`.
+    /// - The retired WARN was nested inside `resourceProviderSetup.spiProvider().onPresent(...)` in
+    ///   `AetherNode.assembleNode`, because `content`'s `StorageInstance` is ONLY provisioned via
+    ///   `registerRuntimeExtensions` in that same branch (confirmed: it has no other call site).
+    ///   `spiProvider` is populated only when `config.configProvider()` is non-empty
+    ///   (`createResourceProviderFacade`), so this config supplies a minimal empty
+    ///   `ConfigurationProvider` -- any content works, only presence matters, so this test still
+    ///   exercises the branch the WARN used to live in. That path also sets
+    ///   `ConfigService`/`ResourceProvider` process-wide static singletons, hence the explicit
+    ///   `.clear()` calls in `tearDown`.
     private static AetherNodeConfig minimalConfig(Option<EnvironmentIntegration> environment,
                                                    Option<StorageEncryptionConfig> storageEncryption) {
         var self = NodeId.nodeId("content-storage-warn-boot-test").unwrap();

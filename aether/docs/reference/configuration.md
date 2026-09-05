@@ -247,17 +247,17 @@ missing entirely. If the node's environment has no `SecretsProvider` at all whil
 
 **Coverage.** Encrypts block payloads (`get`/`put`) on `LocalDiskTier` and `DhtStorageTier` for any
 instance with `encrypted = true`, and on the `streams` instance's segment-block tiers when
-`streams_encrypted = true`. The auto-synthesized default `artifacts` instance (created when no
-explicit `[storage.artifacts]` section is configured) tracks node-wide keyring presence: it is
-encrypted whenever `[storage.encryption]` is configured with a resolvable keyring, plaintext
-otherwise — an explicit `[storage.artifacts]` section is only needed to opt out or to fine-tune
-other settings, not merely to get coverage. Does **not** cover: `MemoryTier` (in-process, never
-touches disk); metadata/refs/snapshot files (`MetadataStore`/`SnapshotManager`) for any instance,
-`streams` included; the `streams` instance's write-ahead log (`walPath`, #634-3) — a separate
-directory from the segment-block tiers that `streams_encrypted` gates, and never wrapped in
-`EncryptingStorageTier`; the `content` storage instance (provisioned via a separate code path that
-does not currently accept a keyring at all — tracked as the same structural gap as `content`'s
-exclusion from demotion/GC, #783).
+`streams_encrypted = true`. The auto-synthesized default `artifacts` and `content` instances
+(created when no explicit `[storage.artifacts]`/`[storage.content]` section is configured) track
+node-wide keyring presence: encrypted whenever `[storage.encryption]` is configured with a
+resolvable keyring, plaintext otherwise — an explicit `[storage.artifacts]`/`[storage.content]`
+section is only needed to opt out or to fine-tune other settings, not merely to get coverage
+(`content` joined this coverage in #783; it previously bypassed the config/keyring wiring, and
+demotion/GC, entirely via a separate factory path). Does **not** cover: `MemoryTier` (in-process,
+never touches disk); metadata/refs/snapshot files (`MetadataStore`/`SnapshotManager`) for any
+instance, `streams` included; the `streams` instance's write-ahead log (`walPath`, #634-3) — a
+separate directory from the segment-block tiers that `streams_encrypted` gates, and never wrapped
+in `EncryptingStorageTier`.
 
 **Not the same as `[streams.X].encryption-key-id`.** That per-stream blueprint key is unrelated and
 was already found structurally inert and rejected at validation (`#576`, 2026-08-27) —
