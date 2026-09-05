@@ -19,6 +19,7 @@ import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
+import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRoutePublisher;
@@ -393,6 +394,8 @@ class BlueprintDeployStatusTest {
         public Option<NodeId> leader() { return unsupported("leader"); }
         @Override
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) { return unsupported("apply"); }
+        @Override
+        public SchemaOrchestratorService schemaOrchestrator() { return unsupported("schemaOrchestrator"); }
         @Override
         public int managementPort() { return unsupported("managementPort"); }
         @Override

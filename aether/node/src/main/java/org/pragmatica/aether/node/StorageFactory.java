@@ -20,6 +20,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.parse.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.DemotionConfig;
@@ -75,7 +76,28 @@ public final class StorageFactory {
                                StorageReadinessGate readinessGate,
                                MetadataStore metadataStore,
                                DemotionManager demotionManager,
-                               StorageGarbageCollector garbageCollector) {
+                               StorageGarbageCollector garbageCollector,
+                               Option<DhtMarkerCheck> dhtMarkerCheck) {
+        /// #858: pre-#858 call sites that build a `StorageSetup` with no DHT tier involved (e.g.
+        /// `StorageRoutesTest`'s direct `new StorageSetup(...)`) keep compiling unchanged, delegating
+        /// to the canonical constructor with an empty marker check.
+        public StorageSetup(String name,
+                            StorageInstance instance,
+                            SnapshotManager snapshotManager,
+                            StorageReadinessGate readinessGate,
+                            MetadataStore metadataStore,
+                            DemotionManager demotionManager,
+                            StorageGarbageCollector garbageCollector) {
+            this(name,
+                 instance,
+                 snapshotManager,
+                 readinessGate,
+                 metadataStore,
+                 demotionManager,
+                 garbageCollector,
+                 Option.empty());
+        }
+
         public static StorageSetup storageSetup(String name,
                                                 StorageInstance instance,
                                                 SnapshotManager snapshotManager,
@@ -91,6 +113,46 @@ public final class StorageFactory {
                                     demotionManager,
                                     garbageCollector);
         }
+
+        public static StorageSetup storageSetup(String name,
+                                                StorageInstance instance,
+                                                SnapshotManager snapshotManager,
+                                                StorageReadinessGate readinessGate,
+                                                MetadataStore metadataStore,
+                                                DemotionManager demotionManager,
+                                                StorageGarbageCollector garbageCollector,
+                                                Option<DhtMarkerCheck> dhtMarkerCheck) {
+            return new StorageSetup(name,
+                                    instance,
+                                    snapshotManager,
+                                    readinessGate,
+                                    metadataStore,
+                                    demotionManager,
+                                    garbageCollector,
+                                    dhtMarkerCheck);
+        }
+    }
+
+    /// #858: carries what the post-formation step ([#verifyDhtMarkers], called from
+    /// `AetherNode.start()`) needs to check/write ONE instance's DHT-namespace encryption marker
+    /// without re-deriving it -- the per-instance effective keyring decision `createOne` already made
+    /// (`config.encrypted() ? keyring : empty`), the DHT namespace prefix, and the `readGate` that
+    /// blocks `DhtStorageTier.get()` for this namespace until [#verifyDhtMarker] resolves it. Present
+    /// only for instances that actually carry a DHT tier -- see [#maybeEncryptDht].
+    record DhtMarkerCheck(String instanceName,
+                          String dhtKeyPrefix,
+                          Option<EncryptionKeyring> effectiveKeyring,
+                          Promise<Unit> readGate) {}
+
+    /// #858: the tier list plus the (possibly absent) DHT marker check that goes with it -- threaded
+    /// from [#maybeEncryptDht] up through [#buildTierList]/[#handleDiskTierUnavailable]/[#buildTiers]
+    /// to [#createOne], which hands `dhtMarkerCheck` to `StorageSetup` unchanged.
+    private record TierBuild(List<StorageTier> tiers, Option<DhtMarkerCheck> dhtMarkerCheck) {
+        /// #858: [#maybeEncryptDht]'s own return shape -- the single (possibly absent) DHT tier plus
+        /// its marker check, before either is folded into a [TierBuild]'s full tier list by
+        /// [#withDht]. Kept separate from the enclosing record because `maybeEncryptDht` builds at
+        /// most one tier, never a list.
+        private record DhtBuild(Option<StorageTier> tier, Option<DhtMarkerCheck> markerCheck) {}
     }
 
     /// #250: fan out demotion across every storage setup so leader-pinned activation
@@ -220,7 +282,6 @@ public final class StorageFactory {
                                   dhtClient,
                                   keyring));
         }
-
         // #783 ruling (2026-09-04): `content` -- the shared per-node StorageInstance ContentStore
         // resources provision through (registered as an SPI extension in AetherNode) -- used to be
         // built by a separate, keyring-less `defaultContentStorage` entirely outside this map: no
@@ -429,13 +490,17 @@ public final class StorageFactory {
         return buildTiers(name, config, dhtClient, effectiveKeyring).mapError(cause -> Causes.cause("Failed to create storage '" + name
                                                                                                    + "': " + cause.message(),
                                                                                                     Option.some(cause)))
-                         .map(tiers -> assembleSetup(name, tiers, config, nodeId));
+                         .map(build -> assembleSetup(name,
+                                                     build.tiers(),
+                                                     config,
+                                                     nodeId,
+                                                     build.dhtMarkerCheck()));
     }
 
-    private static Result<List<StorageTier>> buildTiers(String name,
-                                                        StorageConfig config,
-                                                        Option<DHTClient> dhtClient,
-                                                        Option<EncryptionKeyring> keyring) {
+    private static Result<TierBuild> buildTiers(String name,
+                                                StorageConfig config,
+                                                Option<DHTClient> dhtClient,
+                                                Option<EncryptionKeyring> keyring) {
         var memoryTier = MemoryTier.memoryTier(config.memoryMaxBytes());
         var dhtKeyPrefix = name + "-blocks";
         var diskPath = Path.of(config.diskPath());
@@ -457,123 +522,187 @@ public final class StorageFactory {
                                                         keyring));
     }
 
-    /// Builds (from `dhtClient`/`dhtKeyPrefix`) and wraps the DHT tier under `keyring` when present
-    /// -- shared between the disk-available and disk-unavailable paths so a keyring's coverage
-    /// doesn't silently shrink to "disk only" when the disk tier degrades to the memory+DHT
-    /// fallback.
-    ///
-    /// #253 SHOULD-FIX #1 (2026-09-04 ruling): the encrypting branch also writes the per-instance
-    /// DHT marker (same [EncryptingStorageTier#MARKER_FILE_NAME] key name as the disk marker, under
-    /// this namespace's `dhtKeyPrefix`) mirroring [EncryptingStorageTier#wrapLocalDisk] -- so a LATER
-    /// boot with the disk tier absent/wiped and no keyring can be refused by
-    /// [#refuseIfDhtEncryptedWithoutKeyring] instead of this method silently handing back the bare
-    /// DHT tier. Unlike the disk marker, the write here is unconditional (idempotent put on every
-    /// encrypting boot, not a first-enable-only write guarded by an empty-directory check): the DHT
-    /// has no directory to scan for pre-existing plaintext, so there is no "empty vs already-has-
-    /// blocks" branch to gate on, and re-asserting the marker keeps it current with the latest
-    /// active key id.
-    private static Result<Option<StorageTier>> maybeEncryptDht(Option<DHTClient> dhtClient,
-                                                               String dhtKeyPrefix,
-                                                               Option<EncryptionKeyring> keyring) {
-        return dhtClient.fold(() -> Result.success(Option.<StorageTier> empty()),
+    /// Builds the DHT tier (from `dhtClient`/`dhtKeyPrefix`) and wraps it under `keyring` when
+    /// present -- shared between the disk-available and disk-unavailable paths so a keyring's
+    /// coverage doesn't silently shrink to "disk only" when the disk tier degrades to the memory+DHT
+    /// fallback. Purely in-memory now (#858): building the tier and its [#DhtMarkerCheck] does no
+    /// I/O -- the marker read/write itself is deferred to [#verifyDhtMarker], run post-formation from
+    /// `AetherNode.start()`, because the `DHTClient` handed to the constructor cannot route before
+    /// cluster formation resolves there. The returned tier is gated on a fresh, unresolved
+    /// `readGate`: [DhtStorageTier#get] blocks until [#verifyDhtMarker] resolves it, so no read can
+    /// observe a namespace whose marker hasn't been checked yet.
+    private static TierBuild.DhtBuild maybeEncryptDht(String name,
+                                                      Option<DHTClient> dhtClient,
+                                                      String dhtKeyPrefix,
+                                                      Option<EncryptionKeyring> keyring) {
+        return dhtClient.fold(() -> new TierBuild.DhtBuild(Option.empty(), Option.empty()),
                               client -> {
-                                  var dht = DhtStorageTier.dhtStorageTier(client, dhtKeyPrefix);
+                                  var readGate = Promise.<Unit> promise();
+                                  var dht = DhtStorageTier.dhtStorageTier(client, dhtKeyPrefix, name, readGate);
+                                  var tier = keyring.<StorageTier> fold(() -> dht,
+                                                                        ring -> EncryptingStorageTier.wrap(dht, ring));
+                                  var check = new DhtMarkerCheck(name, dhtKeyPrefix, keyring, readGate);
 
-                                  return keyring.fold(() -> Result.success(Option.some((StorageTier) dht)),
-                                                      ring -> writeDhtMarker(client, dhtKeyPrefix, ring).map(_ -> Option.some((StorageTier) EncryptingStorageTier.wrap(dht,
-                                                                                                                                                                       ring))));
+                                  return new TierBuild.DhtBuild(Option.some(tier), Option.some(check));
                               });
     }
 
-    private static Result<Unit> writeDhtMarker(DHTClient client, String dhtKeyPrefix, EncryptionKeyring ring) {
+    /// #858: runs post-formation (`AetherNode.start()`, via [#verifyDhtMarkers]) -- replaces the
+    /// former boot-time `.await(DHT_MARKER_TIMEOUT)` inside the constructor path (`createAll` ->
+    /// `createOne` -> [#maybeEncryptDht]), which blocked on a `DHTClient` that cannot route before
+    /// cluster formation resolves and always burned the full 30 s timeout on a real boot with a DHT
+    /// client and no keyring (#858). No keyring: refuses if the marker is present -- same
+    /// `EncryptionError.EncryptedTierRequiresKeyring` cause as before, just raised later
+    /// (fail-closed; `start()` aborts and the node stops). Keyring present: (re)writes the marker.
+    /// Either branch resolves `check.readGate()` on success so [DhtStorageTier#get] starts serving
+    /// reads for this namespace; on failure the gate is left unresolved, which is safe because a
+    /// failed `start()` aborts the whole node before anything could observe it.
+    static Promise<Unit> verifyDhtMarker(DHTClient client, DhtMarkerCheck check) {
+        return verifyDhtMarker(client, check, DHT_MARKER_TIMEOUT);
+    }
+
+    /// #858 C2 test seam: lets a test bound the marker get/put far below the 30s production default,
+    /// so "a never-resolving DHT client yields the timeout cause" is provable in milliseconds. Mirrors
+    /// `MavenProtocolRoutesTimeoutTest`'s injected `SHORT_TIMEOUT` for the same reason. Package-private
+    /// -- only `StorageFactoryEncryptionTest` (same package) needs it; [#verifyDhtMarker] above is the
+    /// production entry point, fixed at [#DHT_MARKER_TIMEOUT].
+    static Promise<Unit> verifyDhtMarker(DHTClient client,
+                                         DhtMarkerCheck check,
+                                         org.pragmatica.lang.io.TimeSpan timeout) {
+        return check.effectiveKeyring()
+                    .fold(() -> refuseIfDhtEncryptedWithoutKeyring(client,
+                                                                   check.dhtKeyPrefix(),
+                                                                   check.instanceName(),
+                                                                   timeout),
+                          ring -> writeDhtMarker(client,
+                                                 check.dhtKeyPrefix(),
+                                                 check.instanceName(),
+                                                 ring,
+                                                 timeout))
+                    .onSuccess(_ -> check.readGate()
+                                         .resolve(Result.success(unit())));
+    }
+
+    /// #858: fans [#verifyDhtMarker] across every check in `checks` -- called once, post-formation,
+    /// from `AetherNode.start()`, generic over `storageSetups`' CONTENTS (no hardcoded instance
+    /// names), so an instance that starts carrying a DHT tier later (#783: `content` routed through
+    /// `createAll`) is covered automatically. Cancels the remaining in-flight checks on the first
+    /// failure (`allOfOrCancel`) since one failure aborts `start()` and stops the node regardless of
+    /// the others' outcome.
+    static Promise<Unit> verifyDhtMarkers(DHTClient client, List<DhtMarkerCheck> checks) {
+        if (checks.isEmpty()) {
+            return Promise.UNIT;
+        }
+
+        var verifications = checks.stream().map(check -> verifyDhtMarker(client, check)).toList();
+
+        return Promise.allOfOrCancel(verifications).flatMap(results -> Result.firstFailureOf(results).fold(cause -> Promise.<Unit> failure(cause),
+                                                                                                           _ -> Promise.UNIT));
+    }
+
+    private static Promise<Unit> writeDhtMarker(DHTClient client,
+                                                String dhtKeyPrefix,
+                                                String instanceName,
+                                                EncryptionKeyring ring,
+                                                org.pragmatica.lang.io.TimeSpan timeout) {
         return client.put(dhtKeyPrefix + "/" + EncryptingStorageTier.MARKER_FILE_NAME,
                           ring.activeKeyId().getBytes(StandardCharsets.UTF_8))
-                     .await(DHT_MARKER_TIMEOUT);
+                     .timeout(timeout)
+                     .mapError(cause -> remapMarkerTimeout(cause, instanceName, timeout));
     }
 
-    /// #253 SHOULD-FIX #1 (2026-09-04 ruling): the DHT-namespace reverse direction of
-    /// [#maybeEncryptDht]'s marker write, mirroring
-    /// [EncryptingStorageTier#refuseIfEncryptedWithoutKeyring] for local disk. An absent marker
-    /// means this DHT namespace was never encrypted and a bare tier is legitimate; its presence
-    /// means blocks under `dhtKeyPrefix` are ciphertext, and a bare tier over them would silently
-    /// hand back framed `AEC1...` bytes as content on every read.
-    private static Result<Unit> refuseIfDhtEncryptedWithoutKeyring(Option<DHTClient> dhtClient,
-                                                                   String dhtKeyPrefix,
-                                                                   String instanceName) {
-        return dhtClient.fold(() -> Result.success(unit()),
-                              client -> client.get(dhtKeyPrefix + "/" + EncryptingStorageTier.MARKER_FILE_NAME)
-                                              .flatMap(marker -> marker.fold(() -> Promise.success(unit()),
-                                                                             bytes -> Promise.failure(new EncryptionError.EncryptedTierRequiresKeyring(instanceName,
-                                                                                                                                                       new String(bytes,
-                                                                                                                                                                  StandardCharsets.UTF_8)))))
-                                              .await(DHT_MARKER_TIMEOUT));
+    /// #858 C2: `.timeout()` is safe to call directly on these two chains -- unlike
+    /// `DhtStorageTier#admission`'s `readGate` -- because `client.put`/`client.get` return a fresh,
+    /// single-use, non-shared promise per call; there is no second reader who could observe a
+    /// timeout-vs-real-result race on the same promise.
+    ///
+    /// Two distinct causes, never conflated: a marker get/put that itself times out after formation
+    /// means `start()` never learned whether a marker exists, so it fails on THIS cause
+    /// ([EncryptionError.DhtMarkerCheckTimedOut]) -- never [EncryptionError.EncryptedTierRequiresKeyring],
+    /// which means the opposite: the marker WAS read successfully and named a key id absent from the
+    /// configured keyring.
+    private static Cause remapMarkerTimeout(Cause cause, String instanceName, org.pragmatica.lang.io.TimeSpan timeout) {
+        return cause instanceof CoreError.Timeout
+               ? new EncryptionError.DhtMarkerCheckTimedOut(instanceName, timeout.millis())
+               : cause;
     }
 
-    /// #253 review round 4 note (2026-09-04): `maybeEncryptDht` is hoisted above `keyring.fold` here, unlike [#buildTierList] -- safe only because this path has no preceding disk-side guard to race against, and an empty keyring writes no marker.
-    private static Result<List<StorageTier>> handleDiskTierUnavailable(String name,
-                                                                       Cause cause,
-                                                                       MemoryTier memoryTier,
-                                                                       Option<DHTClient> dhtClient,
-                                                                       String dhtKeyPrefix,
-                                                                       Option<EncryptionKeyring> keyring) {
+    /// #858: the DHT-namespace reverse direction of [#writeDhtMarker], mirroring
+    /// [EncryptingStorageTier#refuseIfEncryptedWithoutKeyring] for local disk. An absent marker means
+    /// this DHT namespace was never encrypted and a bare tier is legitimate; its presence means
+    /// blocks under `dhtKeyPrefix` are ciphertext, and a bare tier over them would silently hand back
+    /// framed `AEC1...` bytes as content on every read.
+    private static Promise<Unit> refuseIfDhtEncryptedWithoutKeyring(DHTClient client,
+                                                                    String dhtKeyPrefix,
+                                                                    String instanceName,
+                                                                    org.pragmatica.lang.io.TimeSpan timeout) {
+        return client.get(dhtKeyPrefix + "/" + EncryptingStorageTier.MARKER_FILE_NAME)
+                     .flatMap(marker -> marker.fold(() -> Promise.success(unit()),
+                                                    bytes -> Promise.<Unit> failure(new EncryptionError.EncryptedTierRequiresKeyring(instanceName,
+                                                                                                                                     new String(bytes,
+                                                                                                                                                StandardCharsets.UTF_8)))))
+                     .timeout(timeout)
+                     .mapError(cause -> remapMarkerTimeout(cause, instanceName, timeout));
+    }
+
+    private static Result<TierBuild> handleDiskTierUnavailable(String name,
+                                                               Cause cause,
+                                                               MemoryTier memoryTier,
+                                                               Option<DHTClient> dhtClient,
+                                                               String dhtKeyPrefix,
+                                                               Option<EncryptionKeyring> keyring) {
         log.warn("Disk tier for '{}' unavailable: {}, using memory + DHT fallback", name, cause.message());
-        var dhtResult = maybeEncryptDht(dhtClient, dhtKeyPrefix, keyring);
 
-        return keyring.fold(() -> refuseIfDhtEncryptedWithoutKeyring(dhtClient, dhtKeyPrefix, name).flatMap(_ -> dhtResult),
-                            _ -> dhtResult)
-                      .map(dht -> dht.map(t -> List.<StorageTier> of(memoryTier, t))
-                                     .or(List.of(memoryTier)));
+        return Result.success(withDht(maybeEncryptDht(name, dhtClient, dhtKeyPrefix, keyring), List.of(memoryTier)));
     }
 
-    /// #253 BLOCKING #3 (2026-09-04 ruling): the no-keyring branch used to return the bare, unwrapped
-    /// `diskTier` unconditionally -- silently handing back framed `AEC1...` bytes as plaintext on
-    /// every read if `diskPath` was previously encrypted (marker present) and this boot supplies no
-    /// keyring for it (`encrypted = false`, or `[storage.encryption]` removed entirely). Checks
-    /// [EncryptingStorageTier#refuseIfEncryptedWithoutKeyring] first and fails the instance rather
-    /// than reaching the bare-tier branch.
-    ///
-    /// #253 SHOULD-FIX #1 (2026-09-04 ruling): same guard extended to the DHT tier via
-    /// [#refuseIfDhtEncryptedWithoutKeyring] -- the disk-side check alone left the DHT tier's own
-    /// marker unchecked when disk happened to be present too.
-    ///
-    /// #253 review round 3 SHOULD-FIX (2026-09-04 ruling): [#maybeEncryptDht] (and the marker write
-    /// inside it) is called from WITHIN each branch below, after that branch's disk-side guard has
-    /// already succeeded -- never hoisted above `keyring.fold` as an eagerly-evaluated `var`. The
-    /// eager form used to stamp the DHT namespace's `.encryption-enabled` marker before
-    /// [EncryptingStorageTier#wrapLocalDisk]'s legacy-plaintext scan ran, so a boot refused by that
-    /// scan still left a marker behind with no ciphertext ever written under it -- and backing out to
-    /// `encrypted = false` then tripped [#refuseIfDhtEncryptedWithoutKeyring] on a namespace that was
-    /// never actually encrypted, locking the operator out until the key was restored or the marker
-    /// deleted by hand.
-    private static Result<List<StorageTier>> buildTierList(String name,
-                                                           MemoryTier memoryTier,
-                                                           LocalDiskTier diskTier,
-                                                           Path diskPath,
-                                                           Option<DHTClient> dhtClient,
-                                                           String dhtKeyPrefix,
-                                                           Option<EncryptionKeyring> keyring) {
-        return keyring.fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(diskPath, name)
-                                                       .flatMap(_ -> refuseIfDhtEncryptedWithoutKeyring(dhtClient,
-                                                                                                        dhtKeyPrefix,
-                                                                                                        name))
-                                                       .flatMap(_ -> maybeEncryptDht(dhtClient, dhtKeyPrefix, keyring))
-                                                       .map(dht -> dht.map(t -> List.<StorageTier> of(memoryTier,
-                                                                                                      diskTier,
-                                                                                                      t))
-                                                                      .or(List.of(memoryTier, diskTier))),
-                            ring -> EncryptingStorageTier.wrapLocalDisk(diskTier, diskPath, ring).flatMap(encDisk -> maybeEncryptDht(dhtClient,
-                                                                                                                                     dhtKeyPrefix,
-                                                                                                                                     keyring).map(dht -> dht.map(t -> List.<StorageTier> of(memoryTier,
-                                                                                                                                                                                            encDisk,
-                                                                                                                                                                                            t))
-                                                                                                                                                            .or(List.of(memoryTier,
-                                                                                                                                                                        encDisk)))));
+    /// #858 BLOCKING #3 (unchanged from #253): the no-keyring branch checks
+    /// [EncryptingStorageTier#refuseIfEncryptedWithoutKeyring] before reaching the bare-disk-tier
+    /// branch -- silently handing back framed `AEC1...` bytes as plaintext would otherwise be
+    /// possible if `diskPath` was previously encrypted (marker present) and this boot supplies no
+    /// keyring for it. The DHT-side counterpart of that same guard ([#refuseIfDhtEncryptedWithoutKeyring])
+    /// no longer runs HERE (#858) -- [#maybeEncryptDht] only builds the (gated) tier and its
+    /// [#DhtMarkerCheck]; the actual marker read/refuse runs post-formation, in `AetherNode.start()`.
+    private static Result<TierBuild> buildTierList(String name,
+                                                   MemoryTier memoryTier,
+                                                   LocalDiskTier diskTier,
+                                                   Path diskPath,
+                                                   Option<DHTClient> dhtClient,
+                                                   String dhtKeyPrefix,
+                                                   Option<EncryptionKeyring> keyring) {
+        return keyring.fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(diskPath, name).map(_ -> withDht(maybeEncryptDht(name,
+                                                                                                                                         dhtClient,
+                                                                                                                                         dhtKeyPrefix,
+                                                                                                                                         keyring),
+                                                                                                                         List.of(memoryTier,
+                                                                                                                                 diskTier))),
+                            ring -> EncryptingStorageTier.wrapLocalDisk(diskTier, diskPath, ring).map(encDisk -> withDht(maybeEncryptDht(name,
+                                                                                                                                         dhtClient,
+                                                                                                                                         dhtKeyPrefix,
+                                                                                                                                         keyring),
+                                                                                                                         List.of(memoryTier,
+                                                                                                                                 encDisk))));
+    }
+
+    private static TierBuild withDht(TierBuild.DhtBuild dhtBuild, List<StorageTier> baseTiers) {
+        var tiers = dhtBuild.tier()
+                            .map(dht -> {
+                                     var withDht = new ArrayList<>(baseTiers);
+
+                                     withDht.add(dht);
+
+                                     return List.<StorageTier> copyOf(withDht);
+                                 })
+                            .or(baseTiers);
+
+        return new TierBuild(tiers, dhtBuild.markerCheck());
     }
 
     private static StorageSetup assembleSetup(String name,
                                               List<StorageTier> tiers,
                                               StorageConfig config,
-                                              String nodeId) {
+                                              String nodeId,
+                                              Option<DhtMarkerCheck> dhtMarkerCheck) {
         var metadataStore = MetadataStore.inMemoryMetadataStore(name);
         var instance = StorageInstance.storageInstance(name, tiers, metadataStore);
         var snapshotConfig = buildSnapshotConfig(config, nodeId);
@@ -593,7 +722,8 @@ public final class StorageFactory {
                                          readinessGate,
                                          metadataStore,
                                          demotionManager,
-                                         garbageCollector);
+                                         garbageCollector,
+                                         dhtMarkerCheck);
     }
 
     private static SnapshotConfig buildSnapshotConfig(StorageConfig config, String nodeId) {
