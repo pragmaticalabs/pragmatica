@@ -23,6 +23,7 @@ import org.pragmatica.aether.deployment.AuditLog;
 import org.pragmatica.aether.deployment.cluster.AllocationPool;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.ReconciliationAdjustment;
@@ -32,6 +33,7 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Acti
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.AppBlueprintPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.AppBlueprintRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Deactivate;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.GovernorAnnouncementPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SchemaVersionPutReceived;
@@ -42,6 +44,7 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Self
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerJoinReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerLeaveReceived;
 import org.pragmatica.aether.deployment.schema.SchemaEvent.ActivationBlocked;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
@@ -264,6 +267,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             log.info("Node {} became leader, activating cluster deployment manager with {} known nodes",
                      ctx.self(),
                      activeNodes().size());
+            if (!ctx.localAliveMembersWired()) {
+                log.warn("localAliveMembersSupplier not wired: #731 dead-restored-worker sweep is disabled "
+                        + "(fails safe — removes nothing) until AetherNode supplies the MembershipFsm-backed view");
+            }
+
             rebuildStateFromKVStore();
             reconcile();
             startReconcileTimer();
@@ -298,6 +306,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                                                                                                  tx);
                 case MembershipDecisionReceived(MembershipDecision decision) -> handleMembershipDecision(decision, tx);
                 case WorkerJoinReceived(WorkerJoinDecision decision) -> handleWorkerJoin(decision, tx);
+                case WorkerLeaveReceived(WorkerLeaveDecision decision) -> handleWorkerLeave(decision, tx);
                 case SelfShutdownReceived(TransportObservation.SelfShutdown selfShutdown) -> handleSelfShutdown(selfShutdown,
                                                                                                                 tx);
                 case ActivationDirectivePutReceived(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) -> handleActivationDirectivePut(valuePut,
@@ -310,6 +319,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                                                                                          tx);
                 case SchemaVersionPutReceived(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) -> handleSchemaVersionPut(valuePut,
                                                                                                                                  tx);
+                case GovernorAnnouncementPutReceived(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut) -> handleGovernorAnnouncementPut(valuePut,
+                                                                                                                                                             tx);
                 default -> tx.ignore();
             }
         }
@@ -382,6 +393,22 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void processWorkerJoin(WorkerJoinDecision decision) {
             log.info("Received worker join: {} (role={})", decision.nodeId(), decision.role());
             assignNodeRole(decision.nodeId());
+        }
+
+        /// The non-core leave channel (#731), symmetric to [`#handleWorkerJoin`]. Routed straight
+        /// to the same [`#handleNodeRemoval`] a CORE `NodeRemoved`/`NodeDecommissioned`/self-shutdown
+        /// already uses — no new cleanup logic, because a worker's KV footprint
+        /// (`SliceNodeKey`/`NodeArtifactKey`/`NodeRoutesKey`) and its `workerNodes` allocation-pool
+        /// entry are written and keyed identically to a core node's. `reconcile()` afterward is what
+        /// re-places the departed worker's slice instances onto the remaining pool.
+        private void handleWorkerLeave(WorkerLeaveDecision decision,
+                                       TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processWorkerLeave(decision));
+        }
+
+        private void processWorkerLeave(WorkerLeaveDecision decision) {
+            log.info("Received worker leave: {}", decision.nodeId());
+            handleNodeRemoval(decision.nodeId()).onSuccess(_ -> reconcile());
         }
 
         private void handleSelfShutdown(TransportObservation.SelfShutdown selfShutdown,
@@ -495,6 +522,22 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
         }
 
+        private void handleGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut,
+                                                   TransitionRequest<ClusterDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> processGovernorAnnouncementPut(valuePut));
+        }
+
+        /// #731 round 3: a committed reannouncement carries exactly the roster
+        /// `sweepDeadRestoredWorkers` reads, so re-running the sweep here closes the gap between a
+        /// governor's `tickReannounce` write landing and the next scheduled `deferredTopologyRecheck`
+        /// — which otherwise fires once, 2 seconds after `onEntry`, well short of the default 30s
+        /// reannounce interval.
+        private void processGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut) {
+            log.debug("Governor announcement committed for community {}, re-running dead-worker sweep",
+                      valuePut.cause().key().communityId());
+            sweepDeadRestoredWorkers();
+        }
+
         @Contract
         public void startReconcileTimer() {
             reconcileTimer.set(SharedScheduler.scheduleAtFixedRate(this::reconcileIfActive, ctx.reconcileInterval()));
@@ -515,6 +558,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             log.info("Rebuilding cluster deployment state from KVStore");
             ctx.kvStore().forEach(AetherKey.class, AetherValue.class, this::processKVEntry);
             log.info("Restored {} blueprints and {} worker nodes from KVStore", blueprints.size(), workerNodes.size());
+            sweepDeadRestoredWorkers();
             rebuildSliceStateFromKVStoreEntries();
             triggerLoadedSliceActivation();
             cleanupStaleNodeRoutes();
@@ -529,7 +573,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             if (deactivated.get()) {
                 return;
             }
-
+            // #731 round 2: a cold leader's `sweepDeadRestoredWorkers` call inside
+            // `rebuildStateFromKVStore` (Active.onEntry, immediate) can find no governor
+            // announcements yet — SWIM/community state has not had time to converge. This
+            // 2s-deferred retry is what actually catches the dead-restored-worker case on a
+            // freshly elected leader; see `sweepDeadRestoredWorkers`'s doc comment.
+            sweepDeadRestoredWorkers();
             cleanupStaleNodeRoutes();
             cleanupStaleSliceEntries();
             cleanupStaleNodeArtifactEntries();
@@ -669,6 +718,106 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             if (ActivationDirectiveValue.WORKER.equals(value.role())) {
                 workerNodes.add(key.nodeId());
                 log.trace("Restored worker node: {}", key.nodeId());
+            }
+        }
+
+        /// #731 leader-change gap: a worker restored here from its durable `ActivationDirectiveKey`
+        /// may never have been locally observed joining (a freshly booted leader, or one that
+        /// connected asymmetrically) — `MembershipDeltaProjector`'s `everJoined` gate then filters
+        /// its REMOVED edge upstream of `processRemoved`, so the live-leader `WorkerLeaveDecision`
+        /// path can never fire for it. A restored worker absent from every community's SWIM-observed
+        /// roster is removed here with the same batch a live departure gets, instead of being placed
+        /// on again this term.
+        ///
+        /// The primary source is `GovernorAnnouncementValue.members()` — the community roster each
+        /// governor recomputes from SWIM and commits through consensus, the same record `WorkerRoutes`
+        /// projects for `/api/workers` — never `ctx.communityLiveness()`. Pong-history absence and
+        /// membership absence are different signals: `communityLiveness().isAbsent` reads `false`
+        /// ("not absent") for a peer this process has never received a pong from at all, which is
+        /// exactly the cold-leader, never-locally-observed case this sweep exists to catch, so gating
+        /// on it silently no-ops on the scenario it targets (round-2 review finding). It also runs the
+        /// other way: a live worker merely pong-silent past the absence window at activation would be
+        /// wrongly removed with nothing to re-register it. Membership presence has neither failure
+        /// mode: absent-with-no-pong-history is still removed, present-with-no-pong-history is kept.
+        ///
+        /// #731 round 3: the committed announcement alone still has a lag. A worker enters
+        /// `workerNodes` the moment its `ActivationDirectiveKey` commits, but only enters a
+        /// `GovernorAnnouncementValue.members()` roster at the governor's NEXT `tickReannounce`
+        /// (`GovernorAnnouncer.onSelfElected` returns early when already governor; a SWIM edge only
+        /// updates the governor's in-memory `lastAliveMembers`, never the committed value) — up to one
+        /// reannounce interval (default 30s) after the directive commits, a live fresh worker is in no
+        /// announcement at all. A worker is removed only when it is absent from BOTH signals: the
+        /// committed announcement AND `ctx.localAliveMembersSupplier()` — this leader's own local SWIM
+        /// alive view (`MembershipFsm.dhtRoutableMembers()`, OBSERVED+MEMBER+SUSPECT). A fresh live
+        /// worker is present in the local view within SWIM detection time even before its first
+        /// reannouncement; a genuinely dead worker is absent from both within that same detection
+        /// time. Latency bound on removal: SWIM detection time + up to one reannounce interval. Under
+        /// a partition the announcement stays frozen (never resolves) rather than converging on a
+        /// wrong answer — removing nothing is the safe direction, matching the empty-announcement
+        /// early return below.
+        ///
+        /// No non-dissolved announcement anywhere in the KVStore reads as "not observed yet" rather
+        /// than "everyone is gone" — removing nothing is the safe direction on a leader that has not
+        /// yet seen a single governor election. This sweep re-runs on every committed
+        /// `GovernorAnnouncementKey` Put (`handleGovernorAnnouncementPut`) and once more from the
+        /// one-shot `deferredTopologyRecheck`, scheduled 2s into `Active.onEntry()`, so a sweep that
+        /// no-ops here because governor state had not yet converged still runs once it has.
+        ///
+        /// #731 round 4 (review re-check): if `ctx.localAliveMembersSupplier()` has never been wired
+        /// (`AetherNode` sets it once, before Active is reachable — see `ClusterDeploymentContext`),
+        /// this sweep no-ops entirely rather than run with the still-default empty local view, which
+        /// would silently degenerate the dual-signal AND back to the observed-only check round 3
+        /// exists to strengthen. `Active.onEntry()` logs one WARN for this case.
+        private void sweepDeadRestoredWorkers() {
+            var observedMembers = observedCommunityMembers();
+
+            if (observedMembers.isEmpty()) {
+                return;
+            }
+
+            if (!ctx.localAliveMembersWired()) {
+                return;
+            }
+
+            var localAliveMembers = ctx.localAliveMembersSupplier().get();
+            var deadWorkers = workerNodes.stream()
+                                         .filter(node -> !observedMembers.contains(node) && !localAliveMembers.contains(node))
+                                         .toList();
+
+            if (deadWorkers.isEmpty()) {
+                return;
+            }
+
+            log.info("Sweeping {} worker(s) restored from KVStore but absent from every announced community roster and this node's local SWIM view: {}",
+                     deadWorkers.size(),
+                     deadWorkers);
+            deadWorkers.forEach(node -> handleNodeRemoval(node).onFailure(cause -> log.error("Failed to sweep dead restored worker {}: {}",
+                                                                                             node,
+                                                                                             cause.message())));
+        }
+
+        /// The union of every non-dissolved community's SWIM-observed membership — the same KVStore
+        /// projection `WorkerRoutes.buildWorkersResponse` reads for `/api/workers`, since both answer
+        /// "which nodes are current community members" from the one authoritative source.
+        private Set<NodeId> observedCommunityMembers() {
+            Set<NodeId> members = new HashSet<>();
+
+            ctx.kvStore()
+               .forEach(GovernorAnnouncementKey.class,
+                        GovernorAnnouncementValue.class,
+                        (_, value) -> addIfNotDissolved(members, value));
+
+            return members;
+        }
+
+        // Extracted out of the `forEach` lambda above (rather than an inline `if`) because
+        // `jbct:format` collapses an `if` nested inside a lambda that is itself the trailing
+        // argument of a multi-line fluent call to a shallower, misleading indentation — R5 in
+        // the #731 round-3 review — and re-applies that same collapse on every future format
+        // pass. A named helper has no lambda-in-fluent-call nesting for the formatter to mis-indent.
+        private static void addIfNotDissolved(Set<NodeId> members, GovernorAnnouncementValue value) {
+            if (!value.dissolved()) {
+                members.addAll(value.members());
             }
         }
 
@@ -1825,23 +1974,23 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             artifactKeysToRemove.stream()
                                 .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
                                 .forEach(consensusCommands::add);
+            sliceKeysToRemove.stream().<KVCommand<AetherKey>> map(KVCommand.Remove::new).forEach(consensusCommands::add);
+            consensusCommands.add(new KVCommand.Remove<>(ActivationDirectiveKey.activationDirectiveKey(removedNode)));
             consensusCommands.addAll(nodeRouteCommands);
             workerNodes.remove(removedNode);
-            log.info("Removed {} slice states, {} node-artifact entries, and {} node-routes updates for departed node {}",
+            log.info("Removed {} slice states, {} node-artifact entries, {} node-routes updates, and the "
+                    + "activation directive for departed node {}",
                      sliceKeysToRemove.size(),
                      artifactKeysToRemove.size(),
                      nodeRouteCommands.size(),
                      removedNode);
-            if (!consensusCommands.isEmpty()) {
-                return ctx.cluster()
-                          .apply(consensusCommands)
-                          .mapToUnit()
-                          .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
-                                                        removedNode,
-                                                        cause.message()));
-            }
 
-            return Promise.unitPromise();
+            return ctx.cluster()
+                      .apply(consensusCommands)
+                      .mapToUnit()
+                      .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
+                                                    removedNode,
+                                                    cause.message()));
         }
 
         private List<NodeArtifactKey> findNodeArtifactKeysForNode(NodeId nodeId) {
@@ -2492,6 +2641,14 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         @Contract
         void restorePreviousBlueprintForTest(InFlightBlueprint inflight, ExpandedBlueprint previous, String cause) {
             restorePreviousBlueprint(inflight, previous, cause);
+        }
+
+        /// #731 round 2: lets a test invoke the 2s-deferred retry (`Active.onEntry`'s
+        /// `SharedScheduler.schedule(this::deferredTopologyRecheck, ...)` call site) synchronously,
+        /// to pin the cold-leader-then-converged sequencing without waiting out the real delay.
+        @Contract
+        void deferredTopologyRecheckForTest() {
+            deferredTopologyRecheck();
         }
 
         public record InFlightBlueprint(BlueprintId id,
