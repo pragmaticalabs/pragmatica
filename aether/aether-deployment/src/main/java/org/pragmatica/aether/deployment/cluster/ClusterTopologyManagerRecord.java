@@ -523,7 +523,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Override
     public Promise<Boolean> setAutoHealEnabled(boolean enabled, String reason) {
         var prev = isAutoHealEnabled();
-
         @SuppressWarnings("unchecked")
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(AetherKey.AutoHealStateKey.SINGLETON,
                                                                                                      AutoHealStateValue.autoHealStateValue(enabled,
