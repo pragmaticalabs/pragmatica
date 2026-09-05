@@ -1,0 +1,10 @@
+### Fixed (2026-09-05 — #796: docs-vs-source residue audit, 16 items)
+- **`configuration.md`** documented fictional `AetherNodeConfig.aetherNodeConfig()/.testConfig()/.forgeConfig()` factories — replaced with the real staged `builder()` chain and a required/defaulted-stage table across all four examples `[mechanism: AetherNodeConfig.java]`. Also corrected the `max_group_size` row: `GroupAssignment.computeGroups` is live-wired via `GroupMembershipTracker.recomputeGroups()`/`AetherNode.activateWorkerMode`, not dead code `[mechanism: AetherNode.java:5152, :2826]`.
+- **`cloud-integration.md`**: `Main.wireCloudIfConfigured` → `Main.resolveEnvironment`; "five" → "six" cloud config string maps (added `security`) `[mechanism: Main.java:359, CloudConfig.java]`.
+- **`docker-deployment.md`**: node/forge `JAVA_OPTS` defaults and `HEALTHCHECK` block corrected to match both Dockerfiles exactly `[mechanism: docker/aether-node/Dockerfile, docker/aether-forge/Dockerfile]`.
+- **`management-api.md`**: documented two previously-undocumented routes, `GET /nodes/routes/{id}` and `GET /nodes/metrics/{id}` `[mechanism: ManagementRoute.java:106,349]`.
+- **`deployment-recovery.md`**: dead link to `membership-architecture-v2-spec.md` corrected to its `specs/archive/` location.
+- **`curl-examples.sh`/`python-client.py`**: added auth header, fixed deploy POST body shape (`blueprint`+nested `thresholds`, not `artifactBase`+flat fields) `[mechanism: DeployRoutes.java DeployRequest]`.
+- **`bootstrap-config.md`**: `[cluster.core].provider` fails loudly on an unrecognized value, not silently discarded `[mechanism: ClusterBootstrapConfigParser.java:242-250]`.
+- **`guarantees.md`**: stale self-reference removed — `feature-catalog.md` already carries the base64-blob-not-diffable correction it pointed at.
+- Remaining items: 2 already fixed on tip at `baaba19e1` (current-docker-setup.md base image + compose filename; timeout-configuration.md DHT timeout), not re-touched; others' claims verified correct as written — no doc change.
