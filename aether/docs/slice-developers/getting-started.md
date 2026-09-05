@@ -963,7 +963,11 @@ Routes can be:
 - **String** (uses default security): `shorten = "POST /"`
 - **Array** (explicit security): `resolve = ["GET /{shortCode}", "public"]`
 
-The `[security]` section is optional -- routes without it default to `public`.
+The `[security]` section is optional. A route with no `[security]` section at all does **not**
+default to `public` (#763) -- it inherits the app HTTP server's global `security_mode` (see
+"Securing Your Endpoints" below), the same as an authenticated route with no per-route override.
+Only an explicit `"public"` -- via `default = "public"` or a per-route `["...", "public"]` array --
+bypasses the global policy for that route.
 
 The `override_policy` controls what operators can change at deploy time via blueprint.toml:
 - **`strengthen_only`** (default) -- operators can only make routes more restrictive
