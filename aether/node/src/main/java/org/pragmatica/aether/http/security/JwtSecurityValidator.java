@@ -50,7 +50,7 @@ class JwtSecurityValidator implements SecurityValidator {
             case SecurityPolicy.Authenticated() -> validateBearerToken(request);
             case SecurityPolicy.RoleRequired _ -> validateBearerToken(request);
             case SecurityPolicy.ApiKeyRequired() -> success(SecurityContext.securityContext());
-            default -> success(SecurityContext.securityContext());
+            default -> SecurityError.UNRESOLVED_POLICY.result();
         };
     }
 

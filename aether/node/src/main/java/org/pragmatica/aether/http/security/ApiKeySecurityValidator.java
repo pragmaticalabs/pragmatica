@@ -61,7 +61,7 @@ class ApiKeySecurityValidator implements SecurityValidator {
             case SecurityPolicy.Authenticated() -> validateApiKey(request);
             case SecurityPolicy.RoleRequired _ -> validateApiKey(request);
             case SecurityPolicy.BearerTokenRequired() -> Result.success(SecurityContext.securityContext());
-            default -> Result.success(SecurityContext.securityContext());
+            default -> SecurityError.UNRESOLVED_POLICY.result();
         };
     }
 
