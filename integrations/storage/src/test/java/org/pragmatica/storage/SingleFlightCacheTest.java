@@ -1,6 +1,8 @@
 package org.pragmatica.storage;
 
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -116,6 +118,69 @@ class SingleFlightCacheTest {
                    .onSuccess(opt -> opt.onPresent(bytes -> assertThat(bytes).isEqualTo(data)));
 
             assertThat(freshCalls.get()).isEqualTo(1);
+        }
+
+        /// Deterministic proof of the eviction race, independent of ambient scheduling: eviction
+        /// removes the map entry via `onResultRun`, which `Promise` dispatches on the general
+        /// virtual-thread carrier pool — a DIFFERENT path than the timeout firing itself, which
+        /// runs on a dedicated platform-thread scheduler and is unaffected by carrier starvation.
+        /// Saturating every carrier before the bound fires guarantees the cleanup task is queued
+        /// (not yet run) at the moment the next caller arrives, forcing the exact interleaving a
+        /// wall-clock race can only hit by luck. Without the `isResolved` check in `deduplicate`,
+        /// the next caller would inherit the stale Timeout instead of a fresh load; this fails
+        /// deterministically against the pre-fix `computeIfAbsent` and passes deterministically
+        /// against the fix.
+        @Test
+        void deduplicate_hungLoader_nextCallerFreshEvenWithCleanupQueuedBehindSaturatedCarriers() throws InterruptedException {
+            var bounded = SingleFlightCache.singleFlightCache(SHORT_BOUND);
+            var id = blockIdOf("hung-starved".getBytes(StandardCharsets.UTF_8));
+            var hungCalls = new AtomicInteger(0);
+
+            int carrierCount = Math.max(Runtime.getRuntime().availableProcessors(), 4);
+            var release = new CountDownLatch(1);
+            var started = new CountDownLatch(carrierCount);
+            var occupiers = new Thread[carrierCount];
+
+            for (int i = 0; i < carrierCount; i++) {
+                occupiers[i] = Thread.ofVirtual().start(() -> {
+                    started.countDown();
+                    try {
+                        release.await();
+                    } catch (InterruptedException ignored) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+            }
+
+            try {
+                assertThat(started.await(5, TimeUnit.SECONDS))
+                    .as("every virtual-thread carrier must be occupied before the bound fires")
+                    .isTrue();
+
+                // First caller: loader never resolves → surfaces a Timeout once the bound fires.
+                // The cleanup this triggers cannot run yet — every carrier is held by an occupier.
+                bounded.deduplicate(id, () -> hangingLoaderWithCounter(hungCalls))
+                       .await(timeSpan(5).seconds())
+                       .onSuccessRun(() -> fail("Expected timeout failure for hung loader"))
+                       .onFailure(c -> assertThat(c).isInstanceOf(CoreError.Timeout.class));
+
+                // Second caller, arriving while the cleanup is still queued behind the occupiers:
+                // must get a fresh load, not the stale already-resolved entry.
+                var data = "fresh".getBytes(StandardCharsets.UTF_8);
+                var freshCalls = new AtomicInteger(0);
+
+                bounded.deduplicate(id, () -> loaderWithCounter(data, freshCalls))
+                       .await(timeSpan(5).seconds())
+                       .onFailure(c -> fail("Expected fresh load to succeed: " + c.message()))
+                       .onSuccess(opt -> opt.onPresent(bytes -> assertThat(bytes).isEqualTo(data)));
+
+                assertThat(freshCalls.get()).isEqualTo(1);
+            } finally {
+                release.countDown();
+                for (var occupier : occupiers) {
+                    occupier.join();
+                }
+            }
         }
 
         /// Dedup semantics for healthy concurrent callers are unchanged by the bound: a slow
