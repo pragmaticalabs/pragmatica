@@ -111,6 +111,16 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
         };
     }
 
+    /// Exhaustive over the sealed hierarchy on purpose: no `default` arm. A `default` here would
+    /// silently persist a newly added policy state as `"API_KEY"` and score it `20` (#866 review F3),
+    /// fabricating a wire value and a strength for a state nobody taught these switches about --
+    /// the exact fail-soft shape removed from `ApiKeySecurityValidator`/`JwtSecurityValidator`.
+    /// Adding a state must be a COMPILE error here, as it already is there.
+    ///
+    /// `unused()` is an unconstructable placeholder (no factory, no `new unused()` anywhere); its
+    /// arms exist only to keep the switches exhaustive, and mirror `Unspecified` so that a value
+    /// escaping here would round-trip through `fromString` to `Unspecified` and be resolved to the
+    /// global policy rather than adopted as an explicit one.
     default String asString() {
         return switch (this) {
             case Public() -> "PUBLIC";
@@ -119,7 +129,7 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
             case BearerTokenRequired() -> "BEARER_TOKEN";
             case RoleRequired(var name) -> "ROLE:" + name;
             case Unspecified() -> "UNSPECIFIED";
-            default -> "API_KEY";
+            case unused() -> "UNSPECIFIED";
         };
     }
 
@@ -131,7 +141,7 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
             case BearerTokenRequired() -> 20;
             case RoleRequired(_) -> 30;
             case Unspecified() -> - 1;
-            default -> 20;
+            case unused() -> - 1;
         };
     }
 
