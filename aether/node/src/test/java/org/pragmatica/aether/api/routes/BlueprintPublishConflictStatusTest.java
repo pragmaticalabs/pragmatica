@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -194,14 +195,20 @@ class BlueprintPublishConflictStatusTest {
         };
     }
 
-    /// The body route reads its payload through `fromJson` only; nothing else on the context is
-    /// touched before the handler fails.
+    /// The body route reads its payload through `fromJson`, wrapped by the `jsonBody` DEFAULT
+    /// method (#772). A proxy's `InvocationHandler` intercepts every interface call, default
+    /// methods included, so any other default method (`jsonBody` today, whichever comes next)
+    /// must be forwarded to its real body via [InvocationHandler#invokeDefault] rather than
+    /// enumerated by name here — the point of this test double is that only `fromJson` is
+    /// stubbed, everything else on `RequestContext` behaves exactly as it does in production.
     private static RequestContext requestContext() {
         return (RequestContext) Proxy.newProxyInstance(RequestContext.class.getClassLoader(),
                                                        new Class[]{RequestContext.class},
-                                                       (_, method, _) -> "fromJson".equals(method.getName())
-                                                                         ? Result.success(new SliceRoutes.BlueprintDeployRequest(COORDS))
-                                                                         : unsupported(method.getName()));
+                                                       (proxy, method, args) -> "fromJson".equals(method.getName())
+                                                                                 ? Result.success(new SliceRoutes.BlueprintDeployRequest(COORDS))
+                                                                                 : method.isDefault()
+                                                                                   ? InvocationHandler.invokeDefault(proxy, method, args)
+                                                                                   : unsupported(method.getName()));
     }
 
     private static final class RecordingResponseWriter implements ResponseWriter {
