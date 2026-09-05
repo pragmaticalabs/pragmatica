@@ -136,13 +136,20 @@ class SingleFlightCacheTest {
         /// java.util.concurrent synchronizer UNMOUNTS a virtual thread from its carrier (the JVM
         /// frees the carrier for other work while parked), which would defeat the whole point —
         /// the carrier must stay genuinely held, not merely "a virtual thread is waiting".
+        ///
+        /// `carrierCount` must equal the ACTUAL carrier parallelism, not exceed it: a busy-spinning
+        /// virtual thread never yields its carrier, so once `parallelism` occupiers have mounted,
+        /// any additional occupier can never be scheduled at all — the whole point (every carrier
+        /// held) is reached exactly at that count, and oversubscribing past it self-deadlocks the
+        /// setup rather than the intended target code.
         @Test
         void deduplicate_hungLoader_nextCallerFreshEvenWithCleanupQueuedBehindSaturatedCarriers() throws InterruptedException {
             var bounded = SingleFlightCache.singleFlightCache(SHORT_BOUND);
             var id = blockIdOf("hung-starved".getBytes(StandardCharsets.UTF_8));
             var hungCalls = new AtomicInteger(0);
 
-            int carrierCount = Math.max(Runtime.getRuntime().availableProcessors() * 4, 32);
+            int carrierCount = Integer.getInteger("jdk.virtualThreadScheduler.parallelism",
+                                                   Runtime.getRuntime().availableProcessors());
             var released = new AtomicBoolean(false);
             var started = new CountDownLatch(carrierCount);
             var occupiers = new Thread[carrierCount];
