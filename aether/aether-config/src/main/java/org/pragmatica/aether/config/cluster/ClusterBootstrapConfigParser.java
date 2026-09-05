@@ -598,10 +598,9 @@ public final class ClusterBootstrapConfigParser {
         }
 
         var autoGenerate = doc.getBoolean(OPERATIONS_TLS_SECTION, "auto_generate").or(true);
-        var clusterSecret = doc.getString(OPERATIONS_TLS_SECTION, "cluster_secret");
         var certTtl = doc.getString(OPERATIONS_TLS_SECTION, "cert_ttl").or("720h");
 
-        return TlsDeploymentConfig.tlsDeploymentConfig(autoGenerate, clusterSecret, certTtl);
+        return TlsDeploymentConfig.tlsDeploymentConfig(autoGenerate, certTtl);
     }
 
     private static TimeoutsConfig parseTimeoutsConfig(TomlDocument doc) {

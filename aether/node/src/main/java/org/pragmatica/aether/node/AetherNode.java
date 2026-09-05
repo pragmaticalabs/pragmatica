@@ -1664,6 +1664,19 @@ public interface AetherNode extends ManageableNode {
                                        .onSuccess(_ -> clusterNode.network()
                                                                   .whenReady(startSwimTrigger))
                                        .flatMap(_ -> startClusterAsync())
+                                       // #858: check/write each DHT-tier instance's encryption marker
+                                       // here — AFTER startClusterAsync() resolves (cluster formation
+                                       // complete, dhtClient can route) and BEFORE armPeriodicTasks /
+                                       // "started" (no DHT read is reachable before this point: deployed
+                                       // slices need leader election + quorum, which themselves need
+                                       // formation). Was boot-time, inside the constructor path
+                                       // (createAll → createOne), where it always blocked the full 30 s
+                                       // DHT_MARKER_TIMEOUT because the DHTClient handed to the
+                                       // constructor cannot route yet (#858). A no-keyring instance whose
+                                       // marker is present fails HERE with
+                                       // EncryptionError.EncryptedTierRequiresKeyring, which aborts
+                                       // start() and stops the node — same cause as before, just later.
+                                       .flatMap(_ -> verifyDhtMarkers())
                                        // #644: arm the deferred periodic tasks only now, once cluster
                                        // formation has resolved — a created-but-unstarted node performs
                                        // no periodic work, and none of the deferred tasks participates
@@ -1679,6 +1692,24 @@ public interface AetherNode extends ManageableNode {
                                        .map(this::armPeriodicTasks)
                                        .onSuccess(_ -> log.info("Aether node {} started, cluster forming...",
                                                                 self()));
+            }
+
+            /// #858: post-formation DHT encryption-marker check/write, run once from [#start] between
+            /// `startClusterAsync()` and `armPeriodicTasks`. Generic over `storageSetups`' CONTENTS —
+            /// iterates whatever [StorageFactory.StorageSetup#dhtMarkerCheck] entries are present, no
+            /// hardcoded instance list — so an instance that starts carrying a DHT tier later (#783:
+            /// `content` routed through `createAll`) is covered automatically without touching this
+            /// method. No `dhtClient` (no DHT-backed instance in this config) short-circuits to
+            /// `Promise.UNIT` — nothing to check.
+            private Promise<Unit> verifyDhtMarkers() {
+                var checks = storageSetups.values()
+                                          .stream()
+                                          .map(StorageFactory.StorageSetup::dhtMarkerCheck)
+                                          .flatMap(Option::stream)
+                                          .toList();
+
+                return dhtClient.map(client -> StorageFactory.verifyDhtMarkers(client, checks))
+                                .or(Promise.UNIT);
             }
 
             /// The #644 arming stage of [#start]'s chain — a named identity so the arm rides the
