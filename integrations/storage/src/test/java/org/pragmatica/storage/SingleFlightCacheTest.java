@@ -3,6 +3,7 @@ package org.pragmatica.storage;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -130,24 +131,27 @@ class SingleFlightCacheTest {
         /// the next caller would inherit the stale Timeout instead of a fresh load; this fails
         /// deterministically against the pre-fix `computeIfAbsent` and passes deterministically
         /// against the fix.
+        ///
+        /// Occupiers busy-spin rather than park on a CountDownLatch/lock: blocking on a
+        /// java.util.concurrent synchronizer UNMOUNTS a virtual thread from its carrier (the JVM
+        /// frees the carrier for other work while parked), which would defeat the whole point —
+        /// the carrier must stay genuinely held, not merely "a virtual thread is waiting".
         @Test
         void deduplicate_hungLoader_nextCallerFreshEvenWithCleanupQueuedBehindSaturatedCarriers() throws InterruptedException {
             var bounded = SingleFlightCache.singleFlightCache(SHORT_BOUND);
             var id = blockIdOf("hung-starved".getBytes(StandardCharsets.UTF_8));
             var hungCalls = new AtomicInteger(0);
 
-            int carrierCount = Math.max(Runtime.getRuntime().availableProcessors(), 4);
-            var release = new CountDownLatch(1);
+            int carrierCount = Math.max(Runtime.getRuntime().availableProcessors() * 4, 32);
+            var released = new AtomicBoolean(false);
             var started = new CountDownLatch(carrierCount);
             var occupiers = new Thread[carrierCount];
 
             for (int i = 0; i < carrierCount; i++) {
                 occupiers[i] = Thread.ofVirtual().start(() -> {
                     started.countDown();
-                    try {
-                        release.await();
-                    } catch (InterruptedException ignored) {
-                        Thread.currentThread().interrupt();
+                    while (!released.get()) {
+                        Thread.onSpinWait();
                     }
                 });
             }
@@ -158,7 +162,8 @@ class SingleFlightCacheTest {
                     .isTrue();
 
                 // First caller: loader never resolves → surfaces a Timeout once the bound fires.
-                // The cleanup this triggers cannot run yet — every carrier is held by an occupier.
+                // The cleanup this triggers cannot run yet — every carrier is held by a spinning
+                // occupier.
                 bounded.deduplicate(id, () -> hangingLoaderWithCounter(hungCalls))
                        .await(timeSpan(5).seconds())
                        .onSuccessRun(() -> fail("Expected timeout failure for hung loader"))
@@ -176,7 +181,7 @@ class SingleFlightCacheTest {
 
                 assertThat(freshCalls.get()).isEqualTo(1);
             } finally {
-                release.countDown();
+                released.set(true);
                 for (var occupier : occupiers) {
                     occupier.join();
                 }
