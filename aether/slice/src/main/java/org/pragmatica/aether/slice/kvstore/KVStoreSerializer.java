@@ -566,7 +566,8 @@ public final class KVStoreSerializer {
     /// order — `reason` is free operator text and goes last, mirroring [#serializeClusterConfig]'s
     /// `tomlContent` placement, so an escaped `|` inside it can never be mistaken for a delimiter.
     private static String serializeAutoHealState(AutoHealStateValue v) {
-        return v.enabled() + PIPE + v.updatedAt() + PIPE + v.reason().replace("|", "\\|");
+        return v.enabled() + PIPE + v.updatedAt() + PIPE + v.reason()
+                                                            .replace("|", "\\|");
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseAutoHealStateEntry(String identity, String raw) {

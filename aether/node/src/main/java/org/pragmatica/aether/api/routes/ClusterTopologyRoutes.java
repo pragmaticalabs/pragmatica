@@ -126,8 +126,8 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                            : "disable");
 
         return ctmOpt().async(CTM_UNAVAILABLE)
-                       .flatMap(ctm -> ctm.setAutoHealEnabled(enabled, reason)
-                                          .map(previousState -> new AutoHealToggleResponse(enabled, previousState)));
+                     .flatMap(ctm -> ctm.setAutoHealEnabled(enabled, reason)
+                                        .map(previousState -> new AutoHealToggleResponse(enabled, previousState)));
     }
 
     private Option<ClusterTopologyManager> ctmOpt() {

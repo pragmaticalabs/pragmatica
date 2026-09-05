@@ -69,14 +69,12 @@ public interface ClusterTopologyManager extends TopologyManager {
 
     Option<LastProvisionFailure> lastProvisionFailure();
     int resetCircuitBreaker(String reason);
-
     /// #685 — the operator's auto-heal disable/enable is a durable cluster fact stored in consensus
     /// KV (`AetherKey.AutoHealStateKey`), never a leader's in-memory mood: a read reflects the log
     /// applied LOCALLY, so the flag becomes visible on a node when that node applies the committed
     /// Put — bounded by consensus latency, not zero; a node behind on apply answers the previous
     /// value until then. Absent key means enabled (the pre-#685 default).
     boolean isAutoHealEnabled();
-
     /// #685 — writes the durable KV record via the existing `commandApplier` channel and returns the
     /// PRIOR state once the write is applied. Same visibility caveat as [#isAutoHealEnabled]: other
     /// nodes (including a newly-elected leader) observe the change only after they apply the

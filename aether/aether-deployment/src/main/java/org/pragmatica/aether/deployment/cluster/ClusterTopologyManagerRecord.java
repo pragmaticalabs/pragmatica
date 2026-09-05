@@ -529,7 +529,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// previous value until then.
     @Override
     public boolean isAutoHealEnabled() {
-        return autoHealStateReader.get().map(AutoHealStateValue::enabled).or(true);
+        return autoHealStateReader.get()
+                                  .map(AutoHealStateValue::enabled)
+                                  .or(true);
     }
 
     /// #685 — writes the operator's decision through the same consensus-backed KV channel as
@@ -551,26 +553,27 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         @SuppressWarnings("unchecked")
-        var command = (KVCommand<AetherKey>) (KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(AetherKey.AutoHealStateKey.SINGLETON,
-                                                                                                       AutoHealStateValue.autoHealStateValue(enabled, reason));
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(AetherKey.AutoHealStateKey.SINGLETON,
+                                                                                                     AutoHealStateValue.autoHealStateValue(enabled,
+                                                                                                                                           reason));
 
         return commandApplier.apply(List.of(command))
-                              .onFailure(cause -> log.warn("CTM: failed to write AutoHealStateValue enabled={} reason={}: {}",
-                                                           enabled,
-                                                           reason,
-                                                           cause.message()))
-                              .map(_ -> {
-                                  log.warn("CTM: auto-heal {} (operator: {}) — prior state was {}",
-                                           enabled
-                                           ? "ENABLED"
-                                           : "DISABLED",
-                                           reason,
-                                           prev
-                                           ? "enabled"
-                                           : "disabled");
+                             .onFailure(cause -> log.warn("CTM: failed to write AutoHealStateValue enabled={} reason={}: {}",
+                                                          enabled,
+                                                          reason,
+                                                          cause.message()))
+                             .map(_ -> {
+                                      log.warn("CTM: auto-heal {} (operator: {}) — prior state was {}",
+                                               enabled
+                                               ? "ENABLED"
+                                               : "DISABLED",
+                                               reason,
+                                               prev
+                                               ? "enabled"
+                                               : "disabled");
 
-                                  return prev;
-                              });
+                                      return prev;
+                                  });
     }
 
     /// Membership v2 / E2 — provision a replacement, PURE ACTUATOR.
