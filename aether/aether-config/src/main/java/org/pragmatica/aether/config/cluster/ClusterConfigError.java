@@ -301,7 +301,8 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
             return "No cluster configuration stored. An upgrade request cannot create one — it "
                  + "carries only a target version, not the cluster name, topology, or deployment "
                  + "settings a config requires. Run 'aether cluster bootstrap <aether-cluster.toml>' "
-                 + "first, then retry 'aether cluster upgrade --version " + targetVersion + "'.";
+                 + "first, then retry 'aether cluster upgrade --version " + targetVersion
+                 + "'.";
         }
 
         @Override
