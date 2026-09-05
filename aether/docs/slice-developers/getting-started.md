@@ -996,8 +996,11 @@ The `override_policy` controls what operators can change at deploy time via blue
 - **`strengthen_only`** (default) -- operators can only make routes more restrictive. On a route
   with no `[security]` section, strength is not comparable (what it enforces is the global
   `security_mode`), so only the direction is judged: an override to `public` is refused, any other
-  override is applied. See the [Management API reference](../reference/management-api.md#undeclared-routes)
-  for the residual this leaves open.
+  override is applied. Note that an accepted override governs requests arriving at OTHER nodes; on the
+  node hosting the route the local check still uses the route's declared policy. Declare `[security]`
+  in `routes.toml` rather than relying on an override alone. See the
+  [Management API reference](../reference/management-api.md#undeclared-routes) for the scope limit and
+  the residuals this leaves open.
 - **`full`** -- operators can change security in any direction
 - **`none`** -- no overrides allowed
 
