@@ -525,7 +525,7 @@ After a graceful drain completes (all slices evicted respecting disruption budge
 
 ### ServiceLoader SPI
 
-Each provider module contains a `META-INF/services/org.pragmatica.aether.environment.EnvironmentIntegrationFactory` file pointing to its factory class. At startup, `Main.wireCloudIfConfigured` reads the `[cloud]` config, calls `EnvironmentIntegrationFactory.createFromConfig(cloudConfig)`, which uses ServiceLoader to find the factory matching the configured provider name.
+Each provider module contains a `META-INF/services/org.pragmatica.aether.environment.EnvironmentIntegrationFactory` file pointing to its factory class. At startup, `Main.resolveEnvironment` reads the `[cloud]` config (`AetherConfig::cloud`), calls `EnvironmentIntegrationFactory.createFromConfig(cloudConfig)`, which uses ServiceLoader to find the factory matching the configured provider name.
 
 ### Faceted Design
 
@@ -540,4 +540,4 @@ Each provider returns only the facets it supports. The rest of Aether checks for
 
 ### CloudConfig
 
-The generic `CloudConfig` record holds provider name plus five string maps (`credentials`, `compute`, `loadBalancer`, `discovery`, `secrets`). Each factory knows how to interpret its provider-specific keys from these maps. This keeps the config layer provider-agnostic.
+The generic `CloudConfig` record holds provider name plus six string maps (`credentials`, `compute`, `loadBalancer`, `discovery`, `secrets`, `security`). Each factory knows how to interpret its provider-specific keys from these maps. This keeps the config layer provider-agnostic.

@@ -641,6 +641,13 @@ List HTTP routes registered on the connected node.
 }
 ```
 
+### GET /api/v1/nodes/routes/{id}
+
+Per-node variant of `/api/v1/nodes/routes`. The request lands on any node and is forwarded to the
+node identified by `{id}` (via the standard `nodeIdParam(0)` forwarding pattern shared with
+`/api/v1/nodes/status/{id}`, `/api/v1/nodes/endpoint/{id}`, etc.). Response shape matches `GET
+/api/v1/nodes/routes`.
+
 ### GET /api/v1/routes
 
 List HTTP routes across the cluster.
@@ -1373,6 +1380,13 @@ Get per-node CPU and heap metrics.
   }
 ]
 ```
+
+### GET /api/v1/nodes/metrics/{id}
+
+Per-node variant of `/api/v1/nodes/metrics`. The request lands on any node and is forwarded to
+the node identified by `{id}` (via the standard `nodeIdParam(0)` forwarding pattern shared with
+`/api/v1/nodes/status/{id}`, `/api/v1/nodes/routes/{id}`, etc.). Response shape matches `GET
+/api/v1/nodes/metrics`.
 
 ### GET /api/v1/artifacts/metrics
 
@@ -3917,6 +3931,7 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | GET | `/api/v1/slices/status` | Slice Management |
 | GET | `/api/v1/slices/config/{id}` | Slice Management |
 | GET | `/api/v1/nodes/routes` | Slice Management (per-node) |
+| GET | `/api/v1/nodes/routes/{id}` | Slice Management (per-node) |
 | GET | `/api/v1/routes` | Slice Management (cluster-wide) |
 | POST | `/api/v1/scale` | Slice Management |
 | POST | `/api/v1/blueprints` | Blueprint Management |
@@ -3936,6 +3951,7 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | GET | `/api/v1/metrics/timeouts` | Metrics |
 | POST | `/api/v1/metrics/backfill` | Metrics (dev-mode only) |
 | GET | `/api/v1/nodes/metrics` | Metrics |
+| GET | `/api/v1/nodes/metrics/{id}` | Metrics |
 | GET | `/api/v1/artifacts/metrics` | Metrics |
 | GET | `/api/v1/invocations/metrics` | Metrics |
 | GET | `/api/v1/invocations/metrics/slow` | Metrics |

@@ -95,7 +95,7 @@ In practice, most production deployments use immutable VMs/pods: hosts are cattl
 
 Aether's recovery flow:
 
-1. **Failure detection** — SWIM gossip detects a peer is unreachable and QUIC transport confirms the disconnect; the node drops out of the presence-derived membership view (SWIM/QUIC via NTT). Node membership is never stored in or committed to the KV-Store. See `aether/docs/specs/membership-architecture-v2-spec.md`.
+1. **Failure detection** — SWIM gossip detects a peer is unreachable and QUIC transport confirms the disconnect; the node drops out of the presence-derived membership view (SWIM/QUIC via NTT). Node membership is never stored in or committed to the KV-Store. See `aether/docs/specs/archive/membership-architecture-v2-spec.md`.
 2. **Departure** — once presence is lost, the node is removed from the cluster's membership view. There is no node-state KV write; the node-id simply ceases to be a present member.
 3. **CTM reaction** — CTM observes the membership change, computes `actual = present-and-ready core count, desired = configured`, sees a deficit, and calls `provisionSingleNode()`.
 4. **Replacement provisioning** — for cloud providers, this issues a `CreateServer` API call; for `manual` provisioning, this is a no-op and operator intervention is expected; for `docker` runtime (test fixtures), this runs `docker run` against the local daemon.
