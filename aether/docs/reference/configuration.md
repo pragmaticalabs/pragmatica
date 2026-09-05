@@ -289,12 +289,16 @@ framed `AEC1...` bytes as if they were plaintext content on every read. Recovery
 to a fresh, unmarked directory or DHT namespace (`#831`). This marker/refusal pair covers the
 per-instance disk/DHT path above; the built-in `streams` segment tiers' DHT namespace
 (`stream-segments`) has neither yet — only its disk side does — and is tracked separately as `#849`.
-**Timing differs by tier (`#858`):** the local-disk marker is checked synchronously during storage
-construction, before the node object exists — a disk read needs no cluster. The DHT marker cannot be:
-its `DHTClient` can only route once cluster formation resolves, so that check runs from `start()`,
-after formation resolves and before the node reports ready; a DHT tier serves no reads until its own
-check completes (gated internally, not observable as a separate config knob). A boot that fails this
-later DHT check stops the node the same way any other `start()` failure does: exit code `1`, the
+**Timing differs by tier (`#858`/`#874`):** the local-disk marker is checked synchronously during
+storage construction, before the node object exists — a disk read needs no cluster. The DHT marker
+cannot be: its `DHTClient` can only route once cluster formation resolves, so that check runs from
+`start()`, after formation resolves. It does **not** run before the node's HTTP surfaces come up —
+`managementServer`/`appHttpServer` start earlier in the same `start()` chain and can already accept
+traffic, including the Maven protocol handler's writes, while this check is in flight. What actually
+blocks during that window is every DHT-tier operation on the pending namespace — `get`, `put`,
+`delete` and `exists` all gate on the same internal check (not observable as a separate config knob),
+so a write cannot land ahead of the check and persist plaintext into a namespace the check later finds
+already encrypted. A boot that fails this later DHT check stops the node the same way any other `start()` failure does: exit code `1`, the
 generic "fatal startup failure" path (`Main#exitWithError`) — see
 [`node-operations.md`](node-operations.md#exit-codes) for the full table.
 
