@@ -81,7 +81,7 @@ class AetherClient:
             req = urllib.request.Request(
                 url,
                 data=blueprint_content.encode(),
-                headers={"Content-Type": "application/json"},
+                headers=self._headers({"Content-Type": "application/json"}),
                 method="POST"
             )
             with urllib.request.urlopen(req) as response:
@@ -95,7 +95,7 @@ class AetherClient:
         """Delete a blueprint (undeploy slices)."""
         url = f"{self.base_url}/api/v1/blueprints/{blueprint_id}"
         try:
-            req = urllib.request.Request(url, method="DELETE")
+            req = urllib.request.Request(url, headers=self._headers(), method="DELETE")
             with urllib.request.urlopen(req) as response:
                 return json.loads(response.read().decode())
         except urllib.error.HTTPError as e:
