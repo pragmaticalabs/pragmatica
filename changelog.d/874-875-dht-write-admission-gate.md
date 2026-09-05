@@ -22,16 +22,37 @@
 - `configuration.md`'s DHT-marker-timing section corrected: it previously claimed the check runs
   "before the node reports ready", which reads as if HTTP surfaces wait for it. They don't — what
   blocks during that window is every DHT-tier operation on the pending namespace, not the HTTP surface.
-- [verified: `DhtStorageTierTest$Admission` (7 tests: pending-gate timeout and immediate-refusal
-  cases for `get`/`put`/`delete`/`exists`, including two that assert directly against the raw DHT
-  client that a gated write never persists, whether it times out or is refused) — 7/7;
+- **Round 1 (review) fix — the #875 regression test could not fail, it could only wedge.**
+  `verifyDhtMarker_resolvesReadGate_withRefusalCause_onProductionFailurePath` ended in an unbounded
+  `c.readGate().await()`; a regression on `StorageFactory.verifyDhtMarker`'s failure branch
+  (dropping `check.readGate().resolve(Result.failure(cause))`) would hang the test forever instead of
+  failing it — `readGate` is independent of `DhtStorageTier`'s `admissionTimeout` (that bound applies
+  only to the `.map()`-derived promise inside `DhtStorageTier#admission`, never to `readGate` itself),
+  so the comment claiming a 30 s production bound would eventually rescue it was false. Now bounded
+  with the file's existing `SHORT_MARKER_TIMEOUT` (150 ms); the false comment is replaced with the
+  correct mechanism. Proved by mutation: reverting the two-line fix makes the test fail in ~11s
+  wall-clock with a real assertion (`CoreError.Timeout` where `EncryptionError.EncryptedTierRequiresKeyring`
+  was expected), not a hang; restoring the fix returns it to a 0.28s pass.
+- **Round 1 (review) fix — a gated write/read answered HTTP 500, not 503.**
+  `StorageError.TierNotAdmitted` is not a `CoreError.Timeout`, so `MavenProtocolRoutes.sendFailureResponse`
+  fell through to `internalError` (500) for a state that is transient by construction — telling
+  `mvn deploy` "server bug, do not retry" instead of "retry me". `TierNotAdmitted` now maps to 503
+  Service Unavailable with a `Retry-After: 1` header; every other cause is unaffected and still gets 500.
+- [verified: `DhtStorageTierTest$Admission` (six `@Test` methods: pending-gate-timeout and
+  immediate-refusal cases for `get`/`put`/`delete`/`exists`, including two that assert directly against
+  the raw DHT client that a gated write never persists, whether it times out or is refused) — 6/6, read
+  from surefire `<testcase>` counts (not the `.txt` summary, which undercounts `@Nested` classes);
   `StorageFactoryEncryptionTest#verifyDhtMarker_resolvesReadGate_withRefusalCause_onProductionFailurePath`
   (drives the real no-keyring-refusal path through `StorageFactory.verifyDhtMarker` and reads
-  `readGate()` directly, without resolving it by hand) — 1/1;
-  `aether/aether-storage` full module suite — 30/30;
-  `aether/node` full module suite — 12900/12900 across the reactor;
-  `mvn jbct:check -pl aether/aether-storage,aether/node` — 0 format issues, 0 lint errors on both
-  touched modules]
+  `readGate()` directly, without resolving it by hand; mutation-probed per above) — 1/1;
+  `MavenProtocolRoutesTierNotAdmittedTest` (503+`Retry-After` for `TierNotAdmitted`, plain 500 with no
+  `Retry-After` for every other cause) — 2/2;
+  `aether/aether-storage` MODULE suite (full, `mvn -pl aether/aether-storage test`) — 30/30;
+  `aether/node` MODULE suite (full, `mvn -pl aether/node test`, not a reactor total — no full-monorepo
+  reactor run was performed this round since only `aether/node` sources changed) — 1138/1138, 1 skipped
+  (pre-existing, unrelated to this change);
+  `mvn jbct:check -pl aether/node -fae` — 0 format issues, 0 lint errors (aether-storage source is
+  unchanged this round, not re-gated)]
 - **What is NOT covered:** `AetherNode.start()`'s startup ordering is unchanged — `managementServer`/
   `appHttpServer` still come up before `verifyDhtMarkers()` resolves; protection now comes from gating
   every DHT-tier operation rather than delaying HTTP-surface startup, which was weighed and rejected
@@ -39,4 +60,5 @@
   full 30 s bound. `Promise.allOfOrCancel` in `StorageFactory.verifyDhtMarkers` (plural) cancels
   sibling in-flight marker checks on the first failure; the exact cancellation cause a cancelled
   sibling's `readGate` now resolves with is a strict improvement over the pre-#875 hang but its precise
-  type is unverified here.
+  type is unverified here. The `Retry-After: 1` value is a deliberately small, unmeasured hint
+  [design intent — unverified], not a measured recovery-time bound.
