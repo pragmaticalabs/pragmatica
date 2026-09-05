@@ -13,5 +13,10 @@
 - `deduplicate()` now uses `compute` instead of `computeIfAbsent` and treats an existing-but-
   resolved map entry as absent, so a settled entry can never be handed out regardless of whether
   the async cleanup has run yet — this closes the race instead of narrowing it
-  [verified: `SingleFlightCacheTest$HungLoaderEvictionTests#deduplicate_hungLoader_evictedAfterBoundAndNextCallerFresh`,
-  single-shot assertion, no polling].
+  [verified: `SingleFlightCacheTest$HungLoaderEvictionTests#deduplicate_hungLoader_nextCallerFreshEvenWithCleanupQueuedBehindSaturatedCarriers`,
+  which busy-spins exactly `jdk.virtualThreadScheduler.parallelism` virtual threads to hold every
+  carrier hostage before the bound fires, forcing the cleanup dispatch to still be queued when the
+  next caller arrives — 5/5 deterministic FAIL against the pre-fix `computeIfAbsent`, 5/5
+  deterministic PASS against this fix, both ~0.17-0.19s (no wall-clock race or ambient-load
+  dependence in either direction); `deduplicate_hungLoader_evictedAfterBoundAndNextCallerFresh`
+  covers the same eviction contract without forcing the race window].
