@@ -71,6 +71,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipTransitionRecord;
 import org.pragmatica.aether.deployment.membership.fsm.PeerTarget;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumCoConfirmation;
@@ -3098,6 +3099,7 @@ public interface AetherNode extends ManageableNode {
                                                                                          hlcClock::now,
                                                                                          delegateRouter::route,
                                                                                          delegateRouter::route,
+                                                                                         delegateRouter::route,
                                                                                          topologyObserver::pruneDeparted);
 
         membershipFsm.onMembershipDelta(membershipDeltaProjector::onDelta);
@@ -3216,6 +3218,12 @@ public interface AetherNode extends ManageableNode {
         clusterDeploymentManager.setCommunityLiveness(node -> metricsCollector.sinceLastPongNanos(node)
                                                                               .map(since -> since >= communityAbsenceNanos)
                                                                               .or(false));
+        // #731 round 3: the leader's own local SWIM-derived alive view — `dhtRoutableMembers()`
+        // includes a node the instant SWIM observes it (OBSERVED/MEMBER/SUSPECT) and drops it only
+        // once SWIM confirms departure/death, unlike the committed GovernorAnnouncementValue roster
+        // which lags by up to one reannounce interval. `membershipFsm` is already fully constructed
+        // by this point in node startup, so no deferred-holder indirection is needed here.
+        clusterDeploymentManager.setLocalAliveMembersSupplier(membershipFsm::dhtRoutableMembers);
         // QUIC reconnect feeds NTT's soft up-bias (unchanged) AND the FSM's peer-connected tap.
         Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) presenceSampler::onQuicReconnect).andThen(membershipFsm::onPeerConnected);
         // QUIC disconnect feeds BOTH NTT's soft down-bias (unchanged) AND the liveness half of the
@@ -5657,6 +5665,10 @@ public interface AetherNode extends ManageableNode {
         // No onRemove — the high-water is monotonic by definition, so ownership/governor removes are intentionally ignored.
         kvRouterBuilder.onPut(AetherKey.GovernorAnnouncementKey.class,
                               ownershipEpochHighWater::onGovernorAnnouncementPut);
+        // #731 round 3: re-run the dead-worker sweep on every committed reannouncement, not only on
+        // the one-shot 2s deferredTopologyRecheck timer (ClusterDeploymentState onEntry).
+        kvRouterBuilder.onPut(AetherKey.GovernorAnnouncementKey.class,
+                              clusterDeploymentManager::onGovernorAnnouncementPut);
         kvRouterBuilder.onPut(AetherKey.DhtPartitionOwnershipKey.class, ownershipEpochHighWater::onDhtOwnershipPut);
         kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,
                               ownershipEpochHighWater::onStreamPartitionOwnershipPut);
@@ -5721,6 +5733,11 @@ public interface AetherNode extends ManageableNode {
         // topology stream), so without this route assignNodeRole is unreachable for exactly the
         // nodes that need a community — they reach FSM Member and are never assigned a role.
         entries.add(MessageRouter.Entry.route(WorkerJoinDecision.class, clusterDeploymentManager::onWorkerJoin));
+        // #731: the non-core leave channel, symmetric to the join route above — a departed
+        // worker's REMOVED edge never reaches MembershipDecision either, so without this route
+        // handleNodeRemoval is unreachable for a dead worker and its allocation-pool slot and KV
+        // footprint (SliceNodeKey/NodeArtifactKey/NodeRoutesKey) linger forever.
+        entries.add(MessageRouter.Entry.route(WorkerLeaveDecision.class, clusterDeploymentManager::onWorkerLeave));
         // RC1 Step 2: route the new lifecycle-projection variants into CDM so the
         // dropped `onNodeLifecyclePut` listener's work (drain eviction, etc.) is
         // covered through the single canonical MembershipDecision channel.
