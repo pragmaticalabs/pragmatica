@@ -123,6 +123,20 @@ class StorageFactoryEncryptionTest {
                     .unwrap();
     }
 
+    /// #874: `put` is now gated on the same `readGate` as `get` (previously ungated) -- a raw
+    /// `writeThrough` against a DHT-backed instance must first resolve the marker check the way
+    /// `AetherNode.start()` does post-formation, or `admission()` blocks it for the full 30s
+    /// `admissionTimeout` and fails with `StorageError.TierNotAdmitted`. Mirrors the
+    /// `dhtMarkerCheck()`/`verifyDhtMarker` sequence the read-side tests below already use
+    /// (`verifyDhtMarker_fails_...`, `createAll_stillRefusesLegacyPlaintextBlock_...`). A no-op for
+    /// instances with no DHT tier (`dhtMarkerCheck()` empty).
+    private static void admitDhtMarker(StorageFactory.StorageSetup setup, DHTClient dhtClient) {
+        setup.dhtMarkerCheck()
+             .onPresent(check -> StorageFactory.verifyDhtMarker(dhtClient, check)
+                                                .await()
+                                                .onFailure(cause -> fail("verifying the DHT marker failed: " + cause.message())));
+    }
+
     private static void assertCiphertextAtRest(byte[] stored, String where) {
         assertThat(stored).as("%s must hold ciphertext, not the plaintext block", where)
                           .isNotEqualTo(PLAINTEXT);
@@ -195,6 +209,8 @@ class StorageFactoryEncryptionTest {
 
         assertThat(setups).containsKey(ARTIFACTS);
 
+        admitDhtMarker(setups.get(ARTIFACTS), dhtClient);
+
         var blockId = writeThrough(setups.get(ARTIFACTS));
         var stored = dhtClient.rawValue("artifacts-blocks", blockId);
 
@@ -215,6 +231,8 @@ class StorageFactoryEncryptionTest {
         var setups = createAllOrFail(Map.of(), Option.some(dhtClient), Option.none());
 
         assertThat(setups).containsKey(ARTIFACTS);
+
+        admitDhtMarker(setups.get(ARTIFACTS), dhtClient);
 
         var blockId = writeThrough(setups.get(ARTIFACTS));
         var stored = dhtClient.rawValue("artifacts-blocks", blockId);
@@ -424,6 +442,8 @@ class StorageFactoryEncryptionTest {
 
         assertThat(setups).containsKey(INSTANCE);
 
+        admitDhtMarker(setups.get(INSTANCE), dhtClient);
+
         var blockId = writeThrough(setups.get(INSTANCE));
         var stored = dhtClient.rawValue(INSTANCE + "-blocks", blockId);
 
@@ -444,6 +464,8 @@ class StorageFactoryEncryptionTest {
                                      Option.some(singleKeyRing("key-1")));
 
         assertThat(setups).containsKey(INSTANCE);
+
+        admitDhtMarker(setups.get(INSTANCE), dhtClient);
 
         var blockId = writeThrough(setups.get(INSTANCE));
         var stored = dhtClient.rawValue(INSTANCE + "-blocks", blockId);
