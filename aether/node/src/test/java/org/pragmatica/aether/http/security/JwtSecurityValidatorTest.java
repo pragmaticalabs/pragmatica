@@ -341,10 +341,27 @@ class JwtSecurityValidatorTest {
         }
 
         @Test
-        void validate_passesThrough_forApiKeyRequiredPolicy() {
+        void validate_denies_forApiKeyRequiredPolicy_thisNodeCannotEnforceIt() {
+            // #866 review G1, mirror image of the api-key validator's BEARER_TOKEN arm. This used to
+            // return SUCCESS with an anonymous context and no credential inspected, so under
+            // security_mode = "jwt" an operator override to "api_key" served the route to anyone
+            // while the routes listing reported API_KEY. API_KEY is reachable only via an operator
+            // override — routes.toml cannot declare it and globalSecurityPolicy() cannot produce it
+            // under jwt mode.
             validator.validate(requestWithoutToken(), SecurityPolicy.apiKeyRequired())
-                     .onFailure(cause -> fail("Expected success — wrong validator type passes through"))
-                     .onSuccess(ctx -> assertThat(ctx.isAuthenticated()).isFalse());
+                     .onSuccess(ctx -> fail("Expected failure — a policy this node cannot enforce must deny, not grant"))
+                     .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class));
+        }
+
+        @Test
+        void validate_denies_forApiKeyRequiredPolicy_evenWithAValidTokenPresented() {
+            // A valid bearer token is still not an API key, so presenting one must not satisfy an
+            // API_KEY policy either.
+            var token = buildToken(Map.of("sub", TEST_SUBJECT, "exp", futureExp()));
+
+            validator.validate(requestWithToken(token), SecurityPolicy.apiKeyRequired())
+                     .onSuccess(ctx -> fail("Expected failure — a bearer token does not satisfy an API_KEY policy"))
+                     .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class));
         }
 
         @Test

@@ -60,6 +60,19 @@ public sealed interface SecurityError extends Cause, HttpStatusAware {
     /// defense in depth (#763/#772 review).
     SecurityError UNRESOLVED_POLICY = new MissingCredentials("Security policy was not resolved to a concrete value before reaching the validator");
 
+    /// The route's policy names a credential type this node's `security_mode` does not serve --
+    /// `BEARER_TOKEN` under `api-key` mode, or `API_KEY` under `jwt` mode. Reachable only through an
+    /// operator security override, since neither value can be declared in `routes.toml`
+    /// (`RouteSecurityLevel` parses only public/authenticated/role/unspecified) and
+    /// `globalSecurityPolicy()` can only produce the policy matching the mode.
+    ///
+    /// These two arms previously returned SUCCESS with an anonymous, unauthenticated context and no
+    /// credential inspected at all, so an operator override to the "wrong" credential type was a
+    /// total authentication bypass rather than the lock-down it reads as (#866 review G1). Denying
+    /// is the honest outcome: the node cannot enforce what was asked for, so it refuses rather than
+    /// serving the route wide open.
+    SecurityError UNENFORCEABLE_POLICY = new MissingCredentials("Route policy requires a credential type this node's security_mode does not serve");
+
     record InsufficientRole(String message) implements SecurityError {
         @Override
         public HttpStatus httpStatus() {
