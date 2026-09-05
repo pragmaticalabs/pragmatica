@@ -250,6 +250,26 @@ class SecurityValueObjectsTest {
         }
 
         @Test
+        void fromString_unspecifiedDeserialization() {
+            // #866 review F4: `case "UNSPECIFIED"` in fromString had no test — revert it and the
+            // whole suite stayed green. Without it, an "UNSPECIFIED" entry read back off a remote
+            // node's route table falls through parseRoleOrDefault to apiKeyRequired(), which is an
+            // EXPLICIT policy, so AppHttpServer#isExplicitPolicy adopts it instead of falling back
+            // to the global one. Under security_mode = "none" that 401s a route that should serve.
+            assertThat(SecurityPolicy.fromString("UNSPECIFIED"))
+                .isInstanceOf(SecurityPolicy.Unspecified.class);
+        }
+
+        @Test
+        void fromString_unspecifiedRoundTrip_throughAsString() {
+            // The wire path is asString() -> KV store -> fromString(); pin both directions together
+            // so a change to either arm breaks here.
+            assertThat(SecurityPolicy.unspecified().asString()).isEqualTo("UNSPECIFIED");
+            assertThat(SecurityPolicy.fromString(SecurityPolicy.unspecified().asString()))
+                .isInstanceOf(SecurityPolicy.Unspecified.class);
+        }
+
+        @Test
         void canAccess_publicRoute_allowsAnonymous() {
             var policy = SecurityPolicy.publicRoute();
             var anonymous = SecurityContext.securityContext();
