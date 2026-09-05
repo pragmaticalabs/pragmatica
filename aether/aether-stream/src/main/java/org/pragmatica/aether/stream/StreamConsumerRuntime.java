@@ -25,16 +25,27 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     /// call it from a plain statement. `void` is the JDK's contract here, not a choice, hence
     /// [`Contract`].
     ///
-    /// **This is NOT an infallible operation, and the narrowed signature hides that.** Closing flushes
-    /// every consumer cursor before removing push listeners, and that flush is
-    /// `ConsumerCursorStore.commit(...)` — a `Promise<Unit>` consensus write that can fail. The flush
-    /// site does not absorb the failure so much as never look at it: the returned `Promise` is
-    /// discarded unobserved, so a failed final commit is silent — no log, no retry, no signal here.
-    /// Effect: shutdown always completes, cursor durability is not guaranteed, and a consumer whose
-    /// final flush failed resumes from its last committed offset and redelivers the gap. Consumers
-    /// must therefore be idempotent [design intent — unverified]. Making that dropped failure
-    /// deliberate rather than incidental is worth its own ticket; this doc only stops the signature
-    /// from lying about it.
+    /// Closing flushes every consumer's cursor before removing push listeners. That flush is
+    /// `ConsumerCursorStore.commit(...)` — a `Promise<Unit>` consensus write that can fail, or simply
+    /// not settle before shutdown needs to proceed. #654: the batch of final commits is bound-await
+    /// for up to 5 seconds so a wedged or slow write cannot hold node stop; a commit that has not
+    /// settled within the bound counts as failed for THIS shutdown even if it later succeeds. Every
+    /// failure — settled or bound-expired — is counted in [#cursorCommitFailureCount] and, while the
+    /// consumer stays attached, visible on [SubscriptionSnapshot#lastCursorCommitFailure]. A store
+    /// composed of sub-stages (#654 round 2, e.g. the node's cluster-aware store chaining a consensus
+    /// checkpoint publish onto the local write) may recover an inner failure rather than fail
+    /// `commit(...)` itself — that case is logged by the STORE at its own level, not here, but is
+    /// still folded into the same counter/detail, prefixed `checkpoint publish:` to distinguish it from
+    /// a `local commit:` failure, which this runtime logs at ERROR (consumer group, stream, partition,
+    /// cause) directly. **Redelivery contract**: a consumer whose final flush failed or did not settle
+    /// resumes, on its next attach, from its LAST COMMITTED offset [mechanism: `loadCursorAndStart`
+    /// unconditionally fetches and applies the last committed offset before starting delivery] and
+    /// redelivers every event since — consumers must be idempotent. On failover to another node it
+    /// resumes instead from the last CONSENSUS-PUBLISHED checkpoint, since the outgoing node's local
+    /// cursor is unreadable elsewhere — a lost publish means redelivery from that older point (#488,
+    /// #654 round 2). Operator recovery: none needed for one failure at one shutdown — that is ordinary
+    /// at-least-once behavior; a sustained rise in [#cursorCommitFailureCount] across restarts, rather
+    /// than an isolated one, is the signal worth investigating (consensus write path health).
     ///
     /// Ordering is load-bearing (#488): call this while the partition manager is still open and the
     /// cluster node still up, or the cursor write races shutdown and the listener removal — which
@@ -60,15 +71,23 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     /// Snapshot of everything currently subscribed. Pure read, assembled on request — the operator
     /// surface for "is this consumer actually attached, and where is it?" (#488).
     List<SubscriptionSnapshot> subscriptions();
+    /// #654: node-wide count of cursor commits — final flush at detach, or periodic checkpoint —
+    /// that failed or did not settle within their bound. Monotonic for the life of this runtime;
+    /// survives a consumer's removal from the live subscription set, unlike
+    /// [SubscriptionSnapshot#lastCursorCommitFailure], which goes with the removed entry.
+    long cursorCommitFailureCount();
 
     /// One live subscription. `cursor` is the next offset this consumer will read, i.e. one past the
-    /// last delivered offset.
+    /// last delivered offset. `lastCursorCommitFailure` (#654) is the detail of this consumer's most
+    /// recent cursor commit failure, cleared on its next successful commit; [Option#none] when its
+    /// last commit succeeded or none has been attempted yet.
     record SubscriptionSnapshot(String streamName,
                                 int partition,
                                 String consumerGroup,
                                 long cursor,
                                 boolean stalled,
-                                IdlePolicy idlePolicy) {}
+                                IdlePolicy idlePolicy,
+                                Option<String> lastCursorCommitFailure) {}
 
     /// Whether the idle reaper may unsubscribe a consumer that has not polled recently.
     ///
