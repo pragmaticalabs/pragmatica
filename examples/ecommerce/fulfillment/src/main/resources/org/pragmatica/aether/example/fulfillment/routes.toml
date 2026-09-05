@@ -1,5 +1,11 @@
 prefix = "/api/v1/fulfillment"
 
+# #763: an absent [security] section now inherits the global security_mode instead of defaulting
+# to public. This is a no-auth demo -- make that explicit rather than relying on the pre-#763
+# implicit-public behavior.
+[security]
+default = "public"
+
 [routes]
 calculateShipping = "POST /shipping/calculate"
 createShipment = "POST /shipments"

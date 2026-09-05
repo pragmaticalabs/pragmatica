@@ -979,6 +979,18 @@ bypasses the global policy for that route.
 > `[security]` / `default = "public"` to any `routes.toml` whose routes should stay open. Deployments
 > running `security_mode = "none"` are unaffected -- that mode does not enforce any policy either
 > way.
+>
+> **The trigger is rebuilding your slice with the new `jbct/slice-processor`, not upgrading the
+> node runtime.** `.withSecurity(...)` is codegen output baked into your slice's generated Java
+> source at *compile* time -- the node reads it from your already-compiled JAR, it never
+> re-parses your `routes.toml` at deploy time. Upgrading only the aether-node runtime and
+> redeploying an OLD, already-built slice JAR changes nothing: that JAR still carries the old
+> `SecurityPolicy.publicRoute()` literal from whichever processor version built it, and stays
+> silently public exactly as before. The behavior only flips the moment you **recompile that slice
+> against this (or a later) processor version** -- a `mvn clean package` (or your build's
+> equivalent) that regenerates `*Routes.java` -- and then deploy the resulting JAR. Two separate
+> moments; only the second is under your control at your own schedule, and only the second is
+> where this note's "action required" applies.
 
 The `override_policy` controls what operators can change at deploy time via blueprint.toml:
 - **`strengthen_only`** (default) -- operators can only make routes more restrictive
