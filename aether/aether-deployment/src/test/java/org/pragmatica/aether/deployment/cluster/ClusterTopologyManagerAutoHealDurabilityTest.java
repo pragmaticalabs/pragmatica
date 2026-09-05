@@ -34,6 +34,7 @@ import org.pragmatica.net.tcp.NodeAddress;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -82,6 +83,14 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
     /// CTM instances, none aware of each other, exactly as separate nodes never share process memory
     /// but do share consensus-materialized state.
     private ClusterTopologyManager newCtm() {
+        return newCtm(() -> kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class));
+    }
+
+    /// Same as [#newCtm()], but with a caller-supplied `autoHealStateReader` instead of one that
+    /// reads through to the shared `kvStore` — lets a test build an instance whose LOCAL view is
+    /// pinned independently of what the shared, consensus-materialized store actually holds, modeling
+    /// a node that is behind on applying the log (#685 review round 1 SHOULD-FIX 2).
+    private ClusterTopologyManager newCtm(Supplier<Option<AutoHealStateValue>> autoHealStateReader) {
         var config = new TopologyConfig(SELF, 5, timeSpan(60).seconds(), timeSpan(1).seconds(), List.of(INFO_SELF));
         var snapshotSource = new StubSnapshotSource();
         var observer = TopologyObserver.topologyObserver(config, quietRouter(), snapshotSource).unwrap();
@@ -104,7 +113,7 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
                                                              _ -> {},
                                                              _ -> {},
                                                              Option::none,
-                                                             () -> kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class));
+                                                             autoHealStateReader);
     }
 
     /// Condition 1 — a fresh/empty KV (no operator has ever touched the flag; also the state of
@@ -139,15 +148,46 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
                 .isTrue();
     }
 
-    /// A same-state toggle is a documented no-op (see `ClusterTopologyManagerRecord#setAutoHealEnabled`)
-    /// and must not perturb what every reader observes.
+    /// A same-state toggle leaves what every reader observes unchanged — but (#685 review round 1
+    /// SHOULD-FIX 2) it is NOT a no-op internally: the write still goes through the shared KV
+    /// unconditionally. See [#redundantEnable_writesAnyway_whenThisNodesLocalViewIsStale] for the test
+    /// that observes the write itself; this one only pins the observable outcome.
     @Test
-    void redundantEnable_isNoOp_andLeavesStateUnchangedEverywhere() {
+    void redundantEnable_leavesObservedStateUnchanged_everywhere() {
         var priorState = ctmA.setAutoHealEnabled(true, "operator: no-op enable").await().unwrap();
 
         assertThat(priorState).isTrue();
         assertThat(ctmA.isAutoHealEnabled()).isTrue();
         assertThat(ctmB.isAutoHealEnabled()).isTrue();
+    }
+
+    /// #685 review round 1 SHOULD-FIX 2 — a node whose own applied-log position lags the durable
+    /// truth must not let an equality match on its STALE local read skip the write. Here `staleCtm`'s
+    /// `autoHealStateReader` is pinned to a fixed "enabled" answer, independent of what the shared
+    /// `kvStore` actually holds (which this test drives to disabled first) — modeling a node that
+    /// has not yet applied the disable. Told "enable" (redundant per its stale local view, but NOT
+    /// redundant against the durable record), it must still issue the Put: skipping it would leave
+    /// the durable record disabled forever while telling the operator the no-op succeeded.
+    @Test
+    void redundantEnable_writesAnyway_whenThisNodesLocalViewIsStale() {
+        ctmA.setAutoHealEnabled(false, "operator: incident response").await().unwrap();
+
+        assertThat(kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class)
+                          .map(AutoHealStateValue::enabled)
+                          .or(true))
+                .as("durable record is disabled")
+                .isFalse();
+
+        var staleCtm = newCtm(() -> Option.some(AutoHealStateValue.autoHealStateValue(true, "stale-local-view")));
+
+        var priorState = staleCtm.setAutoHealEnabled(true, "operator: redundant per its stale view").await().unwrap();
+
+        assertThat(priorState).as("prior value as THIS NODE saw it — stale, not the durable truth").isTrue();
+        assertThat(kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class)
+                          .map(AutoHealStateValue::enabled)
+                          .or(true))
+                .as("the Put was issued anyway — a stale equality match must never skip the write")
+                .isTrue();
     }
 
     private static MessageRouter.MutableRouter quietRouter() {

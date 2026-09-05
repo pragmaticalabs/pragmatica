@@ -162,6 +162,11 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// `DrainProcedure`); `drainCommandClear` removes the target after the CTM grace-terminate
     /// backstop reaps the container. `AetherNode` wires these to
     /// `DrainCommandRegistry::requestDrain` / `::clearDrain`.
+    ///
+    /// #685 review round 1 NOTE 4 — `autoHealStateReader` is REQUIRED here, not defaulted: a
+    /// production wiring site that omitted it would silently get permanently-enabled auto-heal with
+    /// no compile error. Only the 8-param overload above (no plausible production use — it also lacks
+    /// drain-command wiring) defaults it, explicitly, at its own call site.
     static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
                                                          NodeLifecycleManager lifecycleManager,
                                                          AutoHealConfig config,
@@ -171,7 +176,8 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                          Supplier<ClusterPhase> phaseSupplier,
                                                          Consumer<NodeId> drainCommandSink,
-                                                         Consumer<NodeId> drainCommandClear) {
+                                                         Consumer<NodeId> drainCommandClear,
+                                                         Supplier<Option<AutoHealStateValue>> autoHealStateReader) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
                                                                          lifecycleManager,
                                                                          config,
@@ -182,7 +188,8 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          phaseSupplier,
                                                                          System::currentTimeMillis,
                                                                          drainCommandSink,
-                                                                         drainCommandClear);
+                                                                         drainCommandClear,
+                                                                         autoHealStateReader);
     }
 
     /// #336 production factory — additionally wires the leader's OWN RESOLVED config as
