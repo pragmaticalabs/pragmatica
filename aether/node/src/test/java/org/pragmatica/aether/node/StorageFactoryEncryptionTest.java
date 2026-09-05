@@ -123,6 +123,20 @@ class StorageFactoryEncryptionTest {
                     .unwrap();
     }
 
+    /// #874: `put` is now gated on the same `readGate` as `get` (previously ungated) -- a raw
+    /// `writeThrough` against a DHT-backed instance must first resolve the marker check the way
+    /// `AetherNode.start()` does post-formation, or `admission()` blocks it for the full 30s
+    /// `admissionTimeout` and fails with `StorageError.TierNotAdmitted`. Mirrors the
+    /// `dhtMarkerCheck()`/`verifyDhtMarker` sequence the read-side tests below already use
+    /// (`verifyDhtMarker_fails_...`, `createAll_stillRefusesLegacyPlaintextBlock_...`). A no-op for
+    /// instances with no DHT tier (`dhtMarkerCheck()` empty).
+    private static void admitDhtMarker(StorageFactory.StorageSetup setup, DHTClient dhtClient) {
+        setup.dhtMarkerCheck()
+             .onPresent(check -> StorageFactory.verifyDhtMarker(dhtClient, check)
+                                                .await()
+                                                .onFailure(cause -> fail("verifying the DHT marker failed: " + cause.message())));
+    }
+
     private static void assertCiphertextAtRest(byte[] stored, String where) {
         assertThat(stored).as("%s must hold ciphertext, not the plaintext block", where)
                           .isNotEqualTo(PLAINTEXT);
@@ -195,6 +209,8 @@ class StorageFactoryEncryptionTest {
 
         assertThat(setups).containsKey(ARTIFACTS);
 
+        admitDhtMarker(setups.get(ARTIFACTS), dhtClient);
+
         var blockId = writeThrough(setups.get(ARTIFACTS));
         var stored = dhtClient.rawValue("artifacts-blocks", blockId);
 
@@ -215,6 +231,8 @@ class StorageFactoryEncryptionTest {
         var setups = createAllOrFail(Map.of(), Option.some(dhtClient), Option.none());
 
         assertThat(setups).containsKey(ARTIFACTS);
+
+        admitDhtMarker(setups.get(ARTIFACTS), dhtClient);
 
         var blockId = writeThrough(setups.get(ARTIFACTS));
         var stored = dhtClient.rawValue("artifacts-blocks", blockId);
@@ -424,6 +442,8 @@ class StorageFactoryEncryptionTest {
 
         assertThat(setups).containsKey(INSTANCE);
 
+        admitDhtMarker(setups.get(INSTANCE), dhtClient);
+
         var blockId = writeThrough(setups.get(INSTANCE));
         var stored = dhtClient.rawValue(INSTANCE + "-blocks", blockId);
 
@@ -444,6 +464,8 @@ class StorageFactoryEncryptionTest {
                                      Option.some(singleKeyRing("key-1")));
 
         assertThat(setups).containsKey(INSTANCE);
+
+        admitDhtMarker(setups.get(INSTANCE), dhtClient);
 
         var blockId = writeThrough(setups.get(INSTANCE));
         var stored = dhtClient.rawValue(INSTANCE + "-blocks", blockId);
@@ -499,6 +521,73 @@ class StorageFactoryEncryptionTest {
                                                                 + "must fail closed, not silently resolve the read gate "
                                                                 + "over existing ciphertext"))
                                            .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class)));
+    }
+
+    /// #875: the test above proves `verifyDhtMarker`'s RETURNED `Promise` fails with the refusal
+    /// cause -- it says nothing about `check.readGate()` itself, the shared promise
+    /// [org.pragmatica.aether.storage.DhtStorageTier] actually blocks on. `DhtStorageTierTest`'s
+    /// admission-race coverage constructs and resolves `readGate` BY HAND
+    /// (`readGate.resolve(Result.failure(refusal))`), so it pins `DhtStorageTier`'s reaction to an
+    /// already-resolved gate but cannot prove `verifyDhtMarker` is what resolves it in production --
+    /// that pins its own fixture, not the production path. This test drives the real
+    /// no-keyring-refusal branch end to end (same setup as the test above) and reads `readGate()`
+    /// directly afterward; nothing here calls `.resolve(...)`. Before #875, the failure branch of
+    /// `verifyDhtMarker` left `readGate` unresolved, so a caller racing this check (a read/write
+    /// arriving mid-formation) would wait out the full `admissionTimeout` and see
+    /// `StorageError.TierNotAdmitted` instead of the real cause asserted here.
+    @Test
+    void verifyDhtMarker_resolvesReadGate_withRefusalCause_onProductionFailurePath() throws IOException {
+        var brokenDiskPath = tempDir.resolve("vault-disk-unavailable-gate");
+
+        Files.writeString(brokenDiskPath, "a plain file here forces LocalDiskTier construction to fail");
+
+        var dhtClient = new InMemoryDHTClient();
+        var seeded = createAllOrFail(Map.of(INSTANCE, storageConfigAt(brokenDiskPath, true)),
+                                     Option.some(dhtClient),
+                                     Option.some(singleKeyRing("key-1")));
+
+        seeded.get(INSTANCE)
+              .dhtMarkerCheck()
+              .onPresent(check -> StorageFactory.verifyDhtMarker(dhtClient, check)
+                                                 .await()
+                                                 .onFailure(cause -> fail("writing the DHT marker on first boot failed: " + cause.message())));
+
+        var reboot = createAllOrFail(Map.of(INSTANCE, storageConfigAt(brokenDiskPath, false)),
+                                     Option.some(dhtClient),
+                                     Option.none());
+
+        var check = reboot.get(INSTANCE).dhtMarkerCheck();
+
+        assertThat(check.isPresent()).as("an instance with a DHT tier must always carry a marker check for "
+                                         + "AetherNode.start() to verify post-formation")
+                                     .isTrue();
+
+        check.onPresent(c -> {
+            StorageFactory.verifyDhtMarker(dhtClient, c)
+                          .await()
+                          .onSuccess(_ -> fail("booting a previously-encrypted DHT namespace with no keyring "
+                                              + "must fail closed"))
+                          .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class));
+
+            // #875: the gate itself, not merely the returned Promise, must carry the refusal. `readGate`
+            // is independent of `DhtStorageTier`'s `admissionTimeout` -- that bound applies only to the
+            // `.map()`-derived promise inside `DhtStorageTier#admission`, never to `readGate` itself -- so
+            // if `verifyDhtMarker`'s failure branch ever dropped `check.readGate().resolve(...)`, an
+            // unbounded `.await()` here would hang forever, not for 30s. Bounded so that regressing
+            // :560-563 turns this test RED with a fast assertion failure instead of wedging the build:
+            // `await(SHORT_MARKER_TIMEOUT)` yields `CoreError.Timeout`, which fails the `isInstanceOf`
+            // check below in milliseconds.
+            c.readGate()
+             .await(SHORT_MARKER_TIMEOUT)
+             .onSuccess(_ -> fail("#875: a refused marker check must resolve readGate to FAILURE with the "
+                                  + "refusal cause, not success -- a caller racing this check must fail "
+                                  + "immediately, not be admitted"))
+             .onFailure(cause -> assertThat(cause).as("#875: readGate must carry the SAME refusal cause the "
+                                                       + "returned Promise failed with, not a generic or "
+                                                       + "unresolved state (or, if this is a "
+                                                       + "CoreError.Timeout, readGate was never resolved at all)")
+                                                   .isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class));
+        });
     }
 
     /// #858 C2: two distinct causes must never be conflated. Marker get/put timing out after

@@ -526,9 +526,15 @@ public final class StorageFactory {
     /// client and no keyring (#858). No keyring: refuses if the marker is present -- same
     /// `EncryptionError.EncryptedTierRequiresKeyring` cause as before, just raised later
     /// (fail-closed; `start()` aborts and the node stops). Keyring present: (re)writes the marker.
-    /// Either branch resolves `check.readGate()` on success so [DhtStorageTier#get] starts serving
-    /// reads for this namespace; on failure the gate is left unresolved, which is safe because a
-    /// failed `start()` aborts the whole node before anything could observe it.
+    ///
+    /// #875: BOTH branches resolve `check.readGate()` -- success admits [DhtStorageTier]'s gated
+    /// operations immediately; failure resolves the SAME gate WITH the refusal cause, so a caller
+    /// racing this check fails with that cause right away instead of waiting out the full
+    /// `admissionTimeout` and surfacing the wrong error (`StorageError.TierNotAdmitted`). An earlier
+    /// version left the failure branch unresolved, reasoning a failed `start()` aborts the node before
+    /// anything could observe it -- true for `start()`'s own chain, but `readGate` is a shared,
+    /// resolve-once promise with no guarantee every caller reads it only after that abort completes;
+    /// resolving it with the cause removes the race instead of relying on the abort's timing.
     static Promise<Unit> verifyDhtMarker(DHTClient client, DhtMarkerCheck check) {
         return verifyDhtMarker(client, check, DHT_MARKER_TIMEOUT);
     }
@@ -552,7 +558,9 @@ public final class StorageFactory {
                                                  ring,
                                                  timeout))
                     .onSuccess(_ -> check.readGate()
-                                         .resolve(Result.success(unit())));
+                                         .resolve(Result.success(unit())))
+                    .onFailure(cause -> check.readGate()
+                                             .resolve(Result.failure(cause)));
     }
 
     /// #858: fans [#verifyDhtMarker] across every check in `checks` -- called once, post-formation,
