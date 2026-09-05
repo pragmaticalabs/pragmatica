@@ -103,9 +103,10 @@ class SecurityOverrideApplierTest {
         void applyOverrides_rejectsOverride_onUnspecifiedRoute_withStrengthenOnly() {
             // #772 review item 3: Unspecified.strength() is -1, so comparing the raw declared
             // strength let ANY override (even "public", strength 0) pass as "stronger" on an
-            // undeclared route. The applier cannot see the deployment's effective policy at
-            // publish time, so it must refuse rather than silently allow. Pin: an override to
-            // "public" on an undeclared route under a global API_KEY/JWT mode must not succeed.
+            // undeclared route. `public` is the floor under every global mode, so it is the one
+            // override that weakens unconditionally and the one this rule refuses. Pin: an override
+            // to "public" on an undeclared route under a global API_KEY/JWT mode must not succeed.
+            // The two tests below pin the other half — strengthening MUST still apply (#866 F1).
             var routes = List.of(route("GET", "/api/v1/urls/", SecurityPolicy.unspecified()));
             var overrides = SecurityOverrides.securityOverrides(
                 List.of(SecurityOverrides.Entry.entry("GET /api/v1/urls/*", "public")),
@@ -116,6 +117,44 @@ class SecurityOverrideApplierTest {
 
             assertThat(result).hasSize(1);
             assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.Unspecified.class);
+        }
+
+        @Test
+        void applyOverrides_appliesAuthenticated_onUnspecifiedRoute_withStrengthenOnly() {
+            // #866 review F1: refusing EVERY override on an undeclared route was a
+            // privilege-escalation regression, not a conservative choice. The refused route stays
+            // Unspecified, isExplicitPolicy filters it, and resolveEffectivePolicy falls back to the
+            // global policy — so the operator's lock-down silently becomes whatever the global mode
+            // happens to be. Strengthening must apply.
+            var routes = List.of(route("GET", "/api/v1/urls/", SecurityPolicy.unspecified()));
+            var overrides = SecurityOverrides.securityOverrides(
+                List.of(SecurityOverrides.Entry.entry("GET /api/v1/urls/*", "authenticated")),
+                SecurityOverridePolicy.STRENGTHEN_ONLY
+            );
+
+            var result = SecurityOverrideApplier.applyOverrides(routes, overrides);
+
+            assertThat(result).hasSize(1);
+            assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.Authenticated.class);
+        }
+
+        @Test
+        void applyOverrides_appliesRoleRequired_onUnspecifiedRoute_withStrengthenOnly() {
+            // The scenario F1 names outright: an operator pins an admin route to role:admin under
+            // the DEFAULT override policy. Dropping this override leaves the route on the shipped
+            // api-key global default, where enforceRoleIfRequired checks nothing because the
+            // effective policy is not RoleRequired — any valid API key reaches an admin-only route.
+            var routes = List.of(route("GET", "/api/v1/admin/", SecurityPolicy.unspecified()));
+            var overrides = SecurityOverrides.securityOverrides(
+                List.of(SecurityOverrides.Entry.entry("GET /api/v1/admin/*", "role:admin")),
+                SecurityOverridePolicy.STRENGTHEN_ONLY
+            );
+
+            var result = SecurityOverrideApplier.applyOverrides(routes, overrides);
+
+            assertThat(result).hasSize(1);
+            assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.RoleRequired.class);
+            assertThat(result.getFirst().security().asString()).isEqualTo("ROLE:admin");
         }
     }
 
