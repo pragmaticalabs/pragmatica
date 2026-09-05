@@ -2101,7 +2101,7 @@ Example output:
 
 ### `aether cluster topology auto-heal disable`
 
-Disable CTM auto-heal — `handleDeficit` becomes a no-op until re-enabled. Use during disruption-budget testing, planned maintenance windows, or scenarios where the cluster must not automatically rebuild after node loss. Already-in-flight provisioning attempts continue to completion. Writes through the consensus-backed command path (see the staleness note under `status`); a same-state call is a no-op.
+Disable CTM auto-heal — `handleDeficit` becomes a no-op until re-enabled. Use during disruption-budget testing, planned maintenance windows, or scenarios where the cluster must not automatically rebuild after node loss. Already-in-flight provisioning attempts continue to completion. Writes through the consensus-backed command path (see the staleness note under `status`); a same-state call (per this node's local, possibly stale view) still writes through unconditionally rather than short-circuiting.
 
 ```bash
 aether cluster topology auto-heal disable
@@ -2114,7 +2114,7 @@ Example output:
 
 ### `aether cluster topology auto-heal enable`
 
-Re-enable CTM auto-heal. If a deficit is pending, the next reconcile picks it up immediately on the node applying the write. Writes through the consensus-backed command path (see the staleness note under `status`); a same-state call is a no-op.
+Re-enable CTM auto-heal. If a deficit is pending, the next reconcile picks it up immediately on the node applying the write. Writes through the consensus-backed command path (see the staleness note under `status`); a same-state call (per this node's local, possibly stale view) still writes through unconditionally rather than short-circuiting.
 
 ```bash
 aether cluster topology auto-heal enable
