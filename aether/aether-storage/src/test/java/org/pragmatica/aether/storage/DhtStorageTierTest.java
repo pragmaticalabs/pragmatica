@@ -12,8 +12,12 @@ import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.Partition;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.BlockId;
+import org.pragmatica.storage.EncryptionError;
+import org.pragmatica.storage.StorageError;
 import org.pragmatica.storage.TierLevel;
 
 import java.nio.charset.StandardCharsets;
@@ -24,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class DhtStorageTierTest {
     private static final byte[] SAMPLE_CONTENT = "hello distributed world".getBytes();
@@ -126,6 +131,58 @@ class DhtStorageTierTest {
         @Test
         void isShared_returnsTrue() {
             assertThat(tier.isShared()).isTrue();
+        }
+    }
+
+    /// #858 C1: `DhtStorageTier.get` is gated on a per-instance `readGate` that
+    /// `StorageFactory.verifyDhtMarker` resolves post-formation. These pin the ruling's two required
+    /// states: a read arriving while the gate is still PENDING waits at most a bound then fails with
+    /// a named cause; a read arriving after the gate was already REFUSED fails immediately with the
+    /// refusal cause, never waiting the bound.
+    @Nested
+    class Admission {
+        /// Far below the 30s production default (`DhtStorageTier.DEFAULT_ADMISSION_TIMEOUT`) so the
+        /// pending-then-times-out test proves the bound in milliseconds, not seconds.
+        private static final TimeSpan SHORT_ADMISSION_TIMEOUT = timeSpan(150).millis();
+
+        @Test
+        void get_whileGatePending_timesOutWithTierNotAdmitted_afterBound() {
+            var readGate = Promise.<Unit> promise();
+            var gatedTier = DhtStorageTier.dhtStorageTier(dhtClient, KEY_PREFIX, "content", readGate, SHORT_ADMISSION_TIMEOUT);
+            var started = System.nanoTime();
+
+            gatedTier.get(blockIdOf(SAMPLE_CONTENT))
+                     .await()
+                     .onSuccess(_ -> fail("a read against a gate that never resolves must not succeed"))
+                     .onFailure(cause -> assertThat(cause).isInstanceOf(StorageError.TierNotAdmitted.class));
+
+            var elapsedMillis = (System.nanoTime() - started) / 1_000_000;
+
+            assertThat(elapsedMillis).as("must wait at least the admission bound, not fail instantly")
+                                     .isGreaterThanOrEqualTo(SHORT_ADMISSION_TIMEOUT.millis());
+            assertThat(elapsedMillis).as("must not wait meaningfully longer than the bound -- proves the wait is "
+                                         + "bounded, not merely eventually satisfied by it")
+                                     .isLessThan(SHORT_ADMISSION_TIMEOUT.millis() + 2000);
+        }
+
+        @Test
+        void get_afterGateRefused_failsImmediately_withRefusalCause() {
+            var readGate = Promise.<Unit> promise();
+            var refusal = new EncryptionError.EncryptedTierRequiresKeyring("content", "key-1");
+            readGate.resolve(Result.failure(refusal));
+
+            var gatedTier = DhtStorageTier.dhtStorageTier(dhtClient, KEY_PREFIX, "content", readGate, SHORT_ADMISSION_TIMEOUT);
+            var started = System.nanoTime();
+
+            gatedTier.get(blockIdOf(SAMPLE_CONTENT))
+                     .await()
+                     .onSuccess(_ -> fail("a read against a refused tier must not succeed"))
+                     .onFailure(cause -> assertThat(cause).isSameAs(refusal));
+
+            var elapsedMillis = (System.nanoTime() - started) / 1_000_000;
+
+            assertThat(elapsedMillis).as("a refusal must fail immediately, never wait out the admission bound")
+                                     .isLessThan(SHORT_ADMISSION_TIMEOUT.millis());
         }
     }
 

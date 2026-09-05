@@ -59,4 +59,22 @@ public sealed interface StorageError extends Cause {
             return "Storage read error: " + detail;
         }
     }
+
+    /// #858 C1: a read reached a DHT-backed tier before its post-formation encryption-marker check
+    /// admitted it, and the admission bound (`DhtStorageTier`'s local copy of
+    /// `StorageFactory#DHT_MARKER_TIMEOUT`) elapsed while it was still pending -- distinct from the
+    /// tier being REFUSED (that fails immediately with the refusal cause, e.g.
+    /// `EncryptionError.EncryptedTierRequiresKeyring`, never this one). No package-private static
+    /// factory here, unlike this file's other records -- the only constructor is
+    /// `DhtStorageTier` in `org.pragmatica.aether.storage`, a different package, so a
+    /// package-private factory would be unreachable from it (see `EncryptionError`'s bare-constructor
+    /// records for the same cross-package precedent). Recovery: none from the read path -- retry once
+    /// `start()`'s marker check has resolved the tier's admission gate, or check node logs if the
+    /// node itself failed to start.
+    record TierNotAdmitted(String instanceName, long timeoutMillis) implements StorageError {
+        @Override
+        public String message() {
+            return "DHT tier '" + instanceName + "' not yet admitted (waited " + timeoutMillis + "ms)";
+        }
+    }
 }
