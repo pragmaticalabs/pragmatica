@@ -16,12 +16,14 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///
 /// In-flight entries are BOUNDED: the deduplicated promise carries an aggregate timeout, so a
 /// loader that never resolves (e.g. a durable tier whose underlying transport silently drops the
-/// read) is forcibly resolved with `CoreError.Timeout` after `inFlightBound` and evicted via the
-/// `onResultRun` cleanup. Without this bound a single hung loader PERMANENTLY POISONS its BlockId:
-/// every subsequent caller joins the dead promise (the entry is only removed `onResultRun`, which
-/// for a never-resolving loader never fires). Healthy loads resolve well within the bound, so
-/// dedup semantics for concurrent callers are unchanged — joiners still share the one in-flight
-/// promise.
+/// read) is forcibly resolved with `CoreError.Timeout` after `inFlightBound`. Without this bound a
+/// single hung loader PERMANENTLY POISONS its BlockId: every subsequent caller joins the dead
+/// promise forever. Eviction is enforced on the READ side (a resolved map entry is treated as
+/// absent, see `deduplicate`), not only by the `onResultRun` removal — the removal itself runs
+/// asynchronously off-thread, so relying on it alone would leave a window where a caller arriving
+/// right after the bound fires still observes the stale settled entry. Healthy loads resolve well
+/// within the bound, so dedup semantics for concurrent callers are unchanged — joiners still share
+/// the one in-flight promise.
 public final class SingleFlightCache {
     /// Default upper bound on how long a single in-flight load may remain unresolved before it
     /// is evicted. Generous relative to the artifact-store resolve budget (the durable tier's
@@ -49,12 +51,20 @@ public final class SingleFlightCache {
 
     /// Execute the loader only if no read is in flight for this block.
     /// Returns the shared Promise for all concurrent callers.
-    /// Uses computeIfAbsent for atomic single-flight guarantee.
+    /// Uses compute (not computeIfAbsent) so a RESOLVED entry is treated as absent: eviction
+    /// removes a settled entry from the map asynchronously (`onResultRun` dispatches off-thread,
+    /// see below), so between "bound fires" and "removal executes" the map can still hold an
+    /// already-resolved promise. Without the `isResolved` check, a caller arriving in that window
+    /// would inherit the stale result via computeIfAbsent instead of getting a fresh load — for a
+    /// hung loader that means inheriting the OLD Timeout forever-non-deterministically, defeating
+    /// the bound's own purpose. Checking resolution makes eviction race-free instead of merely
+    /// narrowing the window.
     /// Cleanup registration happens outside the map operation to avoid
     /// recursive ConcurrentHashMap updates when promises resolve synchronously.
     public Promise<Option<byte[]>> deduplicate(BlockId id, Supplier<Promise<Option<byte[]>>> loader) {
         boolean[] created = {false};
-        var promise = inFlight.computeIfAbsent(id, _ -> boundedLoad(loader, created));
+        var promise = inFlight.compute(id, (_, existing) ->
+                existing == null || existing.isResolved() ? boundedLoad(loader, created) : existing);
 
         if (created[0]) {
             promise.onResultRun(() -> inFlight.remove(id));
