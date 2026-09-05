@@ -117,10 +117,25 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     /// the exact fail-soft shape removed from `ApiKeySecurityValidator`/`JwtSecurityValidator`.
     /// Adding a state must be a COMPILE error here, as it already is there.
     ///
-    /// `unused()` is an unconstructable placeholder (no factory, no `new unused()` anywhere); its
-    /// arms exist only to keep the switches exhaustive, and mirror `Unspecified` so that a value
-    /// escaping here would round-trip through `fromString` to `Unspecified` and be resolved to the
-    /// global policy rather than adopted as an explicit one.
+    /// `unused()` is UNCONSTRUCTED, not unconstructable -- an earlier revision of this comment said
+    /// the latter and it was false (#866 review G5). `record unused()` at :61 is an implicitly-public
+    /// nested record of a public interface, so `new SecurityPolicy.unused()` compiles from anywhere
+    /// on the module path; a record's canonical constructor must be at least as accessible as the
+    /// record, and Java gives interface member types implicit `public`, so it cannot be sealed off.
+    /// It simply has no construction site TODAY, and a comment asserting otherwise would be greppable
+    /// as a guarantee long after someone adds the first one.
+    ///
+    /// Both of its arms are therefore chosen to fail CLOSED if it is ever constructed, rather than to
+    /// mirror `Unspecified`:
+    ///
+    ///   - `strength()` returns `Integer.MAX_VALUE`, so `SecurityOverrideApplier.applyIfStronger` (the
+    ///     only consumer of `strength()`) refuses EVERY override on such a route. The previous value
+    ///     `- 1` was the fail-OPEN side: `unused()` is not `Unspecified`, so it skips the undeclared-
+    ///     route guard entirely and `0 >= - 1` would have let an override to `public` through.
+    ///   - `asString()` returns `"UNUSED"`, which `fromString` deliberately does not recognize, so a
+    ///     node reading it falls to `parseRoleOrDefault` -> `apiKeyRequired()` and logs a warning
+    ///     naming the value. That is stricter than `"UNSPECIFIED"`, which would resolve to the global
+    ///     policy and be served openly under `security_mode = "none"`.
     default String asString() {
         return switch (this) {
             case Public() -> "PUBLIC";
@@ -129,7 +144,7 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
             case BearerTokenRequired() -> "BEARER_TOKEN";
             case RoleRequired(var name) -> "ROLE:" + name;
             case Unspecified() -> "UNSPECIFIED";
-            case unused() -> "UNSPECIFIED";
+            case unused() -> "UNUSED";
         };
     }
 
@@ -141,7 +156,7 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
             case BearerTokenRequired() -> 20;
             case RoleRequired(_) -> 30;
             case Unspecified() -> - 1;
-            case unused() -> - 1;
+            case unused() -> Integer.MAX_VALUE;
         };
     }
 

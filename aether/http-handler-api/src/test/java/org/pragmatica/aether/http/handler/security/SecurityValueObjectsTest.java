@@ -261,6 +261,35 @@ class SecurityValueObjectsTest {
         }
 
         @Test
+        void unusedPlaceholder_isConstructable_andBothArmsFailClosed() {
+            // #866 review G5. The javadoc used to call unused() "unconstructable"; this test is the
+            // counter-example — it constructs one. Java gives interface member types implicit public
+            // and a record's canonical constructor must be at least as accessible as the record, so
+            // it CANNOT be sealed off. It is unconstructed today, which is a fact about call sites,
+            // not a guarantee about the type.
+            //
+            // Since it cannot be made unreachable, both arms must fail CLOSED. strength() is
+            // MAX_VALUE so SecurityOverrideApplier (the only consumer of strength()) refuses every
+            // override on such a route; the previous value -1 was the fail-OPEN side, because
+            // unused() is not Unspecified and so skips the undeclared-route guard entirely, leaving
+            // `0 >= -1` to admit an override to public.
+            var placeholder = new SecurityPolicy.unused();
+
+            assertThat(placeholder.strength()).isEqualTo(Integer.MAX_VALUE);
+            assertThat(placeholder.strength()).isGreaterThan(SecurityPolicy.roleRequired("admin").strength());
+            assertThat(placeholder.asString()).isEqualTo("UNUSED");
+        }
+
+        @Test
+        void unusedPlaceholder_wireValue_readsBackAsApiKeyRequired_notAsPublic() {
+            // "UNUSED" is deliberately unrecognized by fromString, so a node reading it falls to
+            // parseRoleOrDefault -> apiKeyRequired() and logs. That is stricter than "UNSPECIFIED",
+            // which would resolve to the global policy and be served openly under security_mode=none.
+            assertThat(SecurityPolicy.fromString(new SecurityPolicy.unused().asString()))
+                .isInstanceOf(SecurityPolicy.ApiKeyRequired.class);
+        }
+
+        @Test
         void fromString_unspecifiedRoundTrip_throughAsString() {
             // The wire path is asString() -> KV store -> fromString(); pin both directions together
             // so a change to either arm breaks here.

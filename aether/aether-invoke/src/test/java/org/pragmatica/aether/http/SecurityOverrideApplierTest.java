@@ -156,6 +156,25 @@ class SecurityOverrideApplierTest {
             assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.RoleRequired.class);
             assertThat(result.getFirst().security().asString()).isEqualTo("ROLE:admin");
         }
+
+        @Test
+        void applyOverrides_refusesEveryOverride_onUnusedPlaceholderRoute_withStrengthenOnly() {
+            // #866 review G5. unused() is NOT Unspecified, so it never reaches applyToUndeclaredRoute
+            // and is judged purely by the strength comparison below. Its strength is Integer.MAX_VALUE
+            // precisely so that comparison refuses everything: nothing is >= MAX_VALUE. With the old
+            // value of -1 this same override to "public" would have been APPLIED (0 >= -1) — the
+            // fail-open side of a guard that exists to prevent exactly that.
+            var routes = List.of(route("GET", "/api/v1/urls/", new SecurityPolicy.unused()));
+            var overrides = SecurityOverrides.securityOverrides(
+                List.of(SecurityOverrides.Entry.entry("GET /api/v1/urls/*", "public")),
+                SecurityOverridePolicy.STRENGTHEN_ONLY
+            );
+
+            var result = SecurityOverrideApplier.applyOverrides(routes, overrides);
+
+            assertThat(result).hasSize(1);
+            assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.unused.class);
+        }
     }
 
     @Nested
