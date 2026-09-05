@@ -993,7 +993,11 @@ bypasses the global policy for that route.
 > where this note's "action required" applies.
 
 The `override_policy` controls what operators can change at deploy time via blueprint.toml:
-- **`strengthen_only`** (default) -- operators can only make routes more restrictive
+- **`strengthen_only`** (default) -- operators can only make routes more restrictive. On a route
+  with no `[security]` section, strength is not comparable (what it enforces is the global
+  `security_mode`), so only the direction is judged: an override to `public` is refused, any other
+  override is applied. See the [Management API reference](../reference/management-api.md#undeclared-routes)
+  for the residual this leaves open.
 - **`full`** -- operators can change security in any direction
 - **`none`** -- no overrides allowed
 

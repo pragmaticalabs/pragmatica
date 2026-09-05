@@ -1084,7 +1084,7 @@ override_policy = "strengthen_only"    # strengthen_only | full | none
 
 | Policy | Behavior |
 |--------|----------|
-| `strengthen_only` (default) | Operator can only make routes MORE restrictive (public->authenticated, authenticated->public is rejected) |
+| `strengthen_only` (default) | Operator can only make routes MORE restrictive (public->authenticated applies; authenticated->public is rejected). On a route that declared NO security stance, see "Undeclared routes" below. |
 | `full` | Operator can change security in any direction |
 | `none` | No overrides allowed -- slice developer's security is final |
 
@@ -1094,6 +1094,8 @@ override_policy = "strengthen_only"    # strengthen_only | full | none
 |-------|---------|
 | `public` | No authentication required |
 | `authenticated` | Any valid credential (API key or JWT based on server security mode) |
+| `api_key` | A valid API key specifically |
+| `bearer_token` | A valid bearer token specifically |
 | `role:<name>` | Requires specific role in SecurityContext |
 
 #### Pattern Matching
@@ -1106,7 +1108,28 @@ override_policy = "strengthen_only"    # strengthen_only | full | none
 
 #### Strength Ordering
 
-For `strengthen_only` policy, security levels are ordered: `public (0) < authenticated (1) < role:* (2)`. Overrides that weaken security are silently ignored.
+For `strengthen_only` policy, security levels are ordered by `SecurityPolicy.strength()`:
+
+`public (0) < authenticated (10) < api_key (20) = bearer_token (20) < role:* (30)`
+
+An override whose strength is greater than or equal to the route's declared strength is applied;
+one that would lower it is refused and logged at WARN. Note `api_key` and `bearer_token` are
+deliberately EQUAL, so either may replace the other.
+
+##### Undeclared routes
+
+A route whose `routes.toml` has no `[security]` section carries no declared policy (reported as
+`UNSPECIFIED` by `GET /api/v1/routes`), and its strength is not comparable: what it actually
+enforces is the node's global `security_mode`, which the publish-time override path cannot see.
+For such a route, `strengthen_only` judges only the DIRECTION of the change:
+
+- an override to `public` is **refused** — it is the floor under every global mode, so it can only weaken;
+- every other override (`authenticated`, `api_key`, `bearer_token`, `role:*`) is **applied**.
+
+**Known residual.** Under `security_mode = "api-key"` (the default), an override to `authenticated`
+(strength 10) on an undeclared route whose effective policy is `api_key` (strength 20) is a
+weakening that this rule still permits. Closing it requires the override path to know the global
+security mode. Declare `[security]` explicitly on any route where the distinction matters.
 
 ---
 
