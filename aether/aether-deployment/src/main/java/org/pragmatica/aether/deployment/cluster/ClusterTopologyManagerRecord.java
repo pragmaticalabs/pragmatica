@@ -47,6 +47,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -96,7 +97,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicLong lastProvisioningFailureMs,
                                     AtomicReference<LastProvisionFailure> lastProvisionFailureRef,
                                     AtomicLong formationAnchorMs,
-                                    AtomicBoolean autoHealEnabled,
+                                    Supplier<Option<AutoHealStateValue>> autoHealStateReader,
                                     LongSupplier clock,
                                     Consumer<NodeId> drainCommandSink,
                                     Consumer<NodeId> drainCommandClear,
@@ -127,49 +128,21 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                             phaseSupplier,
                                             clock,
                                             _ -> {},
-                                            _ -> {});
+                                            _ -> {},
+                                            Option::none);
     }
 
     /// Membership v2 / B5b — production factory wiring the leader's DRAIN command channel.
     /// `drainCommandSink` enqueues the target into the `DrainCommandRegistry` (so the leader's
     /// outbound ping carries the target in its global `drainNodes` set and the target self-drains via its
     /// `DrainProcedure`); `drainCommandClear` removes the target after the grace-terminate
-    /// backstop reaps the container. Both default to no-op via the overload above for tests and
-    /// legacy callers.
-    static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
-                                                                     NodeLifecycleManager lifecycleManager,
-                                                                     AutoHealConfig config,
-                                                                     DeploymentMap deploymentMap,
-                                                                     GenerationSnapshotSource snapshotSource,
-                                                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
-                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                                     Supplier<ClusterPhase> phaseSupplier,
-                                                                     LongSupplier clock,
-                                                                     Consumer<NodeId> drainCommandSink,
-                                                                     Consumer<NodeId> drainCommandClear) {
-        return clusterTopologyManagerRecord(observer,
-                                            lifecycleManager,
-                                            config,
-                                            deploymentMap,
-                                            snapshotSource,
-                                            clusterConfigReader,
-                                            commandApplier,
-                                            phaseSupplier,
-                                            clock,
-                                            drainCommandSink,
-                                            drainCommandClear,
-                                            Option::none);
-    }
-
-    /// #336 production factory overload — additionally wires the leader's OWN RESOLVED config as
-    /// `resolvedLocalConfig`. The leader runs with its per-node overlay RESOLVED to literals (the
-    /// CLI rendered it from the resolved config); the CTM render path uses it to substitute the
-    /// literal `${env:...}` / `${secrets:...}` placeholders left in a replacement's composed overlay
-    /// (which is composed from the deliberately-unresolved persisted KV TOML), so a CTM-provisioned
-    /// scale-up / auto-heal node boots with resolved credentials instead of crashing on placeholders.
-    /// Defaults to `Option::none` (placeholders pass through unchanged, preserving prior behavior)
-    /// via the overload above for tests, non-cloud, and legacy callers; only `AetherNode` supplies
-    /// the real value.
+    /// backstop reaps the container.
+    ///
+    /// #685 review round 1 NOTE 4 — `autoHealStateReader` (#685) is a REQUIRED trailing parameter,
+    /// not defaulted: a production wiring site that omitted it would silently get permanently-enabled
+    /// auto-heal with no compile error (a fail-open that reads as correct). The overload above (the
+    /// only caller with no plausible production use — it also lacks drain-command wiring) passes
+    /// `Option::none` explicitly at its own call site instead of hiding the default in here.
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
                                                                      AutoHealConfig config,
@@ -181,7 +154,40 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                      LongSupplier clock,
                                                                      Consumer<NodeId> drainCommandSink,
                                                                      Consumer<NodeId> drainCommandClear,
-                                                                     Supplier<Option<TomlDocument>> resolvedLocalConfig) {
+                                                                     Supplier<Option<AutoHealStateValue>> autoHealStateReader) {
+        return clusterTopologyManagerRecord(observer,
+                                            lifecycleManager,
+                                            config,
+                                            deploymentMap,
+                                            snapshotSource,
+                                            clusterConfigReader,
+                                            commandApplier,
+                                            phaseSupplier,
+                                            clock,
+                                            drainCommandSink,
+                                            drainCommandClear,
+                                            Option::none,
+                                            autoHealStateReader);
+    }
+
+    /// Canonical factory. `autoHealStateReader` (#685) is the durable KV read backing
+    /// [ClusterTopologyManager#isAutoHealEnabled]. Only the legacy/test-only 9-param overload above
+    /// defaults it (to `Option::none`, absent key = enabled, explicitly at its own call site); every
+    /// other overload — including `AetherNode`'s production wiring, a direct
+    /// `KVStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class)` lookup — requires it.
+    static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
+                                                                     NodeLifecycleManager lifecycleManager,
+                                                                     AutoHealConfig config,
+                                                                     DeploymentMap deploymentMap,
+                                                                     GenerationSnapshotSource snapshotSource,
+                                                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                                     Supplier<ClusterPhase> phaseSupplier,
+                                                                     LongSupplier clock,
+                                                                     Consumer<NodeId> drainCommandSink,
+                                                                     Consumer<NodeId> drainCommandClear,
+                                                                     Supplier<Option<TomlDocument>> resolvedLocalConfig,
+                                                                     Supplier<Option<AutoHealStateValue>> autoHealStateReader) {
         return new ClusterTopologyManagerRecord(observer,
                                                 lifecycleManager,
                                                 config,
@@ -198,7 +204,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicLong(0L),
                                                 new AtomicReference<>(),
                                                 new AtomicLong(clock.getAsLong()),
-                                                new AtomicBoolean(true),
+                                                Option.option(autoHealStateReader).or((Supplier<Option<AutoHealStateValue>>) Option::none),
                                                 clock,
                                                 Option.option(drainCommandSink).or(_ -> {}),
                                                 Option.option(drainCommandClear).or(_ -> {}),
@@ -488,35 +494,57 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return prev;
     }
 
+    /// #685 — durable read-through. Absent key (fresh/empty KV, pre-#685 clusters) means enabled:
+    /// the operator has never disabled auto-heal, so the pre-#685 default holds. A read reflects the
+    /// log applied LOCALLY; the disable becomes visible on a node when that node applies the
+    /// committed Put — bounded by consensus latency, not zero; a node behind on apply answers the
+    /// previous value until then.
     @Override
     public boolean isAutoHealEnabled() {
-        return autoHealEnabled.get();
+        return autoHealStateReader.get()
+                                  .map(AutoHealStateValue::enabled)
+                                  .or(true);
     }
 
+    /// #685 — writes the operator's decision through the same consensus-backed KV channel as
+    /// [#setDesiredCount], so every node — including one that never received this call directly —
+    /// converges on it once it applies the committed Put. See [#isAutoHealEnabled] for the exact
+    /// visibility guarantee.
+    ///
+    /// #685 review round 1 SHOULD-FIX 2 — the write is UNCONDITIONAL, even when the locally-read
+    /// `prev` already equals `enabled`. `prev` comes from this node's own applied-log position, which
+    /// can lag the durable truth by up to consensus latency: a node behind on apply that is told
+    /// "enable" while its local view already (stale-ly) reads enabled must not skip the Put — the
+    /// durable record could still say disabled, and skipping the write would leave it that way forever
+    /// while telling the operator the no-op succeeded. The Put is idempotent and the value is a single
+    /// scalar with no contention, so the equality shortcut bought nothing and cost correctness. The
+    /// returned boolean is the prior value AS THIS NODE SAW IT — not a confirmation of what the durable
+    /// record previously held.
     @Override
-    public boolean setAutoHealEnabled(boolean enabled, String reason) {
-        var prev = autoHealEnabled.getAndSet(enabled);
+    public Promise<Boolean> setAutoHealEnabled(boolean enabled, String reason) {
+        var prev = isAutoHealEnabled();
+        @SuppressWarnings("unchecked")
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(AetherKey.AutoHealStateKey.SINGLETON,
+                                                                                                     AutoHealStateValue.autoHealStateValue(enabled,
+                                                                                                                                           reason));
 
-        if (prev == enabled) {
-            log.info("CTM: auto-heal already {} (reason: {}) — no-op",
-                     enabled
-                     ? "enabled"
-                     : "disabled",
-                     reason);
+        return commandApplier.apply(List.of(command))
+                             .onFailure(cause -> log.warn("CTM: failed to write AutoHealStateValue enabled={} reason={}: {}",
+                                                          enabled,
+                                                          reason,
+                                                          cause.message()))
+                             .map(_ -> {
+                                      log.warn("CTM: auto-heal {} (operator: {}) — prior value as this node saw it was {}",
+                                               enabled
+                                               ? "ENABLED"
+                                               : "DISABLED",
+                                               reason,
+                                               prev
+                                               ? "enabled"
+                                               : "disabled");
 
-            return prev;
-        }
-
-        log.warn("CTM: auto-heal {} (operator: {}) — prior state was {}",
-                 enabled
-                 ? "ENABLED"
-                 : "DISABLED",
-                 reason,
-                 prev
-                 ? "enabled"
-                 : "disabled");
-
-        return prev;
+                                      return prev;
+                                  });
     }
 
     /// Membership v2 / E2 — provision a replacement, PURE ACTUATOR.

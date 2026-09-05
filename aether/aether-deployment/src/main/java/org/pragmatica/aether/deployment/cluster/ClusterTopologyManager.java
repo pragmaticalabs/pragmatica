@@ -15,6 +15,7 @@ import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -68,8 +69,17 @@ public interface ClusterTopologyManager extends TopologyManager {
 
     Option<LastProvisionFailure> lastProvisionFailure();
     int resetCircuitBreaker(String reason);
+    /// #685 — the operator's auto-heal disable/enable is a durable cluster fact stored in consensus
+    /// KV (`AetherKey.AutoHealStateKey`), never a leader's in-memory mood: a read reflects the log
+    /// applied LOCALLY, so the flag becomes visible on a node when that node applies the committed
+    /// Put — bounded by consensus latency, not zero; a node behind on apply answers the previous
+    /// value until then. Absent key means enabled (the pre-#685 default).
     boolean isAutoHealEnabled();
-    boolean setAutoHealEnabled(boolean enabled, String reason);
+    /// #685 — writes the durable KV record via the existing `commandApplier` channel and returns the
+    /// PRIOR state once the write is applied. Same visibility caveat as [#isAutoHealEnabled]: other
+    /// nodes (including a newly-elected leader) observe the change only after they apply the
+    /// committed Put, not synchronously with this call's resolution.
+    Promise<Boolean> setAutoHealEnabled(boolean enabled, String reason);
 
     /// Membership v2 / E2 — provision a replacement for a departed peer under the
     /// leader-supplied identity `newNodeId`.
@@ -152,6 +162,11 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// `DrainProcedure`); `drainCommandClear` removes the target after the CTM grace-terminate
     /// backstop reaps the container. `AetherNode` wires these to
     /// `DrainCommandRegistry::requestDrain` / `::clearDrain`.
+    ///
+    /// #685 review round 1 NOTE 4 — `autoHealStateReader` is REQUIRED here, not defaulted: a
+    /// production wiring site that omitted it would silently get permanently-enabled auto-heal with
+    /// no compile error. Only the 8-param overload above (no plausible production use — it also lacks
+    /// drain-command wiring) defaults it, explicitly, at its own call site.
     static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
                                                          NodeLifecycleManager lifecycleManager,
                                                          AutoHealConfig config,
@@ -161,7 +176,8 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                          Supplier<ClusterPhase> phaseSupplier,
                                                          Consumer<NodeId> drainCommandSink,
-                                                         Consumer<NodeId> drainCommandClear) {
+                                                         Consumer<NodeId> drainCommandClear,
+                                                         Supplier<Option<AutoHealStateValue>> autoHealStateReader) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
                                                                          lifecycleManager,
                                                                          config,
@@ -172,7 +188,8 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          phaseSupplier,
                                                                          System::currentTimeMillis,
                                                                          drainCommandSink,
-                                                                         drainCommandClear);
+                                                                         drainCommandClear,
+                                                                         autoHealStateReader);
     }
 
     /// #336 production factory — additionally wires the leader's OWN RESOLVED config as
@@ -185,6 +202,10 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// non-cloud / forge / tests, in which case the composed overlay passes through unchanged
     /// (prior behavior). `AetherNode` supplies a memoized supplier that parses the node's own config
     /// file once via `TomlParser.parseFile`.
+    ///
+    /// `autoHealStateReader` (#685) is the durable KV read for the operator's auto-heal
+    /// enable/disable flag — a direct local lookup against `AetherKey.AutoHealStateKey.SINGLETON`,
+    /// never a separately-maintained cache. `AetherNode` wires it to the production `KVStore`.
     static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
                                                          NodeLifecycleManager lifecycleManager,
                                                          AutoHealConfig config,
@@ -195,7 +216,8 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          Supplier<ClusterPhase> phaseSupplier,
                                                          Consumer<NodeId> drainCommandSink,
                                                          Consumer<NodeId> drainCommandClear,
-                                                         Supplier<Option<TomlDocument>> resolvedLocalConfig) {
+                                                         Supplier<Option<TomlDocument>> resolvedLocalConfig,
+                                                         Supplier<Option<AutoHealStateValue>> autoHealStateReader) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
                                                                          lifecycleManager,
                                                                          config,
@@ -207,6 +229,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          System::currentTimeMillis,
                                                                          drainCommandSink,
                                                                          drainCommandClear,
-                                                                         resolvedLocalConfig);
+                                                                         resolvedLocalConfig,
+                                                                         autoHealStateReader);
     }
 }

@@ -3277,6 +3277,8 @@ Operator-triggered reset of the CTM provisioning circuit breaker. Use after fixi
 
 Snapshot of the CTM auto-heal toggle. When `enabled=false`, `handleDeficit` is a no-op — deficit-driven replacement provisioning is halted until re-enabled. Operator-controlled gate, distinct from the failure-driven circuit breaker. Use during disruption-budget testing, planned maintenance windows, or any scenario where the cluster should not automatically rebuild after node loss.
 
+The toggle is a durable cluster fact (#685): it is stored as a typed record (`AutoHealStateKey` / `AutoHealStateValue`) in the consensus-replicated KV, not in the leader process's memory. `status` always answers from that record — an absent key (a fresh cluster, or one that has never had auto-heal touched) means enabled, matching the pre-#685 default. **A read reflects the log applied LOCALLY; the disable becomes visible on a node when that node applies the committed Put — bounded by consensus latency, not zero; a node behind on apply answers the previous value until then.** [mechanism: read-through against `KVStore.getTyped`; unit-proven by `ClusterTopologyManagerAutoHealDurabilityTest` — two independent `ClusterTopologyManager` instances over one shared `KVStore`, one instance disabling while the other, which never received the call, observes it]. A redundant toggle call (requesting the value this node's local, possibly-stale view already believes) still writes through unconditionally rather than short-circuiting on that local read. In particular, a leader failover no longer reverts an operator's disable: the newly-elected leader's CTM reads the same durable record the previous leader wrote, instead of starting from a fresh in-memory default.
+
 **RBAC:** ADMIN · **Routing:** LEADER
 
 **Response:**
@@ -3288,7 +3290,7 @@ Snapshot of the CTM auto-heal toggle. When `enabled=false`, `handleDeficit` is a
 
 ### POST /api/v1/cluster/topology/auto-heal/enable
 
-Re-enable CTM auto-heal. If a deficit exists at the time of the call, the next reconcile picks it up immediately (no scheduled poll wait). Returns the prior `enabled` state for the audit log.
+Re-enable CTM auto-heal. Writes `AutoHealStateValue(enabled=true, reason)` through the same consensus-backed command path as other topology mutations; every node converges on it once it applies the committed Put (see the staleness note under `GET .../auto-heal`). If a deficit exists at the time of the call, the next reconcile picks it up immediately (no scheduled poll wait) on the node applying the write. Returns the prior `enabled` state, as observed by this node's local (possibly stale) view, for the audit log. A same-state call (already enabled, by that local view) still writes through unconditionally — the write is never skipped on a local-read shortcut, since that read can lag the durable value (#685 review round 1).
 
 **RBAC:** ADMIN · **Routing:** LEADER
 
@@ -3302,7 +3304,7 @@ Re-enable CTM auto-heal. If a deficit exists at the time of the call, the next r
 
 ### POST /api/v1/cluster/topology/auto-heal/disable
 
-Disable CTM auto-heal. The change applies immediately to the next `handleDeficit` invocation — already-in-flight provisioning attempts continue to completion. Returns the prior `enabled` state for the audit log.
+Disable CTM auto-heal. Writes `AutoHealStateValue(enabled=false, reason)` through the same consensus-backed command path as other topology mutations; already-in-flight provisioning attempts on any node continue to completion. Returns the prior `enabled` state, as observed by this node's local (possibly stale) view, for the audit log. A same-state call (already disabled, by that local view) still writes through unconditionally — the write is never skipped on a local-read shortcut, since that read can lag the durable value (#685 review round 1). The disable survives a leader failover (#685) — see the staleness note under `GET .../auto-heal`.
 
 **RBAC:** ADMIN · **Routing:** LEADER
 
