@@ -50,6 +50,10 @@ public interface SecurityOverrideApplier {
     }
 
     private static HttpRouteDefinition applyIfStronger(HttpRouteDefinition route, SecurityPolicy newPolicy) {
+        if (route.security() instanceof SecurityPolicy.Unspecified) {
+            return applyToUndeclaredRoute(route, newPolicy);
+        }
+
         if (newPolicy.strength() >= route.security().strength()) {
             return applyAndLog(route, newPolicy);
         }
@@ -61,6 +65,36 @@ public interface SecurityOverrideApplier {
                  newPolicy.asString());
 
         return route;
+    }
+
+    /// An undeclared route's declared strength (-1) is not its EFFECTIVE strength: that depends on
+    /// the deployment's global security mode, which this publish-time call site cannot see
+    /// (`aether-invoke` does not depend on `aether-config`'s `SecurityMode`). The raw strength
+    /// comparison is therefore meaningless here, and only the DIRECTION of the requested change can
+    /// be judged.
+    ///
+    /// `public` is the one override that weakens the route under every global mode, because it is
+    /// the floor. It is refused. Every other override is applied: refusing them all (as #866 first
+    /// did) silently drops an operator's `role:admin` lock-down and leaves the route on the global
+    /// policy, which under the shipped `api-key` default enforces no role at all, so any valid API
+    /// key reaches an admin-only route.
+    ///
+    /// Residual, accepted for rc4 and NOT closed by this rule: under `security_mode = "api-key"` an
+    /// override to `authenticated` (strength 10) on a route whose effective policy is
+    /// `ApiKeyRequired` (20) is a weakening this rule still allows. Closing it requires the applier
+    /// to know the global security mode at publish time.
+    private static HttpRouteDefinition applyToUndeclaredRoute(HttpRouteDefinition route, SecurityPolicy newPolicy) {
+        if (newPolicy instanceof SecurityPolicy.Public) {
+            LOG.warn("Security override rejected (STRENGTHEN_ONLY): {} {} has no declared policy; "
+                    + "refusing override to {}, which weakens the route under every global security mode",
+                     route.httpMethod(),
+                     route.pathPrefix(),
+                     newPolicy.asString());
+
+            return route;
+        }
+
+        return applyAndLog(route, newPolicy);
     }
 
     private static HttpRouteDefinition applyAndLog(HttpRouteDefinition route, SecurityPolicy newPolicy) {

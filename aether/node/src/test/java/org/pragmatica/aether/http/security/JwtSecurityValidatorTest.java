@@ -346,6 +346,18 @@ class JwtSecurityValidatorTest {
                      .onFailure(cause -> fail("Expected success — wrong validator type passes through"))
                      .onSuccess(ctx -> assertThat(ctx.isAuthenticated()).isFalse());
         }
+
+        @Test
+        void validate_denies_forUnspecifiedPolicy() {
+            // #763/#772 review: Unspecified is a codegen-only sentinel AppHttpServer resolves to a
+            // concrete policy before dispatch — it should never reach a validator directly. Pre-fix,
+            // the exhaustiveness-only `default` arm granted access unconditionally for it.
+            var token = buildToken(Map.of("sub", TEST_SUBJECT, "exp", futureExp()));
+
+            validator.validate(requestWithToken(token), SecurityPolicy.unspecified())
+                     .onSuccess(ctx -> fail("Expected failure — unresolved policy must deny, not grant"))
+                     .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class));
+        }
     }
 
     @Nested

@@ -60,8 +60,28 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     @SuppressWarnings("unused")
     record unused() implements SecurityPolicy {}
 
+    /// Codegen-only sentinel: no route declared a security level (routes.toml has no `[security]`
+    /// section, or a slice-authored route never called `.withSecurity(...)`). Never served: resolved
+    /// to a concrete policy by [org.pragmatica.aether.http.AppHttpServer#isExplicitPolicy] before a
+    /// request reaches a [org.pragmatica.aether.http.security.SecurityValidator], both of which refuse
+    /// `Unspecified` via an explicit case rather than a `default` arm (#772 review). `canAccess` denies
+    /// to honor the [RouteSecurityPolicy] contract for any caller outside that pipeline — it has zero
+    /// callers in aether's own request path today, so it is not itself a wired backstop.
+    record Unspecified() implements SecurityPolicy {
+        private static final Unspecified INSTANCE = new Unspecified();
+
+        @Override
+        public <T extends RequestSecurityContext> Access canAccess(T context) {
+            return Access.DENY;
+        }
+    }
+
     static SecurityPolicy publicRoute() {
         return Public.INSTANCE;
+    }
+
+    static SecurityPolicy unspecified() {
+        return Unspecified.INSTANCE;
     }
 
     static SecurityPolicy authenticated() {
@@ -86,10 +106,21 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
             case "AUTHENTICATED" -> authenticated();
             case "API_KEY" -> apiKeyRequired();
             case "BEARER_TOKEN" -> bearerTokenRequired();
+            case "UNSPECIFIED" -> unspecified();
             default -> parseRoleOrDefault(value);
         };
     }
 
+    /// Exhaustive over the sealed hierarchy on purpose: no `default` arm. A `default` here would
+    /// silently persist a newly added policy state as `"API_KEY"` and score it `20` (#866 review F3),
+    /// fabricating a wire value and a strength for a state nobody taught these switches about --
+    /// the exact fail-soft shape removed from `ApiKeySecurityValidator`/`JwtSecurityValidator`.
+    /// Adding a state must be a COMPILE error here, as it already is there.
+    ///
+    /// `unused()` is an unconstructable placeholder (no factory, no `new unused()` anywhere); its
+    /// arms exist only to keep the switches exhaustive, and mirror `Unspecified` so that a value
+    /// escaping here would round-trip through `fromString` to `Unspecified` and be resolved to the
+    /// global policy rather than adopted as an explicit one.
     default String asString() {
         return switch (this) {
             case Public() -> "PUBLIC";
@@ -97,7 +128,8 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
             case ApiKeyRequired() -> "API_KEY";
             case BearerTokenRequired() -> "BEARER_TOKEN";
             case RoleRequired(var name) -> "ROLE:" + name;
-            default -> "API_KEY";
+            case Unspecified() -> "UNSPECIFIED";
+            case unused() -> "UNSPECIFIED";
         };
     }
 
@@ -108,7 +140,8 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
             case ApiKeyRequired() -> 20;
             case BearerTokenRequired() -> 20;
             case RoleRequired(_) -> 30;
-            default -> 20;
+            case Unspecified() -> - 1;
+            case unused() -> - 1;
         };
     }
 

@@ -223,6 +223,19 @@ class ApiKeySecurityValidatorTest {
                  .onSuccess(context -> assertThat(context.isAuthenticated()).isFalse());
     }
 
+    @Test
+    void validate_denies_forUnspecifiedPolicy() {
+        // #763/#772 review: Unspecified is a codegen-only sentinel that AppHttpServer resolves to a
+        // concrete policy before dispatch — it should never reach a validator directly. Pre-fix, the
+        // exhaustiveness-only `default` arm granted access unconditionally for it; it must deny.
+        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
+
+        validator.validate(request, SecurityPolicy.unspecified())
+                 .onSuccessRun(() -> fail("Expected failure — unresolved policy must deny, not grant"))
+                 .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class));
+    }
+
     private HttpRequestContext createRequest(Map<String, List<String>> headers) {
         return HttpRequestContext.httpRequestContext("/test",
                                                      "GET",

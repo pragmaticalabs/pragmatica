@@ -1174,7 +1174,7 @@ public interface Route<T> extends RouteSource {
         // Body only
         @Override
         public <B> BodyBuilder<R, B> withBody(TypeToken<B> type) {
-            return fn -> to(ctx -> ctx.fromJson(type)
+            return fn -> to(ctx -> ctx.jsonBody(type)
                                       .async()
                                       .flatMap(fn));
         }
@@ -1245,7 +1245,7 @@ public interface Route<T> extends RouteSource {
         @Override
         public <B> PathBodyBuilder1<R, P1, B> withBody(TypeToken<B> type) {
             return fn -> parent.to(ctx -> ctx.matchPath(p1)
-                                             .flatMap(v1 -> ctx.fromJson(type)
+                                             .flatMap(v1 -> ctx.jsonBody(type)
                                                                .map(body -> fn.apply(v1, body)))
                                              .async()
                                              .flatMap(p -> p));
@@ -1289,7 +1289,7 @@ public interface Route<T> extends RouteSource {
         @Override
         public <B> PathBodyBuilder2<R, P1, P2, B> withBody(TypeToken<B> type) {
             return fn -> parent.to(ctx -> ctx.matchPath(p1, p2)
-                                             .flatMap((v1, v2) -> ctx.fromJson(type)
+                                             .flatMap((v1, v2) -> ctx.jsonBody(type)
                                                                      .map(body -> fn.apply(v1, v2, body)))
                                              .async()
                                              .flatMap(p -> p));
@@ -1328,7 +1328,7 @@ public interface Route<T> extends RouteSource {
         @Override
         public <B> PathBodyBuilder3<R, P1, P2, P3, B> withBody(TypeToken<B> type) {
             return fn -> parent.to(ctx -> ctx.matchPath(p1, p2, p3)
-                                             .flatMap((v1, v2, v3) -> ctx.fromJson(type)
+                                             .flatMap((v1, v2, v3) -> ctx.jsonBody(type)
                                                                          .map(body -> fn.apply(v1, v2, v3, body)))
                                              .async()
                                              .flatMap(p -> p));
@@ -1362,7 +1362,7 @@ public interface Route<T> extends RouteSource {
         @Override
         public <B> PathBodyBuilder4<R, P1, P2, P3, P4, B> withBody(TypeToken<B> type) {
             return fn -> parent.to(ctx -> ctx.matchPath(p1, p2, p3, p4)
-                                             .flatMap((v1, v2, v3, v4) -> ctx.fromJson(type)
+                                             .flatMap((v1, v2, v3, v4) -> ctx.jsonBody(type)
                                                                              .map(body -> fn.apply(v1, v2, v3, v4, body)))
                                              .async()
                                              .flatMap(p -> p));
@@ -1416,7 +1416,7 @@ public interface Route<T> extends RouteSource {
         @Override
         public <B> QueryBodyBuilder1<R, Q1, B> withBody(TypeToken<B> type) {
             return fn -> parent.to(ctx -> ctx.matchQuery(q1)
-                                             .flatMap(v1 -> ctx.fromJson(type)
+                                             .flatMap(v1 -> ctx.jsonBody(type)
                                                                .map(body -> fn.apply(v1, body)))
                                              .async()
                                              .flatMap(p -> p));
@@ -1435,7 +1435,7 @@ public interface Route<T> extends RouteSource {
         @Override
         public <B> QueryBodyBuilder2<R, Q1, Q2, B> withBody(TypeToken<B> type) {
             return fn -> parent.to(ctx -> ctx.matchQuery(q1, q2)
-                                             .flatMap((v1, v2) -> ctx.fromJson(type)
+                                             .flatMap((v1, v2) -> ctx.jsonBody(type)
                                                                      .map(body -> fn.apply(v1, v2, body)))
                                              .async()
                                              .flatMap(p -> p));
@@ -1457,7 +1457,7 @@ public interface Route<T> extends RouteSource {
         @Override
         public <B> QueryBodyBuilder3<R, Q1, Q2, Q3, B> withBody(TypeToken<B> type) {
             return fn -> parent.to(ctx -> ctx.matchQuery(q1, q2, q3)
-                                             .flatMap((v1, v2, v3) -> ctx.fromJson(type)
+                                             .flatMap((v1, v2, v3) -> ctx.jsonBody(type)
                                                                          .map(body -> fn.apply(v1, v2, v3, body)))
                                              .async()
                                              .flatMap(p -> p));
@@ -1480,7 +1480,7 @@ public interface Route<T> extends RouteSource {
         @Override
         public <B> QueryBodyBuilder4<R, Q1, Q2, Q3, Q4, B> withBody(TypeToken<B> type) {
             return fn -> parent.to(ctx -> ctx.matchQuery(q1, q2, q3, q4)
-                                             .flatMap((v1, v2, v3, v4) -> ctx.fromJson(type)
+                                             .flatMap((v1, v2, v3, v4) -> ctx.jsonBody(type)
                                                                              .map(body -> fn.apply(v1, v2, v3, v4, body)))
                                              .async()
                                              .flatMap(p -> p));
@@ -1517,7 +1517,7 @@ public interface Route<T> extends RouteSource {
         public <B> PathQueryBodyBuilder1_1<R, P1, Q1, B> withBody(TypeToken<B> type) {
             return fn -> parent.to(ctx -> ctx.matchPath(p1)
                                              .flatMap(pv -> ctx.matchQuery(q1)
-                                                               .flatMap(qv -> ctx.fromJson(type)
+                                                               .flatMap(qv -> ctx.jsonBody(type)
                                                                                  .map(body -> fn.apply(pv, qv, body))))
                                              .async()
                                              .flatMap(p -> p));
@@ -1541,7 +1541,7 @@ public interface Route<T> extends RouteSource {
         public <B> PathQueryBodyBuilder1_2<R, P1, Q1, Q2, B> withBody(TypeToken<B> type) {
             return fn -> parent.to(ctx -> ctx.matchPath(p1)
                                              .flatMap(pv -> ctx.matchQuery(q1, q2)
-                                                               .flatMap((qv1, qv2) -> ctx.fromJson(type)
+                                                               .flatMap((qv1, qv2) -> ctx.jsonBody(type)
                                                                                          .map(body -> fn.apply(pv,
                                                                                                                qv1,
                                                                                                                qv2,
@@ -1599,7 +1599,7 @@ public interface Route<T> extends RouteSource {
         public <B> PathQueryBodyBuilder2_1<R, P1, P2, Q1, B> withBody(TypeToken<B> type) {
             return fn -> parent.to(ctx -> ctx.matchPath(p1, p2)
                                              .flatMap((pv1, pv2) -> ctx.matchQuery(q1)
-                                                                       .flatMap(qv -> ctx.fromJson(type)
+                                                                       .flatMap(qv -> ctx.jsonBody(type)
                                                                                          .map(body -> fn.apply(pv1,
                                                                                                                pv2,
                                                                                                                qv,

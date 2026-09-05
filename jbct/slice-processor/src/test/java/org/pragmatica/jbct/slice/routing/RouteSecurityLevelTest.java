@@ -62,6 +62,17 @@ class RouteSecurityLevelTest {
         }
 
         @Test
+        void parse_returnsUnspecified_forUnspecifiedString() {
+            // #772 review item 4: toConfigString() can emit "unspecified" into the generated
+            // manifest (ManifestGenerator); parse() must round-trip it back rather than falling
+            // through to "Unknown security level".
+            var result = RouteSecurityLevel.parse("unspecified");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(level -> assertThat(level).isEqualTo(RouteSecurityLevel.UNSPECIFIED));
+        }
+
+        @Test
         void parse_trimsPadding() {
             var result = RouteSecurityLevel.parse("  authenticated  ");
 
@@ -167,6 +178,20 @@ class RouteSecurityLevelTest {
         @Test
         void toConfigString_returnsRoleWithName() {
             assertThat(new RouteSecurityLevel.Role("admin").toConfigString()).isEqualTo("role:admin");
+        }
+
+        @Test
+        void toConfigString_returnsUnspecified() {
+            assertThat(RouteSecurityLevel.UNSPECIFIED.toConfigString()).isEqualTo("unspecified");
+        }
+
+        @Test
+        void roundTrip_unspecified_parseOfToConfigString() {
+            // Pins the #772 review item 4 fix both ways: what codegen emits, parse() accepts back.
+            var result = RouteSecurityLevel.parse(RouteSecurityLevel.UNSPECIFIED.toConfigString());
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(level -> assertThat(level).isEqualTo(RouteSecurityLevel.UNSPECIFIED));
         }
     }
 }

@@ -53,6 +53,13 @@ public sealed interface SecurityError extends Cause, HttpStatusAware {
 
     SecurityError NO_VALIDATOR_CONFIGURED = new MissingCredentials("Route requires authentication but no security mode is configured");
 
+    /// Reached only if [org.pragmatica.aether.http.handler.security.SecurityPolicy.Unspecified]
+    /// (or the dead placeholder permitted type used to force switch exhaustiveness) somehow reaches
+    /// a [SecurityValidator] directly, bypassing the resolution `AppHttpServer#isExplicitPolicy`
+    /// performs before dispatch. Should never happen in production; denies rather than grants as
+    /// defense in depth (#763/#772 review).
+    SecurityError UNRESOLVED_POLICY = new MissingCredentials("Security policy was not resolved to a concrete value before reaching the validator");
+
     record InsufficientRole(String message) implements SecurityError {
         @Override
         public HttpStatus httpStatus() {

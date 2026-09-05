@@ -963,10 +963,41 @@ Routes can be:
 - **String** (uses default security): `shorten = "POST /"`
 - **Array** (explicit security): `resolve = ["GET /{shortCode}", "public"]`
 
-The `[security]` section is optional -- routes without it default to `public`.
+The `[security]` section is optional. A route with no `[security]` section at all does **not**
+default to `public` (#763) -- it inherits the app HTTP server's global `security_mode` (see
+"Securing Your Endpoints" below), the same as an authenticated route with no per-route override.
+Only an explicit `"public"` -- via `default = "public"` or a per-route `["...", "public"]` array --
+bypasses the global policy for that route.
+
+> **Action required if you run `api-key` or `jwt` mode today.** Before this change, a route with
+> no `[security]` section answered `200` unauthenticated -- it was silently treated as `public`.
+> After upgrading, the same route answers `401`/`403`, because it now inherits the global
+> `security_mode` instead. This affects any deployment where `security_mode` is `api-key` or `jwt`
+> (the default is `api-key` -- see "Securing Your Endpoints") and at least one slice's `routes.toml`
+> has no `[security]` section. As of this release, 16 non-test `routes.toml` files in this repo are
+> in that state, all under `examples/` and `aether/e2e-tests/`. **Remedy:** add
+> `[security]` / `default = "public"` to any `routes.toml` whose routes should stay open. Deployments
+> running `security_mode = "none"` are unaffected -- that mode does not enforce any policy either
+> way.
+>
+> **The trigger is rebuilding your slice with the new `jbct/slice-processor`, not upgrading the
+> node runtime.** `.withSecurity(...)` is codegen output baked into your slice's generated Java
+> source at *compile* time -- the node reads it from your already-compiled JAR, it never
+> re-parses your `routes.toml` at deploy time. Upgrading only the aether-node runtime and
+> redeploying an OLD, already-built slice JAR changes nothing: that JAR still carries the old
+> `SecurityPolicy.publicRoute()` literal from whichever processor version built it, and stays
+> silently public exactly as before. The behavior only flips the moment you **recompile that slice
+> against this (or a later) processor version** -- a `mvn clean package` (or your build's
+> equivalent) that regenerates `*Routes.java` -- and then deploy the resulting JAR. Two separate
+> moments; only the second is under your control at your own schedule, and only the second is
+> where this note's "action required" applies.
 
 The `override_policy` controls what operators can change at deploy time via blueprint.toml:
-- **`strengthen_only`** (default) -- operators can only make routes more restrictive
+- **`strengthen_only`** (default) -- operators can only make routes more restrictive. On a route
+  with no `[security]` section, strength is not comparable (what it enforces is the global
+  `security_mode`), so only the direction is judged: an override to `public` is refused, any other
+  override is applied. See the [Management API reference](../reference/management-api.md#undeclared-routes)
+  for the residual this leaves open.
 - **`full`** -- operators can change security in any direction
 - **`none`** -- no overrides allowed
 
