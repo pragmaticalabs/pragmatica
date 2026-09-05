@@ -569,18 +569,23 @@ class StorageFactoryEncryptionTest {
                                               + "must fail closed"))
                           .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class));
 
-            // #875: the gate itself, not merely the returned Promise, must carry the refusal. If
-            // `verifyDhtMarker`'s failure branch ever dropped `check.readGate().resolve(...)`, this
-            // `.await()` would hang until DhtStorageTier's own admission bound (30s in production)
-            // rather than complete here.
+            // #875: the gate itself, not merely the returned Promise, must carry the refusal. `readGate`
+            // is independent of `DhtStorageTier`'s `admissionTimeout` -- that bound applies only to the
+            // `.map()`-derived promise inside `DhtStorageTier#admission`, never to `readGate` itself -- so
+            // if `verifyDhtMarker`'s failure branch ever dropped `check.readGate().resolve(...)`, an
+            // unbounded `.await()` here would hang forever, not for 30s. Bounded so that regressing
+            // :560-563 turns this test RED with a fast assertion failure instead of wedging the build:
+            // `await(SHORT_MARKER_TIMEOUT)` yields `CoreError.Timeout`, which fails the `isInstanceOf`
+            // check below in milliseconds.
             c.readGate()
-             .await()
+             .await(SHORT_MARKER_TIMEOUT)
              .onSuccess(_ -> fail("#875: a refused marker check must resolve readGate to FAILURE with the "
                                   + "refusal cause, not success -- a caller racing this check must fail "
                                   + "immediately, not be admitted"))
              .onFailure(cause -> assertThat(cause).as("#875: readGate must carry the SAME refusal cause the "
                                                        + "returned Promise failed with, not a generic or "
-                                                       + "unresolved state")
+                                                       + "unresolved state (or, if this is a "
+                                                       + "CoreError.Timeout, readGate was never resolved at all)")
                                                    .isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class));
         });
     }
