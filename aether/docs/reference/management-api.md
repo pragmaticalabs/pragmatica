@@ -1143,7 +1143,7 @@ For such a route, `strengthen_only` judges only the DIRECTION of the change:
 > authorized by the route's **declared** policy (or, if it declared none, by the global
 > `security_mode`), not by your override — while the routes listing shows the override as in effect.
 > Aether nodes are individually addressable, so which behaviour you get depends on which node the
-> client reaches. This is a pre-existing gap, tracked separately; it is documented here rather than
+> client reaches. This is a pre-existing gap, tracked as #887; it is documented here rather than
 > claimed fixed. **Until it is closed, do not rely on a security override as the only control on a
 > sensitive route — declare the policy in the slice's `routes.toml` as well.**
 

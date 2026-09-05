@@ -90,7 +90,7 @@ public interface SecurityOverrideApplier {
     /// Consequence: an override governs requests that arrive at OTHER nodes (which resolve it from
     /// the KV entry and enforce it before forwarding) and does NOT govern requests that arrive
     /// directly at the hosting node. Enforcement depends on which node the client connects to. That
-    /// mis-plumbing is PRE-EXISTING, not introduced here, and is tracked separately; fixing it means
+    /// mis-plumbing is PRE-EXISTING, not introduced here, and is tracked as #887; fixing it means
     /// deciding where override resolution belongs, which is a design change with its own review.
     ///
     /// So: this rule restores the applier's half of the F1 fix -- a strengthening override is no

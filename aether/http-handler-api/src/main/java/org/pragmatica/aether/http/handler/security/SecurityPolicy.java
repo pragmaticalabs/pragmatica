@@ -132,6 +132,15 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     ///     only consumer of `strength()`) refuses EVERY override on such a route. The previous value
     ///     `- 1` was the fail-OPEN side: `unused()` is not `Unspecified`, so it skips the undeclared-
     ///     route guard entirely and `0 >= - 1` would have let an override to `public` through.
+    ///
+    ///     `MAX_VALUE` is asymmetric across the comparison's two positions -- maximally RESTRICTIVE as
+    ///     the route's policy, maximally PERMISSIVE if it were ever the incoming override. The second
+    ///     position is unreachable, checked rather than assumed: `newPolicy` has exactly one producer,
+    ///     `fromBlueprintString`, which yields only `Public`/`Authenticated`/`ApiKeyRequired`/
+    ///     `BearerTokenRequired`/`RoleRequired` (its `default` arm returns `roleRequired` or
+    ///     `apiKeyRequired`). Nor can codegen produce one: `RouteSecurityLevel` is sealed over four
+    ///     records with no `unused` member at all, and `RouteSourceGenerator.securityExpression` emits
+    ///     only `publicRoute()`/`authenticated()`/`roleRequired()`/`unspecified()`.
     ///   - `asString()` returns `"UNUSED"`, which `fromString` deliberately does not recognize, so a
     ///     node reading it falls to `parseRoleOrDefault` -> `apiKeyRequired()` and logs a warning
     ///     naming the value. That is stricter than `"UNSPECIFIED"`, which would resolve to the global
