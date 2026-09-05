@@ -24,6 +24,25 @@
   deterministic PASS against this fix, both ~0.17-0.19s (no wall-clock race or ambient-load
   dependence in either direction); `deduplicate_hungLoader_evictedAfterBoundAndNextCallerFresh`
   covers the same eviction contract without forcing the race window].
+- **Adversarial review of this same fix found a second, distinct defect it introduced**: treating a
+  resolved entry as absent (above) means a settled promise A's map slot can legitimately be
+  superseded by a fresh promise B for the same id before A's own asynchronous cleanup runs. The
+  original cleanup removed by key only (`inFlight.remove(id)`), which deletes whatever currently
+  occupies the slot — after supersession, that is B, a live in-flight promise, not the settled A
+  that scheduled the removal. A subsequent caller then finds the slot empty and starts a third,
+  duplicate load, silently breaking the single-flight guarantee itself under exactly the churn this
+  fix targets (each caller still resolves correctly from its own promise reference, so nothing
+  looks wrong from the outside). Fixed by removing with the atomic two-argument
+  `inFlight.remove(id, promise)` (compare-and-remove), a no-op once the slot no longer holds the
+  promise that scheduled the cleanup
+  [verified: `SingleFlightCacheTest$HungLoaderEvictionTests#deduplicate_liveSuccessorSurvives_predecessorsDelayedCleanup`,
+  which reuses the carrier-saturation harness to hold A's cleanup pending while B is created and
+  kept deliberately unresolved, then releases the carriers and — via an observer chained onto A's
+  own promise, guaranteed by same-promise completion ordering to fire only after the cache's own
+  cleanup has run — waits for proof the cleanup actually executed before asserting a third caller
+  joins B rather than starting a third load: 5/5 deterministic FAIL against the key-only
+  `remove(id)` (real assertion failure, not a timeout), 5/5 deterministic PASS against
+  `remove(id, promise)`; full-class regression 7/7 testcases, 0 failures/errors].
 - **Honest limit on the claim:** this was found while chasing #859, an intermittently failing test
   (`SingleFlightCacheTest$HungLoaderEvictionTests.deduplicate_hungLoader_evictedAfterBoundAndNextCallerFresh`,
   "Expected fresh load to succeed: Promise timed out after 150ms") — the failure message is
