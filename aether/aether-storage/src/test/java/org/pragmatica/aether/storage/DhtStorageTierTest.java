@@ -134,11 +134,14 @@ class DhtStorageTierTest {
         }
     }
 
-    /// #858 C1: `DhtStorageTier.get` is gated on a per-instance `readGate` that
-    /// `StorageFactory.verifyDhtMarker` resolves post-formation. These pin the ruling's two required
-    /// states: a read arriving while the gate is still PENDING waits at most a bound then fails with
-    /// a named cause; a read arriving after the gate was already REFUSED fails immediately with the
-    /// refusal cause, never waiting the bound.
+    /// #858 C1/#874: `get`, `put`, `delete` and `exists` are all gated on a per-instance `readGate`
+    /// that `StorageFactory.verifyDhtMarker` resolves post-formation. These pin the ruling's two
+    /// required states: an operation arriving while the gate is still PENDING waits at most a bound
+    /// then fails with a named cause; an operation arriving after the gate was already REFUSED fails
+    /// immediately with the refusal cause, never waiting the bound. The `put` variants additionally
+    /// pin #874's hazard directly: a gated write must never reach the DHT ahead of admission, whether
+    /// it eventually times out or is refused outright -- proving no plaintext can land in a namespace
+    /// the marker check has not (or will not) admit.
     @Nested
     class Admission {
         /// Far below the 30s production default (`DhtStorageTier.DEFAULT_ADMISSION_TIMEOUT`) so the
@@ -183,6 +186,86 @@ class DhtStorageTierTest {
 
             assertThat(elapsedMillis).as("a refusal must fail immediately, never wait out the admission bound")
                                      .isLessThan(SHORT_ADMISSION_TIMEOUT.millis());
+        }
+
+        /// #874: pins the exact hazard the ticket describes -- an ungated `put` reachable over HTTP
+        /// (e.g. `managementServer`/`appHttpServer` coming up before `verifyDhtMarkers()` resolves)
+        /// could persist a PLAINTEXT block into a namespace the marker check had not yet cleared.
+        /// Asserts against the RAW `dhtClient`, bypassing the tier entirely, so this cannot pass by
+        /// accident if some other path re-reads through the same gated tier.
+        @Test
+        void put_whileGatePending_neverReachesDht_evenAfterTimingOut() {
+            var readGate = Promise.<Unit> promise();
+            var gatedTier = DhtStorageTier.dhtStorageTier(dhtClient, KEY_PREFIX, "content", readGate, SHORT_ADMISSION_TIMEOUT);
+            var blockId = blockIdOf(SAMPLE_CONTENT);
+
+            gatedTier.put(blockId, SAMPLE_CONTENT)
+                     .await()
+                     .onSuccess(_ -> fail("a write against a gate that never resolves must not succeed"))
+                     .onFailure(cause -> assertThat(cause).isInstanceOf(StorageError.TierNotAdmitted.class));
+
+            dhtClient.exists(rawKey(blockId))
+                     .await()
+                     .onFailure(_ -> fail("raw exists should succeed"))
+                     .onSuccess(found -> assertThat(found).as("#874: a write blocked on a pending gate must "
+                                                              + "never reach the DHT, not even after it times out")
+                                                           .isFalse());
+        }
+
+        /// #874/#875: a write racing a REFUSED gate must fail with the refusal cause immediately
+        /// (mirrors `get_afterGateRefused_...`) AND must never persist -- the two failure modes the
+        /// ticket names (waiting the full bound, and persisting plaintext) are pinned together here.
+        @Test
+        void put_afterGateRefused_failsImmediately_withoutPersisting() {
+            var readGate = Promise.<Unit> promise();
+            var refusal = new EncryptionError.EncryptedTierRequiresKeyring("content", "key-1");
+            readGate.resolve(Result.failure(refusal));
+
+            var gatedTier = DhtStorageTier.dhtStorageTier(dhtClient, KEY_PREFIX, "content", readGate, SHORT_ADMISSION_TIMEOUT);
+            var blockId = blockIdOf(SAMPLE_CONTENT);
+            var started = System.nanoTime();
+
+            gatedTier.put(blockId, SAMPLE_CONTENT)
+                     .await()
+                     .onSuccess(_ -> fail("a write against a refused tier must not succeed"))
+                     .onFailure(cause -> assertThat(cause).isSameAs(refusal));
+
+            var elapsedMillis = (System.nanoTime() - started) / 1_000_000;
+            assertThat(elapsedMillis).as("a refusal must fail immediately, never wait out the admission bound")
+                                     .isLessThan(SHORT_ADMISSION_TIMEOUT.millis());
+
+            dhtClient.exists(rawKey(blockId))
+                     .await()
+                     .onFailure(_ -> fail("raw exists should succeed"))
+                     .onSuccess(found -> assertThat(found).as("#874: a write refused by the marker check must "
+                                                              + "never persist plaintext into the namespace")
+                                                           .isFalse());
+        }
+
+        @Test
+        void exists_whileGatePending_timesOutWithTierNotAdmitted() {
+            var readGate = Promise.<Unit> promise();
+            var gatedTier = DhtStorageTier.dhtStorageTier(dhtClient, KEY_PREFIX, "content", readGate, SHORT_ADMISSION_TIMEOUT);
+
+            gatedTier.exists(blockIdOf(SAMPLE_CONTENT))
+                     .await()
+                     .onSuccess(_ -> fail("#874: exists is a read too -- it must gate on the same latch as get"))
+                     .onFailure(cause -> assertThat(cause).isInstanceOf(StorageError.TierNotAdmitted.class));
+        }
+
+        @Test
+        void delete_whileGatePending_timesOutWithTierNotAdmitted() {
+            var readGate = Promise.<Unit> promise();
+            var gatedTier = DhtStorageTier.dhtStorageTier(dhtClient, KEY_PREFIX, "content", readGate, SHORT_ADMISSION_TIMEOUT);
+
+            gatedTier.delete(blockIdOf(SAMPLE_CONTENT))
+                     .await()
+                     .onSuccess(_ -> fail("#874: delete must gate on the same latch as get/put"))
+                     .onFailure(cause -> assertThat(cause).isInstanceOf(StorageError.TierNotAdmitted.class));
+        }
+
+        private static byte[] rawKey(BlockId id) {
+            return (KEY_PREFIX + "/" + id.hexString()).getBytes(StandardCharsets.UTF_8);
         }
     }
 

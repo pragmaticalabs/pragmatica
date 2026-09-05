@@ -51,13 +51,22 @@ public final class DhtStorageTier implements StorageTier {
     }
 
     /// #858: the post-formation DHT-marker check (`StorageFactory.verifyDhtMarker`) resolves
-    /// `readGate` only after it has verified/written this namespace's encryption marker -- so a read
-    /// issued before that point (impossible for `artifacts`/`streams`, only reachable via deployed
-    /// slices which themselves need post-formation leader election, but enforced here rather than
-    /// merely documented) waits instead of racing a marker check that hasn't run yet. `put`/`delete`/
-    /// `exists` are ungated -- the ruling scopes the guard to reads. `instanceName` is the operator-
-    /// facing identity used in [StorageError.TierNotAdmitted]'s cause text -- distinct from
-    /// `keyPrefix`, which is the DHT key namespace.
+    /// `readGate` only after it has verified/written this namespace's encryption marker -- so an
+    /// operation issued before that point (impossible for `artifacts`/`streams`, only reachable via
+    /// deployed slices which themselves need post-formation leader election, but enforced here rather
+    /// than merely documented) waits instead of racing a marker check that hasn't run yet.
+    ///
+    /// #874: `get`, `put`, `delete` AND `exists` are all gated on the same `readGate` -- an earlier
+    /// ruling scoped the guard to `get` alone, reasoning only a read could observe a not-yet-verified
+    /// namespace. That missed two things. First, `AetherNode.start()` brings `managementServer`/
+    /// `appHttpServer` up BEFORE `verifyDhtMarkers()` runs, so an ungated `put` reachable over HTTP
+    /// (e.g. a Maven `deploy`) could persist a PLAINTEXT block into a namespace whose marker, once
+    /// actually checked, says it is already encrypted -- and because the DHT is a cluster-wide shared
+    /// store (`#isShared`), that block replicates to peers and survives this node's subsequent
+    /// `EncryptedTierRequiresKeyring` abort. Second, `exists` IS a read -- a DHT round trip on
+    /// `buildKey(id)`, never a local, gate-free check. `instanceName` is the operator-facing identity
+    /// used in [StorageError.TierNotAdmitted]'s cause text -- distinct from `keyPrefix`, which is the
+    /// DHT key namespace.
     public static DhtStorageTier dhtStorageTier(DHTClient dhtClient,
                                                 String keyPrefix,
                                                 String instanceName,
@@ -81,13 +90,14 @@ public final class DhtStorageTier implements StorageTier {
         return admission().flatMap(_ -> dhtClient.get(buildKey(id)));
     }
 
-    /// #858 C1: a read arriving while `readGate` is still pending waits at most `admissionTimeout`
-    /// then fails with [StorageError.TierNotAdmitted] -- never an unbounded wait. A read arriving
-    /// after `readGate` was already resolved -- success (admitted) or failure (the step REFUSED this
-    /// tier, e.g. `EncryptionError.EncryptedTierRequiresKeyring`) -- returns/fails immediately,
-    /// carrying the real cause on refusal, never waiting the bound. The `isResolved()` fast path
-    /// covers the common case (ungated tiers via `Promise.UNIT`, or any read once admission has
-    /// settled) without paying for `.map()`/`.timeout()`.
+    /// #858 C1/#874: an operation (`get`/`put`/`delete`/`exists`) arriving while `readGate` is still
+    /// pending waits at most `admissionTimeout` then fails with [StorageError.TierNotAdmitted] --
+    /// never an unbounded wait. An operation arriving after `readGate` was already resolved --
+    /// success (admitted) or failure (the step REFUSED this tier, e.g.
+    /// `EncryptionError.EncryptedTierRequiresKeyring`) -- returns/fails immediately, carrying the real
+    /// cause on refusal, never waiting the bound. The `isResolved()` fast path covers the common case
+    /// (ungated tiers via `Promise.UNIT`, or any call once admission has settled) without paying for
+    /// `.map()`/`.timeout()`.
     ///
     /// `.timeout()` is applied to a `.map()`-derived, single-use promise -- never to `readGate`
     /// itself. `readGate` is shared and resolved from a separate call path
@@ -112,18 +122,18 @@ public final class DhtStorageTier implements StorageTier {
 
     @Override
     public Promise<Unit> put(BlockId id, byte[] content) {
-        return dhtClient.put(buildKey(id), content);
+        return admission().flatMap(_ -> dhtClient.put(buildKey(id), content));
     }
 
     @Override
     public Promise<Unit> delete(BlockId id) {
-        return dhtClient.remove(buildKey(id))
-                        .mapToUnit();
+        return admission().flatMap(_ -> dhtClient.remove(buildKey(id))
+                                                 .mapToUnit());
     }
 
     @Override
     public Promise<Boolean> exists(BlockId id) {
-        return dhtClient.exists(buildKey(id));
+        return admission().flatMap(_ -> dhtClient.exists(buildKey(id)));
     }
 
     @Override
