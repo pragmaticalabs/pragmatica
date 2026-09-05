@@ -6,72 +6,76 @@ Complete reference for configuring Aether nodes, cluster, and runtime behavior.
 
 ### AetherNodeConfig
 
-Main configuration for an Aether cluster node.
+Main configuration for an Aether cluster node. There is no all-args or partial-args static
+factory — construction is only via a staged `builder()` chain; each stage's setter returns the
+next stage's type. `self` through `quicTls` are required (no default); `.build()` becomes
+available starting at `certificateProvider`, and every stage from there defaults if skipped.
 
 ```java
-AetherNodeConfig.aetherNodeConfig(
-    self,              // NodeId - unique node identifier
-    port,              // int - cluster communication port
-    coreNodes,         // List<NodeInfo> - cluster peers
-    sliceActionConfig, // SliceActionConfig - slice lifecycle settings
-    sliceConfig,       // SliceConfig - slice repository configuration
-    managementPort,    // int - HTTP API port (0 to disable)
-    artifactRepoConfig // DHTConfig - artifact repository settings
-);
+var config = AetherNodeConfig.builder()
+    .self(self)                       // NodeId - unique node identifier
+    .coreNodes(coreNodes)             // List<NodeInfo> - cluster peers
+    .managementPort(managementPort)   // int - HTTP API port (0 to disable)
+    .sliceConfig(sliceConfig)         // SliceConfig - slice repository configuration
+    .artifactRepo(artifactRepoConfig) // DHTConfig - artifact repository settings
+    .coreMax(coreMax)                 // int - target cluster size (0 = coreNodes.size())
+    .appHttp(appHttpConfig)           // AppHttpConfig - slice-route HTTP server
+    .tls(Option.none())               // Option<TlsConfig> - cluster/HTTP TLS
+    .quicTls(quicTlsConfig)           // TlsConfig - QUIC cluster transport TLS
+    .build();                         // remaining stages take their per-stage default
 ```
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `self` | `NodeId` | required | Unique node identifier |
-| `port` | `int` | required | Cluster communication port |
-| `coreNodes` | `List<NodeInfo>` | required | List of cluster peers |
-| `sliceActionConfig` | `SliceActionConfig` | defaults | Slice lifecycle timeouts |
-| `sliceConfig` | `SliceConfig` | defaults | Slice repository configuration |
-| `managementPort` | `int` | 8080 | HTTP management API port |
-| `artifactRepoConfig` | `DHTConfig` | DEFAULT | Artifact repository settings |
+| Stage (required, no default) | Type | Description |
+|---|---|---|
+| `self` | `NodeId` | Unique node identifier |
+| `coreNodes` | `List<NodeInfo>` | Cluster peers |
+| `managementPort` | `int` | HTTP management API port (0 to disable) |
+| `sliceConfig` | `SliceConfig` | Slice repository configuration |
+| `artifactRepo` | `DHTConfig` | Artifact repository settings |
+| `coreMax` | `int` | Target cluster size (0 uses `coreNodes.size()`) |
+| `appHttp` | `AppHttpConfig` | Application HTTP server for slice routes |
+| `tls` | `Option<TlsConfig>` | TLS for cluster and HTTP |
+| `quicTls` | `TlsConfig` | QUIC cluster transport TLS |
 
-Additional fields configured via `with*` builder methods:
+Stages from `certificateProvider` onward default if skipped (each is also settable explicitly
+before calling `.build()`):
 
-| Method | Type | Default | Description |
-|--------|------|---------|-------------|
-| `withTls()` | `TlsConfig` | none | TLS for cluster and HTTP |
-| `withAppHttp()` | `AppHttpConfig` | defaults | Application HTTP server for slice routes |
-| `withControllerConfig()` | `ControllerConfig` | DEFAULT | Scaling thresholds and behavior |
-| `withTtm()` | `TtmConfig` | defaults | TTM predictive scaling |
-| `withRollback()` | `RollbackConfig` | defaults | Automatic rollback settings |
-| `withConfigProvider()` | `ConfigurationProvider` | none | Resource provisioning |
-| `withEnvironment()` | `EnvironmentIntegration` | none | Compute/secrets integration |
-| `withAutoHeal()` | `AutoHealConfig` | DEFAULT | Auto-heal retry configuration |
+| Stage | Default when `.build()` is called early |
+|---|---|
+| `certificateProvider` | `Option.none()` |
+| `configProvider` | `Option.none()` |
+| `environment` | `Option.none()` |
+| `managementHttpProtocol` | `HttpProtocol.H1` |
+| `storageConfig` | `Map.of()` |
+| `backupConfig` | `Option.none()` |
+| `membership` | `Option.none()` |
+| `streaming` | `StreamingConfig.streamingConfig()` |
+| `protocol` | `ProtocolConfig.defaultConfig()` |
+| `sliceAction` | `SliceActionConfig.sliceActionConfig()` |
+| `cache` | `DHTConfig.CACHE_DEFAULT` |
+| `ttm` | `TtmConfig.ttmConfig()` |
+| `rollback` | `RollbackConfig.rollbackConfig()` |
+| `controllerConfig` | `ControllerConfig.DEFAULT` |
+| `autoHeal` | `AutoHealConfig.DEFAULT` |
+| `observability` | `ObservabilityConfig.DEFAULT` |
+| `atomicity` | `DeploymentAtomicity.ALL_OR_NOTHING` |
+| `activationGated` | `false` |
+| `timeouts` | `TimeoutsConfig.timeoutsConfig()` |
+| `workerConfig` | `Option.none()` |
+| `deploymentDefaults` | `DeploymentDefaults.DEFAULT` |
+| `clusterFormation` | `ClusterFormationConfig.defaults()` |
 
-### Factory Methods
+Three fields have no builder stage at all — they're set on the built config, because their
+authoritative source is resolved outside the builder (see the `withAutoHeal`/`withClusterName`/
+`withStorageEncryption` doc comments in `AetherNodeConfig.java`):
 
-```java
-// Minimal configuration
-AetherNodeConfig.aetherNodeConfig(nodeId, port, peers);
+| Method | Type | Description |
+|---|---|---|
+| `withClusterName()` | `Option<ClusterName>` | Cluster identity, stamped from `AETHER_CLUSTER_NAME` |
+| `withAutoHeal()` | `AutoHealConfig` | Auto-heal retry configuration (overrides the builder default) |
+| `withStorageEncryption()` | `Option<StorageEncryptionConfig>` | Storage-tier encryption keyring |
 
-// With custom slice action config
-AetherNodeConfig.aetherNodeConfig(nodeId, port, peers, sliceActionConfig);
-
-// With management port
-AetherNodeConfig.aetherNodeConfig(nodeId, port, peers, sliceActionConfig, 8080);
-
-// Full configuration
-AetherNodeConfig.aetherNodeConfig(nodeId, port, peers, sliceActionConfig, sliceConfig, 8080, dhtConfig);
-
-// Test configuration (shorter timeouts, management disabled, full replication)
-AetherNodeConfig.testConfig(nodeId, port, peers);
-
-// Forge simulation configuration (CPU-based scaling disabled)
-AetherNodeConfig.forgeConfig(nodeId, port, peers);
-```
-
-### TLS Configuration
-
-```java
-var tlsConfig = TlsConfig.tlsConfig(certPath, keyPath);
-var config = AetherNodeConfig.aetherNodeConfig(...)
-                             .withTls(tlsConfig);
-```
+See `Main.java`'s `run()` method for the full production wiring, including these three post-build calls.
 
 When `[tls]` `auto_generate = false` with operator-provided `cert_path`/`key_path`, the node
 **refuses to start** if `AETHER_INSECURE_DEV_MODE=true` is also set — insecure dev-mode is
@@ -86,8 +90,7 @@ Controls slice lifecycle timeouts and behavior.
 
 ```java
 SliceActionConfig.sliceActionConfig();
-SliceActionConfig.sliceActionConfig(serializerProvider);
-SliceActionConfig.sliceActionConfig(serializerProvider, frameworkJarsPath);
+SliceActionConfig.sliceActionConfig(frameworkJarsPath);
 ```
 
 | Parameter | Default | Description |
@@ -98,8 +101,7 @@ SliceActionConfig.sliceActionConfig(serializerProvider, frameworkJarsPath);
 | `unloadingTimeout` | 2 minutes | Max time for slice unloading |
 | `startStopTimeout` | 5 seconds | Max time for start/stop |
 | `repositories` | Local repository | Artifact repositories |
-| `serializerProvider` | Fury | Serialization provider |
-| `frameworkJarsPath` | none | Custom framework JARs path |
+| `frameworkJarsPath` | none (`Option.empty()`) | Custom framework JARs path |
 
 ## Controller Configuration
 
@@ -359,28 +361,39 @@ var peers = List.of(
     NodeInfo.nodeInfo(NodeId.nodeId("node-3"), "192.168.1.3", 8090)
 );
 
-var config = AetherNodeConfig.aetherNodeConfig(
-    NodeId.nodeId("node-1"),
-    8090,
-    peers
-);
+var config = AetherNodeConfig.builder()
+    .self(NodeId.nodeId("node-1"))
+    .coreNodes(peers)
+    .managementPort(8090)
+    .sliceConfig(SliceConfig.sliceConfig())
+    .artifactRepo(DHTConfig.DEFAULT)
+    .coreMax(peers.size())
+    .appHttp(AppHttpConfig.appHttpConfig())
+    .tls(Option.none())
+    .quicTls(quicTlsConfig)
+    .build();
 ```
 
 ### Production with TLS
 
 ```java
-var config = AetherNodeConfig.aetherNodeConfig(
-    NodeId.nodeId("node-1"),
-    8090,
-    peers,
-    SliceActionConfig.sliceActionConfig(),
-    8080
-).withTls(TlsConfig.tlsConfig(certPath, keyPath));
+var config = AetherNodeConfig.builder()
+    .self(NodeId.nodeId("node-1"))
+    .coreNodes(peers)
+    .managementPort(8080)
+    .sliceConfig(SliceConfig.sliceConfig())
+    .artifactRepo(DHTConfig.DEFAULT)
+    .coreMax(peers.size())
+    .appHttp(AppHttpConfig.appHttpConfig())
+    .tls(TlsConfig.server(certPath, keyPath))
+    .quicTls(TlsConfig.server(certPath, keyPath))
+    .build();
 ```
 
 ### Custom Timeouts
 
-Since `SliceActionConfig` is a record, custom timeouts can be constructed directly:
+Since `SliceActionConfig` is a record, custom timeouts can be constructed directly (7 fields —
+there is no serializer-provider field; slice serialization is not part of this config):
 
 ```java
 var sliceActionConfig = new SliceActionConfig(
@@ -390,20 +403,40 @@ var sliceActionConfig = new SliceActionConfig(
     timeSpan(5).minutes(),    // unloadingTimeout
     timeSpan(2).minutes(),    // startStopTimeout
     List.of(localRepository()),
-    furySerializerFactoryProvider(),
     Option.empty()            // frameworkJarsPath
 );
 
-var config = AetherNodeConfig.aetherNodeConfig(
-    nodeId, port, peers, sliceActionConfig
-);
+var config = AetherNodeConfig.builder()
+    .self(nodeId)
+    .coreNodes(peers)
+    .managementPort(port)
+    .sliceConfig(sliceConfig)
+    .artifactRepo(artifactRepoConfig)
+    .coreMax(peers.size())
+    .appHttp(AppHttpConfig.appHttpConfig())
+    .tls(Option.none())
+    .quicTls(quicTlsConfig)
+    .sliceAction(sliceActionConfig)
+    .build();
 ```
 
 ### Test Configuration
 
+There is no canned test or forge factory — tests build the minimal required chain directly and
+skip everything from `certificateProvider` onward to take its defaults:
+
 ```java
-// Shorter timeouts for faster tests
-var config = AetherNodeConfig.testConfig(nodeId, port, peers);
+var config = AetherNodeConfig.builder()
+    .self(nodeId)
+    .coreNodes(peers)
+    .managementPort(AetherNodeConfig.MANAGEMENT_DISABLED)
+    .sliceConfig(SliceConfig.sliceConfig())
+    .artifactRepo(DHTConfig.DEFAULT)
+    .coreMax(peers.size())
+    .appHttp(AppHttpConfig.appHttpConfig())
+    .tls(Option.none())
+    .quicTls(quicTlsConfig)
+    .build();
 ```
 
 ## Worker Configuration
@@ -419,7 +452,7 @@ max_group_size = 100
 |-------|------|---------|-------------|
 | `group_name` | string | `"default"` | Logical group name for this worker pool |
 | `zone` | string | `"local"` | Zone identifier for zone-aware grouping. Workers in the same zone auto-cluster |
-| `max_group_size` | int | `100` | **Inert today** — declared for the worker-group splitting mechanism, which is not built (#673: `GroupAssignment.computeGroups` has no live caller; communities are one-per-source). Parsed and validated (`< 2` refuses at parse); changes no behavior until #673's wire-or-delete decision. Community size in the shipping product is the per-source worker count. |
+| `max_group_size` | int | `100` | Caps worker-group size for `GroupAssignment.computeGroups`, invoked from `GroupMembershipTracker.recomputeGroups()` and wired into the live worker-activation path (`AetherNode.activateWorkerMode`) — see below. Validated at parse (`< 2` refuses). |
 
 Zone is also extracted from the NodeId: everything before the last dash (e.g., `us-east-worker-1` → zone `us-east-worker`). The explicit `zone` config takes precedence for group computation.
 

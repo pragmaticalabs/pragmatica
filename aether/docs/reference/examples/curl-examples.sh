@@ -3,6 +3,9 @@
 # Usage: Set BASE_URL to your node address
 
 BASE_URL="${BASE_URL:-http://localhost:8080}"
+# security_mode defaults to api-key (issue #290); set API_KEY to an ADMIN/OPERATOR key for
+# mutating calls such as the deploy example below. See reference/management-api.md#authentication.
+API_KEY="${API_KEY:-}"
 
 echo "=== Cluster Status ==="
 curl -s "$BASE_URL/api/v1/nodes/status" | jq .
@@ -75,13 +78,12 @@ echo
 echo "=== Start Rolling Deployment ==="
 curl -s -X POST "$BASE_URL/api/v1/deploy" \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
   -d '{
-    "artifactBase": "org.example:my-slice",
-    "version": "2.0.0",
+    "blueprint": "org.example:my-slice:2.0.0",
     "strategy": "ROLLING",
     "instances": 3,
-    "maxErrorRate": 0.01,
-    "maxLatencyMs": 500,
+    "thresholds": {"maxErrorRate": 0.01, "maxLatencyMs": 500},
     "cleanupPolicy": "GRACE_PERIOD"
   }' | jq .
 echo

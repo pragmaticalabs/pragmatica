@@ -15,14 +15,24 @@ import urllib.error
 class AetherClient:
     """Simple Python client for Aether Management API."""
 
-    def __init__(self, base_url: str = "http://localhost:8080"):
+    def __init__(self, base_url: str = "http://localhost:8080", api_key: str = None):
+        """api_key: required unless the cluster's security_mode is "none" (security_mode
+        defaults to api-key, issue #290 — see reference/management-api.md#authentication)."""
         self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+
+    def _headers(self, extra: dict = None) -> dict:
+        headers = {"X-API-Key": self.api_key} if self.api_key else {}
+        if extra:
+            headers.update(extra)
+        return headers
 
     def _get(self, path: str) -> dict:
         """Make GET request."""
         url = f"{self.base_url}{path}"
         try:
-            with urllib.request.urlopen(url) as response:
+            req = urllib.request.Request(url, headers=self._headers())
+            with urllib.request.urlopen(req) as response:
                 return json.loads(response.read().decode())
         except urllib.error.HTTPError as e:
             return {"error": f"HTTP {e.code}: {e.read().decode()}"}
@@ -36,7 +46,7 @@ class AetherClient:
             req = urllib.request.Request(
                 url,
                 data=json.dumps(data).encode(),
-                headers={"Content-Type": "application/json"},
+                headers=self._headers({"Content-Type": "application/json"}),
                 method="POST"
             )
             with urllib.request.urlopen(req) as response:
@@ -150,12 +160,12 @@ class AetherClient:
         })
 
     # Deployments
-    def start_deployment(self, artifact_base: str, version: str,
-                         strategy: str = "IMMEDIATE", instances: int = 1, **kwargs) -> dict:
-        """Start a deployment."""
+    def start_deployment(self, blueprint: str, strategy: str = "ROLLING",
+                         instances: int = 1, **kwargs) -> dict:
+        """Start a deployment. `blueprint` is full artifact coordinates
+        (group:artifact:version), e.g. "org.example:my-slice:2.0.0"."""
         data = {
-            "artifactBase": artifact_base,
-            "version": version,
+            "blueprint": blueprint,
             "strategy": strategy,
             "instances": instances,
             **kwargs

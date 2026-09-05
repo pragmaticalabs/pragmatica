@@ -1921,14 +1921,14 @@ When `--non-interactive` is set without `--target`, the command applies `--targe
 Emit a deployment-manifest template with `aether.cluster` and `aether.node-id` labels pre-set. Operators get a working starting point that's correct-by-construction — no chance of forgetting to label containers, which would otherwise leave cross-cluster tooling unable to distinguish two clusters sharing infrastructure.
 
 ```bash
-aether cluster scaffold --name <cluster-name> --format docker-compose [--nodes N] [--image IMG] \
+aether cluster scaffold --name <cluster-name> --template docker-compose [--nodes N] [--image IMG] \
                         [--mgmt-port-base 5150] [--app-port-base 8070] [--cluster-port 6000] > compose.yml
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
-| `--format` | Output format. Currently `docker-compose` |
+| `--template` | Output template. Currently `docker-compose` |
 | `--nodes` | Compose-fixed node count (default 5) |
 | `--image` | Container image (default `aether-node:local`) |
 | `--mgmt-port-base` | Host port base for management API (default 5150) |
@@ -1937,7 +1937,7 @@ aether cluster scaffold --name <cluster-name> --format docker-compose [--nodes N
 
 Example:
 ```bash
-aether cluster scaffold --name us-prod --format docker-compose --nodes 5 > compose.yml
+aether cluster scaffold --name us-prod --template docker-compose --nodes 5 > compose.yml
 docker compose -f compose.yml up -d
 ```
 
