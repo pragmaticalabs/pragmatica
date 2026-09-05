@@ -34,8 +34,11 @@ public final class DhtStorageTier implements StorageTier {
     private final Promise<Unit> readGate;
     private final TimeSpan admissionTimeout;
 
-    private DhtStorageTier(DHTClient dhtClient, String keyPrefix, String instanceName, Promise<Unit> readGate,
-                            TimeSpan admissionTimeout) {
+    private DhtStorageTier(DHTClient dhtClient,
+                           String keyPrefix,
+                           String instanceName,
+                           Promise<Unit> readGate,
+                           TimeSpan admissionTimeout) {
         this.dhtClient = dhtClient;
         this.keyPrefixBytes = (keyPrefix + "/").getBytes(StandardCharsets.UTF_8);
         this.instanceName = instanceName;
@@ -55,15 +58,21 @@ public final class DhtStorageTier implements StorageTier {
     /// `exists` are ungated -- the ruling scopes the guard to reads. `instanceName` is the operator-
     /// facing identity used in [StorageError.TierNotAdmitted]'s cause text -- distinct from
     /// `keyPrefix`, which is the DHT key namespace.
-    public static DhtStorageTier dhtStorageTier(DHTClient dhtClient, String keyPrefix, String instanceName, Promise<Unit> readGate) {
+    public static DhtStorageTier dhtStorageTier(DHTClient dhtClient,
+                                                String keyPrefix,
+                                                String instanceName,
+                                                Promise<Unit> readGate) {
         return new DhtStorageTier(dhtClient, keyPrefix, instanceName, readGate, DEFAULT_ADMISSION_TIMEOUT);
     }
 
     /// #858 C1 test seam: lets tests bound the admission wait far below the 30s production default so
     /// "waits at most a bound, then fails" is provable in milliseconds. Package-private -- only
     /// `DhtStorageTierTest` (same package) needs it.
-    static DhtStorageTier dhtStorageTier(DHTClient dhtClient, String keyPrefix, String instanceName, Promise<Unit> readGate,
-                                          TimeSpan admissionTimeout) {
+    static DhtStorageTier dhtStorageTier(DHTClient dhtClient,
+                                         String keyPrefix,
+                                         String instanceName,
+                                         Promise<Unit> readGate,
+                                         TimeSpan admissionTimeout) {
         return new DhtStorageTier(dhtClient, keyPrefix, instanceName, readGate, admissionTimeout);
     }
 
@@ -96,8 +105,9 @@ public final class DhtStorageTier implements StorageTier {
         return readGate.map(_ -> unit())
                        .timeout(admissionTimeout)
                        .mapError(cause -> cause instanceof CoreError.Timeout
-                                           ? new StorageError.TierNotAdmitted(instanceName, admissionTimeout.millis())
-                                           : cause);
+                                          ? new StorageError.TierNotAdmitted(instanceName,
+                                                                             admissionTimeout.millis())
+                                          : cause);
     }
 
     @Override
