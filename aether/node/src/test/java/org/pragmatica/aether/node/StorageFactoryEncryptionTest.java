@@ -20,6 +20,7 @@ import org.pragmatica.dht.Partition;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.BlockEncryptor;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.EncryptingStorageTier;
@@ -32,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #253: proves `StorageFactory` wires [org.pragmatica.storage.EncryptingStorageTier] around the
 /// tiers the per-instance config actually asks for -- and around no others.
@@ -60,6 +62,10 @@ class StorageFactoryEncryptionTest {
     private static final String INSTANCE = "vault";
     private static final String NODE_ID = "node-1";
     private static final String ARTIFACTS = "artifacts";
+    /// #858 C2 test seam bound -- far below the 30s production `DHT_MARKER_TIMEOUT` so the
+    /// never-responding-client test proves the timeout cause in milliseconds. Mirrors
+    /// `MavenProtocolRoutesTimeoutTest`'s injected `SHORT_TIMEOUT`.
+    private static final TimeSpan SHORT_MARKER_TIMEOUT = timeSpan(150).millis();
 
     @TempDir
     Path tempDir;
@@ -252,18 +258,16 @@ class StorageFactoryEncryptionTest {
         });
     }
 
-    /// #253 review round 3 SHOULD-FIX (2026-09-04 ruling): pins the `buildTierList` ordering fix --
-    /// [#maybeEncryptDht] (and the marker write inside it) must run only AFTER
-    /// [org.pragmatica.storage.EncryptingStorageTier#wrapLocalDisk]'s legacy-plaintext scan has
-    /// already succeeded, never before it. Seeds a raw plaintext block on disk (forcing
-    /// `wrapLocalDisk` to refuse) with a DHT client also present and a keyring supplied; the first
-    /// boot must fail closed AND leave no DHT-side marker behind, and a second boot of the SAME disk
-    /// directory and the SAME `InMemoryDHTClient` with `encrypted = false` (no keyring) must then
-    /// succeed -- proving the failed first attempt did not orphan a marker that would otherwise trip
-    /// `refuseIfDhtEncryptedWithoutKeyring` and lock the operator out until the marker was deleted by
-    /// hand. Before the fix, the eagerly-evaluated `maybeEncryptDht` call wrote the marker before
-    /// `wrapLocalDisk` ran, so this test's first boot would still fail but the marker check below
-    /// would find one present anyway.
+    /// #253 review round 3 SHOULD-FIX (2026-09-04 ruling), updated by #858: previously pinned an
+    /// ordering fix where [#maybeEncryptDht]'s marker WRITE had to run only after the disk-side
+    /// guard succeeded, never before it -- an eagerly-evaluated write could otherwise orphan a DHT
+    /// marker on a boot the disk guard went on to refuse. #858 eliminates the hazard structurally
+    /// rather than by reordering: `maybeEncryptDht` now performs no I/O at all -- it only builds an
+    /// in-memory tier and a `DhtMarkerCheck` descriptor; the marker write itself happens exclusively
+    /// in `StorageFactory.verifyDhtMarker`, run post-formation from `AetherNode.start()`, which this
+    /// test (calling `createAll` directly) never reaches. This test now pins that invariant
+    /// directly: `createAll` alone can never write (or block on) a DHT marker under any ordering,
+    /// disk-guard outcome included.
     @Test
     void createAll_leavesNoDhtMarker_whenDiskGuardRefusesBeforeDhtEncryptionIsApplied() {
         var diskDir = tempDir.resolve("vault-legacy-disk-with-dht");
@@ -306,10 +310,10 @@ class StorageFactoryEncryptionTest {
                                                   Option.some(dhtClient),
                                                   Option.none());
 
-        assertThat(secondBoot.isSuccess()).as("with no marker orphaned by the failed first boot, rebooting the same "
-                                             + "DHT namespace unencrypted must succeed rather than tripping "
-                                             + "refuseIfDhtEncryptedWithoutKeyring on a namespace that was never "
-                                             + "actually encrypted")
+        assertThat(secondBoot.isSuccess()).as("#858: createAll never checks the DHT marker at construction time -- "
+                                             + "rebooting the same DHT namespace must succeed regardless of any "
+                                             + "marker; the check now runs later, post-formation, in "
+                                             + "AetherNode.start()")
                                           .isTrue();
     }
 
@@ -448,19 +452,15 @@ class StorageFactoryEncryptionTest {
         stored.onPresent(raw -> assertPlaintextAtRest(raw, "the DHT tier"));
     }
 
-    /// #253 SHOULD-FIX #1 (2026-09-04 ruling): mirrors
-    /// `createAll_fails_whenDiskCarriesEncryptionMarker_andNoKeyringSuppliedForInstance` for the DHT
-    /// namespace, on exactly the path review round 2 named -- disk tier absent (here: a `diskPath`
-    /// that already exists as a plain FILE, forcing `LocalDiskTier.localDiskTier` to fail and
-    /// `buildTiers` to route into `handleDiskTierUnavailable`'s memory+DHT fallback) -- where
-    /// `maybeEncryptDht` used to hand back the bare DHT tier unconditionally, regardless of a marker
-    /// left by an earlier encrypting boot. First boot enables encryption and writes a block through
-    /// the degraded (memory+DHT) instance, seeding the DHT-side `.encryption-enabled` marker exactly
-    /// as a real encrypted boot would; the second boot reuses the SAME `InMemoryDHTClient` and the
-    /// SAME broken `diskPath` but supplies no keyring, and must fail closed rather than silently
-    /// handing back the bare DHT tier over existing ciphertext.
+    /// #253 SHOULD-FIX #1, superseded by #858 (2026-09-04 ruling): the boot-time refusal this test
+    /// used to pin now runs post-formation instead -- [StorageFactory#maybeEncryptDht] performs no
+    /// I/O, so `createAll` always succeeds and hands back a `dhtMarkerCheck` for the instance rather
+    /// than checking the marker itself. This test now pins the refusal one layer down, calling
+    /// `StorageFactory.verifyDhtMarker` directly against that check -- exactly what
+    /// `AetherNode.start()` does post-formation -- on the same degraded (disk-unavailable) path
+    /// review round 2 named.
     @Test
-    void createAll_fails_whenDhtCarriesEncryptionMarker_andDiskUnavailable_andNoKeyringSupplied() throws IOException {
+    void verifyDhtMarker_fails_whenDhtCarriesEncryptionMarker_andDiskUnavailable_andNoKeyringSupplied() throws IOException {
         var brokenDiskPath = tempDir.resolve("vault-disk-unavailable");
 
         Files.writeString(brokenDiskPath, "a plain file here forces LocalDiskTier construction to fail");
@@ -470,22 +470,63 @@ class StorageFactoryEncryptionTest {
                                      Option.some(dhtClient),
                                      Option.some(singleKeyRing("key-1")));
 
+        // #858: `createAll` performs no DHT I/O any more -- the marker is written only when
+        // `StorageFactory.verifyDhtMarker` runs post-formation, exactly as `AetherNode.start()`
+        // does. Without this call the reboot below would find no marker at all (absent -> success),
+        // never reaching the keyring-mismatch this test pins.
+        seeded.get(INSTANCE)
+              .dhtMarkerCheck()
+              .onPresent(check -> StorageFactory.verifyDhtMarker(dhtClient, check)
+                                                 .await()
+                                                 .onFailure(cause -> fail("writing the DHT marker on first boot failed: " + cause.message())));
+
         writeThrough(seeded.get(INSTANCE));
 
-        var result = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(brokenDiskPath, false)),
-                                              NODE_ID,
-                                              Option.some(dhtClient),
-                                              Option.none());
+        var reboot = createAllOrFail(Map.of(INSTANCE, storageConfigAt(brokenDiskPath, false)),
+                                     Option.some(dhtClient),
+                                     Option.none());
 
-        assertThat(result.isFailure()).as("booting a previously-encrypted DHT namespace with the disk tier "
-                                          + "unavailable and no keyring for this instance must fail closed, not "
-                                          + "silently return the bare DHT tier over existing ciphertext")
-                                      .isTrue();
-        result.onFailure(cause -> {
-            assertThat(cause.message()).contains(INSTANCE);
-            assertThat(cause.source().isPresent()).isTrue();
-            assertThat(cause.source().unwrap()).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class);
-        });
+        var check = reboot.get(INSTANCE).dhtMarkerCheck();
+
+        assertThat(check.isPresent()).as("an instance with a DHT tier must always carry a marker check for "
+                                         + "AetherNode.start() to verify post-formation")
+                                     .isTrue();
+
+        check.onPresent(c -> StorageFactory.verifyDhtMarker(dhtClient, c)
+                                           .await()
+                                           .onSuccess(_ -> fail("booting a previously-encrypted DHT namespace with the "
+                                                                + "disk tier unavailable and no keyring for this instance "
+                                                                + "must fail closed, not silently resolve the read gate "
+                                                                + "over existing ciphertext"))
+                                           .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class)));
+    }
+
+    /// #858 C2: two distinct causes must never be conflated. Marker get/put timing out after
+    /// formation (this test: the DHT client itself never answers) means `start()` never learned
+    /// whether a marker exists at all -- fails on `EncryptionError.DhtMarkerCheckTimedOut`. That is
+    /// the opposite situation from `EncryptedTierRequiresKeyring` (the marker WAS read successfully
+    /// and named a key id absent from the keyring): a never-resolving DHT client must never be
+    /// misreported as that cause. Uses the package-private `verifyDhtMarker(..., timeout)` test seam
+    /// (mirrors `MavenProtocolRoutesTimeoutTest`'s injected `SHORT_TIMEOUT`) so this proves the bound
+    /// in milliseconds rather than waiting out the real 30s `DHT_MARKER_TIMEOUT`.
+    @Test
+    void verifyDhtMarker_fails_withDhtMarkerCheckTimedOut_whenDhtClientNeverResponds() {
+        var neverRespondingClient = new NeverRespondingDHTClient();
+        var seeded = createAllOrFail(Map.of(INSTANCE, storageConfigAt(tempDir.resolve("vault-hang"), false)),
+                                     Option.some(neverRespondingClient),
+                                     Option.none());
+
+        var check = seeded.get(INSTANCE).dhtMarkerCheck();
+
+        assertThat(check.isPresent()).as("an instance with a DHT tier must always carry a marker check for "
+                                         + "AetherNode.start() to verify post-formation")
+                                     .isTrue();
+
+        check.onPresent(c -> StorageFactory.verifyDhtMarker(neverRespondingClient, c, SHORT_MARKER_TIMEOUT)
+                                           .await()
+                                           .onSuccess(_ -> fail("a marker check whose DHT round trip never resolves must "
+                                                                + "not succeed"))
+                                           .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.DhtMarkerCheckTimedOut.class)));
     }
 
     /// #253 SHOULD-FIX #1 (2026-09-04 ruling): the legacy/forward-direction counterpart to the test
@@ -516,6 +557,17 @@ class StorageFactoryEncryptionTest {
         var seeded = createAllOrFail(Map.of(INSTANCE, storageConfigAt(brokenDiskPath, true)),
                                      Option.some(dhtClient),
                                      Option.some(singleKeyRing("key-1")));
+
+        // #858: `DhtStorageTier.get()` is now gated on a per-instance readGate that only
+        // `StorageFactory.verifyDhtMarker` resolves -- mirroring the post-formation step
+        // `AetherNode.start()` runs before the node reports ready. An unresolved gate would hang
+        // the read below forever (`.await()` has no timeout), so verify the marker first, exactly
+        // as production does.
+        seeded.get(INSTANCE)
+              .dhtMarkerCheck()
+              .onPresent(check -> StorageFactory.verifyDhtMarker(dhtClient, check)
+                                                 .await()
+                                                 .onFailure(cause -> fail("verifying the DHT marker failed: " + cause.message())));
 
         seeded.get(INSTANCE)
               .instance()
@@ -569,6 +621,38 @@ class StorageFactoryEncryptionTest {
 
         private static String keyString(byte[] key) {
             return new String(key, StandardCharsets.UTF_8);
+        }
+    }
+
+    /// #858 C2: a `DHTClient` whose round trip never resolves, so `verifyDhtMarker`'s `.timeout(...)`
+    /// is the only thing that ever completes the call -- proving the timeout cause fires on a hung
+    /// client rather than only on an explicit test-injected failure. Mirrors
+    /// `MavenProtocolRoutesTimeoutTest`'s `neverResolvingHandler()` idiom (`Promise.promise()`, never
+    /// resolved).
+    private static final class NeverRespondingDHTClient implements DHTClient {
+        @Override
+        public Promise<Option<byte[]>> get(byte[] key) {
+            return Promise.promise(); // never resolves
+        }
+
+        @Override
+        public Promise<Unit> put(byte[] key, byte[] value) {
+            return Promise.promise(); // never resolves
+        }
+
+        @Override
+        public Promise<Boolean> remove(byte[] key) {
+            return Promise.promise(); // never invoked on this path; kept unresolved for consistency
+        }
+
+        @Override
+        public Promise<Boolean> exists(byte[] key) {
+            return Promise.promise(); // never invoked on this path; kept unresolved for consistency
+        }
+
+        @Override
+        public Partition partitionFor(byte[] key) {
+            return null;
         }
     }
 }
