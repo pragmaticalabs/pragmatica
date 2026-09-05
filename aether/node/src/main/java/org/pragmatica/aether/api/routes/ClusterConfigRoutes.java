@@ -55,6 +55,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -110,7 +112,9 @@ public final class ClusterConfigRoutes implements RouteSource {
                                          .toJson(this::handleUpgrade));
     }
 
-    private Promise<ClusterConfigResponse> buildConfigResponse() {
+    // Package-private (matching the #335/#835 handleScale precedent) so
+    // ClusterConfigRoutesNoConfigTest can drive the real route handler directly.
+    Promise<ClusterConfigResponse> buildConfigResponse() {
         return lookupClusterConfig().map(ClusterConfigRoutes::toConfigResponse);
     }
 
@@ -191,7 +195,9 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                                                                                                                           0L),
                                                                                                                        Option.none());
 
-    private Promise<ClusterStatusResponse> buildStatusResponse() {
+    // Package-private (matching the #335/#835 handleScale precedent) so
+    // ClusterConfigRoutesNoConfigTest can drive the real route handler directly.
+    Promise<ClusterStatusResponse> buildStatusResponse() {
         var node = nodeSupplier.get();
 
         return lookupClusterConfig().map(config -> assembleStatus(node, config));
@@ -713,8 +719,19 @@ public final class ClusterConfigRoutes implements RouteSource {
         return Result.success(source);
     }
 
-    private Promise<UpgradeResponse> handleUpgrade(UpgradeRequest request) {
-        return lookupClusterConfig().flatMap(stored -> initiateUpgrade(stored, request));
+    /// #837: this used to route unconditionally through [#lookupClusterConfig], which folds
+    /// absence into the bare, statusless [#ConfigNotFoundError] the other read routes use — an
+    /// operator saw a 500 that read like server failure right after a volume wipe. Same shape as
+    /// #335's [#handleScale] fix: branch on [#storedClusterConfig] directly so absence gets a
+    /// typed 409 naming the real recovery (`aether cluster bootstrap`), not a guess and not a 500.
+    // Package-private (matching the #335/#835 handleScale precedent) so
+    // ClusterConfigRoutesNoConfigTest can drive the real route handler directly.
+    Promise<UpgradeResponse> handleUpgrade(UpgradeRequest request) {
+        return storedClusterConfig().fold(() -> noConfigForUpgrade(request), stored -> initiateUpgrade(stored, request));
+    }
+
+    private static Promise<UpgradeResponse> noConfigForUpgrade(UpgradeRequest request) {
+        return new ClusterConfigError.NoConfigToUpgrade(request.targetVersion()).promise();
     }
 
     private Promise<UpgradeResponse> initiateUpgrade(ClusterConfigValue stored, UpgradeRequest request) {
@@ -804,7 +821,14 @@ public final class ClusterConfigRoutes implements RouteSource {
                : Option.empty();
     }
 
-    private enum ConfigNotFoundError implements Cause {
+    /// #837: statusless before this fix — `HttpStatusAware` was missing, so
+    /// `ProblemResponses.resolveStatus` fell through to its 500 default for every reader of
+    /// [#lookupClusterConfig] (`GET /api/v1/cluster/config`, `GET /api/v1/cluster/status`) after a
+    /// volume wipe left no stored config. Absence of a resource on a GET is 404, not server
+    /// failure — [#handleScale] and [#handleUpgrade] bypass this enum entirely (they need a
+    /// different status and a recovery-command message), but the two plain reads share this one
+    /// typed cause.
+    private enum ConfigNotFoundError implements Cause, HttpStatusAware {
         NOT_FOUND("No cluster configuration stored");
         private final String message;
         ConfigNotFoundError(String message) {
@@ -813,6 +837,10 @@ public final class ClusterConfigRoutes implements RouteSource {
         @Override
         public String message() {
             return message;
+        }
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.NOT_FOUND;
         }
     }
 }

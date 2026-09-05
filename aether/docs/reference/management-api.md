@@ -3051,6 +3051,16 @@ DERIVED from it — the sum of the `core` entries — rather than stored alongsi
 cannot drift. It is retained because most consumers only need the total, but it cannot say where
 those cores live, which is what `POST /api/v1/cluster/scale` needs in a multi-source cluster.
 
+**Not Found (404, changed 2026-09-04, #837).** No cluster configuration is stored yet (e.g. right
+after a `docker compose down -v` volume wipe, before the first `aether cluster bootstrap`). This
+used to answer HTTP 500 — a bare, statusless internal cause defaulted to the server-error status
+rather than naming the actual condition. Absence of a resource on a GET is a 404, not a server
+failure:
+```json
+{"detail": "No cluster configuration stored"}
+```
+Recovery: `aether cluster bootstrap <aether-cluster.toml>`.
+
 ### GET /api/v1/cluster/provisioning
 
 Provisioning diagnostics — answers "why is a core-membership deficit being or not being filled?" without log-scraping. Combines the leader's end-of-pass reconcile decision snapshot, the provisioning circuit-breaker state, and the most recent provisioning failure. Surfaced only on the leader that owns a Cluster Topology Manager; on any other node a `leader: false` body with zeroed counters and an explanatory `lastReason` is returned (the numeric fields are not meaningful in that case).
@@ -3126,6 +3136,17 @@ Get aggregated cluster status including node health, slice deployment info, and 
 }
 ```
 Per-node fields: `kvState` is the node's heartbeat-reported readiness (`SYNCING` / `READY` / `DRAINING`) as cached by the leader from the leader↔node heartbeat. Despite the legacy field name, this value is **never** read from, stored in, or committed to the KV-Store — it is node-authoritative and presence/heartbeat-derived; empty string when the leader has not yet received a heartbeat. `derivedStatus` is the operator-visible projection of presence (SWIM/QUIC) ∪ heartbeat-readiness ∪ quorum. See `aether/docs/specs/membership-architecture-v2-spec.md`.
+
+**Not Found (404, changed 2026-09-04, #837).** Status is assembled from the stored cluster config
+plus live node/membership data; with no config stored (e.g. right after a volume wipe, before the
+first bootstrap) there is no honest way to fill `clusterName`, `desiredVersion`, or
+`desiredCoreCount` — fabricating them, or adding a new "config absent" flag alongside the existing
+fields, would misrepresent a response this route has never returned before. This previously
+answered HTTP 500 for the same reason as `GET /api/v1/cluster/config` above (see its 404 note):
+```json
+{"detail": "No cluster configuration stored"}
+```
+Recovery: `aether cluster bootstrap <aether-cluster.toml>`.
 
 ### POST /api/v1/cluster/config
 
@@ -3341,6 +3362,16 @@ Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store 
 {
   "error": "Cluster is already at version 0.26.0"
 }
+```
+
+**Conflicts (HTTP 409, changed 2026-09-04, #837).** No cluster config is stored yet (e.g. right
+after a `docker compose down -v` volume wipe and fresh bootstrap). An upgrade request cannot create
+one: it carries only `targetVersion`, not the cluster name, topology, or deployment settings a
+config requires — mirroring `POST /api/v1/cluster/scale`'s identical refusal (see its Conflicts
+section above). This previously answered HTTP 500. The response names the missing recovery
+command:
+```json
+{"detail": "No cluster configuration stored. ... Run 'aether cluster bootstrap <aether-cluster.toml>' first, then retry 'aether cluster upgrade --version 0.26.0'."}
 ```
 
 ---
