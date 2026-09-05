@@ -112,4 +112,17 @@ public sealed interface EncryptionError extends Cause {
                  + " existing block(s) with no encryption marker -- tier may hold plaintext data";
         }
     }
+
+    /// #858 C2: the boot-time DHT encryption-marker get/put (run after cluster formation completes,
+    /// so the DHT client can route) did not resolve within `StorageFactory#DHT_MARKER_TIMEOUT` --
+    /// distinct from [EncryptedTierRequiresKeyring] (marker present, no keyring configured): this
+    /// fires when the DHT client itself never answered within the bound, so `start()` cannot tell
+    /// whether a marker exists at all. `start()` fails on it rather than falling through to either the
+    /// encrypted or the plaintext assumption.
+    record DhtMarkerCheckTimedOut(String instanceName, long timeoutMillis) implements EncryptionError {
+        @Override
+        public String message() {
+            return "DHT encryption-marker check for instance '" + instanceName + "' timed out after " + timeoutMillis + "ms";
+        }
+    }
 }

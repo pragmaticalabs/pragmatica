@@ -275,7 +275,7 @@ than 4 bytes, or a non-matching magic) is treated as **legacy plaintext**: enabl
 local-disk directory that already holds unmarked block files is refused at boot; a DHT tier has no
 directory to scan for that forward-direction check, so an unmarked plaintext block on the DHT tier is
 instead caught per block on read, exactly as before this ruling. The DHT tier does still have its own
-boot-time check, but in the opposite direction — see "Reverse-direction refusal" below. A block whose
+check, but in the opposite direction — see "Reverse-direction refusal" below. A block whose
 header names a key id absent from the configured keyring fails with `UnknownKeyId` rather than a
 truncated read.
 
@@ -284,14 +284,21 @@ existing plaintext; boot also refuses the opposite move — *disabling* encrypti
 `[storage.encryption]` entirely) over a tier that already holds ciphertext. Both local-disk and DHT
 tiers write a `.encryption-enabled` marker the first time encryption is enabled over them (a file at
 the disk directory's root; a key under the DHT tier's `<name>-blocks` namespace). If that marker is
-present at boot and no keyring resolves for the instance, boot fails with
-`EncryptedTierRequiresKeyring` naming the instance and the key id blocks were last written under,
-instead of silently handing back framed `AEC1...` bytes as if they were plaintext content on every
-read. Recovery: restore `[storage.encryption]` with that key id still resolvable in
-`[storage.encryption.keys]`, or migrate to a fresh, unmarked directory or DHT namespace (`#831`).
-This marker/refusal pair covers the per-instance disk/DHT path above; the built-in `streams`
-segment tiers' DHT namespace (`stream-segments`) has neither yet — only its disk side does — and is
-tracked separately as `#849`.
+present and no keyring resolves for the instance, boot fails with `EncryptedTierRequiresKeyring`
+naming the instance and the key id blocks were last written under, instead of silently handing back
+framed `AEC1...` bytes as if they were plaintext content on every read. Recovery: restore
+`[storage.encryption]` with that key id still resolvable in `[storage.encryption.keys]`, or migrate
+to a fresh, unmarked directory or DHT namespace (`#831`). This marker/refusal pair covers the
+per-instance disk/DHT path above; the built-in `streams` segment tiers' DHT namespace
+(`stream-segments`) has neither yet — only its disk side does — and is tracked separately as `#849`.
+**Timing differs by tier (`#858`):** the local-disk marker is checked synchronously during storage
+construction, before the node object exists — a disk read needs no cluster. The DHT marker cannot be:
+its `DHTClient` can only route once cluster formation resolves, so that check runs from `start()`,
+after formation resolves and before the node reports ready; a DHT tier serves no reads until its own
+check completes (gated internally, not observable as a separate config knob). A boot that fails this
+later DHT check stops the node the same way any other `start()` failure does: exit code `1`, the
+generic "fatal startup failure" path (`Main#exitWithError`) — see
+[`node-operations.md`](node-operations.md#exit-codes) for the full table.
 
 **Nonce bound.** Each block's 12-byte (96-bit) nonce is drawn from `SecureRandom`, not a counter.
 NIST SP 800-38D caps random-96-bit-nonce AES-GCM at 2³² encryptions under one key before nonce

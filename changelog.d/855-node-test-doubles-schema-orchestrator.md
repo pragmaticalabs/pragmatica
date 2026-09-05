@@ -1,0 +1,2 @@
+### Fixed (2026-09-04 — #855: `aether/node` test-compile broken by three #826-era `ManageableNode` doubles missing `schemaOrchestrator()`)
+- **Three hand-written test doubles didn't override the `schemaOrchestrator()` abstract method** added to `ManageableNode` by #543, leaving `aether/node`'s test sources uncompilable on the rc4 tip; the override is added to each, mirroring the existing `unsupported()`-double convention — test-only, no production code changed [verified: `aether/node` full suite, 1132 tests].

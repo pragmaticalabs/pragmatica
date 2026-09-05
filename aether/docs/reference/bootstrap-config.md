@@ -241,8 +241,7 @@ allow `CONTAINER`, `JVM`, or `EMBER`. A mismatch fails validation before provisi
 | `[operations.auto_heal] provision_stability_window` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
 | `[operations.auto_heal] decommissioned_retention` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
 | `[operations.auto_heal] swim_hints_ttl` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
-| `[operations.tls] auto_generate` | bool | `true` | Set `false` when providing `cluster_secret` externally. |
-| `[operations.tls] cluster_secret` | string | — | |
+| `[operations.tls] auto_generate` | bool | `true` | When `false`, the management API listener uses plain HTTP instead of an auto-generated self-signed cert. |
 | `[operations.tls] cert_ttl` | duration string | `"720h"` | |
 | `[operations.timeouts] health_check` | duration string | `"300s"` | |
 | `[operations.timeouts] quorum_formation` | duration string | `"600s"` | |
