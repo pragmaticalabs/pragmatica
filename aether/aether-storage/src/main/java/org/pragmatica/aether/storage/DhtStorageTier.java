@@ -128,7 +128,7 @@ public final class DhtStorageTier implements StorageTier {
     @Override
     public Promise<Unit> delete(BlockId id) {
         return admission().flatMap(_ -> dhtClient.remove(buildKey(id))
-                                                  .mapToUnit());
+                                                 .mapToUnit());
     }
 
     @Override
