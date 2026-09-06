@@ -578,6 +578,7 @@ public final class EmberCluster {
 
         nodeCounter.set(initialClusterSize);
         var startPromises = new ArrayList<Promise<NodeStartResult>>();
+        var firstFailure = Promise.<Unit> promise();
 
         for (int i = 0; i < initialClusterSize; i++) {
             var nodeInfo = initialNodes.get(i);
@@ -596,6 +597,7 @@ public final class EmberCluster {
 
             nodes.put(nodeIdStr, node);
             startPromises.add(node.start()
+                                  .onFailure(firstFailure::fail)
                                   .map(_ -> NodeStartResult.nodeStartResult(nodeIdStr,
                                                                             port,
                                                                             mgmtPort,
@@ -606,7 +608,38 @@ public final class EmberCluster {
                                                                                     Option.some(cause))));
         }
 
-        return Promise.allOf(startPromises).flatMap(this::handleStartResults);
+        var outcome = Promise.<Unit> promise();
+
+        Promise.allOf(startPromises).flatMap(this::handleStartResults).onResult(outcome::resolve);
+        firstFailure.onFailure(cause -> abortStart(cause).onResult(outcome::resolve));
+
+        return outcome;
+    }
+
+    /// #727: the first node-start failure aborts the whole start, instead of waiting for every node.
+    ///
+    /// A node whose start FAILS settles its promise at once, but a node whose start SUCCEEDS settles
+    /// only on consensus quorum (`AetherNode.start()` resolves inside `clusterNode.start()`). So once
+    /// enough peers have failed that quorum can no longer form, every survivor's start is pending
+    /// forever, `allOf` never settles, and [#start] hangs with no bound at all. Observed 2026-09-06 on
+    /// a 3-node cluster with two management ports already taken: the third node waited 500+ s for a
+    /// quorum of one, the caller's untimed `await()` then ignored JUnit's 8-minute interrupt, and only
+    /// failsafe's 30-minute fork wall ended it — with no failing test named. Whichever path settles
+    /// `outcome` first wins (`resolve` is compare-and-set); the other's stops are bounded, recovered,
+    /// and idempotent on an already-stopped node.
+    private Promise<Unit> abortStart(Cause cause) {
+        log.error("Cluster startup aborted on first node failure: {}", cause.message());
+        var stopPromises = nodes.values()
+                                .stream()
+                                .map(node -> node.stop()
+                                                 .timeout(NODE_TIMEOUT)
+                                                 .recover(_ -> Unit.unit()))
+                                .toList();
+
+        return Promise.allOf(stopPromises)
+                      .mapToUnit()
+                      .onSuccess(this::clearClusterStateOnFailure)
+                      .flatMap(_ -> cause.promise());
     }
 
     /// TEST SEAM (#509 probe) — start the instances [#start] created and held back, in their original
