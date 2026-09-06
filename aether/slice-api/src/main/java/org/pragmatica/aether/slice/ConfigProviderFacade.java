@@ -34,15 +34,22 @@ import org.pragmatica.lang.utils.Causes;
 ///   - `requireLong`/`requireDouble` parse through [org.pragmatica.config.ConfigSource]'s own safe
 ///     parsers, so a non-numeric value yields a named missing-key failure instead of throwing
 ///     `NumberFormatException` out of the factory.
-///   - `requireStringList` is implemented rather than refused. Values are comma-joined scalars, the
-///     same encoding `ProviderBasedConfigService#splitCommaList` reads, because `TomlDocument`
-///     flattens every value through `toString()` before a provider ever sees it.
+///   - `requireStringList` is implemented rather than refused, and accepts BOTH spellings. The
+///     idiomatic one is a native TOML array, `tags = ["a", "b"]`, which reaches every provider as
+///     Java's `List.toString()` — `[a, b]` — because `TomlDocument#getSection` stringifies each
+///     value before a provider sees it (review S4: the first draft split that on commas and
+///     returned `["[a", "b]"]` with no diagnostic). The fallback is the comma-joined scalar
+///     `"a, b"` that `ProviderBasedConfigService#splitCommaList` established. A nested array is not
+///     a string list and is refused by name rather than split into bracket fragments.
 ///
 /// An absent key is a failure for every `require*` method, list included. That is the word
 /// "require" meaning what it says; a caller that wants absence to be legal declares the component
-/// as `Option<T>`, which the generator routes to the `get*` methods instead.
+/// as `Option<T>`, which the generator routes to the `get*` methods instead. A PRESENT but EMPTY
+/// list (`tags = []` or `tags = ""`) is a value and succeeds as `[]` — "require" pins presence, and
+/// emptiness is something a list is allowed to be (review N2, decided here).
 record ConfigProviderFacade(ConfigurationProvider provider) implements ConfigFacade {
     private static final Fn1<Cause, String> MISSING_KEY = Causes.forOneValue("Required config key not found: %s");
+    private static final Fn1<Cause, String> NESTED_ARRAY = Causes.forOneValue("Config key %s holds a nested array, which is not a string list");
 
     static ConfigProviderFacade configProviderFacade(ConfigurationProvider provider) {
         return new ConfigProviderFacade(provider);
@@ -75,7 +82,11 @@ record ConfigProviderFacade(ConfigurationProvider provider) implements ConfigFac
 
     @Override
     public Result<List<String>> requireStringList(String section, String key) {
-        return require(section, key, this::readStringList);
+        var fullKey = fullKey(section, key);
+
+        return provider.getString(fullKey)
+                       .toResult(MISSING_KEY.apply(fullKey))
+                       .flatMap(raw -> parseStringList(fullKey, raw));
     }
 
     @Override
@@ -114,9 +125,26 @@ record ConfigProviderFacade(ConfigurationProvider provider) implements ConfigFac
         return section + "." + key;
     }
 
-    private Option<List<String>> readStringList(String fullKey) {
-        return provider.getString(fullKey)
-                       .map(ConfigProviderFacade::splitCommaList);
+    /// Package-private so the two spellings, the mixed and empty forms, and the nested refusal
+    /// are pinned directly against the parse rather than through a provider.
+    static Result<List<String>> parseStringList(String fullKey, String raw) {
+        var trimmed = raw.trim();
+
+        if (!isNativeArray(trimmed)) {
+            return Result.success(splitCommaList(trimmed));
+        }
+
+        var body = trimmed.substring(1, trimmed.length() - 1);
+
+        if (body.contains("[") || body.contains("]")) {
+            return NESTED_ARRAY.apply(fullKey).result();
+        }
+
+        return Result.success(splitCommaList(body));
+    }
+
+    private static boolean isNativeArray(String trimmed) {
+        return trimmed.length() >= 2 && trimmed.startsWith("[") && trimmed.endsWith("]");
     }
 
     private static List<String> splitCommaList(String raw) {

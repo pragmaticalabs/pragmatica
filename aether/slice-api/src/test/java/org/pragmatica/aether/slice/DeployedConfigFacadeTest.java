@@ -80,15 +80,60 @@ class DeployedConfigFacadeTest {
                                                                   .contains(SECTION + ".host"));
         }
 
-        /// Comma-joined scalars, the same encoding `ProviderBasedConfigService#splitCommaList`
-        /// reads, because `TomlDocument` flattens every value through `toString()` before any
-        /// provider sees it. The legacy `ConfigService` adapter refused this method outright, so a
+        /// The idiomatic spelling. A native TOML array `tags = ["alpha", "beta"]` reaches the
+        /// provider as `[alpha, beta]` — `TomlDocument` stringifies every value through
+        /// `toString()` — and must come back as the two elements, not as `["[alpha", "beta]"]`
+        /// (review S4: that is what the first draft returned, silently).
+        @Test
+        void stringListAcceptsANativeTomlArray() {
+            var config = facade(Map.of(SECTION + ".tags", "[alpha, beta]",
+                                        SECTION + ".single", "[alpha]"));
+
+            assertThat(config.requireStringList(SECTION, "tags").unwrap()).isEqualTo(List.of("alpha", "beta"));
+            assertThat(config.requireStringList(SECTION, "single").unwrap()).isEqualTo(List.of("alpha"));
+        }
+
+        /// The fallback: comma-joined scalars, the encoding `ProviderBasedConfigService#splitCommaList`
+        /// established. The legacy `ConfigService` adapter refused this method outright, so a
         /// `List<String>` config field could not have worked even with that adapter wired in.
         @Test
         void stringListSplitsOnCommasTrimmingAndDroppingEmpties() {
             var config = facade(Map.of(SECTION + ".tags", " alpha , beta ,, gamma "));
 
             assertThat(config.requireStringList(SECTION, "tags").unwrap()).isEqualTo(List.of("alpha", "beta", "gamma"));
+        }
+
+        /// Whitespace and empty slots inside a native array are trimmed and dropped exactly as they
+        /// are in the comma-joined form: the two spellings must agree on every input they share.
+        @Test
+        void stringListTreatsBothSpellingsAlike() {
+            var config = facade(Map.of(SECTION + ".native", " [ alpha ,, beta ] ",
+                                        SECTION + ".scalar", " alpha ,, beta "));
+
+            assertThat(config.requireStringList(SECTION, "native").unwrap()).isEqualTo(config.requireStringList(SECTION, "scalar").unwrap());
+            assertThat(config.requireStringList(SECTION, "native").unwrap()).isEqualTo(List.of("alpha", "beta"));
+        }
+
+        /// Present-but-empty is a VALUE (review N2, decided): `require` pins presence, and an empty
+        /// list is something a list is allowed to be. Both spellings of empty agree.
+        @Test
+        void stringListPresentButEmptySucceedsAsEmptyList() {
+            var config = facade(Map.of(SECTION + ".native", "[]",
+                                        SECTION + ".scalar", ""));
+
+            assertThat(config.requireStringList(SECTION, "native").unwrap()).isEmpty();
+            assertThat(config.requireStringList(SECTION, "scalar").unwrap()).isEmpty();
+        }
+
+        /// A nested array cannot be a string list. Refuse by name rather than hand back bracket
+        /// fragments that look like elements.
+        @Test
+        void stringListRefusesANestedArrayByName() {
+            var result = facade(Map.of(SECTION + ".tags", "[[alpha, beta], [gamma]]")).requireStringList(SECTION, "tags");
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains(SECTION + ".tags")
+                                                                  .contains("nested array"));
         }
 
         @Test
