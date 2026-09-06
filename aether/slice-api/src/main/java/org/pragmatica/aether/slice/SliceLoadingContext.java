@@ -289,9 +289,11 @@ public final class SliceLoadingContext implements SliceCreationContext {
             this.sliceCodec = sliceCodec;
         }
 
-        /// Deliberately NOT upgraded to the context overload. The no-context overload is the cached
-        /// path in `SpiResourceProvider` (one shared promise per type+section); upgrading it here
-        /// would silently drop that caching. Nothing is lost: every resource that encodes values —
+        /// Deliberately NOT upgraded to the context overload. Both overloads are cached in
+        /// `SpiResourceProvider` (#268): the no-context one under a single shared scope that no
+        /// slice's unload releases, the context one per slice. Upgrading here would move every
+        /// plain caller into the per-slice scope and have this slice's unload close a resource the
+        /// caller never attributed to it. Nothing is lost: every resource that encodes values —
         /// streams, publishers, interceptors — is provisioned through the context overload by
         /// generated code, and the stream factories reject a context-less provisioning outright.
         @Override

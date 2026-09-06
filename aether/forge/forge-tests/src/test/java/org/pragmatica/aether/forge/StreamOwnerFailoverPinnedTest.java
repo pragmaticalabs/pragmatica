@@ -11,6 +11,7 @@ import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.lang.io.TimeSpan;
 
 /// #491 — membership-PINNED variant of the RF=2 stream owner-kill failover proof (shared flow in
 /// [AbstractStreamOwnerFailover]). Identical to [StreamOwnerFailoverTest] except it pins membership two
@@ -66,7 +67,7 @@ class StreamOwnerFailoverPinnedTest extends AbstractStreamOwnerFailover {
         cluster.allNodes()
                .forEach(node -> node.clusterTopologyManager()
                                     .onPresent(ctm -> ctm.setAutoHealEnabled(false, PIN_REASON)
-                                                         .await()
+                                                         .await(TimeSpan.timeSpan(30).seconds())
                                                          .onFailure(cause -> {
                                                              throw new AssertionError("auto-heal pin failed: " + cause.message());
                                                          })));
