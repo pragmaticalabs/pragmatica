@@ -97,14 +97,21 @@ class SpiResourceProviderTest {
                                                                  .contains(String.class.getName()));
         }
 
+        /// #268 R4: a FAILED provisioning must not be memoized.
+        ///
+        /// This test previously asserted the opposite — that the two calls returned the same
+        /// promise. `String.class` has no registered factory, so the memoized promise it pinned
+        /// was a failed one, which is exactly the defect: an `Intermittent` failure classified for
+        /// retry-with-backoff got the same poisoned promise back on every retry.
         @Test
-        void provide_returnsSamePromise_whenCalledTwiceWithSameKey() {
+        void provide_doesNotMemoizeFailure_whenProvisioningFails() {
             var provider = spiResourceProvider((section, configClass) -> Result.success("dummy"));
 
             var promise1 = provider.provide(String.class, "test");
             var promise2 = provider.provide(String.class, "test");
 
-            assertThat(promise1).isSameAs(promise2);
+            assertThat(promise1.await(TIMEOUT).isFailure()).isTrue();
+            assertThat(promise2).isNotSameAs(promise1);
         }
     }
 
