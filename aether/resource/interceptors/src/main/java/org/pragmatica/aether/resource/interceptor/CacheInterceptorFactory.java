@@ -8,6 +8,7 @@ import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -41,19 +42,17 @@ public final class CacheInterceptorFactory implements ResourceFactory<CacheMetho
         var keyExtractor = (Fn1<Object, ?>) context.keyExtractor().or(Fn1.id());
 
         return createCache(config, context).map(cache -> cacheRegistry.acquire(config.cacheName(),
-                                                                               () -> cache))
-                          .map(cache -> new CacheMethodInterceptor(cache,
-                                                                   config.strategy(),
-                                                                   keyExtractor,
-                                                                   config.cacheName()))
+                                                                               () -> cache,
+                                                                               sharedCache -> new CacheMethodInterceptor(sharedCache,
+                                                                                                                         config.strategy(),
+                                                                                                                         keyExtractor,
+                                                                                                                         Option.present(config.cacheName()))))
                           .async();
     }
 
     @Override
     public Promise<Unit> close(CacheMethodInterceptor resource) {
-        if (resource.cacheName() != null) {
-            cacheRegistry.release(resource.cacheName(), resource.cache());
-        }
+        resource.cacheName().onPresent(name -> cacheRegistry.release(name, resource));
 
         return Promise.unitPromise();
     }

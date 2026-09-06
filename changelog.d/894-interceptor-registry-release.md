@@ -1,0 +1,4 @@
+### Fixed (2026-09-07 — #894: CacheInterceptorFactory and IdempotencyInterceptorFactory retain factory-level registries keyed by name that no release path prunes)
+- **Factory-level interceptor registries now release entries after the final holder closes, and repeated closes cannot evict a live sibling.** [verified: FactoryRegistryReleaseTest#cacheFactory_doubleClose_doesNotPruneSibling]
+- Cache and idempotency provisioning share one identity-aware registry entry per configured name, including the idempotency store and in-flight claims. [mechanism: NamedResourceRegistry tracks holder identity and removes an entry only after its holder set is empty]
+- With the unified release path from #900 in place, this change closes #894 by pruning the registries after the final release. [mechanism: Factory close hooks release their interceptor identity from the shared registry]

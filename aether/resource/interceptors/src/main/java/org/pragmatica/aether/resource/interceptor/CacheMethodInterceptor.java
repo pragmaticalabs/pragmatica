@@ -6,6 +6,7 @@ package org.pragmatica.aether.resource.interceptor;
 
 import org.pragmatica.aether.slice.MethodInterceptor;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
 
@@ -13,9 +14,9 @@ import org.pragmatica.lang.Promise;
 public record CacheMethodInterceptor(CacheBackend cache,
                                      CacheStrategy strategy,
                                      Fn1<Object, ?> keyExtractor,
-                                     String cacheName) implements MethodInterceptor {
+                                     Option<String> cacheName) implements MethodInterceptor {
     public CacheMethodInterceptor(CacheBackend cache, CacheStrategy strategy, Fn1<Object, ?> keyExtractor) {
-        this(cache, strategy, keyExtractor, null);
+        this(cache, strategy, keyExtractor, Option.empty());
     }
 
     @Override

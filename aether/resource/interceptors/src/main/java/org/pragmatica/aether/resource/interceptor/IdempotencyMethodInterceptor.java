@@ -42,11 +42,11 @@ import org.pragmatica.lang.Promise;
 public record IdempotencyMethodInterceptor(CacheBackend store,
                                            ConcurrentHashMap<Object, Promise<Object>> claims,
                                            Fn1<Object, ?> keyExtractor,
-                                           String storeName) implements MethodInterceptor {
+                                           Option<String> storeName) implements MethodInterceptor {
     public IdempotencyMethodInterceptor(CacheBackend store,
                                         ConcurrentHashMap<Object, Promise<Object>> claims,
                                         Fn1<Object, ?> keyExtractor) {
-        this(store, claims, keyExtractor, null);
+        this(store, claims, keyExtractor, Option.empty());
     }
 
     public static IdempotencyMethodInterceptor idempotencyMethodInterceptor(CacheBackend store,
