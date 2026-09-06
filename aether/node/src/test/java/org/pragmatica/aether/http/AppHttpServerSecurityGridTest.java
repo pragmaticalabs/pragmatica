@@ -49,10 +49,18 @@ import static org.pragmatica.lang.Unit.unit;
 /// #888 — the FULL `security_mode` x effective-policy grid, through a live `AppHttpServer` with a
 /// real `HttpClient`, one anonymous `GET` per cell.
 ///
-/// Four server configurations (`none`, `api-key`, `jwt` WITHOUT `jwks_url`, `jwt` WITH it) times six
-/// effective policies (`public`, `authenticated`, `role:admin`, `unspecified`, `api_key`,
-/// `bearer_token`). The expected status per cell is written down as a literal table, not derived from
-/// the code under test, so a change to any cell is a change to this file.
+/// Five server configurations (`none`, `api-key` WITH keys, `api-key` WITHOUT keys, `jwt` WITHOUT
+/// `jwks_url`, `jwt` WITH it) times six effective policies (`public`, `authenticated`, `role:admin`,
+/// `unspecified`, `api_key`, `bearer_token`). The expected status per cell is written down as a
+/// literal table, not derived from the code under test, so a change to any cell is a change to this
+/// file. These five are every behaviourally distinct configuration: `buildSecurityValidator` reads
+/// `jwtConfig` only under `JWT` and `apiKeys` only under `API_KEY`, and the request path reads the
+/// mode alone, so the raw 3 x 2 x 2 product collapses to these five (#902 review, section 2).
+///
+/// `api-key` WITHOUT keys is the shipped default (`ConfigLoader` defaults `security_mode` to
+/// `api-key`; `[app-http.api-keys]` may be empty), the configuration symmetric to #888 on the
+/// api-key side. It is fail-closed by construction -- `ApiKeySecurityValidator` answers
+/// `MISSING_API_KEY` to a header-less request whatever the key map holds -- and that row pins it.
 ///
 /// The #888 cells are `jwt`-without-config x every non-`public` policy. Before the fix that
 /// configuration installed `permitAllValidator`, whose context carries `Role.ADMIN`, so all five
@@ -76,10 +84,12 @@ class AppHttpServerSecurityGridTest {
     private HttpClient httpClient;
 
     /// The server-side configuration axis. `JWT_WITHOUT_CONFIG` is `security_mode = "jwt"` with no
-    /// `[app-http] jwks_url` — the #888 configuration.
+    /// `[app-http] jwks_url` — the #888 configuration. `API_KEY_WITHOUT_KEYS` is `security_mode =
+    /// "api-key"` with an empty `[app-http.api-keys]` — the shipped default.
     enum Setup {
         NONE,
         API_KEY,
+        API_KEY_WITHOUT_KEYS,
         JWT_WITHOUT_CONFIG,
         JWT_WITH_CONFIG;
 
@@ -87,6 +97,7 @@ class AppHttpServerSecurityGridTest {
             return switch (this) {
                 case NONE -> appHttp(SecurityMode.NONE, Option.empty());
                 case API_KEY -> AppHttpConfig.appHttpConfig(PORT, Set.of(VALID_API_KEY));
+                case API_KEY_WITHOUT_KEYS -> appHttp(SecurityMode.API_KEY, Option.empty());
                 case JWT_WITHOUT_CONFIG -> appHttp(SecurityMode.JWT, Option.empty());
                 case JWT_WITH_CONFIG -> appHttp(SecurityMode.JWT, Option.some(JwtConfig.jwtConfig(UNREACHABLE_JWKS).unwrap()));
             };
@@ -129,9 +140,11 @@ class AppHttpServerSecurityGridTest {
 
     /// The pinned grid, anonymous caller. Read: `none` refuses every auth-requiring policy before any
     /// validator runs (`NO_VALIDATOR_CONFIGURED`) and resolves `unspecified` to its global `public`
-    /// policy; `api-key` and both `jwt` columns resolve `unspecified` to their credential type and
-    /// refuse every non-`public` policy for want of a credential (or, for the mismatched credential
-    /// type, with `UNENFORCEABLE_POLICY`). No configuration serves anything but `public` anonymously.
+    /// policy; both `api-key` rows and both `jwt` rows resolve `unspecified` to their credential type
+    /// and refuse every non-`public` policy for want of a credential (or, for the mismatched
+    /// credential type, with `UNENFORCEABLE_POLICY`). `api-key` with no keys refuses identically to
+    /// `api-key` with keys: the header is checked before the key map is consulted. No configuration
+    /// serves anything but `public` anonymously.
     static final List<Cell> GRID = List.of(new Cell(Setup.NONE, Policy.PUBLIC, 200),
                                            new Cell(Setup.NONE, Policy.AUTHENTICATED, 401),
                                            new Cell(Setup.NONE, Policy.ROLE_ADMIN, 401),
@@ -144,6 +157,12 @@ class AppHttpServerSecurityGridTest {
                                            new Cell(Setup.API_KEY, Policy.UNSPECIFIED, 401),
                                            new Cell(Setup.API_KEY, Policy.API_KEY, 401),
                                            new Cell(Setup.API_KEY, Policy.BEARER_TOKEN, 401),
+                                           new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.PUBLIC, 200),
+                                           new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.AUTHENTICATED, 401),
+                                           new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.ROLE_ADMIN, 401),
+                                           new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.UNSPECIFIED, 401),
+                                           new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.API_KEY, 401),
+                                           new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.BEARER_TOKEN, 401),
                                            new Cell(Setup.JWT_WITHOUT_CONFIG, Policy.PUBLIC, 200),
                                            new Cell(Setup.JWT_WITHOUT_CONFIG, Policy.AUTHENTICATED, 401),
                                            new Cell(Setup.JWT_WITHOUT_CONFIG, Policy.ROLE_ADMIN, 401),
