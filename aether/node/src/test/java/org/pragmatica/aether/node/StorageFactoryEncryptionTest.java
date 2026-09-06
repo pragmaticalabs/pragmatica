@@ -168,6 +168,24 @@ class StorageFactoryEncryptionTest {
                           .isEqualTo(PLAINTEXT);
     }
 
+    /// Review round 2 (NOTE 7): every `Map.of()` case below leaves BOTH synthesized defaults on their
+    /// fixed absolute paths (`/data/aether/storage`, `/data/aether/content/{blocks,snapshots}`) and
+    /// relies on `/data` NOT being writable, so each degrades to memory+DHT
+    /// (`handleDiskTierUnavailable`) and no test touches the real filesystem. On a host where `/data`
+    /// IS writable (a root container) a keyring-present case would stamp `.encryption-enabled` on the
+    /// real disk and a later keyring-absent case would refuse to boot -- order-dependent, and hard to
+    /// read back to its cause. So fail HERE, loudly and before any write, rather than skip: a skip
+    /// would hide exactly the cases that host needs to hear about. Pre-existing for `artifacts`;
+    /// #783 widened the population to `content`.
+    private static void requireDefaultDiskRootUnwritable() {
+        assertThat(Files.isWritable(Path.of("/data"))).as("PRECONDITION: the synthesized defaults' fixed disk root "
+                                                          + "/data must not be writable on this host, or these "
+                                                          + "tests would write encryption markers onto the real "
+                                                          + "filesystem -- run them in a sandbox without a writable "
+                                                          + "/data")
+                                                      .isFalse();
+    }
+
     private static Map<String, StorageFactory.StorageSetup> createAllOrFail(Map<String, StorageConfig> configs,
                                                                              Option<DHTClient> dhtClient,
                                                                              Option<EncryptionKeyring> keyring) {
@@ -223,6 +241,8 @@ class StorageFactoryEncryptionTest {
     @Test
     void createAll_synthesizedDefaultArtifacts_isEncrypted_whenKeyringPresent() {
         var dhtClient = new InMemoryDHTClient();
+        requireDefaultDiskRootUnwritable();
+
         var setups = createAllOrFail(Map.of(), Option.some(dhtClient), Option.some(singleKeyRing("key-1")));
 
         assertThat(setups).containsKey(ARTIFACTS);
@@ -246,6 +266,8 @@ class StorageFactoryEncryptionTest {
     @Test
     void createAll_synthesizedDefaultArtifacts_staysPlaintext_whenKeyringAbsent() {
         var dhtClient = new InMemoryDHTClient();
+        requireDefaultDiskRootUnwritable();
+
         var setups = createAllOrFail(Map.of(), Option.some(dhtClient), Option.none());
 
         assertThat(setups).containsKey(ARTIFACTS);
@@ -299,6 +321,26 @@ class StorageFactoryEncryptionTest {
         assertThat(contentBlockPath).as("distinct basePaths: content's block file must not live anywhere under "
                                         + "artifacts' own disk directory tree")
                                     .isNotEqualTo(artifactsBlockPath);
+
+        // Review round 2 (NOTE 9): the snapshot half of the sibling derivation had no red-on-revert --
+        // no test read a snapshot file. `forceSnapshot` writes synchronously into the configured
+        // `snapshotPath`, so the file landing under the sibling `content/snapshots` directory (and not
+        // under artifacts' tree) pins `defaultContentConfig`'s `resolve("snapshots")`.
+        setups.get(CONTENT).snapshotManager().forceSnapshot();
+
+        var expectedContentSnapshotsDir = artifactsDir.resolveSibling(CONTENT).resolve("snapshots");
+
+        assertThat(Files.isDirectory(expectedContentSnapshotsDir)).as("content's synthesized default snapshotPath must "
+                                                                       + "be the sibling 'content/snapshots' directory")
+                                                                   .isTrue();
+        try (var entries = Files.list(expectedContentSnapshotsDir)) {
+            assertThat(entries.anyMatch(Files::isRegularFile)).as("forceSnapshot must have written at least one snapshot "
+                                                                  + "file there")
+                                                              .isTrue();
+        }
+        assertThat(expectedContentSnapshotsDir.startsWith(artifactsDir)).as("content's snapshots must not live under "
+                                                                            + "artifacts' own directory tree")
+                                                                        .isFalse();
     }
 
     /// #783 C2 (2026-09-04 ruling): the DHT tier's key prefix is `<instance name>-blocks`
@@ -315,6 +357,8 @@ class StorageFactoryEncryptionTest {
         dhtClient.put(CONTENT + "-blocks/" + legacyBlockId.hexString(), PLAINTEXT)
                  .await()
                  .onFailure(cause -> fail("seeding a raw legacy content block failed: " + cause.message()));
+
+        requireDefaultDiskRootUnwritable();
 
         var setups = createAllOrFail(Map.of(), Option.some(dhtClient), Option.none());
 
@@ -373,6 +417,8 @@ class StorageFactoryEncryptionTest {
                  .await()
                  .onFailure(cause -> fail("seeding a raw legacy content block failed: " + cause.message()));
 
+        requireDefaultDiskRootUnwritable();
+
         var setups = createAllOrFail(Map.of(), Option.some(dhtClient), Option.some(singleKeyRing("key-1")));
 
         assertThat(setups).containsKey(CONTENT);
@@ -408,6 +454,8 @@ class StorageFactoryEncryptionTest {
     @Test
     void createAll_synthesizedDefaultContent_isEncrypted_whenKeyringPresent() {
         var dhtClient = new InMemoryDHTClient();
+        requireDefaultDiskRootUnwritable();
+
         var setups = createAllOrFail(Map.of(), Option.some(dhtClient), Option.some(singleKeyRing("key-1")));
 
         assertThat(setups).containsKey(CONTENT);
@@ -430,6 +478,8 @@ class StorageFactoryEncryptionTest {
     @Test
     void createAll_synthesizedDefaultContent_staysPlaintext_whenKeyringAbsent() {
         var dhtClient = new InMemoryDHTClient();
+        requireDefaultDiskRootUnwritable();
+
         var setups = createAllOrFail(Map.of(), Option.some(dhtClient), Option.none());
 
         assertThat(setups).containsKey(CONTENT);
