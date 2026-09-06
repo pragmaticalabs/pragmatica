@@ -251,8 +251,12 @@ public interface SliceStore {
         /// Emits one INFO log per intrinsic key whose value is shadowed by an existing KV
         /// override at slice-load time (operator override preceded slice deploy) — see
         /// [#logShadowedKeys].
-        private Option<ConfigurationProvider> buildSliceCompositeFromClassLoader(Artifact artifact,
-                                                                                 ClassLoader classLoader) {
+        ///
+        /// Package-private (not private) so SliceStoreTest can pin the absence branches directly:
+        /// a malformed `resources.toml` drops the WHOLE composite, node keys included, and the
+        /// refusal a slice then receives from `ctx.config()` has to be true for that branch too
+        /// (#889 review S1).
+        Option<ConfigurationProvider> buildSliceCompositeFromClassLoader(Artifact artifact, ClassLoader classLoader) {
             return nodeComposite.flatMap(composite -> loadSliceIntrinsicProviderFromClassLoader(artifact, classLoader).map(intrinsic -> assembleSliceComposite(artifact,
                                                                                                                                                                intrinsic,
                                                                                                                                                                composite)));

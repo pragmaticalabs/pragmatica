@@ -63,7 +63,7 @@ public final class SliceLoadingContext implements SliceCreationContext {
         this.bufferingInvoker = new BufferingInvokerFacade(delegate.invoker());
         this.nodeCodec = nodeCodec;
         this.sliceCodec = nodeCodec.map(_ -> DeferredSliceCodec.deferredSliceCodec(delegate.sliceId()
-                                                                                           .or("<unnamed slice>")));
+                                                                                           .or(UNNAMED_SLICE)));
     }
 
     public static SliceLoadingContext sliceLoadingContext(SliceCreationContext delegate) {
@@ -160,7 +160,8 @@ public final class SliceLoadingContext implements SliceCreationContext {
     /// service not available", so a slice that needed configuration surfaced as a chain of
     /// missing-KEY errors and sent the reader to their `resources.toml` when the real fault was that
     /// the node had no configuration provider at all. [AbsentCompositeConfigFacade] says which of
-    /// those two things is missing, and names the slice that asked.
+    /// two layers is missing, lists the load-time conditions that leave it missing, and names the
+    /// slice that asked.
     ///
     /// Slices declaring no config section are unaffected either way: they never call `config()`.
     private ConfigFacade configWithoutComposite() {
