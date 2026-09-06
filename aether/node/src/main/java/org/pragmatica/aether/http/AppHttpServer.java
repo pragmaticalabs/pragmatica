@@ -405,8 +405,8 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// `public` routes with an empty context and answers `401 NO_VALIDATOR_CONFIGURED` to the rest.
     private static SecurityValidator jwtModeWithoutConfigValidator() {
         log.warn("[app-http] security_mode = \"jwt\" but no JWT configuration is present ([app-http] jwks_url"
-                 + " is missing) — every non-public app route will be REFUSED with 401 until it is set."
-                 + " Set jwks_url (and issuer/audience) or switch security_mode (#888).");
+                + " is missing) — every non-public app route will be REFUSED with 401 until it is set."
+                + " Set jwks_url (and issuer/audience) or switch security_mode (#888).");
 
         return SecurityValidator.denyUnlessPublicValidator();
     }
