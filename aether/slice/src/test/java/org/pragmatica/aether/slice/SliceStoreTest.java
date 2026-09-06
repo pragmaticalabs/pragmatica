@@ -23,7 +23,10 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
 
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -362,6 +365,100 @@ class SliceStoreTest {
 
         assertThat(composite.isEmpty()).isTrue();
     }
+
+    // === Slice-composite absence branches (#889 review S1) ===
+    //
+    // `AbsentCompositeConfigFacade` names four load-time conditions. Three of them leave the node
+    // WITH a provider, so a refusal that blamed "no configuration provider" was false there. The
+    // parse-failure branch is pinned here: the malformed slice file drops the whole composite (node
+    // keys included — the layering is all-or-nothing), and the refusal the slice receives must be
+    // true for that branch, i.e. it must name the slice's own layer as a candidate.
+
+    @Test
+    void buildSliceCompositeFromClassLoader_dropsWholeComposite_whenResourcesTomlIsMalformed() {
+        var store = storeWithNodeComposite(Map.of("deployed.endpoint.host", "node.internal"));
+
+        // Positive control: the same store and a parseable file yield a composite carrying BOTH
+        // layers. Without this, an empty result below could mean the loader stub never answered.
+        var composite = store.buildSliceCompositeFromClassLoader(artifact, resourcesTomlLoader(WELL_FORMED_TOML));
+
+        assertThat(composite.isPresent()).isTrue();
+        assertThat(composite.unwrap().getString("deployed.endpoint.port").unwrap()).isEqualTo("8080");
+        assertThat(composite.unwrap().getString("deployed.endpoint.host").unwrap()).isEqualTo("node.internal");
+
+        // The branch under test.
+        assertThat(store.buildSliceCompositeFromClassLoader(artifact, resourcesTomlLoader(MALFORMED_TOML)).isEmpty())
+                .describedAs("a malformed resources.toml drops the WHOLE composite, node keys included")
+                .isTrue();
+    }
+
+    @Test
+    void configRefusal_namesTheSliceLayer_whenResourcesTomlIsMalformed() {
+        var store = storeWithNodeComposite(Map.of("deployed.endpoint.host", "node.internal"));
+        var context = SliceLoadingContext.sliceLoadingContext(STUB_INVOKER, REFUSING_RESOURCES, artifact.asString());
+
+        context.setCompositeBuilder(loader -> store.buildSliceCompositeFromClassLoader(artifact, loader));
+        context.materializeComposite(resourcesTomlLoader(MALFORMED_TOML));
+
+        var result = context.config().requireString("deployed.endpoint", "host");
+
+        assertThat(result.isFailure()).describedAs("node.toml carries the key, but the dropped composite took it away").isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause.message()).contains("No configuration composite");
+            assertThat(cause.message()).describedAs("the node HAS a provider here; the refusal must not blame it alone")
+                                       .contains("resources.toml");
+            assertThat(cause.message()).contains(artifact.asString());
+        });
+    }
+
+    private static final String WELL_FORMED_TOML = """
+            [deployed.endpoint]
+            port = 8080
+            """;
+
+    // An unterminated array is a parse error by TomlParser's own contract (TomlError.unterminatedArray).
+    private static final String MALFORMED_TOML = """
+            [deployed.endpoint]
+            host = [
+            """;
+
+    private sliceStore storeWithNodeComposite(Map<String, String> nodeValues) {
+        return (sliceStore) SliceStore.sliceStore(registry,
+                                                  List.of(),
+                                                  sharedLoader,
+                                                  STUB_INVOKER,
+                                                  REFUSING_RESOURCES,
+                                                  SliceActionConfig.sliceActionConfig(),
+                                                  Option.some(IntrinsicConfigProvider.intrinsicConfigProvider("node.toml", nodeValues)),
+                                                  Option.empty(),
+                                                  Option.empty(),
+                                                  SliceLoadingContext.noResourceOverlay());
+    }
+
+    /// A classloader whose `META-INF/resources.toml` is the given text — the only resource the
+    /// composite builder reads through the slice loader.
+    private static ClassLoader resourcesTomlLoader(String content) {
+        return new ClassLoader(SliceStoreTest.class.getClassLoader()) {
+            @Override
+            public InputStream getResourceAsStream(String name) {
+                return "META-INF/resources.toml".equals(name)
+                       ? new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8))
+                       : super.getResourceAsStream(name);
+            }
+        };
+    }
+
+    private static final ResourceProviderFacade REFUSING_RESOURCES = new ResourceProviderFacade() {
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+            return Causes.cause("no resources in this test").promise();
+        }
+
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
+            return Causes.cause("no resources in this test").promise();
+        }
+    };
 
     // === Slice-intrinsic secret resolution (#269) ===
     //

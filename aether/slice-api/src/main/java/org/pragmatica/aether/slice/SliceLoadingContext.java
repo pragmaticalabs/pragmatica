@@ -29,6 +29,8 @@ import static org.pragmatica.lang.utils.Causes.cause;
 
 
 public final class SliceLoadingContext implements SliceCreationContext {
+    private static final String UNNAMED_SLICE = "<unnamed slice>";
+
     private final SliceCreationContext delegate;
     private final BufferingInvokerFacade bufferingInvoker;
     private final AtomicBoolean materialized = new AtomicBoolean(false);
@@ -60,8 +62,7 @@ public final class SliceLoadingContext implements SliceCreationContext {
         this.delegate = delegate;
         this.bufferingInvoker = new BufferingInvokerFacade(delegate.invoker());
         this.nodeCodec = nodeCodec;
-        this.sliceCodec = nodeCodec.map(_ -> DeferredSliceCodec.deferredSliceCodec(delegate.sliceId()
-                                                                                           .or("<unnamed slice>")));
+        this.sliceCodec = nodeCodec.map(_ -> DeferredSliceCodec.deferredSliceCodec(delegate.sliceId().or(UNNAMED_SLICE)));
     }
 
     public static SliceLoadingContext sliceLoadingContext(SliceCreationContext delegate) {
@@ -116,9 +117,66 @@ public final class SliceLoadingContext implements SliceCreationContext {
         return delegate.sliceId();
     }
 
+    /// The deployed slice's configuration, served from the materialized slice-composite
+    /// (`slice.toml` under the node-composite's operator KV overlay and node.toml) rather than from
+    /// the delegate's [NoOpConfigFacade] (#889).
+    ///
+    /// This is the seam the defect lived in. Every production path reaches slice creation through
+    /// the two- or three-argument `SliceCreationContext` factory, both of which pass the no-op, so
+    /// `ctx.config()` inside a deployed slice could never return a value and a slice declaring
+    /// `@ResourceQualifier(type = ConfigurationSection.class)` could not be created.
+    ///
+    /// Serving it HERE rather than threading a `ConfigFacade` in through
+    /// `DependencyResolver#resolveWithContext` is not a shortcut, it is the only placement that can
+    /// carry the right config: the slice-composite is LATE-BOUND — it cannot exist until the slice
+    /// classloader does, which is why the caller supplies a builder and not a value — so a facade
+    /// constructed at resolve time could only ever carry the node composite, silently missing the
+    /// slice's own `resources.toml` and every operator override layered onto it.
+    ///
+    /// Read through the [java.util.concurrent.atomic.AtomicReference] on each call for the same
+    /// reason: a facade captured at construction time would latch the pre-materialization absence.
+    /// `DependencyResolver#materializeThenResolve` attaches the composite strictly before the
+    /// generated factory runs — synchronously, deliberately — and that factory is the first reader.
+    ///
+    /// When no composite is attached the result is a REFUSAL that names itself, not a degradation:
+    /// see [#configWithoutComposite].
     @Override
     public ConfigFacade config() {
-        return delegate.config();
+        return sliceComposite.get()
+                             .<ConfigFacade> map(composite -> ConfigProviderFacade.configProviderFacade(sliceName(),
+                                                                                                        composite))
+                             .or(this::configWithoutComposite);
+    }
+
+    private String sliceName() {
+        return delegate.sliceId()
+                       .or(UNNAMED_SLICE);
+    }
+
+    /// No composite attached — decide between an explicitly supplied facade and a named refusal.
+    ///
+    /// A caller that built its context through the config-carrying `SliceCreationContext` overload
+    /// supplied a real facade on purpose, and that must win; the test kit and the deployment path
+    /// both leave the delegate at [NoOpConfigFacade] instead, and identity against that constant is
+    /// what separates the two cases.
+    ///
+    /// For the no-op case this deliberately does NOT fall through to the delegate. Doing so is the
+    /// obvious implementation and it degrades silently: `NoOpConfigFacade` fails with "Config
+    /// service not available", so a slice that needed configuration surfaced as a chain of
+    /// missing-KEY errors and sent the reader to their `resources.toml` when the real fault was that
+    /// the node had no configuration provider at all. [AbsentCompositeConfigFacade] says which of
+    /// two layers is missing, lists the load-time conditions that leave it missing, and names the
+    /// slice that asked.
+    ///
+    /// Slices declaring no config section are unaffected either way: they never call `config()`.
+    private ConfigFacade configWithoutComposite() {
+        var supplied = delegate.config();
+
+        if (supplied != NoOpConfigFacade.INSTANCE) {
+            return supplied;
+        }
+
+        return AbsentCompositeConfigFacade.absentCompositeConfigFacade(sliceName());
     }
 
     @Override
