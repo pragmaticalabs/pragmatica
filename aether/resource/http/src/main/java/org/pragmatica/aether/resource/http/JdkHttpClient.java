@@ -19,6 +19,7 @@ import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.AsyncCloseable;
 import org.pragmatica.lang.parse.Network;
 import org.pragmatica.lang.type.TypeToken;
 
@@ -31,7 +32,13 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Unit.unit;
 
 
-final class JdkHttpClient implements HttpClient {
+/// The `@Http` resource.
+///
+/// It implements [AsyncCloseable] because release dispatch sees only the resource OBJECT: this
+/// client HOLDS the [HttpOperations] that owns the Netty `EventLoopGroup` when the NETTY backend is
+/// selected, and a closeable held in a field is invisible to `ResourceFactory`'s default close no
+/// matter how wide that dispatch gets (#891). Closing the client closes the operations it owns.
+final class JdkHttpClient implements HttpClient, AsyncCloseable {
     private final HttpClientConfig config;
     private final HttpOperations operations;
     private volatile JsonMapper jsonMapper;
@@ -70,6 +77,17 @@ final class JdkHttpClient implements HttpClient {
     @Override
     public HttpClientConfig config() {
         return config;
+    }
+
+    /// Close the backing operations when they own releasable state.
+    ///
+    /// The JDK backend's operations hold nothing that needs releasing and implement no close
+    /// convention, so they take the success branch; the Netty backend's do, and are awaited.
+    @Override
+    public Promise<Unit> close() {
+        return operations instanceof AsyncCloseable closeable
+               ? closeable.close()
+               : Promise.unitPromise();
     }
 
     @Override
