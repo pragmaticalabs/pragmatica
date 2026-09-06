@@ -44,7 +44,7 @@ import org.pragmatica.lang.utils.Causes;
 record ConfigProviderFacade(ConfigurationProvider provider) implements ConfigFacade {
     private static final Fn1<Cause, String> MISSING_KEY = Causes.forOneValue("Required config key not found: %s");
 
-    static ConfigFacade configProviderFacade(ConfigurationProvider provider) {
+    static ConfigProviderFacade configProviderFacade(ConfigurationProvider provider) {
         return new ConfigProviderFacade(provider);
     }
 
@@ -75,7 +75,7 @@ record ConfigProviderFacade(ConfigurationProvider provider) implements ConfigFac
 
     @Override
     public Result<List<String>> requireStringList(String section, String key) {
-        return require(section, key, fullKey -> provider.getString(fullKey).map(ConfigProviderFacade::splitCommaList));
+        return require(section, key, this::readStringList);
     }
 
     @Override
@@ -112,6 +112,11 @@ record ConfigProviderFacade(ConfigurationProvider provider) implements ConfigFac
 
     private static String fullKey(String section, String key) {
         return section + "." + key;
+    }
+
+    private Option<List<String>> readStringList(String fullKey) {
+        return provider.getString(fullKey)
+                       .map(ConfigProviderFacade::splitCommaList);
     }
 
     private static List<String> splitCommaList(String raw) {

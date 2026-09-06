@@ -144,7 +144,7 @@ public final class SliceLoadingContext implements SliceCreationContext {
     @Override
     public ConfigFacade config() {
         return sliceComposite.get()
-                             .map(ConfigProviderFacade::configProviderFacade)
+                             .<ConfigFacade> map(ConfigProviderFacade::configProviderFacade)
                              .or(delegate::config);
     }
 
