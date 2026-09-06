@@ -1,13 +1,13 @@
 ### Fixed (2026-09-04 — #783: `content` storage instance bypassed demotion/GC and could never be encrypted)
 
-- **`StorageFactory.defaultContentStorage(Option<DHTClient>)` built the `content` `StorageInstance` (the shared per-node instance `ContentStore` resources provision through) entirely outside `storageSetups` — no `MetadataStore`, no `DemotionManager`, no `StorageGarbageCollector` — so `StorageMaintenanceDriver` (#250/#803, ticks every registered `StorageSetup`) never reached it and memory usage grew unbounded.** The same bypass also kept `content` out of the config-aware, keyring-aware `createAll`/`createOne` path (#253), so it could never be encrypted regardless of `[storage.encryption]` — #830 shipped a boot-time WARN naming this gap. `defaultContentStorage` is deleted; `createAll` now synthesizes a `content` entry through `createOne`, mirroring the synthesized `artifacts` default from #830, whenever `[storage.content]` isn't explicit
-  [mechanism: `StorageFactory.createAll` — `if (!configs.containsKey(CONTENT_NAME))` branch; `AetherNode` reads `storageSetups.get("content").instance()` in place of the old `defaultContentStorage` call; verified, in-JVM through the real `StorageFactory` + real composite managers + real `StorageMaintenanceDriver` (not multi-node): `StorageMaintenanceWiringTest#createAll_realMaintenanceDriverTick_reachesSynthesizedContentInstance` pins REGISTRATION and the #250 shared-DHT guard; `#createAll_realMaintenanceDriverTick_actuallyShrinksContentMemoryTier` pins that the memory cache ACTUALLY shrinks across one tick (memory-tier residency measured before/after from content's own `MetadataStore`, plus content's own `DemotionManager.stats().bytesMoved()`); `#createAll_realMaintenanceDriverTick_actuallyCollectsOrphanedContentBlock` pins that an orphaned block is ACTUALLY collected (disk file gone from the filesystem, lifecycle record gone, block unreadable). Mutation-probed: cutting `demotionManager.demote()` out of `StorageMaintenanceDriver.tick()` reddens ONLY the demotion test, and cutting `garbageCollector.collectGarbage()` reddens ONLY the GC test -- each pins its own property and neither is satisfied by the other's work]. Every instrument reads content's OWN manager, never the composite — a composite counter could be satisfied entirely by `artifacts`.
+- **`StorageFactory.defaultContentStorage(Option<DHTClient>)` built the `content` `StorageInstance` (the shared per-node instance `ContentStore` resources provision through) entirely outside `storageSetups` — no `MetadataStore`, no `DemotionManager`, no `StorageGarbageCollector` — so `StorageMaintenanceDriver` (#250/#803, ticks every registered `StorageSetup`) never reached it and memory usage grew unbounded.** The same bypass also kept `content` out of the config-aware, keyring-aware `createAll`/`createOne` path (#253), so it could never be encrypted regardless of `[storage.encryption]` — #830 shipped a boot-time WARN naming this gap. `defaultContentStorage` is deleted; `createAll` now synthesizes a `content` entry through `createOne`, mirroring the synthesized `artifacts` default from #830, whenever `[storage.content]` isn't explicit. One behaviour change this carries for operators who already HAD an explicit `[storage.content]` section: before this fix `createAll` built that section's setup but `AetherNode` ignored it and handed `ContentStore` the bare instance, so the section was inert for `ContentStore`; after it, the section governs `ContentStore` — a stray `memory_max_bytes`, `encrypted = true` or path in it takes effect on upgrade
+  [mechanism: `StorageFactory.createAll` — `if (!configs.containsKey(CONTENT_NAME))` branch; `AetherNode` reads `storageSetups.get("content").instance()` in place of the old `defaultContentStorage` call — that hand-off is pinned through a REAL BOOT by `AetherNodeContentStorageWiringBootTest#assembleNode_registersContentSetupInstance_asTheSpiStorageInstanceExtension`: the `StorageInstance` extension the node's `SpiResourceProvider` hands every factory (`ContentStoreFactory` included) `isSameAs` `node.storageSetups().get("content").instance()` and is not `artifacts`'. Red-before is review probe F — `registerRuntimeExtensions(..., artifactStorage)` at the call site — which left all 1166 `aether/node` tests green until this test existed (review round 2, BLOCKING 2); verified, in-JVM through the real `StorageFactory` + real composite managers + real `StorageMaintenanceDriver` (not multi-node): `StorageMaintenanceWiringTest#createAll_realMaintenanceDriverTick_reachesSynthesizedContentInstance` pins REGISTRATION and the #250 shared-DHT guard; `#createAll_realMaintenanceDriverTick_actuallyShrinksContentMemoryTier` pins that the memory cache ACTUALLY shrinks across one tick (memory-tier residency measured before/after from content's own `MetadataStore`, plus content's own `DemotionManager.stats().bytesMoved()`); `#createAll_realMaintenanceDriverTick_actuallyCollectsOrphanedContentBlock` pins that an orphaned block is ACTUALLY collected (disk file gone from the filesystem, lifecycle record gone, block unreadable). Mutation-probed: cutting `demotionManager.demote()` out of `StorageMaintenanceDriver.tick()` reddens ONLY the demotion test, and cutting `garbageCollector.collectGarbage()` reddens ONLY the GC test -- each pins its own property and neither is satisfied by the other's work]. Every instrument reads content's OWN manager, never the composite — a composite counter could be satisfied entirely by `artifacts`.
 - **`content` is now encrypted whenever `[storage.encryption]` is configured with a resolvable keyring, and stays plaintext otherwise, with no explicit `[storage.content]` section required** — `encrypted = keyring.isPresent()`, same rule as the synthesized `artifacts` default
   [verified: `StorageFactoryEncryptionTest#createAll_synthesizedDefaultContent_isEncrypted_whenKeyringPresent` / `#createAll_synthesizedDefaultContent_staysPlaintext_whenKeyringAbsent`].
 - **#830's boot-time WARN ("'content' storage instance is NOT covered") no longer fires** — content is covered like every other instance now
   [verified: `AetherNodeContentStorageWarnBootTest#assembleNode_doesNotWarnOnContentStorage_whenKeyringConfigured`, a real boot on ephemeral ports with log4j appender interception; red-before is re-adding the retired WARN call].
 - **The synthesized default's disk/snapshot paths are siblings of the synthesized `artifacts` default** (`artifactsDiskPath.resolveSibling("content")`, then `/blocks` and `/snapshots` — the same convention `streamDataDir` already uses), never the bare `StorageConfig.storageConfig()` default — reusing that bare default verbatim would have collided both instances' snapshot files (and disk blocks) in the same directory, since `assembleSetup` reads `snapshotPath` with no per-instance subdirectory of its own
-  [verified: `StorageFactoryEncryptionTest#createAll_synthesizedContent_usesSiblingDiskPath_distinctFromArtifacts` — two synthesized instances, distinct `basePath`s through the real factory].
+  [verified: `StorageFactoryEncryptionTest#createAll_synthesizedContent_usesSiblingDiskPath_distinctFromArtifacts` — two synthesized instances, distinct `basePath`s through the real factory; since review round 2 it also `forceSnapshot`s content and asserts the file lands under the sibling `content/snapshots`, so both halves of the derivation have a red-on-revert: `defaults.diskPath()` in place of `content/blocks` reddens it (probe H), and `defaults.snapshotPath()` in place of `content/snapshots` reddens it too].
 - **The DHT tier keeps the `content-blocks` key prefix**, so a block written under the old bypass path stays reachable through the new instance — `buildTiers` derives `dhtKeyPrefix = name + "-blocks"` from the instance name `"content"`, reproducing the old hardcoded prefix exactly, with no code change needed
   [verified: `StorageFactoryEncryptionTest#createAll_synthesizedContent_readsPreExistingBlock_underOldContentBlocksDhtPrefix` — seeds a block under `content-blocks/<id>` directly, reads it back through the new synthesized instance].
 - **Tier sizes:** `content`'s memory tier stays at 256 MB (`memory_max_bytes`, unchanged from the old bypass default) plus the optional DHT tier (unchanged); it now additionally gets a 10 GB disk tier (`disk_max_bytes`) between them — the old bypass path had no disk tier at all, so this is new capacity and new coverage, not a regression of the memory ceiling.
@@ -28,16 +28,23 @@
   [evidence: `StorageFactoryEncryptionTest#createAll_leavesNoDhtMarker_whenDiskGuardRefusesBeforeDhtEncryptionIsApplied`
   needed an explicit `[storage.content]` entry after this change, exactly as it already needed one for
   `artifacts`, and for the identical reason — the comment there records it].
-- **A written-but-never-read block is invisible to demotion** (`integrations/storage`, all instances,
-  not just `content`). `StorageInstance.writeToAllTiers` promotes into the memory cache tier and calls
-  `recordTierPresence` BEFORE `trackNewBlock` creates the lifecycle record; `MetadataStore.computeLifecycle`
-  is `computeIfPresent`, so that promotion record is silently dropped. The block is then PHYSICALLY in
-  the memory tier while the metadata store says it lives on disk alone, and
-  `DefaultDemotionManager.selectCandidates` — which picks from `listBlocksByTier(MEMORY)` — cannot see
-  it even with the tier over its high watermark. A subsequent read re-records presence, so demotion
-  works normally after write-then-read (which is why the demotion test above fills via normal use).
-  Consequence worth stating plainly: a write-only workload can hold the memory tier at its ceiling with
-  nothing demotable. Outside this ticket's module; reported, not fixed.
+- **A written-but-never-read block was invisible to demotion — true when this fragment was first
+  written, FIXED by #886 (PR #901) before this landed.** An earlier revision of this bullet reported
+  the defect as open, and gave the wrong mechanism (it blamed `computeLifecycle`'s `computeIfPresent`
+  dropping the promotion record; #886 shows the record was present and was lost to `trackNewBlock`'s
+  unconditional re-create one step later). #901 merged onto the release branch first; its fragment,
+  `changelog.d/886-write-only-block-demotion.md`, is authoritative for the defect and the mechanism,
+  and this entry no longer claims anything about either. What changed HERE as a consequence: the
+  demotion test used to fill content's memory tier write-then-read because the read was the only way
+  a written block became visible to the demoter, and its `fillMemoryTier` javadoc called that read
+  "REQUIRED". The read is dropped, not kept — a write-only fill is the workload acceptance item 3
+  asks about, and a retained read would keep that test green through a regression of #886 while
+  claiming to measure normal use. Pinned: with `trackNewBlock` mutated back to the unconditional
+  `createLifecycle`, `actuallyShrinksContentMemoryTier`'s baseline (`memoryBefore == 8`) goes red
+  (0 listed), so the demotion test now also depends on #886's fix and says so
+  [verified: `StorageMaintenanceWiringTest#fillMemoryTier`, write-only since review round 2; the reviewer's
+  probe G (read removed on the merged tree, before this change) was the positive control that the read
+  was no longer needed — 0 red of 8].
 - **Ticket wording vs. shipped behaviour:** acceptance item 3 asks that "orphaned DHT blocks are
   actually collected". They are deliberately NOT — `DefaultStorageGarbageCollector.deleteBlock` calls
   `StorageInstance.deleteFromPrivateTiers`, never `delete`, precisely so this node's local refcount
@@ -47,7 +54,7 @@
 ### Reconciliation with other unreleased fragments
 
 Two fragments in this same unreleased set describe the `content` gap as current and are superseded by
-this one — a reader assembling the release notes should take this fragment as authoritative for
+this one, and a third supersedes one finding of this one — a reader assembling the release notes should take this fragment as authoritative for
 `content`:
 
 - `changelog.d/253-storage-encryption-at-rest.md` states the `content` instance is "architecturally
@@ -58,7 +65,18 @@ this one — a reader assembling the release notes should take this fragment as 
   is routed through `createAll` and inherits the post-formation check automatically — exactly as that
   fragment predicted it would.
 
-Those two files are other tickets' artifacts and are left untouched here.
+- `changelog.d/253-storage-encryption-at-rest.md:73` cites
+  `AetherNodeContentStorageWarnBootTest#assembleNode_warnsOnContentStorageGap_whenKeyringConfigured` as
+  its `[verified:]` for the WARN. #783 renamed AND inverted that test to
+  `#assembleNode_doesNotWarnOnContentStorage_whenKeyringConfigured` (the WARN is retired, its absence is
+  what is pinned), so that citation now dangles — the pin #253's fragment points at exists under the
+  new name with the opposite assertion.
+- `changelog.d/886-write-only-block-demotion.md` (PR #901, merged before this) fixes the
+  write-only-block demotion defect this fragment's "Findings" section first reported as open, and
+  states that whichever PR lands second reconciles the text. This one landed second; the finding
+  above is rewritten accordingly and the demotion test's read-back workaround is dropped.
+
+Those three files are other tickets' artifacts and are left untouched here.
 
 ### Correction: what mutation probe A actually reddens
 
@@ -67,8 +85,9 @@ An earlier revision of this fragment claimed that reverting `createAll`'s conten
 reworded, because a probe result in a changelog is durable evidence and the next person deciding what
 is covered will rely on it.
 
-Re-run and measured, not reasoned about: reverting the hunk reddens **6 of the 8** #783 tests --
-`Tests run: 30, Failures: 6`. The six are the ones that let `createAll` synthesize `content`:
+Re-run and measured, not reasoned about: reverting the hunk reddens **6 of the 8** #783 tests in the
+two `StorageFactory`-level classes -- `Tests run: 30, Failures: 6`. The six are the ones that let
+`createAll` synthesize `content`:
 
 - `StorageFactoryEncryptionTest#createAll_synthesizedContent_usesSiblingDiskPath_distinctFromArtifacts`
 - `StorageFactoryEncryptionTest#createAll_synthesizedContent_readsPreExistingBlock_underOldContentBlocksDhtPrefix`
@@ -79,6 +98,14 @@ Re-run and measured, not reasoned about: reverting the hunk reddens **6 of the 8
 
 (The count moved from five to six when the upgrade-hazard test below was added; it is stated here as
 re-measured against the current base, not carried forward from the earlier run.)
+
+Scoped wider -- review round 2, SHOULD-FIX 4 -- the same probe over all four #783 test classes
+reddens **9 of 33** (`Tests run: 33, Failures: 6, Errors: 3`): the six above, plus both
+`AetherNodeContentStorageWarnBootTest` boots and the `AetherNodeContentStorageWiringBootTest` boot,
+each dying with the `Objects.requireNonNull` message at `AetherNode.assembleNode`'s
+`storageSetups.get("content")` invariant guard. Those three errors are the ONLY red-on-revert that
+guard has, and the message names its own reasoning rather than a bare NPE at `.instance()` -- which
+is what the guard is for.
 
 The two it does **NOT** redden are the acceptance-item-3 pair,
 `#createAll_realMaintenanceDriverTick_actuallyShrinksContentMemoryTier` and
@@ -109,11 +136,13 @@ encryption is **not opt-in**: it is triggered by keyring presence alone. An oper
 Consequence: content blocks written before the upgrade are plaintext, and after it they are read
 through an `EncryptingStorageTier`. They become **unreadable** -- and #253 ships detection, not
 migration, so there is **no migration path** for them. The failure is loud and typed, never a silent
-pass-through of unauthenticated bytes:
+pass-through of unauthenticated bytes, and it is per-read on the DHT tier:
 
-- **Disk tier** -- `wrapLocalDisk` refuses at boot when the directory holds block files with no
-  `.encryption-enabled` marker: a loud boot failure (`EnablingOverExistingPlaintext`).
-- **DHT tier** -- no directory to scan, so there is no forward-direction boot guard and
+- **Disk tier** -- does not apply to `content`'s pre-upgrade data. The pre-#783 bypass path had no
+  disk tier (memory + DHT only), so the new `content/blocks` directory is fresh; `wrapLocalDisk`'s
+  boot-time refusal over unmarked plaintext files (`EnablingOverExistingPlaintext`) is real code but
+  is unreachable for this upgrade. Every durable pre-upgrade content block is in the DHT.
+- **DHT tier** -- the whole hazard. No directory to scan, so there is no forward-direction boot guard and
   `verifyDhtMarker` stamps the namespace unconditionally; each pre-existing block then fails per-read
   with `EncryptionError.LegacyPlaintextBlock`
   [verified: `StorageFactoryEncryptionTest#createAll_synthesizedContent_failsClosedOnPreExistingPlaintext_whenKeyringPresent`
