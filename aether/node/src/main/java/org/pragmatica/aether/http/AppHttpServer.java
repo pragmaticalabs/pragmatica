@@ -392,7 +392,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private static SecurityValidator buildSecurityValidator(AppHttpConfig config) {
         return switch (config.securityMode()) {
             case API_KEY -> SecurityValidator.apiKeyValidator(config.apiKeys());
-            case JWT -> config.jwtConfig().map(SecurityValidator::jwtValidator).or(AppHttpServerAdapter::jwtModeWithoutConfigValidator);
+            case JWT -> config.jwtConfig().map(SecurityValidator::jwtValidator).or(() -> jwtModeWithoutConfigValidator(config.enabled()));
             case NONE -> SecurityValidator.permitAllValidator();
         };
     }
@@ -403,13 +403,24 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// state strictly MORE permissive than `security_mode = "none"`. A JWT node that cannot verify a
     /// token must refuse everything a token would have gated: `denyUnlessPublicValidator` serves
     /// `public` routes with an empty context and answers `401 NO_VALIDATOR_CONFIGURED` to the rest.
-    private static SecurityValidator jwtModeWithoutConfigValidator() {
-        log.warn("[app-http] security_mode = \"jwt\" but no JWT configuration is present ([app-http] jwks_url"
-                + " is missing) — every non-public app route will be REFUSED with 401 until it is set."
-                + " Set jwks_url (and issuer/audience) or switch security_mode (#888).");
+    ///
+    /// Logged at ERROR, not WARN (#902 review ruling): the operator declared `jwt` and nothing can
+    /// verify a token, so every non-public route on this node will answer `401` -- a declared-intent
+    /// contradiction, not a degraded default. Only logged for a server that will actually serve:
+    /// the validator is built at construction, before `start()` consults `enabled()`, and a disabled
+    /// server refuses nothing. Pinned by `AppHttpServerJwtMissingConfigLogTest`.
+    private static SecurityValidator jwtModeWithoutConfigValidator(boolean serverEnabled) {
+        if (serverEnabled) {
+            log.error(JWT_MISSING_CONFIG_MESSAGE);
+        }
 
         return SecurityValidator.denyUnlessPublicValidator();
     }
+
+    private static final String JWT_MISSING_CONFIG_MESSAGE = "[app-http] security_mode = \"jwt\" but [app-http] jwks_url is missing:"
+                                                     + " no JWT configuration is present, so every non-public app route on this"
+                                                     + " node will be REFUSED with 401. Set jwks_url (and issuer/audience) or"
+                                                     + " change security_mode, then restart the node (#888).";
 
     private static Option<HttpForwarder> buildHttpForwarder(NodeId selfNodeId,
                                                             HttpRouteRegistry routeRegistry,
