@@ -386,12 +386,29 @@ class AppHttpServerAdapter implements AppHttpServer {
         return ctx.stopped();
     }
 
+    /// The `NONE` arm may install `permitAllValidator` only because `handleRequestInScope` refuses
+    /// every auth-requiring policy with `NO_VALIDATOR_CONFIGURED` before the validator is consulted;
+    /// the `JWT` arm has no such pre-check, so its no-config fallback must itself deny (#888).
     private static SecurityValidator buildSecurityValidator(AppHttpConfig config) {
         return switch (config.securityMode()) {
             case API_KEY -> SecurityValidator.apiKeyValidator(config.apiKeys());
-            case JWT -> config.jwtConfig().map(SecurityValidator::jwtValidator).or(SecurityValidator.permitAllValidator());
+            case JWT -> config.jwtConfig().map(SecurityValidator::jwtValidator).or(AppHttpServerAdapter::jwtModeWithoutConfigValidator);
             case NONE -> SecurityValidator.permitAllValidator();
         };
+    }
+
+    /// #888: `security_mode = "jwt"` with no `[app-http] jwks_url` used to fall back to
+    /// `permitAllValidator`, which has no policy switch and hands EVERY caller a context holding
+    /// `Role.ADMIN` + `Role.SERVICE` — so `role:admin` routes were served to anonymous requests, a
+    /// state strictly MORE permissive than `security_mode = "none"`. A JWT node that cannot verify a
+    /// token must refuse everything a token would have gated: `denyUnlessPublicValidator` serves
+    /// `public` routes with an empty context and answers `401 NO_VALIDATOR_CONFIGURED` to the rest.
+    private static SecurityValidator jwtModeWithoutConfigValidator() {
+        log.warn("[app-http] security_mode = \"jwt\" but no JWT configuration is present ([app-http] jwks_url"
+                 + " is missing) — every non-public app route will be REFUSED with 401 until it is set."
+                 + " Set jwks_url (and issuer/audience) or switch security_mode (#888).");
+
+        return SecurityValidator.denyUnlessPublicValidator();
     }
 
     private static Option<HttpForwarder> buildHttpForwarder(NodeId selfNodeId,
