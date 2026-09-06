@@ -33,16 +33,16 @@ import static org.pragmatica.lang.Option.option;
 public final class SpiResourceProvider implements ResourceProvider {
     private final Map<Class<?>, List<ResourceFactory<?, ?>>> factories;
 
-    /// Consumer id standing for a caller the provider cannot attribute to a slice — the
-    /// context-free `provide(type, section)` overload, which carries no slice id (the wrapper
-    /// chain in `SliceLoadingContext` only injects one on the context overload).
+    /// Scope standing for a caller the provider cannot attribute to a slice — the context-free
+    /// `provide(type, section)` overload, which carries no slice id (the wrapper chain in
+    /// `SliceLoadingContext` only injects one on the context overload).
     ///
-    /// It pins the entry: `releaseAll(sliceId)` can never remove it, so a shared resource is never
-    /// closed while an unattributed holder may still be using it. That is R2 of #268 — the
-    /// last-consumer unload used to close a resource a plain-path caller still held. Turning an
+    /// Every unattributed caller shares this one scope, which is the genuinely SHARED cache the
+    /// plain overload has always been. It also pins: `releaseAll(sliceId)` can never equal it, so
+    /// an unattributed holder's resource is never closed out from under it (#268 R2). Turning an
     /// unattributable release into a bounded leak is the safe direction; the alternative is
-    /// use-after-close on a connection pool.
-    private static final String UNATTRIBUTED_CONSUMER = "<unattributed>";
+    /// use-after-close on a live connection pool.
+    private static final String UNATTRIBUTED_SCOPE = "<unattributed>";
 
     private final Map<CacheKey, Promise<Provisioned<?>>> promiseCache;
     private final Map<CacheKey, Set<String>> consumers;
@@ -139,8 +139,23 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// They used to implement incompatible models: the context overload registered a consumer but
     /// never cached, and the plain overload cached but never registered — so `releaseAll` drained a
     /// map nothing had been inserted into, and every context-provisioned resource leaked. Both now
-    /// memoize under the same key AND register a consumer, which is what makes refcounting and
-    /// close mean anything.
+    /// memoize AND register, which is what makes close mean anything.
+    ///
+    /// THE KEY CARRIES A SCOPE, and that is load-bearing rather than incidental. The context
+    /// overload is codec-scoped — `SliceLoadingContext.CodecAwareResourceProvider` injects the
+    /// DEPLOYED SLICE's codec as `Serializer`/`Deserializer` on every context call, because that
+    /// codec is the only one that knows the application's own record types (#526). A cache key
+    /// without a slice dimension would hand slice B the resource slice A built with A's codec,
+    /// making B's application-typed stream events and DHT cache entries unencodable. Scoping the
+    /// key is what keeps #526 fixed. `PublisherFactory` is a second, independent reason: it derives
+    /// a topic's namespace from the provisioning slice's `Artifact`, so a shared entry would let
+    /// whichever slice provisioned first decide the address for every other.
+    ///
+    /// Per-slice instances are NOT a behaviour change — the context overload was uncached, and
+    /// generated code provisions once per slice inside its static create path, so each slice
+    /// already got its own. What is new is that the instance is now memoized within the slice and
+    /// released when that slice unloads. Genuinely shared pools, if ever wanted, are a deliberate
+    /// design change with their own ticket — not something to acquire from a cache key.
     ///
     /// Registration happens BEFORE provisioning so a release racing an in-flight provision cannot
     /// close a resource the caller is about to receive; a provision that then FAILS evicts its own
@@ -149,9 +164,10 @@ public final class SpiResourceProvider implements ResourceProvider {
     private <T> Promise<T> provideShared(Class<T> resourceType,
                                          String configSection,
                                          Option<ProvisioningContext> contextOpt) {
-        var key = new CacheKey(resourceType, configSection);
+        var scope = provisioningScope(contextOpt);
+        var key = new CacheKey(resourceType, configSection, scope);
 
-        registerConsumer(key, contextOpt);
+        consumers.computeIfAbsent(key, _ -> ConcurrentHashMap.newKeySet()).add(scope);
         var cached = promiseCache.computeIfAbsent(key, _ -> createProvisioned(resourceType, configSection, contextOpt));
         // Attached OUTSIDE computeIfAbsent on purpose: an already-failed promise fires this
         // synchronously, and mutating a ConcurrentHashMap from inside its own mapping function is
@@ -162,12 +178,12 @@ public final class SpiResourceProvider implements ResourceProvider {
         return (Promise<T>) cached.map(Provisioned::resource);
     }
 
-    private void registerConsumer(CacheKey key, Option<ProvisioningContext> contextOpt) {
-        var consumerId = contextOpt.flatMap(context -> context.extension(String.class)
-                                                              .option())
-                                   .or(UNATTRIBUTED_CONSUMER);
-
-        consumers.computeIfAbsent(key, _ -> ConcurrentHashMap.newKeySet()).add(consumerId);
+    /// The slice a provisioning call belongs to, or [#UNATTRIBUTED_SCOPE] when the caller supplied
+    /// no context to carry one.
+    private static String provisioningScope(Option<ProvisioningContext> contextOpt) {
+        return contextOpt.flatMap(context -> context.extension(String.class)
+                                                    .option())
+                         .or(UNATTRIBUTED_SCOPE);
     }
 
     @Override
@@ -175,22 +191,36 @@ public final class SpiResourceProvider implements ResourceProvider {
         return factories.containsKey(resourceType);
     }
 
-    /// Release everything `sliceId` was the last consumer of.
+    /// Release everything scoped to `sliceId`, closing each through the factory that built it.
     ///
-    /// `CacheKey` carries no slice dimension, so resources ARE shared across slices by design and
-    /// the model is last-consumer-releases. Two #268 defects lived here: the close used
-    /// `factoryList.getFirst()` rather than the factory whose `supports()` actually matched (R3 —
-    /// wrong for the DB connectors, where async/R2DBC/JDBC all answer for `SqlConnector`), and the
-    /// drop-to-empty test was a check-then-act over `consumers` (R5).
+    /// Because the key carries a scope, a slice releases exactly its own entries; the shared
+    /// unattributed scope never matches a slice id and so is never released. Two #268 defects
+    /// lived here: the close used `factoryList.getFirst()` rather than the factory whose
+    /// `supports()` actually matched (R3 — wrong for the DB connectors, where async, R2DBC and
+    /// JDBC all answer for `SqlConnector`), and the drop-to-empty test was a check-then-act over
+    /// `consumers` (R5).
     ///
-    /// The emptiness test is now atomic: `computeIfPresent` returning `null` removed the mapping
-    /// under the bin lock, so exactly one caller observes the transition and `promiseCache.remove`
-    /// then hands the entry to exactly one closer.
+    /// The drop is now atomic: `computeIfPresent` returning `null` removed the mapping under the
+    /// bin lock, so exactly one caller observes the transition and `promiseCache.remove` then
+    /// hands the entry to exactly one closer, even if two releases race.
+    ///
+    /// NOTE on "last consumer": with a scoped key each entry has exactly one consumer identity, so
+    /// the set-drains-to-empty machinery below currently expresses per-scope release rather than
+    /// cross-slice refcounting. It is kept because it is what makes the drop atomic, and because a
+    /// deliberately shared scope would need it — but no test here claims cross-slice refcounting,
+    /// because nothing in the current model exercises it.
     @Override
     public Promise<Unit> releaseAll(String sliceId) {
         var closeFutures = new ArrayList<Promise<Unit>>();
 
         for (var key : Set.copyOf(consumers.keySet())) {
+            // The shared unattributed scope is released by nobody. Relying instead on "no real
+            // slice is named <unattributed>" would make the pin an accident of naming rather than
+            // an invariant, and a slice id that collided would quietly close a pool still in use.
+            if (UNATTRIBUTED_SCOPE.equals(key.scope())) {
+                continue;
+            }
+
             var remaining = consumers.computeIfPresent(key, (_, consumerSet) -> dropConsumer(consumerSet, sliceId));
 
             if (remaining != null) {
@@ -399,7 +429,10 @@ public final class SpiResourceProvider implements ResourceProvider {
         return (section, configClass) -> svc.config(section, configClass);
     }
 
-    private record CacheKey(Class<?> resourceType, String configSection) {}
+    /// Identity of a cached resource. `scope` is the provisioning slice's id, or
+    /// [#UNATTRIBUTED_SCOPE] for the context-free overload — see [#provideShared] for why the
+    /// slice dimension is required rather than optional.
+    private record CacheKey(Class<?> resourceType, String configSection, String scope) {}
 
     /// A provisioned resource together with the factory that actually built it, so the release
     /// path closes through the SAME factory rather than guessing at the head of the priority list.
