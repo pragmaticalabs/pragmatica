@@ -75,6 +75,14 @@ class SpiResourceProviderLifecycleTest {
     /// Implements neither convention: nothing to close, and that must stay a quiet success.
     private static final class InertResource {}
 
+    /// Breaks the convention: `close()` THROWS instead of returning a failed promise.
+    private static final class ThrowingCloseResource implements AsyncCloseable {
+        @Override
+        public Promise<Unit> close() {
+            throw new IllegalStateException("close threw synchronously");
+        }
+    }
+
     /// Factory with NO close override, so the default dispatch in [ResourceFactory] is under test.
     ///
     /// Hands out a DISTINCT resource per provisioning call and keeps them all. A single shared
@@ -125,6 +133,23 @@ class SpiResourceProviderLifecycleTest {
         @Override
         public Promise<SyncResource> provision(TrackedConfig config) {
             return Promise.success(resource);
+        }
+    }
+
+    private static final class ThrowingCloseFactory implements ResourceFactory<ThrowingCloseResource, TrackedConfig> {
+        @Override
+        public Class<ThrowingCloseResource> resourceType() {
+            return ThrowingCloseResource.class;
+        }
+
+        @Override
+        public Class<TrackedConfig> configType() {
+            return TrackedConfig.class;
+        }
+
+        @Override
+        public Promise<ThrowingCloseResource> provision(TrackedConfig config) {
+            return Promise.success(new ThrowingCloseResource());
         }
     }
 
@@ -614,6 +639,26 @@ class SpiResourceProviderLifecycleTest {
             provider.releaseAll("slice-a").await(TIMEOUT);
 
             assertThat(factory.resource.isClosed()).isTrue();
+        }
+
+        /// A close that THROWS instead of failing its promise must not abort the release of the
+        /// slice's other resources. The default dispatch calls `AsyncCloseable.close()` inline and
+        /// has no catch, and `releaseAll` applies the close through `flatMap` on a resolved entry,
+        /// so without the guard in `closeThroughOwningFactory` the exception escapes `releaseAll`
+        /// itself — before or after the well-behaved resource, depending on iteration order, but
+        /// out of the loop either way (review of #900, NOTE 2).
+        @Test
+        void releaseAll_stillClosesTheOthers_whenOneCloseThrows() {
+            var wellBehaved = new AsyncFactory();
+            var provider = providerOf(wellBehaved, new ThrowingCloseFactory());
+
+            provider.provide(AsyncResource.class, SECTION, contextFor("slice-a")).await(TIMEOUT);
+            provider.provide(ThrowingCloseResource.class, SECTION, contextFor("slice-a")).await(TIMEOUT);
+
+            var released = provider.releaseAll("slice-a").await(TIMEOUT);
+
+            assertThat(released.isSuccess()).isTrue();
+            assertThat(wellBehaved.provisioned.getFirst().isClosed()).isTrue();
         }
 
         /// A resource implementing neither convention has nothing to close; the release must still

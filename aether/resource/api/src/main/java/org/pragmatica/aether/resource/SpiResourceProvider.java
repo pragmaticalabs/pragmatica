@@ -25,6 +25,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Option.option;
 
@@ -259,11 +260,31 @@ public final class SpiResourceProvider implements ResourceProvider {
         return Promise.allOf(closeFutures).map(_ -> Unit.unit());
     }
 
+    /// Close through the factory that built the resource, with a close that THROWS turned into a
+    /// failed promise rather than trusted to the convention.
+    ///
+    /// `releaseAll` applies this inline through `flatMap` on an already-resolved entry, so an
+    /// exception escaping a factory's `close` — or an `AsyncCloseable.close()` the default
+    /// dispatch invokes — would exit the release loop with every later entry still unreleased.
+    /// Lifting it keeps "one bad resource cannot block the others" true for throws as well as for
+    /// failed promises (review of #900, NOTE 2). The default close already absorbs and logs its own
+    /// failures; this is the guard for the overrides and the implementors that do not.
     @SuppressWarnings("unchecked")
     private static Promise<Unit> closeThroughOwningFactory(Provisioned<?> provisioned) {
         var factory = (ResourceFactory<Object, ?>) provisioned.factory();
 
-        return factory.close(provisioned.resource());
+        return Result.lift(throwable -> closeThrew(provisioned, throwable), () -> factory.close(provisioned.resource()))
+                     .fold(Promise::failure, close -> close);
+    }
+
+    private static Cause closeThrew(Provisioned<?> provisioned, Throwable throwable) {
+        System.getLogger(SpiResourceProvider.class.getName())
+              .log(System.Logger.Level.WARNING,
+                   "Resource close threw for " + provisioned.resource().getClass().getName()
+                  + " — the resource is released from the cache anyway",
+                   throwable);
+
+        return Causes.fromThrowable(throwable);
     }
 
     @SuppressWarnings("unchecked")
