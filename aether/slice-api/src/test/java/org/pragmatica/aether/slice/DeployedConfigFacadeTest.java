@@ -113,12 +113,33 @@ class DeployedConfigFacadeTest {
     /// The seam itself: which facade a loading context hands to the slice factory.
     @Nested
     class LoadingContextSeam {
+        /// Absence must REFUSE by name, not degrade. Falling through to the no-op would report
+        /// "Config service not available" — a missing-key shape — and send the reader to their
+        /// resources.toml when the node in fact has no configuration provider at all.
         @Test
-        void configFallsBackToTheNoOpUntilACompositeIsAttached() {
-            var context = SliceLoadingContext.sliceLoadingContext(noOpInvoker(), noOpResources(), "slice");
+        void configRefusesByNameWhenNoCompositeIsAttached() {
+            var context = SliceLoadingContext.sliceLoadingContext(noOpInvoker(), noOpResources(), "org.example:probe:1.0.0");
+            var result = context.config().requireString(SECTION, "host");
 
-            assertThat(context.config().requireString(SECTION, "host").isFailure()).describedAs("with no composite there is nothing to serve; this is the pre-fix state of every deployment")
-                                                                                    .isTrue();
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> {
+                       assertThat(cause.message()).describedAs("the failure must name the missing SOURCE, not look like a missing key")
+                                                   .contains("No configuration composite");
+                       assertThat(cause.message()).describedAs("the operator has a cluster of slices and needs to know which one asked")
+                                                   .contains("org.example:probe:1.0.0");
+                       assertThat(cause.message()).contains(SECTION + ".host");
+                   });
+        }
+
+        /// A caller that supplied a real facade through the config-carrying `SliceCreationContext`
+        /// overload meant it, and must not be overridden by the refusal above.
+        @Test
+        void anExplicitlySuppliedFacadeWinsOverTheRefusal() {
+            var supplied = ConfigProviderFacade.configProviderFacade(provider(Map.of(SECTION + ".host", "supplied.host")));
+            var delegate = SliceCreationContext.sliceCreationContext(noOpInvoker(), noOpResources(), "slice", supplied);
+            var context = SliceLoadingContext.sliceLoadingContext(delegate);
+
+            assertThat(context.config().requireString(SECTION, "host").unwrap()).isEqualTo("supplied.host");
         }
 
         @Test

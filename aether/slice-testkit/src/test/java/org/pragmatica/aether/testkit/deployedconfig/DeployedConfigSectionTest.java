@@ -84,18 +84,22 @@ class DeployedConfigSectionTest {
 
     /// The premise check, and the reason the assertion above means what it says.
     ///
-    /// With no node-composite there is no slice-composite to serve, `SliceLoadingContext#config`
-    /// falls back to the delegate's `NoOpConfigFacade`, and creation must FAIL. If this passed,
-    /// the test above would be satisfied by something other than the config path — and the
+    /// With no node-composite there is no slice-composite to serve and creation must FAIL. If this
+    /// passed, the test above would be satisfied by something other than the config path — and the
     /// pre-#889 runtime is exactly this state on every deployment.
+    ///
+    /// It also pins the failure's SHAPE: absence refuses by name rather than degrading into the
+    /// no-op's missing-key wording.
     @Test
     void deployedSlice_failsToCreate_whenNoConfigurationIsAvailable(@TempDir Path tempDir) throws Exception {
         var jar = packageSliceJar(tempDir);
         var result = storeFor(jar, Option.none()).loadSlice(artifact())
                                                  .await(TIMEOUT);
 
-        assertThat(result.isFailure()).describedAs("a config-section slice cannot be created against a facade that answers nothing")
+        assertThat(result.isFailure()).describedAs("a config-section slice cannot be created when there is no configuration to read")
                                       .isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).describedAs("the refusal must name the missing SOURCE and the slice, not read as a missing key")
+                                                              .contains("No configuration composite"));
     }
 
     /// Cross-loader sanity: the slice really was defined by the deployment's own child-first loader,
