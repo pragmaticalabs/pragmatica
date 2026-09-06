@@ -67,14 +67,18 @@ An earlier revision of this fragment claimed that reverting `createAll`'s conten
 reworded, because a probe result in a changelog is durable evidence and the next person deciding what
 is covered will rely on it.
 
-Re-run and measured, not reasoned about: reverting the hunk reddens **5 of the 7** #783 tests --
-`Tests run: 28, Failures: 5`. The five are the ones that let `createAll` synthesize `content`:
+Re-run and measured, not reasoned about: reverting the hunk reddens **6 of the 8** #783 tests --
+`Tests run: 30, Failures: 6`. The six are the ones that let `createAll` synthesize `content`:
 
 - `StorageFactoryEncryptionTest#createAll_synthesizedContent_usesSiblingDiskPath_distinctFromArtifacts`
 - `StorageFactoryEncryptionTest#createAll_synthesizedContent_readsPreExistingBlock_underOldContentBlocksDhtPrefix`
+- `StorageFactoryEncryptionTest#createAll_synthesizedContent_failsClosedOnPreExistingPlaintext_whenKeyringPresent`
 - `StorageFactoryEncryptionTest#createAll_synthesizedDefaultContent_isEncrypted_whenKeyringPresent`
 - `StorageFactoryEncryptionTest#createAll_synthesizedDefaultContent_staysPlaintext_whenKeyringAbsent`
 - `StorageMaintenanceWiringTest#createAll_realMaintenanceDriverTick_reachesSynthesizedContentInstance`
+
+(The count moved from five to six when the upgrade-hazard test below was added; it is stated here as
+re-measured against the current base, not carried forward from the earlier run.)
 
 The two it does **NOT** redden are the acceptance-item-3 pair,
 `#createAll_realMaintenanceDriverTick_actuallyShrinksContentMemoryTier` and
