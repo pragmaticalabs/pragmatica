@@ -5,6 +5,7 @@
 package org.pragmatica.aether.resource;
 
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -158,6 +159,51 @@ class SpiResourceProviderLifecycleTest {
             return attempts.incrementAndGet() == 1
                    ? Causes.cause("transient provisioning failure").promise()
                    : Promise.success(new AsyncResource());
+        }
+    }
+
+    /// Fails the first provision ASYNCHRONOUSLY — the promise is returned pending and failed from
+    /// another thread, only once the test says so — and succeeds afterwards.
+    ///
+    /// [FlakyFactory] fails synchronously, which means every continuation the caller chains sees an
+    /// already-resolved promise and runs inline; the ORDER in which the provider's eviction and the
+    /// caller's retry are registered is then invisible. A pending failure is the only way to
+    /// observe that order, and it is the production shape: a connector fails on a worker thread.
+    private static final class AsyncFlakyFactory implements ResourceFactory<AsyncResource, TrackedConfig> {
+        private final AtomicInteger attempts = new AtomicInteger();
+        private final CountDownLatch releaseFailure = new CountDownLatch(1);
+
+        @Override
+        public Class<AsyncResource> resourceType() {
+            return AsyncResource.class;
+        }
+
+        @Override
+        public Class<TrackedConfig> configType() {
+            return TrackedConfig.class;
+        }
+
+        @Override
+        public Promise<AsyncResource> provision(TrackedConfig config) {
+            if (attempts.incrementAndGet() > 1) {
+                return Promise.success(new AsyncResource());
+            }
+
+            return Promise.promise(promise -> Thread.ofVirtual().start(() -> failWhenReleased(promise)));
+        }
+
+        private void failWhenReleased(Promise<AsyncResource> promise) {
+            try {
+                releaseFailure.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+
+            promise.fail(Causes.cause("transient provisioning failure"));
+        }
+
+        void releaseFailure() {
+            releaseFailure.countDown();
         }
     }
 
@@ -436,6 +482,31 @@ class SpiResourceProviderLifecycleTest {
 
             assertThat(first.isFailure()).isTrue();
             assertThat(second.isSuccess()).isTrue();
+        }
+
+        /// The eviction must run BEFORE the caller can observe the failure, not merely eventually.
+        ///
+        /// The retry here is issued from the failure continuation itself (`fold` is a dependent
+        /// transform, so it runs on the resolving thread the moment the failure lands). Evicting
+        /// through an `onFailure` EVENT ran after every dependent, so a retry from the continuation
+        /// called `computeIfAbsent` first and received the memoized failure (review of #900, SF-1:
+        /// 25 of 50 retries). Registering the eviction as a dependent ahead of the caller's `map`
+        /// makes this deterministic: with the event-based eviction it fails every time, because the
+        /// failure is released only after the retry is chained.
+        @Test
+        void provide_retryIssuedFromTheFailureContinuation_provisionsAfresh() {
+            var factory = new AsyncFlakyFactory();
+            var provider = providerOf(factory);
+
+            var retried = provider.provide(AsyncResource.class, SECTION, contextFor("slice-a"))
+                                  .fold(first -> first.isSuccess()
+                                                 ? Promise.resolved(first)
+                                                 : provider.provide(AsyncResource.class, SECTION, contextFor("slice-a")));
+
+            factory.releaseFailure();
+
+            assertThat(retried.await(TIMEOUT).isSuccess()).isTrue();
+            assertThat(factory.attempts.get()).isEqualTo(2);
         }
     }
 

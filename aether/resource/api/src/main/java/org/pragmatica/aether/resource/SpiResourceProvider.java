@@ -169,13 +169,20 @@ public final class SpiResourceProvider implements ResourceProvider {
 
         consumers.computeIfAbsent(key, _ -> ConcurrentHashMap.newKeySet()).add(scope);
         var cached = promiseCache.computeIfAbsent(key, _ -> createProvisioned(resourceType, configSection, contextOpt));
-        // Attached OUTSIDE computeIfAbsent on purpose: an already-failed promise fires this
+
+        // The eviction is a DEPENDENT TRANSFORM (`withFailure`), not an `onFailure` event, and it
+        // is registered AHEAD of the caller's `map`. Dependents run on the resolving thread in
+        // registration order, before any event reaches the executor, so by the time a caller's
+        // continuation can observe the failure the entry is already gone and a retry issued from
+        // that continuation provisions afresh. As an event it ran AFTER the caller's continuation,
+        // which handed a retry the memoized failure (review of #900, SF-1).
+        //
+        // Attached OUTSIDE computeIfAbsent on purpose: an already-failed promise applies this
         // synchronously, and mutating a ConcurrentHashMap from inside its own mapping function is
         // forbidden. `remove(key, cached)` is conditional, so re-attaching per call is idempotent
         // and can never evict a newer entry.
-        cached.onFailure(_ -> promiseCache.remove(key, cached));
-
-        return (Promise<T>) cached.map(Provisioned::resource);
+        return (Promise<T>) cached.withFailure(_ -> promiseCache.remove(key, cached))
+                                  .map(Provisioned::resource);
     }
 
     /// The slice a provisioning call belongs to, or [#UNATTRIBUTED_SCOPE] when the caller supplied
