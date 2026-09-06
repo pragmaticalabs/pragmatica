@@ -43,13 +43,13 @@ import org.pragmatica.storage.StorageTier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 public final class StorageFactory {
     private static final Logger log = LoggerFactory.getLogger(StorageFactory.class);
-    private static final long DEFAULT_MEMORY_BYTES = 256L * 1024 * 1024;
     private static final String STREAMS_NAME = "streams";
     /// Hot-ring mirror in the memory tier — small; the live ring already holds recent events,
     /// the memory tier is only the first read-waterfall hop for just-sealed segment blocks.
@@ -283,6 +283,22 @@ public final class StorageFactory {
                                   dhtClient,
                                   keyring));
         }
+        // #783 ruling (2026-09-04): `content` -- the shared per-node StorageInstance ContentStore
+        // resources provision through (registered as an SPI extension in AetherNode) -- used to be
+        // built by a separate, keyring-less `defaultContentStorage` entirely outside this map: no
+        // MetadataStore, no DemotionManager/StorageGarbageCollector, so `StorageMaintenanceDriver`
+        // (fanned out over `storageSetups`, see #250/#803) never ticked it, and it could never be
+        // encrypted regardless of `[storage.encryption]`. Synthesizing it here, exactly like the
+        // `artifacts` branch above, routes it through the SAME config-aware, keyring-aware
+        // `createOne` path: real demotion/GC, and `encrypted = keyring.isPresent()` unless an
+        // explicit `[storage.content]` section overrides it.
+        if (!configs.containsKey(CONTENT_NAME)) {
+            results.add(createOne(CONTENT_NAME,
+                                  defaultContentConfig(configs, keyring.isPresent()),
+                                  nodeId,
+                                  dhtClient,
+                                  keyring));
+        }
 
         return Result.firstFailureOf(results).map(setups -> setups.stream()
                                                                   .collect(Collectors.toMap(StorageSetup::name,
@@ -307,22 +323,47 @@ public final class StorageFactory {
     }
 
     private static final String ARTIFACTS_NAME = "artifacts";
+    private static final String CONTENT_NAME = "content";
 
-    /// Default `StorageInstance` backing slice-facing `ContentStore` resources (#251). Registered as
-    /// the SPI `StorageInstance` extension so `ContentStoreFactory.provision(config, context)` can
-    /// resolve a tiered store — without this, ContentStore provisioning fails at runtime with
-    /// "requires ProvisioningContext with StorageInstance extension". Memory cache tier over a DHT
-    /// durable tier (memory-only when no DHT client is wired) -- the same shape `createAll`'s
-    /// synthesized default `artifacts` instance uses, but `content` has no config-driven,
-    /// keyring-aware path (#783: architecturally unencryptable under #253, tracked separately).
-    static StorageInstance defaultContentStorage(Option<DHTClient> dhtClient) {
-        var memoryTier = MemoryTier.memoryTier(DEFAULT_MEMORY_BYTES);
+    /// #783: `StorageConfig.storageConfig()`'s defaults with `encrypted` tracking node-wide keyring
+    /// presence (mirroring [#defaultArtifactsConfig]), but `diskPath`/`snapshotPath` are NOT the bare
+    /// defaults -- `assembleSetup` reads `config.snapshotPath()` directly with no per-instance
+    /// subdirectory of its own, so reusing the artifacts default verbatim would collide both
+    /// instances' snapshot files (and disk blocks) in the same directory. Instead this derives a
+    /// `content` data dir as a SIBLING of wherever `artifacts` actually resolves -- the explicit
+    /// `[storage.artifacts]` config when the operator set one, else the hardcoded default -- then splits
+    /// it into `content/blocks` (disk) and `content/snapshots` (metadata) so neither collides with
+    /// artifacts' own paths or with each other.
+    ///
+    /// This borrows the "sibling of the artifacts disk path, then subdivided" SHAPE from
+    /// `AetherNode.streamDataDir`, but it is deliberately NOT the same convention, and the difference
+    /// matters: `streamDataDir` appends `.resolve(config.self().id())`, a node-id segment this does
+    /// not have. That segment is what keeps two nodes sharing one host mount from writing the same
+    /// directory. Without it, co-located nodes share `<artifacts>/../content/{blocks,snapshots}`:
+    /// blocks are content-addressed so concurrent writes are benign, but one node's GC
+    /// (`deleteFromPrivateTiers`) can delete a file the other's `MetadataStore` still records as
+    /// present, and `LocalDiskTier.calculateUsedBytes()`'s directory walk double-counts across them.
+    /// Not fixed here because `artifacts` has had exactly this shape since before #783 (its default
+    /// `/data/aether/storage` carries no node id either), so adding the segment for `content` alone
+    /// would leave the pair inconsistent and change on-disk layout for a case #783 did not create.
+    ///
+    /// The GENERAL version of the collision hazard -- any two EXPLICITLY configured instances that
+    /// both omit `disk_path`/`snapshot_path` still share the bare `StorageConfig.storageConfig()`
+    /// default and collide -- is likewise not addressed here; see the PR body.
+    private static StorageConfig defaultContentConfig(Map<String, StorageConfig> configs, boolean encrypted) {
+        var defaults = StorageConfig.storageConfig();
+        var artifactsConfig = option(configs.get(ARTIFACTS_NAME)).or(defaults);
+        var contentDataDir = Path.of(artifactsConfig.diskPath()).resolveSibling(CONTENT_NAME);
 
-        return dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "content-blocks"))
-                        .map(dht -> StorageInstance.storageInstance("content",
-                                                                    List.of(memoryTier, dht)))
-                        .or(StorageInstance.storageInstance("content",
-                                                            List.of(memoryTier)));
+        return new StorageConfig(defaults.memoryMaxBytes(),
+                                 defaults.diskMaxBytes(),
+                                 contentDataDir.resolve("blocks").toString(),
+                                 contentDataDir.resolve("snapshots").toString(),
+                                 defaults.snapshotMutationThreshold(),
+                                 defaults.snapshotMaxInterval(),
+                                 defaults.snapshotRetentionCount(),
+                                 defaults.walPath(),
+                                 encrypted);
     }
 
     /// Build the disk-backed, snapshot-capable `streams` StorageSetup that durably backs the stream
