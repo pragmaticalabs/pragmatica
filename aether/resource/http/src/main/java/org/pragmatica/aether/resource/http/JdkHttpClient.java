@@ -58,6 +58,15 @@ final class JdkHttpClient implements HttpClient, AsyncCloseable {
         return new JdkHttpClient(config, createOperations(config));
     }
 
+    /// Test seam: a client over operations the CALLER supplies, so a test can observe whether
+    /// [#close()] reaches them. The two backends' operations either own nothing observable (JDK)
+    /// or own a Netty event loop whose shutdown is only measurable from outside the module (#895),
+    /// which is why the close tests could not go red on a no-op close without this (review of
+    /// #900, SF-3). Package-private; production goes through the config-driven factories above.
+    static JdkHttpClient jdkHttpClient(HttpClientConfig config, HttpOperations operations) {
+        return new JdkHttpClient(config, operations);
+    }
+
     // NOTE: despite the name, this type now also produces a Netty-backed HttpOperations when
     //       HttpClientConfig.backend() selects NETTY. Renaming JdkHttpClient is out of scope.
     static HttpOperations createOperations(HttpClientConfig config) {
