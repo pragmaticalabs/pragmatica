@@ -9,7 +9,6 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
@@ -22,17 +21,39 @@ import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn2;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Option.option;
 
 
 public final class SpiResourceProvider implements ResourceProvider {
     private final Map<Class<?>, List<ResourceFactory<?, ?>>> factories;
-    private final Map<CacheKey, Promise<?>> promiseCache;
-    private final Map<CacheKey, Set<String>> consumers;
+
+    /// Scope standing for a caller the provider cannot attribute to a slice — the context-free
+    /// `provide(type, section)` overload, which carries no slice id (the wrapper chain in
+    /// `SliceLoadingContext` only injects one on the context overload).
+    ///
+    /// Every unattributed caller shares this one scope, which is the genuinely SHARED cache the
+    /// plain overload has always been. It also pins: `releaseAll(sliceId)` can never equal it, so
+    /// an unattributed holder's resource is never closed out from under it (#268 R2). Turning an
+    /// unattributable release into a bounded leak is the safe direction; the alternative is
+    /// use-after-close on a live connection pool.
+    private static final String UNATTRIBUTED_SCOPE = "<unattributed>";
+
+    /// The ONLY lifecycle state. One entry per `(type, section, scope)`, inserted by
+    /// `computeIfAbsent` and removed only by `remove(key, value)` — the failed-provision eviction
+    /// and `releaseAll` — so every entry has exactly one remover and the remover is the one that
+    /// closes. A second map (a consumer set per key) used to sit beside this one and the pair was
+    /// updated non-atomically: a release could observe the set drained and close what a
+    /// concurrent provision was about to hand out, or the provision could insert here AFTER the
+    /// release had dropped the set, leaving an entry no later release could reach (review of
+    /// #900, SF-2: 187 of 3000 racing rounds). With the scope in the key the set was always
+    /// `{scope}` and counted nothing, so it is gone rather than made atomic.
+    private final Map<CacheKey, Promise<Provisioned<?>>> promiseCache;
     private final Map<Class<?>, Object> runtimeExtensions;
     private final Fn2<Result<?>, String, Class<?>> configLoader;
 
@@ -51,7 +72,6 @@ public final class SpiResourceProvider implements ResourceProvider {
     private SpiResourceProvider(Fn2<Result<?>, String, Class<?>> configLoader, List<ResourceFactory<?, ?>> discovered) {
         this.configLoader = configLoader;
         this.promiseCache = new ConcurrentHashMap<>();
-        this.consumers = new ConcurrentHashMap<>();
         this.runtimeExtensions = new ConcurrentHashMap<>();
         this.factories = indexByResourceType(discovered);
     }
@@ -112,23 +132,79 @@ public final class SpiResourceProvider implements ResourceProvider {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-        var key = new CacheKey(resourceType, configSection);
-
-        return (Promise<T>) promiseCache.computeIfAbsent(key, k -> createResource(resourceType, configSection));
+        return provideShared(resourceType, configSection, Option.none());
     }
 
     @Override
     public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
-        var key = new CacheKey(resourceType, configSection);
+        return provideShared(resourceType, configSection, Option.some(context));
+    }
 
-        context.extension(String.class)
-               .onSuccess(sliceId -> consumers.computeIfAbsent(key,
-                                                               _ -> ConcurrentHashMap.newKeySet())
-                                              .add(sliceId));
+    /// The single lifecycle path both overloads take (#268).
+    ///
+    /// They used to implement incompatible models: the context overload registered a consumer but
+    /// never cached, and the plain overload cached but never registered — so `releaseAll` drained a
+    /// map nothing had been inserted into, and every context-provisioned resource leaked. Both now
+    /// memoize AND register, which is what makes close mean anything.
+    ///
+    /// THE KEY CARRIES A SCOPE, and that is load-bearing rather than incidental. The context
+    /// overload is codec-scoped — `SliceLoadingContext.CodecAwareResourceProvider` injects the
+    /// DEPLOYED SLICE's codec as `Serializer`/`Deserializer` on every context call, because that
+    /// codec is the only one that knows the application's own record types (#526). A cache key
+    /// without a slice dimension would hand slice B the resource slice A built with A's codec,
+    /// making B's application-typed stream events and DHT cache entries unencodable. Scoping the
+    /// key is what keeps #526 fixed. `PublisherFactory` is a second, independent reason: it derives
+    /// a topic's namespace from the provisioning slice's `Artifact`, so a shared entry would let
+    /// whichever slice provisioned first decide the address for every other.
+    ///
+    /// Per-slice instances are NOT a behaviour change — the context overload was uncached, and
+    /// generated code provisions once per slice inside its static create path, so each slice
+    /// already got its own. What is new is that the instance is now memoized within the slice and
+    /// released when that slice unloads. Genuinely shared pools, if ever wanted, are a deliberate
+    /// design change with their own ticket — not something to acquire from a cache key.
+    ///
+    /// WHAT A RACE WITH `releaseAll` OF THE SAME SCOPE GUARANTEES, and by what mechanism: the
+    /// entry is inserted and removed through `ConcurrentHashMap`'s per-key atomics only, so the
+    /// provision is linearized against the release. Either `computeIfAbsent` observed the entry
+    /// before the release removed it — the caller receives that entry's resource and the release
+    /// closes it once provisioned, which is the slice unloading while it provisions (unload wins,
+    /// the same as a sequential provide-then-release) — or it ran after the removal and created
+    /// a fresh entry that the NEXT `releaseAll` of the scope finds. No entry is ever left in the
+    /// map unreachable by its scope's release, and no entry is closed by more than one remover.
+    /// What is NOT guaranteed: that a caller racing its own scope's release holds an open
+    /// resource afterwards — nothing short of a lease held for the duration of use could promise
+    /// that, and the slice-loading FSM sequences create before stop so the race is not reached in
+    /// production. A provision that FAILS evicts its own entry (see below), so the failure is not
+    /// memoized.
+    @SuppressWarnings("unchecked")
+    private <T> Promise<T> provideShared(Class<T> resourceType,
+                                         String configSection,
+                                         Option<ProvisioningContext> contextOpt) {
+        var scope = provisioningScope(contextOpt);
+        var key = new CacheKey(resourceType, configSection, scope);
+        var cached = promiseCache.computeIfAbsent(key, _ -> createProvisioned(resourceType, configSection, contextOpt));
+        // The eviction is a DEPENDENT TRANSFORM (`withFailure`), not an `onFailure` event, and it
+        // is registered AHEAD of the caller's `map`. Dependents run on the resolving thread in
+        // registration order, before any event reaches the executor, so by the time a caller's
+        // continuation can observe the failure the entry is already gone and a retry issued from
+        // that continuation provisions afresh. As an event it ran AFTER the caller's continuation,
+        // which handed a retry the memoized failure (review of #900, SF-1).
+        //
+        // Attached OUTSIDE computeIfAbsent on purpose: an already-failed promise applies this
+        // synchronously, and mutating a ConcurrentHashMap from inside its own mapping function is
+        // forbidden. `remove(key, cached)` is conditional, so re-attaching per call is idempotent
+        // and can never evict a newer entry.
+        return (Promise<T>) cached.withFailure(_ -> promiseCache.remove(key, cached))
+                                  .map(Provisioned::resource);
+    }
 
-        return createResourceWithContext(resourceType, configSection, context);
+    /// The slice a provisioning call belongs to, or [#UNATTRIBUTED_SCOPE] when the caller supplied
+    /// no context to carry one.
+    private static String provisioningScope(Option<ProvisioningContext> contextOpt) {
+        return contextOpt.flatMap(context -> context.extension(String.class)
+                                                    .option())
+                         .or(UNATTRIBUTED_SCOPE);
     }
 
     @Override
@@ -136,61 +212,92 @@ public final class SpiResourceProvider implements ResourceProvider {
         return factories.containsKey(resourceType);
     }
 
+    /// Release everything scoped to `sliceId`, closing each through the factory that built it.
+    ///
+    /// Because the key carries a scope, a slice releases exactly its own entries; the shared
+    /// unattributed scope never matches a slice id and so is never released. Two #268 defects
+    /// lived here: the close used `factoryList.getFirst()` rather than the factory whose
+    /// `supports()` actually matched (R3 — wrong for the DB connectors, where async, R2DBC and
+    /// JDBC all answer for `SqlConnector`), and the drop-to-empty test was a check-then-act over
+    /// a consumer set (R5).
+    ///
+    /// Each matching entry is detached with `remove(key, cached)`: a conditional remove under the
+    /// bin lock, so of any number of racing releases of one scope exactly one detaches a given
+    /// entry and that one closes it, and a provision that replaced the entry in between is left
+    /// alone. That single-remover property is the whole of what "atomic" means here; there is no
+    /// second structure to keep in step (see `promiseCache`).
+    ///
+    /// NOTE on "last consumer": with a scoped key each entry has exactly one consumer identity, so
+    /// release is per-scope, not cross-slice refcounting. No test here claims cross-slice
+    /// refcounting, because nothing in the current model exercises it.
     @Override
-    @SuppressWarnings("unchecked")
     public Promise<Unit> releaseAll(String sliceId) {
         var closeFutures = new ArrayList<Promise<Unit>>();
-        var iterator = consumers.entrySet().iterator();
 
-        while (iterator.hasNext()) {
-            var entry = iterator.next();
+        for (var entry : List.copyOf(promiseCache.entrySet())) {
             var key = entry.getKey();
-            var consumerSet = entry.getValue();
+            // The shared unattributed scope is released by nobody. Relying instead on "no real
+            // slice is named <unattributed>" would make the pin an accident of naming rather than
+            // an invariant, and a slice id that collided would quietly close a pool still in use.
+            if (UNATTRIBUTED_SCOPE.equals(key.scope()) || !sliceId.equals(key.scope())) {
+                continue;
+            }
 
-            consumerSet.remove(sliceId);
-            if (consumerSet.isEmpty()) {
-                iterator.remove();
-                var cached = promiseCache.remove(key);
+            var cached = entry.getValue();
 
-                if (cached != null) {
-                    var factoryList = factories.get(key.resourceType());
-
-                    if (factoryList != null && !factoryList.isEmpty()) {
-                        var factory = (ResourceFactory<Object, ?>) factoryList.getFirst();
-
-                        closeFutures.add(cached.flatMap(resource -> factory.close(resource)));
-                    }
-                }
+            if (promiseCache.remove(key, cached)) {
+                closeFutures.add(cached.flatMap(SpiResourceProvider::closeThroughOwningFactory));
             }
         }
 
         if (closeFutures.isEmpty()) {
             return Promise.unitPromise();
         }
-
+        // allOf collects Results rather than short-circuiting, so one resource that fails to close
+        // (or one entry holding a failed provision) cannot block the release of the others.
         return Promise.allOf(closeFutures).map(_ -> Unit.unit());
     }
 
+    /// Close through the factory that built the resource, with a close that THROWS turned into a
+    /// failed promise rather than trusted to the convention.
+    ///
+    /// `releaseAll` applies this inline through `flatMap` on an already-resolved entry, so an
+    /// exception escaping a factory's `close` — or an `AsyncCloseable.close()` the default
+    /// dispatch invokes — would exit the release loop with every later entry still unreleased.
+    /// Lifting it keeps "one bad resource cannot block the others" true for throws as well as for
+    /// failed promises (review of #900, NOTE 2). The default close already absorbs and logs its own
+    /// failures; this is the guard for the overrides and the implementors that do not.
     @SuppressWarnings("unchecked")
-    private <T> Promise<T> createResource(Class<T> resourceType, String configSection) {
-        return option(factories.get(resourceType)).filter(list -> !list.isEmpty())
-                     .map(factoryList -> loadConfigAndInvoke((List<ResourceFactory<T, ?>>)(List<?>) factoryList,
-                                                             resourceType,
-                                                             configSection))
-                     .or(() -> new SliceLoadingFailure.Fatal.ResourceFactoryNotFound(resourceType.getName()).promise());
+    private static Promise<Unit> closeThroughOwningFactory(Provisioned<?> provisioned) {
+        var factory = (ResourceFactory<Object, ?>) provisioned.factory();
+
+        return Result.lift(throwable -> closeThrew(provisioned, throwable),
+                           () -> factory.close(provisioned.resource()))
+                     .fold(Promise::failure, close -> close);
+    }
+
+    private static Cause closeThrew(Provisioned<?> provisioned, Throwable throwable) {
+        var resourceType = provisioned.resource().getClass().getName();
+
+        System.getLogger(SpiResourceProvider.class.getName()).log(System.Logger.Level.WARNING,
+                                                                  "Resource close threw for " + resourceType
+                                                                 + " — the resource is released from the cache anyway",
+                                                                  throwable);
+
+        return Causes.fromThrowable(throwable);
     }
 
     @SuppressWarnings("unchecked")
-    private <T> Promise<T> createResourceWithContext(Class<T> resourceType,
-                                                     String configSection,
-                                                     ProvisioningContext context) {
-        var enrichedContext = enrichWithRuntimeExtensions(context);
+    private <T> Promise<Provisioned<?>> createProvisioned(Class<T> resourceType,
+                                                          String configSection,
+                                                          Option<ProvisioningContext> contextOpt) {
+        var enrichedContext = contextOpt.map(this::enrichWithRuntimeExtensions);
 
         return option(factories.get(resourceType)).filter(list -> !list.isEmpty())
-                     .map(factoryList -> loadConfigAndInvokeWithContext((List<ResourceFactory<T, ?>>)(List<?>) factoryList,
-                                                                        resourceType,
-                                                                        configSection,
-                                                                        enrichedContext))
+                     .map(factoryList -> loadConfigAndInvoke((List<ResourceFactory<T, ?>>)(List<?>) factoryList,
+                                                             resourceType,
+                                                             configSection,
+                                                             enrichedContext))
                      .or(() -> new SliceLoadingFailure.Fatal.ResourceFactoryNotFound(resourceType.getName()).promise());
     }
 
@@ -222,63 +329,48 @@ public final class SpiResourceProvider implements ResourceProvider {
                : enriched.withExtension((Class<Object>) entry.getKey(), entry.getValue());
     }
 
-    private <T> Promise<T> loadConfigAndInvoke(List<ResourceFactory<T, ?>> factoryList,
-                                               Class<T> resourceType,
-                                               String configSection) {
+    private <T> Promise<Provisioned<?>> loadConfigAndInvoke(List<ResourceFactory<T, ?>> factoryList,
+                                                            Class<T> resourceType,
+                                                            String configSection,
+                                                            Option<ProvisioningContext> contextOpt) {
         return loadConfig(configSection,
                           factoryList.getFirst().configType(),
-                          org.pragmatica.lang.Option.<ProvisioningContext> none()).flatMap(config -> selectAndInvoke(factoryList,
-                                                                                                                     config,
-                                                                                                                     resourceType,
-                                                                                                                     configSection));
+                          contextOpt).flatMap(config -> selectAndInvoke(factoryList,
+                                                                        config,
+                                                                        resourceType,
+                                                                        configSection,
+                                                                        contextOpt));
     }
 
-    private <T> Promise<T> loadConfigAndInvokeWithContext(List<ResourceFactory<T, ?>> factoryList,
-                                                          Class<T> resourceType,
-                                                          String configSection,
-                                                          ProvisioningContext context) {
-        return loadConfig(configSection,
-                          factoryList.getFirst().configType(),
-                          org.pragmatica.lang.Option.some(context)).flatMap(config -> selectAndInvokeWithContext(factoryList,
-                                                                                                                 config,
-                                                                                                                 resourceType,
-                                                                                                                 configSection,
-                                                                                                                 context));
-    }
-
+    /// Select the factory whose `supports()` matches and REMEMBER it alongside the resource.
+    ///
+    /// The matched factory is the only one entitled to close what it built; `releaseAll` used to
+    /// reach for `factoryList.getFirst()` instead, which is a different object whenever several
+    /// factories answer for one resource type — exactly the DB case, where async, R2DBC and JDBC
+    /// connectors all supply `SqlConnector` and are ordered by priority (#268 R3).
     @SuppressWarnings("unchecked")
-    private <T, C> Promise<T> selectAndInvoke(List<ResourceFactory<T, ?>> factoryList,
-                                              C config,
-                                              Class<T> resourceType,
-                                              String configSection) {
+    private <T, C> Promise<Provisioned<?>> selectAndInvoke(List<ResourceFactory<T, ?>> factoryList,
+                                                           C config,
+                                                           Class<T> resourceType,
+                                                           String configSection,
+                                                           Option<ProvisioningContext> contextOpt) {
         for (var factory : factoryList) {
             var typed = (ResourceFactory<T, C>) factory;
 
             if (typed.supports(config)) {
-                return typed.provision(config)
-                            .mapError(cause -> classifyProvisionFailure(resourceType, configSection, cause));
+                return invokeProvision(typed, config, contextOpt).<Provisioned<?>> map(resource -> new Provisioned<>(resource,
+                                                                                                                     typed))
+                                      .mapError(cause -> classifyProvisionFailure(resourceType, configSection, cause));
             }
         }
 
         return new SliceLoadingFailure.Fatal.ResourceFactoryNotFound(resourceType.getName()).promise();
     }
 
-    @SuppressWarnings("unchecked")
-    private <T, C> Promise<T> selectAndInvokeWithContext(List<ResourceFactory<T, ?>> factoryList,
-                                                         C config,
-                                                         Class<T> resourceType,
-                                                         String configSection,
-                                                         ProvisioningContext context) {
-        for (var factory : factoryList) {
-            var typed = (ResourceFactory<T, C>) factory;
-
-            if (typed.supports(config)) {
-                return typed.provision(config, context)
-                            .mapError(cause -> classifyProvisionFailure(resourceType, configSection, cause));
-            }
-        }
-
-        return new SliceLoadingFailure.Fatal.ResourceFactoryNotFound(resourceType.getName()).promise();
+    private static <T, C> Promise<T> invokeProvision(ResourceFactory<T, C> factory,
+                                                     C config,
+                                                     Option<ProvisioningContext> contextOpt) {
+        return contextOpt.fold(() -> factory.provision(config), context -> factory.provision(config, context));
     }
 
     /// Classify a resource-provisioning failure for the slice-loading FSM (spec §6 / decision #7).
@@ -296,9 +388,7 @@ public final class SpiResourceProvider implements ResourceProvider {
     }
 
     @SuppressWarnings("unchecked")
-    private <C> Promise<C> loadConfig(String section,
-                                      Class<C> configType,
-                                      org.pragmatica.lang.Option<ProvisioningContext> contextOpt) {
+    private <C> Promise<C> loadConfig(String section, Class<C> configType, Option<ProvisioningContext> contextOpt) {
         var loaded = (Result<Object>) resolveConfigLoader(contextOpt).apply(section, configType);
 
         return topicNameFallback(section, configType, loaded).mapError(cause -> new SliceLoadingFailure.Fatal.ConfigurationFailed(section,
@@ -347,12 +437,12 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// slice-composite is used (wrapped in `ProviderBasedConfigService` for section binding).
     /// Otherwise the loader falls back to the constructor-supplied `configLoader` (typically
     /// the global `ConfigService.instance()` singleton).
-    private Fn2<Result<?>, String, Class<?>> resolveConfigLoader(org.pragmatica.lang.Option<ProvisioningContext> contextOpt) {
+    private Fn2<Result<?>, String, Class<?>> resolveConfigLoader(Option<ProvisioningContext> contextOpt) {
         return contextOpt.flatMap(SpiResourceProvider::extractCompositeLoader)
                          .or(configLoader);
     }
 
-    private static org.pragmatica.lang.Option<Fn2<Result<?>, String, Class<?>>> extractCompositeLoader(ProvisioningContext context) {
+    private static Option<Fn2<Result<?>, String, Class<?>>> extractCompositeLoader(ProvisioningContext context) {
         return context.extension(ConfigurationProvider.class)
                       .option()
                       .map(SpiResourceProvider::loaderFromComposite);
@@ -364,5 +454,12 @@ public final class SpiResourceProvider implements ResourceProvider {
         return (section, configClass) -> svc.config(section, configClass);
     }
 
-    private record CacheKey(Class<?> resourceType, String configSection) {}
+    /// Identity of a cached resource. `scope` is the provisioning slice's id, or
+    /// [#UNATTRIBUTED_SCOPE] for the context-free overload — see [#provideShared] for why the
+    /// slice dimension is required rather than optional.
+    private record CacheKey(Class<?> resourceType, String configSection, String scope) {}
+
+    /// A provisioned resource together with the factory that actually built it, so the release
+    /// path closes through the SAME factory rather than guessing at the head of the priority list.
+    private record Provisioned<T>(T resource, ResourceFactory<T, ?> factory) {}
 }
