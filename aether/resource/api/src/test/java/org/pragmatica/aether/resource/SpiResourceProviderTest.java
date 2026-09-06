@@ -5,11 +5,14 @@
 
 package org.pragmatica.aether.resource;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.resource.SpiResourceProvider.spiResourceProvider;
@@ -99,19 +102,31 @@ class SpiResourceProviderTest {
 
         /// #268 R4: a FAILED provisioning must not be memoized.
         ///
-        /// This test previously asserted the opposite — that the two calls returned the same
-        /// promise. `String.class` has no registered factory, so the memoized promise it pinned
-        /// was a failed one, which is exactly the defect: an `Intermittent` failure classified for
-        /// retry-with-backoff got the same poisoned promise back on every retry.
+        /// This test previously asserted the opposite — that two calls returned the SAME promise.
+        /// `String.class` has no registered factory, so what it pinned was a memoized FAILURE,
+        /// which is the defect itself: an `Intermittent` failure classified for retry-with-backoff
+        /// handed the same poisoned promise back on every retry.
+        ///
+        /// The failure is injected in the CONFIG LOADER rather than the factory, so this covers the
+        /// eviction path from a different origin than the lifecycle test's failing `provision`.
+        /// Asserting promise non-identity would NOT work here: `provide` maps the cached promise on
+        /// every call, so the returned objects always differ whether or not eviction happens — that
+        /// assertion cannot fail and proves nothing.
         @Test
-        void provide_doesNotMemoizeFailure_whenProvisioningFails() {
-            var provider = spiResourceProvider((section, configClass) -> Result.success("dummy"));
+        void provide_retriesProvisioning_afterAFailedAttempt() {
+            var attempts = new AtomicInteger();
+            var provider = spiResourceProvider((section, configClass) -> attempts.incrementAndGet() == 1
+                                                                        ? Causes.cause("transient config failure")
+                                                                                .result()
+                                                                        : Result.success(new RecordedResourceConfig(section)));
 
-            var promise1 = provider.provide(String.class, "test");
-            var promise2 = provider.provide(String.class, "test");
+            var first = provider.provide(RecordedResource.class, "retry.section")
+                                .await(TIMEOUT);
+            var second = provider.provide(RecordedResource.class, "retry.section")
+                                 .await(TIMEOUT);
 
-            assertThat(promise1.await(TIMEOUT).isFailure()).isTrue();
-            assertThat(promise2).isNotSameAs(promise1);
+            assertThat(first.isFailure()).isTrue();
+            assertThat(second.isSuccess()).isTrue();
         }
     }
 
