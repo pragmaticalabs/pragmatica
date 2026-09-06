@@ -9,7 +9,6 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
@@ -44,8 +43,16 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// use-after-close on a live connection pool.
     private static final String UNATTRIBUTED_SCOPE = "<unattributed>";
 
+    /// The ONLY lifecycle state. One entry per `(type, section, scope)`, inserted by
+    /// `computeIfAbsent` and removed only by `remove(key, value)` — the failed-provision eviction
+    /// and `releaseAll` — so every entry has exactly one remover and the remover is the one that
+    /// closes. A second map (a consumer set per key) used to sit beside this one and the pair was
+    /// updated non-atomically: a release could observe the set drained and close what a
+    /// concurrent provision was about to hand out, or the provision could insert here AFTER the
+    /// release had dropped the set, leaving an entry no later release could reach (review of
+    /// #900, SF-2: 187 of 3000 racing rounds). With the scope in the key the set was always
+    /// `{scope}` and counted nothing, so it is gone rather than made atomic.
     private final Map<CacheKey, Promise<Provisioned<?>>> promiseCache;
-    private final Map<CacheKey, Set<String>> consumers;
     private final Map<Class<?>, Object> runtimeExtensions;
     private final Fn2<Result<?>, String, Class<?>> configLoader;
 
@@ -64,7 +71,6 @@ public final class SpiResourceProvider implements ResourceProvider {
     private SpiResourceProvider(Fn2<Result<?>, String, Class<?>> configLoader, List<ResourceFactory<?, ?>> discovered) {
         this.configLoader = configLoader;
         this.promiseCache = new ConcurrentHashMap<>();
-        this.consumers = new ConcurrentHashMap<>();
         this.runtimeExtensions = new ConcurrentHashMap<>();
         this.factories = indexByResourceType(discovered);
     }
@@ -157,9 +163,19 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// released when that slice unloads. Genuinely shared pools, if ever wanted, are a deliberate
     /// design change with their own ticket — not something to acquire from a cache key.
     ///
-    /// Registration happens BEFORE provisioning so a release racing an in-flight provision cannot
-    /// close a resource the caller is about to receive; a provision that then FAILS evicts its own
-    /// cache entry (see below), so the failure is not memoized.
+    /// WHAT A RACE WITH `releaseAll` OF THE SAME SCOPE GUARANTEES, and by what mechanism: the
+    /// entry is inserted and removed through `ConcurrentHashMap`'s per-key atomics only, so the
+    /// provision is linearized against the release. Either `computeIfAbsent` observed the entry
+    /// before the release removed it — the caller receives that entry's resource and the release
+    /// closes it once provisioned, which is the slice unloading while it provisions (unload wins,
+    /// the same as a sequential provide-then-release) — or it ran after the removal and created
+    /// a fresh entry that the NEXT `releaseAll` of the scope finds. No entry is ever left in the
+    /// map unreachable by its scope's release, and no entry is closed by more than one remover.
+    /// What is NOT guaranteed: that a caller racing its own scope's release holds an open
+    /// resource afterwards — nothing short of a lease held for the duration of use could promise
+    /// that, and the slice-loading FSM sequences create before stop so the race is not reached in
+    /// production. A provision that FAILS evicts its own entry (see below), so the failure is not
+    /// memoized.
     @SuppressWarnings("unchecked")
     private <T> Promise<T> provideShared(Class<T> resourceType,
                                          String configSection,
@@ -167,7 +183,6 @@ public final class SpiResourceProvider implements ResourceProvider {
         var scope = provisioningScope(contextOpt);
         var key = new CacheKey(resourceType, configSection, scope);
 
-        consumers.computeIfAbsent(key, _ -> ConcurrentHashMap.newKeySet()).add(scope);
         var cached = promiseCache.computeIfAbsent(key, _ -> createProvisioned(resourceType, configSection, contextOpt));
 
         // The eviction is a DEPENDENT TRANSFORM (`withFailure`), not an `onFailure` event, and it
@@ -205,38 +220,33 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// lived here: the close used `factoryList.getFirst()` rather than the factory whose
     /// `supports()` actually matched (R3 — wrong for the DB connectors, where async, R2DBC and
     /// JDBC all answer for `SqlConnector`), and the drop-to-empty test was a check-then-act over
-    /// `consumers` (R5).
+    /// a consumer set (R5).
     ///
-    /// The drop is now atomic: `computeIfPresent` returning `null` removed the mapping under the
-    /// bin lock, so exactly one caller observes the transition and `promiseCache.remove` then
-    /// hands the entry to exactly one closer, even if two releases race.
+    /// Each matching entry is detached with `remove(key, cached)`: a conditional remove under the
+    /// bin lock, so of any number of racing releases of one scope exactly one detaches a given
+    /// entry and that one closes it, and a provision that replaced the entry in between is left
+    /// alone. That single-remover property is the whole of what "atomic" means here; there is no
+    /// second structure to keep in step (see `promiseCache`).
     ///
     /// NOTE on "last consumer": with a scoped key each entry has exactly one consumer identity, so
-    /// the set-drains-to-empty machinery below currently expresses per-scope release rather than
-    /// cross-slice refcounting. It is kept because it is what makes the drop atomic, and because a
-    /// deliberately shared scope would need it — but no test here claims cross-slice refcounting,
-    /// because nothing in the current model exercises it.
+    /// release is per-scope, not cross-slice refcounting. No test here claims cross-slice
+    /// refcounting, because nothing in the current model exercises it.
     @Override
     public Promise<Unit> releaseAll(String sliceId) {
         var closeFutures = new ArrayList<Promise<Unit>>();
 
-        for (var key : Set.copyOf(consumers.keySet())) {
+        for (var entry : List.copyOf(promiseCache.entrySet())) {
+            var key = entry.getKey();
             // The shared unattributed scope is released by nobody. Relying instead on "no real
             // slice is named <unattributed>" would make the pin an accident of naming rather than
             // an invariant, and a slice id that collided would quietly close a pool still in use.
-            if (UNATTRIBUTED_SCOPE.equals(key.scope())) {
+            if (UNATTRIBUTED_SCOPE.equals(key.scope()) || !sliceId.equals(key.scope())) {
                 continue;
             }
 
-            var remaining = consumers.computeIfPresent(key, (_, consumerSet) -> dropConsumer(consumerSet, sliceId));
+            var cached = entry.getValue();
 
-            if (remaining != null) {
-                continue;
-            }
-
-            var cached = promiseCache.remove(key);
-
-            if (cached != null) {
+            if (promiseCache.remove(key, cached)) {
                 closeFutures.add(cached.flatMap(SpiResourceProvider::closeThroughOwningFactory));
             }
         }
@@ -247,19 +257,6 @@ public final class SpiResourceProvider implements ResourceProvider {
         // allOf collects Results rather than short-circuiting, so one resource that fails to close
         // (or one entry holding a failed provision) cannot block the release of the others.
         return Promise.allOf(closeFutures).map(_ -> Unit.unit());
-    }
-
-    /// Remove one consumer, reporting the set as `null` once it is empty.
-    ///
-    /// `null` is `ConcurrentHashMap.computeIfPresent`'s "remove the mapping" signal, and returning
-    /// it from inside the remapping function is what makes the drop-to-empty test atomic — the
-    /// caller then knows it alone observed the transition.
-    private static Set<String> dropConsumer(Set<String> consumerSet, String sliceId) {
-        consumerSet.remove(sliceId);
-
-        return consumerSet.isEmpty()
-               ? null
-               : consumerSet;
     }
 
     @SuppressWarnings("unchecked")

@@ -7,6 +7,8 @@ package org.pragmatica.aether.resource;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -38,15 +40,19 @@ class SpiResourceProviderLifecycleTest {
 
     /// Implements the PROJECT's async close convention and nothing else — the #891 case.
     private static final class AsyncResource implements AsyncCloseable {
-        private final AtomicBoolean closed = new AtomicBoolean(false);
+        private final AtomicInteger closes = new AtomicInteger();
 
         boolean isClosed() {
-            return closed.get();
+            return closes.get() > 0;
+        }
+
+        int closeCount() {
+            return closes.get();
         }
 
         @Override
         public Promise<Unit> close() {
-            closed.set(true);
+            closes.incrementAndGet();
 
             return Promise.unitPromise();
         }
@@ -418,6 +424,78 @@ class SpiResourceProviderLifecycleTest {
             provider.releaseAll(UNATTRIBUTED_SCOPE_LITERAL).await(TIMEOUT);
 
             assertThat(unattributed.isClosed()).isFalse();
+        }
+    }
+
+    @Nested
+    class ProvideRacingReleaseOfTheSameScope {
+        private static final int ROUNDS = 40_000;
+
+        /// One round: a provision and two back-to-back releases of the SAME scope, started as close
+        /// together as two threads and a latch allow. The result of the provision is kept; the
+        /// releases' are not. The window the old code lost was the few instructions between its two
+        /// map updates, so the releasing thread fires twice per round to land in it more often.
+        private static Result<AsyncResource> race(SpiResourceProvider provider, ExecutorService executor) throws Exception {
+            var go = new CountDownLatch(1);
+            var provided = executor.submit(() -> {
+                go.await();
+
+                return provider.provide(AsyncResource.class, SECTION, contextFor("slice-a")).await(TIMEOUT);
+            });
+            var released = executor.submit(() -> {
+                go.await();
+                provider.releaseAll("slice-a").await(TIMEOUT);
+
+                return provider.releaseAll("slice-a").await(TIMEOUT);
+            });
+
+            go.countDown();
+            released.get();
+
+            return provided.get();
+        }
+
+        /// The lifecycle state is ONE map mutated only through per-key atomics, so a provision is
+        /// linearized against a release of its scope: it either receives the entry the release is
+        /// about to close, or creates a fresh one that the NEXT release of the scope finds. That is
+        /// what each round asserts: after the race, one more release of the scope must leave the
+        /// resource the caller received closed. Two more things follow and are asserted at the
+        /// end: no resource is closed twice (exactly one remover per entry) and none is left open.
+        ///
+        /// With the previous two-map state — a consumer set updated beside the cache — the
+        /// provision could insert into the cache AFTER the release had dropped the set, and a
+        /// release, which walked the set's keys, could not reach that entry: the caller held a
+        /// resource no release could close until some LATER provision re-registered the key and
+        /// adopted it. A final release alone therefore cannot see the defect; the per-round check
+        /// can. The review of #900 measured 187 of 3000 rounds (SF-2) with its own probe; with
+        /// this fixture the window is hit far less often, so the round count is sized for the
+        /// revert to be red on every run, not most — see the fix report for the measured rate.
+        @Test
+        void afterEachRacingRound_theNextReleaseClosesWhatTheCallerReceived() throws Exception {
+            var factory = new AsyncFactory();
+            var provider = providerOf(factory);
+            var unreachable = 0;
+
+            try (var executor = Executors.newFixedThreadPool(2)) {
+                for (var round = 0; round < ROUNDS; round++) {
+                    var received = race(provider, executor);
+
+                    assertThat(received.isSuccess()).as("round %d must hand out a resource", round).isTrue();
+
+                    provider.releaseAll("slice-a").await(TIMEOUT);
+
+                    if (!received.unwrap().isClosed()) {
+                        unreachable++;
+                    }
+                }
+            }
+
+            var closedTwice = factory.provisioned.stream().filter(resource -> resource.closeCount() > 1).count();
+            var stillOpen = factory.provisioned.stream().filter(resource -> !resource.isClosed()).count();
+
+            assertThat(unreachable).as("rounds whose resource the next release could not reach, of %d", ROUNDS).isZero();
+            assertThat(closedTwice).as("resources closed by more than one remover").isZero();
+            assertThat(stillOpen).as("resources left open after the last release").isZero();
         }
     }
 
