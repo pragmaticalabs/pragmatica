@@ -418,9 +418,9 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private static final String JWT_MISSING_CONFIG_MESSAGE = "[app-http] security_mode = \"jwt\" but [app-http] jwks_url is missing:"
-                                                     + " no JWT configuration is present, so every non-public app route on this"
-                                                     + " node will be REFUSED with 401. Set jwks_url (and issuer/audience) or"
-                                                     + " change security_mode, then restart the node (#888).";
+                                                           + " no JWT configuration is present, so every non-public app route on this"
+                                                           + " node will be REFUSED with 401. Set jwks_url (and issuer/audience) or"
+                                                           + " change security_mode, then restart the node (#888).";
 
     private static Option<HttpForwarder> buildHttpForwarder(NodeId selfNodeId,
                                                             HttpRouteRegistry routeRegistry,
