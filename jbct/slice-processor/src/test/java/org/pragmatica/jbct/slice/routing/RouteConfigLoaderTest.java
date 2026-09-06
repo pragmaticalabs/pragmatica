@@ -153,7 +153,7 @@ class RouteConfigLoaderTest {
     class MissingSecuritySection {
 
         @Test
-        void load_succeeds_withPublicDefaults_whenSecuritySectionMissing() throws IOException {
+        void load_succeeds_withUnspecifiedDefault_whenSecuritySectionMissing() throws IOException {
             var config = writeConfig("routes.toml", """
                 prefix = "/api/v1"
 
@@ -166,7 +166,9 @@ class RouteConfigLoaderTest {
             assertThat(result.isSuccess()).isTrue();
             result.onSuccess(rc -> {
                 assertThat(rc.prefix()).isEqualTo("/api/v1");
-                assertThat(rc.securityDefault()).isEqualTo(RouteSecurityLevel.PUBLIC);
+                // #763: an absent [security] section is UNSPECIFIED, not PUBLIC — the route must
+                // inherit the server's global policy rather than being silently exempted from it.
+                assertThat(rc.securityDefault()).isEqualTo(RouteSecurityLevel.UNSPECIFIED);
                 assertThat(rc.overridePolicy()).isEqualTo(OverridePolicy.STRENGTHEN_ONLY);
                 assertThat(rc.routes()).hasSize(1);
                 assertThat(rc.routeSecurity()).isEmpty();

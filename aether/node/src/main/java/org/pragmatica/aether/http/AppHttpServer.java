@@ -795,15 +795,41 @@ class AppHttpServerAdapter implements AppHttpServer {
         return routePolicy.or(globalSecurityPolicy());
     }
 
+    /// A LOCAL route match governs the request's policy outright: `dispatchToRoute` is local-first,
+    /// so a request matching a local route is normally served locally, and the policy that authorizes
+    /// it must come from the route that serves it. `Unspecified` on a matched local route therefore
+    /// means "inherit the global policy" (`resolveEffectivePolicy` falls back), never "ask a remote
+    /// node".
+    ///
+    /// KNOWN GAP in that premise, recorded not fixed (#866 review G4): "matches locally" and "is
+    /// served locally" are decided by two DIFFERENT comparisons. This function's local branch goes
+    /// through `HttpRoutePublisher.findLocalRoute`, which tests
+    /// `normalizedPath.startsWith(route.pathPrefix())` against the RAW stored prefix; dispatch goes
+    /// through `findMatchingLocalRoute` -> `pathMatchesPrefix`, which normalizes BOTH sides and so
+    /// requires a slash boundary. A stored prefix without a trailing slash (which
+    /// `RouteMetadataExtractor.extractPathPrefix` produces for a route with no path placeholder)
+    /// therefore matches here but not there: with a local `/api/v1/pricing` and a remote
+    /// `/api/v1/pricing-admin/`, a request for `/api/v1/pricing-admin/report` short-circuits on the
+    /// local match, drops the remote route's stronger policy, and is then forwarded to the node that
+    /// really owns it -- where `dispatchForwardedRequest` runs no security check of its own. That
+    /// needs `findLocalRoute` to adopt the same normalize-both-sides comparison; it is a matching-
+    /// semantics change and belongs with the route-selection work, not here. Reachability is a
+    /// naming coincidence (`pricing` / `pricing-admin`) and no such pair ships in this repo today.
+    ///
+    /// Keying the local branch on the POLICY rather than on the MATCH is what #866 review F2 found:
+    /// remote lookup is prefix-based and `computeRouteTable` excludes a remote route only on exact
+    /// `method:pathPrefix` identity, so a broader remote prefix survives and can govern a narrower
+    /// local path. Once `Public` became adoptable (`isExplicitPolicy` now filters `Unspecified`
+    /// instead of `Public`), that fallthrough could WEAKEN a local undeclared route to public --
+    /// the exact partially-migrated state the #763 remedy instructions produce.
     private Option<SecurityPolicy> findRouteSecurityPolicy(String method,
                                                            String normalizedPath,
                                                            RouteTable routeTable) {
-        var localPolicy = httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath))
-                                            .map(LocalRouteInfo::security)
-                                            .filter(AppHttpServerAdapter::isExplicitPolicy);
+        var localRoute = httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath));
 
-        if (localPolicy.isPresent()) {
-            return localPolicy;
+        if (localRoute.isPresent()) {
+            return localRoute.map(LocalRouteInfo::security)
+                             .filter(AppHttpServerAdapter::isExplicitPolicy);
         }
 
         return findMatchingRemoteRoute(routeTable.remoteRoutes(),
@@ -813,7 +839,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private static boolean isExplicitPolicy(SecurityPolicy policy) {
-        return ! (policy instanceof SecurityPolicy.Public());
+        return ! (policy instanceof SecurityPolicy.Unspecified());
     }
 
     private SecurityPolicy globalSecurityPolicy() {

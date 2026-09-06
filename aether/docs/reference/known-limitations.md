@@ -39,6 +39,19 @@ compatibility story. See
 for the fuller technical writeup and the operator-facing fallback (canary-wait rolling upgrade,
 no rc-skipping) that applies until it lands.
 
+**Worked example of why this bites — route security values (rc4, #763/#866).** The persisted
+`NodeRoutesValue.RouteEntry.security` field is a plain `String`, and rc4 added a new value to its
+domain: `"UNSPECIFIED"`, meaning "this route declared no security stance, so apply the node's
+global `security_mode`". A node running an older build has no case for that value, falls through
+its unrecognized-value path, and resolves it to `api_key`. The direction is fail-closed — the route
+demands a credential rather than becoming public — but the *behaviour differs between nodes in the
+same cluster*: the old node enforces `api_key` on a route whose owner declared nothing, while a new
+node applies whatever `security_mode` says. **This is not a claim that the change is safe to roll
+through a live cluster.** It is an illustration of the gap above: a string-typed wire field can gain
+a value with no version check anywhere to notice, and the only reason this instance is not a
+security regression is the direction its fallback happens to point. The supported upgrade path
+remains full-cluster stop, upgrade, start.
+
 ## Single trust domain
 
 Aether runs within **one trust domain**:

@@ -43,7 +43,7 @@ class RouteMetadataExtractorImpl implements RouteMetadataExtractor {
     private static SecurityPolicy resolveSecurityPolicy(Route<?> route) {
         return route.security() instanceof SecurityPolicy sp
                ? sp
-               : SecurityPolicy.publicRoute();
+               : SecurityPolicy.unspecified();
     }
 
     private String extractPathPrefix(String path) {
