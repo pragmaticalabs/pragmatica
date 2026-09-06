@@ -246,8 +246,10 @@ final class DefaultStorageInstance implements StorageInstance {
 
     private TierLevel initialTier() {
         return writePolicy == WritePolicy.WRITE_BEHIND
-               ? tiers.getFirst().level()
-               : tiers.getLast().level();
+               ? tiers.getFirst()
+                      .level()
+               : tiers.getLast()
+                      .level();
     }
 
     private Promise<BlockId> deduplicateBlock(BlockId id) {
@@ -340,7 +342,8 @@ final class DefaultStorageInstance implements StorageInstance {
     /// the pre-existing post-condition that a successful put always leaves a record, for the one
     /// case where the claim can vanish mid-write (a metadata restore that clears the map).
     private BlockId trackNewBlock(BlockId id, TierLevel initialTier) {
-        metadataStore.computeLifecycle(id, lc -> lc.withTierAdded(initialTier))
+        metadataStore.computeLifecycle(id,
+                                       lc -> lc.withTierAdded(initialTier))
                      .onEmpty(() -> metadataStore.createLifecycle(BlockLifecycle.blockLifecycle(id, initialTier)));
         log.debug("Block {} stored in tier {}", id, initialTier);
 

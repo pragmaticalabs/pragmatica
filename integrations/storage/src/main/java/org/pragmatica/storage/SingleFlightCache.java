@@ -71,8 +71,10 @@ public final class SingleFlightCache {
     /// makes the cleanup a no-op once the slot no longer holds the promise that scheduled it.
     public Promise<Option<byte[]>> deduplicate(BlockId id, Supplier<Promise<Option<byte[]>>> loader) {
         boolean[] created = {false};
-        var promise = inFlight.compute(id, (_, existing) ->
-                existing == null || existing.isResolved() ? boundedLoad(loader, created) : existing);
+        var promise = inFlight.compute(id,
+                                       (_, existing) -> existing == null || existing.isResolved()
+                                                        ? boundedLoad(loader, created)
+                                                        : existing);
 
         if (created[0]) {
             promise.onResultRun(() -> inFlight.remove(id, promise));

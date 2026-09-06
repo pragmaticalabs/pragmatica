@@ -122,7 +122,9 @@ public sealed interface EncryptionError extends Cause {
     record DhtMarkerCheckTimedOut(String instanceName, long timeoutMillis) implements EncryptionError {
         @Override
         public String message() {
-            return "DHT encryption-marker check for instance '" + instanceName + "' timed out after " + timeoutMillis + "ms";
+            return "DHT encryption-marker check for instance '" + instanceName
+                 + "' timed out after " + timeoutMillis
+                 + "ms";
         }
     }
 }
