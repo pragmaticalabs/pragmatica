@@ -41,7 +41,14 @@ import org.pragmatica.lang.Promise;
 @SuppressWarnings("unchecked")
 public record IdempotencyMethodInterceptor(CacheBackend store,
                                            ConcurrentHashMap<Object, Promise<Object>> claims,
-                                           Fn1<Object, ?> keyExtractor) implements MethodInterceptor {
+                                           Fn1<Object, ?> keyExtractor,
+                                           String storeName) implements MethodInterceptor {
+    public IdempotencyMethodInterceptor(CacheBackend store,
+                                        ConcurrentHashMap<Object, Promise<Object>> claims,
+                                        Fn1<Object, ?> keyExtractor) {
+        this(store, claims, keyExtractor, null);
+    }
+
     public static IdempotencyMethodInterceptor idempotencyMethodInterceptor(CacheBackend store,
                                                                             Fn1<Object, ?> keyExtractor) {
         return new IdempotencyMethodInterceptor(store, new ConcurrentHashMap<>(), keyExtractor);

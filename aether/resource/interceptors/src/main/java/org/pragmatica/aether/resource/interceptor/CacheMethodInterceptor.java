@@ -10,7 +10,14 @@ import org.pragmatica.lang.Promise;
 
 
 @SuppressWarnings("unchecked")
-public record CacheMethodInterceptor(CacheBackend cache, CacheStrategy strategy, Fn1<Object, ?> keyExtractor) implements MethodInterceptor {
+public record CacheMethodInterceptor(CacheBackend cache,
+                                     CacheStrategy strategy,
+                                     Fn1<Object, ?> keyExtractor,
+                                     String cacheName) implements MethodInterceptor {
+    public CacheMethodInterceptor(CacheBackend cache, CacheStrategy strategy, Fn1<Object, ?> keyExtractor) {
+        this(cache, strategy, keyExtractor, null);
+    }
+
     @Override
     public <R, T> Fn1<Promise<R>, T> intercept(Fn1<Promise<R>, T> method) {
         return switch (strategy) {
