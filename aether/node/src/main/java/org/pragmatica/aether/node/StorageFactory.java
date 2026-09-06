@@ -43,6 +43,7 @@ import org.pragmatica.storage.StorageTier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -351,7 +352,7 @@ public final class StorageFactory {
     /// default and collide -- is likewise not addressed here; see the PR body.
     private static StorageConfig defaultContentConfig(Map<String, StorageConfig> configs, boolean encrypted) {
         var defaults = StorageConfig.storageConfig();
-        var artifactsConfig = Option.option(configs.get(ARTIFACTS_NAME)).or(defaults);
+        var artifactsConfig = option(configs.get(ARTIFACTS_NAME)).or(defaults);
         var contentDataDir = Path.of(artifactsConfig.diskPath()).resolveSibling(CONTENT_NAME);
 
         return new StorageConfig(defaults.memoryMaxBytes(),
