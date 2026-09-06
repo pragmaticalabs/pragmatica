@@ -3,13 +3,19 @@ package org.pragmatica.storage;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.storage.DemotionConfig.demotionConfig;
 import static org.pragmatica.storage.DemotionManager.demotionManager;
 
@@ -102,7 +108,11 @@ class StorageInstanceWriteOnlyDemotionTest {
     }
 
     /// The write-behind path was never affected by #886: its record names the fast tier, so the
-    /// block is listed under MEMORY without a read. Pinned so the fix cannot regress it.
+    /// block is listed under MEMORY without a read. Pinned so the fix cannot regress it, and the
+    /// record is pinned to exactly `{MEMORY}`: the claim names the fast tier and finalization adds
+    /// that same tier, while the durable tier is never declared present until a read finds the
+    /// drained bytes there. A claim naming the durable tier instead (the write-through choice)
+    /// would finalize as `{MEMORY, LOCAL_DISK}` and declare disk residency for bytes still queued.
     @Test
     void writeBehind_writeOnly_blockIsListedUnderFastTier() {
         var behindMemory = MemoryTier.memoryTier(MEMORY_MAX, TierLevel.MEMORY);
@@ -122,8 +132,93 @@ class StorageInstanceWriteOnlyDemotionTest {
                                     .toList();
 
             assertThat(listed).containsExactlyInAnyOrderElementsOf(ids);
+            ids.forEach(id -> assertThat(behindStore.getLifecycle(id).unwrap().presentIn())
+                                  .containsExactly(TierLevel.MEMORY));
         } finally {
             behind.shutdown();
+        }
+    }
+
+    /// The claim IS the record, so a reference added while the first write is still in flight (a
+    /// second put of the same content deduplicates onto the claim) survives finalization. The
+    /// previous re-create replaced the record and dropped that count back to 1, under-counting a
+    /// live reference. The durable tier's put is held open until the duplicate has been counted.
+    @Test
+    void writeThrough_duplicatePutWhileWriteInFlight_refCountSurvivesFinalization() {
+        var gate = Promise.<Unit>promise();
+        var putEntered = new CountDownLatch(1);
+        var gatedDisk = new GatedPutTier(MemoryTier.memoryTier(MEMORY_MAX * 100, TierLevel.LOCAL_DISK), gate, putEntered);
+        var gatedStore = MetadataStore.inMemoryMetadataStore("in-flight-886");
+        var gated = StorageInstance.storageInstance("in-flight-886",
+                                                    List.of(MemoryTier.memoryTier(MEMORY_MAX, TierLevel.MEMORY), gatedDisk),
+                                                    gatedStore);
+        var content = distinctBlock(0);
+
+        var first = gated.put(content);
+
+        assertThat(awaitEntered(putEntered)).isTrue();
+
+        var duplicate = gated.put(content).await().unwrap();
+
+        // Control: the duplicate landed on the claim while the durable write was still open.
+        assertThat(gatedStore.getLifecycle(duplicate).unwrap().refCount()).isEqualTo(2);
+
+        gate.succeed(unit());
+
+        var id = first.await().unwrap();
+        var lifecycle = gatedStore.getLifecycle(id).unwrap();
+
+        assertThat(id).isEqualTo(duplicate);
+        assertThat(lifecycle.refCount()).isEqualTo(2);
+        assertThat(lifecycle.presentIn()).containsExactlyInAnyOrder(TierLevel.MEMORY, TierLevel.LOCAL_DISK);
+    }
+
+    private static boolean awaitEntered(CountDownLatch latch) {
+        try {
+            return latch.await(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    /// Delegates everything to `delegate`; `put` signals `entered` and completes only after `gate`.
+    private record GatedPutTier(StorageTier delegate, Promise<Unit> gate, CountDownLatch entered) implements StorageTier {
+        @Override
+        public Promise<Option<byte[]>> get(BlockId id) {
+            return delegate.get(id);
+        }
+
+        @Override
+        public Promise<Unit> put(BlockId id, byte[] content) {
+            entered.countDown();
+
+            return gate.flatMap(_ -> delegate.put(id, content));
+        }
+
+        @Override
+        public Promise<Unit> delete(BlockId id) {
+            return delegate.delete(id);
+        }
+
+        @Override
+        public Promise<Boolean> exists(BlockId id) {
+            return delegate.exists(id);
+        }
+
+        @Override
+        public TierLevel level() {
+            return delegate.level();
+        }
+
+        @Override
+        public long usedBytes() {
+            return delegate.usedBytes();
+        }
+
+        @Override
+        public long maxBytes() {
+            return delegate.maxBytes();
         }
     }
 
