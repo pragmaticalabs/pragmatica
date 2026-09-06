@@ -7,17 +7,18 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.storage.DemotionConfig.demotionConfig;
 import static org.pragmatica.storage.DemotionManager.demotionManager;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /// #886: a block that is WRITTEN AND NEVER READ must be visible to demotion.
 ///
@@ -124,19 +125,21 @@ class StorageInstanceWriteOnlyDemotionTest {
                                                      WritePolicy.WRITE_BEHIND);
 
         try {
-            var ids = writeBlocksWithoutReading(behind);
-
-            var listed = behindStore.listBlocksByTier(TierLevel.MEMORY)
-                                    .stream()
-                                    .map(BlockLifecycle::blockId)
-                                    .toList();
-
-            assertThat(listed).containsExactlyInAnyOrderElementsOf(ids);
-            ids.forEach(id -> assertThat(behindStore.getLifecycle(id).unwrap().presentIn())
-                                  .containsExactly(TierLevel.MEMORY));
+            assertListedOnlyUnderMemory(behindStore, writeBlocksWithoutReading(behind));
         } finally {
             behind.shutdown();
         }
+    }
+
+    private static void assertListedOnlyUnderMemory(MetadataStore store, List<BlockId> ids) {
+        var listed = store.listBlocksByTier(TierLevel.MEMORY)
+                          .stream()
+                          .map(BlockLifecycle::blockId)
+                          .toList();
+
+        assertThat(listed).containsExactlyInAnyOrderElementsOf(ids);
+        ids.forEach(id -> assertThat(store.getLifecycle(id).unwrap().presentIn())
+                              .containsExactly(TierLevel.MEMORY));
     }
 
     /// The claim IS the record, so a reference added while the first write is still in flight (a
@@ -147,7 +150,9 @@ class StorageInstanceWriteOnlyDemotionTest {
     void writeThrough_duplicatePutWhileWriteInFlight_refCountSurvivesFinalization() {
         var gate = Promise.<Unit>promise();
         var putEntered = new CountDownLatch(1);
-        var gatedDisk = new GatedPutTier(MemoryTier.memoryTier(MEMORY_MAX * 100, TierLevel.LOCAL_DISK), gate, putEntered);
+        var gatedDisk = GatedPutTier.gatedPutTier(MemoryTier.memoryTier(MEMORY_MAX * 100, TierLevel.LOCAL_DISK),
+                                                  gate,
+                                                  putEntered);
         var gatedStore = MetadataStore.inMemoryMetadataStore("in-flight-886");
         var gated = StorageInstance.storageInstance("in-flight-886",
                                                     List.of(MemoryTier.memoryTier(MEMORY_MAX, TierLevel.MEMORY), gatedDisk),
@@ -184,6 +189,10 @@ class StorageInstanceWriteOnlyDemotionTest {
 
     /// Delegates everything to `delegate`; `put` signals `entered` and completes only after `gate`.
     private record GatedPutTier(StorageTier delegate, Promise<Unit> gate, CountDownLatch entered) implements StorageTier {
+        static GatedPutTier gatedPutTier(StorageTier delegate, Promise<Unit> gate, CountDownLatch entered) {
+            return new GatedPutTier(delegate, gate, entered);
+        }
+
         @Override
         public Promise<Option<byte[]>> get(BlockId id) {
             return delegate.get(id);
