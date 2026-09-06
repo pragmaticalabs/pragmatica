@@ -39,8 +39,11 @@
   artifact can fail deterministically.** The node reports `state is ACTIVATE but not found in
   SliceStore` when the ACTIVATE directive reaches it while the previous instance's unload is still
   in flight, and the leader treats that as non-retriable and rolls the blueprint back. An operator
-  running `delete` then `apply` quickly gets the same rollback. Timing-dependent (never seen on the
-  quiet box in ten runs, once in five under 3x CPU oversubscription); needs its own ticket
+  running `delete` then `apply` quickly gets the same rollback. Timing-dependent: never seen on the
+  quiet box in ten runs; with the old un-awaited delete it hit 3 times in 11 runs under 3x CPU
+  oversubscription, in two orderings — failure before the new instance is counted (rollback, the
+  240s hole) or after it (the old instance counted as "fully deployed" 20ms after apply, then a
+  FAILED entry lingering ~30s until the next reconcile). Needs its own ticket
   [mechanism: `ClusterDeploymentState.handleDeterministicFailure` on `NodeDeploymentState.Active
   .handleSliceNotFoundForActivation`; log lines at 22:16:23.894–23.990 in the hog5 run].
 - **Every wait in the class now carries a name and the cluster's state at expiry** — leader, each
