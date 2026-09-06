@@ -102,11 +102,11 @@ public interface DependencyResolver {
                                                      Option<SliceCodec> nodeCodec,
                                                      Fn1<Option<ResourceProviderFacade>, ClassLoader> resourceOverlayBuilder) {
         Fn1<SliceLoadingContext, Artifact> contextFor = slice -> loadingContextFor(slice,
-                                                                                    invokerFacade,
-                                                                                    resourceFacade,
-                                                                                    compositeBuilder,
-                                                                                    nodeCodec,
-                                                                                    resourceOverlayBuilder);
+                                                                                   invokerFacade,
+                                                                                   resourceFacade,
+                                                                                   compositeBuilder,
+                                                                                   nodeCodec,
+                                                                                   resourceOverlayBuilder);
         var loadingContext = contextFor.apply(artifact);
 
         return registry.lookup(artifact)
@@ -134,7 +134,8 @@ public interface DependencyResolver {
                                                                      artifact.asString(),
                                                                      nodeCodec);
 
-        compositeBuilder.onPresent(builder -> loadingContext.setCompositeBuilder(classLoader -> builder.apply(artifact, classLoader)));
+        compositeBuilder.onPresent(builder -> loadingContext.setCompositeBuilder(classLoader -> builder.apply(artifact,
+                                                                                                              classLoader)));
         loadingContext.setResourceOverlayBuilder(resourceOverlayBuilder);
 
         return loadingContext;

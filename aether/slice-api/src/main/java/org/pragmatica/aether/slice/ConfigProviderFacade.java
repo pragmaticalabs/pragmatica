@@ -54,6 +54,7 @@ import org.pragmatica.lang.utils.Causes;
 /// has to say which.
 record ConfigProviderFacade(String sliceId, ConfigurationProvider provider) implements ConfigFacade {
     private static final Fn1<Cause, String> MISSING_KEY = Causes.forOneValue("Required config key not found: %s");
+
     private static final Fn1<Cause, String> NESTED_ARRAY = Causes.forOneValue("Config %s holds a nested array, which is not a string list");
 
     static ConfigProviderFacade configProviderFacade(String sliceId, ConfigurationProvider provider) {
@@ -91,7 +92,8 @@ record ConfigProviderFacade(String sliceId, ConfigurationProvider provider) impl
 
         return provider.getString(fullKey)
                        .toResult(MISSING_KEY.apply(describe(fullKey)))
-                       .flatMap(raw -> parseStringList(describe(fullKey), raw));
+                       .flatMap(raw -> parseStringList(describe(fullKey),
+                                                       raw));
     }
 
     @Override
@@ -154,7 +156,9 @@ record ConfigProviderFacade(String sliceId, ConfigurationProvider provider) impl
     }
 
     private static boolean isNativeArray(String trimmed) {
-        return trimmed.length() >= 2 && trimmed.startsWith("[") && trimmed.endsWith("]");
+        return trimmed.length() >= 2
+               && trimmed.startsWith("[")
+               && trimmed.endsWith("]");
     }
 
     private static List<String> splitCommaList(String raw) {

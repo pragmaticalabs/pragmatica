@@ -62,8 +62,7 @@ public final class SliceLoadingContext implements SliceCreationContext {
         this.delegate = delegate;
         this.bufferingInvoker = new BufferingInvokerFacade(delegate.invoker());
         this.nodeCodec = nodeCodec;
-        this.sliceCodec = nodeCodec.map(_ -> DeferredSliceCodec.deferredSliceCodec(delegate.sliceId()
-                                                                                           .or(UNNAMED_SLICE)));
+        this.sliceCodec = nodeCodec.map(_ -> DeferredSliceCodec.deferredSliceCodec(delegate.sliceId().or(UNNAMED_SLICE)));
     }
 
     public static SliceLoadingContext sliceLoadingContext(SliceCreationContext delegate) {
@@ -144,12 +143,14 @@ public final class SliceLoadingContext implements SliceCreationContext {
     @Override
     public ConfigFacade config() {
         return sliceComposite.get()
-                             .<ConfigFacade> map(composite -> ConfigProviderFacade.configProviderFacade(sliceName(), composite))
+                             .<ConfigFacade> map(composite -> ConfigProviderFacade.configProviderFacade(sliceName(),
+                                                                                                        composite))
                              .or(this::configWithoutComposite);
     }
 
     private String sliceName() {
-        return delegate.sliceId().or(UNNAMED_SLICE);
+        return delegate.sliceId()
+                       .or(UNNAMED_SLICE);
     }
 
     /// No composite attached — decide between an explicitly supplied facade and a named refusal.
