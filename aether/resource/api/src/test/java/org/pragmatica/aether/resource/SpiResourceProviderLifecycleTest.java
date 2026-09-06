@@ -5,6 +5,7 @@
 package org.pragmatica.aether.resource;
 
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -68,9 +69,13 @@ class SpiResourceProviderLifecycleTest {
     private static final class InertResource {}
 
     /// Factory with NO close override, so the default dispatch in [ResourceFactory] is under test.
+    ///
+    /// Hands out a DISTINCT resource per provisioning call and keeps them all. A single shared
+    /// resource object would make a scoped-cache assertion conflate two different cache entries —
+    /// the fixture has to be able to tell slice-a's resource from slice-b's before a test can claim
+    /// anything about which one was closed.
     private static final class AsyncFactory implements ResourceFactory<AsyncResource, TrackedConfig> {
-        private final AsyncResource resource = new AsyncResource();
-        private final AtomicInteger provisionCount = new AtomicInteger();
+        private final List<AsyncResource> provisioned = new CopyOnWriteArrayList<>();
 
         @Override
         public Class<AsyncResource> resourceType() {
@@ -84,14 +89,21 @@ class SpiResourceProviderLifecycleTest {
 
         @Override
         public Promise<AsyncResource> provision(TrackedConfig config) {
-            provisionCount.incrementAndGet();
+            var resource = new AsyncResource();
+
+            provisioned.add(resource);
 
             return Promise.success(resource);
+        }
+
+        int provisionCount() {
+            return provisioned.size();
         }
     }
 
     private static final class SyncFactory implements ResourceFactory<SyncResource, TrackedConfig> {
         private final SyncResource resource = new SyncResource();
+
 
         @Override
         public Class<SyncResource> resourceType() {
@@ -208,8 +220,49 @@ class SpiResourceProviderLifecycleTest {
                                   .withExtension(String.class, sliceId);
     }
 
+    /// Mirrors SpiResourceProvider's own UNATTRIBUTED_SCOPE. Deliberately duplicated rather than
+    /// exposed: releasing it must be a no-op, and a test that reached into the production constant
+    /// could not tell the difference between "never matches" and "constant renamed".
+    private static final String UNATTRIBUTED_SCOPE_LITERAL = "<unattributed>";
+
+    private interface Codec {}
+
+    private record SliceCodec(String owner) implements Codec {}
+
+    /// Stands in for a stream or DHT-cache resource: its VALUE embeds the codec it was built with,
+    /// which is what makes cross-slice sharing observable.
+    private record CodecTaggedResource(String codecOwner) {}
+
+    private static final class CodecTaggedFactory implements ResourceFactory<CodecTaggedResource, TrackedConfig> {
+        @Override
+        public Class<CodecTaggedResource> resourceType() {
+            return CodecTaggedResource.class;
+        }
+
+        @Override
+        public Class<TrackedConfig> configType() {
+            return TrackedConfig.class;
+        }
+
+        @Override
+        public Promise<CodecTaggedResource> provision(TrackedConfig config) {
+            return Promise.success(new CodecTaggedResource("no-codec"));
+        }
+
+        @Override
+        public Promise<CodecTaggedResource> provision(TrackedConfig config, ProvisioningContext context) {
+            return context.extension(Codec.class)
+                          .map(codec -> new CodecTaggedResource(((SliceCodec) codec).owner()))
+                          .async();
+        }
+    }
+
+    private static ProvisioningContext contextFor(String sliceId, String codecOwner) {
+        return contextFor(sliceId).withExtension(Codec.class, new SliceCodec(codecOwner));
+    }
+
     @Nested
-    class ContextOverloadParticipatesInTheLifecycle {
+    class SliceScopedLifecycle {
 
         /// #268 R1. Production reaches the CONTEXT overload; before the fix only the plain overload
         /// wrote `promiseCache`, so `releaseAll` drained a map nothing had been inserted into and
@@ -222,72 +275,127 @@ class SpiResourceProviderLifecycleTest {
             provider.provide(AsyncResource.class, SECTION, contextFor("slice-a"))
                     .await(TIMEOUT);
 
-            assertThat(factory.resource.isClosed()).isFalse();
+            assertThat(factory.provisioned.getFirst().isClosed()).isFalse();
 
             provider.releaseAll("slice-a")
                     .await(TIMEOUT);
 
-            assertThat(factory.resource.isClosed()).isTrue();
+            assertThat(factory.provisioned.getFirst().isClosed()).isTrue();
         }
 
-        /// The context overload must memoize, or refcounting has nothing to count.
+        /// Memoization within one slice: repeated provisioning of the same type+section by the same
+        /// slice yields one resource, which is what makes the release path have a single thing to
+        /// close.
         @Test
-        void provide_provisionsOnce_whenContextOverloadCalledTwice() {
+        void provide_provisionsOnce_whenOneSliceProvidesTwice() {
+            var factory = new AsyncFactory();
+            var provider = providerOf(factory);
+
+            var first = provider.provide(AsyncResource.class, SECTION, contextFor("slice-a")).await(TIMEOUT);
+            var second = provider.provide(AsyncResource.class, SECTION, contextFor("slice-a")).await(TIMEOUT);
+
+            assertThat(factory.provisionCount()).isEqualTo(1);
+            assertThat(second.unwrap()).isSameAs(first.unwrap());
+        }
+
+        /// The cache key carries a slice dimension, so two slices get two instances.
+        ///
+        /// This is not an efficiency preference — it is what keeps #526 fixed, and the codec test
+        /// below shows what goes wrong without it.
+        @Test
+        void provide_givesEachSliceItsOwnInstance() {
+            var factory = new AsyncFactory();
+            var provider = providerOf(factory);
+
+            var forA = provider.provide(AsyncResource.class, SECTION, contextFor("slice-a")).await(TIMEOUT);
+            var forB = provider.provide(AsyncResource.class, SECTION, contextFor("slice-b")).await(TIMEOUT);
+
+            assertThat(factory.provisionCount()).isEqualTo(2);
+            assertThat(forB.unwrap()).isNotSameAs(forA.unwrap());
+        }
+
+        /// A slice unload releases exactly that slice's resources and leaves every other slice's
+        /// alone.
+        ///
+        /// Deliberately NOT phrased as cross-slice refcounting: with a scoped key the two slices
+        /// never share an entry, so a "does not close while another slice holds it" assertion would
+        /// be true by construction and would pass against broken code.
+        @Test
+        void releaseAll_closesOnlyTheReleasingSlicesResource() {
             var factory = new AsyncFactory();
             var provider = providerOf(factory);
 
             provider.provide(AsyncResource.class, SECTION, contextFor("slice-a")).await(TIMEOUT);
             provider.provide(AsyncResource.class, SECTION, contextFor("slice-b")).await(TIMEOUT);
 
-            assertThat(factory.provisionCount.get()).isEqualTo(1);
+            var forA = factory.provisioned.get(0);
+            var forB = factory.provisioned.get(1);
+
+            provider.releaseAll("slice-a").await(TIMEOUT);
+
+            assertThat(forA.isClosed()).isTrue();
+            assertThat(forB.isClosed()).isFalse();
         }
     }
 
     @Nested
-    class Refcounting {
+    class UnattributedScopeIsSharedAndPinned {
 
+        /// The context-free overload is the genuinely shared cache: it carries no slice id and no
+        /// codec, so every unattributed caller can safely have the same instance.
         @Test
-        void releaseAll_doesNotClose_whileAnotherSliceStillHoldsTheResource() {
+        void provide_sharesOneInstance_acrossPlainOverloadCallers() {
             var factory = new AsyncFactory();
             var provider = providerOf(factory);
 
-            provider.provide(AsyncResource.class, SECTION, contextFor("slice-a")).await(TIMEOUT);
-            provider.provide(AsyncResource.class, SECTION, contextFor("slice-b")).await(TIMEOUT);
+            var first = provider.provide(AsyncResource.class, SECTION).await(TIMEOUT);
+            var second = provider.provide(AsyncResource.class, SECTION).await(TIMEOUT);
 
-            provider.releaseAll("slice-a").await(TIMEOUT);
-
-            assertThat(factory.resource.isClosed()).isFalse();
+            assertThat(factory.provisionCount()).isEqualTo(1);
+            assertThat(second.unwrap()).isSameAs(first.unwrap());
         }
 
+        /// #268 R2. An unattributed caller cannot be tied to any slice, so no slice's unload may
+        /// close its resource. Closing it would be use-after-close on a live connection pool; the
+        /// safe direction is a bounded leak.
         @Test
-        void releaseAll_closes_whenLastConsumerReleases() {
-            var factory = new AsyncFactory();
-            var provider = providerOf(factory);
-
-            provider.provide(AsyncResource.class, SECTION, contextFor("slice-a")).await(TIMEOUT);
-            provider.provide(AsyncResource.class, SECTION, contextFor("slice-b")).await(TIMEOUT);
-
-            provider.releaseAll("slice-a").await(TIMEOUT);
-            provider.releaseAll("slice-b").await(TIMEOUT);
-
-            assertThat(factory.resource.isClosed()).isTrue();
-        }
-
-        /// #268 R2. `CacheKey` has no slice dimension, so a resource IS shared; a caller that came
-        /// in through the context-free overload cannot be attributed to any slice and therefore
-        /// pins the entry. Closing it on some other slice's unload is use-after-close on a live
-        /// connection pool.
-        @Test
-        void releaseAll_doesNotClose_whileAnUnattributedCallerStillHoldsTheResource() {
+        void releaseAll_neverCloses_theUnattributedScopesResource() {
             var factory = new AsyncFactory();
             var provider = providerOf(factory);
 
             provider.provide(AsyncResource.class, SECTION).await(TIMEOUT);
             provider.provide(AsyncResource.class, SECTION, contextFor("slice-a")).await(TIMEOUT);
 
-            provider.releaseAll("slice-a").await(TIMEOUT);
+            var unattributed = factory.provisioned.get(0);
 
-            assertThat(factory.resource.isClosed()).isFalse();
+            provider.releaseAll("slice-a").await(TIMEOUT);
+            provider.releaseAll(UNATTRIBUTED_SCOPE_LITERAL).await(TIMEOUT);
+
+            assertThat(unattributed.isClosed()).isFalse();
+        }
+    }
+
+    @Nested
+    class CodecScopingSurvivesCaching {
+
+        /// #526 guard. `CodecAwareResourceProvider` injects the DEPLOYED SLICE's codec as
+        /// Serializer/Deserializer on every context-overload call, because it is the only codec
+        /// that knows the application's own record types.
+        ///
+        /// Caching the context overload under a key WITHOUT a slice dimension hands slice B the
+        /// resource slice A built with A's codec — reintroducing #526 through a leak fix. This test
+        /// fails (slice-b receives codec-a) if the slice dimension is dropped from CacheKey.
+        @Test
+        void secondSlice_receivesItsOwnCodec_notTheFirstSlices() {
+            var provider = providerOf(new CodecTaggedFactory());
+
+            var forA = provider.provide(CodecTaggedResource.class, SECTION, contextFor("slice-a", "codec-a"))
+                               .await(TIMEOUT);
+            var forB = provider.provide(CodecTaggedResource.class, SECTION, contextFor("slice-b", "codec-b"))
+                               .await(TIMEOUT);
+
+            assertThat(forA.unwrap().codecOwner()).isEqualTo("codec-a");
+            assertThat(forB.unwrap().codecOwner()).isEqualTo("codec-b");
         }
     }
 
@@ -345,7 +453,7 @@ class SpiResourceProviderLifecycleTest {
             provider.provide(AsyncResource.class, SECTION, contextFor("slice-a")).await(TIMEOUT);
             provider.releaseAll("slice-a").await(TIMEOUT);
 
-            assertThat(factory.resource.isClosed()).isTrue();
+            assertThat(factory.provisioned.getFirst().isClosed()).isTrue();
         }
 
         @Test
