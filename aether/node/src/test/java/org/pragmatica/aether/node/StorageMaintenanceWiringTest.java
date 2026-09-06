@@ -465,23 +465,22 @@ class StorageMaintenanceWiringTest {
         return contentDir.resolve("blocks");
     }
 
-    /// Fills content's memory tier to 100% of its budget through NORMAL USE -- write, then read --
-    /// which is precisely the state #783's acceptance item 3 asks about.
+    /// Fills content's memory tier to 100% of its budget through NORMAL USE -- write only, never read
+    /// back -- which is precisely the state #783's acceptance item 3 asks about.
     ///
-    /// The read is REQUIRED, not decoration, and the reason is a sharp edge in `StorageInstance`:
-    /// `writeToAllTiers` writes the durable (disk) tier, then promotes into the memory cache tier via
-    /// `recordTierPresence` -> `MetadataStore.computeLifecycle`, and only THEN calls `trackNewBlock`
-    /// to create the lifecycle record. `computeLifecycle` is `computeIfPresent`, so that promotion
-    /// record lands on a lifecycle that does not exist yet and is silently dropped -- a
-    /// written-but-never-read block is PHYSICALLY in the memory tier while the metadata store still
-    /// says it lives on disk alone. `DefaultDemotionManager.selectCandidates` picks candidates from
-    /// `listBlocksByTier(MEMORY)`, so such a block is invisible to demotion even with the tier over
-    /// its high watermark. A subsequent read re-records presence for the tier it is served from
-    /// (`completeVerification` -> `recordTierPresence`), by which time the lifecycle exists, so
-    /// write-then-read leaves the memory tier both full AND visible to the demoter.
-    ///
-    /// That ordering quirk lives in `integrations/storage`, outside this ticket's scope; it is
-    /// reported, not fixed here.
+    /// Until #886 (PR #901) this had to be write-THEN-READ: `StorageInstance.trackNewBlock` finalized
+    /// a written block by overwriting the lifecycle record the memory-tier promotion had just been
+    /// added to, so a written-but-never-read block sat physically in the memory tier while the
+    /// metadata store named the durable tier alone, and `DefaultDemotionManager.selectCandidates`
+    /// (`listBlocksByTier(MEMORY)`) could not see it; only a later read re-recorded presence. The
+    /// read-back this helper used to do was a workaround for that defect, and an earlier revision of
+    /// this comment described the defect as open. #901 landed on the release branch first and
+    /// `trackNewBlock` now updates the record in place, so the workaround is DROPPED rather than kept
+    /// as belt-and-braces: a write-only fill is the workload the ticket asks about, and a retained
+    /// read would let the demotion test stay green through a regression of #886 while claiming to
+    /// measure normal use. Consequence, pinned on purpose: the `memoryBefore == CONTENT_MEMORY_BLOCKS`
+    /// baseline in `actuallyShrinksContentMemoryTier` now also goes red if `trackNewBlock` reverts to
+    /// the unconditional `createLifecycle` (re-measured on the merged tree: the listing is empty).
     private static void fillMemoryTier(StorageFactory.StorageSetup setup) {
         for (var i = 0; i < CONTENT_MEMORY_BLOCKS; i++) {
             var blockId = setup.instance()
@@ -490,10 +489,7 @@ class StorageMaintenanceWiringTest {
                                .onFailure(cause -> fail("writing fill block failed: " + cause.message()))
                                .unwrap();
 
-            setup.instance()
-                 .get(blockId)
-                 .await()
-                 .onFailure(cause -> fail("reading fill block back failed: " + cause.message()));
+            assertThat(blockId).as("fill block %d must be stored", i).isNotNull();
         }
     }
 
