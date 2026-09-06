@@ -183,9 +183,7 @@ public final class SpiResourceProvider implements ResourceProvider {
                                          Option<ProvisioningContext> contextOpt) {
         var scope = provisioningScope(contextOpt);
         var key = new CacheKey(resourceType, configSection, scope);
-
         var cached = promiseCache.computeIfAbsent(key, _ -> createProvisioned(resourceType, configSection, contextOpt));
-
         // The eviction is a DEPENDENT TRANSFORM (`withFailure`), not an `onFailure` event, and it
         // is registered AHEAD of the caller's `map`. Dependents run on the resolving thread in
         // registration order, before any event reaches the executor, so by the time a caller's
@@ -273,16 +271,18 @@ public final class SpiResourceProvider implements ResourceProvider {
     private static Promise<Unit> closeThroughOwningFactory(Provisioned<?> provisioned) {
         var factory = (ResourceFactory<Object, ?>) provisioned.factory();
 
-        return Result.lift(throwable -> closeThrew(provisioned, throwable), () -> factory.close(provisioned.resource()))
+        return Result.lift(throwable -> closeThrew(provisioned, throwable),
+                           () -> factory.close(provisioned.resource()))
                      .fold(Promise::failure, close -> close);
     }
 
     private static Cause closeThrew(Provisioned<?> provisioned, Throwable throwable) {
-        System.getLogger(SpiResourceProvider.class.getName())
-              .log(System.Logger.Level.WARNING,
-                   "Resource close threw for " + provisioned.resource().getClass().getName()
-                  + " — the resource is released from the cache anyway",
-                   throwable);
+        var resourceType = provisioned.resource().getClass().getName();
+
+        System.getLogger(SpiResourceProvider.class.getName()).log(System.Logger.Level.WARNING,
+                                                                  "Resource close threw for " + resourceType
+                                                                 + " — the resource is released from the cache anyway",
+                                                                  throwable);
 
         return Causes.fromThrowable(throwable);
     }
