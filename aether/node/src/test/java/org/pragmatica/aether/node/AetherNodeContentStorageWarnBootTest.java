@@ -205,6 +205,16 @@ class AetherNodeContentStorageWarnBootTest {
     ///   `.clear()` calls in `tearDown`.
     private static AetherNodeConfig minimalConfig(Option<EnvironmentIntegration> environment,
                                                    Option<StorageEncryptionConfig> storageEncryption) {
+        return minimalConfig(environment, storageEncryption, ConfigurationProvider.builder().build());
+    }
+
+    /// Same fixture with a caller-supplied `ConfigurationProvider`, for a sibling boot test that needs
+    /// a config SECTION to exist (`AetherNodeContentStorageWiringBootTest`): the SPI's config loader
+    /// refuses to provision a resource whose section is absent, so "any content works" above holds
+    /// only for THIS class.
+    static AetherNodeConfig minimalConfig(Option<EnvironmentIntegration> environment,
+                                           Option<StorageEncryptionConfig> storageEncryption,
+                                           ConfigurationProvider configProvider) {
         var self = NodeId.nodeId("content-storage-warn-boot-test").unwrap();
         var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
 
@@ -219,7 +229,7 @@ class AetherNodeContentStorageWarnBootTest {
                                 .tls(Option.none())
                                 .quicTls(TlsConfig.selfSignedMutual())
                                 .certificateProvider(Option.none())
-                                .configProvider(Option.some(ConfigurationProvider.builder().build()))
+                                .configProvider(Option.some(configProvider))
                                 .environment(environment)
                                 .build()
                                 .withStorageEncryption(storageEncryption);
