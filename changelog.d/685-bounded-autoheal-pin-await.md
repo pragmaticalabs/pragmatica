@@ -1,0 +1,4 @@
+### Fixed (2026-09-06 — #685: the membership-pin await in `StreamOwnerFailoverPinnedTest` was unbounded under a comment claiming it was bounded)
+
+- **`StreamOwnerFailoverPinnedTest.pinMembership` awaited `setAutoHealEnabled(false, …)` — a consensus round-trip since #685 — with a bare `.await()`, directly under a comment reading "Await it, bounded, and fail".** A pin that never resolved would park the `forge-tests` job until the runner's own timeout instead of failing the test by name. The await is now bounded at 30 s; on expiry the existing `onFailure` arm throws with the timeout cause
+  [mechanism: `Promise.await(TimeSpan)` returns a failed `Result` on expiry, which the existing `onFailure(cause -> throw new AssertionError(...))` arm converts into a named test failure; the success path is unchanged]. This was #867's one SHOULD-FIX from its review round 1: it was edited in the stream tree but never committed, so #867 merged with the comment and without the code.
