@@ -5,6 +5,7 @@
 package org.pragmatica.aether.testkit.deployedconfig;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -64,15 +65,33 @@ class DeployedConfigSectionTest {
     private static final String ENVELOPE_VERSION = "1007";
     private static final String CONFIG_SECTION = "deployed.endpoint";
 
-    /// The values the deployed slice must actually observe. Distinctive on purpose — a facade that
-    /// returned defaults, empties or zeroes could not produce this string.
-    private static final Map<String, String> DEPLOYED_CONFIG = Map.of(CONFIG_SECTION + ".host", "endpoint.internal",
-                                                                       CONFIG_SECTION + ".port", "8443",
-                                                                       CONFIG_SECTION + ".secure", "true",
-                                                                       CONFIG_SECTION + ".tags", "alpha, beta",
-                                                                       CONFIG_SECTION + ".weight", "7");
+    /// The slice's OWN configuration layer, shipped inside the jar as `META-INF/resources.toml`
+    /// the way `PackageSlicesMojo` ships it. Every key the record needs lives here, so the node
+    /// composite below is purely an override layer and each field can be attributed to exactly one
+    /// source. Distinctive values on purpose — a facade that returned defaults, empties or zeroes
+    /// could not produce the render below.
+    ///
+    ///   - `host` is a `${secrets:...}` placeholder, resolved by the store's secret resolver;
+    ///   - `port` and `weight` are shadowed by the operator override in the node composite;
+    ///   - `secure` and `tags` exist ONLY here, and `tags` is a native TOML array (review S4).
+    private static final String SLICE_RESOURCES_TOML = """
+            [deployed.endpoint]
+            host = "${secrets:endpoint/host}"
+            port = 8080
+            secure = true
+            tags = ["alpha", "beta"]
+            weight = 3
+            """;
 
-    private static final String EXPECTED_RENDER = "endpoint.internal|8443|true|alpha+beta|7";
+    private static final String RESOLVED_HOST = "vault.internal";
+
+    /// The operator's override layer: node.toml under the KV overlay, in production. Deliberately
+    /// carries only the keys it shadows, so a value that reaches the slice from here is provably an
+    /// override and a value that does not is provably the slice's own.
+    private static final Map<String, String> OPERATOR_OVERRIDES = Map.of(CONFIG_SECTION + ".port", "8443",
+                                                                          CONFIG_SECTION + ".weight", "7");
+
+    private static final String EXPECTED_RENDER = RESOLVED_HOST + "|8443|true|alpha+beta|7";
 
     @Test
     void deployedSlice_receivesParsedConfigRecord_withRealValues(@TempDir Path tempDir) throws Exception {
@@ -80,6 +99,27 @@ class DeployedConfigSectionTest {
 
         assertThat(describe(slice)).describedAs("the deployed slice must observe the configured values, not a no-op facade's failures")
                                    .isEqualTo("probe=" + EXPECTED_RENDER);
+    }
+
+    /// The same load, attributed field by field to the layer that supplied it (review S3). One
+    /// assertion per layer, so a regression in the composite's ORDER or in a single layer names
+    /// itself instead of surfacing as a mismatched render string.
+    @Test
+    void deployedSlice_observesEachLayerOfTheComposite(@TempDir Path tempDir) throws Exception {
+        var slice = loadDeployedSlice(tempDir, Option.some(nodeComposite()));
+        var fields = describe(slice).substring("probe=".length())
+                                    .split("\\|");
+
+        assertThat(fields[0]).describedAs("host: a ${secrets:...} placeholder in the slice's own resources.toml, resolved at load")
+                             .isEqualTo(RESOLVED_HOST);
+        assertThat(fields[1]).describedAs("port: declared 8080 in resources.toml, the operator override must WIN")
+                             .isEqualTo("8443");
+        assertThat(fields[2]).describedAs("secure: lives only in the slice's own resources.toml")
+                             .isEqualTo("true");
+        assertThat(fields[3]).describedAs("tags: a native TOML array in the slice's own resources.toml, read as its elements")
+                             .isEqualTo("alpha+beta");
+        assertThat(fields[4]).describedAs("weight: declared 3 in resources.toml, the operator override must win for an optional too")
+                             .isEqualTo("7");
     }
 
     /// The premise check, and the reason the assertion above means what it says.
@@ -144,7 +184,15 @@ class DeployedConfigSectionTest {
     }
 
     private static ConfigurationProvider nodeComposite() {
-        return IntrinsicConfigProvider.intrinsicConfigProvider("node.toml", DEPLOYED_CONFIG);
+        return IntrinsicConfigProvider.intrinsicConfigProvider("node.toml", OPERATOR_OVERRIDES);
+    }
+
+    /// The one secret the fixture asks for. Any other path is a failure, so a placeholder the test
+    /// did not plan for cannot resolve to something plausible by accident.
+    private static Promise<String> resolveSecret(String path) {
+        return "endpoint/host".equals(path)
+               ? Promise.success(RESOLVED_HOST)
+               : Causes.cause("no such secret in this fixture: " + path).promise();
     }
 
     private static Artifact artifact() {
@@ -152,9 +200,9 @@ class DeployedConfigSectionTest {
     }
 
     /// Wire the store the way `AetherNode` does, minus the parts this slice does not use: a
-    /// repository that serves the jar, a fresh registry, and the node-composite under test. The
-    /// resource facade refuses everything on purpose — [EndpointProbe] declares no resources, so a
-    /// working one could only mask a failure.
+    /// repository that serves the jar, a fresh registry, the node-composite under test and the
+    /// secret resolver for the slice's own layer. The resource facade refuses everything on
+    /// purpose — [EndpointProbe] declares no resources, so a working one could only mask a failure.
     private static SliceStore storeFor(Path jar, Option<ConfigurationProvider> nodeComposite) {
         return SliceStore.sliceStore(SliceRegistry.sliceRegistry(),
                                      List.of(repositoryServing(jar)),
@@ -164,7 +212,7 @@ class DeployedConfigSectionTest {
                                      SliceActionConfig.sliceActionConfig(),
                                      nodeComposite,
                                      Option.none(),
-                                     Option.none(),
+                                     Option.some(DeployedConfigSectionTest::resolveSecret),
                                      SliceLoadingContext.noResourceOverlay());
     }
 
@@ -179,8 +227,9 @@ class DeployedConfigSectionTest {
     }
 
     /// Package the compiled fixture — including the processor-generated `EndpointProbeFactory` and
-    /// every synthetic local-record class both it and [EndpointProbe] produce — into a slice jar
-    /// shaped the way `PackageSlicesMojo` shapes a real one.
+    /// every synthetic local-record class both it and [EndpointProbe] produce — plus the slice's
+    /// own `META-INF/resources.toml` into a slice jar shaped the way `PackageSlicesMojo` shapes a
+    /// real one.
     ///
     /// The whole package directory is swept rather than a hand-listed set of classes: the local
     /// records compile to synthetic names (`EndpointProbeFactory$1endpointProbeSlice`) that a list
@@ -193,6 +242,8 @@ class DeployedConfigSectionTest {
             for (var classFile : sliceClassFiles()) {
                 writeEntry(out, PACKAGE_PATH + "/" + classFile.getFileName(), Files.readAllBytes(classFile));
             }
+
+            writeEntry(out, "META-INF/resources.toml", SLICE_RESOURCES_TOML.getBytes(StandardCharsets.UTF_8));
         }
 
         return jar;
