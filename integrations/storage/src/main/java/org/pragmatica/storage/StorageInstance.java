@@ -238,9 +238,16 @@ final class DefaultStorageInstance implements StorageInstance {
         return newId;
     }
 
+    /// The claim IS the block's lifecycle record -- there is no second one. It names the tier the
+    /// active policy writes first, and [#trackNewBlock] finalizes it in place once the write lands.
     private BlockLifecycle sentinelFor(BlockId id) {
-        return BlockLifecycle.blockLifecycle(id,
-                                             tiers.getLast().level());
+        return BlockLifecycle.blockLifecycle(id, initialTier());
+    }
+
+    private TierLevel initialTier() {
+        return writePolicy == WritePolicy.WRITE_BEHIND
+               ? tiers.getFirst().level()
+               : tiers.getLast().level();
     }
 
     private Promise<BlockId> deduplicateBlock(BlockId id) {
@@ -323,8 +330,18 @@ final class DefaultStorageInstance implements StorageInstance {
                    .flatMap(_ -> promoteToNextCacheTier(id, content, cacheTiers, index + 1));
     }
 
+    /// Finalizes the record that [#handlePut]'s claim already created -- an UPDATE, never a re-create.
+    /// On the write-through path the cache-tier promotions have by now accumulated their presence
+    /// onto that record via [#recordTierPresence]; the previous unconditional `createLifecycle`
+    /// (a plain `put`) overwrote it with a durable-only record, so a block that was written and
+    /// never read sat physically in the memory tier while `listBlocksByTier(MEMORY)` could not
+    /// see it, and demotion was blind to it however far over its watermark the tier was (#886).
+    /// The add is idempotent by construction (the claim names the same tier); the fallback keeps
+    /// the pre-existing post-condition that a successful put always leaves a record, for the one
+    /// case where the claim can vanish mid-write (a metadata restore that clears the map).
     private BlockId trackNewBlock(BlockId id, TierLevel initialTier) {
-        metadataStore.createLifecycle(BlockLifecycle.blockLifecycle(id, initialTier));
+        metadataStore.computeLifecycle(id, lc -> lc.withTierAdded(initialTier))
+                     .onEmpty(() -> metadataStore.createLifecycle(BlockLifecycle.blockLifecycle(id, initialTier)));
         log.debug("Block {} stored in tier {}", id, initialTier);
 
         return id;
