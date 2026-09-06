@@ -87,11 +87,11 @@
   plane's `KvStoreApiKeyValidator` has a dead `BearerTokenRequired -> success(anonymous)` arm and a
   reachable no-header, no-keys `-> success(anonymous VIEWER)` arm (#866 G1 family), and the
   `AetherNode` bootstrap warning states the inverse of that code; all pre-existing, outside this
-  diff, filed separately
+  diff, filed as #908
   [mechanism: review section 5 and 8 of `review-902-888-2026-09-06`; read-verified, not executed].
 - **Other `permitAllValidator` sites, audited.** `AppHttpServerAdapter`'s `NONE` arm is guarded by the
   request-time pre-check that refuses every auth-requiring policy before the validator runs (pinned by
-  the `none` row above). `ForgeServer`'s three websocket handlers pass `authRequired = false`, the
+  the `none` row above). `ForgeServer`'s three websocket handlers pass `securityEnabled = false`, the
   documented local-dev case. The management plane already installs `denyUnlessPublicValidator` (#573).
   No other site installs it
   [mechanism: repo-wide grep for `permitAllValidator` and for unconditional `Result.success(SecurityContext`].
