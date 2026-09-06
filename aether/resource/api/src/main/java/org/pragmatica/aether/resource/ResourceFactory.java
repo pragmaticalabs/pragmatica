@@ -63,9 +63,8 @@ public interface ResourceFactory<T, C> {
 
     private static Unit logAsyncCloseFailure(Object resource, Cause cause) {
         logger().log(System.Logger.Level.WARNING,
-                     "Resource close failed for " + resource.getClass()
-                                                            .getName()
-                     + " — the resource is released from the cache anyway: " + cause);
+                     "Resource close failed for " + resource.getClass().getName()
+                    + " — the resource is released from the cache anyway: " + cause);
 
         return Unit.unit();
     }
@@ -79,7 +78,7 @@ public interface ResourceFactory<T, C> {
                 logger().log(System.Logger.Level.WARNING,
                              "Resource close failed for " + resource.getClass()
                                                                     .getName()
-                             + " — the resource is released from the cache anyway",
+                            + " — the resource is released from the cache anyway",
                              e);
             }
 
@@ -92,10 +91,9 @@ public interface ResourceFactory<T, C> {
     /// class repeating itself.
     private static Promise<Unit> noCloseConvention(Object resource) {
         logger().log(System.Logger.Level.DEBUG,
-                     "No close convention for " + resource.getClass()
-                                                          .getName()
-                     + " — implements neither AsyncCloseable nor AutoCloseable, so nothing was closed."
-                     + " Override ResourceFactory.close(T) if this resource owns releasable state.");
+                     "No close convention for " + resource.getClass().getName()
+                    + " — implements neither AsyncCloseable nor AutoCloseable, so nothing was closed."
+                    + " Override ResourceFactory.close(T) if this resource owns releasable state.");
 
         return Promise.unitPromise();
     }

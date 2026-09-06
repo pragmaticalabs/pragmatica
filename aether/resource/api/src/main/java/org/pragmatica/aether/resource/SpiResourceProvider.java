@@ -32,6 +32,7 @@ import static org.pragmatica.lang.Option.option;
 
 public final class SpiResourceProvider implements ResourceProvider {
     private final Map<Class<?>, List<ResourceFactory<?, ?>>> factories;
+
     /// Consumer id standing for a caller the provider cannot attribute to a slice — the
     /// context-free `provide(type, section)` overload, which carries no slice id (the wrapper
     /// chain in `SliceLoadingContext` only injects one on the context overload).
@@ -146,15 +147,12 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// cache entry (see below), so the failure is not memoized.
     @SuppressWarnings("unchecked")
     private <T> Promise<T> provideShared(Class<T> resourceType,
-                                          String configSection,
-                                          Option<ProvisioningContext> contextOpt) {
+                                         String configSection,
+                                         Option<ProvisioningContext> contextOpt) {
         var key = new CacheKey(resourceType, configSection);
 
         registerConsumer(key, contextOpt);
-
-        var cached = promiseCache.computeIfAbsent(key,
-                                                   _ -> createProvisioned(resourceType, configSection, contextOpt));
-
+        var cached = promiseCache.computeIfAbsent(key, _ -> createProvisioned(resourceType, configSection, contextOpt));
         // Attached OUTSIDE computeIfAbsent on purpose: an already-failed promise fires this
         // synchronously, and mutating a ConcurrentHashMap from inside its own mapping function is
         // forbidden. `remove(key, cached)` is conditional, so re-attaching per call is idempotent
@@ -169,8 +167,7 @@ public final class SpiResourceProvider implements ResourceProvider {
                                                               .option())
                                    .or(UNATTRIBUTED_CONSUMER);
 
-        consumers.computeIfAbsent(key, _ -> ConcurrentHashMap.newKeySet())
-                 .add(consumerId);
+        consumers.computeIfAbsent(key, _ -> ConcurrentHashMap.newKeySet()).add(consumerId);
     }
 
     @Override
@@ -194,11 +191,7 @@ public final class SpiResourceProvider implements ResourceProvider {
         var closeFutures = new ArrayList<Promise<Unit>>();
 
         for (var key : Set.copyOf(consumers.keySet())) {
-            var remaining = consumers.computeIfPresent(key, (_, consumerSet) -> {
-                consumerSet.remove(sliceId);
-
-                return consumerSet.isEmpty() ? null : consumerSet;
-            });
+            var remaining = consumers.computeIfPresent(key, (_, consumerSet) -> dropConsumer(consumerSet, sliceId));
 
             if (remaining != null) {
                 continue;
@@ -214,10 +207,22 @@ public final class SpiResourceProvider implements ResourceProvider {
         if (closeFutures.isEmpty()) {
             return Promise.unitPromise();
         }
-
         // allOf collects Results rather than short-circuiting, so one resource that fails to close
         // (or one entry holding a failed provision) cannot block the release of the others.
         return Promise.allOf(closeFutures).map(_ -> Unit.unit());
+    }
+
+    /// Remove one consumer, reporting the set as `null` once it is empty.
+    ///
+    /// `null` is `ConcurrentHashMap.computeIfPresent`'s "remove the mapping" signal, and returning
+    /// it from inside the remapping function is what makes the drop-to-empty test atomic — the
+    /// caller then knows it alone observed the transition.
+    private static Set<String> dropConsumer(Set<String> consumerSet, String sliceId) {
+        consumerSet.remove(sliceId);
+
+        return consumerSet.isEmpty()
+               ? null
+               : consumerSet;
     }
 
     @SuppressWarnings("unchecked")
@@ -229,8 +234,8 @@ public final class SpiResourceProvider implements ResourceProvider {
 
     @SuppressWarnings("unchecked")
     private <T> Promise<Provisioned<?>> createProvisioned(Class<T> resourceType,
-                                                           String configSection,
-                                                           Option<ProvisioningContext> contextOpt) {
+                                                          String configSection,
+                                                          Option<ProvisioningContext> contextOpt) {
         var enrichedContext = contextOpt.map(this::enrichWithRuntimeExtensions);
 
         return option(factories.get(resourceType)).filter(list -> !list.isEmpty())
@@ -290,17 +295,17 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// connectors all supply `SqlConnector` and are ordered by priority (#268 R3).
     @SuppressWarnings("unchecked")
     private <T, C> Promise<Provisioned<?>> selectAndInvoke(List<ResourceFactory<T, ?>> factoryList,
-                                                            C config,
-                                                            Class<T> resourceType,
-                                                            String configSection,
-                                                            Option<ProvisioningContext> contextOpt) {
+                                                           C config,
+                                                           Class<T> resourceType,
+                                                           String configSection,
+                                                           Option<ProvisioningContext> contextOpt) {
         for (var factory : factoryList) {
             var typed = (ResourceFactory<T, C>) factory;
 
             if (typed.supports(config)) {
-                return invokeProvision(typed, config, contextOpt)
-                            .<Provisioned<?>> map(resource -> new Provisioned<>(resource, typed))
-                            .mapError(cause -> classifyProvisionFailure(resourceType, configSection, cause));
+                return invokeProvision(typed, config, contextOpt).<Provisioned<?>> map(resource -> new Provisioned<>(resource,
+                                                                                                                     typed))
+                                      .mapError(cause -> classifyProvisionFailure(resourceType, configSection, cause));
             }
         }
 
@@ -308,10 +313,9 @@ public final class SpiResourceProvider implements ResourceProvider {
     }
 
     private static <T, C> Promise<T> invokeProvision(ResourceFactory<T, C> factory,
-                                                      C config,
-                                                      Option<ProvisioningContext> contextOpt) {
-        return contextOpt.fold(() -> factory.provision(config),
-                               context -> factory.provision(config, context));
+                                                     C config,
+                                                     Option<ProvisioningContext> contextOpt) {
+        return contextOpt.fold(() -> factory.provision(config), context -> factory.provision(config, context));
     }
 
     /// Classify a resource-provisioning failure for the slice-loading FSM (spec §6 / decision #7).
@@ -329,9 +333,7 @@ public final class SpiResourceProvider implements ResourceProvider {
     }
 
     @SuppressWarnings("unchecked")
-    private <C> Promise<C> loadConfig(String section,
-                                      Class<C> configType,
-                                      Option<ProvisioningContext> contextOpt) {
+    private <C> Promise<C> loadConfig(String section, Class<C> configType, Option<ProvisioningContext> contextOpt) {
         var loaded = (Result<Object>) resolveConfigLoader(contextOpt).apply(section, configType);
 
         return topicNameFallback(section, configType, loaded).mapError(cause -> new SliceLoadingFailure.Fatal.ConfigurationFailed(section,
