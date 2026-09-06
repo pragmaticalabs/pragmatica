@@ -1,0 +1,9 @@
+### Fixed (2026-09-05 — #772: a route expecting a JSON body answered 500 for a missing or malformed body)
+
+- **A missing, empty, or malformed request body on a route declared with `.withBody(...)` fell through to the framework's `ErrorMapper.defaultMapper()` 500 fallback instead of a client-error response** — Jackson's binding failure (`JsonError.TypeMismatch`/`InvalidJson`/etc.) was a plain `Cause`, never an `HttpError`, so nothing distinguished "the client sent a bad body" from an unexpected server fault. `RequestContext` now exposes `jsonBody(TypeToken<T>)`, wrapping every body-parsing failure as `HttpStatus.BAD_REQUEST.with(cause)` — mirroring the existing `PathParameter#mapped` (#397) pattern — and all twelve `withBody` combinators in `Route` route through it. The RFC 9457 problem body's `detail` names the expected type, taken directly from the underlying `JsonError` message
+  [verified: `aether/http-routing-adapter/src/test/java/org/pragmatica/aether/http/adapter/SliceRouterJsonBodyTest.java` — real `SliceRouter`/`HttpRequestContext` dispatch, missing/malformed/valid bodies].
+- A body that PARSES successfully but fails domain validation performed by the handler itself is unaffected by this fix and still answers 500 today — the handler's own `Cause` is never an `HttpError`
+  [verified: `SliceRouterJsonBodyTest#postItem_returns500_whenBodyParsesButHandlerRejectsDomainValidation`].
+- **Cosmetic**: `JsonError.TypeMismatch`'s message carried a dangling `" at "` suffix for a root-level/pathless mismatch (Jackson's `getPathReference()` returns `""`, not `null`, so the null-only `Option.option` filter left it present) — most visible on exactly this bug's missing-body case. `typeMismatch(...)` now also filters a blank path
+  [verified: `SliceRouterJsonBodyTest#postItem_returns400_namingExpectedType_whenBodyMissing`].
+- Docs updated: HTTP adapter reference — status codes for missing/malformed request bodies.

@@ -1091,7 +1091,7 @@ override_policy = "strengthen_only"    # strengthen_only | full | none
 
 | Policy | Behavior |
 |--------|----------|
-| `strengthen_only` (default) | Operator can only make routes MORE restrictive (public->authenticated, authenticated->public is rejected) |
+| `strengthen_only` (default) | Operator can only make routes MORE restrictive (public->authenticated applies; authenticated->public is rejected). On a route that declared NO security stance, see "Undeclared routes" below. |
 | `full` | Operator can change security in any direction |
 | `none` | No overrides allowed -- slice developer's security is final |
 
@@ -1101,6 +1101,8 @@ override_policy = "strengthen_only"    # strengthen_only | full | none
 |-------|---------|
 | `public` | No authentication required |
 | `authenticated` | Any valid credential (API key or JWT based on server security mode) |
+| `api_key` | A valid API key specifically. **Only usable when the node runs `security_mode = "api-key"`** -- see the warning below. |
+| `bearer_token` | A valid bearer token specifically. **Only usable when the node runs `security_mode = "jwt"`** -- see the warning below. |
 | `role:<name>` | Requires specific role in SecurityContext |
 
 #### Pattern Matching
@@ -1113,7 +1115,58 @@ override_policy = "strengthen_only"    # strengthen_only | full | none
 
 #### Strength Ordering
 
-For `strengthen_only` policy, security levels are ordered: `public (0) < authenticated (1) < role:* (2)`. Overrides that weaken security are silently ignored.
+For `strengthen_only` policy, security levels are ordered by `SecurityPolicy.strength()`:
+
+`public (0) < authenticated (10) < api_key (20) = bearer_token (20) < role:* (30)`
+
+An override whose strength is greater than or equal to the route's declared strength is applied;
+one that would lower it is refused and logged at WARN.
+
+> **Do not use `api_key` or `bearer_token` to substitute for one another.** They carry equal
+> strength (`20`), so the `strengthen_only` check accepts the swap -- but strength is not
+> interchangeability. A node enforces exactly the credential type its `security_mode` serves: under
+> `api-key` mode a `bearer_token` policy cannot be checked, and under `jwt` mode an `api_key` policy
+> cannot be. Such a route now **fails closed** and answers `401`
+> (`SecurityError.UNENFORCEABLE_POLICY`). Until #866 it did the opposite -- the request was served
+> with no credential inspected at all, while `GET /api/v1/routes` reported the stricter-looking
+> policy. Use `authenticated` when you mean "any valid credential this node accepts"; it resolves to
+> whichever type the mode serves.
+
+##### Undeclared routes
+
+A route whose `routes.toml` has no `[security]` section carries no declared policy (reported as
+`UNSPECIFIED` by `GET /api/v1/routes`), and its strength is not comparable: what it actually
+enforces is the node's global `security_mode`, which the publish-time override path cannot see.
+For such a route, `strengthen_only` judges only the DIRECTION of the change:
+
+- an override to `public` is **refused** — it is the floor under every global mode, so it can only weaken;
+- every other override (`authenticated`, `api_key`, `bearer_token`, `role:*`) is **applied**.
+
+> **Scope limit — an accepted override does not govern every request.** "Applied" here means the
+> override reaches the route's replicated entry, which is what `GET /api/v1/routes` reports and what
+> **other** nodes resolve and enforce before forwarding. It does **not** reach the local
+> authorization decision on the node that HOSTS the route: that decision reads the route's declared
+> policy, taken before overrides are applied. So a request arriving directly at the hosting node is
+> authorized by the route's **declared** policy (or, if it declared none, by the global
+> `security_mode`), not by your override — while the routes listing shows the override as in effect.
+> Aether nodes are individually addressable, so which behaviour you get depends on which node the
+> client reaches. This is a pre-existing gap, tracked as #887; it is documented here rather than
+> claimed fixed. **Until it is closed, do not rely on a security override as the only control on a
+> sensitive route — declare the policy in the slice's `routes.toml` as well.**
+
+**Known residuals.** Three, not one:
+
+1. Under `security_mode = "api-key"` (the default), an override to `authenticated` (strength 10) on
+   an undeclared route whose effective policy is `api_key` (strength 20) is a weakening this rule
+   still permits.
+2. The same holds under `security_mode = "jwt"`, where the effective policy is `bearer_token`, also
+   strength 20. Between them these cover both enforcing modes; `none` is unaffected.
+3. A credential-**type** mismatch is not a strength weakening at all, so the ordering above will not
+   reveal it — see the `api_key`/`bearer_token` warning. Such routes fail closed with `401` rather
+   than being weakened, but the override does not do what its name suggests.
+
+Closing 1 and 2 requires the override path to know the global security mode. Declare `[security]`
+explicitly on any route where the distinction matters.
 
 ---
 

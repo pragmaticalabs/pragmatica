@@ -21,8 +21,14 @@ public sealed interface RouteSecurityLevel {
     /// Requires a specific role in SecurityContext.
     record Role(String roleName) implements RouteSecurityLevel {}
 
+    /// No `[security]` section at all — distinct from an explicit `default = "public"`. Resolved to
+    /// `SecurityPolicy.unspecified()` by codegen (never a concrete public/authenticated/role literal),
+    /// letting the server tell "declared public" from "undeclared" apart at request time (#763).
+    record Unspecified() implements RouteSecurityLevel {}
+
     RouteSecurityLevel PUBLIC = new Public();
     RouteSecurityLevel AUTHENTICATED = new Authenticated();
+    RouteSecurityLevel UNSPECIFIED = new Unspecified();
     Cause EMPTY_VALUE = Causes.cause("Empty security value");
     Cause EMPTY_ROLE = Causes.cause("Empty role name");
     Fn1<Cause, String> UNKNOWN_LEVEL = Causes.forOneValue("Unknown security level: %s");
@@ -38,16 +44,18 @@ public sealed interface RouteSecurityLevel {
         return switch (trimmed) {
             case "public" -> Result.success(PUBLIC);
             case "authenticated" -> Result.success(AUTHENTICATED);
+            case "unspecified" -> Result.success(UNSPECIFIED);
             default -> parseRole(trimmed, value);
         };
     }
 
-    /// Strength ordering: PUBLIC(0) < AUTHENTICATED(1) < ROLE(2).
+    /// Strength ordering: UNSPECIFIED(-1) < PUBLIC(0) < AUTHENTICATED(1) < ROLE(2).
     default int strength() {
         return switch (this) {
             case Public _ -> 0;
             case Authenticated _ -> 1;
             case Role _ -> 2;
+            case Unspecified _ -> -1;
         };
     }
 
@@ -62,6 +70,7 @@ public sealed interface RouteSecurityLevel {
             case Public _ -> "public";
             case Authenticated _ -> "authenticated";
             case Role(var name) -> "role:" + name;
+            case Unspecified _ -> "unspecified";
         };
     }
 

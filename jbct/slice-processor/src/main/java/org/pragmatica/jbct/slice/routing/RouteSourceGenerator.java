@@ -798,6 +798,7 @@ public class RouteSourceGenerator {
             case RouteSecurityLevel.Public _ -> "SecurityPolicy.publicRoute()";
             case RouteSecurityLevel.Authenticated _ -> "SecurityPolicy.authenticated()";
             case RouteSecurityLevel.Role(var name) -> "SecurityPolicy.roleRequired(\"" + escapeJavaString(name) + "\")";
+            case RouteSecurityLevel.Unspecified _ -> "SecurityPolicy.unspecified()";
         };
     }
 

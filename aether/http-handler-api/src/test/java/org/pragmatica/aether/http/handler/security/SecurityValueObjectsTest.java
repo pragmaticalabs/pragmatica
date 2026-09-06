@@ -250,6 +250,55 @@ class SecurityValueObjectsTest {
         }
 
         @Test
+        void fromString_unspecifiedDeserialization() {
+            // #866 review F4: `case "UNSPECIFIED"` in fromString had no test — revert it and the
+            // whole suite stayed green. Without it, an "UNSPECIFIED" entry read back off a remote
+            // node's route table falls through parseRoleOrDefault to apiKeyRequired(), which is an
+            // EXPLICIT policy, so AppHttpServer#isExplicitPolicy adopts it instead of falling back
+            // to the global one. Under security_mode = "none" that 401s a route that should serve.
+            assertThat(SecurityPolicy.fromString("UNSPECIFIED"))
+                .isInstanceOf(SecurityPolicy.Unspecified.class);
+        }
+
+        @Test
+        void unusedPlaceholder_isConstructable_andBothArmsFailClosed() {
+            // #866 review G5. The javadoc used to call unused() "unconstructable"; this test is the
+            // counter-example — it constructs one. Java gives interface member types implicit public
+            // and a record's canonical constructor must be at least as accessible as the record, so
+            // it CANNOT be sealed off. It is unconstructed today, which is a fact about call sites,
+            // not a guarantee about the type.
+            //
+            // Since it cannot be made unreachable, both arms must fail CLOSED. strength() is
+            // MAX_VALUE so SecurityOverrideApplier (the only consumer of strength()) refuses every
+            // override on such a route; the previous value -1 was the fail-OPEN side, because
+            // unused() is not Unspecified and so skips the undeclared-route guard entirely, leaving
+            // `0 >= -1` to admit an override to public.
+            var placeholder = new SecurityPolicy.unused();
+
+            assertThat(placeholder.strength()).isEqualTo(Integer.MAX_VALUE);
+            assertThat(placeholder.strength()).isGreaterThan(SecurityPolicy.roleRequired("admin").strength());
+            assertThat(placeholder.asString()).isEqualTo("UNUSED");
+        }
+
+        @Test
+        void unusedPlaceholder_wireValue_readsBackAsApiKeyRequired_notAsPublic() {
+            // "UNUSED" is deliberately unrecognized by fromString, so a node reading it falls to
+            // parseRoleOrDefault -> apiKeyRequired() and logs. That is stricter than "UNSPECIFIED",
+            // which would resolve to the global policy and be served openly under security_mode=none.
+            assertThat(SecurityPolicy.fromString(new SecurityPolicy.unused().asString()))
+                .isInstanceOf(SecurityPolicy.ApiKeyRequired.class);
+        }
+
+        @Test
+        void fromString_unspecifiedRoundTrip_throughAsString() {
+            // The wire path is asString() -> KV store -> fromString(); pin both directions together
+            // so a change to either arm breaks here.
+            assertThat(SecurityPolicy.unspecified().asString()).isEqualTo("UNSPECIFIED");
+            assertThat(SecurityPolicy.fromString(SecurityPolicy.unspecified().asString()))
+                .isInstanceOf(SecurityPolicy.Unspecified.class);
+        }
+
+        @Test
         void canAccess_publicRoute_allowsAnonymous() {
             var policy = SecurityPolicy.publicRoute();
             var anonymous = SecurityContext.securityContext();
