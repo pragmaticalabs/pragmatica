@@ -116,9 +116,36 @@ public final class SliceLoadingContext implements SliceCreationContext {
         return delegate.sliceId();
     }
 
+    /// The deployed slice's configuration, served from the materialized slice-composite
+    /// (`slice.toml` under the node-composite's operator KV overlay and node.toml) rather than from
+    /// the delegate's [NoOpConfigFacade] (#889).
+    ///
+    /// This is the seam the defect lived in. Every production path reaches slice creation through
+    /// the two- or three-argument `SliceCreationContext` factory, both of which pass the no-op, so
+    /// `ctx.config()` inside a deployed slice could never return a value and a slice declaring
+    /// `@ResourceQualifier(type = ConfigurationSection.class)` could not be created.
+    ///
+    /// Serving it HERE rather than threading a `ConfigFacade` in through
+    /// `DependencyResolver#resolveWithContext` is not a shortcut, it is the only placement that can
+    /// carry the right config: the slice-composite is LATE-BOUND — it cannot exist until the slice
+    /// classloader does, which is why the caller supplies a builder and not a value — so a facade
+    /// constructed at resolve time could only ever carry the node composite, silently missing the
+    /// slice's own `resources.toml` and every operator override layered onto it.
+    ///
+    /// Read through the [java.util.concurrent.atomic.AtomicReference] on each call for the same
+    /// reason: a facade captured at construction time would latch the pre-materialization absence.
+    /// `DependencyResolver#materializeThenResolve` attaches the composite strictly before the
+    /// generated factory runs — synchronously, deliberately — and that factory is the first reader.
+    ///
+    /// Falls back to the delegate when no composite is attached, so a context built without
+    /// per-slice config keeps exactly its previous behaviour instead of silently acquiring an empty
+    /// facade. On a real node that fallback means the node has no configuration provider at all, in
+    /// which case resource provisioning is a no-op too and nothing could be provisioned regardless.
     @Override
     public ConfigFacade config() {
-        return delegate.config();
+        return sliceComposite.get()
+                             .map(ConfigProviderFacade::configProviderFacade)
+                             .or(delegate::config);
     }
 
     @Override
