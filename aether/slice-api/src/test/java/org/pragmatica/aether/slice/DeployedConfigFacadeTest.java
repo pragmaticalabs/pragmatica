@@ -31,8 +31,10 @@ class DeployedConfigFacadeTest {
         return IntrinsicConfigProvider.intrinsicConfigProvider("test", values);
     }
 
+    private static final String SLICE_ID = "org.example:probe:1.0.0";
+
     private static ConfigFacade facade(Map<String, String> values) {
-        return ConfigProviderFacade.configProviderFacade(provider(values));
+        return ConfigProviderFacade.configProviderFacade(SLICE_ID, provider(values));
     }
 
     @Nested
@@ -71,13 +73,20 @@ class DeployedConfigFacadeTest {
             assertThat(config.requireLong(SECTION, "size").isFailure()).isTrue();
         }
 
+        /// Names the slice as well as the key: a `[slices]` dependency reads through its own
+        /// context (review S2), so a missing-key failure raised while loading slice A may belong
+        /// to its dependency B, and the message has to say which.
         @Test
-        void missingRequiredKeyFailsAndNamesTheKey() {
+        void missingRequiredKeyFailsAndNamesTheKeyAndTheSlice() {
             var result = facade(Map.of()).requireString(SECTION, "host");
 
             assertThat(result.isFailure()).isTrue();
-            result.onFailure(cause -> assertThat(cause.message()).describedAs("the operator has to be told WHICH key was missing")
-                                                                  .contains(SECTION + ".host"));
+            result.onFailure(cause -> {
+                       assertThat(cause.message()).describedAs("the operator has to be told WHICH key was missing")
+                                                   .contains(SECTION + ".host");
+                       assertThat(cause.message()).describedAs("...and WHICH slice asked for it")
+                                                   .contains(SLICE_ID);
+                   });
         }
 
         /// The idiomatic spelling. A native TOML array `tags = ["alpha", "beta"]` reaches the
@@ -180,7 +189,7 @@ class DeployedConfigFacadeTest {
         /// overload meant it, and must not be overridden by the refusal above.
         @Test
         void anExplicitlySuppliedFacadeWinsOverTheRefusal() {
-            var supplied = ConfigProviderFacade.configProviderFacade(provider(Map.of(SECTION + ".host", "supplied.host")));
+            var supplied = ConfigProviderFacade.configProviderFacade("supplied", provider(Map.of(SECTION + ".host", "supplied.host")));
             var delegate = SliceCreationContext.sliceCreationContext(noOpInvoker(), noOpResources(), "slice", supplied);
             var context = SliceLoadingContext.sliceLoadingContext(delegate);
 

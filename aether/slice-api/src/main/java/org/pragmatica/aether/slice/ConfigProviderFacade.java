@@ -47,12 +47,17 @@ import org.pragmatica.lang.utils.Causes;
 /// as `Option<T>`, which the generator routes to the `get*` methods instead. A PRESENT but EMPTY
 /// list (`tags = []` or `tags = ""`) is a value and succeeds as `[]` — "require" pins presence, and
 /// emptiness is something a list is allowed to be (review N2, decided here).
-record ConfigProviderFacade(ConfigurationProvider provider) implements ConfigFacade {
+///
+/// Every refusal names the slice that asked as well as the key. A node loads many slices, and
+/// since #889 review S2 a `[slices]` dependency reads through a context of its own, so a
+/// missing-key failure raised while loading slice A may belong to its dependency B — the message
+/// has to say which.
+record ConfigProviderFacade(String sliceId, ConfigurationProvider provider) implements ConfigFacade {
     private static final Fn1<Cause, String> MISSING_KEY = Causes.forOneValue("Required config key not found: %s");
-    private static final Fn1<Cause, String> NESTED_ARRAY = Causes.forOneValue("Config key %s holds a nested array, which is not a string list");
+    private static final Fn1<Cause, String> NESTED_ARRAY = Causes.forOneValue("Config %s holds a nested array, which is not a string list");
 
-    static ConfigProviderFacade configProviderFacade(ConfigurationProvider provider) {
-        return new ConfigProviderFacade(provider);
+    static ConfigProviderFacade configProviderFacade(String sliceId, ConfigurationProvider provider) {
+        return new ConfigProviderFacade(sliceId, provider);
     }
 
     @Override
@@ -85,8 +90,8 @@ record ConfigProviderFacade(ConfigurationProvider provider) implements ConfigFac
         var fullKey = fullKey(section, key);
 
         return provider.getString(fullKey)
-                       .toResult(MISSING_KEY.apply(fullKey))
-                       .flatMap(raw -> parseStringList(fullKey, raw));
+                       .toResult(MISSING_KEY.apply(describe(fullKey)))
+                       .flatMap(raw -> parseStringList(describe(fullKey), raw));
     }
 
     @Override
@@ -114,20 +119,25 @@ record ConfigProviderFacade(ConfigurationProvider provider) implements ConfigFac
         return provider.getBoolean(fullKey(section, key));
     }
 
-    private static <T> Result<T> require(String section, String key, Fn1<Option<T>, String> reader) {
+    private <T> Result<T> require(String section, String key, Fn1<Option<T>, String> reader) {
         var fullKey = fullKey(section, key);
 
         return reader.apply(fullKey)
-                     .toResult(MISSING_KEY.apply(fullKey));
+                     .toResult(MISSING_KEY.apply(describe(fullKey)));
     }
 
     private static String fullKey(String section, String key) {
         return section + "." + key;
     }
 
+    private String describe(String fullKey) {
+        return "key " + fullKey + " for slice " + sliceId;
+    }
+
     /// Package-private so the two spellings, the mixed and empty forms, and the nested refusal
-    /// are pinned directly against the parse rather than through a provider.
-    static Result<List<String>> parseStringList(String fullKey, String raw) {
+    /// are pinned directly against the parse rather than through a provider. `subject` is the
+    /// already-described key, used only in the refusal.
+    static Result<List<String>> parseStringList(String subject, String raw) {
         var trimmed = raw.trim();
 
         if (!isNativeArray(trimmed)) {
@@ -137,7 +147,7 @@ record ConfigProviderFacade(ConfigurationProvider provider) implements ConfigFac
         var body = trimmed.substring(1, trimmed.length() - 1);
 
         if (body.contains("[") || body.contains("]")) {
-            return NESTED_ARRAY.apply(fullKey).result();
+            return NESTED_ARRAY.apply(subject).result();
         }
 
         return Result.success(splitCommaList(body));

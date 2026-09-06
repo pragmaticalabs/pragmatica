@@ -60,6 +60,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class DeployedConfigSectionTest {
     private static final TimeSpan TIMEOUT = timeSpan(10).seconds();
     private static final String ARTIFACT_COORDS = "org.example:endpoint-probe:1.0.0";
+    private static final String DEPENDENCY_COORDS = "org.example:endpoint-dependency:1.0.0";
     private static final String PACKAGE_PATH = "org/pragmatica/aether/testkit/deployedconfig";
     private static final String FACTORY_CLASS = "org.pragmatica.aether.testkit.deployedconfig.EndpointProbeFactory";
     private static final String ENVELOPE_VERSION = "1007";
@@ -132,9 +133,9 @@ class DeployedConfigSectionTest {
     /// no-op's missing-key wording.
     @Test
     void deployedSlice_failsToCreate_whenNoConfigurationIsAvailable(@TempDir Path tempDir) throws Exception {
-        var jar = packageSliceJar(tempDir);
-        var result = storeFor(jar, Option.none()).loadSlice(artifact())
-                                                 .await(TIMEOUT);
+        var jar = packageSliceJar(tempDir, ARTIFACT_COORDS, SLICE_RESOURCES_TOML, List.of());
+        var result = storeFor(SliceRegistry.sliceRegistry(), Map.of(ARTIFACT_COORDS, jar), Option.none()).loadSlice(artifact())
+                                                                                                          .await(TIMEOUT);
 
         assertThat(result.isFailure()).describedAs("a config-section slice cannot be created when there is no configuration to read")
                                       .isTrue();
@@ -155,13 +156,85 @@ class DeployedConfigSectionTest {
         assertThat(slice.getClass().getClassLoader()).isNotSameAs(getClass().getClassLoader());
     }
 
-    private Slice loadDeployedSlice(Path tempDir, Option<ConfigurationProvider> nodeComposite) throws IOException {
-        var jar = packageSliceJar(tempDir);
+    /// A `[slices]` dependency must read ITS OWN composite, not its parent's (review S2).
+    ///
+    /// Before this was fixed, `DependencyResolver` threaded the parent's single loading context
+    /// into every dependency it pulled from the repository; materialization is first-wins and the
+    /// builder was closed over the parent artifact, so the dependency's generated factory read
+    /// `parent.toml ⊕ node`. Here both slices declare the same key with different values and
+    /// nothing in the node layer overrides it: each must observe its own.
+    @Test
+    void dependencySlice_readsItsOwnConfig_notItsParents(@TempDir Path tempDir) throws Exception {
+        var registry = SliceRegistry.sliceRegistry();
+        var jars = Map.of(ARTIFACT_COORDS, packageSliceJar(tempDir, ARTIFACT_COORDS, tomlWithHost("parent.internal"), List.of(DEPENDENCY_COORDS)),
+                          DEPENDENCY_COORDS, packageSliceJar(tempDir, DEPENDENCY_COORDS, tomlWithHost("dependency.internal"), List.of()));
+        var parent = storeFor(registry, jars, Option.some(emptyNodeComposite())).loadSlice(artifact(ARTIFACT_COORDS))
+                                                                                  .await(TIMEOUT)
+                                                                                  .fold(cause -> fail("parent load failed: " + cause.message()),
+                                                                                        SliceStore.LoadedSlice::slice);
+        var dependency = registry.lookup(artifact(DEPENDENCY_COORDS));
 
-        return storeFor(jar, nodeComposite).loadSlice(artifact())
-                                           .await(TIMEOUT)
-                                           .fold(cause -> fail("slice load failed: " + cause.message()),
-                                                 SliceStore.LoadedSlice::slice);
+        assertThat(dependency.isPresent()).describedAs("the dependency must have been registered by the parent's load")
+                                          .isTrue();
+        assertThat(describe(dependency.unwrap())).describedAs("the dependency must observe ITS OWN resources.toml, not the parent's")
+                                        .isEqualTo("probe=dependency.internal|8080|true|alpha+beta|3");
+        assertThat(describe(parent)).describedAs("the parent keeps its own")
+                                    .isEqualTo("probe=parent.internal|8080|true|alpha+beta|3");
+    }
+
+    /// The failure side of the same seam: a key the dependency needs and does not have must fail
+    /// the load NAMING THE DEPENDENCY — not succeed by reading the parent's value for it, and not
+    /// fail pointing the operator at the parent.
+    @Test
+    void dependencySlice_refusalNamesTheDependency_whenItsOwnKeyIsMissing(@TempDir Path tempDir) throws Exception {
+        var registry = SliceRegistry.sliceRegistry();
+        var jars = Map.of(ARTIFACT_COORDS, packageSliceJar(tempDir, ARTIFACT_COORDS, tomlWithHost("parent.internal"), List.of(DEPENDENCY_COORDS)),
+                          DEPENDENCY_COORDS, packageSliceJar(tempDir, DEPENDENCY_COORDS, TOML_WITHOUT_SECURE, List.of()));
+        var result = storeFor(registry, jars, Option.some(emptyNodeComposite())).loadSlice(artifact(ARTIFACT_COORDS))
+                                                                                  .await(TIMEOUT);
+
+        assertThat(result.isFailure()).describedAs("the parent declares `secure`; the dependency must not be able to read it from there")
+                                      .isTrue();
+        result.onFailure(cause -> {
+                   assertThat(cause.message()).contains(CONFIG_SECTION + ".secure");
+                   assertThat(cause.message()).describedAs("the refusal must name the slice that asked, which is the dependency")
+                                               .contains(DEPENDENCY_COORDS);
+               });
+    }
+
+    private Slice loadDeployedSlice(Path tempDir, Option<ConfigurationProvider> nodeComposite) throws IOException {
+        var jar = packageSliceJar(tempDir, ARTIFACT_COORDS, SLICE_RESOURCES_TOML, List.of());
+
+        return storeFor(SliceRegistry.sliceRegistry(), Map.of(ARTIFACT_COORDS, jar), nodeComposite).loadSlice(artifact())
+                                                                                                    .await(TIMEOUT)
+                                                                                                    .fold(cause -> fail("slice load failed: " + cause.message()),
+                                                                                                          SliceStore.LoadedSlice::slice);
+    }
+
+    /// A complete, self-contained slice layer with a distinguishable host, for the two-slice
+    /// dependency tests. No secrets, so both slices resolve against the same store.
+    private static String tomlWithHost(String host) {
+        return """
+                [deployed.endpoint]
+                host = "%s"
+                port = 8080
+                secure = true
+                tags = ["alpha", "beta"]
+                weight = 3
+                """.formatted(host);
+    }
+
+    private static final String TOML_WITHOUT_SECURE = """
+            [deployed.endpoint]
+            host = "dependency.internal"
+            port = 8080
+            tags = ["alpha", "beta"]
+            """;
+
+    /// A node composite that is PRESENT (so a slice composite is built at all) but overrides
+    /// nothing, so every value a slice observes is attributable to its own layer.
+    private static ConfigurationProvider emptyNodeComposite() {
+        return IntrinsicConfigProvider.intrinsicConfigProvider("node.toml", Map.of());
     }
 
     /// Invoke the slice's own method across the classloader boundary.
@@ -196,16 +269,21 @@ class DeployedConfigSectionTest {
     }
 
     private static Artifact artifact() {
-        return Artifact.artifact(ARTIFACT_COORDS).unwrap();
+        return artifact(ARTIFACT_COORDS);
+    }
+
+    private static Artifact artifact(String coords) {
+        return Artifact.artifact(coords).unwrap();
     }
 
     /// Wire the store the way `AetherNode` does, minus the parts this slice does not use: a
-    /// repository that serves the jar, a fresh registry, the node-composite under test and the
-    /// secret resolver for the slice's own layer. The resource facade refuses everything on
+    /// repository that serves the jars by coordinate, the registry (the caller's, so a dependency
+    /// registered during a load can be looked up afterwards), the node-composite under test and
+    /// the secret resolver for the slice's own layer. The resource facade refuses everything on
     /// purpose — [EndpointProbe] declares no resources, so a working one could only mask a failure.
-    private static SliceStore storeFor(Path jar, Option<ConfigurationProvider> nodeComposite) {
-        return SliceStore.sliceStore(SliceRegistry.sliceRegistry(),
-                                     List.of(repositoryServing(jar)),
+    private static SliceStore storeFor(SliceRegistry registry, Map<String, Path> jars, Option<ConfigurationProvider> nodeComposite) {
+        return SliceStore.sliceStore(registry,
+                                     List.of(repositoryServing(jars)),
                                      new SharedLibraryClassLoader(DeployedConfigSectionTest.class.getClassLoader()),
                                      REFUSING_INVOKER,
                                      REFUSING_RESOURCES,
@@ -216,9 +294,13 @@ class DeployedConfigSectionTest {
                                      SliceLoadingContext.noResourceOverlay());
     }
 
-    private static Repository repositoryServing(Path jar) {
-        return artifact -> Location.location(artifact, toUrl(jar))
-                                   .async();
+    /// Serves exactly the jars the test packaged. An artifact nobody packaged is a failure, not a
+    /// fallback to some other jar — a dependency resolved to the wrong jar would look like a pass.
+    private static Repository repositoryServing(Map<String, Path> jars) {
+        return artifact -> Option.option(jars.get(artifact.asString()))
+                                 .toResult(Causes.cause("no jar packaged for " + artifact.asString()))
+                                 .flatMap(jar -> Location.location(artifact, toUrl(jar)))
+                                 .async();
     }
 
     private static java.net.URL toUrl(Path jar) {
@@ -228,33 +310,44 @@ class DeployedConfigSectionTest {
 
     /// Package the compiled fixture — including the processor-generated `EndpointProbeFactory` and
     /// every synthetic local-record class both it and [EndpointProbe] produce — plus the slice's
-    /// own `META-INF/resources.toml` into a slice jar shaped the way `PackageSlicesMojo` shapes a
-    /// real one.
+    /// own `META-INF/resources.toml` and, when it has `[slices]` dependencies, the dependency file
+    /// under `META-INF/dependencies/`, into a slice jar shaped the way `PackageSlicesMojo` shapes
+    /// a real one. The same classes serve every coordinate: a dependency is just another jar with
+    /// its own manifest and its own config layer, loaded in its own child-first loader.
     ///
     /// The whole package directory is swept rather than a hand-listed set of classes: the local
     /// records compile to synthetic names (`EndpointProbeFactory$1endpointProbeSlice`) that a list
     /// would silently miss, and a missing class surfaces as a confusing load failure rather than as
     /// a packaging error.
-    private static Path packageSliceJar(Path tempDir) throws IOException {
-        var jar = tempDir.resolve("endpoint-probe.jar");
+    private static Path packageSliceJar(Path tempDir, String coords, String resourcesToml, List<String> sliceDependencies) throws IOException {
+        var jar = tempDir.resolve(coords.split(":")[1] + ".jar");
 
-        try (var out = new JarOutputStream(Files.newOutputStream(jar), sliceManifest())) {
+        try (var out = new JarOutputStream(Files.newOutputStream(jar), sliceManifest(coords))) {
             for (var classFile : sliceClassFiles()) {
                 writeEntry(out, PACKAGE_PATH + "/" + classFile.getFileName(), Files.readAllBytes(classFile));
             }
 
-            writeEntry(out, "META-INF/resources.toml", SLICE_RESOURCES_TOML.getBytes(StandardCharsets.UTF_8));
+            writeEntry(out, "META-INF/resources.toml", resourcesToml.getBytes(StandardCharsets.UTF_8));
+
+            if (!sliceDependencies.isEmpty()) {
+                writeEntry(out, "META-INF/dependencies/" + FACTORY_CLASS, dependencyFile(sliceDependencies).getBytes(StandardCharsets.UTF_8));
+            }
         }
 
         return jar;
     }
 
-    private static Manifest sliceManifest() {
+    /// The `[slices]` section exactly as `PackageSlicesMojo` emits it: one coordinate per line.
+    private static String dependencyFile(List<String> sliceDependencies) {
+        return "[slices]\n" + String.join("\n", sliceDependencies) + "\n";
+    }
+
+    private static Manifest sliceManifest(String coords) {
         var manifest = new Manifest();
         var attributes = manifest.getMainAttributes();
 
         attributes.put(Attributes.Name.MANIFEST_VERSION, "1.0");
-        attributes.putValue(SliceManifest.SLICE_ARTIFACT_ATTR, ARTIFACT_COORDS);
+        attributes.putValue(SliceManifest.SLICE_ARTIFACT_ATTR, coords);
         attributes.putValue(SliceManifest.SLICE_CLASS_ATTR, FACTORY_CLASS);
         attributes.putValue(SliceManifest.ENVELOPE_VERSION_ATTR, ENVELOPE_VERSION);
 

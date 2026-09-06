@@ -211,8 +211,7 @@ public interface SliceStore {
                                                          sharedLibraryLoader,
                                                          invokerFacade,
                                                          resourceFacade,
-                                                         Option.some(classLoader -> buildSliceCompositeFromClassLoader(artifact,
-                                                                                                                       classLoader)),
+                                                         Option.some(this::buildSliceCompositeFromClassLoader),
                                                          nodeCodec,
                                                          resourceOverlayBuilder)
                                      .map(resolved -> {

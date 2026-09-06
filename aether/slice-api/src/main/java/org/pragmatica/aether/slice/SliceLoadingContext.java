@@ -144,8 +144,12 @@ public final class SliceLoadingContext implements SliceCreationContext {
     @Override
     public ConfigFacade config() {
         return sliceComposite.get()
-                             .<ConfigFacade> map(ConfigProviderFacade::configProviderFacade)
+                             .<ConfigFacade> map(composite -> ConfigProviderFacade.configProviderFacade(sliceName(), composite))
                              .or(this::configWithoutComposite);
+    }
+
+    private String sliceName() {
+        return delegate.sliceId().or(UNNAMED_SLICE);
     }
 
     /// No composite attached — decide between an explicitly supplied facade and a named refusal.
@@ -171,7 +175,7 @@ public final class SliceLoadingContext implements SliceCreationContext {
             return supplied;
         }
 
-        return AbsentCompositeConfigFacade.absentCompositeConfigFacade(delegate.sliceId().or(UNNAMED_SLICE));
+        return AbsentCompositeConfigFacade.absentCompositeConfigFacade(sliceName());
     }
 
     @Override
