@@ -1,0 +1,179 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+
+package org.pragmatica.aether.slice;
+
+import java.util.List;
+import java.util.Map;
+
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.IntrinsicConfigProvider;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.type.TypeToken;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/// Unit-level cover for what a deployed slice's `ctx.config()` actually answers (#889).
+///
+/// The end-to-end proof lives in slice-testkit's `DeployedConfigSectionTest`, which drives a real
+/// jar through `SliceStore`. This pins the two halves that test can only observe in combination:
+/// the facade's own read semantics, and the seam in [SliceLoadingContext] that decides which facade
+/// a slice gets.
+class DeployedConfigFacadeTest {
+    private static final String SECTION = "app.endpoint";
+
+    private static ConfigurationProvider provider(Map<String, String> values) {
+        return IntrinsicConfigProvider.intrinsicConfigProvider("test", values);
+    }
+
+    private static ConfigFacade facade(Map<String, String> values) {
+        return ConfigProviderFacade.configProviderFacade(provider(values));
+    }
+
+    @Nested
+    class ReadSemantics {
+        @Test
+        void requireReadsAddressTheSectionQualifiedKey() {
+            var config = facade(Map.of(SECTION + ".host", "endpoint.internal"));
+
+            assertThat(config.requireString(SECTION, "host").unwrap()).isEqualTo("endpoint.internal");
+            assertThat(config.requireString("other", "host").isFailure()).describedAs("a key in a different section must not answer")
+                                                                         .isTrue();
+        }
+
+        @Test
+        void typedRequireReadsParseTheirValues() {
+            var config = facade(Map.of(SECTION + ".port", "8443",
+                                        SECTION + ".size", "9000000000",
+                                        SECTION + ".ratio", "0.25",
+                                        SECTION + ".secure", "true"));
+
+            assertThat(config.requireInt(SECTION, "port").unwrap()).isEqualTo(8443);
+            assertThat(config.requireLong(SECTION, "size").unwrap()).isEqualTo(9_000_000_000L);
+            assertThat(config.requireDouble(SECTION, "ratio").unwrap()).isEqualTo(0.25);
+            assertThat(config.requireBoolean(SECTION, "secure").unwrap()).isTrue();
+        }
+
+        /// A non-numeric value must come back as a named failure, not as a `NumberFormatException`
+        /// thrown out of the generated factory. The older `ConfigService` adapter reached
+        /// `Long::parseLong` directly and would throw here.
+        @Test
+        void unparseableNumberFailsRatherThanThrows() {
+            var config = facade(Map.of(SECTION + ".port", "not-a-number",
+                                        SECTION + ".size", "not-a-number"));
+
+            assertThat(config.requireInt(SECTION, "port").isFailure()).isTrue();
+            assertThat(config.requireLong(SECTION, "size").isFailure()).isTrue();
+        }
+
+        @Test
+        void missingRequiredKeyFailsAndNamesTheKey() {
+            var result = facade(Map.of()).requireString(SECTION, "host");
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).describedAs("the operator has to be told WHICH key was missing")
+                                                                  .contains(SECTION + ".host"));
+        }
+
+        /// Comma-joined scalars, the same encoding `ProviderBasedConfigService#splitCommaList`
+        /// reads, because `TomlDocument` flattens every value through `toString()` before any
+        /// provider sees it. The legacy `ConfigService` adapter refused this method outright, so a
+        /// `List<String>` config field could not have worked even with that adapter wired in.
+        @Test
+        void stringListSplitsOnCommasTrimmingAndDroppingEmpties() {
+            var config = facade(Map.of(SECTION + ".tags", " alpha , beta ,, gamma "));
+
+            assertThat(config.requireStringList(SECTION, "tags").unwrap()).isEqualTo(List.of("alpha", "beta", "gamma"));
+        }
+
+        @Test
+        void missingStringListFailsRatherThanReturningEmpty() {
+            assertThat(facade(Map.of()).requireStringList(SECTION, "tags").isFailure()).describedAs("require means require; an optional list is declared as Option")
+                                                                                        .isTrue();
+        }
+
+        @Test
+        void optionalReadsReturnNoneWhenAbsentAndValueWhenPresent() {
+            var populated = facade(Map.of(SECTION + ".weight", "7"));
+
+            assertThat(populated.getInt(SECTION, "weight").or(-1)).isEqualTo(7);
+            assertThat(facade(Map.of()).getInt(SECTION, "weight").isPresent()).isFalse();
+            assertThat(facade(Map.of()).getString(SECTION, "host").isPresent()).isFalse();
+            assertThat(facade(Map.of()).getBoolean(SECTION, "secure").isPresent()).isFalse();
+            assertThat(facade(Map.of()).getLong(SECTION, "size").isPresent()).isFalse();
+            assertThat(facade(Map.of()).getDouble(SECTION, "ratio").isPresent()).isFalse();
+        }
+    }
+
+    /// The seam itself: which facade a loading context hands to the slice factory.
+    @Nested
+    class LoadingContextSeam {
+        @Test
+        void configFallsBackToTheNoOpUntilACompositeIsAttached() {
+            var context = SliceLoadingContext.sliceLoadingContext(noOpInvoker(), noOpResources(), "slice");
+
+            assertThat(context.config().requireString(SECTION, "host").isFailure()).describedAs("with no composite there is nothing to serve; this is the pre-fix state of every deployment")
+                                                                                    .isTrue();
+        }
+
+        @Test
+        void configServesTheCompositeOnceAttached() {
+            var context = SliceLoadingContext.sliceLoadingContext(noOpInvoker(), noOpResources(), "slice");
+
+            context.setSliceComposite(Option.some(provider(Map.of(SECTION + ".host", "endpoint.internal"))));
+
+            assertThat(context.config().requireString(SECTION, "host").unwrap()).isEqualTo("endpoint.internal");
+        }
+
+        /// The deployment path never calls `setSliceComposite` directly — it registers a builder and
+        /// `DependencyResolver` materializes it with the slice classloader, strictly before the
+        /// generated factory runs. `config()` must therefore read through the reference on each
+        /// call rather than latch a facade at construction time.
+        @Test
+        void configPicksUpACompositeMaterializedAfterTheContextWasBuilt() {
+            var context = SliceLoadingContext.sliceLoadingContext(noOpInvoker(), noOpResources(), "slice");
+
+            context.setCompositeBuilder(_ -> Option.some(provider(Map.of(SECTION + ".host", "materialized.host"))));
+
+            assertThat(context.config().requireString(SECTION, "host").isFailure()).describedAs("a registered builder must not take effect before materialization")
+                                                                                    .isTrue();
+
+            context.materializeComposite(DeployedConfigFacadeTest.class.getClassLoader());
+
+            assertThat(context.config().requireString(SECTION, "host").unwrap()).isEqualTo("materialized.host");
+        }
+    }
+
+    private static SliceInvokerFacade noOpInvoker() {
+        return new SliceInvokerFacade() {
+            @Override
+            public <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
+                                                                  String methodName,
+                                                                  TypeToken<T> requestType,
+                                                                  TypeToken<R> responseType) {
+                return Result.success(null);
+            }
+        };
+    }
+
+    private static ResourceProviderFacade noOpResources() {
+        return new ResourceProviderFacade() {
+            @Override
+            public <T> org.pragmatica.lang.Promise<T> provide(Class<T> resourceType, String configSection) {
+                return org.pragmatica.lang.Promise.success(null);
+            }
+
+            @Override
+            public <T> org.pragmatica.lang.Promise<T> provide(Class<T> resourceType,
+                                                              String configSection,
+                                                              ProvisioningContext context) {
+                return org.pragmatica.lang.Promise.success(null);
+            }
+        };
+    }
+}
