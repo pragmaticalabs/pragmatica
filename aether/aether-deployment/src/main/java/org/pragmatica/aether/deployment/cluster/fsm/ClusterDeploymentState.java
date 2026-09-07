@@ -1689,26 +1689,60 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             SharedScheduler.schedule(this::reconcile, timeSpan(jitteredMs).millis());
         }
 
-        /// #922 — retry exhaustion is TERMINAL. It previously logged, cleared the
-        /// counter and routed `DeploymentFailed`, then returned, leaving the artifact absent from
-        /// `permanentlyFailed`. That was not a resting state. [#handleSliceFailure] issues an
-        /// unload on every failure; the node's removal of the `NodeArtifactKey` arrives at
-        /// [#handleSliceNodeRemoval], which — finding the artifact not permanently failed —
-        /// scheduled a reconcile 1 s later; [#reconcileBlueprint] is gated by nothing else, so it
-        /// redeployed the artifact and `retryCounters.merge` restarted at 1. An intermittent cause
-        /// that never settles therefore looped at roughly 1 Hz for the life of the cluster: no
-        /// terminal state, no rollback, and consensus round-trips forever.
+        /// #922 — retry exhaustion is TERMINAL, but only for a deployment that has produced
+        /// nothing. It previously logged, cleared the counter and routed `DeploymentFailed`, then
+        /// returned, leaving the artifact absent from `permanentlyFailed`. That was not a resting
+        /// state. [#handleSliceFailure] issues an unload on every failure; the node's removal of the
+        /// `NodeArtifactKey` arrives at [#handleSliceNodeRemoval], which — finding the artifact not
+        /// permanently failed — scheduled a reconcile 1 s later; [#reconcileBlueprint] is gated by
+        /// nothing else, so it redeployed the artifact and `retryCounters.merge` restarted at 1. An
+        /// intermittent cause that never settles therefore looped at roughly 1 Hz for the life of
+        /// the cluster: no terminal state, no rollback, and consensus round-trips forever.
         ///
-        /// Settling here bounds every intermittent cause at `MAX_RETRIES` + 1 reported failures and
-        /// makes the `ALL_OR_NOTHING` promise hold on this branch as it already did on the
+        /// Settling makes the `ALL_OR_NOTHING` promise hold on this branch as it already did on the
         /// deterministic one. The counter is cleared first so a later redeploy of the same artifact
         /// — which clears `permanentlyFailed` when the blueprint is applied — starts from a clean
         /// budget rather than inheriting an exhausted one.
+        ///
+        /// #924 review, BLOCKING: settling UNCONDITIONALLY here was itself a defect, and a worse
+        /// one than the livelock. The terminal is cluster-wide and permanent; the retry budget it
+        /// was hung on is per artifact AND node. So a slice already deployed and healthy on three
+        /// nodes, whose instance on ONE node suffered a transient longer than ~31 s, was settled
+        /// permanently failed for the WHOLE cluster — and because its blueprint had already left
+        /// `inFlightBlueprints`, [#rollbackBlueprintForArtifact] matched nothing and not even an
+        /// outcome record was written. Auto-heal, rebalancing and scale-up for that artifact were
+        /// then dead until an operator re-applied the blueprint. Before the #922 fix that case
+        /// self-healed, so the fix traded a livelock on a deployment that never succeeded for a
+        /// permanent, silent, cluster-wide failure of one that had.
+        ///
+        /// [#hasActiveInstanceElsewhere] is the discriminator, and the two populations are the ones
+        /// the ticket and the review name: a deployment ATTEMPT with nothing running is abandoned
+        /// (bounded — #922's case), while a RUNNING workload suffering a node-local transient keeps
+        /// being reconciled toward its desired instance count (unbounded — convergence, which is
+        /// what an orchestrator owes a workload the operator believes is up).
         private void handleRetryBudgetExhausted(SliceNodeKey sliceKey, String failureReason) {
             var artifact = sliceKey.artifact();
 
             retryCounters.remove(sliceKey.asString());
             if (permanentlyFailed.contains(artifact)) {
+                return;
+            }
+
+            if (hasActiveInstanceElsewhere(artifact)) {
+                log.warn("Max retries ({}) exceeded for {} on {}: {} — NOT marking permanently failed: "
+                         + "the artifact is ACTIVE on another node, so this is a node-local transient and "
+                         + "reconciliation keeps converging toward the desired instance count",
+                         MAX_RETRIES,
+                         artifact,
+                         sliceKey.nodeId(),
+                         failureReason);
+                ctx.router()
+                   .route(DeploymentFailed.deploymentFailed(artifact,
+                                                            sliceKey.nodeId(),
+                                                            SliceState.FAILED,
+                                                            failureReason,
+                                                            ctx.nowMs()));
+
                 return;
             }
 
@@ -1718,6 +1752,44 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                       sliceKey.nodeId(),
                       failureReason);
             settleAsPermanentlyFailed(sliceKey, failureReason);
+        }
+
+        /// Whether ANY instance of this artifact is ACTIVE on a live node — the discriminator
+        /// between a deployment ATTEMPT that has produced nothing and a RUNNING workload suffering a
+        /// node-local transient (#924 review, BLOCKING).
+        ///
+        /// It exists to match the EVIDENCE to the BLAST RADIUS. The terminal reached by
+        /// [#settleAsPermanentlyFailed] is cluster-wide (`permanentlyFailed` is a `Set<Artifact>`)
+        /// and permanent; the retry budget that triggers it is per artifact AND node
+        /// (`retryCounters` is keyed on `sliceKey.asString()`). A cluster-wide permanent verdict
+        /// needs cluster-wide evidence, and "nothing of this artifact is running anywhere" is it.
+        ///
+        /// `inFlightBlueprints` is the cheaper test and the WRONG one. [ClusterDeploymentContext#newActive]
+        /// builds it empty and only a live `AppBlueprintPutReceived` populates it, so it does not
+        /// survive leader failover: gating on it would silently stop settling — reopening #922 — for
+        /// every deployment whose leader changed mid-flight. `sliceStates` is rebuilt from durable
+        /// KV entries by [#rebuildSliceStateFromKVStoreEntries] during [#rebuildStateFromKVStore] on
+        /// activation, so this predicate reads the same answer on a new leader as on the old one.
+        ///
+        /// Strictly ACTIVE, not [#isLiveState]: a sibling instance merely LOADING or LOADED is part
+        /// of the same unproven attempt and must not vote to keep it alive, or a deployment stuck
+        /// short of ACTIVE would never settle at all.
+        ///
+        /// "Elsewhere" is implicit rather than filtered: [#handleSliceFailure] removes the failing
+        /// key from `sliceStates` before either failure branch runs, so the instance that just
+        /// failed cannot count itself. That ordering is load-bearing — moving this call ahead of
+        /// that removal would make every exhaustion look survivable.
+        private boolean hasActiveInstanceElsewhere(Artifact artifact) {
+            var liveNodes = activeNodes();
+
+            return sliceStates.entrySet()
+                              .stream()
+                              .filter(entry -> entry.getKey()
+                                                    .artifact()
+                                                    .equals(artifact))
+                              .filter(entry -> liveNodes.contains(entry.getKey()
+                                                                       .nodeId()))
+                              .anyMatch(entry -> entry.getValue() == SliceState.ACTIVE);
         }
 
         /// The activation gate for a slice's schema migrations, scoped to the slice's OWN blueprint.

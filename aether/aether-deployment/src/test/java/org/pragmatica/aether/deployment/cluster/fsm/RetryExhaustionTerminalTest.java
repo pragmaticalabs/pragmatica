@@ -19,8 +19,10 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -174,6 +176,108 @@ class RetryExhaustionTerminalTest {
                     + "can read, not an unrecorded disappearance")
                 .isNotEmpty()
                 .allSatisfy(outcome -> assertThat(outcome.failingSlices()).contains(SLICE.asString()));
+    }
+
+    /// #924 review, BLOCKING — the reverse risk, and the reason the terminal needed a scope.
+    ///
+    /// `settleAsPermanentlyFailed` was lifted from the DETERMINISTIC branch, where a cluster-wide
+    /// inference is sound: a deterministic failure is node-independent, so failing on one node does
+    /// mean the artifact is bad everywhere. That inference does not transfer to the transient
+    /// branch — a transient failure on node A says nothing about node B. Carrying it across is the
+    /// actual defect: `retryCounters` is per artifact AND node, while `permanentlyFailed` is a
+    /// cluster-wide `Set<Artifact>`.
+    ///
+    /// Its consequence is worse than the livelock it replaced. The livelock was noisy and kept
+    /// trying; this is silent and terminal on a deployment that had been healthy. The blueprint has
+    /// already left `inFlightBlueprints`, so `rollbackBlueprintForArtifact` matches nothing, no
+    /// FAILED outcome is written, and the artifact's last recorded outcome still reads SUCCEEDED
+    /// while reconcile quietly refuses to replace the lost instance forever.
+    ///
+    /// **This asserts the RECOVERY, not the absence of a rollback.** "No rollback happened" is
+    /// equally true of a system that has silently stopped doing anything, which is precisely the
+    /// bug — so it would pin nothing. What is asserted instead is that reconciliation still
+    /// re-drives the artifact after exhaustion, and that the lost instance actually comes back.
+    @Test
+    void exhaustionOnOneNode_whileTheArtifactIsActiveElsewhere_stillRecoversTheLostInstance() {
+        var expanded = blueprint();
+        var active = deployOnBothNodesThenExhaustSelf(expanded);
+
+        assertThat(active.getCurrentInstances(SLICE))
+                .as("the instance on NODE_A never failed and must survive a sibling node's exhausted "
+                    + "budget — a cluster-wide terminal would have condemned the whole artifact")
+                .extracting(SliceNodeKey::nodeId)
+                .contains(NODE_A);
+
+        leaderSideCluster.commands.clear();
+        active.reconcile();
+
+        assertThat(leaderSideCluster.commandKeysFor(SLICE))
+                .as("#924: after the per-node budget is spent on ONE node, reconciliation must still "
+                    + "act on the artifact. Empty here is the wedge: auto-heal, rebalancing and "
+                    + "scale-up dead forever, with the standing outcome record still reading "
+                    + "SUCCEEDED and nothing written to say otherwise")
+                .isNotEmpty();
+
+        // The transient clears and the node reports the slice up again.
+        leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(SELF, activeInstance())));
+
+        assertThat(active.getCurrentInstances(SLICE))
+                .as("recovery, stated positively: once the transient clears the artifact is deployable "
+                    + "again and runs on BOTH nodes. This is the assertion a silently-wedged cluster "
+                    + "cannot satisfy")
+                .extracting(SliceNodeKey::nodeId)
+                .containsExactlyInAnyOrder(SELF, NODE_A);
+    }
+
+    /// Consistency check accompanying the pin above rather than a second pin: the standing outcome
+    /// record must not be contradicted. Deliberately NOT load-bearing — a wedged cluster also writes
+    /// no FAILED record, so this cannot discriminate on its own and is not relied on to.
+    @Test
+    void exhaustionOnOneNode_whileTheArtifactIsActiveElsewhere_leavesTheSucceededOutcomeStanding() {
+        var expanded = blueprint();
+
+        deployOnBothNodesThenExhaustSelf(expanded);
+
+        assertThat(leaderSideCluster.outcomeFor(expanded.id()))
+                .as("the blueprint genuinely did deploy, so its outcome record must still say so")
+                .isNotEmpty()
+                .allSatisfy(outcome -> assertThat(outcome.status())
+                        .isEqualTo(DeploymentOutcomeStatus.SUCCEEDED));
+    }
+
+    /// Drives the blueprint to fully deployed on both nodes — which retires it from
+    /// `inFlightBlueprints` and writes SUCCEEDED — then spends the entire retry budget on SELF with
+    /// an intermittent cause, leaving NODE_A untouched.
+    private ClusterDeploymentState.Active deployOnBothNodesThenExhaustSelf(ExpandedBlueprint expanded) {
+        leaderHarness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
+        leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(NODE_A, activeInstance())));
+        leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(SELF, activeInstance())));
+
+        var active = (ClusterDeploymentState.Active) leaderHarness.state();
+
+        assertThat(active.getCurrentInstances(SLICE))
+                .as("precondition: the artifact must be RUNNING on both nodes before the transient. "
+                    + "Without it this degenerates into the never-succeeded case the pins above "
+                    + "already cover, and would pass against the very defect it exists to catch")
+                .hasSize(2);
+
+        for (var report = 1; report <= TERMINAL_ON_REPORT; report++) {
+            leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(SELF, intermittentFailure())));
+        }
+
+        return active;
+    }
+
+    /// A slice instance reported ACTIVE. `methods` is empty deliberately — these tests care that the
+    /// state is ACTIVE, not that the instance published endpoints.
+    private static NodeArtifactValue activeInstance() {
+        return NodeArtifactValue.activeNodeArtifactValue(0, List.of());
+    }
+
+    private static ValuePut<NodeArtifactKey, NodeArtifactValue> replayOn(NodeId node, NodeArtifactValue value) {
+        var key = NodeArtifactKey.nodeArtifactKey(node, SLICE);
+
+        return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
     }
 
     /// A failure the leader is REQUIRED to treat as retryable, built from a cause that was already
