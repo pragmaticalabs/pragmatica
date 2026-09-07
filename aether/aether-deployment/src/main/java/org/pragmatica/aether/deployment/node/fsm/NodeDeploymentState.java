@@ -34,6 +34,7 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.slice.SliceLoadingFailure.Intermittent.SliceNotInStore;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -136,9 +137,20 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private static final Fn1<Cause, SliceNodeKey> UNLOAD_FAILED = Causes.forOneValue("Failed to unload slice %s");
 
-        private static final Fn1<Cause, String> SLICE_NOT_FOUND_FOR_ACTIVATION = Causes.forOneValue("Slice %s state is ACTIVATE but not found in SliceStore");
+        /// #916: typed `Intermittent`, NOT a plain `Causes.forOneValue`. Untyped it fell through
+        /// `SliceLoadingFailure.classify`'s permanent catch-all, so an ACTIVATE that merely crossed
+        /// an in-flight unload of the same artifact was reported `fatal`, and the leader rolled the
+        /// blueprint back under `ALL_OR_NOTHING`. Non-fatal routes it to the cluster's existing
+        /// bounded retry (`ClusterDeploymentState.Active.handleTransientFailure`, 5 attempts).
+        private static final Fn1<Cause, String> SLICE_NOT_FOUND_FOR_ACTIVATION =
+                artifact -> SliceNotInStore.sliceNotInStore(artifact, "activation");
 
-        private static final Fn1<Cause, String> SLICE_NOT_LOADED_FOR_REGISTRATION = Causes.forOneValue("Slice not loaded for registration: %s");
+        /// #916: the second store-absence cause on the same activation chain
+        /// ([#registerSliceForInvocation]), typed for the same reason and reachable through the same
+        /// unload/activate crossing — the slice can be evicted between `handleActivating`'s lookup
+        /// and this one.
+        private static final Fn1<Cause, String> SLICE_NOT_LOADED_FOR_REGISTRATION =
+                artifact -> SliceNotInStore.sliceNotInStore(artifact, "invocation registration");
 
         @Override
         public void onEntry() {
