@@ -6,6 +6,7 @@ package org.pragmatica.aether.forge;
 
 import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.Callable;
 
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
@@ -22,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.awaitility.core.ConditionTimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -104,24 +106,29 @@ class MultiSourceCommunitySmokeTest {
         // #491 raised SWIM/membership timeouts: nine in-JVM nodes contend for the same machine's
         // cores, and the default windows read scheduling stalls as SUSPECT churn.
         cluster.withRaisedSwimTimeouts();
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
+        // #915: bounded, and named on expiry. Untimed, this await() parks until the start resolves
+        // and ignores JUnit's lifecycle interrupt (#914), so a start that never settles reached the
+        // 8-minute backstop and reported a class-level ERROR at ~515s naming no step at all.
+        LifecycleAwait.settled(INITIAL_CORES + "-core cluster start (ports " + BASE_PORT + "+)",
+                               cluster,
+                               cluster.start());
 
-        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
+        awaitFormation("leader elected among " + INITIAL_CORES + " cores",
+                       () -> cluster.currentLeader().isPresent());
         // The leader's BootstrapModule auto-seeds committed ClusterConfig.coreCount = 5; until it
         // lands, joiners would be promoted to core instead of assigned WORKER.
-        await().atMost(FORM_TIMEOUT)
-               .pollInterval(POLL)
-               .until(() -> committedCoreCount().filter(count -> count == INITIAL_CORES).isPresent());
+        awaitFormation("committed ClusterConfig.coreCount == " + INITIAL_CORES
+                       + " (BootstrapModule auto-seed)",
+                       () -> committedCoreCount().filter(count -> count == INITIAL_CORES).isPresent());
         log.info("MSRC-SMOKE: {}-core cluster formed, committed cap={}", INITIAL_CORES, committedCoreCount().or(-1));
     }
 
     @AfterAll
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        // #915: bounded and checked. The bare await() here could neither expire nor report:
+        // a stop that never settled hung @AfterAll to the backstop, and a stop that FAILED was
+        // discarded because nothing read the Result.
+        Option.option(cluster).onPresent(c -> LifecycleAwait.settled("cluster stop", c, c.stop()));
     }
 
     @Test
@@ -131,9 +138,9 @@ class MultiSourceCommunitySmokeTest {
         addWorkerAndSettle(3, SOURCE_B);
         addWorkerAndSettle(4, SOURCE_B);
 
-        await().atMost(MINT_TIMEOUT)
-               .pollInterval(POLL)
-               .until(() -> communityValue(COMMUNITY_A).isPresent() && communityValue(COMMUNITY_B).isPresent());
+        awaitBounded("communities " + COMMUNITY_A + " and " + COMMUNITY_B + " both minted",
+                     MINT_TIMEOUT,
+                     () -> communityValue(COMMUNITY_A).isPresent() && communityValue(COMMUNITY_B).isPresent());
 
         assertThat(communityValue(COMMUNITY_A).map(CommunityValue::sourceName).or(""))
             .as("community %s must record its minting source", COMMUNITY_A)
@@ -157,21 +164,51 @@ class MultiSourceCommunitySmokeTest {
     private void addWorkerAndSettle(int index, String source) {
         var expectedNodeCount = INITIAL_CORES + index;
 
-        cluster.addNode(Map.of(NodeInfo.LABEL_ROLE, "worker", NodeInfo.LABEL_SOURCE, source))
-               .await()
-               .onSuccess(nodeId -> log.info("MSRC-SMOKE: worker {}/4 (source={}) joined as {}",
-                                             index, source, nodeId.id()))
-               .onFailure(cause -> {
-                   throw new AssertionError("worker " + index + " (source " + source + ") failed to join: "
-                                            + cause.message());
-               });
-        await().atMost(SETTLE_TIMEOUT)
-               .pollInterval(POLL)
-               .until(() -> cluster.currentLeader().isPresent()
-                            && countedCores() == INITIAL_CORES
-                            && cluster.nodeCount() == expectedNodeCount);
+        // #915: the third untimed lifecycle await in this class, and not named in the ticket —
+        // found by the module-wide sweep. A worker join that never settles wedges the @Test body
+        // exactly as a start wedges @BeforeAll.
+        var nodeId = LifecycleAwait.nodeSettled("worker " + index + "/4 (source " + source + ") join",
+                                                cluster,
+                                                cluster.addNode(Map.of(NodeInfo.LABEL_ROLE, "worker",
+                                                                       NodeInfo.LABEL_SOURCE, source)));
+        log.info("MSRC-SMOKE: worker {}/4 (source={}) joined as {}", index, source, nodeId.id());
+
+        awaitSettle("worker " + index + "/4 settled: leader present, countedCores==" + INITIAL_CORES
+                    + ", nodeCount==" + expectedNodeCount,
+                    () -> cluster.currentLeader().isPresent()
+                          && countedCores() == INITIAL_CORES
+                          && cluster.nodeCount() == expectedNodeCount);
         log.info("MSRC-SMOKE: after worker {}/4 countedCores={} nodeCount={}",
                  index, countedCores(), cluster.nodeCount());
+    }
+
+    // ----- named waits (#915) -----
+    //
+    // Awaitility's own expiry message is "Condition with Lambda expression in
+    // MultiSourceCommunitySmokeTest was not fulfilled within N seconds" — it names the CLASS and
+    // nothing else, so a stalled formation and a stalled mint are indistinguishable in a CI log.
+    // These three wrappers give every wait an alias and attach the cluster state at expiry.
+
+    private void awaitFormation(String what, Callable<Boolean> condition) {
+        awaitBounded(what, FORM_TIMEOUT, condition);
+    }
+
+    private void awaitSettle(String what, Callable<Boolean> condition) {
+        awaitBounded(what, SETTLE_TIMEOUT, condition);
+    }
+
+    private void awaitBounded(String what, Duration bound, Callable<Boolean> condition) {
+        try {
+            await().alias(what)
+                   .atMost(bound)
+                   .pollInterval(POLL)
+                   .until(condition);
+        } catch (ConditionTimeoutException timeout) {
+            throw new AssertionError(timeout.getMessage()
+                                     + "\nCluster state when the wait ended:\n"
+                                     + LifecycleAwait.snapshot(cluster),
+                                     timeout);
+        }
     }
 
     // ----- committed-state reads off the leader KV store (the probe's accessors) -----
