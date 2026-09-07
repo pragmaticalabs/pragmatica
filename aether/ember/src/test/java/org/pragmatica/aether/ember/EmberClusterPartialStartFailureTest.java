@@ -47,9 +47,9 @@ class EmberClusterPartialStartFailureTest {
     @AfterEach
     void tearDown() {
         if (cluster != null) {
-            assertThat(cluster.stop().await(STOP_BOUND).isSuccess())
+            assertThat(cluster.stop().await(STOP_BOUND).fold(Cause::message, _ -> "stopped"))
                 .describedAs("stopping an already-aborted cluster must complete within %s", STOP_BOUND)
-                .isTrue();
+                .isEqualTo("stopped");
         }
     }
 
@@ -80,8 +80,11 @@ class EmberClusterPartialStartFailureTest {
     /// the node assertions here fail on an empty snapshot.
     ///
     /// #727 review B1 — the same snapshot is where a fabricated state does the most damage, so it is
-    /// asserted here too: not one node of a cluster that never formed may report itself active. With
-    /// the old hardcoded `"healthy"` literal all three did.
+    /// asserted here too. Two of these three nodes could not bind, and the survivor cannot reach a
+    /// quorum of one, so NONE of them is consensus-active and every one must say so. The old hardcoded
+    /// `"healthy"` literal made all three claim otherwise; restoring it turns this red, and so does
+    /// replacing `observedState` with a constant `active`. The opposite mutation — a constant
+    /// `inactive` — passes here and is caught by `EmberClusterObservedNodeStateTest` instead.
     private void assertStartFailureSnapshotSurvivedTheAbort() {
         assertThat(cluster.status().nodes())
             .describedAs("the abort clears the live registry; this is the condition the retained "
@@ -98,8 +101,9 @@ class EmberClusterPartialStartFailureTest {
             .describedAs("the snapshot must carry the nodes the failed start had created")
             .hasSize(3);
         assertThat(snapshot.status().nodes())
-            .describedAs("no node of a cluster that never formed may report itself as active")
-            .noneMatch(node -> EmberCluster.STATE_ACTIVE.equals(node.state()));
+            .allSatisfy(node -> assertThat(node.state())
+                .describedAs("node %s of a cluster that never formed", node.id())
+                .isEqualTo(EmberCluster.STATE_INACTIVE));
         assertThat(snapshot.nodeFailures())
             .describedAs("the snapshot must name the nodes whose start failed, and why")
             .isNotEmpty();
