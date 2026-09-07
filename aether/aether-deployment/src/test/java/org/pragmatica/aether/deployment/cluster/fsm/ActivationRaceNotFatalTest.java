@@ -112,25 +112,27 @@ class ActivationRaceNotFatalTest {
         var expanded = blueprint();
         var emitted = driveActivationAgainstEmptyStore();
 
+        leaderHarness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
+        leaderHarness.dispatch(new NodeArtifactPutReceived(replayOf(emitted)));
+
+        // Assertion order is deliberate: the two load-bearing claims come first, so a revert of the
+        // production hunk reports the DEFECT (fatal, rolled back) rather than tripping first on the
+        // message-text check, which only identifies the cause and is not what the ticket is about.
+        assertThat(emitted.fatal())
+                .as("#916: the slice being absent while an unload is in flight is a retryable "
+                    + "crossing, so the node must NOT mark it fatal — a fatal report is what made "
+                    + "the leader roll the blueprint back")
+                .isFalse();
+        assertThat(leaderSideCluster.removeKeys())
+                .as("#916 acceptance: the blueprint must survive the crossing and stay deployable "
+                    + "(ALL_OR_NOTHING must not roll it back)")
+                .doesNotContain(AppBlueprintKey.appBlueprintKey(expanded.id()));
         assertThat(emitted.state()).as("the node must report the activation as FAILED")
                                    .isEqualTo(SliceState.FAILED);
         assertThat(emitted.failureReason()
                           .or(""))
                 .as("the reported reason must name the store absence, not a generic wrapper")
                 .contains("not present in SliceStore");
-        assertThat(emitted.fatal())
-                .as("#916: the slice being absent while an unload is in flight is a retryable "
-                    + "crossing, so the node must NOT mark it fatal — a fatal report is what made "
-                    + "the leader roll the blueprint back")
-                .isFalse();
-
-        leaderHarness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
-        leaderHarness.dispatch(new NodeArtifactPutReceived(replayOf(emitted)));
-
-        assertThat(leaderSideCluster.removeKeys())
-                .as("#916 acceptance: the blueprint must survive the crossing and stay deployable "
-                    + "(ALL_OR_NOTHING must not roll it back)")
-                .doesNotContain(AppBlueprintKey.appBlueprintKey(expanded.id()));
     }
 
     @Test

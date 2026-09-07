@@ -166,7 +166,8 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
 
             @Override
             public String message() {
-                return "Slice " + artifact + " not present in SliceStore during " + operation
+                return "Slice " + artifact
+                     + " not present in SliceStore during " + operation
                      + " (a concurrent unload may still be in flight)";
             }
         }
