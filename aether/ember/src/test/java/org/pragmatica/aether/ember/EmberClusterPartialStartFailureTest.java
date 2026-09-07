@@ -39,10 +39,17 @@ class EmberClusterPartialStartFailureTest {
 
     private EmberCluster cluster;
 
+    /// #727 review S3 — the `Result` used to be discarded, so a stop that exhausted the bound passed
+    /// silently: a bounded await whose expiry names nothing is the same blind wait this ticket exists
+    /// to remove. It doubles as the pin for review N4: by the time this runs, `abortStart` has already
+    /// stopped every node, so a green assertion here is evidence that the second stop is idempotent
+    /// rather than a docstring claiming it is.
     @AfterEach
     void tearDown() {
         if (cluster != null) {
-            cluster.stop().await(STOP_BOUND);
+            assertThat(cluster.stop().await(STOP_BOUND).isSuccess())
+                .describedAs("stopping an already-aborted cluster must complete within %s", STOP_BOUND)
+                .isTrue();
         }
     }
 
@@ -55,10 +62,48 @@ class EmberClusterPartialStartFailureTest {
             var outcome = cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started");
 
             assertThat(outcome).contains("Address already in use");
+            assertStartFailureSnapshotSurvivedTheAbort();
         }
         // The survivor was stopped as part of the abort: its management port is reclaimable.
         try (var reclaimed = new ServerSocket(BASE_MGMT_PORT + 2)) {
             assertThat(reclaimed.isBound()).isTrue();
         }
+    }
+
+    /// #727 review B2 — the abort clears `nodes`, `nodeInfos` and the rest BEFORE the failure reaches
+    /// the caller, so a caller that reports `status()` on a start failure reads an emptied registry:
+    /// the state dump added for this very failure was `leader=none` with zero node lines, on exactly
+    /// the failures it exists for. [EmberCluster#lastStartFailure] is captured before the stops begin.
+    ///
+    /// Red-before is a hunk revert, not a rewrite: move `captureStartFailure(startFailures)` in
+    /// `EmberCluster.abortStart` from above the stop list to below `clearClusterStateOnFailure`, and
+    /// the node assertions here fail on an empty snapshot.
+    ///
+    /// #727 review B1 — the same snapshot is where a fabricated state does the most damage, so it is
+    /// asserted here too: not one node of a cluster that never formed may report itself active. With
+    /// the old hardcoded `"healthy"` literal all three did.
+    private void assertStartFailureSnapshotSurvivedTheAbort() {
+        assertThat(cluster.status().nodes())
+            .describedAs("the abort clears the live registry; this is the condition the retained "
+                         + "snapshot exists for, and it must hold or the test proves nothing")
+            .isEmpty();
+
+        var snapshot = cluster.lastStartFailure()
+                              .or(() -> {
+                                  throw new AssertionError("no start-failure snapshot was retained; the state "
+                                                           + "dump for this failure would be empty");
+                              });
+
+        assertThat(snapshot.status().nodes())
+            .describedAs("the snapshot must carry the nodes the failed start had created")
+            .hasSize(3);
+        assertThat(snapshot.status().nodes())
+            .describedAs("no node of a cluster that never formed may report itself as active")
+            .noneMatch(node -> EmberCluster.STATE_ACTIVE.equals(node.state()));
+        assertThat(snapshot.nodeFailures())
+            .describedAs("the snapshot must name the nodes whose start failed, and why")
+            .isNotEmpty();
+        assertThat(snapshot.nodeFailures().values())
+            .allSatisfy(message -> assertThat(message).contains("Address already in use"));
     }
 }

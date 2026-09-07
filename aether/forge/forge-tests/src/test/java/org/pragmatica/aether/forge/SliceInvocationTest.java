@@ -25,7 +25,6 @@ import java.time.Duration;
 import java.util.concurrent.Callable;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -65,6 +64,12 @@ class SliceInvocationTest {
     private static final String BLUEPRINT_ID = "forge.test:slice-invocation:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
     private static final Pattern OUTCOME_TIMESTAMP = Pattern.compile("\"timestampMs\":(\\d+)");
+    /// #727 review N1: every `await()` in this class is bounded, including the ones on the failure
+    /// path — that is the path that runs when things are already wrong. `PromiseImpl.await()` re-parks
+    /// until resolved and never consults the interrupt flag, so an unbounded await here outlives
+    /// JUnit's lifecycle backstop. Far above each request's own 10s JDK timeout, so it fires only if
+    /// the promise never settles at all.
+    private static final TimeSpan HTTP_BOUND = TimeSpan.timeSpan(60).seconds();
 
     private EmberCluster cluster;
     private final HttpOperations http = jdkHttpOperations();
@@ -95,8 +100,7 @@ class SliceInvocationTest {
         // the new ACTIVATE directive cross ("state is ACTIVATE but not found in SliceStore"), the
         // leader classes that deterministic and rolls the blueprint back, and the deploy wait then
         // polls for a slice that no longer exists (reproduced 2026-09-06, 3x CPU oversubscription).
-        var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
-        httpRequestDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
+        httpRequestDelete(leaderOrAnyMgmtPort(), "/api/v1/blueprints/" + BLUEPRINT_ID);
         awaitEchoSliceUndeployed();
     }
 
@@ -246,7 +250,7 @@ class SliceInvocationTest {
     // counts, because a stale ROLLED_BACK from an earlier test stays readable until the next apply's
     // live entry replicates to the queried node.
     private void failFastOnDeploymentFailure() {
-        var status = httpRequest("GET", anyMgmtPort(), "/api/v1/blueprints/status/" + BLUEPRINT_ID, null);
+        var status = httpRequest("GET", leaderOrAnyMgmtPort(), "/api/v1/blueprints/status/" + BLUEPRINT_ID, null);
         if (isTerminalFailure(status) && outcomeTimestampMs(status) >= applyStartedAtMs) {
             throw new AssertionError("Blueprint " + BLUEPRINT_ID + " failed after apply: " + status);
         }
@@ -259,9 +263,27 @@ class SliceInvocationTest {
         return status.contains("\"overallStatus\":\"FAILED\"") || status.contains("\"overallStatus\":\"ROLLED_BACK\"");
     }
 
+    /// #727 review N2 — this used to take the FIRST `"timestampMs"` in the body. Safe today
+    /// (`BlueprintStatusResponse` carries exactly one and `BlueprintSliceStatus` none), and it would
+    /// have broken SILENTLY the day a per-slice timestamp is added: the fail-fast would compare the
+    /// wrong number and stop firing, which reads exactly like a deployment that never failed. A second
+    /// match is now an error naming the body, and an absent one still returns 0 — which fails the
+    /// `>= applyStartedAtMs` guard, so the default stays "do not fail fast".
     private static long outcomeTimestampMs(String status) {
         var matcher = OUTCOME_TIMESTAMP.matcher(status);
-        return matcher.find() ? Long.parseLong(matcher.group(1)) : 0L;
+
+        if (!matcher.find()) {
+            return 0L;
+        }
+
+        var first = Long.parseLong(matcher.group(1));
+
+        if (matcher.find()) {
+            throw new AssertionError("Blueprint status carries more than one timestampMs, so the outcome's own "
+                                     + "timestamp is no longer identifiable — this fail-fast needs a precise "
+                                     + "reader before it can be trusted again. Body: " + status);
+        }
+        return first;
     }
 
     // The undeploy wait used to be a bare `!getSlices().contains("echo-slice")`: an error body from the
@@ -295,24 +317,19 @@ class SliceInvocationTest {
     }
 
     private String clusterSnapshot() {
-        var status = cluster.status();
-        var nodes = status.nodes().stream().map(this::nodeSnapshot).collect(Collectors.joining("\n"));
-        return "  leader=" + status.leaderId() + "\n" + nodes;
-    }
-
-    private String nodeSnapshot(EmberCluster.NodeStatus node) {
-        return "  " + node.id() + " state=" + node.state() + " leader=" + node.isLeader()
-               + " health=" + healthBody(node.mgmtPort());
-    }
-
-    private String healthBody(int port) {
-        return http.sendString(healthRequest(port))
-                   .await()
-                   .fold(cause -> "unreachable (" + cause.message() + ")",
-                         response -> response.statusCode() + " " + response.body());
+        return ClusterSnapshot.render(cluster, http);
     }
 
     // HTTP helper methods
+
+    /// The port every management call in this class goes to. #727 review S2: the deploy fail-fast used
+    /// to query [#anyMgmtPort] — always node 1, a follower — while the apply and the delete it must
+    /// observe went to the leader. The direction was safe (a lagging follower yields a MISSED fail-fast,
+    /// never a false red), but it blunted the fail-fast under exactly the load it targets, where
+    /// replication lags. One port for all three now.
+    private int leaderOrAnyMgmtPort() {
+        return cluster.getLeaderManagementPort().or(anyMgmtPort());
+    }
 
     private int anyMgmtPort() {
         return cluster.status().nodes().getFirst().mgmtPort();
@@ -355,7 +372,10 @@ class SliceInvocationTest {
             artifact = "%s"
             instances = %d
             """.formatted(BLUEPRINT_ID, artifact, instances);
-        var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
+        var leaderPort = leaderOrAnyMgmtPort();
+        // #727 review N3: the test JVM's clock, compared below against the node's `ctx.nowMs()`.
+        // Sound because Forge runs every node in this JVM on this host; it is NOT a portable guard,
+        // and the comparison would need a cluster-supplied timestamp against a remote node.
         applyStartedAtMs = System.currentTimeMillis();
         return postBlueprintWithRetry(leaderPort, blueprint);
     }
@@ -387,7 +407,7 @@ class SliceInvocationTest {
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
         return http.sendString(request)
-                   .await()
+                   .await(HTTP_BOUND)
                    .map(HttpResult::body)
                    .or(ERROR_FALLBACK);
     }
@@ -411,8 +431,7 @@ class SliceInvocationTest {
     }
 
     private void undeploy(String artifact) {
-        var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
-        httpRequestDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
+        httpRequestDelete(leaderOrAnyMgmtPort(), "/api/v1/blueprints/" + BLUEPRINT_ID);
     }
 
     private String httpRequestDelete(int port, String path) {
@@ -422,7 +441,7 @@ class SliceInvocationTest {
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
         return http.sendString(request)
-                   .await()
+                   .await(HTTP_BOUND)
                    .map(HttpResult::body)
                    .or(ERROR_FALLBACK);
     }
@@ -440,7 +459,7 @@ class SliceInvocationTest {
         }
 
         return http.sendString(builder.build())
-                   .await()
+                   .await(HTTP_BOUND)
                    .map(HttpResult::body)
                    .or(ERROR_FALLBACK);
     }
@@ -452,17 +471,10 @@ class SliceInvocationTest {
     }
 
     private boolean checkNodeHealth(int port) {
-        return http.sendString(healthRequest(port))
-                   .await()
+        return http.sendString(ClusterSnapshot.healthRequest(port))
+                   .await(HTTP_BOUND)
                    .map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true"))
                    .or(false);
     }
 
-    private static HttpRequest healthRequest(int port) {
-        return HttpRequest.newBuilder()
-                          .uri(URI.create("http://localhost:" + port + "/api/v1/health"))
-                          .GET()
-                          .timeout(Duration.ofSeconds(5))
-                          .build();
-    }
 }
