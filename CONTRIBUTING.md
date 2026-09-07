@@ -58,7 +58,10 @@ goal — it fails on formatting drift but does not fix it for you [mechanism:
 `process` goal, which reformats in place. Running `build.sh` locally first means you fix
 formatting issues once, locally, instead of round-tripping through a CI failure.
 
-**What the JBCT gate does and does not cover:** it examines `src/main/java` only. Test sources are
+**What the JBCT gate does and does not cover.** Two independent limits apply, and together they mean
+a green gate is not a statement about most of this repository.
+
+*Scope inside a module that runs it.* The gate examines `src/main/java` only. Test sources are
 excluded from every JBCT goal by default (`jbct.includeTests=false`), so a **test-only** module —
 `aether/forge/forge-tests`, for instance — is not format- or lint-checked at all, and running
 `jbct:check` there is a no-op. That is deliberate policy, not an oversight (#624, #740); whether the
@@ -66,6 +69,35 @@ gate should extend to test trees is an open question, not a settled yes. The goa
 loud rather than reporting a bare success: when files exist but were excluded, they warn that the
 module was **not** examined and name the reason, so a green result is never mistaken for coverage.
 Pass `-Djbct.includeTests=true` to check a test tree by hand.
+
+*Which modules run it at all.* The root `pom.xml` defaults the `jbct.skip` property to `true`. The
+comment there gives avoiding a reactor cycle as the reason — the linter is built out of this
+repository, so it cannot run during the bootstrap of the modules it is built from [mechanism: root
+`pom.xml`, `<jbct.skip>` in `<properties>`, and its comment; `build.sh` step 2, which excludes
+`jbct` for the same reason]. That default is then **inherited by every module that does not override
+it**, which reaches far beyond the modules the cycle actually concerns — that inheritance, not a
+decision about each tree, is what #813 reports. **CI does not override the default** [mechanism:
+`.github/workflows/ci.yml`, the "JBCT format + lint gate" step runs
+`mvn org.pragmatica-lite:jbct-maven-plugin:check -B -pl '!jbct'` — no `-Djbct.skip=false`]. The gate
+therefore runs only where a pom opts back in: `aether/pom.xml` sets `jbct.skip` to `false` for the
+whole Aether tree, and several `examples/` poms do the same for their own subtrees.
+
+The population that matters is the reactor modules that contain a `src/main/java` at all, since
+those are the only ones the gate could examine. There are 118 of them, and **the gate examines 71
+and skips 47.** The skipped 47 are `core/`, every module under `integrations/`, every module under
+`jbct/`, `testing/`, and `examples/pragmatica-lite`. So the gate does not examine the Core library,
+and does not examine a single integration. **A green gate is not coverage for those trees**, and you
+should not read one as evidence that code you added there conforms. This gap is real, known and
+tracked in #813 and #880.
+
+If your change lands in a skipped module, check it by hand:
+
+```bash
+mvn jbct:check -pl <module> -Djbct.skip=false
+```
+
+Expect pre-existing findings in those trees — debt that has never been gated accumulates. Fix what
+your own change introduces; leave the rest, and say in the PR that you did.
 
 For quick iteration on a single module: `mvn test -pl <module>`. The full matrix CI actually runs
 is in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — format+lint check, `mvn install
@@ -95,9 +127,42 @@ The smoke set is the pre-push expectation, and it is **required** for changes to
 set takes a couple of minutes, while the same defect found in CI costs a 30-minute job, a red
 branch, and the diagnosis.
 
+## What the code must look like
+
+JBCT is a coding standard, not only tooling. The linter enforces part of it mechanically — where it
+runs, see above — and review covers the rest. The rules that shape almost every diff:
+
+- **Absence is `Option<T>`, never `null`.** A lookup that legitimately finds nothing returns
+  `Option<T>`; finding nothing is a normal outcome, not an error.
+- **Failure is `Result<T>`, never an exception used for control flow.** Failures are typed `Cause`
+  values returned to the caller, not thrown past it.
+- **Asynchrony is `Promise<T>`.** Work crossing a process boundary returns a `Promise`, which
+  carries its own failure — so `Promise<Result<T>>` is a double error channel and is not used.
+- **Parse, don't validate, at the boundary.** Untrusted input is converted once, at the edge, into a
+  domain type that cannot hold an invalid value. The interior then has nothing left to re-check.
+
+A method that is synchronous, total and always present simply returns `T`. The wrappers appear only
+where absence, failure or asynchrony is real — they are not decoration.
+
+New to this? The course is free and is the fastest path:
+
+- [The JBCT course](https://pragmatica.dev/java/jbct/course/) — start here.
+- [Four return types](https://pragmatica.dev/java/jbct/course/four-return-types/) — when each of
+  `T`, `Option<T>`, `Result<T>` and `Promise<T>` applies, and which nestings are allowed.
+- [Error handling](https://pragmatica.dev/java/jbct/course/error-handling/) — `Cause`, and why
+  exceptions are not the control-flow mechanism here.
+- [*Java Backend Coding Technology*](https://leanpub.com/jbct-book) — the complete argument, if you
+  want the reasoning rather than the rules.
+
+Contributing with an AI assistant? The agent definitions under `ai-tools/` in
+[siy/coding-technology](https://github.com/siy/coding-technology) encode these rules. They are
+written for Claude Code, but their rule sections are ordinary prose and adapt to other assistants.
+
 ## Branches, commits, and pull requests
 
-- Fork the repository and branch off `main`.
+- Fork the repository and branch off the **current release branch**, not `main`. Development
+  integrates on the release branch; `main` lags it substantially and is not where changes land.
+  The README's **Current release branch** line names the one in effect.
 - This project's history uses `<type>/<issue-number>-<short-slug>` branch names (e.g.
   `fix/613-javax-parent-first`, `feat/619-nest-directive`, `docs/608-forge-debug`) — follow it
   when you have a tracking issue, but it isn't enforced.
@@ -106,17 +171,38 @@ branch, and the diagnosis.
   non-obvious "why" is welcome for external contributions (the maintainers' own internal-stream
   convention of single-line, no-body commits is specific to their release workflow and isn't
   expected of contributors).
-- Open the PR against `main`. A maintainer will review, request changes if needed, and choose the
-  merge strategy at merge time.
+- Open the PR against the same release branch you forked from — again, the README names the current
+  one. A maintainer will review, request changes if needed, and choose the merge strategy at merge
+  time.
+
+### CI on a pull request from a fork
+
+Your workflow runs will not start on their own. They sit in `action_required` until a maintainer
+approves them. GitHub requires that approval for workflow runs on pull requests from forks by
+first-time contributors; it is the platform default, it applies regardless of what your change
+does, and it is **not** a judgement about your PR or a sign that something is wrong with it.
+Approval depends on maintainer availability, so a run can wait hours before it starts. Nothing is
+required from you while it waits.
 
 ### Sign-off
 
-There is no automated DCO or CLA check gating PRs in this repository today [mechanism: `.github/`
-contains only `ci.yml` and `release.yml` — no DCO/CLA bot is configured]. We nonetheless ask that
-you certify the provenance of your contribution by adding a `Signed-off-by` trailer (`git commit
--s`), per the [Developer Certificate of Origin](https://developercertificate.org/). This is a
-request, not (yet) an enforced gate — expect it to become one before GA, given the dual-license
-surface above.
+There is no automated DCO or CLA check gating PRs in this repository today [mechanism:
+`.github/workflows/` contains `ci.yml` and `release.yml` — no DCO/CLA bot is configured]. We
+nonetheless ask that you certify the provenance of your contribution by adding a `Signed-off-by`
+trailer (`git commit -s`), per the
+[Developer Certificate of Origin](https://developercertificate.org/). This is a request, not (yet)
+an enforced gate — expect it to become one before GA, given the dual-license surface above.
+
+## What review expects
+
+- **A test must fail when the production change is reverted.** Revert only the production hunk, keep
+  the test, and watch it go red. A test that stays green while the code it covers is gone pins
+  nothing, however much it asserts — and this is the most common reason a PR needs a second round.
+  Rebuilding the fixture inside the test is the usual way this goes wrong.
+- **Scope discipline.** Only the files your change needs. Drive-by reformatting, unrelated renames
+  and opportunistic fixes make a diff hard to review and slow it down; send them separately.
+- **Expect one review round**, with specific and cited findings — a file and line, the mechanism, or
+  the test that contradicts a claim. Answering in the same terms is the fastest way through.
 
 ## Code of conduct
 
