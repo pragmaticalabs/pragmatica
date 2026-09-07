@@ -24,10 +24,12 @@ import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -221,6 +223,28 @@ class ActivationRaceNotFatalTest {
                 .as("and the terminal must HOLD: a reconcile after exhaustion must not re-drive the "
                     + "artifact, which is the step that turned the old exhaustion into a loop")
                 .isEmpty();
+    }
+
+    /// #922 acceptance, second half: the operator must be able to SEE that the deployment did not
+    /// apply. A rollback that leaves no record is silence of a different shape, so this asserts the
+    /// explicit `DeploymentOutcomeValue` — not merely the blueprint's removal.
+    @Test
+    void intermittentFailureThatNeverSettles_recordsAnExplicitFailedOutcome() {
+        var expanded = blueprint();
+        var intermittent = NodeArtifactValue.failedNodeArtifactValue(SliceNotInStore.sliceNotInStore(SLICE.asString(),
+                                                                                                     "activation"));
+
+        leaderHarness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
+
+        for (var report = 1; report <= TERMINAL_ON_REPORT; report++) {
+            leaderHarness.dispatch(new NodeArtifactPutReceived(replayOf(intermittent)));
+        }
+
+        assertThat(leaderSideCluster.outcomeFor(expanded.id()))
+                .as("#922: exhaustion must leave an explicit FAILED deployment outcome the operator "
+                    + "can read, not an unrecorded disappearance")
+                .isNotEmpty()
+                .allSatisfy(outcome -> assertThat(outcome.failingSlices()).contains(SLICE.asString()));
     }
 
     /// NOTE 2 from review round 1 — `SLICE_NOT_LOADED_FOR_REGISTRATION` was typed by #916 but
@@ -471,6 +495,21 @@ class ActivationRaceNotFatalTest {
                                .map(KVCommand::key)
                                .filter(key -> key.asString()
                                                  .contains(artifact.asString()))
+                               .toList();
+            }
+        }
+
+        /// Every `DeploymentOutcomeValue` written for the given blueprint.
+        private List<DeploymentOutcomeValue> outcomeFor(BlueprintId blueprintId) {
+            var key = DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId);
+
+            synchronized (commands) {
+                return commands.stream()
+                               .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                  && put.key().equals(key))
+                               .map(command -> ((KVCommand.Put<AetherKey, ?>) command).value())
+                               .filter(value -> value instanceof DeploymentOutcomeValue)
+                               .map(value -> (DeploymentOutcomeValue) value)
                                .toList();
             }
         }
