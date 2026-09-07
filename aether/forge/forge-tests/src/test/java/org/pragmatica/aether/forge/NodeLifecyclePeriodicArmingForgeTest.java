@@ -65,11 +65,9 @@ class NodeLifecyclePeriodicArmingForgeTest {
         cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, NODE_PREFIX);
 
         // 2 of 3 started is a Rabia quorum, so the cluster genuinely forms around the held-back node.
-        cluster.start(Set.of(HELD_BACK_ID))
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
+        LifecycleAwait.settled("cluster start in setUp()",
+                               cluster,
+                               cluster.start(Set.of(HELD_BACK_ID)));
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
@@ -79,8 +77,7 @@ class NodeLifecyclePeriodicArmingForgeTest {
     @AfterAll
     void tearDown() {
         if (cluster != null) {
-            cluster.stop()
-                   .await();
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -126,11 +123,9 @@ class NodeLifecyclePeriodicArmingForgeTest {
     void startingTheHeldBackNode_armsExactlyTheDeferredSet() {
         var held = periodicTasksOf(heldBackInstance());
 
-        cluster.startHeldBackNodes()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Held-back start failed: " + cause.message());
-               });
+        LifecycleAwait.settled("held-back node start in startingTheHeldBackNode_armsExactlyTheDeferredSet()",
+                               cluster,
+                               cluster.startHeldBackNodes());
 
         assertThat(held.armedCount()).isEqualTo(deferredWhileHeld);
         assertThat(held.deferredCount()).isZero();
@@ -146,8 +141,7 @@ class NodeLifecyclePeriodicArmingForgeTest {
                               .map(NodeLifecyclePeriodicArmingForgeTest::periodicTasksOf)
                               .toList();
 
-        cluster.stop()
-               .await();
+        LifecycleAwait.bestEffort("cluster stop in stop_disarmsEveryNode()", cluster, cluster.stop());
         cluster = null;
 
         assertThat(observed).isNotEmpty();

@@ -177,11 +177,7 @@ class DurableEntityForgeTest {
                                                   .withEnvironment("AETHER_")
                                                   .build();
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "dur", Option.some(configProvider));
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
@@ -251,8 +247,7 @@ class DurableEntityForgeTest {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
 
             httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
-            cluster.stop()
-                   .await();
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -635,11 +630,9 @@ class DurableEntityForgeTest {
 
         var ownerNodeId = nodeIdForAppPort(ownerPort);
 
-        cluster.killNode(ownerNodeId)
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Failed to stop node " + ownerNodeId + ": " + cause.message());
-               });
+        LifecycleAwait.nodeSettled("kill node " + ownerNodeId + " in state_survivesTheLossOfTheNodeThatOwnedIt()",
+                                   cluster,
+                                   cluster.killNode(ownerNodeId));
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)

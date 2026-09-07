@@ -106,9 +106,7 @@ class OwnershipFenceBaselineTest {
     @TerminalOperation
     void setUp() {
         cluster = emberCluster(SIZE, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, PREFIX);
-        cluster.start()
-               .await()
-               .onFailure(OwnershipFenceBaselineTest::failStart);
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
 
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesReady);
@@ -118,7 +116,7 @@ class OwnershipFenceBaselineTest {
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
     /// 1d-ii fence: a deposed/stale owner's data-plane append, stamped with its now-stale owner epoch,
@@ -253,9 +251,6 @@ class OwnershipFenceBaselineTest {
         return cluster.allNodes().stream().allMatch(AetherNode::isReady);
     }
 
-    private static void failStart(Cause cause) {
-        throw new AssertionError("Cluster start failed: " + cause.message());
-    }
 
     private static void failScenario(Cause cause) {
         throw new AssertionError("Scenario setup failed: " + cause.message());

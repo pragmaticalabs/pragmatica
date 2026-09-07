@@ -200,8 +200,7 @@ class DurableEntityTimerDurabilityTest {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
 
             httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
-            cluster.stop()
-                   .await();
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -332,11 +331,10 @@ class DurableEntityTimerDurabilityTest {
         var ownerPort = appPortForNodeId(ownerBefore);
         var killedAt = System.nanoTime();
 
-        cluster.killNode(ownerBefore)
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Failed to stop the owner " + ownerBefore + ": " + cause.message());
-               });
+        LifecycleAwait.nodeSettled("kill node " + ownerBefore
+                                  + " in timerFires_afterOwnerHandover_appliedOnceByTheNewOwner()",
+                                   cluster,
+                                   cluster.killNode(ownerBefore));
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
@@ -404,21 +402,13 @@ class DurableEntityTimerDurabilityTest {
     // --- restart ------------------------------------------------------------------
 
     private void restartCluster() {
-        cluster.stop()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster stop failed: " + cause.message());
-               });
+        LifecycleAwait.settled("cluster stop in restartCluster()", cluster, cluster.stop());
 
         startAndAwaitReady();
     }
 
     private void startAndAwaitReady() {
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
+        LifecycleAwait.settled("cluster start in startAndAwaitReady()", cluster, cluster.start());
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)

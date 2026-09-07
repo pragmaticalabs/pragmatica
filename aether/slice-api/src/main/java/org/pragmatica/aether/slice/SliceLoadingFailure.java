@@ -148,6 +148,30 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
             }
         }
 
+        /// #916 — the slice is absent from the node's `SliceStore` at a point in the activation
+        /// chain that requires it to be present. This is a race, not a defect: an unload issued for
+        /// a previous deployment of the same artifact can still be in flight when the ACTIVATE for
+        /// the new one arrives, and a retry after the unload settles succeeds.
+        ///
+        /// Typed `Intermittent` at the raise site rather than left to [SliceLoadingFailure#classify],
+        /// whose catch-all is deliberately permanent. Untyped, this cause reached
+        /// `Fatal.UnexpectedError`, and the cluster leader rolled the whole blueprint back under
+        /// `ALL_OR_NOTHING` for a collision a bounded retry would have cleared. Same reasoning and
+        /// same remedy as `SliceInvoker.verifyEndpointExists`, which typed its own activation-order
+        /// race `Intermittent` for exactly this reason.
+        record SliceNotInStore(String artifact, String operation) implements Intermittent {
+            public static SliceNotInStore sliceNotInStore(String artifact, String operation) {
+                return new SliceNotInStore(artifact, operation);
+            }
+
+            @Override
+            public String message() {
+                return "Slice " + artifact
+                     + " not present in SliceStore during " + operation
+                     + " (a concurrent unload may still be in flight)";
+            }
+        }
+
         record ResourceUnavailable(String resource, Cause causeSource) implements Intermittent {
             @Override
             public String message() {
@@ -163,6 +187,42 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
         interface Custom extends Intermittent {}
     }
 
+    /// Classifies an arbitrary `Cause` raised on a slice loading or activation path.
+    ///
+    /// **The catch-all stays permanent (#916 ruling).** Every cause this method does not recognise
+    /// becomes `Fatal.UnexpectedError`, and that is deliberate, not an oversight. The cause universe
+    /// here is open — any code on the loading or activation path can raise anything — so the default
+    /// arm is chosen for the failure mode it produces, not for how often it is right.
+    ///
+    /// Permanent-by-default fails loudly and bounded: the leader marks the artifact permanently
+    /// failed and, under `ALL_OR_NOTHING`, rolls the blueprint back, so the declared atomicity holds
+    /// and the operator sees a `ROLLED_BACK` blueprint they can act on.
+    ///
+    /// Intermittent-by-default would fail in the direction that matters, and worse than the first
+    /// version of this comment claimed. That version said a genuinely permanent failure would be
+    /// "retried five times and then abandoned" without a rollback. Retry exhaustion does not abandon
+    /// anything: `ClusterDeploymentState.Active.logMaxRetriesExceeded` clears the retry counter and
+    /// routes `DeploymentFailed` but never marks the artifact permanently failed, so the unload that
+    /// every failure issues removes the `NodeArtifactKey`, `handleSliceNodeRemoval` sees an artifact
+    /// still deployable and schedules a reconcile, and `reconcileBlueprint` — gated on
+    /// `permanentlyFailed` and nothing else — redeploys it with the counter restarting at 1. The
+    /// real cost of an intermittent default is therefore an unbounded redeploy loop at roughly 1 Hz
+    /// with no terminal state at all, not a quiet half-deployed blueprint. Trading a wrong rollback
+    /// for that is plainly the worse trade, so the ruling stands on a stronger footing than it was
+    /// first argued on.
+    ///
+    /// That loop is **pre-existing and out of scope here** — it is tracked by #922, and its
+    /// sustaining entry point is `ArtifactNotFound` on the LOAD leg, a cause that was already
+    /// `Intermittent` before #916 and is untouched by it. The causes typed below cannot sustain it:
+    /// every path that issues an ACTIVATE is gated on the slice having been reported `LOADED`, so
+    /// they require a prior successful load and a genuinely absent artifact fails earlier, at
+    /// `handleLoadingFailure`.
+    ///
+    /// The price of keeping the permanent default is an obligation: **a transient cause on these
+    /// paths must be typed `Intermittent` where it is raised**, because reaching this method untyped
+    /// means permanent. Two causes have already been paid for this way —
+    /// `SliceInvoker.verifyEndpointExists` (activation-order race on a dependency's endpoint) and
+    /// [Intermittent.SliceNotInStore] (#916, the unload/activate crossing).
     static SliceLoadingFailure classify(Cause cause) {
         if (cause instanceof SliceLoadingFailure failure) {
             return failure;

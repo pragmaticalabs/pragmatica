@@ -81,15 +81,13 @@ class CoordinationSlopeInstrumentTest {
     @BeforeAll
     void setUp() {
         cluster = emberCluster(CORES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "cslope");
-        cluster.start().await().onFailure(cause -> {
-            throw new AssertionError("Cluster start failed: " + cause.message());
-        });
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
     }
 
     @AfterAll
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
     /// The sampler's contract with `GET /api/v1/metrics/transport`, checked on EVERY core because the

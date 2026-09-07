@@ -142,11 +142,7 @@ class DurableTopicDeliveryForgeTest {
         // The durable tier writes envelopes through per-partition WALs. Without an on-disk data dir the
         // backing streams are memory-only and "durable" would be measuring nothing.
         cluster.withDataBaseDir(baseDir);
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
@@ -227,8 +223,7 @@ class DurableTopicDeliveryForgeTest {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
 
             httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
-            cluster.stop()
-                   .await();
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 

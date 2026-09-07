@@ -67,9 +67,7 @@ class ClusterProvisioningDiagnosticsProbeTest {
     @TerminalOperation
     void setUp() {
         cluster = emberCluster(CORES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "provisioning");
-        cluster.start()
-               .await()
-               .onFailure(ClusterProvisioningDiagnosticsProbeTest::failStart);
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
 
         await().alias("cluster leader elected")
                .atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
@@ -82,7 +80,7 @@ class ClusterProvisioningDiagnosticsProbeTest {
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
     @Test
@@ -154,9 +152,6 @@ class ClusterProvisioningDiagnosticsProbeTest {
                    .or("{}");
     }
 
-    private static void failStart(Cause cause) {
-        throw new AssertionError("Cluster start failed: " + cause.message());
-    }
 
     private static void failScenario(Cause cause) {
         throw new AssertionError("Scenario setup failed: " + cause.message());

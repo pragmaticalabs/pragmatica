@@ -12,7 +12,6 @@ import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
 import java.net.URI;
@@ -104,12 +103,12 @@ abstract class AbstractMultiPartitionStream {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
             httpDelete(leaderPort, "/api/v1/blueprints/" + blueprintId());
-            cluster.stop().await();
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
     private void startAndAwaitReady() {
-        cluster.start().await().onFailure(AbstractMultiPartitionStream::failStart);
+        LifecycleAwait.settled("cluster start in startAndAwaitReady()", cluster, cluster.start());
 
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesHealthy);
@@ -443,7 +442,4 @@ abstract class AbstractMultiPartitionStream {
 
     // --- failure sinks ------------------------------------------------------
 
-    private static void failStart(Cause cause) {
-        throw new AssertionError("Cluster start failed: " + cause.message());
-    }
 }

@@ -115,7 +115,10 @@ class StreamPublishReshuffleTest extends AbstractMultiPartitionStream {
             var preKillAcked = acked.size();
 
             // Kill the partition-0 owner MID-STREAM and wait for the partition to re-resolve to a new owner.
-            cluster.killNode(killTarget).await();
+            LifecycleAwait.nodeBestEffort("kill node " + killTarget
+                                      + " in sustainedPublish_duringOwnerKillReshuffle_everyAckedOffsetSurvivesUniqueAndOrdered()",
+                                       cluster,
+                                       cluster.killNode(killTarget));
             await().atMost(FAILOVER_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> ownerReResolved(KILL_PARTITION, killTarget));
 
             // Keep publishing across/after the reshuffle until a further batch of writes is acked.

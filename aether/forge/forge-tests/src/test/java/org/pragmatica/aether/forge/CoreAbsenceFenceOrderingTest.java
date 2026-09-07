@@ -17,7 +17,6 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.TerminalOperation;
 import org.slf4j.Logger;
@@ -156,7 +155,7 @@ class CoreAbsenceFenceOrderingTest {
     void setUp() {
         cluster = emberCluster(INITIAL_CORES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "fence");
         cluster.withRaisedSwimTimeouts();
-        cluster.start().await().onFailure(CoreAbsenceFenceOrderingTest::failStart);
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
 
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.status().nodes().size() == INITIAL_CORES);
@@ -177,11 +176,10 @@ class CoreAbsenceFenceOrderingTest {
         log.info("FENCE-PROBE: committed ClusterConfig.coreCount={} — the cap is live, the next join exceeds it",
                  committedCoreCount().or(0));
 
-        worker = cluster.addWorkerNode()
-                        .await()
-                        .onFailure(CoreAbsenceFenceOrderingTest::failScenario)
-                        .map(id -> id.id())
-                        .or("");
+        worker = LifecycleAwait.nodeSettled("worker node join in addWorkerBeyondTheCoreCap()",
+                                            cluster,
+                                            cluster.addWorkerNode())
+                               .id();
         log.info("FENCE-PROBE: added node {} — expected to exceed the core cap and be minted a WORKER", worker);
 
         // CORRECTION (found by running it): `isArmed()` is `!lastPingNanos.isEmpty()` — "a core ping
@@ -221,7 +219,7 @@ class CoreAbsenceFenceOrderingTest {
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
     @Test
@@ -238,7 +236,10 @@ class CoreAbsenceFenceOrderingTest {
         // open. The core's ClusterSyncPing stops arriving, which is the ONLY liveness signal this
         // fence consumes — and crucially the node cannot write to the core either, which is the whole
         // reason the response has to be local.
-        cluster.blackhole(worker).await().onFailure(CoreAbsenceFenceOrderingTest::failScenario);
+        LifecycleAwait.nodeSettled("blackhole node " + worker
+                                  + " in isolatedWorkerFencesItselfLocally_strictlyBeforeTheCoreWouldReplaceIt()",
+                                   cluster,
+                                   cluster.blackhole(worker));
         log.info("FENCE-PROBE: black-holed {} at t0 — core pings stop, and it cannot reach consensus", worker);
 
         // CAPTURED at the moment the fence is observed, NOT re-read afterwards. Ember injects
@@ -414,13 +415,5 @@ class CoreAbsenceFenceOrderingTest {
     private Option<CoreAbsenceSnapshot> snapshot(String nodeId) {
         return cluster.getNode(nodeId)
                       .flatMap(node -> node.coreAbsenceSnapshot());
-    }
-
-    private static void failStart(Cause cause) {
-        throw new AssertionError("Cluster start failed: " + cause.message());
-    }
-
-    private static void failScenario(Cause cause) {
-        throw new AssertionError("Scenario step failed: " + cause.message());
     }
 }

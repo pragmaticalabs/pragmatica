@@ -150,7 +150,7 @@ abstract class AbstractStreamOwnerFailover {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
             httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
-            cluster.stop().await();
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -183,7 +183,10 @@ abstract class AbstractStreamOwnerFailover {
         assertThat(owner).describedAs("HRW owner identified before kill").isNotBlank();
 
         // Kill the HRW owner (graceful SWIM leave -> deterministic membership shrink -> HRW re-resolves).
-        cluster.killNode(owner).await();
+        LifecycleAwait.nodeBestEffort("kill node " + owner
+                                  + " in ownerKill_promotedReplicaServesCompleteHistory_andRestoresRf()",
+                                   cluster,
+                                   cluster.killNode(owner));
 
         await().atMost(FAILOVER_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
@@ -454,11 +457,7 @@ abstract class AbstractStreamOwnerFailover {
     // --- deployment + readiness --------------------------------------------
 
     private void startAndAwaitReady() {
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
+        LifecycleAwait.settled("cluster start in startAndAwaitReady()", cluster, cluster.start());
 
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesHealthy);
