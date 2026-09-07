@@ -47,6 +47,11 @@
   artifact fails earlier at `handleLoadingFailure` and never reaches them
   [mechanism: all four call sites of `tryActivateIfDependenciesReady` filter on
   `SliceState.LOADED` — `ClusterDeploymentState:1550`, `:694`, `:894`, `:1897`].
+- **Split note.** The terminal-state fix for that loop is a separate change, on its own ticket and
+  its own pull request (#922) — different concern, different blast radius, and either can land or be
+  reverted without the other. The correction to `aether/docs/specs/stream-offheap-budget-spec.md`,
+  whose stated resolution depends on that terminal existing, travels with #922 rather than with this
+  ticket.
 - **`classify`'s catch-all deliberately STAYS fail-permanent** — the reviewable judgement of this
   change, so the reasoning is recorded rather than assumed. The cause universe on the loading and
   activation paths is open, so the default arm is chosen for the failure mode it produces.
