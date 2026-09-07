@@ -52,6 +52,7 @@ public final class CacheInterceptorFactory implements ResourceFactory<CacheMetho
 
     @Override
     public Promise<Unit> close(CacheMethodInterceptor resource) {
+        // The boolean only reports whether this holder was registered; close is idempotent, so false is a no-op.
         resource.cacheName().onPresent(name -> cacheRegistry.release(name, resource));
 
         return Promise.unitPromise();

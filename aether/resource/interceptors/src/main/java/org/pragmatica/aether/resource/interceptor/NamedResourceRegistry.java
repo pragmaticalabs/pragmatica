@@ -17,14 +17,12 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 
 
-/**
- * Factory state keyed by the configured resource name.
- *
- * A factory can share one backend between several provisioned interceptors. The
- * entry must therefore live until the last interceptor is closed, not merely
- * until the first resource release. Holders are tracked by identity because
- * interceptors are records and can otherwise compare equal by value.
- */
+/// Factory state keyed by the configured resource name.
+///
+/// A factory can share one backend between several provisioned interceptors. The
+/// entry must therefore live until the last interceptor is closed, not merely
+/// until the first resource release. Holders are tracked by identity because
+/// interceptors are records and can otherwise compare equal by value.
 final class NamedResourceRegistry<T> {
     private final Map<String, Entry<T>> entries = new ConcurrentHashMap<>();
 

@@ -55,6 +55,7 @@ public final class IdempotencyInterceptorFactory implements ResourceFactory<Idem
 
     @Override
     public Promise<Unit> close(IdempotencyMethodInterceptor resource) {
+        // The boolean only reports whether this holder was registered; close is idempotent, so false is a no-op.
         resource.storeName().onPresent(name -> resourceRegistry.release(name, resource));
 
         return Promise.unitPromise();
