@@ -2,27 +2,8 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.forge;
-
-import java.time.Duration;
-import java.util.List;
-import java.util.Set;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicLong;
-
-import org.pragmatica.aether.ember.EmberCluster;
-import org.pragmatica.aether.environment.ComputeProvider;
-import org.pragmatica.aether.environment.InstanceId;
-import org.pragmatica.aether.environment.InstanceInfo;
-import org.pragmatica.aether.environment.ProviderDefaults;
-import org.pragmatica.aether.environment.ProvisionRequest;
-import org.pragmatica.aether.node.AetherNode;
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.TerminalOperation;
-import org.pragmatica.lang.Unit;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -31,13 +12,30 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.InstanceId;
+import org.pragmatica.aether.environment.InstanceInfo;
+import org.pragmatica.aether.environment.ProviderDefaults;
+import org.pragmatica.aether.environment.ProvisionRequest;
+import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.TerminalOperation;
+import org.pragmatica.lang.Unit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import java.time.Duration;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
 /// #232 — the in-process membership chaos cycle: kill → detect → decommission → heal.
 ///
@@ -105,27 +103,32 @@ import static org.awaitility.Awaitility.await;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class MembershipChaosCycleTest {
     private static final Logger log = LoggerFactory.getLogger(MembershipChaosCycleTest.class);
+
     private static final int SIZE = 5;
     private static final int BASE_PORT = 20500;
     private static final int BASE_MGMT_PORT = 20600;
     private static final int BASE_APP_HTTP_PORT = 20700;
+
     /// `AutoHealConfig.DEFAULT` startupCooldown is 15s: the reconciler will not fill a deficit until a
     /// node has been up that long. Killing inside that window would measure the cooldown, not
     /// detection, so the run settles past it before the kill.
     private static final Duration AUTO_HEAL_STARTUP_COOLDOWN = Duration.ofSeconds(15);
     private static final Duration SETTLE = AUTO_HEAL_STARTUP_COOLDOWN.plusSeconds(5);
+
     /// SWIM suspicion (`SwimConfig.suspectTimeout`, 10s) plus NTT departure
     /// (`MembershipConfig.nttDepartureTimeout`, 15s) — the detection window `AutoHealSpec` names when
     /// it sizes its own hint TTL. 25s is the mechanism; the budget triples it so a loaded CI box does
     /// not turn a slow detection into a red build.
     private static final Duration DETECTION_WINDOW = Duration.ofSeconds(25);
     private static final Duration DECOMMISSION_BUDGET = DETECTION_WINDOW.multipliedBy(3);
+
     /// After the deficit is visible: `autoHealRetry` (10s) to re-arm, `provisioningTimeout` (60s) as
     /// the provider ceiling, then the replacement has to boot, join via SWIM and be counted. Doubled
     /// for the same CI-load reason.
     private static final Duration AUTO_HEAL_RETRY = Duration.ofSeconds(10);
     private static final Duration PROVISIONING_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration HEAL_BUDGET = AUTO_HEAL_RETRY.plus(PROVISIONING_TIMEOUT).multipliedBy(2);
+
     private static final Duration FORM_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL = Duration.ofMillis(500);
 
@@ -138,42 +141,44 @@ class MembershipChaosCycleTest {
         cluster = emberCluster(SIZE, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "chaos");
         cluster.withComputeProviderDecorator(recorder::wrap);
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
-        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader()
-                                                                           .isPresent());
+
+        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> countedCores() == SIZE);
         log.info("CHAOS-CYCLE: {}-node cluster formed, leader={} countedCores={}",
-                 SIZE,
-                 cluster.currentLeader().or("none"),
-                 countedCores());
+                 SIZE, cluster.currentLeader().or("none"), countedCores());
     }
 
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> LifecycleAwait.settled("cluster stop in tearDown()", c, c.stop()));
+        Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
     @Test
     void killedCoreNode_isDecommissioned_andTheClusterHealsItselfBackToFullMembership() {
         settlePastAutoHealCooldown();
+
         var victim = nonLeaderNode();
         var provisionsBeforeKill = recorder.provisionCalls();
 
         log.info("CHAOS-CYCLE: leader={} victim={} (hard kill, connections close) provisionsBefore={}",
-                 cluster.currentLeader().or("none"),
-                 victim,
-                 provisionsBeforeKill);
+                 cluster.currentLeader().or("none"), victim, provisionsBeforeKill);
+
         var t0 = System.nanoTime();
 
         LifecycleAwait.nodeSettled("kill node " + victim
                                   + " in killedCoreNode_isDecommissioned_andTheClusterHealsItselfBackToFullMembership()",
                                    cluster,
                                    cluster.killNode(victim, false));
+
         var decommissionMs = awaitMillis("DECOMMISSION",
                                          t0,
                                          DECOMMISSION_BUDGET,
                                          () -> !countedCoreIds().contains(victim));
-        var healMs = awaitMillis("HEAL", t0, DECOMMISSION_BUDGET.plus(HEAL_BUDGET), () -> countedCores() >= SIZE);
+        var healMs = awaitMillis("HEAL",
+                                 t0,
+                                 DECOMMISSION_BUDGET.plus(HEAL_BUDGET),
+                                 () -> countedCores() >= SIZE);
         // Leadership is a CONVERGENCE property, not an instant one. The first run of this class read
         // `currentLeader()` at the moment heal completed and saw `none` — a re-election was in flight
         // as the replacement joined and changed the topology. Asserting on that instant would have
@@ -183,45 +188,44 @@ class MembershipChaosCycleTest {
         var leaderMs = awaitMillis("LEADER-RECOVERY",
                                    t0,
                                    DECOMMISSION_BUDGET.plus(HEAL_BUDGET),
-                                   () -> cluster.currentLeader()
-                                                .isPresent());
+                                   () -> cluster.currentLeader().isPresent());
         var provisionsAfter = recorder.provisionCalls();
+
         // Logged BEFORE the assertions: a failing assertion is exactly when this timeline is the
         // evidence the ticket asked for, and an AssertionError would skip anything logged after it.
         log.info("CHAOS-CYCLE RESULT (measured, not carried over from the phi-accrual era): "
-                + "decommission={}ms heal={}ms leaderRecovery={}ms provisions={} countedCores={} leader={} ids={}",
-                 decommissionMs,
-                 healMs,
-                 leaderMs,
-                 provisionsAfter - provisionsBeforeKill,
-                 countedCores(),
-                 cluster.currentLeader().or("none"),
-                 countedCoreIds());
-        assertThat(decommissionMs).as("a hard-killed core must leave counted membership within %ds "
-                                     + "(SWIM suspicion 10s + NTT departure 15s, tripled for CI load); -1 means it never did",
-                                      DECOMMISSION_BUDGET.toSeconds())
-                  .isBetween(0L,
-                             DECOMMISSION_BUDGET.toMillis());
-        assertThat(provisionsAfter).as("auto-heal must reach the real ComputeProvider.provision path — counted membership "
-                                      + "returning to %d without a provision would mean something rejoined rather than the "
-                                      + "cluster healing itself, and the heal leg would be unproven",
-                                       SIZE)
-                  .isGreaterThan(provisionsBeforeKill);
-        assertThat(healMs).as("the replacement must boot, join and be COUNTED within %ds; a provision that never "
-                             + "joins leaves the cycle half-proven",
-                              DECOMMISSION_BUDGET.plus(HEAL_BUDGET).toSeconds())
-                  .isBetween(0L,
-                             DECOMMISSION_BUDGET.plus(HEAL_BUDGET).toMillis());
-        assertThat(leaderMs).as("the cluster must settle back to having a leader within %ds — healing to %d nodes is "
-                               + "not a success if leadership never recovers. Awaited, not sampled: a re-election is "
-                               + "legitimately in flight while the replacement joins",
-                                DECOMMISSION_BUDGET.plus(HEAL_BUDGET).toSeconds(),
-                                SIZE)
-                  .isBetween(0L,
-                             DECOMMISSION_BUDGET.plus(HEAL_BUDGET).toMillis());
-        assertThat(countedCoreIds()).as("the dead node must NOT reappear in counted membership — the cluster heals by "
-                                       + "replacing it, not by resurrecting the id that was decommissioned")
-                  .doesNotContain(victim);
+                 + "decommission={}ms heal={}ms leaderRecovery={}ms provisions={} countedCores={} leader={} ids={}",
+                 decommissionMs, healMs, leaderMs, provisionsAfter - provisionsBeforeKill,
+                 countedCores(), cluster.currentLeader().or("none"), countedCoreIds());
+
+        assertThat(decommissionMs)
+            .as("a hard-killed core must leave counted membership within %ds "
+                + "(SWIM suspicion 10s + NTT departure 15s, tripled for CI load); -1 means it never did",
+                DECOMMISSION_BUDGET.toSeconds())
+            .isBetween(0L, DECOMMISSION_BUDGET.toMillis());
+
+        assertThat(provisionsAfter)
+            .as("auto-heal must reach the real ComputeProvider.provision path — counted membership "
+                + "returning to %d without a provision would mean something rejoined rather than the "
+                + "cluster healing itself, and the heal leg would be unproven", SIZE)
+            .isGreaterThan(provisionsBeforeKill);
+
+        assertThat(healMs)
+            .as("the replacement must boot, join and be COUNTED within %ds; a provision that never "
+                + "joins leaves the cycle half-proven", DECOMMISSION_BUDGET.plus(HEAL_BUDGET).toSeconds())
+            .isBetween(0L, DECOMMISSION_BUDGET.plus(HEAL_BUDGET).toMillis());
+
+        assertThat(leaderMs)
+            .as("the cluster must settle back to having a leader within %ds — healing to %d nodes is "
+                + "not a success if leadership never recovers. Awaited, not sampled: a re-election is "
+                + "legitimately in flight while the replacement joins",
+                DECOMMISSION_BUDGET.plus(HEAL_BUDGET).toSeconds(), SIZE)
+            .isBetween(0L, DECOMMISSION_BUDGET.plus(HEAL_BUDGET).toMillis());
+
+        assertThat(countedCoreIds())
+            .as("the dead node must NOT reappear in counted membership — the cluster heals by "
+                + "replacing it, not by resurrecting the id that was decommissioned")
+            .doesNotContain(victim);
     }
 
     /// Polls until `condition`, returning elapsed millis from `t0`, or -1 on timeout. Returning a
@@ -232,23 +236,18 @@ class MembershipChaosCycleTest {
 
         try {
             await().atMost(budget.plusSeconds(10))
-                 .pollInterval(POLL)
-                 .until(() -> {
-                            if (condition.getAsBoolean()) {
-                            latch.compareAndSet(-1,
-                                                (System.nanoTime() - t0) / 1_000_000);
+                   .pollInterval(POLL)
+                   .until(() -> {
+                       if (condition.getAsBoolean()) {
+                           latch.compareAndSet(-1, (System.nanoTime() - t0) / 1_000_000);
 
-                            return true;
-                        }
+                           return true;
+                       }
+                       log.info("CHAOS-CYCLE: {} pending at t+{}ms countedCores={} ids={}",
+                                label, (System.nanoTime() - t0) / 1_000_000, countedCores(), countedCoreIds());
 
-                            log.info("CHAOS-CYCLE: {} pending at t+{}ms countedCores={} ids={}",
-                                     label,
-                                     (System.nanoTime() - t0) / 1_000_000,
-                                     countedCores(),
-                                     countedCoreIds());
-
-                            return false;
-                        });
+                       return false;
+                   });
         } catch (Exception e) {
             log.warn("CHAOS-CYCLE: {} NOT reached within {}s", label, budget.toSeconds());
         }
@@ -258,9 +257,8 @@ class MembershipChaosCycleTest {
 
     private void settlePastAutoHealCooldown() {
         log.info("CHAOS-CYCLE: settling {}s past the {}s auto-heal startup cooldown so the kill "
-                + "measures detection rather than the cooldown",
-                 SETTLE.toSeconds(),
-                 AUTO_HEAL_STARTUP_COOLDOWN.toSeconds());
+                 + "measures detection rather than the cooldown",
+                 SETTLE.toSeconds(), AUTO_HEAL_STARTUP_COOLDOWN.toSeconds());
         await().pollDelay(SETTLE).timeout(SETTLE.plusSeconds(10)).until(() -> true);
     }
 
@@ -284,12 +282,12 @@ class MembershipChaosCycleTest {
         return leaderOrAnyNode().map(node -> node.membershipFsm()
                                                  .coreCountedMembers()
                                                  .size())
-                              .or(0);
+                                .or(0);
     }
 
     private String countedCoreIds() {
         return leaderOrAnyNode().map(node -> idStrings(node.membershipFsm().coreCountedMembers()))
-                              .or("");
+                                .or("");
     }
 
     private Option<AetherNode> leaderOrAnyNode() {
@@ -306,13 +304,7 @@ class MembershipChaosCycleTest {
                   .toString();
     }
 
-    private static void failStart(Cause cause) {
-        throw new AssertionError("Cluster start failed: " + cause.message());
-    }
 
-    private static void failScenario(Cause cause) {
-        throw new AssertionError("Scenario step failed: " + cause.message());
-    }
 
     /// Counts every provision and ALWAYS delegates — this class must not inject provider faults, it
     /// is measuring the healthy heal path.

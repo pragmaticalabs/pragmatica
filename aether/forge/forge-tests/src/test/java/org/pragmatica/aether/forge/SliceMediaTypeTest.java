@@ -2,15 +2,8 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.forge;
-
-import java.net.URI;
-import java.net.http.HttpRequest;
-import java.time.Duration;
-
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.aether.ember.EmberCluster;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -18,12 +11,18 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
 
-import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
-import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-
+import org.pragmatica.aether.ember.EmberCluster;
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 /// Proves the #339 `produces` media types reach the wire: a deployed slice route declared with
 /// `produces = "text/csv"` returns the `text/csv` Content-Type, and a route declared with
@@ -52,15 +51,18 @@ class SliceMediaTypeTest {
     void setUp() {
         cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "smt");
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
-                                                                                    .isPresent());
+
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> cluster.currentLeader().isPresent());
+
         deployEchoSlice();
     }
 
     @AfterAll
     void tearDown() {
         if (cluster != null) {
-            LifecycleAwait.settled("cluster stop in tearDown()", cluster, cluster.stop());
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -83,7 +85,11 @@ class SliceMediaTypeTest {
     @Test
     void binaryRoute_returnsVerbatimBytesUnderOctetStream() {
         var port = appPort();
-        var expected = new byte[]{(byte) BINARY_SEED, (byte)(BINARY_SEED + 1), (byte)(BINARY_SEED + 2), (byte)(BINARY_SEED + 3)};
+        var expected = new byte[]{(byte) BINARY_SEED,
+                                  (byte) (BINARY_SEED + 1),
+                                  (byte) (BINARY_SEED + 2),
+                                  (byte) (BINARY_SEED + 3)};
+
         var response = http.sendBytes(getRequest(port, "/binary/" + BINARY_SEED))
                            .await()
                            .onFailure(cause -> {
@@ -100,30 +106,28 @@ class SliceMediaTypeTest {
 
     private void deployEchoSlice() {
         var deployResponse = deploy(TEST_ARTIFACT);
+        assertThat(deployResponse)
+            .describedAs("Deployment response")
+            .doesNotContain("\"error\"")
+            .contains("\"status\":\"applied\"");
 
-        assertThat(deployResponse).describedAs("Deployment response")
-                  .doesNotContain("\"error\"")
-                  .contains("\"status\":\"applied\"");
         await().atMost(WAIT_TIMEOUT)
-             .pollInterval(POLL_INTERVAL)
-             .failFast(() -> {
-                           if (sliceHasFailed()) {
-                           throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
-                       }
-                       })
-             .until(this::routesReady);
+               .pollInterval(POLL_INTERVAL)
+               .failFast(() -> {
+                   if (sliceHasFailed()) {
+                       throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
+                   }
+               })
+               .until(this::routesReady);
     }
 
     private boolean routesReady() {
-        return getSlices().contains("echo-slice") && !cluster.getAvailableAppHttpPorts()
-                                                             .isEmpty();
+        return getSlices().contains("echo-slice") && !cluster.getAvailableAppHttpPorts().isEmpty();
     }
 
     private int appPort() {
         var ports = cluster.getAvailableAppHttpPorts();
-
         assertThat(ports).describedAs("available app HTTP ports").isNotEmpty();
-
         return ports.getFirst();
     }
 
@@ -144,24 +148,20 @@ class SliceMediaTypeTest {
             instances = 1
             """.formatted(BLUEPRINT_ID, artifact);
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
-
         return postBlueprintWithRetry(leaderPort, blueprint);
     }
 
     private String postBlueprintWithRetry(int port, String body) {
         String lastResponse = null;
-
         for (int attempt = 1; attempt <= 3; attempt++) {
             lastResponse = httpRequestBlueprint(port, body);
             if (!lastResponse.contains("\"error\"")) {
                 return lastResponse;
             }
-
             if (attempt < 3) {
                 sleepQuietly();
             }
         }
-
         return lastResponse;
     }
 
@@ -180,7 +180,6 @@ class SliceMediaTypeTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
-
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -190,9 +189,7 @@ class SliceMediaTypeTest {
     private boolean sliceHasFailed() {
         return cluster.slicesStatus()
                       .stream()
-                      .anyMatch(s -> s.artifact()
-                                      .equals(TEST_ARTIFACT) && s.state()
-                                                                 .equals("FAILED"));
+                      .anyMatch(s -> s.artifact().equals(TEST_ARTIFACT) && s.state().equals("FAILED"));
     }
 
     private String getSlices() {
@@ -207,9 +204,6 @@ class SliceMediaTypeTest {
     }
 
     private int anyMgmtPort() {
-        return cluster.status()
-                      .nodes()
-                      .getFirst()
-                      .mgmtPort();
+        return cluster.status().nodes().getFirst().mgmtPort();
     }
 }

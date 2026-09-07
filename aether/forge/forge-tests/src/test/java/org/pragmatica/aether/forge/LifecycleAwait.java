@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge;
 
-import java.util.stream.Collectors;
-
 import org.pragmatica.aether.ember.EmberCluster;
-import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /// #915 — every lifecycle await in this module is bounded, and every expiry NAMES its step.
 ///
@@ -33,14 +33,31 @@ import org.pragmatica.lang.io.TimeSpan;
 /// silent one. So every expiry here carries the step's own name, the bound it exceeded, and a
 /// snapshot of what the cluster was doing when it gave up.
 ///
-/// ## What the snapshot deliberately omits
+/// ## Two failure policies, because the base had two
 ///
-/// [EmberCluster.NodeStatus#state] is not rendered. On this branch `toNodeStatus` passes the string
-/// literal `"healthy"` for every node, so the field is a constant wearing the costume of an
-/// observation — a broken node and a formed one report it identically. Printing it into a failure
-/// dump would point the next reader away from the fault. `ready` below is read from the node itself
-/// ([AetherNode#isReady], the consensus-active sample), which is a real observation. #913 fixes the
-/// literal at its source in `EmberCluster`; this class does not wait on that and does not touch it.
+/// [#settled] throws; [#bestEffort] logs. Which one a call site gets is decided by what the site did
+/// BEFORE this ticket, not by preference: a site that already threw on failure keeps throwing, and a
+/// site whose `await()` read no `Result` at all keeps not failing the test. Promoting ~40 discarded
+/// teardown results to test failures is a real improvement and a SEPARATE change — it is a new
+/// failure mode in 30+ classes this branch only compiles, and a cleanup hiccup that reddens an
+/// otherwise passing test is the same flakiness this ticket exists to remove. The bound is the fix
+/// for #915; the error policy is not this ticket's to change.
+///
+/// ## The snapshot
+///
+/// Rendering is [ClusterSnapshot]'s, not this class's. #913 landed that renderer for the same need on
+/// the same package, and it already handles the case that matters most here: since #913,
+/// `EmberCluster.start` settles on the FIRST node failure and its abort clears `nodes`/`nodeInfos`
+/// before the caller sees the failure, so a start-failure dump read off `status()` alone is empty on
+/// exactly the failure it exists for. [EmberCluster#lastStartFailure] retains it, and
+/// [ClusterSnapshot] reads it. A second renderer here would diverge from that one on the common path.
+///
+/// Note for readers of the first revision of this file: it omitted [EmberCluster.NodeStatus#state] on
+/// the grounds that `toNodeStatus` passed the string literal `"healthy"` for every node. #913 removed
+/// that literal — the field is now [EmberCluster#observedState], read from [AetherNode#isReady] — so
+/// the omission is obsolete and the field is rendered. The `ready` field this class used to derive
+/// itself was the SAME sample read a second time, and the weaker of the two: it re-read the live
+/// registry, which a start-failure abort has already cleared.
 ///
 /// ## Bounds
 ///
@@ -63,6 +80,12 @@ import org.pragmatica.lang.io.TimeSpan;
 /// — the failure mode of guessing too LOW here is a red run on a healthy cluster, which is the exact
 /// flakiness this ticket exists to remove.
 final class LifecycleAwait {
+    private static final Logger log = LoggerFactory.getLogger(LifecycleAwait.class);
+
+    /// The named absence for a field that was never assigned — a `@BeforeAll` that threw before the
+    /// constructor ran leaves `cluster` null, and `null` printed into a dump reads as a value.
+    static final String NO_CLUSTER = "  no cluster: the field was never assigned";
+
     /// Cluster-wide start and stop.
     static final TimeSpan LIFECYCLE_BOUND = TimeSpan.timeSpan(240).seconds();
     /// Single-node join, kill and blackhole.
@@ -79,10 +102,7 @@ final class LifecycleAwait {
     static <T> T settled(String step, EmberCluster cluster, TimeSpan bound, Promise<T> promise) {
         return promise.await(bound)
                       .fold(cause -> {
-                                throw new AssertionError(step
-                                                        + " did not settle within " + bound
-                                                        + ": " + cause.message()
-                                                        + "\nCluster state when the wait ended:\n" + snapshot(cluster));
+                                throw new AssertionError(report(step, bound, cause.message(), cluster));
                             },
                             value -> value);
     }
@@ -97,39 +117,49 @@ final class LifecycleAwait {
         return settled(step, cluster, NODE_BOUND, promise);
     }
 
-    /// Every value here is read at call time; nothing is defaulted. A cluster with no registered node
-    /// says so in words rather than rendering an empty block, because an empty dump and an absent dump
-    /// read identically in a CI log.
-    static String snapshot(EmberCluster cluster) {
-        if (cluster == null) {
-            return "  no cluster: the field was never assigned";
-        }
-
-        var status = cluster.status();
-
-        if (status.nodes().isEmpty()) {
-            return "  no node is registered with this cluster (nodeCount=" + cluster.nodeCount() + ")";
-        }
-
-        return "  leader=" + status.leaderId()
-             + " nodeCount=" + cluster.nodeCount()
-             + "\n" + status.nodes()
-                            .stream()
-                            .map(node -> nodeLine(cluster, node))
-                            .collect(Collectors.joining("\n"));
+    /// Bounded exactly as [#settled] is, but an expiry or failure is LOGGED rather than thrown.
+    ///
+    /// This is what a call site gets when its `await()` read no `Result` before this ticket. The
+    /// stall is closed either way — the wait now ends at the bound instead of parking to the
+    /// backstop — while the test's own verdict stays the test's. Reporting is strictly more than the
+    /// bare `await()` did, which was nothing at all.
+    static void bestEffort(String step, EmberCluster cluster, TimeSpan bound, Promise<?> promise) {
+        promise.await(bound)
+               .onFailure(cause -> log.error("#915 lifecycle step did not settle (not failing the test — "
+                                             + "this step's result was discarded before #915):\n{}",
+                                             report(step, bound, cause.message(), cluster)));
     }
 
-    /// `ready` is [AetherNode#isReady] read from the node, or the named absence `unregistered` when
-    /// the id in the status answer no longer resolves to a node — which is itself a finding, not a
-    /// blank to fill with `false`.
-    private static String nodeLine(EmberCluster cluster, EmberCluster.NodeStatus node) {
-        return "  " + node.id()
-             + " port=" + node.port()
-             + " mgmt=" + node.mgmtPort()
-             + " leader=" + node.isLeader()
-             + " ready=" + cluster.getNode(node.id())
-                                  .map(AetherNode::isReady)
-                                  .map(String::valueOf)
-                                  .or("unregistered");
+    /// The cluster-wide bound, for a `stop` whose result was previously discarded.
+    static void bestEffort(String step, EmberCluster cluster, Promise<?> promise) {
+        bestEffort(step, cluster, LIFECYCLE_BOUND, promise);
+    }
+
+    /// The single-node bound, for a `killNode` or `blackhole` whose result was previously discarded.
+    static void nodeBestEffort(String step, EmberCluster cluster, Promise<?> promise) {
+        bestEffort(step, cluster, NODE_BOUND, promise);
+    }
+
+    static String report(String step, TimeSpan bound, String cause, EmberCluster cluster) {
+        return step + " did not settle within " + bound
+               + ": " + cause
+               + "\nCluster state when the wait ended:\n" + snapshot(cluster);
+    }
+
+    /// Delegates to [ClusterSnapshot], which is the module's one renderer. The only thing decided
+    /// here is the case that renderer cannot be asked about: a cluster reference that is null.
+    static String snapshot(EmberCluster cluster) {
+        if (cluster == null) {
+            return NO_CLUSTER;
+        }
+
+        return snapshot(cluster.status(), cluster.lastStartFailure());
+    }
+
+    /// Split from the accessor above for the reason #913 split [ClusterSnapshot#render]: the branches
+    /// that matter — a populated registry, and a registry a failed start has already cleared — are
+    /// drivable from a test only if the inputs can be supplied directly.
+    static String snapshot(EmberCluster.ClusterStatus live, Option<EmberCluster.StartFailure> startFailure) {
+        return ClusterSnapshot.render(live, startFailure);
     }
 }

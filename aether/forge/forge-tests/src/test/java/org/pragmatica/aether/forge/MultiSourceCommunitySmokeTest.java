@@ -31,7 +31,6 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
-
 /// The REQUIRED #367 pre-flight smoke (CTO ruling 2026-08-29, the pole-gate redefinition):
 /// multi-source worker topology is the SHIPPED mechanism the GA ladder's 3×3 topology rides —
 /// communities are minted one-per-source (`ClusterDeploymentState`, `source + "-w-0"`), so three
@@ -82,15 +81,18 @@ import static org.awaitility.Awaitility.await;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class MultiSourceCommunitySmokeTest {
     private static final Logger log = LoggerFactory.getLogger(MultiSourceCommunitySmokeTest.class);
+
     private static final int INITIAL_CORES = 5;
     private static final String SOURCE_A = "src-a";
     private static final String SOURCE_B = "src-b";
     private static final String COMMUNITY_A = SOURCE_A + "-w-0";
     private static final String COMMUNITY_B = SOURCE_B + "-w-0";
     private static final String DEFAULT_COMMUNITY = "default-w-0";
+
     private static final int BASE_PORT = 22650;
     private static final int BASE_MGMT_PORT = 22750;
     private static final int BASE_APP_HTTP_PORT = 22850;
+
     private static final Duration FORM_TIMEOUT = Duration.ofSeconds(90);
     private static final Duration SETTLE_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration MINT_TIMEOUT = Duration.ofSeconds(120);
@@ -110,14 +112,13 @@ class MultiSourceCommunitySmokeTest {
         LifecycleAwait.settled(INITIAL_CORES + "-core cluster start (ports " + BASE_PORT + "+)",
                                cluster,
                                cluster.start());
+
         awaitFormation("leader elected among " + INITIAL_CORES + " cores",
-                       () -> cluster.currentLeader()
-                                    .isPresent());
+                       () -> cluster.currentLeader().isPresent());
         // The leader's BootstrapModule auto-seeds committed ClusterConfig.coreCount = 5; until it
         // lands, joiners would be promoted to core instead of assigned WORKER.
         awaitFormation("committed ClusterConfig.coreCount == " + INITIAL_CORES + " (BootstrapModule auto-seed)",
-                       () -> committedCoreCount().filter(count -> count == INITIAL_CORES)
-                                               .isPresent());
+                       () -> committedCoreCount().filter(count -> count == INITIAL_CORES).isPresent());
         log.info("MSRC-SMOKE: {}-core cluster formed, committed cap={}", INITIAL_CORES, committedCoreCount().or(-1));
     }
 
@@ -126,7 +127,7 @@ class MultiSourceCommunitySmokeTest {
         // #915: bounded and checked. The bare await() here could neither expire nor report:
         // a stop that never settled hung @AfterAll to the backstop, and a stop that FAILED was
         // discarded because nothing read the Result.
-        Option.option(cluster).onPresent(c -> LifecycleAwait.settled("cluster stop", c, c.stop()));
+        Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop", c, c.stop()));
     }
 
     @Test
@@ -135,49 +136,50 @@ class MultiSourceCommunitySmokeTest {
         addWorkerAndSettle(2, SOURCE_A);
         addWorkerAndSettle(3, SOURCE_B);
         addWorkerAndSettle(4, SOURCE_B);
+
         awaitBounded("communities " + COMMUNITY_A + " and " + COMMUNITY_B + " both minted",
                      MINT_TIMEOUT,
                      () -> communityValue(COMMUNITY_A).isPresent() && communityValue(COMMUNITY_B).isPresent());
-        assertThat(communityValue(COMMUNITY_A).map(CommunityValue::sourceName).or("")).as("community %s must record its minting source",
-                                                                                          COMMUNITY_A)
-                  .isEqualTo(SOURCE_A);
-        assertThat(communityValue(COMMUNITY_B).map(CommunityValue::sourceName).or("")).as("community %s must record its minting source",
-                                                                                          COMMUNITY_B)
-                  .isEqualTo(SOURCE_B);
+
+        assertThat(communityValue(COMMUNITY_A).map(CommunityValue::sourceName).or(""))
+            .as("community %s must record its minting source", COMMUNITY_A)
+            .isEqualTo(SOURCE_A);
+        assertThat(communityValue(COMMUNITY_B).map(CommunityValue::sourceName).or(""))
+            .as("community %s must record its minting source", COMMUNITY_B)
+            .isEqualTo(SOURCE_B);
         // The label round-trip proof: unlabeled joins mint default-w-0 (CommunityFormationProbeTest
         // demonstrates exactly that), so an existing default community here would mean the source
         // label was dropped somewhere and the two named communities above were minted by luck.
-        assertThat(communityValue(DEFAULT_COMMUNITY).isPresent()).as("no worker may fall back to the default source — the label must round-trip")
-                  .isFalse();
-        assertThat(countedCores()).as("the core count must stay at the cap — no worker was promoted to core")
-                  .isEqualTo(INITIAL_CORES);
+        assertThat(communityValue(DEFAULT_COMMUNITY).isPresent())
+            .as("no worker may fall back to the default source — the label must round-trip")
+            .isFalse();
+        assertThat(countedCores())
+            .as("the core count must stay at the cap — no worker was promoted to core")
+            .isEqualTo(INITIAL_CORES);
     }
 
     // ----- worker join, mirroring CommunityFormationProbeTest's sequential settle -----
+
     private void addWorkerAndSettle(int index, String source) {
         var expectedNodeCount = INITIAL_CORES + index;
+
         // #915: the third untimed lifecycle await in this class, and not named in the ticket —
         // found by the module-wide sweep. A worker join that never settles wedges the @Test body
         // exactly as a start wedges @BeforeAll.
         var nodeId = LifecycleAwait.nodeSettled("worker " + index + "/4 (source " + source + ") join",
                                                 cluster,
-                                                cluster.addNode(Map.of(NodeInfo.LABEL_ROLE,
-                                                                       "worker",
-                                                                       NodeInfo.LABEL_SOURCE,
-                                                                       source)));
+                                                cluster.addNode(Map.of(NodeInfo.LABEL_ROLE, "worker",
+                                                                       NodeInfo.LABEL_SOURCE, source)));
 
         log.info("MSRC-SMOKE: worker {}/4 (source={}) joined as {}", index, source, nodeId.id());
-        awaitSettle("worker " + index
-                   + "/4 settled: leader present, countedCores==" + INITIAL_CORES
-                   + ", nodeCount==" + expectedNodeCount,
-                    () -> cluster.currentLeader()
-                                 .isPresent()
+
+        awaitSettle("worker " + index + "/4 settled: leader present, countedCores==" + INITIAL_CORES
+                    + ", nodeCount==" + expectedNodeCount,
+                    () -> cluster.currentLeader().isPresent()
                           && countedCores() == INITIAL_CORES
                           && cluster.nodeCount() == expectedNodeCount);
         log.info("MSRC-SMOKE: after worker {}/4 countedCores={} nodeCount={}",
-                 index,
-                 countedCores(),
-                 cluster.nodeCount());
+                 index, countedCores(), cluster.nodeCount());
     }
 
     // ----- named waits (#915) -----
@@ -186,6 +188,7 @@ class MultiSourceCommunitySmokeTest {
     // MultiSourceCommunitySmokeTest was not fulfilled within N seconds" — it names the CLASS and
     // nothing else, so a stalled formation and a stalled mint are indistinguishable in a CI log.
     // These three wrappers give every wait an alias and attach the cluster state at expiry.
+
     private void awaitFormation(String what, Callable<Boolean> condition) {
         awaitBounded(what, FORM_TIMEOUT, condition);
     }
@@ -199,32 +202,28 @@ class MultiSourceCommunitySmokeTest {
             await().alias(what).atMost(bound).pollInterval(POLL).until(condition);
         } catch (ConditionTimeoutException timeout) {
             throw new AssertionError(timeout.getMessage()
-                                    + "\nCluster state when the wait ended:\n" + LifecycleAwait.snapshot(cluster),
+                                     + "\nCluster state when the wait ended:\n" + LifecycleAwait.snapshot(cluster),
                                      timeout);
         }
     }
 
     // ----- committed-state reads off the leader KV store (the probe's accessors) -----
+
     private Option<Integer> committedCoreCount() {
-        return leaderOrAnyNode().flatMap(node -> node.kvStore()
-                                                     .get(ClusterConfigKey.CURRENT))
-                              .filter(ClusterConfigValue.class::isInstance)
-                              .map(ClusterConfigValue.class::cast)
-                              .map(ClusterConfigValue::coreCount);
+        return leaderOrAnyNode().flatMap(node -> node.kvStore().get(ClusterConfigKey.CURRENT))
+                                .filter(ClusterConfigValue.class::isInstance)
+                                .map(ClusterConfigValue.class::cast)
+                                .map(ClusterConfigValue::coreCount);
     }
 
     private Option<CommunityValue> communityValue(String communityId) {
-        return leaderOrAnyNode().flatMap(node -> node.kvStore()
-                                                     .get(CommunityKey.communityKey(communityId)))
-                              .filter(CommunityValue.class::isInstance)
-                              .map(CommunityValue.class::cast);
+        return leaderOrAnyNode().flatMap(node -> node.kvStore().get(CommunityKey.communityKey(communityId)))
+                                .filter(CommunityValue.class::isInstance)
+                                .map(CommunityValue.class::cast);
     }
 
     private int countedCores() {
-        return leaderOrAnyNode().map(node -> node.membershipFsm()
-                                                 .coreCountedMembers()
-                                                 .size())
-                              .or(0);
+        return leaderOrAnyNode().map(node -> node.membershipFsm().coreCountedMembers().size()).or(0);
     }
 
     private Option<AetherNode> leaderOrAnyNode() {

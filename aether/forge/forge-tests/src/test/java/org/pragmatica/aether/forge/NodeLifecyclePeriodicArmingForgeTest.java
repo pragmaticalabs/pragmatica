@@ -5,7 +5,6 @@
 package org.pragmatica.aether.forge;
 
 import java.time.Duration;
-import java.util.Set;
 
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
@@ -21,11 +20,12 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
+import java.util.Set;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.awaitility.Awaitility.await;
-
 
 /// The #644 WIRING pin — the one assertion no unit test can make: that `AetherNode.start()` actually
 /// arms the deferred periodic tasks, and that a CREATED-but-never-started node holds none.
@@ -63,18 +63,21 @@ class NodeLifecyclePeriodicArmingForgeTest {
     @BeforeAll
     void setUp() {
         cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, NODE_PREFIX);
+
         // 2 of 3 started is a Rabia quorum, so the cluster genuinely forms around the held-back node.
         LifecycleAwait.settled("cluster start in setUp()",
                                cluster,
                                cluster.start(Set.of(HELD_BACK_ID)));
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
-                                                                                    .isPresent());
+
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> cluster.currentLeader().isPresent());
     }
 
     @AfterAll
     void tearDown() {
         if (cluster != null) {
-            LifecycleAwait.settled("cluster stop in tearDown()", cluster, cluster.stop());
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -86,12 +89,14 @@ class NodeLifecyclePeriodicArmingForgeTest {
     void heldBackNode_holdsDeferredWork_andArmsNothingWhileUnstarted() {
         var held = periodicTasksOf(heldBackInstance());
 
-        assertThat(held.deferredCount()).as("assembly must have deferred the periodic-task family").isPositive();
+        assertThat(held.deferredCount()).as("assembly must have deferred the periodic-task family")
+                                        .isPositive();
         deferredWhileHeld = held.deferredCount();
+
         await().during(HOLD_OBSERVATION)
-             .atMost(HOLD_OBSERVATION.plusSeconds(2))
-             .pollInterval(POLL_INTERVAL)
-             .until(() -> held.armedCount() == 0);
+               .atMost(HOLD_OBSERVATION.plusSeconds(2))
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> held.armedCount() == 0);
     }
 
     /// The wiring pin for every STARTED node: start() armed the full deferred set. This is the
@@ -102,13 +107,13 @@ class NodeLifecyclePeriodicArmingForgeTest {
         assertThat(cluster.allNodes()).isNotEmpty();
         cluster.allNodes()
                .forEach(node -> {
-                            var tasks = periodicTasksOf(node);
+                   var tasks = periodicTasksOf(node);
 
-                            assertThat(tasks.armedCount()).as("a started node must have armed its periodic work")
-                                      .isPositive();
-                            assertThat(tasks.deferredCount()).as("start() must arm the WHOLE deferred set, leaving nothing behind")
-                                      .isZero();
-                        });
+                   assertThat(tasks.armedCount()).as("a started node must have armed its periodic work")
+                                                 .isPositive();
+                   assertThat(tasks.deferredCount()).as("start() must arm the WHOLE deferred set, leaving nothing behind")
+                                                    .isZero();
+               });
     }
 
     /// Releasing the hold arms exactly the set that was deferred while held — late start is ordinary
@@ -121,6 +126,7 @@ class NodeLifecyclePeriodicArmingForgeTest {
         LifecycleAwait.settled("held-back node start in startingTheHeldBackNode_armsExactlyTheDeferredSet()",
                                cluster,
                                cluster.startHeldBackNodes());
+
         assertThat(held.armedCount()).isEqualTo(deferredWhileHeld);
         assertThat(held.deferredCount()).isZero();
     }
@@ -130,16 +136,21 @@ class NodeLifecyclePeriodicArmingForgeTest {
     @Test
     @Order(4)
     void stop_disarmsEveryNode() {
-        var observed = cluster.allNodes().stream().map(NodeLifecyclePeriodicArmingForgeTest::periodicTasksOf).toList();
+        var observed = cluster.allNodes()
+                              .stream()
+                              .map(NodeLifecyclePeriodicArmingForgeTest::periodicTasksOf)
+                              .toList();
 
-        LifecycleAwait.settled("cluster stop in stop_disarmsEveryNode()", cluster, cluster.stop());
+        LifecycleAwait.bestEffort("cluster stop in stop_disarmsEveryNode()", cluster, cluster.stop());
         cluster = null;
+
         assertThat(observed).isNotEmpty();
         observed.forEach(tasks -> assertThat(tasks.armedCount()).as("stop() must cancel every armed periodic task")
-                                            .isZero());
+                                                                .isZero());
     }
 
     // ---- helpers -------------------------------------------------------------------------------
+
     private AetherNode heldBackInstance() {
         return cluster.heldBackNode(HELD_BACK_ID)
                       .fold(() -> fail("held-back node " + HELD_BACK_ID + " not found — was it already started?"),

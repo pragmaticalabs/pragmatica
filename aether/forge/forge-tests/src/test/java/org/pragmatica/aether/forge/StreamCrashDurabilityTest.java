@@ -2,7 +2,21 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.forge;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.lang.Option;
 
 import java.io.IOException;
 import java.net.URI;
@@ -16,26 +30,12 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.config.ConfigurationProvider;
-import org.pragmatica.lang.Option;
-import org.pragmatica.aether.ember.EmberCluster;
-
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.io.TempDir;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
-
-import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
-import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
+import org.pragmatica.aether.ember.EmberCluster;
 
 /// Streaming-persistence A6 — full-cluster restart crash-durability proof for the per-partition WAL.
 ///
@@ -97,22 +97,26 @@ class StreamCrashDurabilityTest {
     private static final int NODES = 5;
     private static final int INSTANCES = 5;
     private static final int EVENT_COUNT = 50;
+
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final Duration DRAIN_TIMEOUT = Duration.ofSeconds(90);
     private static final Duration RECOVERY_TIMEOUT = Duration.ofSeconds(240);
     private static final long POLL_GAP_NANOS = Duration.ofMillis(20).toNanos();
+
     private static final String STREAM_SLICE = TestArtifacts.STREAM_SLICE;
     private static final String STREAM_NAME = "test-events";
     private static final int PARTITION = 0;
     private static final String BLUEPRINT_ID = "forge.test:stream-crash-durability:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
+
     private static final Pattern EVENT_OBJECT = Pattern.compile("\\{[^{}]*\"offset\"[^{}]*}");
     private static final Pattern OFFSET_FIELD = Pattern.compile("\"offset\"\\s*:\\s*(\\d+)");
     private static final Pattern PAYLOAD_FIELD = Pattern.compile("\"payload\"\\s*:\\s*\"([^\"]*)\"");
     private static final Pattern NODE_COUNT_FIELD = Pattern.compile("\"nodeCount\"\\s*:\\s*(\\d+)");
 
     Path baseDir;
+
     private EmberCluster cluster;
     private final HttpOperations http = jdkHttpOperations();
 
@@ -122,6 +126,7 @@ class StreamCrashDurabilityTest {
     @BeforeAll
     void setUp(@TempDir Path tempDir) {
         this.baseDir = tempDir;
+
         // A ConfigurationProvider must be present for the node to enable resource provisioning
         // (StreamPublisher / StreamAccess); without it AetherNode installs a no-op facade that fails
         // every resource-backed slice (mirrors StreamFanoutConsumerTest / ForgeServer).
@@ -129,10 +134,10 @@ class StreamCrashDurabilityTest {
                                                   .withSystemProperties("aether.")
                                                   .withEnvironment("AETHER_")
                                                   .build();
-
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "scd", Option.some(configProvider));
         // Opt in to a writable, restart-stable per-node data dir -> disk tier + per-partition WAL ON.
         cluster.withDataBaseDir(baseDir);
+
         startAndAwaitReady();
     }
 
@@ -140,9 +145,8 @@ class StreamCrashDurabilityTest {
     void tearDown() {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
-
             httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
-            LifecycleAwait.settled("cluster stop in tearDown()", cluster, cluster.stop());
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -153,15 +157,20 @@ class StreamCrashDurabilityTest {
         var port = appPort();
         var base = head(port);
 
-        assertThat(base).describedAs("fresh dedicated cluster: 'test-events' starts empty (offset 0)").isZero();
-        publishBatch(port, "crash", EVENT_COUNT);
-        var published = drain(port, base, EVENT_COUNT, deadlineNanos());
+        assertThat(base)
+            .describedAs("fresh dedicated cluster: 'test-events' starts empty (offset 0)")
+            .isZero();
 
+        publishBatch(port, "crash", EVENT_COUNT);
+
+        var published = drain(port, base, EVENT_COUNT, deadlineNanos());
         assertContiguousBatch(published, base, "crash");
+
         // Guard against a false-green where the dir was writable but the WAL silently stayed OFF (or
         // events were never appended): a NON-EMPTY 'test-events' WAL must exist on disk, proving the
         // owner appended + fsync'd the acked events before ack. WAL OFF would leave none.
         assertWalActiveForTestEvents();
+
         // Full-cluster graceful restart preserving per-node data dirs (same stable node ids -> same
         // dirs). The in-memory ring is lost; only the WAL can bring the 50 events back. Recovery is
         // reconcile-driven: after restart the deterministic HRW owner re-materializes its partition,
@@ -169,53 +178,70 @@ class StreamCrashDurabilityTest {
         // self-promotes to CAUGHT_UP after a bounded wait, then serves owner-routed reads. So the read
         // is drained with a generous deadline until all N reappear (returns as soon as they do).
         restartCluster();
+
         var recoveredPort = appPort();
         var recovered = drain(recoveredPort, 0L, EVENT_COUNT, recoveryDeadlineNanos());
 
         dumpIfShort(recovered, EVENT_COUNT);
-        assertThat(recovered).describedAs("WAL replay must recover ALL %d acked events after full-cluster restart "
-                                         + "(ring was in-memory and lost; nothing was sealed)",
-                                          EVENT_COUNT)
-                  .hasSize(EVENT_COUNT);
+        assertThat(recovered)
+            .describedAs("WAL replay must recover ALL %d acked events after full-cluster restart "
+                         + "(ring was in-memory and lost; nothing was sealed)", EVENT_COUNT)
+            .hasSize(EVENT_COUNT);
         assertContiguousBatch(recovered, 0L, "crash");
     }
 
     // --- restart ------------------------------------------------------------
+
     private void restartCluster() {
         LifecycleAwait.settled("cluster stop in restartCluster()", cluster, cluster.stop());
+
         startAndAwaitReady();
     }
 
     private void startAndAwaitReady() {
         LifecycleAwait.settled("cluster start in startAndAwaitReady()", cluster, cluster.start());
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
-                                                                                    .isPresent());
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesHealthy);
+
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> cluster.currentLeader().isPresent());
+
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(this::allNodesHealthy);
+
         // A6: gate on FULL membership. allNodesHealthy() only checks each node's LOCAL quorum flag, which
         // turns true at quorum (3/5). After a full-cluster restart the cold-boot convergence window must
         // let ALL NODES nodes re-form before we publish (pre-restart) or read (post-restart): with RF=1
         // the deterministic HRW owner of test-events[0] must be a rejoined node holding the WAL, not an
         // empty-WAL survivor picked because a straggler was prematurely evicted.
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> allNodesAreMembers(NODES));
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> allNodesAreMembers(NODES));
+
         // Re-deploy: Forge KV is in-memory, so a full-cluster restart wiped the stream config. This
         // re-puts the deterministic `test-events` config -> owner re-materializes partition 0 ->
         // partition build opens-or-recovers the WAL and replays the un-sealed tail. Idempotent if KV
         // survived. Carries NO events (only the stream config); events come from the WAL.
         deployStreamSlice();
+
         await().atMost(WAIT_TIMEOUT)
-             .pollInterval(POLL_INTERVAL)
-             .failFast(this::failIfSliceFailed)
-             .until(this::appHttpReady);
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .until(this::appHttpReady);
     }
 
     // --- WAL on-disk assertion ---------------------------------------------
-    private void assertWalActiveForTestEvents() throws IOException {
-        var testEventsWals = walFiles(baseDir).stream().filter(StreamCrashDurabilityTest::isTestEventsWal).toList();
 
-        assertThat(testEventsWals).describedAs("stream WAL must be ACTIVE: a 'test-events' WAL file must exist under %s "
-                                              + "(WAL OFF -> none; acked events would not survive restart)",
-                                               baseDir)
-                  .isNotEmpty();
+    private void assertWalActiveForTestEvents() throws IOException {
+        var testEventsWals = walFiles(baseDir).stream()
+                                              .filter(StreamCrashDurabilityTest::isTestEventsWal)
+                                              .toList();
+
+        assertThat(testEventsWals)
+            .describedAs("stream WAL must be ACTIVE: a 'test-events' WAL file must exist under %s "
+                         + "(WAL OFF -> none; acked events would not survive restart)", baseDir)
+            .isNotEmpty();
+
         // Stronger than mere existence (every node opens an empty WAL on materialization): the owner
         // must have actually APPENDED + fsync'd the acked events, so the total on-disk WAL bytes for
         // 'test-events' must be positive.
@@ -225,46 +251,45 @@ class StreamCrashDurabilityTest {
             totalBytes += Files.size(wal);
         }
 
-        assertThat(totalBytes).describedAs("the owner's 'test-events' WAL must hold the acked events (non-empty) — proof they "
-                                          + "were appended + fsync'd before ack, not just that the WAL dir was writable")
-                  .isPositive();
+        assertThat(totalBytes)
+            .describedAs("the owner's 'test-events' WAL must hold the acked events (non-empty) — proof they "
+                         + "were appended + fsync'd before ack, not just that the WAL dir was writable")
+            .isPositive();
     }
 
     private static boolean isTestEventsWal(Path walFile) {
         var parent = walFile.getParent();
 
-        return parent != null && parent.getFileName()
-                                       .toString()
-                                       .equals("test-events");
+        return parent != null && parent.getFileName().toString().equals("test-events");
     }
 
     private static List<Path> walFiles(Path base) throws IOException {
         try (var paths = Files.walk(base)) {
             return paths.filter(Files::isRegularFile)
-                        .filter(p -> p.getFileName()
-                                      .toString()
-                                      .endsWith(".wal"))
+                        .filter(p -> p.getFileName().toString().endsWith(".wal"))
                         .toList();
         }
     }
 
     // --- assertions ---------------------------------------------------------
+
     private void assertContiguousBatch(List<Event> events, long base, String tag) {
-        assertThat(events).describedAs("consumer must receive exactly %d events (no dups, no gaps)",
-                                       EVENT_COUNT)
-                  .hasSize(EVENT_COUNT);
+        assertThat(events)
+            .describedAs("consumer must receive exactly %d events (no dups, no gaps)", EVENT_COUNT)
+            .hasSize(EVENT_COUNT);
+
         for (int i = 0; i < EVENT_COUNT; i++) {
-            assertThat(events.get(i).offset()).describedAs("event %d offset (contiguous from base %d)",
-                                                           i,
-                                                           base)
-                      .isEqualTo(base + i);
-            assertThat(events.get(i).payload()).describedAs("event %d payload (in publish order)",
-                                                            i)
-                      .isEqualTo(tag + "-" + i);
+            assertThat(events.get(i).offset())
+                .describedAs("event %d offset (contiguous from base %d)", i, base)
+                .isEqualTo(base + i);
+            assertThat(events.get(i).payload())
+                .describedAs("event %d payload (in publish order)", i)
+                .isEqualTo(tag + "-" + i);
         }
     }
 
     // --- failure-path observability ----------------------------------------
+
     private void dumpIfShort(List<Event> recovered, int expected) {
         if (recovered.size() < expected) {
             dumpAllNodeStreamState();
@@ -286,6 +311,7 @@ class StreamCrashDurabilityTest {
     }
 
     // --- consumers ----------------------------------------------------------
+
     private List<Event> drain(int port, long base, int count, long deadlineNanos) {
         var collected = new ArrayList<Event>();
         var offset = base;
@@ -326,6 +352,7 @@ class StreamCrashDurabilityTest {
     }
 
     // --- publishing ---------------------------------------------------------
+
     private void publishBatch(int port, String tag, int count) {
         for (int i = 0; i < count; i++) {
             publish(port, tag + "-" + i);
@@ -336,10 +363,10 @@ class StreamCrashDurabilityTest {
         var body = "{\"payload\":\"" + payload + "\"}";
         var response = httpPost(port, "/api/stream/publish", body);
 
-        assertThat(response).describedAs("publish '%s' must succeed (and thus be WAL-fsync'd before ack)",
-                                         payload)
-                  .doesNotContain("\"error\"")
-                  .contains("published");
+        assertThat(response)
+            .describedAs("publish '%s' must succeed (and thus be WAL-fsync'd before ack)", payload)
+            .doesNotContain("\"error\"")
+            .contains("published");
     }
 
     private List<Event> readEvents(int port, long fromOffset, int maxEvents) {
@@ -358,8 +385,7 @@ class StreamCrashDurabilityTest {
             Matcher payload = PAYLOAD_FIELD.matcher(object);
 
             if (offset.find() && payload.find()) {
-                events.add(new Event(Long.parseLong(offset.group(1)),
-                                     payload.group(1)));
+                events.add(new Event(Long.parseLong(offset.group(1)), payload.group(1)));
             }
         }
 
@@ -367,6 +393,7 @@ class StreamCrashDurabilityTest {
     }
 
     // --- deployment + readiness --------------------------------------------
+
     private void deployStreamSlice() {
         var blueprint = """
             id = "%s"
@@ -378,9 +405,10 @@ class StreamCrashDurabilityTest {
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
         var response = postBlueprintWithRetry(leaderPort, blueprint);
 
-        assertThat(response).describedAs("stream-slice deployment")
-                  .doesNotContain("\"error\"")
-                  .contains("\"status\":\"applied\"");
+        assertThat(response)
+            .describedAs("stream-slice deployment")
+            .doesNotContain("\"error\"")
+            .contains("\"status\":\"applied\"");
     }
 
     private boolean appHttpReady() {
@@ -392,15 +420,13 @@ class StreamCrashDurabilityTest {
 
         var body = httpPost(ports.getFirst(), "/api/stream/read", "{\"fromOffset\":0,\"maxEvents\":1}");
 
-        return ! body.contains("\"error\"") && body.contains("events");
+        return !body.contains("\"error\"") && body.contains("events");
     }
 
     private void failIfSliceFailed() {
         var failed = cluster.slicesStatus()
                             .stream()
-                            .anyMatch(s -> s.artifact()
-                                            .equals(STREAM_SLICE) && s.state()
-                                                                      .equals("FAILED"));
+                            .anyMatch(s -> s.artifact().equals(STREAM_SLICE) && s.state().equals("FAILED"));
 
         if (failed) {
             throw new AssertionError("Stream slice deployment FAILED: " + STREAM_SLICE);
@@ -415,10 +441,7 @@ class StreamCrashDurabilityTest {
     }
 
     private int anyMgmtPort() {
-        return cluster.status()
-                      .nodes()
-                      .getFirst()
-                      .mgmtPort();
+        return cluster.status().nodes().getFirst().mgmtPort();
     }
 
     private long deadlineNanos() {
@@ -442,11 +465,9 @@ class StreamCrashDurabilityTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-
         return http.sendString(request)
                    .await()
-                   .map(r -> r.statusCode() == 200 && r.body()
-                                                       .contains("\"quorum\":true"))
+                   .map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true"))
                    .or(false);
     }
 
@@ -460,11 +481,9 @@ class StreamCrashDurabilityTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-
         return http.sendString(request)
                    .await()
-                   .map(r -> r.statusCode() == 200 && healthHasFullMembership(r.body(),
-                                                                              expected))
+                   .map(r -> r.statusCode() == 200 && healthHasFullMembership(r.body(), expected))
                    .or(false);
     }
 
@@ -479,11 +498,13 @@ class StreamCrashDurabilityTest {
     }
 
     // --- HTTP ---------------------------------------------------------------
+
     private String postBlueprintWithRetry(int port, String body) {
         var lastResponse = ERROR_FALLBACK;
 
         for (int attempt = 1; attempt <= 3; attempt++) {
             lastResponse = httpPostToml(port, "/api/v1/blueprints", body);
+
             if (!lastResponse.contains("\"error\"")) {
                 return lastResponse;
             }
@@ -503,7 +524,6 @@ class StreamCrashDurabilityTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
-
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -517,7 +537,6 @@ class StreamCrashDurabilityTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(15))
                                  .build();
-
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -530,7 +549,6 @@ class StreamCrashDurabilityTest {
                                  .DELETE()
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
-
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)

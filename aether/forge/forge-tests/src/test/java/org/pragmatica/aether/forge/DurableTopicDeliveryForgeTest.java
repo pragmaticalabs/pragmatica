@@ -2,26 +2,13 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.forge;
-
-import java.net.URI;
-import java.net.http.HttpRequest;
-import java.nio.file.Path;
-import java.time.Duration;
-import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-
-import org.pragmatica.aether.ember.EmberCluster;
-import org.pragmatica.config.ConfigurationProvider;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.ClassOrderer;
 import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.ClassOrderer;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Tag;
@@ -31,12 +18,24 @@ import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Option;
 
-import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
-import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 /// #386 — the COMPOSED durable pub/sub path, end to end on a real multi-node cluster.
 ///
@@ -95,9 +94,9 @@ import static org.awaitility.Awaitility.await;
 ///     does not prove survival of a partition owner's death.
 @Tag("Heavy")
 @Disabled("never observed fully green; enable on first green run — run 2 executed all five arms and"
-         + " proved the durable tier is dispatching (20 retries where ephemeral gives 1), but three"
-         + " arms failed on test-side baseline carryover and the group-isolation arm was vacuous."
-         + " Enabling it IS the acceptance criterion.")
+          + " proved the durable tier is dispatching (20 retries where ephemeral gives 1), but three"
+          + " arms failed on test-side baseline carryover and the group-isolation arm was vacuous."
+          + " Enabling it IS the acceptance criterion.")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestClassOrder(ClassOrderer.OrderAnnotation.class)
@@ -107,18 +106,23 @@ class DurableTopicDeliveryForgeTest {
     private static final int BASE_APP_HTTP_PORT = 19200;
     private static final int NODES = 5;
     private static final int INSTANCES = 5;
+
     private static final int ORDER_COUNT = 20;
     private static final int POISON_COUNT = 2;
+
     /// durable-pubsub-spec §7: bounded retries before the dead-letter hop. The fixture's failing
     /// handler records every invocation, so this is observed rather than assumed.
     private static final int EXPECTED_ATTEMPTS_PER_EVENT = 5;
+
     /// Declared alongside every other fixture coordinate in [TestArtifacts], where its rationale lives.
     private static final String DURABLE_TOPIC_SLICE = TestArtifacts.DURABLE_TOPIC_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:durable-topic:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
+
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration DELIVERY_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
+
     private static final Pattern COUNT_FIELD = Pattern.compile("\"count\"\\s*:\\s*(\\d+)");
     private static final Pattern FAILING_ATTEMPTS = Pattern.compile("\"failingAttempts\"\\s*:\\s*(\\d+)");
     private static final Pattern HEALTHY_COUNT = Pattern.compile("\"healthyCount\"\\s*:\\s*(\\d+)");
@@ -139,20 +143,29 @@ class DurableTopicDeliveryForgeTest {
         // backing streams are memory-only and "durable" would be measuring nothing.
         cluster.withDataBaseDir(baseDir);
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
-                                                                                    .isPresent());
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesHealthy);
-        deployDurableTopicSlice();
+
         await().atMost(WAIT_TIMEOUT)
-             .pollInterval(POLL_INTERVAL)
-             .failFast(this::failIfSliceFailed)
-             .until(this::appHttpReady);
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> cluster.currentLeader().isPresent());
+
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(this::allNodesHealthy);
+
+        deployDurableTopicSlice();
+
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .until(this::appHttpReady);
+
         // A publish can land before the backing stream's owner has materialized its ring, so gate on a
         // real publish resolving before any assertion runs.
         await().atMost(WAIT_TIMEOUT)
-             .pollInterval(POLL_INTERVAL)
-             .failFast(this::failIfSliceFailed)
-             .until(this::publishReady);
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .until(this::publishReady);
+
         // Durable subscriptions attach on the manager's ownership tick, independently of publish
         // readiness. A never-committed consumer group starts at offset 0 — EARLIEST, permanently, per
         // the #478 ruling (StreamResourceValidator rejects any other auto-offset-reset as inert) — so
@@ -166,9 +179,10 @@ class DurableTopicDeliveryForgeTest {
         // all four delivered including the three published before attach) and confirmed here against
         // the #478 ruling in the validator.
         await().atMost(WAIT_TIMEOUT)
-             .pollInterval(POLL_INTERVAL)
-             .failFast(this::failIfSliceFailed)
-             .until(this::poisonPublishReady);
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .until(this::poisonPublishReady);
+
         // DRAIN BOTH WARM-UPS BEFORE ANY ARM RUNS. The two gates above publish REAL events, and the
         // first run of this suite failed three arms because those events were still in flight when the
         // arms captured their baselines — the warm-up order landed inside arm 2's window (21 delivered
@@ -185,19 +199,22 @@ class DurableTopicDeliveryForgeTest {
         // invocations while order-events flowed): if it recurs, THIS gate fails naming it directly,
         // instead of scattering the symptom across three arms that each blame something else.
         await().atMost(WAIT_TIMEOUT)
-             .pollInterval(POLL_INTERVAL)
-             .failFast(this::failIfSliceFailed)
-             .untilAsserted(() -> assertThat(totalOrdersDelivered()).describedAs("the order-events warm-up must be delivered before any arm measures"
-                                                                                + " delivery")
-                                            .isGreaterThanOrEqualTo(1));
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .untilAsserted(() -> assertThat(totalOrdersDelivered())
+                       .describedAs("the order-events warm-up must be delivered before any arm measures"
+                                    + " delivery")
+                       .isGreaterThanOrEqualTo(1));
+
         await().atMost(WAIT_TIMEOUT)
-             .pollInterval(POLL_INTERVAL)
-             .failFast(this::failIfSliceFailed)
-             .untilAsserted(() -> assertThat(failingAttempts()).describedAs("the poison-events warm-up must exhaust its %d-attempt budget before"
-                                                                           + " any arm measures retries — if this times out, poison dispatch"
-                                                                           + " stalled, which is a RUNTIME signal and not a baseline problem",
-                                                                            EXPECTED_ATTEMPTS_PER_EVENT)
-                                            .isGreaterThanOrEqualTo(EXPECTED_ATTEMPTS_PER_EVENT));
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .untilAsserted(() -> assertThat(failingAttempts())
+                       .describedAs("the poison-events warm-up must exhaust its %d-attempt budget before"
+                                    + " any arm measures retries — if this times out, poison dispatch"
+                                    + " stalled, which is a RUNTIME signal and not a baseline problem",
+                                    EXPECTED_ATTEMPTS_PER_EVENT)
+                       .isGreaterThanOrEqualTo(EXPECTED_ATTEMPTS_PER_EVENT));
     }
 
     @AfterAll
@@ -206,7 +223,7 @@ class DurableTopicDeliveryForgeTest {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
 
             httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
-            LifecycleAwait.settled("cluster stop in tearDown()", cluster, cluster.stop());
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -235,14 +252,16 @@ class DurableTopicDeliveryForgeTest {
             var baseline = failingAttempts();
 
             publishPoison("tier-probe");
+
             await().atMost(DELIVERY_TIMEOUT)
-                 .pollInterval(POLL_INTERVAL)
-                 .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
-                 .untilAsserted(() -> assertThat(failingAttempts() - baseline).describedAs("the durable tier retries a failing handler %d times; ephemeral"
-                                                                                          + " delivery invokes it ONCE and never retries, so anything above"
-                                                                                          + " 1 proves the durable tier is dispatching",
-                                                                                           EXPECTED_ATTEMPTS_PER_EVENT)
-                                                .isEqualTo(EXPECTED_ATTEMPTS_PER_EVENT));
+                   .pollInterval(POLL_INTERVAL)
+                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
+                   .untilAsserted(() -> assertThat(failingAttempts() - baseline)
+                           .describedAs("the durable tier retries a failing handler %d times; ephemeral"
+                                        + " delivery invokes it ONCE and never retries, so anything above"
+                                        + " 1 proves the durable tier is dispatching",
+                                        EXPECTED_ATTEMPTS_PER_EVENT)
+                           .isEqualTo(EXPECTED_ATTEMPTS_PER_EVENT));
         }
     }
 
@@ -260,12 +279,12 @@ class DurableTopicDeliveryForgeTest {
             }
 
             await().atMost(DELIVERY_TIMEOUT)
-                 .pollInterval(POLL_INTERVAL)
-                 .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
-                 .untilAsserted(() -> assertThat(totalOrdersDelivered() - baseline).describedAs("each event delivered exactly once cluster-wide — a multiple of"
-                                                                                               + " %d would mean ungated per-node delivery",
-                                                                                                ORDER_COUNT)
-                                                .isEqualTo(ORDER_COUNT));
+                   .pollInterval(POLL_INTERVAL)
+                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
+                   .untilAsserted(() -> assertThat(totalOrdersDelivered() - baseline)
+                           .describedAs("each event delivered exactly once cluster-wide — a multiple of"
+                                        + " %d would mean ungated per-node delivery", ORDER_COUNT)
+                           .isEqualTo(ORDER_COUNT));
         }
 
         /// The only ordering guarantee §5 makes: serial per (group x partition). The topic has ONE
@@ -274,12 +293,15 @@ class DurableTopicDeliveryForgeTest {
         /// design does not promise.
         @Test
         void eventsArriveInPublishedOrder_withinTheSinglePartition() {
-            await().atMost(DELIVERY_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> !deliveredSequences().isEmpty());
+            await().atMost(DELIVERY_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(() -> !deliveredSequences().isEmpty());
+
             var sequences = deliveredSequences();
 
             assertThat(sequences).describedAs("serial per-(group x partition) dispatch over one partition"
-                                             + " means arrival order IS offset order")
-                      .isSorted();
+                                              + " means arrival order IS offset order")
+                                 .isSorted();
         }
     }
 
@@ -308,20 +330,24 @@ class DurableTopicDeliveryForgeTest {
             }
 
             await().atMost(DELIVERY_TIMEOUT)
-                 .pollInterval(POLL_INTERVAL)
-                 .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
-                 .untilAsserted(() -> assertThat(failingAttempts() - baseline).describedAs("the never-acking handler must be retried a BOUNDED number of"
-                                                                                          + " times (%d per event), not forever and not once",
-                                                                                           EXPECTED_ATTEMPTS_PER_EVENT)
-                                                .isEqualTo(POISON_COUNT * EXPECTED_ATTEMPTS_PER_EVENT));
+                   .pollInterval(POLL_INTERVAL)
+                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
+                   .untilAsserted(() -> assertThat(failingAttempts() - baseline)
+                           .describedAs("the never-acking handler must be retried a BOUNDED number of"
+                                        + " times (%d per event), not forever and not once",
+                                        EXPECTED_ATTEMPTS_PER_EVENT)
+                           .isEqualTo(POISON_COUNT * EXPECTED_ATTEMPTS_PER_EVENT));
+
             // The boundary HOLDS: having given up, the runtime must not resume retrying. A count that
             // keeps climbing here would mean the event was never dead-lettered, only endlessly retried.
             var settled = failingAttempts();
 
             sleep(Duration.ofSeconds(10));
-            assertThat(failingAttempts()).describedAs("retries must STOP once the budget is exhausted — a climbing count means"
-                                                     + " the event was never moved aside")
-                      .isEqualTo(settled);
+
+            assertThat(failingAttempts())
+                    .describedAs("retries must STOP once the budget is exhausted — a climbing count means"
+                                 + " the event was never moved aside")
+                    .isEqualTo(settled);
         }
 
         /// Group attribution: the failing group's exhaustion must not touch the healthy group's
@@ -341,34 +367,39 @@ class DurableTopicDeliveryForgeTest {
             var healthyBaseline = healthyCount();
 
             publishPoison("isolation-probe");
+
             // Dispatch is happening: the failing group has been invoked for this arm's event. Until
             // this holds, a zero healthyCount says nothing about the healthy group.
             await().atMost(DELIVERY_TIMEOUT)
-                 .pollInterval(POLL_INTERVAL)
-                 .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
-                 .untilAsserted(() -> assertThat(failingAttempts() - failingBaseline).describedAs("poison-events dispatch must be observed BEFORE the healthy"
-                                                                                                 + " group's progress can be judged — otherwise a zero below is"
-                                                                                                 + " indistinguishable from 'not started yet'")
-                                                .isGreaterThan(0));
+                   .pollInterval(POLL_INTERVAL)
+                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
+                   .untilAsserted(() -> assertThat(failingAttempts() - failingBaseline)
+                           .describedAs("poison-events dispatch must be observed BEFORE the healthy"
+                                        + " group's progress can be judged — otherwise a zero below is"
+                                        + " indistinguishable from 'not started yet'")
+                           .isGreaterThan(0));
+
             // Now it is attributable: the same event reached the failing group, so the healthy group
             // must see it too. A stall here is a real isolation failure, not a timing artefact.
             await().atMost(DELIVERY_TIMEOUT)
-                 .pollInterval(POLL_INTERVAL)
-                 .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
-                 .untilAsserted(() -> assertThat(healthyCount() - healthyBaseline).describedAs("the healthy group shares the topic with a group that can never"
-                                                                                              + " ack; separate cursors and retry budgets mean it must still"
-                                                                                              + " process the event the failing group is choking on")
-                                                .isGreaterThanOrEqualTo(1));
+                   .pollInterval(POLL_INTERVAL)
+                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
+                   .untilAsserted(() -> assertThat(healthyCount() - healthyBaseline)
+                           .describedAs("the healthy group shares the topic with a group that can never"
+                                        + " ack; separate cursors and retry budgets mean it must still"
+                                        + " process the event the failing group is choking on")
+                           .isGreaterThanOrEqualTo(1));
         }
     }
 
     // --- fixture driving -----------------------------------------------------
+
     private void publishOrder(String orderId, int sequence) {
         var body = "{\"orderId\":\"%s\",\"sequence\":%d}".formatted(orderId, sequence);
         var response = httpPost(appPort(), "/api/durable-topic/publish-order", body);
 
         assertThat(response).describedAs("durable publish must resolve at the min-sync floor")
-                  .doesNotContain("\"error\"");
+                            .doesNotContain("\"error\"");
     }
 
     private void publishPoison(String payload) {
@@ -382,8 +413,7 @@ class DurableTopicDeliveryForgeTest {
     private int totalOrdersDelivered() {
         return cluster.getAvailableAppHttpPorts()
                       .stream()
-                      .mapToInt(port -> firstInt(COUNT_FIELD,
-                                                 httpPost(port, "/api/durable-topic/order-status", "{}")))
+                      .mapToInt(port -> firstInt(COUNT_FIELD, httpPost(port, "/api/durable-topic/order-status", "{}")))
                       .sum();
     }
 
@@ -423,6 +453,7 @@ class DurableTopicDeliveryForgeTest {
     }
 
     // --- cluster plumbing ----------------------------------------------------
+
     private void deployDurableTopicSlice() {
         var blueprint = """
             id = "%s"
@@ -435,8 +466,8 @@ class DurableTopicDeliveryForgeTest {
         var response = httpPostToml(leaderPort, "/api/v1/blueprints", blueprint);
 
         assertThat(response).describedAs("durable-topic slice deployment")
-                  .doesNotContain("\"error\"")
-                  .contains("\"status\":\"applied\"");
+                            .doesNotContain("\"error\"")
+                            .contains("\"status\":\"applied\"");
     }
 
     private boolean appHttpReady() {
@@ -448,7 +479,7 @@ class DurableTopicDeliveryForgeTest {
 
         var body = httpPost(ports.getFirst(), "/api/durable-topic/order-status", "{}");
 
-        return ! body.contains("\"error\"") && body.contains("count");
+        return !body.contains("\"error\"") && body.contains("count");
     }
 
     private boolean publishReady() {
@@ -462,7 +493,7 @@ class DurableTopicDeliveryForgeTest {
                                 "/api/durable-topic/publish-order",
                                 "{\"orderId\":\"__warmup__\",\"sequence\":0}");
 
-        return ! response.contains("\"error\"") && response.contains("published");
+        return !response.contains("\"error\"") && response.contains("published");
     }
 
     /// The `poison-events` half of the readiness gate. Its warm-up event WILL be dead-lettered by the
@@ -477,7 +508,7 @@ class DurableTopicDeliveryForgeTest {
 
         var response = httpPost(ports.getFirst(), "/api/durable-topic/publish-poison", "{\"payload\":\"__warmup__\"}");
 
-        return ! response.contains("\"error\"") && response.contains("published");
+        return !response.contains("\"error\"") && response.contains("published");
     }
 
     /// Deliberately a park rather than an awaitility gate: the assertion it serves is that a count does
@@ -490,9 +521,8 @@ class DurableTopicDeliveryForgeTest {
     private void failIfSliceFailed() {
         var failed = cluster.slicesStatus()
                             .stream()
-                            .anyMatch(status -> status.artifact()
-                                                      .equals(DURABLE_TOPIC_SLICE) && status.state()
-                                                                                            .equals("FAILED"));
+                            .anyMatch(status -> status.artifact().equals(DURABLE_TOPIC_SLICE)
+                                                && status.state().equals("FAILED"));
 
         if (failed) {
             throw new AssertionError("Durable-topic slice deployment FAILED: " + DURABLE_TOPIC_SLICE);
@@ -507,10 +537,7 @@ class DurableTopicDeliveryForgeTest {
     }
 
     private int anyMgmtPort() {
-        return cluster.status()
-                      .nodes()
-                      .getFirst()
-                      .mgmtPort();
+        return cluster.status().nodes().getFirst().mgmtPort();
     }
 
     private boolean allNodesHealthy() {
@@ -529,8 +556,7 @@ class DurableTopicDeliveryForgeTest {
 
         return http.sendString(request)
                    .await()
-                   .map(response -> response.statusCode() == 200 && response.body()
-                                                                            .contains("\"quorum\":true"))
+                   .map(response -> response.statusCode() == 200 && response.body().contains("\"quorum\":true"))
                    .or(false);
     }
 
@@ -543,6 +569,7 @@ class DurableTopicDeliveryForgeTest {
     }
 
     // --- HTTP ----------------------------------------------------------------
+
     private String httpPostToml(int port, String path, String body) {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + path))

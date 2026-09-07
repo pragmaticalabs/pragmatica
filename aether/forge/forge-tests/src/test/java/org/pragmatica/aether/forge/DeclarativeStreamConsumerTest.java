@@ -2,7 +2,22 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
+
 package org.pragmatica.aether.forge;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Option;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
@@ -13,26 +28,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.IntSupplier;
 import java.util.regex.Pattern;
 
-import org.pragmatica.aether.ember.EmberCluster;
-import org.pragmatica.config.ConfigurationProvider;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.lang.Option;
-
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
-
-import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
-import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 /// #488 — the declarative `[streams.X]` consumer actually receives published events.
 ///
@@ -81,20 +80,25 @@ class DeclarativeStreamConsumerTest {
     private static final int INSTANCES = 5;
     private static final int EVENT_COUNT = 30;
     private static final int ORDER_COUNT = 10;
+
     private static final String CONSUMER_EVENTS_STREAM = "consumer-events";
     private static final String ORDER_EVENTS_STREAM = "order-events";
     private static final String SPREAD_EVENTS_STREAM = "spread-events";
+
     /// Attachments expected cluster-wide once settled: one partition each for consumer-events and
     /// order-events, plus the five of spread-events. With the slice on EVERY node each partition's own
     /// owner is a candidate, so owner-preference assigns every partition to its owner and the total is
     /// the stream's partition count summed — never more, which is what a duplicate attach looks like.
     private static final int EXPECTED_ATTACHMENTS = 7;
+
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration DELIVERY_TIMEOUT = Duration.ofSeconds(90);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
+
     private static final String CONSUMER_SLICE = TestArtifacts.STREAM_CONSUMER_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:declarative-consumer:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
+
     private static final Pattern COUNT_FIELD = Pattern.compile("\"count\"\\s*:\\s*(\\d+)");
     private static final Pattern ATTACHED_FIELD = Pattern.compile("\"attachedSubscriptions\"\\s*:\\s*(\\d+)");
 
@@ -110,39 +114,48 @@ class DeclarativeStreamConsumerTest {
                                                   .withSystemProperties("aether.")
                                                   .withEnvironment("AETHER_")
                                                   .build();
-
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "dsc", Option.some(configProvider));
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
-                                                                                    .isPresent());
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesHealthy);
-        deployConsumerSlice();
+
         await().atMost(WAIT_TIMEOUT)
-             .pollInterval(POLL_INTERVAL)
-             .failFast(this::failIfSliceFailed)
-             .until(this::appHttpReady);
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> cluster.currentLeader().isPresent());
+
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(this::allNodesHealthy);
+
+        deployConsumerSlice();
+
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .until(this::appHttpReady);
+
         // A publish can land before the partition owner has materialized its ring, so gate on a real
         // publish succeeding before any test runs.
         await().atMost(WAIT_TIMEOUT)
-             .pollInterval(POLL_INTERVAL)
-             .failFast(this::failIfSliceFailed)
-             .until(this::publishReady);
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .until(this::publishReady);
+
         // The consumer attaches on the manager's ownership tick, which is independent of publish
         // readiness — gate on the registration actually having produced a subscription somewhere.
         await().atMost(WAIT_TIMEOUT)
-             .pollInterval(POLL_INTERVAL)
-             .failFast(this::failIfSliceFailed)
-             .until(() -> totalAttachedSubscriptions() > 0);
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .until(() -> totalAttachedSubscriptions() > 0);
+
         // Gate on EACH stream separately. A subscription attaches at the stream TAIL, so an event
         // published before its consumer attached is skipped, not queued — and with two streams the
         // aggregate gate above is satisfied by whichever attaches first. Waiting per stream is what
         // makes the delivery assertions measure delivery rather than attach timing.
         await().atMost(WAIT_TIMEOUT)
-             .pollInterval(POLL_INTERVAL)
-             .failFast(this::failIfSliceFailed)
-             .until(() -> consumerAttachedFor(CONSUMER_EVENTS_STREAM)
-                          && consumerAttachedFor(ORDER_EVENTS_STREAM)
-                          && consumerAttachedFor(SPREAD_EVENTS_STREAM));
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .until(() -> consumerAttachedFor(CONSUMER_EVENTS_STREAM)
+                            && consumerAttachedFor(ORDER_EVENTS_STREAM)
+                            && consumerAttachedFor(SPREAD_EVENTS_STREAM));
     }
 
     @AfterAll
@@ -151,12 +164,13 @@ class DeclarativeStreamConsumerTest {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
 
             httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
-            LifecycleAwait.settled("cluster stop in tearDown()", cluster, cluster.stop());
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
     @Nested
     class Delivery {
+
         /// The headline #488 assertion, stated as the guarantee actually promises it: every published
         /// payload arrives AT LEAST once.
         ///
@@ -167,10 +181,12 @@ class DeclarativeStreamConsumerTest {
         @Test
         void declaredConsumer_receivesPublishedEvents_withoutAnyExplicitSubscribe() {
             publishBatch("first-batch", EVENT_COUNT);
+
             await().atMost(DELIVERY_TIMEOUT)
-                 .pollInterval(POLL_INTERVAL)
-                 .untilAsserted(() -> assertThat(distinctReceivedMatching("first-batch")).describedAs("every published event must arrive at least once — before #488 this stayed at 0 forever")
-                                                .isEqualTo(EVENT_COUNT));
+                   .pollInterval(POLL_INTERVAL)
+                   .untilAsserted(() -> assertThat(distinctReceivedMatching("first-batch"))
+                           .describedAs("every published event must arrive at least once — before #488 this stayed at 0 forever")
+                           .isEqualTo(EVENT_COUNT));
         }
 
         /// The duplication sensor, and the reason the count assertion stays EXACT.
@@ -184,26 +200,32 @@ class DeclarativeStreamConsumerTest {
         @Test
         void declaredConsumer_deliversEachEventExactlyOnceClusterWide() {
             publishBatch("once-batch", EVENT_COUNT);
+
             await().atMost(DELIVERY_TIMEOUT)
-                 .pollInterval(POLL_INTERVAL)
-                 .untilAsserted(() -> assertThat(distinctReceivedMatching("once-batch")).isEqualTo(EVENT_COUNT));
+                   .pollInterval(POLL_INTERVAL)
+                   .untilAsserted(() -> assertThat(distinctReceivedMatching("once-batch")).isEqualTo(EVENT_COUNT));
+
             // Hold past several reconcile ticks: a second node attaching late would push the total above
             // EVENT_COUNT, which a single sampled assertion would miss.
             sleep(Duration.ofSeconds(12));
-            assertThat(receivedMatching("once-batch")).describedAs("no duplicate observed — exactly one node is assigned, and it stays the only one")
-                      .isEqualTo(EVENT_COUNT);
+
+            assertThat(receivedMatching("once-batch"))
+                    .describedAs("no duplicate observed — exactly one node is assigned, and it stays the only one")
+                    .isEqualTo(EVENT_COUNT);
         }
     }
 
     @Nested
     class Observability {
+
         /// The operator surface must agree with reality: one attached subscription per PARTITION of
         /// each declared consumer's stream. With the slice on every node, owner-preference puts each
         /// partition on its own owner — never more, which is what a duplicate attach would look like.
         @Test
         void declarativeConsumersEndpoint_reportsOneAttachedSubscriptionPerPartition() {
-            assertThat(totalAttachedSubscriptions()).describedAs("one partition each for consumer-events and order-events, five for spread-events")
-                      .isEqualTo(EXPECTED_ATTACHMENTS);
+            assertThat(totalAttachedSubscriptions())
+                    .describedAs("one partition each for consumer-events and order-events, five for spread-events")
+                    .isEqualTo(EXPECTED_ATTACHMENTS);
         }
 
         /// Every node knows the declaration (it is cluster-wide KV), and the endpoint answers on all of
@@ -211,8 +233,8 @@ class DeclarativeStreamConsumerTest {
         @Test
         void declarativeConsumersEndpoint_answersOnEveryNode_namingStreamAndMethod() {
             var bodies = mgmtPorts().stream()
-                                  .map(port -> httpGet(port, "/api/v1/streams/declarative-consumers"))
-                                  .toList();
+                                    .map(port -> httpGet(port, "/api/v1/streams/declarative-consumers"))
+                                    .toList();
 
             assertThat(bodies).allSatisfy(body -> {
                 assertThat(body).doesNotContain("\"error\"");
@@ -240,6 +262,7 @@ class DeclarativeStreamConsumerTest {
     /// with "No codec registered for class" — before delivery is ever reached.
     @Nested
     class ApplicationTypedDelivery {
+
         /// The headline #526 assertion: publishing an app-defined record succeeds at all.
         @Test
         void publishOrder_succeeds_forApplicationDefinedEventType() {
@@ -248,9 +271,9 @@ class DeclarativeStreamConsumerTest {
                                     "{\"orderId\":\"order-probe\",\"customer\":\"acme\",\"amount\":7}");
 
             assertThat(response).describedAs("app-typed publish must succeed — before #526 this threw "
-                                            + "'No codec registered for class' because the publisher held the node codec")
-                      .doesNotContain("\"error\"")
-                      .contains("published");
+                                             + "'No codec registered for class' because the publisher held the node codec")
+                                .doesNotContain("\"error\"")
+                                .contains("published");
         }
 
         /// Both ends of the stream must resolve the slice codec: the publisher to ENCODE the record
@@ -260,10 +283,12 @@ class DeclarativeStreamConsumerTest {
             var baseline = settledCount(DeclarativeStreamConsumerTest.this::totalOrdersReceived);
 
             publishOrderBatch(ORDER_COUNT);
+
             await().atMost(DELIVERY_TIMEOUT)
-                 .pollInterval(POLL_INTERVAL)
-                 .untilAsserted(() -> assertThat(totalOrdersReceived() - baseline).describedAs("every app-typed event must round-trip through the slice codec")
-                                                .isEqualTo(ORDER_COUNT));
+                   .pollInterval(POLL_INTERVAL)
+                   .untilAsserted(() -> assertThat(totalOrdersReceived() - baseline)
+                           .describedAs("every app-typed event must round-trip through the slice codec")
+                           .isEqualTo(ORDER_COUNT));
         }
 
         /// The record's fields must survive encode/decode intact — delivery of a corrupted or
@@ -271,39 +296,40 @@ class DeclarativeStreamConsumerTest {
         @Test
         void declaredConsumer_preservesEveryRecordComponent_throughTheStream() {
             publishOrderBatch(ORDER_COUNT);
+
             await().atMost(DELIVERY_TIMEOUT)
-                 .pollInterval(POLL_INTERVAL)
-                 .untilAsserted(() -> assertThat(receivedOrdersBody()).describedAs("the decoded record must carry the published field values, not defaults")
-                                                .contains("\"orderId\":\"order-0\"")
-                                                .contains("\"customer\":\"customer-0\"")
-                                                .contains("\"amount\":100"));
+                   .pollInterval(POLL_INTERVAL)
+                   .untilAsserted(() -> assertThat(receivedOrdersBody())
+                           .describedAs("the decoded record must carry the published field values, not defaults")
+                           .contains("\"orderId\":\"order-0\"")
+                           .contains("\"customer\":\"customer-0\"")
+                           .contains("\"amount\":100"));
         }
 
         /// The operator surface must stop warning about app types now that they genuinely publish.
         @Test
         void declarativeConsumersEndpoint_reportsEventTypePublishable_forApplicationType() {
             var fragments = mgmtPorts().stream()
-                                     .map(port -> consumerFragment(httpGet(port, "/api/v1/streams/declarative-consumers"),
-                                                                   ORDER_EVENTS_STREAM))
-                                     .filter(fragment -> !fragment.isEmpty())
-                                     .toList();
+                                       .map(port -> consumerFragment(httpGet(port, "/api/v1/streams/declarative-consumers"),
+                                                                     ORDER_EVENTS_STREAM))
+                                       .filter(fragment -> !fragment.isEmpty())
+                                       .toList();
 
             assertThat(fragments).describedAs("every node knows the app-typed declaration — it is cluster-wide KV")
-                      .isNotEmpty();
+                                 .isNotEmpty();
             assertThat(fragments).allSatisfy(fragment -> {
                 assertThat(fragment).describedAs("the slice's own codec registers OrderPlaced, so it IS publishable")
-                          .contains("\"eventTypePublishable\":true");
+                                    .contains("\"eventTypePublishable\":true");
                 assertThat(fragment).doesNotContain("cannot be PUBLISHED");
             });
         }
     }
 
     // --- publish / receive ---------------------------------------------------
+
     private void publishBatch(String prefix, int count) {
         for (var i = 0; i < count; i++) {
-            var response = httpPost(appPort(),
-                                    "/api/stream-consumer/publish",
-                                    "{\"payload\":\"" + prefix + "-" + i + "\"}");
+            var response = httpPost(appPort(), "/api/stream-consumer/publish", "{\"payload\":\"" + prefix + "-" + i + "\"}");
 
             assertThat(response).describedAs("publish must succeed").contains("published");
         }
@@ -328,8 +354,7 @@ class DeclarativeStreamConsumerTest {
         return (int) cluster.getAvailableAppHttpPorts()
                             .stream()
                             .map(port -> httpPost(port, "/api/stream-consumer/received", "{}"))
-                            .flatMap(body -> pattern.matcher(body)
-                                                    .results())
+                            .flatMap(body -> pattern.matcher(body).results())
                             .map(match -> match.group(1))
                             .distinct()
                             .count();
@@ -349,10 +374,7 @@ class DeclarativeStreamConsumerTest {
 
     private void publishOrderBatch(int count) {
         for (var i = 0; i < count; i++) {
-            var body = "{\"orderId\":\"order-" + i
-                     + "\",\"customer\":\"customer-" + i
-                     + "\",\"amount\":" + (100 + i)
-                     + "}";
+            var body = "{\"orderId\":\"order-" + i + "\",\"customer\":\"customer-" + i + "\",\"amount\":" + (100 + i) + "}";
             var response = httpPost(appPort(), "/api/stream-consumer/publish-order", body);
 
             assertThat(response).describedAs("app-typed publish must succeed").contains("published");
@@ -388,9 +410,8 @@ class DeclarativeStreamConsumerTest {
         var lastSample = new AtomicInteger(-1);
 
         await().atMost(DELIVERY_TIMEOUT)
-             .pollInterval(POLL_INTERVAL)
-             .until(() -> isRepeatSample(lastSample,
-                                         counter.getAsInt()));
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> isRepeatSample(lastSample, counter.getAsInt()));
 
         return lastSample.get();
     }
@@ -401,18 +422,17 @@ class DeclarativeStreamConsumerTest {
 
     private int totalAttachedSubscriptions() {
         return mgmtPorts().stream()
-                        .map(port -> httpGet(port, "/api/v1/streams/declarative-consumers"))
-                        .mapToInt(body -> firstInt(ATTACHED_FIELD, body))
-                        .sum();
+                          .map(port -> httpGet(port, "/api/v1/streams/declarative-consumers"))
+                          .mapToInt(body -> firstInt(ATTACHED_FIELD, body))
+                          .sum();
     }
 
     /// True once SOME node reports a live subscription for `stream`. Per-stream, because the
     /// aggregate count cannot distinguish "both consumers attached" from "one attached twice".
     private boolean consumerAttachedFor(String stream) {
         return mgmtPorts().stream()
-                        .map(port -> consumerFragment(httpGet(port, "/api/v1/streams/declarative-consumers"),
-                                                      stream))
-                        .anyMatch(fragment -> fragment.contains("\"assignedPartitions\""));
+                          .map(port -> consumerFragment(httpGet(port, "/api/v1/streams/declarative-consumers"), stream))
+                          .anyMatch(fragment -> fragment.contains("\"assignedPartitions\""));
     }
 
     /// The slice of the declarative-consumers JSON describing one stream. Substring-scoped rather than
@@ -427,10 +447,9 @@ class DeclarativeStreamConsumerTest {
 
     private int ownerMgmtPort() {
         return mgmtPorts().stream()
-                        .filter(port -> firstInt(ATTACHED_FIELD,
-                                                 httpGet(port, "/api/v1/streams/declarative-consumers")) > 0)
-                        .findFirst()
-                        .orElseThrow(() -> new AssertionError("No node reports an attached declarative consumer"));
+                          .filter(port -> firstInt(ATTACHED_FIELD, httpGet(port, "/api/v1/streams/declarative-consumers")) > 0)
+                          .findFirst()
+                          .orElseThrow(() -> new AssertionError("No node reports an attached declarative consumer"));
     }
 
     private static int firstInt(Pattern pattern, String body) {
@@ -442,6 +461,7 @@ class DeclarativeStreamConsumerTest {
     }
 
     // --- deployment + readiness ---------------------------------------------
+
     private void deployConsumerSlice() {
         var blueprint = """
             id = "%s"
@@ -454,8 +474,8 @@ class DeclarativeStreamConsumerTest {
         var response = httpPostToml(leaderPort, "/api/v1/blueprints", blueprint);
 
         assertThat(response).describedAs("declarative-consumer slice deployment")
-                  .doesNotContain("\"error\"")
-                  .contains("\"status\":\"applied\"");
+                            .doesNotContain("\"error\"")
+                            .contains("\"status\":\"applied\"");
     }
 
     private boolean appHttpReady() {
@@ -467,7 +487,7 @@ class DeclarativeStreamConsumerTest {
 
         var body = httpPost(ports.getFirst(), "/api/stream-consumer/received", "{}");
 
-        return ! body.contains("\"error\"") && body.contains("count");
+        return !body.contains("\"error\"") && body.contains("count");
     }
 
     private boolean publishReady() {
@@ -479,15 +499,13 @@ class DeclarativeStreamConsumerTest {
 
         var response = httpPost(ports.getFirst(), "/api/stream-consumer/publish", "{\"payload\":\"__warmup__\"}");
 
-        return ! response.contains("\"error\"") && response.contains("published");
+        return !response.contains("\"error\"") && response.contains("published");
     }
 
     private void failIfSliceFailed() {
         var failed = cluster.slicesStatus()
                             .stream()
-                            .anyMatch(status -> status.artifact()
-                                                      .equals(CONSUMER_SLICE) && status.state()
-                                                                                       .equals("FAILED"));
+                            .anyMatch(status -> status.artifact().equals(CONSUMER_SLICE) && status.state().equals("FAILED"));
 
         if (failed) {
             throw new AssertionError("Declarative-consumer slice deployment FAILED: " + CONSUMER_SLICE);
@@ -510,10 +528,7 @@ class DeclarativeStreamConsumerTest {
     }
 
     private int anyMgmtPort() {
-        return cluster.status()
-                      .nodes()
-                      .getFirst()
-                      .mgmtPort();
+        return cluster.status().nodes().getFirst().mgmtPort();
     }
 
     private boolean allNodesHealthy() {
@@ -532,8 +547,7 @@ class DeclarativeStreamConsumerTest {
 
         return http.sendString(request)
                    .await()
-                   .map(response -> response.statusCode() == 200 && response.body()
-                                                                            .contains("\"quorum\":true"))
+                   .map(response -> response.statusCode() == 200 && response.body().contains("\"quorum\":true"))
                    .or(false);
     }
 
@@ -542,6 +556,7 @@ class DeclarativeStreamConsumerTest {
     }
 
     // --- HTTP ----------------------------------------------------------------
+
     private String httpPostToml(int port, String path, String body) {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + path))

@@ -87,7 +87,7 @@ class GeneratedSliceForgeE2ETest {
     @AfterAll
     void tearDown() {
         if (cluster != null) {
-            LifecycleAwait.settled("cluster stop in tearDown()", cluster, cluster.stop());
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
