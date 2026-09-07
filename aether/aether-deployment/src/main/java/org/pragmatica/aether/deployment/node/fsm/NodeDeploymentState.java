@@ -425,7 +425,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             // #916: WARN, not ERROR. This is now a retryable crossing the cluster recovers from on
             // its own; logging it at ERROR trained operators to treat a self-healing condition as an
             // incident. The genuine terminal — retries exhausted — is still logged at ERROR, by
-            // `ClusterDeploymentState.Active.logMaxRetriesExceeded`.
+            // `ClusterDeploymentState.Active.handleRetryBudgetExhausted`, which since review round 1
+            // also marks the artifact permanently failed and rolls the blueprint back.
             log.warn("Slice {} state is ACTIVATE but not found in SliceStore — reporting intermittent, cluster will retry",
                      sliceKey.artifact());
             transitionToFailed(sliceKey, cause);

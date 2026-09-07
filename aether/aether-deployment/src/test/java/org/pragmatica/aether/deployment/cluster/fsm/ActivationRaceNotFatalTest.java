@@ -223,6 +223,42 @@ class ActivationRaceNotFatalTest {
                 .isEmpty();
     }
 
+    /// NOTE 2 from review round 1 — `SLICE_NOT_LOADED_FOR_REGISTRATION` was typed by #916 but
+    /// unpinned: the other tests drive only `handleActivating`'s branch, so reverting that second
+    /// constant to a plain `Causes.forOneValue` left them green.
+    ///
+    /// This drives the OTHER raise site, and it does so through the scenario the constant's own doc
+    /// claims: the slice is present when `handleActivating` looks for it, activation succeeds, and
+    /// it is gone by the time `registerSliceForInvocation` looks again. The store below evicts on
+    /// `activateSlice` precisely to place the eviction in that window.
+    @Test
+    void sliceEvictedBeforeInvocationRegistration_isReportedIntermittent() {
+        var evicting = new EvictOnActivateSliceStore();
+        var harness = nodeHarness(nodeSideCluster, evicting);
+
+        harness.dispatch(new QuorumEstablished());
+
+        var active = (NodeDeploymentState.Active) harness.state();
+
+        active.processStateTransition(SliceNodeKey.sliceNodeKey(SLICE, SELF), SliceState.ACTIVATE);
+
+        var emitted = lastFailedNodeArtifactValue();
+
+        assertThat(evicting.activateCalls)
+                .as("precondition: the run must have gone THROUGH activation, otherwise it took "
+                    + "handleActivating's branch and pins the other constant all over again")
+                .isEqualTo(1);
+        assertThat(emitted.fatal())
+                .as("#916: eviction between the activation lookup and the registration lookup is the "
+                    + "same retryable crossing, so this raise site must not be fatal either")
+                .isFalse();
+        assertThat(emitted.failureReason()
+                          .or(""))
+                .as("the failure must come from the invocation-registration lookup, not the "
+                    + "activation lookup — those are different constants and only one is under test")
+                .contains("invocation registration");
+    }
+
     /// Drives the real node FSM through the ACTIVATE transition with an empty `SliceStore` and
     /// returns the [NodeArtifactValue] the node actually pushed to consensus.
     private NodeArtifactValue driveActivationAgainstEmptyStore() {
@@ -261,13 +297,18 @@ class ActivationRaceNotFatalTest {
     }
 
     private static FsmTestHarness<NodeDeploymentState, ClusterFsmEvent> nodeHarness(ClusterNode<KVCommand<AetherKey>> cluster) {
+        return nodeHarness(cluster, emptySliceStore());
+    }
+
+    private static FsmTestHarness<NodeDeploymentState, ClusterFsmEvent> nodeHarness(ClusterNode<KVCommand<AetherKey>> cluster,
+                                                                                    SliceStore sliceStore) {
         var router = MessageRouter.mutable();
         var kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
         Function<Fsm<NodeDeploymentState, ClusterFsmEvent>, NodeDeploymentState> factory =
                 fsm -> new NodeDeploymentContext(fsm,
                                                  SELF,
                                                  new NodeAddress("localhost", 9000),
-                                                 emptySliceStore(),
+                                                 sliceStore,
                                                  SliceActionConfig.sliceActionConfig(),
                                                  SliceCodec.sliceCodec(List.of()),
                                                  cluster,
@@ -310,9 +351,63 @@ class ActivationRaceNotFatalTest {
         return harness;
     }
 
+    private NodeArtifactValue lastFailedNodeArtifactValue() {
+        return nodeSideCluster.commands.stream()
+                                       .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                          && put.key() instanceof NodeArtifactKey)
+                                       .map(command -> (NodeArtifactValue) ((KVCommand.Put<AetherKey, ?>) command).value())
+                                       .filter(value -> value.state() == SliceState.FAILED)
+                                       .reduce((first, second) -> second)
+                                       .orElseThrow(() -> new AssertionError("node FSM emitted no FAILED NodeArtifactValue"));
+    }
+
+    /// A store that holds the slice for the activation lookup and drops it the moment activation
+    /// completes, putting the eviction in the window between `handleActivating`'s `findLoadedSlice`
+    /// and `registerSliceForInvocation`'s.
+    private static final class EvictOnActivateSliceStore implements SliceStore {
+        private volatile boolean evicted = false;
+        private volatile int activateCalls = 0;
+
+        private final LoadedSlice entry = new LoadedSlice() {
+            @Override public Artifact artifact() {
+                return SLICE;
+            }
+
+            @Override public org.pragmatica.aether.slice.Slice slice() {
+                return List::of;
+            }
+        };
+
+        @Override public List<LoadedSlice> loaded() {
+            return evicted ? List.of() : List.of(entry);
+        }
+
+        @Override public Promise<LoadedSlice> loadSlice(Artifact artifact) {
+            return Promise.success(entry);
+        }
+
+        @Override public Promise<LoadedSlice> activateSlice(Artifact artifact) {
+            activateCalls++;
+            evicted = true;
+
+            return Promise.success(entry);
+        }
+
+        @Override public Promise<LoadedSlice> deactivateSlice(Artifact artifact) {
+            return Promise.success(entry);
+        }
+
+        @Override public Promise<Unit> unloadSlice(Artifact artifact) {
+            return Promise.unitPromise();
+        }
+
+        @Override public Option<org.pragmatica.config.ConfigurationProvider> sliceComposite(Artifact artifact) {
+            return Option.none();
+        }
+    }
+
     /// The store observable the in-flight unload produces: the artifact is simply not there.
-    private static SliceStore emptySliceStore() {
-        return new SliceStore() {
+    private static SliceStore emptySliceStore() {        return new SliceStore() {
             @Override public List<LoadedSlice> loaded() {
                 return List.of();
             }

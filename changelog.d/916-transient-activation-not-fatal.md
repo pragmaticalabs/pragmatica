@@ -29,20 +29,42 @@
   cause closes both orderings, because neither now reaches `handleDeterministicFailure`
   [mechanism: `trackBlueprintSliceActive` removes the blueprint from `inFlightBlueprints` before
   `rollbackBlueprintForArtifact`'s loop runs; `permanentlyFailed.add` happens either way].
-- **The retry is bounded and its exhaustion is stated.** `handleTransientFailure` allows 5 attempts
-  with exponential backoff (1, 2, 4, 8, 16 s, capped at 30 s, jittered), re-driving `reconcile()`
-  each time. At exhaustion `logMaxRetriesExceeded` logs at ERROR, clears the counter and routes a
-  `DeploymentFailed` event. Nothing here is unbounded and no new retry mechanism was added
-  [mechanism: `ClusterDeploymentState.Active.MAX_RETRIES` = 5, `MAX_RETRY_DELAY_SECONDS` = 30].
+- **The retry is bounded and its exhaustion is now genuinely terminal.** `handleTransientFailure`
+  allows 5 attempts with exponential backoff (1, 2, 4, 8, 16 s, capped at 30 s, jittered),
+  re-driving `reconcile()` each time. The sixth reported failure spends the budget and
+  `handleRetryBudgetExhausted` settles the artifact: it is marked permanently failed, a
+  `DeploymentFailed` event is routed, and the declared atomicity is honoured — `ALL_OR_NOTHING`
+  rolls the owning blueprint back, `BEST_EFFORT` records a FAILED outcome
+  [verified: `ActivationRaceNotFatalTest#intermittentFailureThatNeverSettles_reachesTerminalRollback_withinTheRetryBudget`
+  asserts the terminal arrives on the sixth reported failure and not before, and that a reconcile
+  afterwards does not re-drive the artifact; reverting only the `ClusterDeploymentState` hunk leaves
+  it unsettled after 12 reported failures].
+- **That exhaustion path did not previously stop, and this release fixes it (#922).** Review round 1
+  found the mechanism this fragment originally described was wrong in the mild direction. The old
+  `logMaxRetriesExceeded` cleared the retry counter and routed `DeploymentFailed` without adding the
+  artifact to `permanentlyFailed`. That is not a resting state: every failure already issues an
+  unload, the node's removal of the `NodeArtifactKey` reaches `handleSliceNodeRemoval`, which —
+  finding the artifact still deployable — scheduled a reconcile, and `reconcileBlueprint` is gated
+  by `permanentlyFailed` and nothing else, so it redeployed the artifact with the counter restarting
+  at 1. An intermittent cause that never settled was therefore re-driven at roughly 1 Hz for the
+  life of the cluster: no terminal state, no rollback, and consensus round-trips forever. This was
+  pre-existing and reachable by every intermittent cause, not only the one this ticket types
+  [mechanism: `handleSliceFailure` -> `issueUnloadCommand` -> `deleteSliceNodeKey` ->
+  `handleSliceNodeRemoval` -> `reconcile` -> `reconcileBlueprint`, with no arm that adds to
+  `permanentlyFailed`].
 - **`classify`'s catch-all deliberately STAYS fail-permanent** — the reviewable judgement of this
   change, so the reasoning is recorded rather than assumed. The cause universe on the loading and
-  activation paths is open, so the default arm is chosen for the failure mode it produces.
-  Permanent-by-default fails loudly and bounded: the blueprint is rolled back, `ALL_OR_NOTHING`
-  holds, and the operator sees something they can act on. Intermittent-by-default would fail quietly
-  in the direction that matters — a genuinely permanent failure reaching an unclassified path would
-  be retried five times and then abandoned with **no rollback**, leaving exactly the half-deployed
-  blueprint `ALL_OR_NOTHING` promises cannot exist. Trading a wrong rollback for a silently broken
-  atomicity guarantee is the worse trade
+  activation paths is open, so the default arm is chosen for the failure mode it produces. Note the
+  original argument for it has been withdrawn: it rested on intermittent-by-default breaking
+  atomicity outright, which was true only while retry exhaustion failed to settle. Now that both
+  buckets reach a terminal state with a rollback, the gap is one of cost and latency, not of
+  guarantee, and it is narrower than this ticket first claimed. What still favours permanent: a
+  permanent cause typed intermittent pays six load/activate cycles over roughly a minute of backoff,
+  each issuing an unload and a reconcile through consensus, and holds the blueprint half-deployed
+  and in flight for that window before reaching the identical terminal, whereas a transient cause
+  typed permanent fails at once and is recovered by one redeploy; and a cause arriving here
+  unrecognised is more often a genuine defect than a blip, because the transient conditions on these
+  paths are the ones the code already knows about and types
   [verified: `SliceLoadingFailureClassifyTest#unrecognisedCause_staysPermanent`, and
   `ActivationRaceNotFatalTest#genuinelyUnclassifiedCause_stillRollsBackTheBlueprint` drives an
   untyped cause through both FSMs and asserts the rollback still happens — which doubles as the
@@ -63,12 +85,22 @@
   may still be in flight)"`. Any alert or log filter keying on the old string will stop matching. The
   node-side log line for it also drops from ERROR to WARN, since the cluster now recovers from it on
   its own; retry exhaustion remains an ERROR.
-- **Residual, stated plainly: a transient failure that exhausts its retries does not roll back.**
-  `logMaxRetriesExceeded` routes `DeploymentFailed` and stops; it does not call
-  `rollbackBlueprintForArtifact`. So an activation race that somehow never settles now leaves a
-  blueprint in flight rather than rolled back. This is pre-existing behaviour for every intermittent
-  failure and is not introduced here, but this change puts one more cause on that path and it should
-  not be discovered later as a surprise.
+- **Residual, stated plainly: transient causes on the activation path that are still typed
+  permanent.** Consensus exhaustion inside the activation chain raises a plain
+  `Causes.cause("Consensus … timed out after 2 retries")`, which `classify` does not recognise and
+  so buckets `Fatal`. It is reachable by arithmetic rather than assumption: each attempt carries a
+  30 s timeout and 2 retries, so the plain cause is raised at 90 s, inside the 120 s activation
+  chain timeout that would otherwise have produced an `Intermittent` `CoreError.Timeout`. A quorum
+  loss lasting more than 90 s during activation therefore permanently fails the artifact and rolls
+  the blueprint back for a condition that clears by itself. The bar is high — three consecutive 30 s
+  timeouts means consensus was genuinely unavailable, not merely slow, so a healthy cluster never
+  reaches it and no deployment that would have succeeded under ordinary load is rolled back — which
+  makes it an outage-recovery and maintenance-window defect rather than an ordinary-operation one.
+  Pre-existing, out of scope here, and tracked separately; named because this ticket's own
+  obligation to type transient causes at their raise site leaves it unpaid
+  [mechanism: `NodeDeploymentState.Active.retryConsensusOperation` and `retryApply`,
+  `CONSENSUS_OPERATION_TIMEOUT` = 30 s x (`CONSENSUS_MAX_RETRIES` = 2) + 1 = 90 s <
+  `DEFAULT_ACTIVATION_CHAIN_TIMEOUT` = 120 s].
 - Scope note: this is the product half of #727. PR #913 fixed the **test** so it stops producing the
   race, which removed the flake without touching the defect; this change removes the defect. The
   race was reproduced under CPU load 3 times in 11 runs across both orderings, never on a quiet host
