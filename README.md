@@ -2,6 +2,8 @@
 
 A monorepo for building reliable Java backends with functional programming patterns and a unified application runtime.
 
+**Current release branch: `release-1.0.0-rc4`.** Development integrates here and pull requests target this branch, not `main`. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## What's Inside
 
 **[Pragmatica Core](core/README.md)** — Functional primitives for Java: `Result<T>`, `Option<T>`, `Promise<T>`. No exceptions, no nulls, composable error handling.
