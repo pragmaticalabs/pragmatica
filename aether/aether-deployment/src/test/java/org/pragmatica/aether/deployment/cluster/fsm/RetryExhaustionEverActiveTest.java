@@ -265,6 +265,85 @@ class RetryExhaustionEverActiveTest {
                 .doesNotContain(SLICE);
     }
 
+    /// Leg 1 in isolation: a leader that inherited a LIVE instance it never watched start.
+    ///
+    /// This is failover in the middle of a deployment — some instance is ACTIVE, but the blueprint
+    /// never retired, so no SUCCEEDED record exists and `everActiveArtifacts` is empty on the new
+    /// leader. `rebuildSliceStateFromKVStoreEntries` restores the ACTIVE slice state directly,
+    /// without going through `handleSliceActive`, so leg 1 is the only leg that can answer and the
+    /// artifact must not be condemned.
+    @Test
+    void aRestoredActiveInstance_isEnoughOnALeaderThatNeverWatchedItStart() {
+        var expanded = blueprint();
+        var newLeaderCluster = new RecordingClusterNode(SELF);
+        var newLeaderStore = freshStore();
+
+        // No DeploymentOutcomeKey entry: this deployment never finished, so leg 3 cannot answer.
+        seed(newLeaderStore,
+             new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(SLICE.base()),
+                                 SliceTargetValue.sliceTargetValue(SLICE.version(), 3, Option.some(expanded.id()))),
+             new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(NODE_A, SLICE), activeInstance()));
+
+        var harness = leaderHarness(newLeaderCluster, newLeaderStore, RESOLVED_MEMBERSHIP);
+        var active = (ClusterDeploymentState.Active) harness.state();
+
+        assertThat(active.everActiveArtifacts())
+                .as("precondition: this leader never watched the artifact start")
+                .isEmpty();
+        assertThat(active.sliceStates())
+                .as("precondition: but it inherited a live instance from the previous one")
+                .containsEntry(SliceNodeKey.sliceNodeKey(SLICE, NODE_A), SliceState.ACTIVE);
+
+        for (var report = 1; report <= TERMINAL_ON_REPORT; report++) {
+            harness.dispatch(new NodeArtifactPutReceived(replayOn(SELF, intermittentFailure())));
+        }
+
+        assertThat(active.permanentlyFailed())
+                .as("an instance that is ACTIVE right now is evidence enough on its own")
+                .doesNotContain(SLICE);
+    }
+
+    /// The other half of the anti-livelock boundary: a durable SUCCEEDED record describes the
+    /// attempt that WROTE it, and must not vote for the attempt currently in flight.
+    ///
+    /// Nothing removes a `DeploymentOutcomeKey` entry when a blueprint id is re-applied, so a
+    /// re-used id whose new load order carries a slice that never existed before would otherwise
+    /// hand that brand-new slice the previous attempt's success and it would never settle. Inputs
+    /// are identical to `durableSucceededOutcome_isEnoughOnANewLeaderWithNoInMemoryEvidence` apart
+    /// from the blueprint being put in flight, and the expectations are opposite — so the pair
+    /// discriminates the suppression on its own.
+    @Test
+    void aDurableSucceededOutcome_doesNotVoteForTheAttemptStillInFlight() {
+        var expanded = blueprint();
+        var newLeaderCluster = new RecordingClusterNode(SELF);
+        var newLeaderStore = freshStore();
+
+        seed(newLeaderStore,
+             new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(SLICE.base()),
+                                 SliceTargetValue.sliceTargetValue(SLICE.version(), 3, Option.some(expanded.id()))),
+             new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                 DeploymentOutcomeValue.succeeded(1L)));
+
+        var harness = leaderHarness(newLeaderCluster, newLeaderStore, RESOLVED_MEMBERSHIP);
+
+        // The blueprint id is applied again — a NEW attempt, against a record written by the old one.
+        harness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
+
+        var active = (ClusterDeploymentState.Active) harness.state();
+
+        assertThat(active.everActiveArtifacts())
+                .as("precondition: the in-memory legs are silent, so only the durable record could vote")
+                .isEmpty();
+
+        for (var report = 1; report <= TERMINAL_ON_REPORT; report++) {
+            harness.dispatch(new NodeArtifactPutReceived(replayOn(SELF, intermittentFailure())));
+        }
+
+        assertThat(active.permanentlyFailed())
+                .as("a record describing the PREVIOUS attempt must not keep the current one alive")
+                .contains(SLICE);
+    }
+
     /// The anti-livelock boundary. "Ever reached ACTIVE" must be scoped to the deployment it
     /// describes, or a coordinate that ran once and has since become unfetchable would be re-driven
     /// forever on every LATER deployment — #922 reopened through the guard meant to bound it. The
