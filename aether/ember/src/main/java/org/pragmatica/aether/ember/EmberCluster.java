@@ -94,7 +94,6 @@ public final class EmberCluster {
     public static final int DEFAULT_BASE_APP_HTTP_PORT = 8070;
     private static final TimeSpan NODE_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     private static final long ROLLING_RESTART_DELAY_MS = 5_000;
-
     /// #727 review B1 — the two values [#observedState] can produce, both read from the node.
     /// "active" is short for consensus-active ([AetherNode#isReady]), not a general health verdict.
     public static final String STATE_ACTIVE = "active";
@@ -603,7 +602,6 @@ public final class EmberCluster {
         var startFailures = new ConcurrentHashMap<String, String>();
 
         lastStartFailure.set(null);
-
         for (int i = 0; i < initialClusterSize; i++) {
             var nodeInfo = initialNodes.get(i);
             var nodeIdStr = nodeInfo.id().id();
@@ -621,7 +619,8 @@ public final class EmberCluster {
 
             nodes.put(nodeIdStr, node);
             startPromises.add(node.start()
-                                  .onFailure(cause -> startFailures.put(nodeIdStr, cause.message()))
+                                  .onFailure(cause -> startFailures.put(nodeIdStr,
+                                                                        cause.message()))
                                   .onFailure(firstFailure::fail)
                                   .map(_ -> NodeStartResult.nodeStartResult(nodeIdStr,
                                                                             port,
@@ -635,7 +634,9 @@ public final class EmberCluster {
 
         var outcome = Promise.<Unit> promise();
 
-        Promise.allOf(startPromises).flatMap(results -> handleStartResults(results, startFailures)).onResult(outcome::resolve);
+        Promise.allOf(startPromises)
+               .flatMap(results -> handleStartResults(results, startFailures))
+               .onResult(outcome::resolve);
         firstFailure.onFailure(cause -> abortStart(cause, startFailures).onResult(outcome::resolve));
 
         return outcome;
@@ -994,7 +995,9 @@ public final class EmberCluster {
     /// [#STATE_ACTIVE] means consensus-active, NOT "healthy in every respect" — because the next
     /// unqualified word here would be the same defect again.
     private static String observedState(AetherNode node) {
-        return node.isReady() ? STATE_ACTIVE : STATE_INACTIVE;
+        return node.isReady()
+               ? STATE_ACTIVE
+               : STATE_INACTIVE;
     }
 
     public Option<AetherNode> getNode(String nodeIdStr) {
