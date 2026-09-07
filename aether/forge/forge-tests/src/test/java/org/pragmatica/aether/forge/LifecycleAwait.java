@@ -7,10 +7,14 @@ package org.pragmatica.aether.forge;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.assertj.core.api.Assertions.fail;
 
 /// #915 — every lifecycle await in this module is bounded, and every expiry NAMES its step.
 ///
@@ -101,9 +105,7 @@ final class LifecycleAwait {
     /// method this is.
     static <T> T settled(String step, EmberCluster cluster, TimeSpan bound, Promise<T> promise) {
         return promise.await(bound)
-                      .fold(cause -> {
-                                throw new AssertionError(report(step, bound, cause.message(), cluster));
-                            },
+                      .fold(cause -> fail(report(step, bound, cause.message(), cluster)),
                             value -> value);
     }
 
@@ -123,21 +125,22 @@ final class LifecycleAwait {
     /// stall is closed either way — the wait now ends at the bound instead of parking to the
     /// backstop — while the test's own verdict stays the test's. Reporting is strictly more than the
     /// bare `await()` did, which was nothing at all.
-    static void bestEffort(String step, EmberCluster cluster, TimeSpan bound, Promise<?> promise) {
-        promise.await(bound)
-               .onFailure(cause -> log.error("#915 lifecycle step did not settle (not failing the test — "
-                                             + "this step's result was discarded before #915):\n{}",
-                                             report(step, bound, cause.message(), cluster)));
+    static Result<Unit> bestEffort(String step, EmberCluster cluster, TimeSpan bound, Promise<?> promise) {
+        return promise.await(bound)
+                      .onFailure(cause -> log.error("#915 lifecycle step did not settle (not failing the test — "
+                                                    + "this step's result was discarded before #915):\n{}",
+                                                    report(step, bound, cause.message(), cluster)))
+                      .mapToUnit();
     }
 
     /// The cluster-wide bound, for a `stop` whose result was previously discarded.
-    static void bestEffort(String step, EmberCluster cluster, Promise<?> promise) {
-        bestEffort(step, cluster, LIFECYCLE_BOUND, promise);
+    static Result<Unit> bestEffort(String step, EmberCluster cluster, Promise<?> promise) {
+        return bestEffort(step, cluster, LIFECYCLE_BOUND, promise);
     }
 
     /// The single-node bound, for a `killNode` or `blackhole` whose result was previously discarded.
-    static void nodeBestEffort(String step, EmberCluster cluster, Promise<?> promise) {
-        bestEffort(step, cluster, NODE_BOUND, promise);
+    static Result<Unit> nodeBestEffort(String step, EmberCluster cluster, Promise<?> promise) {
+        return bestEffort(step, cluster, NODE_BOUND, promise);
     }
 
     static String report(String step, TimeSpan bound, String cause, EmberCluster cluster) {
@@ -149,11 +152,9 @@ final class LifecycleAwait {
     /// Delegates to [ClusterSnapshot], which is the module's one renderer. The only thing decided
     /// here is the case that renderer cannot be asked about: a cluster reference that is null.
     static String snapshot(EmberCluster cluster) {
-        if (cluster == null) {
-            return NO_CLUSTER;
-        }
-
-        return snapshot(cluster.status(), cluster.lastStartFailure());
+        return Option.option(cluster)
+                     .map(present -> snapshot(present.status(), present.lastStartFailure()))
+                     .or(NO_CLUSTER);
     }
 
     /// Split from the accessor above for the reason #913 split [ClusterSnapshot#render]: the branches
