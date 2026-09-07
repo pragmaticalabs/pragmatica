@@ -49,6 +49,18 @@
   The pin deliberately asserts the recovery rather than the absence of a rollback, because "no
   rollback happened" is equally true of a cluster that has silently stopped doing anything — which is
   the bug itself.
+- **The exposure was wider than it looks, because a blueprint retires on its FIRST active instance.**
+  `InFlightBlueprint` builds `pendingSlices` with one entry per slice **artifact**, not per instance,
+  so `trackBlueprintSliceActive` removes the blueprint from `inFlightBlueprints` and writes a
+  SUCCEEDED outcome as soon as **one** instance of each slice reaches ACTIVE — whatever the desired
+  instance count. A three-instance slice was therefore unprotected from the moment its first instance
+  came up: from then on an exhaustion on any single node would have condemned it cluster-wide, with
+  no rollback and no record. A corollary worth knowing on its own: a SUCCEEDED deployment outcome
+  attests that every slice started *somewhere*, **not** that the deployment reached its desired
+  instance count
+  [mechanism: `InFlightBlueprint.inFlightBlueprint` fills `pendingSlices` from
+  `expanded.loadOrder()`, one entry per artifact; `trackBlueprintSliceActive` removes on
+  `pendingSlices().remove(artifact)` and calls `recordSucceededOutcome` the moment that set empties].
 - **The discriminator is read from state that survives leader failover.**
   `hasActiveInstanceElsewhere` tests `sliceStates` for an ACTIVE instance on a live node rather than
   asking whether the blueprint is still in `inFlightBlueprints`. The in-flight map is the cheaper test
