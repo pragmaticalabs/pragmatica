@@ -554,12 +554,9 @@ Visible at `GET /api/events` (the events stream the aggregator publishes to). Se
 6. **Follower can't admit floor.** *Resolution:* create entry anyway, log+event (§8). [DECISION]
 7. **`fatal` flag for deployment failure.** Mapping budget-exceed to non-fatal/transient assumes the
    condition may clear. If a slice's stream genuinely can never fit, it retries `MAX_RETRIES` (5) then
-   `logMaxRetriesExceeded` logs at ERROR and routes `DeploymentFailed` — still loud.
-   *Resolution:* non-fatal/transient is correct. **Caveat, corrected 2026-09-07:** the second half of
-   this resolution — "permanent failure still surfaces after retries" — is NOT true on disk.
-   `logMaxRetriesExceeded` never marks the artifact permanently failed, so the deployment is
-   re-driven roughly every second instead of giving up. Tracked by #922; until it lands, do not rely
-   on retry exhaustion as a terminal state. [DECISION]
+   `logMaxRetriesExceeded` + `DeploymentFailed` (`:1077-1089`) — still loud, eventually gives up.
+   *Resolution:* non-fatal/transient is correct; permanent failure still surfaces after retries.
+   [DECISION]
 
 ---
 
