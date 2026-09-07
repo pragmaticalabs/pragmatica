@@ -2,22 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
-
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.TerminalOperation;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
@@ -26,13 +11,28 @@ import java.util.List;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberCluster.NodeStatus;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// Spike — in-process (Ember/single-JVM) reproduction of the Docker-only SILENT-DEATH
 /// failure-detection bug (issues #230/#231/#232).
@@ -57,14 +57,13 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class MembershipBlackHoleSpikeTest {
     private static final Logger log = LoggerFactory.getLogger(MembershipBlackHoleSpikeTest.class);
-
     private static final int SIZE = 5;
     private static final int BASE_PORT = 5360;
     private static final int BASE_MGMT_PORT = 5460;
     private static final int BASE_APP_HTTP_PORT = 5560;
     private static final Duration FORM_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL = Duration.ofMillis(500);
-    private static final Duration SETTLE = Duration.ofSeconds(20);     // clear 15s auto-heal cooldown
+    private static final Duration SETTLE = Duration.ofSeconds(20);  // clear 15s auto-heal cooldown
     private static final Duration DETECT_BUDGET = Duration.ofSeconds(60);
     private static final Duration OBSERVE_POLL = Duration.ofMillis(500);
     private static final Duration LOG_EVERY = Duration.ofMillis(2000);
@@ -79,19 +78,19 @@ class MembershipBlackHoleSpikeTest {
     @TerminalOperation
     void setUp() {
         cluster = emberCluster(SIZE, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "bh");
-        cluster.start()
-               .await()
-               .onFailure(MembershipBlackHoleSpikeTest::failStart);
-
-        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
+        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader()
+                                                                           .isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(this::allNodesHealthy);
-        log.info("BLACKHOLE-SPIKE: {}-node cluster formed, leader={}", SIZE, cluster.currentLeader().or("none"));
+        log.info("BLACKHOLE-SPIKE: {}-node cluster formed, leader={}",
+                 SIZE,
+                 cluster.currentLeader().or("none"));
     }
 
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.settled("cluster stop in tearDown()", c, c.stop()));
     }
 
     @Test
@@ -99,7 +98,8 @@ class MembershipBlackHoleSpikeTest {
     void blackHoleNonLeader_shouldStillBeDetectedDeadAndTerminallyRemoved() {
         var nodes = cluster.status().nodes();
 
-        Option.all(firstMatching(nodes, n -> !n.isLeader()),
+        Option.all(firstMatching(nodes,
+                                 n -> !n.isLeader()),
                    firstMatching(nodes, NodeStatus::isLeader))
               .map(Selection::new)
               .toResult(SpikeError.LEADER_OR_VICTIM_UNAVAILABLE)
@@ -111,61 +111,71 @@ class MembershipBlackHoleSpikeTest {
     private void runSpike(Selection selection) {
         var victim = selection.victim();
         var survivorPort = selection.survivor().mgmtPort();
-        log.info("BLACKHOLE-SPIKE: leader/survivor={} victim={} (will go silent, channels stay open)",
-                 selection.survivor().id(), victim.id());
 
+        log.info("BLACKHOLE-SPIKE: leader/survivor={} victim={} (will go silent, channels stay open)",
+                 selection.survivor().id(),
+                 victim.id());
         log.info("BLACKHOLE-SPIKE: settling {}s (auto-heal cooldown)", SETTLE.toSeconds());
         await().pollDelay(SETTLE).timeout(SETTLE.plusSeconds(5)).until(() -> true);
         log.info("BLACKHOLE-SPIKE: pre-kill survivor connectedPeers={} terminallyRemoved={}",
                  connectedPeers(survivorPort).map(Object::toString).or("?"),
                  terminallyRemoved(survivorPort, victim.id()));
-
         var t0 = System.nanoTime();
-        cluster.blackhole(victim.id()).await();
-        log.info("BLACKHOLE-SPIKE: black-holed {} at t0 — node is now silent but NOT disconnected", victim.id());
 
+        LifecycleAwait.nodeSettled("blackhole node " + victim.id() + " in runSpike()",
+                                   cluster,
+                                   cluster.blackhole(victim.id()));
+        log.info("BLACKHOLE-SPIKE: black-holed {} at t0 — node is now silent but NOT disconnected", victim.id());
         var detectedMs = observeUntilRemoved(survivorPort, victim.id(), t0);
+
         log.info("BLACKHOLE-SPIKE RESULT: victim={} terminal-removal={}ms (-1=NOT within {}s)  "
-                 + "survivor connectedPeers={}",
-                 victim.id(), detectedMs, DETECT_BUDGET.toSeconds(),
+                + "survivor connectedPeers={}",
+                 victim.id(),
+                 detectedMs,
+                 DETECT_BUDGET.toSeconds(),
                  connectedPeers(survivorPort).map(Object::toString).or("?"));
         log.info("BLACKHOLE-SPIKE FINAL /api/v1/nodes/status: {}", status(survivorPort));
         log.info("BLACKHOLE-SPIKE FINAL /api/v1/events: {}", events(survivorPort));
-
-        assertThat(detectedMs)
-            .as("EXPECTED: silently-dead %s is terminally removed within %ds — ABSENT from the "
-                + "leader's active membership AND a NODE_FAILED/NODE_LEFT event emitted for it "
-                + "(-1 = lingering in membership — reproduces the Docker silent-death bug)",
-                victim.id(), DETECT_BUDGET.toSeconds())
-            .isGreaterThanOrEqualTo(0L);
+        assertThat(detectedMs).as("EXPECTED: silently-dead %s is terminally removed within %ds — ABSENT from the "
+                                 + "leader's active membership AND a NODE_FAILED/NODE_LEFT event emitted for it "
+                                 + "(-1 = lingering in membership — reproduces the Docker silent-death bug)",
+                                  victim.id(),
+                                  DETECT_BUDGET.toSeconds())
+                  .isGreaterThanOrEqualTo(0L);
     }
 
     /// Polls the survivor's membership + cluster-event view until the victim is terminally
     /// removed (absent from active membership AND a NODE_FAILED/NODE_LEFT event present) or the
     /// budget expires. Returns the first-observed terminal latency in ms, or -1 if never observed.
     private long observeUntilRemoved(int survivorPort, String victimId, long t0) {
-        var latch = new long[]{-1L};
+        var latch = new long[]{ - 1L};
         var lastLog = new long[]{0L};
+
         await().pollInterval(OBSERVE_POLL)
-               .pollDelay(Duration.ZERO)
-               .timeout(DETECT_BUDGET.plusSeconds(5))
-               .until(() -> recordTick(survivorPort, victimId, t0, latch, lastLog));
+             .pollDelay(Duration.ZERO)
+             .timeout(DETECT_BUDGET.plusSeconds(5))
+             .until(() -> recordTick(survivorPort, victimId, t0, latch, lastLog));
+
         return latch[0];
     }
 
     private boolean recordTick(int survivorPort, String victimId, long t0, long[] latch, long[] lastLog) {
         var elapsed = (System.nanoTime() - t0) / 1_000_000L;
-        if (terminallyRemoved(survivorPort, victimId) && latch[0] < 0) {
+
+        if (terminallyRemoved(survivorPort, victimId) && latch[0]< 0) {
             latch[0] = elapsed;
         }
+
         maybeLog(survivorPort, victimId, elapsed, lastLog);
-        return latch[0] >= 0 || elapsed >= DETECT_BUDGET.toMillis();
+
+        return latch[0]>= 0 || elapsed >= DETECT_BUDGET.toMillis();
     }
 
     private void maybeLog(int survivorPort, String victimId, long elapsedMs, long[] lastLog) {
-        if (elapsedMs - lastLog[0] < LOG_EVERY.toMillis()) {
+        if (elapsedMs - lastLog[0]< LOG_EVERY.toMillis()) {
             return;
         }
+
         lastLog[0] = elapsedMs;
         log.info("BLACKHOLE-SPIKE: t+{}ms survivor connectedPeers={} victimAbsent={} failedEvent={}",
                  elapsedMs,
@@ -175,12 +185,16 @@ class MembershipBlackHoleSpikeTest {
     }
 
     private boolean allNodesHealthy() {
-        return cluster.status().nodes().stream()
-                      .allMatch(node -> httpGet(node.mgmtPort(), "/api/v1/health").contains("\"quorum\":true"));
+        return cluster.status()
+                      .nodes()
+                      .stream()
+                      .allMatch(node -> httpGet(node.mgmtPort(),
+                                                "/api/v1/health").contains("\"quorum\":true"));
     }
 
     private Option<Integer> connectedPeers(int port) {
         var matcher = CONNECTED_PEERS.matcher(httpGet(port, "/api/v1/health"));
+
         return matcher.find()
                ? Option.some(Integer.parseInt(matcher.group(1)))
                : Option.none();
@@ -196,7 +210,7 @@ class MembershipBlackHoleSpikeTest {
     /// Victim is gone from the leader's active node list (`/api/v1/nodes/status` no longer carries
     /// its id). Matched on the JSON `"id":"<victimId>"` field present per NodeInfo entry.
     private boolean victimAbsentFromMembership(int port, String victimId) {
-        return !status(port).contains("\"id\":\"" + victimId + "\"");
+        return ! status(port).contains("\"id\":\"" + victimId + "\"");
     }
 
     /// A terminal departure event (NODE_FAILED or NODE_LEFT) for the victim appears in the
@@ -204,6 +218,7 @@ class MembershipBlackHoleSpikeTest {
     /// `type` enum name; require both the type marker and the victim id in the event payload.
     private boolean victimHasDepartureEvent(int port, String victimId) {
         var body = events(port);
+
         return body.contains(victimId) && (body.contains(NODE_FAILED) || body.contains(NODE_LEFT));
     }
 
@@ -222,6 +237,7 @@ class MembershipBlackHoleSpikeTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -246,13 +262,10 @@ class MembershipBlackHoleSpikeTest {
 
     private enum SpikeError implements Cause {
         LEADER_OR_VICTIM_UNAVAILABLE("No leader, or no non-leader victim / leader survivor available");
-
         private final String message;
-
         SpikeError(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;

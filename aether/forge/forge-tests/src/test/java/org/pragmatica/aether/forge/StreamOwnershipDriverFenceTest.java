@@ -2,17 +2,13 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
+import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -32,18 +28,23 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.TerminalOperation;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Duration;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Supplier;
-
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+
 
 /// #345 item 1d-iii end-to-end gate: the leader-only stream-ownership DRIVER (the
 /// `onReconcilePassComplete` batch seam on [ReplicaSetController] bound to the
@@ -96,21 +97,17 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class StreamOwnershipDriverFenceTest {
     private static final Logger log = LoggerFactory.getLogger(StreamOwnershipDriverFenceTest.class);
-
     private static final int SIZE = 5;
     private static final int BASE_PORT = 5960;
     private static final int BASE_MGMT_PORT = 6060;
     private static final int BASE_APP_HTTP_PORT = 6160;
     private static final String PREFIX = "sodf";
-
     private static final Duration FORM_TIMEOUT = Duration.ofSeconds(180);
     private static final Duration OBSERVE_TIMEOUT = Duration.ofSeconds(150);
     private static final Duration POLL = Duration.ofMillis(500);
-
     private static final String FENCE_STREAM = "sodf:fence";
     private static final int PARTITION = 0;
     private static final int REQUESTED_RF = 1;
-
     /// Distinct stream for the same-term-transfer test (test 3), so it shares no committed ownership
     /// state with the auto-commit test (test 1) under the PER_CLASS shared cluster.
     private static final String TRANSFER_STREAM = "sodf:transfer";
@@ -122,16 +119,19 @@ class StreamOwnershipDriverFenceTest {
     @TerminalOperation
     void setUp() {
         cluster = emberCluster(SIZE, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, PREFIX);
-        cluster.start().await().onFailure(StreamOwnershipDriverFenceTest::failStart);
-        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
+        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader()
+                                                                           .isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(this::allNodesReady);
-        log.info("OWNERSHIP-DRIVER-FENCE: {}-node cluster formed, leader={}", SIZE, cluster.currentLeader().or("none"));
+        log.info("OWNERSHIP-DRIVER-FENCE: {}-node cluster formed, leader={}",
+                 SIZE,
+                 cluster.currentLeader().or("none"));
     }
 
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.settled("cluster stop in tearDown()", c, c.stop()));
     }
 
     /// The DRIVER auto-commits ownership on a membership reconcile, and the resulting committed epoch
@@ -141,13 +141,13 @@ class StreamOwnershipDriverFenceTest {
     @TerminalOperation
     void driverAutoCommitsOwnership_andStaleEpochAppendIsRejected() {
         cluster.allNodes().forEach(node -> materialize(node, FENCE_STREAM));
-
         // The fenced partition's HRW owner, computed from the SAME committed member view the driver uses;
         // it stays ALIVE for the whole test (the deposed-but-alive case).
         var owner0 = hrwOwner(FENCE_STREAM, PARTITION);
-        log.info("OWNERSHIP-DRIVER-FENCE: fenced-partition owner0={} leader={}",
-                 owner0.id(), cluster.currentLeader().or("none"));
 
+        log.info("OWNERSHIP-DRIVER-FENCE: fenced-partition owner0={} leader={}",
+                 owner0.id(),
+                 cluster.currentLeader().or("none"));
         // Drive the leader's ReplicaSetController reconcile with a real MembershipDecision — the SAME
         // event type the production membership tail delivers — so the driver iterates the now-materialized
         // FENCE_STREAM and auto-commits its ownership records. A NodeJoined for an already-present member
@@ -160,30 +160,29 @@ class StreamOwnershipDriverFenceTest {
         // and idempotent, so re-driving until the record appears removes any materialize/reconcile race.
         await().atMost(OBSERVE_TIMEOUT).pollInterval(POLL).until(this::reconcileAndCheckCommitted);
         var committed = committedOwnership(PARTITION).or(StreamOwnershipDriverFenceTest::failNoRecord);
-        assertThat(committed.owner())
-            .as("driver must auto-commit the HRW owner for the fenced partition (no manual commit)")
-            .isEqualTo(owner0);
-        assertThat(committed.ownerEpoch().isStrictlyAfter(Epoch.ZERO))
-            .as("driver-committed epoch %s must strictly dominate the unfenced floor (Epoch.ZERO)", committed.ownerEpoch())
-            .isTrue();
-        assertThat(committed.ownershipTerm())
-            .as("driver's initial ownership record carries ownershipTerm 1")
-            .isEqualTo(1L);
-        log.info("OWNERSHIP-DRIVER-FENCE: driver auto-committed ({}, {}) owner={} epoch={} ownershipTerm={}",
-                 FENCE_STREAM, PARTITION, committed.owner().id(), committed.ownerEpoch(), committed.ownershipTerm());
 
+        assertThat(committed.owner()).as("driver must auto-commit the HRW owner for the fenced partition (no manual commit)")
+                  .isEqualTo(owner0);
+        assertThat(committed.ownerEpoch().isStrictlyAfter(Epoch.ZERO)).as("driver-committed epoch %s must strictly dominate the unfenced floor (Epoch.ZERO)",
+                                                                          committed.ownerEpoch())
+                  .isTrue();
+        assertThat(committed.ownershipTerm()).as("driver's initial ownership record carries ownershipTerm 1")
+                  .isEqualTo(1L);
+        log.info("OWNERSHIP-DRIVER-FENCE: driver auto-committed ({}, {}) owner={} epoch={} ownershipTerm={}",
+                 FENCE_STREAM,
+                 PARTITION,
+                 committed.owner().id(),
+                 committed.ownerEpoch(),
+                 committed.ownershipTerm());
         // The owner under test is still ALIVE. Wait for its OwnershipEpochHighWater to observe the
         // driver-committed ValuePut (the high-water advance is what activates the fence), then assert a
         // stale-epoch (ZERO) append is rejected.
         var ownerNode = resolveNode(owner0);
-        await().atMost(OBSERVE_TIMEOUT).pollInterval(POLL)
-               .until(() -> staleAppend(ownerNode, Epoch.ZERO).isFailure());
 
-        staleAppend(ownerNode, Epoch.ZERO)
-            .onSuccess(offset -> Assertions.fail(
-                "fence: a below-generation (Epoch.ZERO) append on the alive owner must be REJECTED once the "
-                + "driver-committed epoch advanced the high-water, but it was accepted at offset " + offset))
-            .onFailure(StreamOwnershipDriverFenceTest::assertStaleEpochAppend);
+        await().atMost(OBSERVE_TIMEOUT).pollInterval(POLL).until(() -> staleAppend(ownerNode, Epoch.ZERO).isFailure());
+        staleAppend(ownerNode, Epoch.ZERO).onSuccess(offset -> Assertions.fail("fence: a below-generation (Epoch.ZERO) append on the alive owner must be REJECTED once the "
+                                                                              + "driver-committed epoch advanced the high-water, but it was accepted at offset " + offset))
+                   .onFailure(StreamOwnershipDriverFenceTest::assertStaleEpochAppend);
         log.info("OWNERSHIP-DRIVER-FENCE: stale-epoch append on alive owner {} correctly REJECTED — fence live via driver",
                  owner0.id());
     }
@@ -200,53 +199,57 @@ class StreamOwnershipDriverFenceTest {
     @TerminalOperation
     void sameTermOwnerTransfer_deposedButAliveOwnerIsFenced() {
         cluster.allNodes().forEach(node -> materialize(node, TRANSFER_STREAM));
-
         var view = coreMembers(leaderNode());
         var owner0 = hrwOwner(TRANSFER_STREAM, TRANSFER_PARTITION);
         var owner1 = view.stream().filter(n -> !n.equals(owner0)).findFirst().orElse(view.getLast());
         var owner0Node = resolveNode(owner0);
         var term = leaderNode().currentGenerationEpoch().rabiaTerm();
-        log.info("OWNERSHIP-DRIVER-FENCE: same-term transfer owner0={} owner1={} term={}", owner0.id(), owner1.id(), term);
 
+        log.info("OWNERSHIP-DRIVER-FENCE: same-term transfer owner0={} owner1={} term={}",
+                 owner0.id(),
+                 owner1.id(),
+                 term);
         var hrwHolder = new AtomicReference<>(owner0);
         var writer = liveWriter(term, hrwHolder::get);
-
         // The writer commits owner0 at (term, 1) through REAL consensus — no manual Put; the writer mints it.
         commitOwnershipVia(writer, TRANSFER_STREAM, TRANSFER_PARTITION);
-        await().atMost(OBSERVE_TIMEOUT).pollInterval(POLL)
-               .until(() -> committedOwner(TRANSFER_PARTITION).map(v -> v.owner().equals(owner0)).or(false));
+        await().atMost(OBSERVE_TIMEOUT)
+             .pollInterval(POLL)
+             .until(() -> committedOwner(TRANSFER_PARTITION).map(v -> v.owner()
+                                                                       .equals(owner0))
+                                        .or(false));
         var first = committedOwner(TRANSFER_PARTITION).or(StreamOwnershipDriverFenceTest::failNoRecord);
-        assertThat(first.ownerEpoch())
-            .as("writer commits owner0 at (term, ownershipTerm=1)")
-            .isEqualTo(Epoch.epoch(term, 1L));
 
+        assertThat(first.ownerEpoch()).as("writer commits owner0 at (term, ownershipTerm=1)")
+                  .isEqualTo(Epoch.epoch(term, 1L));
         // Same-term reshuffle: HRW now selects owner1. The writer commits the transfer at (term, 2).
         hrwHolder.set(owner1);
         commitOwnershipVia(writer, TRANSFER_STREAM, TRANSFER_PARTITION);
-        await().atMost(OBSERVE_TIMEOUT).pollInterval(POLL)
-               .until(() -> committedOwner(TRANSFER_PARTITION).map(v -> v.owner().equals(owner1)).or(false));
+        await().atMost(OBSERVE_TIMEOUT)
+             .pollInterval(POLL)
+             .until(() -> committedOwner(TRANSFER_PARTITION).map(v -> v.owner()
+                                                                       .equals(owner1))
+                                        .or(false));
         var second = committedOwner(TRANSFER_PARTITION).or(StreamOwnershipDriverFenceTest::failNoRecord);
-        assertThat(second.ownerEpoch())
-            .as("the same-term transfer to owner1 advances the epoch to (term, ownershipTerm=2)")
-            .isEqualTo(Epoch.epoch(term, 2L));
-        assertThat(second.ownerEpoch().isStrictlyAfter(first.ownerEpoch()))
-            .as("owner1's epoch strictly dominates owner0's at the SAME generation term")
-            .isTrue();
+
+        assertThat(second.ownerEpoch()).as("the same-term transfer to owner1 advances the epoch to (term, ownershipTerm=2)")
+                  .isEqualTo(Epoch.epoch(term, 2L));
+        assertThat(second.ownerEpoch().isStrictlyAfter(first.ownerEpoch())).as("owner1's epoch strictly dominates owner0's at the SAME generation term")
+                  .isTrue();
         log.info("OWNERSHIP-DRIVER-FENCE: same-term transfer committed owner1 at {} (was {})",
-                 second.ownerEpoch(), first.ownerEpoch());
-
+                 second.ownerEpoch(),
+                 first.ownerEpoch());
         // owner0 is STILL ALIVE. Once its high-water observes (term, 2), its (term, 1)-stamped append is fenced.
-        await().atMost(OBSERVE_TIMEOUT).pollInterval(POLL)
-               .until(() -> transferAppend(owner0Node, Epoch.epoch(term, 1L)).isFailure());
-
-        transferAppend(owner0Node, Epoch.epoch(term, 1L))
-            .onSuccess(offset -> Assertions.fail(
-                "fence: the deposed-but-alive owner0's (term, 1) append must be REJECTED after the same-term "
-                + "transfer advanced the committed epoch to (term, 2), but it was accepted at offset " + offset))
-            .onFailure(StreamOwnershipDriverFenceTest::assertStaleEpochAppend);
-        assertThat(cluster.getNode(owner0.id()).isPresent())
-            .as("owner0 must remain ALIVE throughout the transfer (the deposed-but-alive case)")
-            .isTrue();
+        await().atMost(OBSERVE_TIMEOUT)
+             .pollInterval(POLL)
+             .until(() -> transferAppend(owner0Node,
+                                         Epoch.epoch(term, 1L)).isFailure());
+        transferAppend(owner0Node,
+                       Epoch.epoch(term, 1L)).onSuccess(offset -> Assertions.fail("fence: the deposed-but-alive owner0's (term, 1) append must be REJECTED after the same-term "
+                                                                                 + "transfer advanced the committed epoch to (term, 2), but it was accepted at offset " + offset))
+                      .onFailure(StreamOwnershipDriverFenceTest::assertStaleEpochAppend);
+        assertThat(cluster.getNode(owner0.id()).isPresent()).as("owner0 must remain ALIVE throughout the transfer (the deposed-but-alive case)")
+                  .isTrue();
         log.info("OWNERSHIP-DRIVER-FENCE: deposed-but-alive owner0 {} (term,1) append correctly REJECTED — same-term fence live",
                  owner0.id());
     }
@@ -267,26 +270,27 @@ class StreamOwnershipDriverFenceTest {
     /// forwards the command it produces, exactly as `AetherNode.driveStreamOwnership` does in production.
     @TerminalOperation
     private void commitOwnershipVia(StreamPartitionOwnershipWriter writer, String stream, int partition) {
-        writer.writeOwnershipChange(stream, partition)
-              .onPresent(this::applyOnLeader);
+        writer.writeOwnershipChange(stream, partition).onPresent(this::applyOnLeader);
     }
 
     @TerminalOperation
     private void applyOnLeader(KVCommand<AetherKey> command) {
-        leaderNode().<Object>apply(List.of(command))
-                    .await()
-                    .onFailure(StreamOwnershipDriverFenceTest::failScenario);
+        leaderNode().<Object> apply(List.of(command)).await().onFailure(StreamOwnershipDriverFenceTest::failScenario);
     }
 
     private Result<Long> transferAppend(AetherNode ownerNode, Epoch staleEpoch) {
         return ownerNode.streamPartitionManager()
-                        .publishLocal(TRANSFER_STREAM, TRANSFER_PARTITION, "stale-write".getBytes(UTF_8), System.currentTimeMillis(), staleEpoch);
+                        .publishLocal(TRANSFER_STREAM,
+                                      TRANSFER_PARTITION,
+                                      "stale-write".getBytes(UTF_8),
+                                      System.currentTimeMillis(),
+                                      staleEpoch);
     }
 
     private Option<StreamPartitionOwnershipValue> committedOwner(int partition) {
         return leaderNode().kvStore()
-                           .getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(TRANSFER_STREAM, partition),
-                                     StreamPartitionOwnershipValue.class);
+                         .getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(TRANSFER_STREAM, partition),
+                                   StreamPartitionOwnershipValue.class);
     }
 
     /// Re-deliver the membership reconcile trigger to every node, then check whether the driver has
@@ -314,13 +318,17 @@ class StreamOwnershipDriverFenceTest {
 
     private Result<Long> staleAppend(AetherNode ownerNode, Epoch staleEpoch) {
         return ownerNode.streamPartitionManager()
-                        .publishLocal(FENCE_STREAM, PARTITION, "stale-write".getBytes(UTF_8), System.currentTimeMillis(), staleEpoch);
+                        .publishLocal(FENCE_STREAM,
+                                      PARTITION,
+                                      "stale-write".getBytes(UTF_8),
+                                      System.currentTimeMillis(),
+                                      staleEpoch);
     }
 
     private Option<StreamPartitionOwnershipValue> committedOwnership(int partition) {
         return leaderNode().kvStore()
-                           .getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(FENCE_STREAM, partition),
-                                     StreamPartitionOwnershipValue.class);
+                         .getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(FENCE_STREAM, partition),
+                                   StreamPartitionOwnershipValue.class);
     }
 
     /// HRW owner computed from the leader's committed member view (`coreNodes()` / `clusterSize()`) —
@@ -350,7 +358,10 @@ class StreamOwnershipDriverFenceTest {
     }
 
     private int clusterSize(AetherNode node) {
-        return node.clusterTopologyManager().map(ctm -> ctm.observer().clusterSize()).or(SIZE);
+        return node.clusterTopologyManager()
+                   .map(ctm -> ctm.observer()
+                                  .clusterSize())
+                   .or(SIZE);
     }
 
     private AetherNode resolveNode(NodeId nodeId) {
@@ -361,11 +372,15 @@ class StreamOwnershipDriverFenceTest {
     }
 
     private AetherNode leaderNode() {
-        return cluster.currentLeader().flatMap(cluster::getNode).or(cluster.allNodes().getFirst());
+        return cluster.currentLeader()
+                      .flatMap(cluster::getNode)
+                      .or(cluster.allNodes().getFirst());
     }
 
     private boolean allNodesReady() {
-        return cluster.allNodes().stream().allMatch(AetherNode::isReady);
+        return cluster.allNodes()
+                      .stream()
+                      .allMatch(AetherNode::isReady);
     }
 
     private static StreamPartitionOwnershipValue failNoRecord() {
@@ -373,9 +388,9 @@ class StreamOwnershipDriverFenceTest {
     }
 
     private static void assertStaleEpochAppend(Cause cause) {
-        assertThat(cause)
-            .as("the deposed (below-generation) append must be rejected with StaleEpochAppend, but got: %s", cause.message())
-            .isInstanceOf(StreamError.StaleEpochAppend.class);
+        assertThat(cause).as("the deposed (below-generation) append must be rejected with StaleEpochAppend, but got: %s",
+                             cause.message())
+                  .isInstanceOf(StreamError.StaleEpochAppend.class);
     }
 
     private static void failStart(Cause cause) {
@@ -393,13 +408,10 @@ class StreamOwnershipDriverFenceTest {
     private enum FenceError implements Cause {
         NO_PLACEMENT("ReplicaPlacement returned no owner for the partition"),
         NODE_UNRESOLVED("Computed owner NodeId could not be resolved to a cluster node");
-
         private final String message;
-
         FenceError(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;

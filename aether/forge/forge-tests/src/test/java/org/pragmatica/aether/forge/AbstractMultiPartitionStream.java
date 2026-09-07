@@ -2,18 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
-
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.pragmatica.aether.ember.EmberCluster;
-import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
-import org.pragmatica.config.ConfigurationProvider;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
@@ -24,10 +13,22 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
+import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// Shared 5-node in-JVM Forge harness for the two multi-partition stream fixtures (#429 / #430),
 /// both deploying the `test-stream-multipart` blueprint (`streams.multipart-events`, partitions=4,
@@ -51,18 +52,15 @@ abstract class AbstractMultiPartitionStream {
     static final int NODES = 5;
     static final int INSTANCES = 5;
     static final int PARTITIONS = 4;
-
     static final String STREAM_SLICE = TestArtifacts.STREAM_MULTIPART_SLICE;
     static final String STREAM_NAME = "multipart-events";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
-
     static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     static final Duration PLACEMENT_TIMEOUT = Duration.ofSeconds(120);
     static final Duration DRAIN_TIMEOUT = Duration.ofSeconds(90);
     static final Duration FAILOVER_TIMEOUT = Duration.ofSeconds(180);
     static final long POLL_GAP_NANOS = Duration.ofMillis(20).toNanos();
-
     private static final Pattern EVENT_OBJECT = Pattern.compile("\\{[^{}]*\"offset\"[^{}]*}");
     private static final Pattern OFFSET_FIELD = Pattern.compile("\"offset\"\\s*:\\s*(\\d+)");
     private static final Pattern PAYLOAD_FIELD = Pattern.compile("\"payload\"\\s*:\\s*\"([^\"]*)\"");
@@ -76,26 +74,26 @@ abstract class AbstractMultiPartitionStream {
     record Event(long offset, long seq) {}
 
     // --- variant hooks ------------------------------------------------------
-
     abstract int basePort();
-
     abstract int baseMgmtPort();
-
     abstract int baseAppHttpPort();
-
     abstract String nodePrefix();
-
     abstract String blueprintId();
 
     // --- lifecycle ----------------------------------------------------------
-
     @BeforeAll
     void setUp() {
         var configProvider = ConfigurationProvider.builder()
                                                   .withSystemProperties("aether.")
                                                   .withEnvironment("AETHER_")
                                                   .build();
-        cluster = emberCluster(NODES, basePort(), baseMgmtPort(), baseAppHttpPort(), nodePrefix(), Option.some(configProvider));
+
+        cluster = emberCluster(NODES,
+                               basePort(),
+                               baseMgmtPort(),
+                               baseAppHttpPort(),
+                               nodePrefix(),
+                               Option.some(configProvider));
         startAndAwaitReady();
     }
 
@@ -103,22 +101,27 @@ abstract class AbstractMultiPartitionStream {
     void tearDown() {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
+
             httpDelete(leaderPort, "/api/v1/blueprints/" + blueprintId());
-            cluster.stop().await();
+            LifecycleAwait.settled("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
     private void startAndAwaitReady() {
-        cluster.start().await().onFailure(AbstractMultiPartitionStream::failStart);
-
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader().isPresent());
+        LifecycleAwait.settled("cluster start in startAndAwaitReady()", cluster, cluster.start());
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
+                                                                                    .isPresent());
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesHealthy);
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> allNodesAreMembers(NODES));
-
         deployStreamSlice();
-
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).failFast(this::failIfSliceFailed).until(this::appHttpReady);
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).failFast(this::failIfSliceFailed).until(this::publishReady);
+        await().atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .failFast(this::failIfSliceFailed)
+             .until(this::appHttpReady);
+        await().atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .failFast(this::failIfSliceFailed)
+             .until(this::publishReady);
     }
 
     private void deployStreamSlice() {
@@ -132,10 +135,9 @@ abstract class AbstractMultiPartitionStream {
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
         var response = postBlueprintWithRetry(leaderPort, blueprint);
 
-        assertThat(response)
-            .describedAs("multi-partition (partitions=4, RF=2) stream-slice deployment")
-            .doesNotContain("\"error\"")
-            .contains("\"status\":\"applied\"");
+        assertThat(response).describedAs("multi-partition (partitions=4, RF=2) stream-slice deployment")
+                  .doesNotContain("\"error\"")
+                  .contains("\"status\":\"applied\"");
     }
 
     private boolean appHttpReady() {
@@ -145,9 +147,11 @@ abstract class AbstractMultiPartitionStream {
             return false;
         }
 
-        var body = httpPost(ports.getFirst(), "/api/stream-mp/read", "{\"partition\":0,\"fromOffset\":0,\"maxEvents\":1}");
+        var body = httpPost(ports.getFirst(),
+                            "/api/stream-mp/read",
+                            "{\"partition\":0,\"fromOffset\":0,\"maxEvents\":1}");
 
-        return !body.contains("\"error\"") && body.contains("events");
+        return ! body.contains("\"error\"") && body.contains("events");
     }
 
     private boolean publishReady() {
@@ -159,13 +163,15 @@ abstract class AbstractMultiPartitionStream {
 
         var response = httpPost(ports.getFirst(), "/api/stream-mp/publish", "{\"payload\":\"__warmup__\"}");
 
-        return !response.contains("\"error\"") && response.contains("published");
+        return ! response.contains("\"error\"") && response.contains("published");
     }
 
     private void failIfSliceFailed() {
         var failed = cluster.slicesStatus()
                             .stream()
-                            .anyMatch(s -> s.artifact().equals(STREAM_SLICE) && s.state().equals("FAILED"));
+                            .anyMatch(s -> s.artifact()
+                                            .equals(STREAM_SLICE) && s.state()
+                                                                      .equals("FAILED"));
 
         if (failed) {
             throw new AssertionError("multi-partition stream slice deployment FAILED: " + STREAM_SLICE);
@@ -173,7 +179,6 @@ abstract class AbstractMultiPartitionStream {
     }
 
     // --- replica-set view (in-JVM, owner-authoritative) ---------------------
-
     /// The owner-authoritative replica-set view for `(STREAM_NAME, partition)`: the registry is
     /// authoritative only on the partition's HRW owner (`servedByOwner()` true), so scan every live
     /// node's in-JVM `replicaSnapshot` and return the owner's.
@@ -190,13 +195,16 @@ abstract class AbstractMultiPartitionStream {
     }
 
     String ownerId(int partition) {
-        return ownerView(partition).flatMap(ReplicaSetView::ownerNodeId).or("");
+        return ownerView(partition).flatMap(ReplicaSetView::ownerNodeId)
+                        .or("");
     }
 
     private boolean partitionPlaced(int partition) {
-        return ownerView(partition).map(view -> view.replicas().size() >= 2
-                                                 && view.replicas().stream().anyMatch(r -> !r.hrwOwner()))
-                                   .or(false);
+        return ownerView(partition).map(view -> view.replicas()
+                                                    .size() >= 2 && view.replicas()
+                                                                        .stream()
+                                                                        .anyMatch(r -> !r.hrwOwner()))
+                        .or(false);
     }
 
     boolean allPartitionsPlaced() {
@@ -210,7 +218,6 @@ abstract class AbstractMultiPartitionStream {
     }
 
     // --- publishing + consuming --------------------------------------------
-
     /// Publish `seq` (payload = its decimal string) through `port` and return whether it was ACKED
     /// (min-sync-2 replica ack, HTTP success). An unacked publish returns false — the caller decides
     /// whether that is a failure (#429 static publish) or a tolerated in-flight loss (#430 under kill).
@@ -226,7 +233,7 @@ abstract class AbstractMultiPartitionStream {
         var body = "{\"payload\":\"" + seq + "\"}";
         var response = httpPost(port, "/api/stream-mp/publish", body, timeout);
 
-        return !response.contains("\"error\"") && response.contains("published");
+        return ! response.contains("\"error\"") && response.contains("published");
     }
 
     List<Event> readPartition(int port, int partition, long fromOffset, int maxEvents) {
@@ -269,17 +276,15 @@ abstract class AbstractMultiPartitionStream {
     /// contiguous run rather than from zero because a setup warm-up publish may occupy the partition's
     /// offset 0.
     void assertPerPartitionOrdered(List<Event> events, int partition) {
-        assertThat(events)
-            .describedAs("partition %d must be populated", partition)
-            .isNotEmpty();
-
+        assertThat(events).describedAs("partition %d must be populated", partition).isNotEmpty();
         for (int i = 1; i < events.size(); i++) {
-            assertThat(events.get(i).offset())
-                .describedAs("partition %d offset at index %d is contiguous (prev + 1) — no dup/gap", partition, i)
-                .isEqualTo(events.get(i - 1).offset() + 1);
-            assertThat(events.get(i).seq())
-                .describedAs("partition %d seq strictly increases with offset (per-partition publish order)", partition)
-                .isGreaterThan(events.get(i - 1).seq());
+            assertThat(events.get(i).offset()).describedAs("partition %d offset at index %d is contiguous (prev + 1) — no dup/gap",
+                                                           partition,
+                                                           i)
+                      .isEqualTo(events.get(i - 1).offset() + 1);
+            assertThat(events.get(i).seq()).describedAs("partition %d seq strictly increases with offset (per-partition publish order)",
+                                                        partition)
+                      .isGreaterThan(events.get(i - 1).seq());
         }
     }
 
@@ -309,7 +314,6 @@ abstract class AbstractMultiPartitionStream {
     }
 
     // --- port / node helpers ------------------------------------------------
-
     int appPort() {
         return cluster.getAvailableAppHttpPorts()
                       .stream()
@@ -324,14 +328,18 @@ abstract class AbstractMultiPartitionStream {
         return cluster.status()
                       .nodes()
                       .stream()
-                      .filter(node -> node.id().equals(nodeId))
+                      .filter(node -> node.id()
+                                          .equals(nodeId))
                       .map(node -> baseAppHttpPort() + (node.port() - basePort()))
                       .findFirst()
                       .orElseThrow(() -> new AssertionError("No app-http port for node " + nodeId));
     }
 
     private int anyMgmtPort() {
-        return cluster.status().nodes().getFirst().mgmtPort();
+        return cluster.status()
+                      .nodes()
+                      .getFirst()
+                      .mgmtPort();
     }
 
     long deadline(Duration budget) {
@@ -339,9 +347,11 @@ abstract class AbstractMultiPartitionStream {
     }
 
     // --- health / membership ------------------------------------------------
-
     private boolean allNodesHealthy() {
-        return cluster.status().nodes().stream().allMatch(node -> checkNodeHealth(node.mgmtPort()));
+        return cluster.status()
+                      .nodes()
+                      .stream()
+                      .allMatch(node -> checkNodeHealth(node.mgmtPort()));
     }
 
     private boolean checkNodeHealth(int port) {
@@ -350,9 +360,11 @@ abstract class AbstractMultiPartitionStream {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
+
         return http.sendString(request)
                    .await()
-                   .map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true"))
+                   .map(r -> r.statusCode() == 200 && r.body()
+                                                       .contains("\"quorum\":true"))
                    .or(false);
     }
 
@@ -363,9 +375,11 @@ abstract class AbstractMultiPartitionStream {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
+
         return http.sendString(request)
                    .await()
-                   .map(r -> r.statusCode() == 200 && healthHasFullMembership(r.body(), expected))
+                   .map(r -> r.statusCode() == 200 && healthHasFullMembership(r.body(),
+                                                                              expected))
                    .or(false);
     }
 
@@ -380,13 +394,11 @@ abstract class AbstractMultiPartitionStream {
     }
 
     // --- HTTP ---------------------------------------------------------------
-
     private String postBlueprintWithRetry(int port, String body) {
         var lastResponse = ERROR_FALLBACK;
 
         for (int attempt = 1; attempt <= 3; attempt++) {
             lastResponse = httpPostToml(port, "/api/v1/blueprints", body);
-
             if (!lastResponse.contains("\"error\"")) {
                 return lastResponse;
             }
@@ -406,6 +418,7 @@ abstract class AbstractMultiPartitionStream {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -423,6 +436,7 @@ abstract class AbstractMultiPartitionStream {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(timeout)
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -435,6 +449,7 @@ abstract class AbstractMultiPartitionStream {
                                  .DELETE()
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -442,7 +457,6 @@ abstract class AbstractMultiPartitionStream {
     }
 
     // --- failure sinks ------------------------------------------------------
-
     private static void failStart(Cause cause) {
         throw new AssertionError("Cluster start failed: " + cause.message());
     }

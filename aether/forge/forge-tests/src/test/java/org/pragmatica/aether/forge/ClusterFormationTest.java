@@ -2,28 +2,29 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
-
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.http.HttpOperations;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.time.Duration;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.HttpOperations;
 import org.pragmatica.aether.ember.EmberCluster;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// Tests for cluster formation and quorum behavior using EmberCluster.
 ///
@@ -57,27 +58,16 @@ class ClusterFormationTest {
     @BeforeAll
     void setUp() {
         cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "cf");
-
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(this::allNodesHealthy);
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
+                                                                                    .isPresent());
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesHealthy);
     }
 
     @AfterAll
     void tearDown() {
         if (cluster != null) {
-            cluster.stop()
-                   .await();
+            LifecycleAwait.settled("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -85,14 +75,14 @@ class ClusterFormationTest {
     void threeNodeCluster_formsQuorum_andElectsLeader() {
         // All nodes should be running
         assertThat(cluster.nodeCount()).isEqualTo(3);
-
         // Health endpoint should report healthy with quorum
         var anyNodePort = cluster.status().nodes().getFirst().mgmtPort();
         var health = getHealth(anyNodePort);
-        assertThat(health).contains("\"status\"");
 
+        assertThat(health).contains("\"status\"");
         // Leader should be elected
         var leader = cluster.currentLeader();
+
         assertThat(leader.isPresent()).isTrue();
     }
 
@@ -101,6 +91,7 @@ class ClusterFormationTest {
         // Each node should report 2 connected peers via /api/v1/health endpoint
         for (var node : cluster.status().nodes()) {
             var health = getHealth(node.mgmtPort());
+
             assertThat(health).contains("\"connectedPeers\":2");
             assertThat(health).contains("\"nodeCount\":3");
         }
@@ -110,10 +101,10 @@ class ClusterFormationTest {
     void cluster_statusConsistent_acrossNodes() {
         // Collect status from all nodes
         var leaderNode = cluster.currentLeader().unwrap();
-
         // All nodes should report the same leader via /api/v1/nodes/status endpoint
         for (var node : cluster.status().nodes()) {
             var status = getStatus(node.mgmtPort());
+
             assertThat(status).contains(leaderNode);
         }
     }
@@ -122,7 +113,6 @@ class ClusterFormationTest {
     void cluster_metricsAvailable_afterFormation() {
         var anyNodePort = cluster.status().nodes().getFirst().mgmtPort();
         var metrics = getMetrics(anyNodePort);
-
         // Metrics should not contain error
         assertThat(metrics).doesNotContain("\"error\"");
     }
@@ -138,21 +128,20 @@ class ClusterFormationTest {
 
         assertThat(comprehensive).doesNotContain("\"error\"");
         assertThat(comprehensive).as("the consensus block must be on the wire")
-                                 .contains("\"consensus\"")
-                                 .contains("\"decisionsCount\"")
-                                 .contains("\"voteRound1Count\"");
-        assertThat(consensusLong(comprehensive, "decisionsCount"))
-            .as("a formed cluster has committed Rabia decisions — zero means the counter chain is disconnected")
-            .isPositive();
+                  .contains("\"consensus\"")
+                  .contains("\"decisionsCount\"")
+                  .contains("\"voteRound1Count\"");
+        assertThat(consensusLong(comprehensive, "decisionsCount")).as("a formed cluster has committed Rabia decisions — zero means the counter chain is disconnected")
+                  .isPositive();
     }
 
     private static long consensusLong(String json, String field) {
-        var matcher = java.util.regex.Pattern.compile("\"" + field + "\"\\s*:\\s*(\\d+)")
-                                             .matcher(json);
+        var matcher = java.util.regex.Pattern.compile("\"" + field + "\"\\s*:\\s*(\\d+)").matcher(json);
 
         if (!matcher.find()) {
-            throw new AssertionError("field " + field + " not found in: "
-                                     + json.substring(0, Math.min(json.length(), 400)));
+            throw new AssertionError("field " + field
+                                    + " not found in: " + json.substring(0,
+                                                                         Math.min(json.length(), 400)));
         }
 
         return Long.parseLong(matcher.group(1));
@@ -160,7 +149,9 @@ class ClusterFormationTest {
 
     private boolean allNodesHealthy() {
         var status = cluster.status();
-        return status.nodes().stream()
+
+        return status.nodes()
+                     .stream()
                      .allMatch(node -> checkNodeHealth(node.mgmtPort()));
     }
 
@@ -170,9 +161,11 @@ class ClusterFormationTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
+
         return http.sendString(request)
                    .await()
-                   .map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true"))
+                   .map(r -> r.statusCode() == 200 && r.body()
+                                                       .contains("\"quorum\":true"))
                    .or(false);
     }
 
@@ -194,6 +187,7 @@ class ClusterFormationTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)

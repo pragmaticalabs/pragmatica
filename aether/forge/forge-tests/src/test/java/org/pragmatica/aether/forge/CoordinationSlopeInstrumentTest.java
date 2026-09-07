@@ -2,22 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
-
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
-import org.pragmatica.aether.ember.EmberCluster;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.lang.Option;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
@@ -27,10 +12,26 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
+import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Option;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// #591 — validates the coordination-load INSTRUMENT against a live cluster.
 ///
@@ -59,19 +60,17 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class CoordinationSlopeInstrumentTest {
     private static final Logger log = LoggerFactory.getLogger(CoordinationSlopeInstrumentTest.class);
-
     private static final int CORES = 3;
     private static final int BASE_PORT = 20000;
     private static final int BASE_MGMT_PORT = 20100;
     private static final int BASE_APP_HTTP_PORT = 20200;
-
     private static final Duration FORM_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL = Duration.ofMillis(500);
 
     /// The two counters the sampler differences. Named here so a rename breaks THIS test with a clear
     /// message rather than silently flattening the slope in a remote run weeks later.
-    private static final List<String> REQUIRED_TRANSPORT_KEYS =
-        List.of("quic_messages_sent_total", "quic_messages_received_total");
+    private static final List<String> REQUIRED_TRANSPORT_KEYS = List.of("quic_messages_sent_total",
+                                                                        "quic_messages_received_total");
 
     private static final List<String> REQUIRED_LOAD_KEYS = List.of("cpu.usage", "heap.used");
 
@@ -81,15 +80,14 @@ class CoordinationSlopeInstrumentTest {
     @BeforeAll
     void setUp() {
         cluster = emberCluster(CORES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "cslope");
-        cluster.start().await().onFailure(cause -> {
-            throw new AssertionError("Cluster start failed: " + cause.message());
-        });
-        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
+        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader()
+                                                                           .isPresent());
     }
 
     @AfterAll
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.settled("cluster stop in tearDown()", c, c.stop()));
     }
 
     /// The sampler's contract with `GET /api/v1/metrics/transport`, checked on EVERY core because the
@@ -100,15 +98,13 @@ class CoordinationSlopeInstrumentTest {
         for (var node : cluster.status().nodes()) {
             var body = get(node.mgmtPort(), "/api/v1/metrics/transport");
 
-            assertThat(body)
-                .as("node %s must answer /api/v1/metrics/transport", node.id())
-                .isNotBlank();
-
+            assertThat(body).as("node %s must answer /api/v1/metrics/transport", node.id()).isNotBlank();
             for (var key : REQUIRED_TRANSPORT_KEYS) {
-                assertThat(body)
-                    .as("node %s: /api/v1/metrics/transport must carry %s — the sampler differences it, and "
-                        + "a missing key would make a busy node read as perfectly idle", node.id(), key)
-                    .contains("\"" + key + "\"");
+                assertThat(body).as("node %s: /api/v1/metrics/transport must carry %s — the sampler differences it, and "
+                                   + "a missing key would make a busy node read as perfectly idle",
+                                    node.id(),
+                                    key)
+                          .contains("\"" + key + "\"");
             }
         }
     }
@@ -120,14 +116,12 @@ class CoordinationSlopeInstrumentTest {
         for (var node : cluster.status().nodes()) {
             var body = get(node.mgmtPort(), "/api/v1/metrics");
 
-            assertThat(body)
-                .as("node %s: /api/v1/metrics must carry a load map", node.id())
-                .contains("\"load\"");
-
+            assertThat(body).as("node %s: /api/v1/metrics must carry a load map", node.id()).contains("\"load\"");
             for (var key : REQUIRED_LOAD_KEYS) {
-                assertThat(body)
-                    .as("node %s: /api/v1/metrics load entries must carry %s", node.id(), key)
-                    .contains("\"" + key + "\"");
+                assertThat(body).as("node %s: /api/v1/metrics load entries must carry %s",
+                                    node.id(),
+                                    key)
+                          .contains("\"" + key + "\"");
             }
         }
     }
@@ -142,13 +136,13 @@ class CoordinationSlopeInstrumentTest {
         var first = messagesTotal(port);
 
         await().pollDelay(Duration.ofSeconds(3)).timeout(Duration.ofSeconds(8)).until(() -> true);
-
         var second = messagesTotal(port);
 
-        assertThat(second)
-            .as("counters must not decrease between reads — the sampler differences them, which is only "
-                + "meaningful for cumulative counters (first=%d second=%d)", first, second)
-            .isGreaterThanOrEqualTo(first);
+        assertThat(second).as("counters must not decrease between reads — the sampler differences them, which is only "
+                             + "meaningful for cumulative counters (first=%d second=%d)",
+                              first,
+                              second)
+                  .isGreaterThanOrEqualTo(first);
         log.info("CSLOPE-INSTRUMENT: cumulative check first={} second={} delta={}", first, second, second - first);
     }
 
@@ -160,42 +154,33 @@ class CoordinationSlopeInstrumentTest {
 
         Assumptions.assumeTrue(Files.isRegularFile(script), "sampler not found at " + script);
         Assumptions.assumeTrue(python3Available(), "python3 unavailable — skipping the end-to-end sampler leg");
-
-        var endpoints = cluster.status()
-                               .nodes()
-                               .stream()
-                               .map(n -> "http://localhost:" + n.mgmtPort())
-                               .toList();
-        var nodeIds = cluster.status()
-                             .nodes()
-                             .stream()
-                             .map(EmberCluster.NodeStatus::id)
-                             .toList();
-
-        var process = new ProcessBuilder("python3", script.toString(),
-                                         "--cores", String.join(",", endpoints),
-                                         "--node-ids", String.join(",", nodeIds),
-                                         "--workers", "0",
-                                         "--window", "5")
-            .redirectErrorStream(true)
-            .start();
+        var endpoints = cluster.status().nodes().stream().map(n -> "http://localhost:" + n.mgmtPort()).toList();
+        var nodeIds = cluster.status().nodes().stream().map(EmberCluster.NodeStatus::id).toList();
+        var process = new ProcessBuilder("python3",
+                                         script.toString(),
+                                         "--cores",
+                                         String.join(",", endpoints),
+                                         "--node-ids",
+                                         String.join(",", nodeIds),
+                                         "--workers",
+                                         "0",
+                                         "--window",
+                                         "5").redirectErrorStream(true)
+                                             .start();
         var output = new String(process.getInputStream().readAllBytes());
         var finished = process.waitFor(90, TimeUnit.SECONDS);
 
         log.info("CSLOPE-INSTRUMENT sampler output:\n{}", output);
         assertThat(finished).as("sampler must terminate").isTrue();
-        assertThat(process.exitValue())
-            .as("sampler must exit 0 against a healthy cluster; output was:\n%s", output)
-            .isZero();
-        assertThat(output)
-            .as("sampler must emit the fields the slope table is built from")
-            .contains("totalCoreMessagesPerSecond")
-            .contains("perCoreMessagesPerSecond")
-            .contains("meanCoreCpuUsage")
-            .contains("anyCoreSaturated");
-        assertThat(output)
-            .as("the sampler must report the cores it was given, not a subset")
-            .contains("\"cores\": " + CORES);
+        assertThat(process.exitValue()).as("sampler must exit 0 against a healthy cluster; output was:\n%s", output)
+                  .isZero();
+        assertThat(output).as("sampler must emit the fields the slope table is built from")
+                  .contains("totalCoreMessagesPerSecond")
+                  .contains("perCoreMessagesPerSecond")
+                  .contains("meanCoreCpuUsage")
+                  .contains("anyCoreSaturated");
+        assertThat(output).as("the sampler must report the cores it was given, not a subset")
+                  .contains("\"cores\": " + CORES);
     }
 
     private long messagesTotal(int mgmtPort) {
@@ -216,9 +201,7 @@ class CoordinationSlopeInstrumentTest {
             throw new AssertionError("transport payload has no " + key + "; payload=" + json);
         }
 
-        var digits = json.substring(at + marker.length())
-                         .replaceFirst("^\\s*:\\s*", "")
-                         .split("[^0-9]", 2)[0];
+        var digits = json.substring(at + marker.length()).replaceFirst("^\\s*:\\s*", "").split("[^0-9]", 2) [0];
 
         if (digits.isEmpty()) {
             throw new AssertionError("value of " + key + " is not numeric; payload=" + json);
@@ -249,12 +232,15 @@ class CoordinationSlopeInstrumentTest {
             dir = dir.getParent();
         }
 
-        return dir == null ? Path.of("").toAbsolutePath() : dir;
+        return dir == null
+               ? Path.of("").toAbsolutePath()
+               : dir;
     }
 
     private static boolean python3Available() {
         try {
-            return new ProcessBuilder("python3", "--version").start().waitFor(10, TimeUnit.SECONDS);
+            return new ProcessBuilder("python3", "--version").start()
+                                                             .waitFor(10, TimeUnit.SECONDS);
         } catch (Exception e) {
             return false;
         }

@@ -2,16 +2,11 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
+import java.time.Duration;
+import java.util.List;
+
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.ReadPreference;
@@ -27,16 +22,22 @@ import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.TerminalOperation;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Duration;
-import java.util.List;
-
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+
 
 /// #345 item 1e end-to-end gate: a `LINEARIZABLE` stream read routes to the COMMITTED owner of the
 /// `(stream, partition)` arc and returns the authoritative data, both when issued ON the committed owner
@@ -64,17 +65,14 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class LinearizableReadForgeTest {
     private static final Logger log = LoggerFactory.getLogger(LinearizableReadForgeTest.class);
-
     private static final int SIZE = 5;
     private static final int BASE_PORT = 5980;
     private static final int BASE_MGMT_PORT = 6080;
     private static final int BASE_APP_HTTP_PORT = 6180;
     private static final String PREFIX = "linr";
-
     private static final Duration FORM_TIMEOUT = Duration.ofSeconds(180);
     private static final Duration OBSERVE_TIMEOUT = Duration.ofSeconds(150);
     private static final Duration POLL = Duration.ofMillis(500);
-
     private static final String STREAM = "linr:events";
     private static final int PARTITION = 0;
     private static final int REQUESTED_RF = 1;
@@ -85,72 +83,83 @@ class LinearizableReadForgeTest {
     @TerminalOperation
     void setUp() {
         cluster = emberCluster(SIZE, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, PREFIX);
-        cluster.start().await().onFailure(LinearizableReadForgeTest::failStart);
-        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
+        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader()
+                                                                           .isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(this::allNodesReady);
-        log.info("LINEARIZABLE-READ: {}-node cluster formed, leader={}", SIZE, cluster.currentLeader().or("none"));
+        log.info("LINEARIZABLE-READ: {}-node cluster formed, leader={}",
+                 SIZE,
+                 cluster.currentLeader().or("none"));
     }
 
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.settled("cluster stop in tearDown()", c, c.stop()));
     }
 
     @Test
     @TerminalOperation
     void linearizableRead_servedByCommittedOwner_returnsWrittenData_onOwnerAndForwardedFromNonOwner() {
         cluster.allNodes().forEach(node -> materialize(node, STREAM));
-
         var owner = hrwOwner(STREAM, PARTITION);
         var ownerNode = resolveNode(owner);
         var term = leaderNode().currentGenerationEpoch().rabiaTerm();
-        log.info("LINEARIZABLE-READ: committed owner={} term={}", owner.id(), term);
 
+        log.info("LINEARIZABLE-READ: committed owner={} term={}", owner.id(), term);
         // Commit ownership through the production writer + REAL consensus, so the LINEARIZABLE arm has a
         // committed StreamPartitionOwnershipValue.owner to route to.
         var writer = liveWriter(term, owner);
-        commitOwnershipVia(writer, STREAM, PARTITION);
-        await().atMost(OBSERVE_TIMEOUT).pollInterval(POLL)
-               .until(() -> committedOwner(PARTITION).map(v -> v.owner().equals(owner)).or(false));
-        log.info("LINEARIZABLE-READ: committed ownership for {}[{}] owner={}", STREAM, PARTITION, owner.id());
 
+        commitOwnershipVia(writer, STREAM, PARTITION);
+        await().atMost(OBSERVE_TIMEOUT)
+             .pollInterval(POLL)
+             .until(() -> committedOwner(PARTITION).map(v -> v.owner()
+                                                              .equals(owner))
+                                        .or(false));
+        log.info("LINEARIZABLE-READ: committed ownership for {}[{}] owner={}", STREAM, PARTITION, owner.id());
         // The committed owner publishes the authoritative events locally.
         ownerNode.streamPartitionManager()
-                 .publishLocal(STREAM, PARTITION, "lin-0".getBytes(UTF_8), System.currentTimeMillis())
+                 .publishLocal(STREAM,
+                               PARTITION,
+                               "lin-0".getBytes(UTF_8),
+                               System.currentTimeMillis())
                  .onFailure(LinearizableReadForgeTest::failScenario);
         ownerNode.streamPartitionManager()
-                 .publishLocal(STREAM, PARTITION, "lin-1".getBytes(UTF_8), System.currentTimeMillis())
+                 .publishLocal(STREAM,
+                               PARTITION,
+                               "lin-1".getBytes(UTF_8),
+                               System.currentTimeMillis())
                  .onFailure(LinearizableReadForgeTest::failScenario);
-
         // 1. LINEARIZABLE read issued ON the committed owner returns the written events.
-        await().atMost(OBSERVE_TIMEOUT).pollInterval(POLL)
-               .until(() -> linearizableRead(ownerNode).size() == 2);
-        assertThat(linearizableRead(ownerNode))
-            .as("LINEARIZABLE read on the committed owner returns the authoritative events")
-            .hasSize(2);
+        await().atMost(OBSERVE_TIMEOUT).pollInterval(POLL).until(() -> linearizableRead(ownerNode).size() == 2);
+        assertThat(linearizableRead(ownerNode)).as("LINEARIZABLE read on the committed owner returns the authoritative events")
+                  .hasSize(2);
         log.info("LINEARIZABLE-READ: owner-served read returned {} events", linearizableRead(ownerNode).size());
-
         // 2. LINEARIZABLE read issued from a NON-owner node forwards to the committed owner and returns
         //    the same events.
-        var nonOwnerNode = cluster.allNodes().stream()
-                                  .filter(node -> !node.self().equals(owner))
+        var nonOwnerNode = cluster.allNodes()
+                                  .stream()
+                                  .filter(node -> !node.self()
+                                                       .equals(owner))
                                   .findFirst()
                                   .orElseThrow();
-        await().atMost(OBSERVE_TIMEOUT).pollInterval(POLL)
-               .until(() -> linearizableRead(nonOwnerNode).size() == 2);
-        assertThat(linearizableRead(nonOwnerNode))
-            .as("LINEARIZABLE read from a non-owner forwards to the committed owner and returns the same events")
-            .hasSize(2);
+
+        await().atMost(OBSERVE_TIMEOUT).pollInterval(POLL).until(() -> linearizableRead(nonOwnerNode).size() == 2);
+        assertThat(linearizableRead(nonOwnerNode)).as("LINEARIZABLE read from a non-owner forwards to the committed owner and returns the same events")
+                  .hasSize(2);
         log.info("LINEARIZABLE-READ: non-owner {} forwarded read returned {} events",
-                 nonOwnerNode.self().id(), linearizableRead(nonOwnerNode).size());
+                 nonOwnerNode.self().id(),
+                 linearizableRead(nonOwnerNode).size());
     }
 
     private List<OffHeapRingEvent> linearizableRead(AetherNode node) {
         return node.streamReadRouter()
                    .read(STREAM, PARTITION, 0, 10, ReadPreference.LINEARIZABLE)
                    .await()
-                   .map(events -> events.stream().map(e -> new OffHeapRingEvent(e.offset())).toList())
+                   .map(events -> events.stream()
+                                        .map(e -> new OffHeapRingEvent(e.offset()))
+                                        .toList())
                    .or(List.of());
     }
 
@@ -172,13 +181,13 @@ class LinearizableReadForgeTest {
 
     @TerminalOperation
     private void applyOnLeader(KVCommand<org.pragmatica.aether.slice.kvstore.AetherKey> command) {
-        leaderNode().<Object>apply(List.of(command)).await().onFailure(LinearizableReadForgeTest::failScenario);
+        leaderNode().<Object> apply(List.of(command)).await().onFailure(LinearizableReadForgeTest::failScenario);
     }
 
     private Option<StreamPartitionOwnershipValue> committedOwner(int partition) {
         return leaderNode().kvStore()
-                           .getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(STREAM, partition),
-                                     StreamPartitionOwnershipValue.class);
+                         .getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(STREAM, partition),
+                                   StreamPartitionOwnershipValue.class);
     }
 
     private NodeId hrwOwner(String stream, int partition) {
@@ -200,11 +209,16 @@ class LinearizableReadForgeTest {
     }
 
     private List<NodeId> coreMembers(AetherNode node) {
-        return node.clusterTopologyManager().map(ctm -> List.copyOf(ctm.observer().coreNodes())).or(List.of());
+        return node.clusterTopologyManager()
+                   .map(ctm -> List.copyOf(ctm.observer().coreNodes()))
+                   .or(List.of());
     }
 
     private int clusterSize(AetherNode node) {
-        return node.clusterTopologyManager().map(ctm -> ctm.observer().clusterSize()).or(SIZE);
+        return node.clusterTopologyManager()
+                   .map(ctm -> ctm.observer()
+                                  .clusterSize())
+                   .or(SIZE);
     }
 
     private AetherNode resolveNode(NodeId nodeId) {
@@ -215,11 +229,15 @@ class LinearizableReadForgeTest {
     }
 
     private AetherNode leaderNode() {
-        return cluster.currentLeader().flatMap(cluster::getNode).or(cluster.allNodes().getFirst());
+        return cluster.currentLeader()
+                      .flatMap(cluster::getNode)
+                      .or(cluster.allNodes().getFirst());
     }
 
     private boolean allNodesReady() {
-        return cluster.allNodes().stream().allMatch(AetherNode::isReady);
+        return cluster.allNodes()
+                      .stream()
+                      .allMatch(AetherNode::isReady);
     }
 
     private static void failStart(Cause cause) {
@@ -237,13 +255,10 @@ class LinearizableReadForgeTest {
     private enum ForgeError implements Cause {
         NO_PLACEMENT("ReplicaPlacement returned no owner for the partition"),
         NODE_UNRESOLVED("Computed owner NodeId could not be resolved to a cluster node");
-
         private final String message;
-
         ForgeError(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;

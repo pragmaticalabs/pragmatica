@@ -2,17 +2,14 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
+import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
+
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.environment.ComputeProvider;
@@ -27,18 +24,22 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.TerminalOperation;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Duration;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicReference;
-
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+
 
 /// #590 — the guard on Ember's role labels: on the opt-in `addWorkerNode()`, on the DEFAULT
 /// `addNode()` staying untouched, and on the provisioned path stamping the role it is handed.
@@ -85,21 +86,17 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class EmberAddNodeRoleLabelTest {
     private static final Logger log = LoggerFactory.getLogger(EmberAddNodeRoleLabelTest.class);
-
     private static final int INITIAL_CORES = 3;
     private static final int BASE_PORT = 21500;
     private static final int BASE_MGMT_PORT = 21600;
     private static final int BASE_APP_HTTP_PORT = 21700;
-
     private static final Duration FORM_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration OBSERVE_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL = Duration.ofMillis(250);
 
     private EmberCluster cluster;
-
     /// The base [EmberCluster] provider, captured by an identity decorator installed before `start()`.
     private final AtomicReference<ComputeProvider> baseProvider = new AtomicReference<>();
-
     /// Nodes added by the test that just ran, killed in [#releaseAddedNodes]. Ember's slot pool is
     /// `2 * initialSize` = 6, of which 3 are taken by the initial cores — three spare for five tests.
     /// Killing returns the slot, so each test is slot-neutral and the class is order-independent.
@@ -116,20 +113,23 @@ class EmberAddNodeRoleLabelTest {
 
             return provider;
         });
-        cluster.start().await().onFailure(EmberAddNodeRoleLabelTest::fail);
-        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
+        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader()
+                                                                           .isPresent());
     }
 
     @AfterEach
     void releaseAddedNodes() {
-        addedNodes.forEach(id -> cluster.killNode(id).await());
+        addedNodes.forEach(id -> LifecycleAwait.nodeSettled("kill node " + id + " in releaseAddedNodes()",
+                                                            cluster,
+                                                            cluster.killNode(id)));
         addedNodes.clear();
     }
 
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.settled("cluster stop in tearDown()", c, c.stop()));
     }
 
     /// THE REGRESSION GUARD. Every existing forge test calls `addNode()`, and a node that started
@@ -137,33 +137,39 @@ class EmberAddNodeRoleLabelTest {
     /// must stay exactly as it was: no role label at all.
     @Test
     void addNode_advertisesNoRoleLabel_soExistingBehaviourIsUnchanged() {
-        var added = add(cluster.addNode().await().onFailure(EmberAddNodeRoleLabelTest::fail).map(NodeId::id).or(""));
+        var added = add(LifecycleAwait.nodeSettled("default addNode join in addNode_advertisesNoRoleLabel_soExistingBehaviourIsUnchanged()",
+                                                   cluster,
+                                                   cluster.addNode())
+                                      .id());
         var labels = advertisedLabels(added);
 
-        log.info("ROLE-LABEL: default addNode -> {} labels={}", added, labels);
-        assertThat(labels.containsKey(NodeInfo.LABEL_ROLE))
-            .as("default addNode() must advertise NO role label — blank classifies as CORE, which is the "
-                + "long-standing behaviour every forge test is written against. Saw labels=%s", labels)
-            .isFalse();
+        log.info("ROLE-LABEL: default addNode -> {} labels={}",
+                 added,
+                 labels);
+        assertThat(labels.containsKey(NodeInfo.LABEL_ROLE)).as("default addNode() must advertise NO role label — blank classifies as CORE, which is the "
+                                                              + "long-standing behaviour every forge test is written against. Saw labels=%s",
+                                                               labels)
+                  .isFalse();
     }
 
     /// The opt-in. Without this label the node classifies as a core and every community-tier mechanism
     /// is suppressed on it, which is exactly what made #590's fence unobservable in-JVM.
     @Test
     void addWorkerNode_advertisesTheWorkerRole_soCommunityTierMechanismsApply() {
-        var added = add(cluster.addWorkerNode()
-                               .await()
-                               .onFailure(EmberAddNodeRoleLabelTest::fail)
-                               .map(NodeId::id)
-                               .or(""));
+        var added = add(LifecycleAwait.nodeSettled("addWorkerNode join in addWorkerNode_advertisesTheWorkerRole_soCommunityTierMechanismsApply()",
+                                                   cluster,
+                                                   cluster.addWorkerNode())
+                                      .id());
         var labels = advertisedLabels(added);
 
-        log.info("ROLE-LABEL: addWorkerNode -> {} labels={}", added, labels);
-        assertThat(labels.get(NodeInfo.LABEL_ROLE))
-            .as("addWorkerNode() must advertise exactly the literal `MemberDescriptor.isCoreRole` tests "
-                + "against — anything else, INCLUDING a near-miss like \"WORKER\", classifies as core and "
-                + "silently restores the suppression this method exists to lift. Saw labels=%s", labels)
-            .isEqualTo("worker");
+        log.info("ROLE-LABEL: addWorkerNode -> {} labels={}",
+                 added,
+                 labels);
+        assertThat(labels.get(NodeInfo.LABEL_ROLE)).as("addWorkerNode() must advertise exactly the literal `MemberDescriptor.isCoreRole` tests "
+                                                      + "against — anything else, INCLUDING a near-miss like \"WORKER\", classifies as core and "
+                                                      + "silently restores the suppression this method exists to lift. Saw labels=%s",
+                                                       labels)
+                  .isEqualTo("worker");
     }
 
     /// The provisioned worker: the case the harness could not previously produce at all. A CTM worker
@@ -178,15 +184,16 @@ class EmberAddNodeRoleLabelTest {
         var added = provisionWithRole("worker");
         var labels = advertisedLabels(added);
 
-        log.info("ROLE-LABEL: provisioned role=worker -> {} labels={}", added, labels);
-        assertThat(labels.get(NodeInfo.LABEL_ROLE))
-            .as("a node provisioned with role=worker must advertise it — the provider is the ONLY place "
-                + "that role can enter an in-JVM node, and dropping it silently re-creates the #590 "
-                + "suppression on a path no test can opt out of. Saw labels=%s", labels)
-            .isEqualTo("worker");
-        assertThat(classifiedCoreByPeer(added))
-            .as("a provisioned worker must classify as NON-core in a peer's membership FSM")
-            .isFalse();
+        log.info("ROLE-LABEL: provisioned role=worker -> {} labels={}",
+                 added,
+                 labels);
+        assertThat(labels.get(NodeInfo.LABEL_ROLE)).as("a node provisioned with role=worker must advertise it — the provider is the ONLY place "
+                                                      + "that role can enter an in-JVM node, and dropping it silently re-creates the #590 "
+                                                      + "suppression on a path no test can opt out of. Saw labels=%s",
+                                                       labels)
+                  .isEqualTo("worker");
+        assertThat(classifiedCoreByPeer(added)).as("a provisioned worker must classify as NON-core in a peer's membership FSM")
+                  .isFalse();
     }
 
     /// The unchanged half, stated on the live path rather than inferred. `core` is the role the CTM
@@ -199,14 +206,15 @@ class EmberAddNodeRoleLabelTest {
         var added = provisionWithRole("core");
         var labels = advertisedLabels(added);
 
-        log.info("ROLE-LABEL: provisioned role=core -> {} labels={}", added, labels);
-        assertThat(labels.get(NodeInfo.LABEL_ROLE))
-            .as("a node provisioned with role=core must advertise it verbatim. Saw labels=%s", labels)
-            .isEqualTo("core");
-        assertThat(classifiedCoreByPeer(added))
-            .as("stamping role=core must leave the classification exactly where blank left it — this is "
-                + "the property that keeps every existing core-provisioning test unaffected")
-            .isTrue();
+        log.info("ROLE-LABEL: provisioned role=core -> {} labels={}",
+                 added,
+                 labels);
+        assertThat(labels.get(NodeInfo.LABEL_ROLE)).as("a node provisioned with role=core must advertise it verbatim. Saw labels=%s",
+                                                       labels)
+                  .isEqualTo("core");
+        assertThat(classifiedCoreByPeer(added)).as("stamping role=core must leave the classification exactly where blank left it — this is "
+                                                  + "the property that keeps every existing core-provisioning test unaffected")
+                  .isTrue();
     }
 
     /// A role that never resolved stamps NO label, rather than `role=""`. Production reaches this shape
@@ -217,10 +225,12 @@ class EmberAddNodeRoleLabelTest {
         var added = provisionWithRole("");
         var labels = advertisedLabels(added);
 
-        log.info("ROLE-LABEL: provisioned role=<blank> -> {} labels={}", added, labels);
-        assertThat(labels.containsKey(NodeInfo.LABEL_ROLE))
-            .as("an unresolved role must stamp no label at all, not an empty-string one. Saw labels=%s", labels)
-            .isFalse();
+        log.info("ROLE-LABEL: provisioned role=<blank> -> {} labels={}",
+                 added,
+                 labels);
+        assertThat(labels.containsKey(NodeInfo.LABEL_ROLE)).as("an unresolved role must stamp no label at all, not an empty-string one. Saw labels=%s",
+                                                               labels)
+                  .isFalse();
     }
 
     /// The equivalence the propagation rests on, asserted directly against the single predicate that
@@ -228,14 +238,12 @@ class EmberAddNodeRoleLabelTest {
     /// no-op and every core-provisioning path needs re-reading.
     @Test
     void coreRoleAndBlank_areEquivalent_soExistingCoreProvisioningIsUnchanged() {
-        assertThat(MemberDescriptor.isCoreRole("core"))
-            .as("`core` must classify as core")
-            .isEqualTo(MemberDescriptor.isCoreRole(""))
-            .isTrue();
-        assertThat(MemberDescriptor.isCoreRole("worker"))
-            .as("`worker` is the ONLY literal that classifies as non-core — the rule the whole "
-                + "community tier is gated on")
-            .isFalse();
+        assertThat(MemberDescriptor.isCoreRole("core")).as("`core` must classify as core")
+                  .isEqualTo(MemberDescriptor.isCoreRole(""))
+                  .isTrue();
+        assertThat(MemberDescriptor.isCoreRole("worker")).as("`worker` is the ONLY literal that classifies as non-core — the rule the whole "
+                                                            + "community tier is gated on")
+                  .isFalse();
     }
 
     /// Provisions through the production boundary: `provision(spec)` runs the static
@@ -243,11 +251,10 @@ class EmberAddNodeRoleLabelTest {
     /// `default` sentinel the CTM auto-heal path always passes, so the provider's own `in-jvm` default
     /// resolves it — the same resolution production performs.
     private String provisionWithRole(String role) {
-        var provider = Option.option(baseProvider.get())
-                             .or(() -> {
-                                 throw new AssertionError("compute provider was never captured — the decorator "
-                                                          + "must be installed before start()");
-                             });
+        var provider = Option.option(baseProvider.get()).or(() -> {
+            throw new AssertionError("compute provider was never captured — the decorator "
+                                    + "must be installed before start()");
+        });
         var context = ProvisionContext.provisionContext(Option.empty(),
                                                         role,
                                                         SourceName.DEFAULT,
@@ -255,13 +262,13 @@ class EmberAddNodeRoleLabelTest {
         var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
                                                ProvisionRequest.DEFAULT_INSTANCE_SIZE_SENTINEL,
                                                "",
-                                               context)
-                                .unwrap();
+                                               context).unwrap();
 
         return add(provider.provision(spec)
                            .await()
                            .onFailure(EmberAddNodeRoleLabelTest::fail)
-                           .map(info -> info.nodeId().or(""))
+                           .map(info -> info.nodeId()
+                                            .or(""))
                            .or(""));
     }
 
@@ -271,22 +278,23 @@ class EmberAddNodeRoleLabelTest {
     private boolean classifiedCoreByPeer(String nodeIdStr) {
         var id = NodeId.nodeId(nodeIdStr).unwrap();
 
-        await().atMost(OBSERVE_TIMEOUT)
-               .pollInterval(POLL)
-               .until(() -> peerDescriptorOf(nodeIdStr, id).isPresent());
+        await().atMost(OBSERVE_TIMEOUT).pollInterval(POLL).until(() -> peerDescriptorOf(nodeIdStr, id).isPresent());
 
         return peerDescriptorOf(nodeIdStr, id).map(MemberDescriptor::isCore)
-                                              .or(() -> {
-                                                  throw new AssertionError("no peer holds a descriptor for "
-                                                                           + nodeIdStr);
-                                              });
+                               .or(() -> {
+                                   throw new AssertionError("no peer holds a descriptor for " + nodeIdStr);
+                               });
     }
 
     /// First descriptor for `id` held by any node OTHER than the subject itself.
     private Option<MemberDescriptor> peerDescriptorOf(String nodeIdStr, NodeId id) {
         return cluster.allNodes()
                       .stream()
-                      .filter(node -> !node.topologyManager().self().id().id().equals(nodeIdStr))
+                      .filter(node -> !node.topologyManager()
+                                           .self()
+                                           .id()
+                                           .id()
+                                           .equals(nodeIdStr))
                       .map(node -> descriptorFrom(node, id))
                       .flatMap(Option::stream)
                       .findFirst()
@@ -295,7 +303,8 @@ class EmberAddNodeRoleLabelTest {
     }
 
     private static Option<MemberDescriptor> descriptorFrom(AetherNode node, NodeId id) {
-        return node.membershipFsm().memberDescriptor(id);
+        return node.membershipFsm()
+                   .memberDescriptor(id);
     }
 
     /// Reads the node's OWN advertised `NodeInfo` — the field peers and its own `MemberDescriptor`

@@ -2,16 +2,13 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
 
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
+import java.time.Duration;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
@@ -25,17 +22,21 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.TerminalOperation;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Duration;
-import java.util.Set;
-import java.util.stream.Collectors;
-import java.util.stream.IntStream;
-
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+
 
 /// Integration proof for the #241 community-formation loop — does N (≥ RF=3) worker joins to one
 /// source drive that source's committed [`CommunityKey`] to `ACTIVE`, IN-JVM, with the Ember
@@ -78,15 +79,14 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// were promoted to core under churn, (b) were assigned but no governor announcement landed, or
 /// (c) were announced but the FSM never flipped the state.
 @Disabled("#336: invalid as an in-JVM gate — 8 nodes on 8 cores starves SWIM probe-acks, so nodes "
-          + "genuinely reach FAULTY (LHM sawtooth = late acks, not absent), not a product bug. The "
-          + "reachability-evidence fix is validated on real infra (02-chaos kill suite). See "
-          + "aether/docs/internal/progress/336-reachability-evidence-fix-2026-06-30.md. Re-enable only "
-          + "with relaxed in-JVM SWIM timeouts for single-JVM density.")
+         + "genuinely reach FAULTY (LHM sawtooth = late acks, not absent), not a product bug. The "
+         + "reachability-evidence fix is validated on real infra (02-chaos kill suite). See "
+         + "aether/docs/internal/progress/336-reachability-evidence-fix-2026-06-30.md. Re-enable only "
+         + "with relaxed in-JVM SWIM timeouts for single-JVM density.")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class CommunityFormationProbeTest {
     private static final Logger log = LoggerFactory.getLogger(CommunityFormationProbeTest.class);
-
     /// 5 cores (quorum 3) rather than 3 (quorum 2): a single worker-add flaps SWIM, and a 3-node
     /// quorum cannot survive two suspected members, so the leader is lost and the join fails. A
     /// 5-node quorum tolerates the churn — the same size `ScaleUpFiveToSevenProbeTest` forms stably.
@@ -95,11 +95,9 @@ class CommunityFormationProbeTest {
     private static final int WORKER_COUNT = 3;
     /// Deterministic single community for the default source: `<source>-w-0`.
     private static final String COMMUNITY_ID = "default-w-0";
-
     private static final int BASE_PORT = 5960;
     private static final int BASE_MGMT_PORT = 6060;
     private static final int BASE_APP_HTTP_PORT = 6160;
-
     private static final Duration FORM_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration SETTLE_TIMEOUT = Duration.ofSeconds(20);
     private static final Duration ACTIVE_TIMEOUT = Duration.ofSeconds(120);
@@ -112,20 +110,20 @@ class CommunityFormationProbeTest {
     @TerminalOperation
     void setUp() {
         cluster = emberCluster(INITIAL_CORES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "cfm");
-        cluster.start()
-               .await()
-               .onFailure(CommunityFormationProbeTest::failStart);
-
-        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
+        await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader()
+                                                                           .isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> countedCores() == INITIAL_CORES);
         log.info("CFM-PROBE: {}-core cluster formed, leader={}, countedCores={}",
-                 INITIAL_CORES, cluster.currentLeader().or("none"), countedCores());
+                 INITIAL_CORES,
+                 cluster.currentLeader().or("none"),
+                 countedCores());
     }
 
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.settled("cluster stop in tearDown()", c, c.stop()));
     }
 
     @Test
@@ -134,26 +132,33 @@ class CommunityFormationProbeTest {
         awaitCoreCapCommitted();
         IntStream.rangeClosed(1, WORKER_COUNT).forEach(this::addWorkerAndSettle);
         log.info("CFM-PROBE: {} workers added; ember.nodeCount={} countedCores={} (committed cap={})",
-                 WORKER_COUNT, cluster.nodeCount(), countedCores(), committedCoreCount().or(-1));
-
+                 WORKER_COUNT,
+                 cluster.nodeCount(),
+                 countedCores(),
+                 committedCoreCount().or(-1));
         var t0 = System.nanoTime();
         var reachedActiveMs = observeUntilActive(t0);
         var finalState = communityState().map(Enum::name).or("ABSENT");
 
         log.info("CFM-PROBE RESULT: community={} reachedActiveAtMs={} (-1=NOT within {}s) finalState={}",
-                 COMMUNITY_ID, reachedActiveMs, ACTIVE_TIMEOUT.toSeconds(), finalState);
+                 COMMUNITY_ID,
+                 reachedActiveMs,
+                 ACTIVE_TIMEOUT.toSeconds(),
+                 finalState);
         dumpDiagnostics();
-
-        assertThat(reachedActiveMs)
-            .as("EXPECTED: %d workers joining the 'default' source drive committed community '%s' to "
-                + "ACTIVE within %ds (leader FSM flips FORMING→ACTIVE when governor-announced "
-                + "liveMembers ≥ RF=%d). reachedActiveAtMs=%d, finalState=%s. -1 = STALL — the loop is "
-                + "wired but did not complete IN-JVM. See the diagnostic dump above for whether the "
-                + "workers were never assigned WORKER (promoted to core under churn), were assigned "
-                + "but no governor announcement landed, or were announced but the FSM never flipped.",
-                WORKER_COUNT, COMMUNITY_ID, ACTIVE_TIMEOUT.toSeconds(), WORKER_COUNT,
-                reachedActiveMs, finalState)
-            .isGreaterThanOrEqualTo(0L);
+        assertThat(reachedActiveMs).as("EXPECTED: %d workers joining the 'default' source drive committed community '%s' to "
+                                      + "ACTIVE within %ds (leader FSM flips FORMING→ACTIVE when governor-announced "
+                                      + "liveMembers ≥ RF=%d). reachedActiveAtMs=%d, finalState=%s. -1 = STALL — the loop is "
+                                      + "wired but did not complete IN-JVM. See the diagnostic dump above for whether the "
+                                      + "workers were never assigned WORKER (promoted to core under churn), were assigned "
+                                      + "but no governor announcement landed, or were announced but the FSM never flipped.",
+                                       WORKER_COUNT,
+                                       COMMUNITY_ID,
+                                       ACTIVE_TIMEOUT.toSeconds(),
+                                       WORKER_COUNT,
+                                       reachedActiveMs,
+                                       finalState)
+                  .isGreaterThanOrEqualTo(0L);
     }
 
     /// Wait for the leader's `BootstrapModule` to commit the auto-seeded `ClusterConfig.coreCount`
@@ -161,8 +166,9 @@ class CommunityFormationProbeTest {
     /// unlimited topology `coreMax`, and joiners would be promoted to core instead of worker.
     private void awaitCoreCapCommitted() {
         await().atMost(FORM_TIMEOUT)
-               .pollInterval(POLL)
-               .until(() -> committedCoreCount().filter(count -> count == INITIAL_CORES).isPresent());
+             .pollInterval(POLL)
+             .until(() -> committedCoreCount().filter(count -> count == INITIAL_CORES)
+                                            .isPresent());
         log.info("CFM-PROBE: committed core cap = {} (joiners beyond this are assigned WORKER)",
                  committedCoreCount().or(-1));
     }
@@ -174,71 +180,86 @@ class CommunityFormationProbeTest {
     @TerminalOperation
     private void addWorkerAndSettle(int index) {
         var expectedNodeCount = INITIAL_CORES + index;
-        cluster.addNode()
-               .await()
-               .onSuccess(nodeId -> log.info("CFM-PROBE: worker {}/{} joined as {}",
-                                             index, WORKER_COUNT, nodeId.id()))
-               .onFailure(CommunityFormationProbeTest::failScenario);
+        var nodeId = LifecycleAwait.nodeSettled("worker " + index + "/" + WORKER_COUNT + " join in addWorkerAndSettle()",
+                                                cluster,
+                                                cluster.addNode());
 
+        log.info("CFM-PROBE: worker {}/{} joined as {}", index, WORKER_COUNT, nodeId.id());
         var settled = pollUntil(SETTLE_TIMEOUT,
-                                () -> cluster.currentLeader().isPresent()
+                                () -> cluster.currentLeader()
+                                             .isPresent()
                                       && countedCores() == INITIAL_CORES
                                       && cluster.nodeCount() == expectedNodeCount);
+
         log.info("CFM-PROBE: after worker {}/{} settled={} leader={} countedCores={} (cap={}) nodeCount={}/{}",
-                 index, WORKER_COUNT, settled, cluster.currentLeader().or("none"),
-                 countedCores(), INITIAL_CORES, cluster.nodeCount(), expectedNodeCount);
+                 index,
+                 WORKER_COUNT,
+                 settled,
+                 cluster.currentLeader().or("none"),
+                 countedCores(),
+                 INITIAL_CORES,
+                 cluster.nodeCount(),
+                 expectedNodeCount);
     }
 
     /// Polls the committed community state until it reaches ACTIVE or the budget expires. Returns the
     /// first-observed convergence latency in ms, or -1 if ACTIVE was never observed.
     private long observeUntilActive(long t0) {
-        var latch = new long[]{-1L};
+        var latch = new long[]{ - 1L};
         var lastLog = new long[]{0L};
+
         await().pollInterval(POLL)
-               .pollDelay(Duration.ZERO)
-               .timeout(ACTIVE_TIMEOUT.plusSeconds(5))
-               .until(() -> recordTick(t0, latch, lastLog));
+             .pollDelay(Duration.ZERO)
+             .timeout(ACTIVE_TIMEOUT.plusSeconds(5))
+             .until(() -> recordTick(t0, latch, lastLog));
+
         return latch[0];
     }
 
     private boolean recordTick(long t0, long[] latch, long[] lastLog) {
         var elapsed = (System.nanoTime() - t0) / 1_000_000L;
-        if (communityState().filter(CommunityState.ACTIVE::equals).isPresent() && latch[0] < 0) {
+
+        if (communityState().filter(CommunityState.ACTIVE::equals).isPresent() && latch[0]< 0) {
             latch[0] = elapsed;
         }
+
         maybeLog(elapsed, lastLog);
-        return latch[0] >= 0 || elapsed >= ACTIVE_TIMEOUT.toMillis();
+
+        return latch[0]>= 0 || elapsed >= ACTIVE_TIMEOUT.toMillis();
     }
 
     private void maybeLog(long elapsedMs, long[] lastLog) {
-        if (elapsedMs - lastLog[0] < LOG_EVERY.toMillis()) {
+        if (elapsedMs - lastLog[0]< LOG_EVERY.toMillis()) {
             return;
         }
+
         lastLog[0] = elapsedMs;
         log.info("CFM-PROBE: t+{}ms community={} state={} governor={} announcedMembers={} "
-                 + "countedCores={} emberNodeCount={}",
+                + "countedCores={} emberNodeCount={}",
                  elapsedMs,
                  COMMUNITY_ID,
                  communityState().map(Enum::name).or("ABSENT"),
-                 governorAnnouncement().map(a -> a.governorId().id()).or("none"),
+                 governorAnnouncement().map(a -> a.governorId()
+                                                  .id()).or("none"),
                  governorAnnouncement().map(GovernorAnnouncementValue::memberCount).or(0),
                  countedCores(),
                  cluster.nodeCount());
     }
 
     // ----- in-process committed-state reads (off the leader KV store) -----
-
     private Option<Integer> committedCoreCount() {
-        return leaderOrAnyNode().flatMap(node -> node.kvStore().get(ClusterConfigKey.CURRENT))
-                                .filter(ClusterConfigValue.class::isInstance)
-                                .map(ClusterConfigValue.class::cast)
-                                .map(ClusterConfigValue::coreCount);
+        return leaderOrAnyNode().flatMap(node -> node.kvStore()
+                                                     .get(ClusterConfigKey.CURRENT))
+                              .filter(ClusterConfigValue.class::isInstance)
+                              .map(ClusterConfigValue.class::cast)
+                              .map(ClusterConfigValue::coreCount);
     }
 
     private Option<CommunityValue> communityValue() {
-        return leaderOrAnyNode().flatMap(node -> node.kvStore().get(CommunityKey.communityKey(COMMUNITY_ID)))
-                                .filter(CommunityValue.class::isInstance)
-                                .map(CommunityValue.class::cast);
+        return leaderOrAnyNode().flatMap(node -> node.kvStore()
+                                                     .get(CommunityKey.communityKey(COMMUNITY_ID)))
+                              .filter(CommunityValue.class::isInstance)
+                              .map(CommunityValue.class::cast);
     }
 
     private Option<CommunityState> communityState() {
@@ -246,13 +267,17 @@ class CommunityFormationProbeTest {
     }
 
     private Option<GovernorAnnouncementValue> governorAnnouncement() {
-        return leaderOrAnyNode().flatMap(node -> node.kvStore().get(GovernorAnnouncementKey.forCommunity(COMMUNITY_ID)))
-                                .filter(GovernorAnnouncementValue.class::isInstance)
-                                .map(GovernorAnnouncementValue.class::cast);
+        return leaderOrAnyNode().flatMap(node -> node.kvStore()
+                                                     .get(GovernorAnnouncementKey.forCommunity(COMMUNITY_ID)))
+                              .filter(GovernorAnnouncementValue.class::isInstance)
+                              .map(GovernorAnnouncementValue.class::cast);
     }
 
     private int countedCores() {
-        return leaderOrAnyNode().map(node -> node.membershipFsm().coreCountedMembers().size()).or(0);
+        return leaderOrAnyNode().map(node -> node.membershipFsm()
+                                                 .coreCountedMembers()
+                                                 .size())
+                              .or(0);
     }
 
     private Option<AetherNode> leaderOrAnyNode() {
@@ -266,6 +291,7 @@ class CommunityFormationProbeTest {
     private static boolean pollUntil(Duration timeout, java.util.concurrent.Callable<Boolean> condition) {
         try {
             await().atMost(timeout).pollInterval(POLL).until(condition);
+
             return true;
         } catch (org.awaitility.core.ConditionTimeoutException e) {
             return false;
@@ -273,33 +299,43 @@ class CommunityFormationProbeTest {
     }
 
     // ----- failure diagnostics -----
-
     @TerminalOperation
     private void dumpDiagnostics() {
         var leaderNode = leaderOrAnyNode();
-        var countedSet = leaderNode.map(node -> node.membershipFsm().coreCountedMembers()).or(Set.of());
+        var countedSet = leaderNode.map(node -> node.membershipFsm()
+                                                    .coreCountedMembers()).or(Set.of());
 
         log.info("CFM-PROBE DUMP: leader={} ember.nodeCount={} countedCores={} committedCap={}",
-                 cluster.currentLeader().or("none"), cluster.nodeCount(), countedSet.size(),
+                 cluster.currentLeader().or("none"),
+                 cluster.nodeCount(),
+                 countedSet.size(),
                  committedCoreCount().or(-1));
         log.info("CFM-PROBE DUMP: community '{}' value = {}",
-                 COMMUNITY_ID, communityValue().map(Object::toString).or("ABSENT"));
+                 COMMUNITY_ID,
+                 communityValue().map(Object::toString).or("ABSENT"));
         log.info("CFM-PROBE DUMP: governor announcement = {}",
                  governorAnnouncement().map(Object::toString).or("ABSENT"));
         log.info("CFM-PROBE DUMP: leader counted-core set = {}", idStrings(countedSet));
-
         cluster.allNodes().forEach(node -> dumpNode(node, countedSet));
     }
 
     private void dumpNode(AetherNode node, Set<NodeId> countedSet) {
         var id = node.self();
-        var inMesh = leaderOrAnyNode().map(leader -> leader.membershipView().isPresent(id)).or(false);
+        var inMesh = leaderOrAnyNode().map(leader -> leader.membershipView()
+                                                           .isPresent(id)).or(false);
+
         log.info("CFM-PROBE DUMP: node={} leader={} inLeaderSwimView={} countedAsCore={} (else=worker)",
-                 id.id(), node.isLeader(), inMesh, countedSet.contains(id));
+                 id.id(),
+                 node.isLeader(),
+                 inMesh,
+                 countedSet.contains(id));
     }
 
     private static String idStrings(Set<NodeId> ids) {
-        return ids.stream().map(NodeId::id).sorted().collect(Collectors.joining(","));
+        return ids.stream()
+                  .map(NodeId::id)
+                  .sorted()
+                  .collect(Collectors.joining(","));
     }
 
     private static void failStart(Cause cause) {

@@ -27,9 +27,10 @@ import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+
 
 /// The #694 guard: an instance provisioned through `EmberComputeProvider.createFrom` must
 /// round-trip the CTM's worker-reconcile selector (`aether-cluster`/`aether-source`/`aether-role`),
@@ -51,7 +52,6 @@ class EmberInstanceTagRoundTripTest {
     private static final int BASE_APP_HTTP_PORT = 22550;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-
     private static final String CLUSTER = "tag-cluster";
     private static final String SOURCE = "src-1";
     private static final String ROLE = "worker";
@@ -74,14 +74,9 @@ class EmberInstanceTagRoundTripTest {
 
             return base;
         });
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
+                                                                                    .isPresent());
         provider = captured.get();
         assertThat(provider).as("decorator must have captured the base provider during start").isNotNull();
         workerInstanceId = provision(ROLE);
@@ -91,8 +86,7 @@ class EmberInstanceTagRoundTripTest {
     @AfterAll
     void tearDown() {
         if (cluster != null) {
-            cluster.stop()
-                   .await();
+            LifecycleAwait.settled("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -103,12 +97,16 @@ class EmberInstanceTagRoundTripTest {
     void provisionedInstance_isFoundByTheSelectorBuiltFromItsOwnContext() {
         var found = listBy(ctmSelector(CLUSTER, SOURCE, ROLE));
 
-        assertThat(found).extracting(info -> info.id().value())
-                         .contains(workerInstanceId);
-        assertThat(tagsOf(workerInstanceId)).isEqualTo(Map.of("aether-cluster", CLUSTER,
-                                                              "aether-role", ROLE,
-                                                              "aether-source", SOURCE,
-                                                              "aether.node-id", workerInstanceId));
+        assertThat(found).extracting(info -> info.id()
+                                                 .value()).contains(workerInstanceId);
+        assertThat(tagsOf(workerInstanceId)).isEqualTo(Map.of("aether-cluster",
+                                                              CLUSTER,
+                                                              "aether-role",
+                                                              ROLE,
+                                                              "aether-source",
+                                                              SOURCE,
+                                                              "aether.node-id",
+                                                              workerInstanceId));
     }
 
     /// The one-field-off guard, all three fields: a selector wrong in ANY single field must not find
@@ -116,15 +114,15 @@ class EmberInstanceTagRoundTripTest {
     /// everything would pass it while corrupting every other source's count.
     @Test
     void provisionedInstance_isNotFoundBySelectorsDifferingInAnyOneField() {
-        assertThat(listBy(ctmSelector("other-cluster", SOURCE, ROLE)))
-            .extracting(info -> info.id().value())
-            .doesNotContain(workerInstanceId);
-        assertThat(listBy(ctmSelector(CLUSTER, "other-source", ROLE)))
-            .extracting(info -> info.id().value())
-            .doesNotContain(workerInstanceId);
-        assertThat(listBy(ctmSelector(CLUSTER, SOURCE, "core")))
-            .extracting(info -> info.id().value())
-            .doesNotContain(workerInstanceId);
+        assertThat(listBy(ctmSelector("other-cluster", SOURCE, ROLE))).extracting(info -> info.id()
+                                                                                              .value())
+                  .doesNotContain(workerInstanceId);
+        assertThat(listBy(ctmSelector(CLUSTER, "other-source", ROLE))).extracting(info -> info.id()
+                                                                                              .value())
+                  .doesNotContain(workerInstanceId);
+        assertThat(listBy(ctmSelector(CLUSTER, SOURCE, "core"))).extracting(info -> info.id()
+                                                                                        .value())
+                  .doesNotContain(workerInstanceId);
     }
 
     /// A blank context role stamps `aether-role=core`, mirroring `HetznerComputeProvider.labelsFor` —
@@ -133,9 +131,9 @@ class EmberInstanceTagRoundTripTest {
     @Test
     void blankRole_stampsTheProductionCoreDefault() {
         assertThat(tagsOf(defaultRoleInstanceId)).containsEntry("aether-role", "core");
-        assertThat(listBy(ctmSelector(CLUSTER, SOURCE, "core")))
-            .extracting(info -> info.id().value())
-            .contains(defaultRoleInstanceId);
+        assertThat(listBy(ctmSelector(CLUSTER, SOURCE, "core"))).extracting(info -> info.id()
+                                                                                        .value())
+                  .contains(defaultRoleInstanceId);
     }
 
     /// The untagged-instance guard: nodes created OUTSIDE the provider (the initial cluster) keep
@@ -152,16 +150,15 @@ class EmberInstanceTagRoundTripTest {
                                        },
                                        instances -> instances);
 
-        assertThat(unfiltered).extracting(info -> info.id().value())
-                              .contains(initialId);
+        assertThat(unfiltered).extracting(info -> info.id()
+                                                      .value()).contains(initialId);
         assertThat(tagsOf(initialId)).isEmpty();
-        assertThat(listBy(ctmSelector(CLUSTER, SOURCE, ROLE)))
-            .extracting(info -> info.id().value())
-            .doesNotContain(initialId);
+        assertThat(listBy(ctmSelector(CLUSTER, SOURCE, ROLE))).extracting(info -> info.id()
+                                                                                      .value())
+                  .doesNotContain(initialId);
     }
 
     // ---- helpers -------------------------------------------------------------------------------
-
     private String provision(String role) {
         var context = new ProvisionContext(Option.some(new ClusterName(CLUSTER)),
                                            role,
@@ -184,7 +181,8 @@ class EmberInstanceTagRoundTripTest {
                        .fold(cause -> {
                                  throw new AssertionError("provision failed: " + cause.message());
                              },
-                             info -> info.id().value());
+                             info -> info.id()
+                                         .value());
     }
 
     private static Map<String, String> ctmSelector(String clusterName, String source, String role) {
@@ -207,7 +205,9 @@ class EmberInstanceTagRoundTripTest {
                                  throw new AssertionError("listInstances failed: " + cause.message());
                              },
                              instances -> instances.stream()
-                                                   .filter(info -> info.id().value().equals(instanceId))
+                                                   .filter(info -> info.id()
+                                                                       .value()
+                                                                       .equals(instanceId))
                                                    .findFirst()
                                                    .map(InstanceInfo::tags)
                                                    .orElseThrow(() -> new AssertionError("instance not listed: " + instanceId)));

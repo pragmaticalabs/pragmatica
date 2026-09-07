@@ -2,8 +2,15 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
+
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.time.Duration;
+
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.aether.ember.EmberCluster;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -11,19 +18,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
 
-import java.net.URI;
-import java.net.http.HttpRequest;
-import java.time.Duration;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
-import org.pragmatica.aether.ember.EmberCluster;
 
 /// #422/#423/#425 full-stack proof that per-slice metric attribution is LIVE end-to-end. Two
 /// distinct slices are deployed and the leader's `GET /api/v1/controller/decisions` snapshot is read:
@@ -55,20 +55,16 @@ class PerSliceDecisionSnapshotProbeTest {
     @BeforeAll
     void setUp() {
         cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "psa");
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
-
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader().isPresent());
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
+                                                                                    .isPresent());
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesHealthy);
     }
 
     @AfterAll
     void tearDown() {
         if (cluster != null) {
-            cluster.stop().await();
+            LifecycleAwait.settled("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -77,15 +73,14 @@ class PerSliceDecisionSnapshotProbeTest {
         deployTwoSlices();
         awaitBothSlicesActive();
         awaitBothArtifactsInDecisionSnapshot();
-
         var decisions = getDecisions();
 
         assertThat(decisions).describedAs("per-slice attribution: slice A tracked separately")
-                             .contains(SLICE_A_FRAGMENT);
+                  .contains(SLICE_A_FRAGMENT);
         assertThat(decisions).describedAs("per-slice attribution: slice B tracked separately")
-                             .contains(SLICE_B_FRAGMENT);
+                  .contains(SLICE_B_FRAGMENT);
         assertThat(decisions).describedAs("idle slices must not be scaled up (no mis-attribution)")
-                             .doesNotContain("\"outcome\":\"SCALED_UP\"");
+                  .doesNotContain("\"outcome\":\"SCALED_UP\"");
     }
 
     private void deployTwoSlices() {
@@ -102,23 +97,29 @@ class PerSliceDecisionSnapshotProbeTest {
             """.formatted(BLUEPRINT_ID, SLICE_A, SLICE_B);
         var response = postBlueprint(leaderPort(), blueprint);
 
-        assertThat(response).describedAs("Deployment response").doesNotContain("\"error\"").contains("\"status\":\"applied\"");
+        assertThat(response).describedAs("Deployment response")
+                  .doesNotContain("\"error\"")
+                  .contains("\"status\":\"applied\"");
     }
 
     private void awaitBothSlicesActive() {
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> {
-            var slices = getSlices();
+        await().atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> {
+                        var slices = getSlices();
 
-            return slices.contains(SLICE_A_FRAGMENT) && slices.contains(SLICE_B_FRAGMENT);
-        });
+                        return slices.contains(SLICE_A_FRAGMENT) && slices.contains(SLICE_B_FRAGMENT);
+                    });
     }
 
     private void awaitBothArtifactsInDecisionSnapshot() {
-        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> {
-            var decisions = getDecisions();
+        await().atMost(WAIT_TIMEOUT)
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> {
+                        var decisions = getDecisions();
 
-            return decisions.contains(SLICE_A_FRAGMENT) && decisions.contains(SLICE_B_FRAGMENT);
-        });
+                        return decisions.contains(SLICE_A_FRAGMENT) && decisions.contains(SLICE_B_FRAGMENT);
+                    });
     }
 
     private String getDecisions() {
@@ -130,7 +131,8 @@ class PerSliceDecisionSnapshotProbeTest {
     }
 
     private int leaderPort() {
-        return cluster.getLeaderManagementPort().or(cluster.status().nodes().getFirst().mgmtPort());
+        return cluster.getLeaderManagementPort()
+                      .or(cluster.status().nodes().getFirst().mgmtPort());
     }
 
     private String postBlueprint(int port, String body) {
@@ -141,7 +143,10 @@ class PerSliceDecisionSnapshotProbeTest {
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
 
-        return http.sendString(request).await().map(HttpResult::body).or(ERROR_FALLBACK);
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private String httpGet(int port, String path) {
@@ -151,11 +156,17 @@ class PerSliceDecisionSnapshotProbeTest {
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
 
-        return http.sendString(request).await().map(HttpResult::body).or(ERROR_FALLBACK);
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private boolean allNodesHealthy() {
-        return cluster.status().nodes().stream().allMatch(node -> checkNodeHealth(node.mgmtPort()));
+        return cluster.status()
+                      .nodes()
+                      .stream()
+                      .allMatch(node -> checkNodeHealth(node.mgmtPort()));
     }
 
     private boolean checkNodeHealth(int port) {
@@ -167,7 +178,8 @@ class PerSliceDecisionSnapshotProbeTest {
 
         return http.sendString(request)
                    .await()
-                   .map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true"))
+                   .map(r -> r.statusCode() == 200 && r.body()
+                                                       .contains("\"quorum\":true"))
                    .or(false);
     }
 }

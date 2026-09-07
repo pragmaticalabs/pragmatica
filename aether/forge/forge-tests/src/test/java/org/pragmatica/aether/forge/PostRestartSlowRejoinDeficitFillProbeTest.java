@@ -204,15 +204,24 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     void setUp() {
         cluster = emberCluster(INITIAL_CORES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, NODE_PREFIX);
         cluster.withComputeProviderDecorator(recorder::wrap);
-        cluster.start().await().onFailure(PostRestartSlowRejoinDeficitFillProbeTest::failStart);
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
         expectStarted(allConfiguredIds(), "FORMATION-1 start");
-        await().atMost(FORM_TIMEOUT).pollInterval(POLL).failFast(this::failIfClusterUnhealthy).until(() -> cluster.currentLeader()
-                                                                           .isPresent());
-        await().atMost(FORM_TIMEOUT).pollInterval(POLL).failFast(this::failIfClusterUnhealthy).until(() -> countedCores() == INITIAL_CORES);
+        await().atMost(FORM_TIMEOUT)
+             .pollInterval(POLL)
+             .failFast(this::failIfClusterUnhealthy)
+             .until(() -> cluster.currentLeader()
+                                 .isPresent());
+        await().atMost(FORM_TIMEOUT)
+             .pollInterval(POLL)
+             .failFast(this::failIfClusterUnhealthy)
+             .until(() -> countedCores() == INITIAL_CORES);
         // Formation 1 must reach FULL observed membership before the restart: the sampler PEAK is what
         // the reconciler's `reachedFullMembership` cold-start latch reads, and gating here means the
         // pre-restart cluster is genuinely formed rather than merely quorate.
-        await().atMost(FORM_TIMEOUT).pollInterval(POLL).failFast(this::failIfClusterUnhealthy).until(() -> observedPeak() >= INITIAL_CORES);
+        await().atMost(FORM_TIMEOUT)
+             .pollInterval(POLL)
+             .failFast(this::failIfClusterUnhealthy)
+             .until(() -> observedPeak() >= INITIAL_CORES);
         recordMilestone("FORMATION-1 complete: leader=" + cluster.currentLeader().or("none")
                        + " countedCores=" + countedCores()
                        + " observedPeak=" + observedPeak());
@@ -227,8 +236,7 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        option(cluster).onPresent(c -> c.stop()
-                                        .await());
+        option(cluster).onPresent(c -> LifecycleAwait.settled("cluster stop in tearDown()", c, c.stop()));
     }
 
     /// THE #509 INVARIANT. Restart the cluster with 2 configured members held back, hold past every
@@ -320,14 +328,20 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     @Order(1)
     @TerminalOperation
     void reconcile_configuredCoreCountRaised_provisionsReplacement() {
-        await().atMost(REJOIN_TIMEOUT).pollInterval(POLL).failFast(this::failIfStartedNodeDied).until(() -> observedPeak() >= INITIAL_CORES);
+        await().atMost(REJOIN_TIMEOUT)
+             .pollInterval(POLL)
+             .failFast(this::failIfStartedNodeDied)
+             .until(() -> observedPeak() >= INITIAL_CORES);
         recordMilestone("CONTROL armed: observedPeak=" + observedPeak() + " (reachedFullMembership latch can now open)");
         var leaderPort = cluster.getLeaderManagementPort()
                                 .toResult(ProbeError.NO_LEADER)
                                 .onFailure(PostRestartSlowRejoinDeficitFillProbeTest::failScenario)
                                 .or(-1);
 
-        await().atMost(FORM_TIMEOUT).pollInterval(POLL).failFast(this::failIfStartedNodeDied).until(() -> readConfigVersion(leaderPort) >= 1);
+        await().atMost(FORM_TIMEOUT)
+             .pollInterval(POLL)
+             .failFast(this::failIfStartedNodeDied)
+             .until(() -> readConfigVersion(leaderPort) >= 1);
         var version = readConfigVersion(leaderPort);
         var response = postScale(leaderPort, RAISED_CORES, version);
 
@@ -371,11 +385,11 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     /// this probe has none of: membership, not durability, is the question here.
     @TerminalOperation
     private void restartWithHeldBackMembers() {
-        cluster.stop().await().onFailure(PostRestartSlowRejoinDeficitFillProbeTest::failScenario);
+        LifecycleAwait.settled("cluster stop in restartWithHeldBackMembers()", cluster, cluster.stop());
         recordMilestone("RESTART: cluster stopped");
         // Nothing is expected alive between stop() and the restart completing.
         expectStarted(Set.of(), "RESTART stop");
-        cluster.start(HELD_BACK).await().onFailure(PostRestartSlowRejoinDeficitFillProbeTest::failStart);
+        LifecycleAwait.settled("cluster start in restartWithHeldBackMembers()", cluster, cluster.start(HELD_BACK));
         expectStarted(startedAfterHoldBack(), "RESTART start (held back " + HELD_BACK + ")");
         recordMilestone("RESTART: started " + (INITIAL_CORES - HELD_BACK.size())
                        + " of " + INITIAL_CORES
@@ -396,11 +410,17 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     @TerminalOperation
     private void releaseHeldBackMembers() {
         log.info("SLOWJOIN-PROBE: releasing held-back members {}", HELD_BACK);
-        cluster.startHeldBackNodes().await().onFailure(PostRestartSlowRejoinDeficitFillProbeTest::failScenario);
+        LifecycleAwait.settled("held-back node start in releaseHeldBackMembers()", cluster, cluster.startHeldBackNodes());
         expectStarted(allConfiguredIds(), "REJOIN (held-back released)");
-        await().atMost(REJOIN_TIMEOUT).pollInterval(POLL).failFast(this::failIfClusterUnhealthy).until(() -> countedCores() >= INITIAL_CORES);
-        await().atMost(REJOIN_TIMEOUT).pollInterval(POLL).failFast(this::failIfClusterUnhealthy).until(() -> cluster.currentLeader()
-                                                                             .isPresent());
+        await().atMost(REJOIN_TIMEOUT)
+             .pollInterval(POLL)
+             .failFast(this::failIfClusterUnhealthy)
+             .until(() -> countedCores() >= INITIAL_CORES);
+        await().atMost(REJOIN_TIMEOUT)
+             .pollInterval(POLL)
+             .failFast(this::failIfClusterUnhealthy)
+             .until(() -> cluster.currentLeader()
+                                 .isPresent());
     }
 
     // ----- observation -----
@@ -553,7 +573,8 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     /// [#releaseHeldBackMembers] adds them.
     private void failIfStartedNodeDied() {
         var dead = startedNodeIds.stream()
-                                 .filter(id -> cluster.getNode(id).isEmpty())
+                                 .filter(id -> cluster.getNode(id)
+                                                      .isEmpty())
                                  .sorted()
                                  .collect(Collectors.joining(","));
 
@@ -569,7 +590,8 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
                                 + "). A node leaves EmberCluster's running registry only via handleSelfDrain, "
                                 + "so this is a self-fence/drain, not a crash. Every subsequent observation "
                                 + "this probe could make is invalid. Live now: " + cluster.nodeCount()
-                                + " node(s), leader=" + cluster.currentLeader().or("none")
+                                + " node(s), leader=" + cluster.currentLeader()
+                                                               .or("none")
                                 + " countedCores=" + countedCores()
                                 + " countedIds=" + countedCoreIds()
                                 + " provisions=" + recorder.render()
@@ -594,8 +616,8 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
 
     private static Set<String> startedAfterHoldBack() {
         return allConfiguredIds().stream()
-                                 .filter(id -> !HELD_BACK.contains(id))
-                                 .collect(Collectors.toCollection(LinkedHashSet::new));
+                               .filter(id -> !HELD_BACK.contains(id))
+                               .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
     private static long elapsedMs(long t0) {
@@ -696,7 +718,8 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     @TerminalOperation
     private String postScale(int port, int coreCount, int expectedVersion) {
         var body = "{\"source\":\"\",\"role\":\"core\",\"count\":" + coreCount
-                   + ",\"expectedVersion\":" + expectedVersion + "}";
+                 + ",\"expectedVersion\":" + expectedVersion
+                 + "}";
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + "/api/v1/cluster/scale"))
                                  .header("Content-Type", "application/json")
@@ -714,11 +737,10 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     /// can never be mistaken for an inert provisioning path.
     private static String requireScaleAccepted(HttpResult result) {
         if (result.statusCode() / 100 != 2) {
-            throw new AssertionError("CONTROL TRIGGER REJECTED: POST /api/v1/cluster/scale returned HTTP "
-                                     + result.statusCode()
-                                     + " — the configured core count was never raised, so any subsequent "
-                                     + "zero-provision observation says nothing about the deficit-fill path. "
-                                     + "Body: " + result.body());
+            throw new AssertionError("CONTROL TRIGGER REJECTED: POST /api/v1/cluster/scale returned HTTP " + result.statusCode()
+                                    + " — the configured core count was never raised, so any subsequent "
+                                    + "zero-provision observation says nothing about the deficit-fill path. "
+                                    + "Body: " + result.body());
         }
 
         return renderResponse(result);

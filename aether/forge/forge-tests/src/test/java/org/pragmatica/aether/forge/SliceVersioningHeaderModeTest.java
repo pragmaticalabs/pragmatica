@@ -2,8 +2,17 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
+
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.time.Duration;
+
+import org.pragmatica.aether.config.ApiVersioningDetection;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Result;
+import org.pragmatica.aether.ember.EmberCluster;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -11,20 +20,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
-import org.pragmatica.aether.config.ApiVersioningDetection;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.lang.Result;
 
-import java.net.URI;
-import java.net.http.HttpRequest;
-import java.time.Duration;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
-import org.pragmatica.aether.ember.EmberCluster;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
 
 /// Proves #198 §7 HEADER-mode versioning reaches the wire: the SAME compiled two-version slices
 /// deployed earlier in path mode are here deployed into a cluster configured with
@@ -59,16 +60,9 @@ class SliceVersioningHeaderModeTest {
     void setUp() {
         cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "smh");
         cluster.withApiVersioningDetection(ApiVersioningDetection.HEADER, VERSION_HEADER);
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
+                                                                                    .isPresent());
         deploy(ORDERS_BLUEPRINT_ID, VERSIONED_SLICE);
         deploy(STRICT_BLUEPRINT_ID, STRICT_SLICE);
         awaitRouteReady("/api/orders/" + ITEM_ID, "1");
@@ -78,8 +72,7 @@ class SliceVersioningHeaderModeTest {
     @AfterAll
     void tearDown() {
         if (cluster != null) {
-            cluster.stop()
-                   .await();
+            LifecycleAwait.settled("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -132,38 +125,44 @@ class SliceVersioningHeaderModeTest {
     }
 
     private void awaitRouteReady(String path, String version) {
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> routeServes(path, version));
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> routeServes(path, version));
     }
 
     private boolean routeServes(String path, String version) {
         if (cluster.getAvailableAppHttpPorts().isEmpty()) {
             return false;
         }
+
         return send(path, version).map(result -> result.statusCode() == 200)
-                                  .or(false);
+                   .or(false);
     }
 
     private Result<HttpResult<String>> send(String path, String version) {
-        return http.sendString(versionedRequest(appPort(), path, version))
+        return http.sendString(versionedRequest(appPort(),
+                                                path,
+                                                version))
                    .await()
                    .onFailure(cause -> {
-                       throw new AssertionError("request " + path + " (v" + version + ") failed: " + cause.message());
-                   });
+                                  throw new AssertionError("request " + path
+                                                          + " (v" + version
+                                                          + ") failed: " + cause.message());
+                              });
     }
 
     private Result<HttpResult<String>> sendNoHeader(String path) {
-        return http.sendString(getRequest(appPort(), path))
+        return http.sendString(getRequest(appPort(),
+                                          path))
                    .await()
                    .onFailure(cause -> {
-                       throw new AssertionError("request " + path + " (no header) failed: " + cause.message());
-                   });
+                                  throw new AssertionError("request " + path + " (no header) failed: " + cause.message());
+                              });
     }
 
     private int appPort() {
         var ports = cluster.getAvailableAppHttpPorts();
+
         assertThat(ports).describedAs("available app HTTP ports").isNotEmpty();
+
         return ports.getFirst();
     }
 
@@ -186,10 +185,10 @@ class SliceVersioningHeaderModeTest {
 
     private void deploy(String blueprintId, String artifact) {
         var deployResponse = postBlueprint(blueprintId, artifact);
-        assertThat(deployResponse)
-            .describedAs("Deployment response for " + artifact)
-            .doesNotContain("\"error\"")
-            .contains("\"status\":\"applied\"");
+
+        assertThat(deployResponse).describedAs("Deployment response for " + artifact)
+                  .doesNotContain("\"error\"")
+                  .contains("\"status\":\"applied\"");
     }
 
     private String postBlueprint(String blueprintId, String artifact) {
@@ -201,20 +200,24 @@ class SliceVersioningHeaderModeTest {
             instances = 1
             """.formatted(blueprintId, artifact);
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
+
         return postBlueprintWithRetry(leaderPort, blueprint);
     }
 
     private String postBlueprintWithRetry(int port, String body) {
         String lastResponse = null;
+
         for (int attempt = 1; attempt <= 3; attempt++) {
             lastResponse = httpRequestBlueprint(port, body);
             if (!lastResponse.contains("\"error\"")) {
                 return lastResponse;
             }
+
             if (attempt < 3) {
                 sleepQuietly();
             }
         }
+
         return lastResponse;
     }
 
@@ -233,6 +236,7 @@ class SliceVersioningHeaderModeTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -240,6 +244,9 @@ class SliceVersioningHeaderModeTest {
     }
 
     private int anyMgmtPort() {
-        return cluster.status().nodes().getFirst().mgmtPort();
+        return cluster.status()
+                      .nodes()
+                      .getFirst()
+                      .mgmtPort();
     }
 }

@@ -4,16 +4,18 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
+import org.junit.jupiter.api.Test;
+
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+
 
 /// #915 — the pin for [LifecycleAwait]. No cluster is started here.
 ///
@@ -37,33 +39,29 @@ class LifecycleAwaitTest {
 
     @Test
     void aPromiseThatNeverSettles_expiresAtTheBound_andNamesTheStep() {
-        var neverSettles = Promise.<Unit>promise();
+        var neverSettles = Promise.<Unit> promise();
         var cluster = unstartedCluster();
         var startedAtMs = System.currentTimeMillis();
 
-        assertThatThrownBy(() -> LifecycleAwait.settled("5-core cluster start", cluster, SHORT_BOUND, neverSettles))
-            .isInstanceOf(AssertionError.class)
-            .describedAs("the expiry must name the step, which is the whole defect: the 8m backstop "
-                         + "named only the class")
-            .hasMessageContaining("5-core cluster start")
-            .hasMessageContaining("did not settle within")
-            .describedAs("and must carry the cluster state, so the next reader does not need a rerun")
-            .hasMessageContaining("Cluster state when the wait ended:");
-
+        assertThatThrownBy(() -> LifecycleAwait.settled("5-core cluster start", cluster, SHORT_BOUND, neverSettles)).isInstanceOf(AssertionError.class)
+                          .describedAs("the expiry must name the step, which is the whole defect: the 8m backstop "
+                                      + "named only the class")
+                          .hasMessageContaining("5-core cluster start")
+                          .hasMessageContaining("did not settle within")
+                          .describedAs("and must carry the cluster state, so the next reader does not need a rerun")
+                          .hasMessageContaining("Cluster state when the wait ended:");
         var elapsedMs = System.currentTimeMillis() - startedAtMs;
 
-        assertThat(elapsedMs)
-            .describedAs("the BOUND must be what ended the wait — an unbounded await would still be "
-                         + "parked here, which is exactly how ~515s class-level ERRORs were produced")
-            .isGreaterThanOrEqualTo(SHORT_BOUND.duration().toMillis())
-            .isLessThan(SHORT_BOUND.duration().toMillis() + SLACK_MS);
+        assertThat(elapsedMs).describedAs("the BOUND must be what ended the wait — an unbounded await would still be "
+                                         + "parked here, which is exactly how ~515s class-level ERRORs were produced")
+                  .isGreaterThanOrEqualTo(SHORT_BOUND.duration().toMillis())
+                  .isLessThan(SHORT_BOUND.duration().toMillis() + SLACK_MS);
     }
 
     /// The positive control. A `settled` that always threw would pass the test above.
     @Test
     void aPromiseThatSettles_returnsItsValue() {
-        var settled = Promise.<String>promise().resolve(org.pragmatica.lang.Result.success("msrc-6"));
-
+        var settled = Promise.<String> promise().resolve(org.pragmatica.lang.Result.success("msrc-6"));
         var value = LifecycleAwait.settled("worker join", unstartedCluster(), SHORT_BOUND, settled);
 
         assertThat(value).isEqualTo("msrc-6");
@@ -74,12 +72,14 @@ class LifecycleAwaitTest {
     /// Result at all, so a stop that failed outright was silently a success.
     @Test
     void aPromiseThatFails_isReportedWithTheSameNamedShape() {
-        var failed = Promise.<Unit>failure(new TestCause("Address already in use"));
+        var failed = Promise.<Unit> failure(new TestCause("Address already in use"));
 
-        assertThatThrownBy(() -> LifecycleAwait.settled("cluster stop", unstartedCluster(), SHORT_BOUND, failed))
-            .isInstanceOf(AssertionError.class)
-            .hasMessageContaining("cluster stop")
-            .hasMessageContaining("Address already in use");
+        assertThatThrownBy(() -> LifecycleAwait.settled("cluster stop",
+                                                        unstartedCluster(),
+                                                        SHORT_BOUND,
+                                                        failed)).isInstanceOf(AssertionError.class)
+                          .hasMessageContaining("cluster stop")
+                          .hasMessageContaining("Address already in use");
     }
 
     @Test
@@ -105,9 +105,8 @@ class LifecycleAwaitTest {
     /// the field, this goes red rather than the fabrication reaching a CI log unnoticed.
     @Test
     void theSnapshotNeverRendersTheFabricatedHealthyLiteral() {
-        assertThat(LifecycleAwait.snapshot(unstartedCluster()))
-            .describedAs("NodeStatus.state is a hardcoded literal on this branch, not an observation")
-            .doesNotContain("healthy");
+        assertThat(LifecycleAwait.snapshot(unstartedCluster())).describedAs("NodeStatus.state is a hardcoded literal on this branch, not an observation")
+                  .doesNotContain("healthy");
     }
 
     /// Constructed, never started: [EmberCluster]'s constructor only assigns fields, so this binds no

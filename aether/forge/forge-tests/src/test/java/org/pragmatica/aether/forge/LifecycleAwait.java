@@ -11,6 +11,7 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 
+
 /// #915 — every lifecycle await in this module is bounded, and every expiry NAMES its step.
 ///
 /// ## The defect this closes
@@ -54,14 +55,18 @@ import org.pragmatica.lang.io.TimeSpan;
 /// lifecycle backstop is double the longest internal guard, so the test's own await is the mechanism
 /// that fires and the backstop stays the outer net it was designed to be.
 ///
-/// [#NODE_BOUND] is 60 s — ~55x the measured 1.1 s. A single node join or kill is a far smaller step
-/// than standing a cluster up, and giving it the full 240 s would spend four minutes to report a
-/// one-second operation that stalled.
+/// [#NODE_BOUND] is 120 s — ~110x the measured 1.1 s, and half [#LIFECYCLE_BOUND]. A single node join
+/// or kill is a far smaller step than standing a cluster up, so a stalled one should be reported
+/// sooner; but the measurement behind it comes from a 5-node cluster, and the scale-up and churn
+/// probes drive joins into larger ones under deliberate stress. Half the cluster bound keeps the
+/// faster diagnosis while staying far outside any healthy time this module has been observed to take
+/// — the failure mode of guessing too LOW here is a red run on a healthy cluster, which is the exact
+/// flakiness this ticket exists to remove.
 final class LifecycleAwait {
     /// Cluster-wide start and stop.
     static final TimeSpan LIFECYCLE_BOUND = TimeSpan.timeSpan(240).seconds();
     /// Single-node join, kill and blackhole.
-    static final TimeSpan NODE_BOUND = TimeSpan.timeSpan(60).seconds();
+    static final TimeSpan NODE_BOUND = TimeSpan.timeSpan(120).seconds();
 
     private LifecycleAwait() {}
 
@@ -74,10 +79,10 @@ final class LifecycleAwait {
     static <T> T settled(String step, EmberCluster cluster, TimeSpan bound, Promise<T> promise) {
         return promise.await(bound)
                       .fold(cause -> {
-                                throw new AssertionError(step + " did not settle within " + bound
-                                                         + ": " + cause.message()
-                                                         + "\nCluster state when the wait ended:\n"
-                                                         + snapshot(cluster));
+                                throw new AssertionError(step
+                                                        + " did not settle within " + bound
+                                                        + ": " + cause.message()
+                                                        + "\nCluster state when the wait ended:\n" + snapshot(cluster));
                             },
                             value -> value);
     }
@@ -106,11 +111,12 @@ final class LifecycleAwait {
             return "  no node is registered with this cluster (nodeCount=" + cluster.nodeCount() + ")";
         }
 
-        return "  leader=" + status.leaderId() + " nodeCount=" + cluster.nodeCount() + "\n"
-               + status.nodes()
-                       .stream()
-                       .map(node -> nodeLine(cluster, node))
-                       .collect(Collectors.joining("\n"));
+        return "  leader=" + status.leaderId()
+             + " nodeCount=" + cluster.nodeCount()
+             + "\n" + status.nodes()
+                            .stream()
+                            .map(node -> nodeLine(cluster, node))
+                            .collect(Collectors.joining("\n"));
     }
 
     /// `ready` is [AetherNode#isReady] read from the node, or the named absence `unregistered` when
@@ -118,12 +124,12 @@ final class LifecycleAwait {
     /// blank to fill with `false`.
     private static String nodeLine(EmberCluster cluster, EmberCluster.NodeStatus node) {
         return "  " + node.id()
-               + " port=" + node.port()
-               + " mgmt=" + node.mgmtPort()
-               + " leader=" + node.isLeader()
-               + " ready=" + cluster.getNode(node.id())
-                                    .map(AetherNode::isReady)
-                                    .map(String::valueOf)
-                                    .or("unregistered");
+             + " port=" + node.port()
+             + " mgmt=" + node.mgmtPort()
+             + " leader=" + node.isLeader()
+             + " ready=" + cluster.getNode(node.id())
+                                  .map(AetherNode::isReady)
+                                  .map(String::valueOf)
+                                  .or("unregistered");
     }
 }

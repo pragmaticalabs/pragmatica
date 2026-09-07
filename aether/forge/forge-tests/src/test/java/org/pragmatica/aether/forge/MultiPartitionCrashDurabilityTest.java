@@ -2,22 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
-
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.io.TempDir;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
-import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
-import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
-import org.pragmatica.config.ConfigurationProvider;
-import org.pragmatica.lang.Option;
 
 import java.io.IOException;
 import java.net.URI;
@@ -31,12 +16,27 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
+import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.lang.Option;
+import org.pragmatica.aether.ember.EmberCluster;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
-import org.pragmatica.aether.ember.EmberCluster;
 
 /// Streaming-persistence — MULTI-PARTITION full-cluster restart crash-durability proof for the
 /// per-partition WAL. The single-partition sibling [StreamCrashDurabilityTest] proves ONE partition's
@@ -80,6 +80,7 @@ import org.pragmatica.aether.ember.EmberCluster;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class MultiPartitionCrashDurabilityTest {
     private static final System.Logger LOG = System.getLogger(MultiPartitionCrashDurabilityTest.class.getName());
+
     private static final int BASE_PORT = 17500;
     private static final int BASE_MGMT_PORT = 17600;
     private static final int BASE_APP_HTTP_PORT = 17700;
@@ -87,25 +88,21 @@ class MultiPartitionCrashDurabilityTest {
     private static final int INSTANCES = 5;
     private static final int PARTITIONS = 4;
     private static final int EVENT_COUNT = 40;
-
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final Duration PLACEMENT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration RECOVERY_TIMEOUT = Duration.ofSeconds(240);
     private static final long POLL_GAP_NANOS = Duration.ofMillis(20).toNanos();
-
     private static final String STREAM_SLICE = TestArtifacts.STREAM_MULTIPART_SLICE;
     private static final String STREAM_NAME = "multipart-events";
     private static final String BLUEPRINT_ID = "forge.test:multipart-crash-durability:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
-
     private static final Pattern EVENT_OBJECT = Pattern.compile("\\{[^{}]*\"offset\"[^{}]*}");
     private static final Pattern OFFSET_FIELD = Pattern.compile("\"offset\"\\s*:\\s*(\\d+)");
     private static final Pattern PAYLOAD_FIELD = Pattern.compile("\"payload\"\\s*:\\s*\"([^\"]*)\"");
     private static final Pattern NODE_COUNT_FIELD = Pattern.compile("\"nodeCount\"\\s*:\\s*(\\d+)");
 
     Path baseDir;
-
     private EmberCluster cluster;
     private final HttpOperations http = jdkHttpOperations();
 
@@ -116,7 +113,6 @@ class MultiPartitionCrashDurabilityTest {
     @BeforeAll
     void setUp(@TempDir Path tempDir) {
         this.baseDir = tempDir;
-
         // A ConfigurationProvider must be present for the node to enable resource provisioning
         // (StreamPublisher / StreamAccess); without it AetherNode installs a no-op facade that fails
         // every resource-backed slice (mirrors StreamFanoutConsumerTest / AbstractMultiPartitionStream).
@@ -124,10 +120,10 @@ class MultiPartitionCrashDurabilityTest {
                                                   .withSystemProperties("aether.")
                                                   .withEnvironment("AETHER_")
                                                   .build();
+
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "mpcd", Option.some(configProvider));
         // Opt in to a writable, restart-stable per-node data dir -> disk tier + per-partition WALs ON.
         cluster.withDataBaseDir(baseDir);
-
         startAndAwaitReady();
     }
 
@@ -135,9 +131,9 @@ class MultiPartitionCrashDurabilityTest {
     void tearDown() {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
+
             httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
-            cluster.stop()
-                   .await();
+            LifecycleAwait.settled("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -148,27 +144,20 @@ class MultiPartitionCrashDurabilityTest {
     @Test
     void multiPartitionRestart_recoversEveryPartition_viaWalReplay() throws IOException {
         var port = appPort();
-
         // All 4 partitions must have owner + in-sync replica PLACED before the min-sync-2 publishes, else a
         // publish to a not-yet-replicated partition cannot ack; placement also confirms HRW spread owners
         // across the cluster so the keyless round-robin populates every partition.
-        await().atMost(PLACEMENT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(this::allPartitionsPlaced);
-
+        await().atMost(PLACEMENT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allPartitionsPlaced);
         publishBatch(port, EVENT_COUNT);
-
         var preByPartition = drainAllPartitions(port);
+
         assertEveryPartitionPopulated(preByPartition);
         assertAllSeqsPresent(preByPartition, EVENT_COUNT);
         assertPerPartitionOrdered(preByPartition);
-
         // A NON-EMPTY 'multipart-events' WAL must exist on disk, proving the owners appended + fsync'd the
         // acked events before ack — the only medium that survives the restart (nothing is ever sealed).
         assertWalActiveForMultipart();
-
         restartCluster();
-
         var recoveredPort = appPort();
         var postByPartition = drainAllPartitionsUntil(recoveredPort, preByPartition);
 
@@ -179,53 +168,32 @@ class MultiPartitionCrashDurabilityTest {
     }
 
     // --- restart ------------------------------------------------------------
-
     private void restartCluster() {
-        cluster.stop()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster stop failed: " + cause.message());
-               });
-
+        LifecycleAwait.settled("cluster stop in restartCluster()", cluster, cluster.stop());
         startAndAwaitReady();
     }
 
     private void startAndAwaitReady() {
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(this::allNodesHealthy);
-
+        LifecycleAwait.settled("cluster start in startAndAwaitReady()", cluster, cluster.start());
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
+                                                                                    .isPresent());
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesHealthy);
         // Gate on FULL membership before publish (pre-restart) or read (post-restart): after a full-cluster
         // restart the cold-boot convergence window must let ALL NODES re-form so every partition's HRW owner
         // is a rejoined node holding its WAL, not an empty-WAL replacement picked because a straggler was
         // prematurely evicted.
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> allNodesAreMembers(NODES));
-
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> allNodesAreMembers(NODES));
         // Re-deploy: Forge KV is in-memory, so a full-cluster restart wiped the stream config. This re-puts
         // the deterministic `multipart-events` config -> each partition's owner re-materializes and its
         // partition build opens-or-recovers the WAL and replays the un-sealed tail. Carries NO events.
         deployStreamSlice();
-
         await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(this::failIfSliceFailed)
-               .until(this::appHttpReady);
+             .pollInterval(POLL_INTERVAL)
+             .failFast(this::failIfSliceFailed)
+             .until(this::appHttpReady);
     }
 
     // --- placement (in-JVM, owner-authoritative) ---------------------------
-
     /// The owner-authoritative replica-set view for `(STREAM_NAME, partition)`: the registry is
     /// authoritative only on the partition's HRW owner (`servedByOwner()` true), so scan every live node's
     /// in-JVM `replicaSnapshot` and return the owner's (the HTTP sensor is delegate-routed, #490).
@@ -252,72 +220,70 @@ class MultiPartitionCrashDurabilityTest {
     }
 
     private boolean partitionPlaced(int partition) {
-        return ownerView(partition).map(view -> view.replicas().size() >= 2
-                                                 && view.replicas().stream().anyMatch(r -> !r.hrwOwner()))
-                                   .or(false);
+        return ownerView(partition).map(view -> view.replicas()
+                                                    .size() >= 2 && view.replicas()
+                                                                        .stream()
+                                                                        .anyMatch(r -> !r.hrwOwner()))
+                        .or(false);
     }
 
     // --- WAL on-disk assertion ---------------------------------------------
-
     private void assertWalActiveForMultipart() throws IOException {
         var multipartWals = walFiles(baseDir).stream()
-                                             .filter(MultiPartitionCrashDurabilityTest::isMultipartWal)
-                                             .toList();
+                                    .filter(MultiPartitionCrashDurabilityTest::isMultipartWal)
+                                    .toList();
 
-        assertThat(multipartWals)
-            .describedAs("stream WAL must be ACTIVE: a 'multipart-events' WAL file must exist under %s "
-                         + "(WAL OFF -> none; acked events would not survive restart)", baseDir)
-            .isNotEmpty();
-
+        assertThat(multipartWals).describedAs("stream WAL must be ACTIVE: a 'multipart-events' WAL file must exist under %s "
+                                             + "(WAL OFF -> none; acked events would not survive restart)",
+                                              baseDir)
+                  .isNotEmpty();
         long totalBytes = 0;
 
         for (var wal : multipartWals) {
             totalBytes += Files.size(wal);
         }
 
-        assertThat(totalBytes)
-            .describedAs("the owners' 'multipart-events' WALs must hold the acked events (non-empty) — proof "
-                         + "they were appended + fsync'd before ack, not just that the WAL dir was writable")
-            .isPositive();
+        assertThat(totalBytes).describedAs("the owners' 'multipart-events' WALs must hold the acked events (non-empty) — proof "
+                                          + "they were appended + fsync'd before ack, not just that the WAL dir was writable")
+                  .isPositive();
     }
 
     private static boolean isMultipartWal(Path walFile) {
         var parent = walFile.getParent();
 
-        return parent != null && parent.getFileName().toString().equals("multipart-events");
+        return parent != null && parent.getFileName()
+                                       .toString()
+                                       .equals("multipart-events");
     }
 
     private static List<Path> walFiles(Path base) throws IOException {
         try (var paths = Files.walk(base)) {
             return paths.filter(Files::isRegularFile)
-                        .filter(p -> p.getFileName().toString().endsWith(".wal"))
+                        .filter(p -> p.getFileName()
+                                      .toString()
+                                      .endsWith(".wal"))
                         .toList();
         }
     }
 
     // --- assertions ---------------------------------------------------------
-
     private void assertEveryPartitionPopulated(List<List<Event>> byPartition) {
         for (int partition = 0; partition < PARTITIONS; partition++) {
-            assertThat(byPartition.get(partition))
-                .describedAs("partition %d must be populated (keyless round-robin spreads over all %d partitions)",
-                             partition, PARTITIONS)
-                .isNotEmpty();
+            assertThat(byPartition.get(partition)).describedAs("partition %d must be populated (keyless round-robin spreads over all %d partitions)",
+                                                               partition,
+                                                               PARTITIONS)
+                      .isNotEmpty();
         }
     }
 
     /// The union of every partition's seqs is exactly {0..count-1} — no acked event lost, none duplicated,
     /// none stranded on the wrong partition.
     private void assertAllSeqsPresent(List<List<Event>> byPartition, int count) {
-        var seqs = byPartition.stream()
-                              .flatMap(List::stream)
-                              .map(Event::seq)
-                              .sorted()
-                              .toList();
+        var seqs = byPartition.stream().flatMap(List::stream).map(Event::seq).sorted().toList();
 
-        assertThat(seqs)
-            .describedAs("every published seq 0..%d must be present across the partitions exactly once", count - 1)
-            .containsExactlyElementsOf(contiguousSeqs(count));
+        assertThat(seqs).describedAs("every published seq 0..%d must be present across the partitions exactly once",
+                                     count - 1)
+                  .containsExactlyElementsOf(contiguousSeqs(count));
     }
 
     private static List<Long> contiguousSeqs(int count) {
@@ -338,15 +304,16 @@ class MultiPartitionCrashDurabilityTest {
             var events = byPartition.get(partition);
 
             for (int i = 0; i < events.size(); i++) {
-                assertThat(events.get(i).offset())
-                    .describedAs("partition %d offset at index %d is contiguous from 0 (no dup/gap)", partition, i)
-                    .isEqualTo((long) i);
+                assertThat(events.get(i).offset()).describedAs("partition %d offset at index %d is contiguous from 0 (no dup/gap)",
+                                                               partition,
+                                                               i)
+                          .isEqualTo((long) i);
             }
 
             for (int i = 1; i < events.size(); i++) {
-                assertThat(events.get(i).seq())
-                    .describedAs("partition %d seq strictly increases with offset (publish order preserved)", partition)
-                    .isGreaterThan(events.get(i - 1).seq());
+                assertThat(events.get(i).seq()).describedAs("partition %d seq strictly increases with offset (publish order preserved)",
+                                                            partition)
+                          .isGreaterThan(events.get(i - 1).seq());
             }
         }
     }
@@ -358,15 +325,14 @@ class MultiPartitionCrashDurabilityTest {
             var preSeqs = pre.get(partition).stream().map(Event::seq).toList();
             var postSeqs = post.get(partition).stream().map(Event::seq).toList();
 
-            assertThat(postSeqs)
-                .describedAs("partition %d: every event durably readable before the restart must be readable "
-                             + "after, in order (independent per-partition WAL replay)", partition)
-                .containsExactlyElementsOf(preSeqs);
+            assertThat(postSeqs).describedAs("partition %d: every event durably readable before the restart must be readable "
+                                            + "after, in order (independent per-partition WAL replay)",
+                                             partition)
+                      .containsExactlyElementsOf(preSeqs);
         }
     }
 
     // --- failure-path observability ----------------------------------------
-
     private void dumpIfPartitionsShort(List<List<Event>> post, List<List<Event>> pre) {
         for (int partition = 0; partition < PARTITIONS; partition++) {
             if (post.get(partition).size() < pre.get(partition).size()) {
@@ -394,7 +360,6 @@ class MultiPartitionCrashDurabilityTest {
     }
 
     // --- consumers ----------------------------------------------------------
-
     /// Drain every partition (0..PARTITIONS-1) fully; index i = partition i's events in offset order.
     private List<List<Event>> drainAllPartitions(int port) {
         var byPartition = new ArrayList<List<Event>>();
@@ -413,7 +378,10 @@ class MultiPartitionCrashDurabilityTest {
         var byPartition = new ArrayList<List<Event>>();
 
         for (int partition = 0; partition < PARTITIONS; partition++) {
-            byPartition.add(drainPartitionUntil(port, partition, pre.get(partition).size(), recoveryDeadlineNanos()));
+            byPartition.add(drainPartitionUntil(port,
+                                                partition,
+                                                pre.get(partition).size(),
+                                                recoveryDeadlineNanos()));
         }
 
         return byPartition;
@@ -486,7 +454,6 @@ class MultiPartitionCrashDurabilityTest {
     }
 
     // --- publishing ---------------------------------------------------------
-
     private void publishBatch(int port, int count) {
         for (int seq = 0; seq < count; seq++) {
             publish(port, seq);
@@ -497,14 +464,13 @@ class MultiPartitionCrashDurabilityTest {
         var body = "{\"payload\":\"" + seq + "\"}";
         var response = httpPost(port, "/api/stream-mp/publish", body);
 
-        assertThat(response)
-            .describedAs("publish seq %d must ack (min-sync-2: durable on >=2 nodes' WALs before ack)", seq)
-            .doesNotContain("\"error\"")
-            .contains("published");
+        assertThat(response).describedAs("publish seq %d must ack (min-sync-2: durable on >=2 nodes' WALs before ack)",
+                                         seq)
+                  .doesNotContain("\"error\"")
+                  .contains("published");
     }
 
     // --- deployment + readiness --------------------------------------------
-
     private void deployStreamSlice() {
         var blueprint = """
             id = "%s"
@@ -516,10 +482,9 @@ class MultiPartitionCrashDurabilityTest {
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
         var response = postBlueprintWithRetry(leaderPort, blueprint);
 
-        assertThat(response)
-            .describedAs("multi-partition (partitions=4, RF=2) stream-slice deployment")
-            .doesNotContain("\"error\"")
-            .contains("\"status\":\"applied\"");
+        assertThat(response).describedAs("multi-partition (partitions=4, RF=2) stream-slice deployment")
+                  .doesNotContain("\"error\"")
+                  .contains("\"status\":\"applied\"");
     }
 
     private boolean appHttpReady() {
@@ -529,15 +494,19 @@ class MultiPartitionCrashDurabilityTest {
             return false;
         }
 
-        var body = httpPost(ports.getFirst(), "/api/stream-mp/read", "{\"partition\":0,\"fromOffset\":0,\"maxEvents\":1}");
+        var body = httpPost(ports.getFirst(),
+                            "/api/stream-mp/read",
+                            "{\"partition\":0,\"fromOffset\":0,\"maxEvents\":1}");
 
-        return !body.contains("\"error\"") && body.contains("events");
+        return ! body.contains("\"error\"") && body.contains("events");
     }
 
     private void failIfSliceFailed() {
         var failed = cluster.slicesStatus()
                             .stream()
-                            .anyMatch(s -> s.artifact().equals(STREAM_SLICE) && s.state().equals("FAILED"));
+                            .anyMatch(s -> s.artifact()
+                                            .equals(STREAM_SLICE) && s.state()
+                                                                      .equals("FAILED"));
 
         if (failed) {
             throw new AssertionError("multi-partition stream slice deployment FAILED: " + STREAM_SLICE);
@@ -552,7 +521,10 @@ class MultiPartitionCrashDurabilityTest {
     }
 
     private int anyMgmtPort() {
-        return cluster.status().nodes().getFirst().mgmtPort();
+        return cluster.status()
+                      .nodes()
+                      .getFirst()
+                      .mgmtPort();
     }
 
     private long recoveryDeadlineNanos() {
@@ -572,9 +544,11 @@ class MultiPartitionCrashDurabilityTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
+
         return http.sendString(request)
                    .await()
-                   .map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true"))
+                   .map(r -> r.statusCode() == 200 && r.body()
+                                                       .contains("\"quorum\":true"))
                    .or(false);
     }
 
@@ -585,9 +559,11 @@ class MultiPartitionCrashDurabilityTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
+
         return http.sendString(request)
                    .await()
-                   .map(r -> r.statusCode() == 200 && healthHasFullMembership(r.body(), expected))
+                   .map(r -> r.statusCode() == 200 && healthHasFullMembership(r.body(),
+                                                                              expected))
                    .or(false);
     }
 
@@ -602,13 +578,11 @@ class MultiPartitionCrashDurabilityTest {
     }
 
     // --- HTTP ---------------------------------------------------------------
-
     private String postBlueprintWithRetry(int port, String body) {
         var lastResponse = ERROR_FALLBACK;
 
         for (int attempt = 1; attempt <= 3; attempt++) {
             lastResponse = httpPostToml(port, "/api/v1/blueprints", body);
-
             if (!lastResponse.contains("\"error\"")) {
                 return lastResponse;
             }
@@ -628,6 +602,7 @@ class MultiPartitionCrashDurabilityTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -641,6 +616,7 @@ class MultiPartitionCrashDurabilityTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(15))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)
@@ -653,6 +629,7 @@ class MultiPartitionCrashDurabilityTest {
                                  .DELETE()
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
+
         return http.sendString(request)
                    .await()
                    .map(HttpResult::body)

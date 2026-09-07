@@ -2,14 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.forge;
-
-import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.parallel.Execution;
-import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -22,8 +15,15 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
 
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+
 
 /// #430 — publish-under-ownership-reshuffle stream chaos test (builds on the #429 `test-stream-multipart`
 /// fixture). A background publisher streams events at a sustained rate through a stable node while the
@@ -95,32 +95,32 @@ class StreamPublishReshuffleTest extends AbstractMultiPartitionStream {
     @Test
     void sustainedPublish_duringOwnerKillReshuffle_everyAckedOffsetSurvivesUniqueAndOrdered() {
         await().atMost(PLACEMENT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allPartitionsPlaced);
-
         var killTarget = ownerId(KILL_PARTITION);
-        assertThat(killTarget)
-            .describedAs("partition %d owner identified before the kill", KILL_PARTITION)
-            .isNotBlank();
 
+        assertThat(killTarget).describedAs("partition %d owner identified before the kill", KILL_PARTITION).isNotBlank();
         // Publish through a node that is NOT the kill target, so the ingress + forwarding path stays up
         // across the reshuffle (only the target partition's write path is disrupted).
         var publishPort = appPortForNodeOtherThan(killTarget);
-        var acked = ConcurrentHashMap.<Long>newKeySet();
+        var acked = ConcurrentHashMap.<Long> newKeySet();
         var stop = new AtomicBoolean(false);
 
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var publisher = CompletableFuture.runAsync(() -> publishLoop(publishPort, acked, stop), executor);
-
             // Pre-kill: let a healthy batch of acked writes accumulate across all four partitions.
             await().atMost(ACK_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> acked.size() >= PRE_KILL_ACKS);
             var preKillAcked = acked.size();
-
             // Kill the partition-0 owner MID-STREAM and wait for the partition to re-resolve to a new owner.
-            cluster.killNode(killTarget).await();
-            await().atMost(FAILOVER_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> ownerReResolved(KILL_PARTITION, killTarget));
-
+            LifecycleAwait.nodeSettled("kill node " + killTarget
+                                      + " in sustainedPublish_duringOwnerKillReshuffle_everyAckedOffsetSurvivesUniqueAndOrdered()",
+                                       cluster,
+                                       cluster.killNode(killTarget));
+            await().atMost(FAILOVER_TIMEOUT)
+                 .pollInterval(POLL_INTERVAL)
+                 .until(() -> ownerReResolved(KILL_PARTITION, killTarget));
             // Keep publishing across/after the reshuffle until a further batch of writes is acked.
-            await().atMost(POST_KILL_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> acked.size() >= preKillAcked + POST_KILL_ACKS);
-
+            await().atMost(POST_KILL_TIMEOUT)
+                 .pollInterval(POLL_INTERVAL)
+                 .until(() -> acked.size() >= preKillAcked + POST_KILL_ACKS);
             stop.set(true);
             publisher.join();
         }
@@ -129,15 +129,14 @@ class StreamPublishReshuffleTest extends AbstractMultiPartitionStream {
         // The promoted owner (and unaffected owners) must serve every acked write; poll until the
         // read-back covers the full acked set before the final reconciliation.
         await().atMost(FAILOVER_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> readbackSeqs(publishPort).containsAll(ackedSnapshot));
-
+             .pollInterval(POLL_INTERVAL)
+             .until(() -> readbackSeqs(publishPort).containsAll(ackedSnapshot));
         var partitionEvents = drainAllPartitions(publishPort);
+
         assertAckedSurviveUniqueAndOrdered(partitionEvents, ackedSnapshot);
     }
 
     // --- publisher ----------------------------------------------------------
-
     /// Serial sustained publisher: publish monotonically increasing seqs (short client timeout so a
     /// wedged partition's write fails fast instead of stalling the loop), recording every ACKED seq,
     /// until `stop` is set. One in-flight publish at a time keeps each partition's acked suffix in
@@ -156,7 +155,6 @@ class StreamPublishReshuffleTest extends AbstractMultiPartitionStream {
     }
 
     // --- reshuffle helpers --------------------------------------------------
-
     private int appPortForNodeOtherThan(String excludedNodeId) {
         var excludedPort = appPortFor(excludedNodeId);
 
@@ -170,11 +168,10 @@ class StreamPublishReshuffleTest extends AbstractMultiPartitionStream {
     private boolean ownerReResolved(int partition, String oldOwner) {
         var owner = ownerId(partition);
 
-        return !owner.isBlank() && !owner.equals(oldOwner);
+        return ! owner.isBlank() && !owner.equals(oldOwner);
     }
 
     // --- reconciliation -----------------------------------------------------
-
     private Set<Long> readbackSeqs(int port) {
         var seqs = new HashSet<Long>();
 
@@ -191,17 +188,14 @@ class StreamPublishReshuffleTest extends AbstractMultiPartitionStream {
         var allSeqs = new ArrayList<Long>();
 
         partitionEvents.forEach(events -> events.forEach(event -> allSeqs.add(event.seq())));
-
         var uniqueSeqs = new HashSet<>(allSeqs);
 
-        assertThat(uniqueSeqs)
-            .describedAs("no event is duplicated across the log (each seq appears at most once)")
-            .hasSize(allSeqs.size());
-        assertThat(uniqueSeqs)
-            .describedAs("every ACKED publish (min-sync-2, %d acked) survives the owner-kill reshuffle", acked.size())
-            .containsAll(acked);
-        assertThat(acked)
-            .describedAs("acked writes accumulated both before and after the kill")
-            .hasSizeGreaterThanOrEqualTo(PRE_KILL_ACKS + POST_KILL_ACKS);
+        assertThat(uniqueSeqs).describedAs("no event is duplicated across the log (each seq appears at most once)")
+                  .hasSize(allSeqs.size());
+        assertThat(uniqueSeqs).describedAs("every ACKED publish (min-sync-2, %d acked) survives the owner-kill reshuffle",
+                                           acked.size())
+                  .containsAll(acked);
+        assertThat(acked).describedAs("acked writes accumulated both before and after the kill")
+                  .hasSizeGreaterThanOrEqualTo(PRE_KILL_ACKS + POST_KILL_ACKS);
     }
 }
