@@ -34,6 +34,7 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.slice.SliceLoadingFailure.Intermittent.SliceNotInStore;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -136,9 +137,20 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private static final Fn1<Cause, SliceNodeKey> UNLOAD_FAILED = Causes.forOneValue("Failed to unload slice %s");
 
-        private static final Fn1<Cause, String> SLICE_NOT_FOUND_FOR_ACTIVATION = Causes.forOneValue("Slice %s state is ACTIVATE but not found in SliceStore");
+        /// #916: typed `Intermittent`, NOT a plain `Causes.forOneValue`. Untyped it fell through
+        /// `SliceLoadingFailure.classify`'s permanent catch-all, so an ACTIVATE that merely crossed
+        /// an in-flight unload of the same artifact was reported `fatal`, and the leader rolled the
+        /// blueprint back under `ALL_OR_NOTHING`. Non-fatal routes it to the cluster's existing
+        /// bounded retry (`ClusterDeploymentState.Active.handleTransientFailure`, 5 attempts).
+        private static final Fn1<Cause, String> SLICE_NOT_FOUND_FOR_ACTIVATION = artifact -> SliceNotInStore.sliceNotInStore(artifact,
+                                                                                                                             "activation");
 
-        private static final Fn1<Cause, String> SLICE_NOT_LOADED_FOR_REGISTRATION = Causes.forOneValue("Slice not loaded for registration: %s");
+        /// #916: the second store-absence cause on the same activation chain
+        /// ([#registerSliceForInvocation]), typed for the same reason and reachable through the same
+        /// unload/activate crossing — the slice can be evicted between `handleActivating`'s lookup
+        /// and this one.
+        private static final Fn1<Cause, String> SLICE_NOT_LOADED_FOR_REGISTRATION = artifact -> SliceNotInStore.sliceNotInStore(artifact,
+                                                                                                                                "invocation registration");
 
         @Override
         public void onEntry() {
@@ -410,8 +422,13 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private void handleSliceNotFoundForActivation(SliceNodeKey sliceKey) {
             var cause = SLICE_NOT_FOUND_FOR_ACTIVATION.apply(sliceKey.artifact().asString());
-
-            log.error("Slice {} state is ACTIVATE but not found in SliceStore", sliceKey.artifact());
+            // #916: WARN, not ERROR. This is now a retryable crossing the cluster recovers from on
+            // its own; logging it at ERROR trained operators to treat a self-healing condition as an
+            // incident. `ClusterDeploymentState.Active.logMaxRetriesExceeded` still logs at ERROR
+            // when the retry budget is spent — though note it does not actually stop there; the
+            // deployment is re-driven, which is the pre-existing livelock tracked by #922.
+            log.warn("Slice {} state is ACTIVATE but not found in SliceStore — reporting intermittent, cluster will retry",
+                     sliceKey.artifact());
             transitionToFailed(sliceKey, cause);
         }
 
