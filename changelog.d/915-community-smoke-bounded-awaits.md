@@ -86,6 +86,18 @@ merged forward onto it, and several of the design decisions below were reversed 
   tag at all. Two cases a healthy cluster never produces now drive the node line directly — a populated
   `ClusterStatus`, and a cleared registry with a retained `StartFailure` — and the populated case is
   asserted as a whole rendered block, so an ADDED field fails it too.
+- **Round 2 — the one-argument accessor's own wiring is now pinned too.** Round 1 fixed an unpinned
+  renderer; the review then found the same shape one level up. Every test drove the two-argument
+  `snapshot(ClusterStatus, Option<StartFailure>)`, so swapping `present.lastStartFailure()` for
+  `Option.none()` inside the one-argument `snapshot(EmberCluster)` — which is what all 92 call sites
+  actually use — left the suite green at 14/14. It was a coverage hole rather than a live defect, but
+  it is the same failure this PR spent a blocking round on, so it gets the same treatment. This is the
+  one case in the set that cannot be supplied directly: `EmberCluster` captures the failure into a
+  private field during `start()` and offers no seam, so the pin makes a start genuinely fail by
+  holding one management port before the cluster is built, then asserts what the accessor renders
+  [verified: `LifecycleAwaitStartFailureTest#aFailedStart_isRenderedByTheOneArgAccessor_fromTheRetainedCapture`;
+  control 15/15 green, and the review's exact substitution turns that test — and only that test — red].
+
 - **Every claim above that rests on a test was mutation-probed, and each probe went red.** Round 1's
   finding was a `[verified:]` tag on a pin that could not fail, so this time each claim's test was
   attacked rather than re-run. Controls first: `LifecycleAwaitTest` + `ClusterSnapshotTest` green at
@@ -139,8 +151,11 @@ merged forward onto it, and several of the design decisions below were reversed 
   `@BeforeAll` and a 240s bounded stop in `@AfterAll` draw separate budgets and cannot sum into it.
 - **Round 1 correction — the gate claim "this change does not add any findings" was false, and the
   arithmetic behind it was wrong too.** Forced with `-Djbct.includeTests=true`, the module reports
-  **807** findings on this branch against **904** on the merged base, a net reduction of 97; at ERROR
-  severity, 146 against 211. The first revision credited a 164-line reduction to the `.onFailure`
+  **804** findings on this branch against **901** on the merged base, a net reduction of 97; at ERROR
+  severity, 146 against 211. (An earlier revision of this bullet said 807/904: that counter matched
+  every `JBCT-<CODE>` mention in the log rather than only finding lines, over-counting by 3 on each
+  side. The ERROR figures are unaffected. A residual 7-finding WARNING-level gap against an
+  independent measurement of the base remains unreconciled and was not chased.) The first revision credited a 164-line reduction to the `.onFailure`
   replacement when most of it was the wholesale reformat that has now been reverted. This PR's own
   four files carry **20 findings, all at WARNING severity and none at ERROR** — the three ERROR-level
   findings review round 1 found in them (`JBCT-EX-01` throw forbidden, `JBCT-TOT-01` partial mapper,
