@@ -82,18 +82,18 @@ decision about each tree, is what #813 reports. **CI does not override the defau
 therefore runs only where a pom opts back in: `aether/pom.xml` sets `jbct.skip` to `false` for the
 whole Aether tree, and most `examples/` modules set it individually.
 
-Of the modules in the root Maven reactor that contain a `src/main/java` at all — the only ones the
-gate could examine — **71 are examined and 47 are skipped.** The skipped set is `core/`, every
-module under `integrations/`, every module under `jbct/`, `testing/`, and
-`examples/pragmatica-lite`. So the gate does not examine the Core library, and does not examine a
-single integration. **A green gate is
-not coverage for those trees**, and you should not read one as evidence that code you added there
-conforms. This gap is real, known and tracked in #813 and #880.
+The population that matters is the reactor modules that contain a `src/main/java` at all, since
+those are the only ones the gate could examine. There are 118 of them, and **the gate examines 71
+and skips 47.** The skipped 47 are `core/`, every module under `integrations/`, every module under
+`jbct/`, `testing/`, and `examples/pragmatica-lite`. So the gate does not examine the Core library,
+and does not examine a single integration. **A green gate is not coverage for those trees**, and you
+should not read one as evidence that code you added there conforms. This gap is real, known and
+tracked in #813 and #880.
 
 If your change lands in a skipped module, check it by hand:
 
 ```bash
-mvn org.pragmatica-lite:jbct-maven-plugin:check -pl <module> -Djbct.skip=false
+mvn jbct:check -pl <module> -Djbct.skip=false
 ```
 
 Expect pre-existing findings in those trees — debt that has never been gated accumulates. Fix what
@@ -189,12 +189,12 @@ required from you while it waits.
 
 ### Sign-off
 
-There is no automated DCO or CLA check gating PRs in this repository today [mechanism: `.github/`
-contains only `ci.yml` and `release.yml` — no DCO/CLA bot is configured]. We nonetheless ask that
-you certify the provenance of your contribution by adding a `Signed-off-by` trailer (`git commit
--s`), per the [Developer Certificate of Origin](https://developercertificate.org/). This is a
-request, not (yet) an enforced gate — expect it to become one before GA, given the dual-license
-surface above.
+There is no automated DCO or CLA check gating PRs in this repository today [mechanism:
+`.github/workflows/` contains `changelog.yml`, `ci.yml` and `release.yml` — no DCO/CLA bot is
+configured]. We nonetheless ask that you certify the provenance of your contribution by adding a
+`Signed-off-by` trailer (`git commit -s`), per the
+[Developer Certificate of Origin](https://developercertificate.org/). This is a request, not (yet)
+an enforced gate — expect it to become one before GA, given the dual-license surface above.
 
 ## What review expects
 
