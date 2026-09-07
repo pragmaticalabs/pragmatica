@@ -1730,8 +1730,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             if (hasActiveInstanceElsewhere(artifact)) {
                 log.warn("Max retries ({}) exceeded for {} on {}: {} — NOT marking permanently failed: "
-                         + "the artifact is ACTIVE on another node, so this is a node-local transient and "
-                         + "reconciliation keeps converging toward the desired instance count",
+                        + "the artifact is ACTIVE on another node, so this is a node-local transient and "
+                        + "reconciliation keeps converging toward the desired instance count",
                          MAX_RETRIES,
                          artifact,
                          sliceKey.nodeId(),
@@ -1787,8 +1787,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                               .filter(entry -> entry.getKey()
                                                     .artifact()
                                                     .equals(artifact))
-                              .filter(entry -> liveNodes.contains(entry.getKey()
-                                                                       .nodeId()))
+                              .filter(entry -> liveNodes.contains(entry.getKey().nodeId()))
                               .anyMatch(entry -> entry.getValue() == SliceState.ACTIVE);
         }
 
