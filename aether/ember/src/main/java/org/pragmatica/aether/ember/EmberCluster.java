@@ -94,6 +94,10 @@ public final class EmberCluster {
     public static final int DEFAULT_BASE_APP_HTTP_PORT = 8070;
     private static final TimeSpan NODE_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     private static final long ROLLING_RESTART_DELAY_MS = 5_000;
+    /// #727 review B1 — the two values [#observedState] can produce, both read from the node.
+    /// "active" is short for consensus-active ([AetherNode#isReady]), not a general health verdict.
+    public static final String STATE_ACTIVE = "active";
+    public static final String STATE_INACTIVE = "inactive";
 
     private final Map<String, AetherNode> nodes = new ConcurrentHashMap<>();
     /// TEST SEAM (#509 probe) — nodes CREATED by [#start] with the full configured topology but whose
@@ -196,6 +200,19 @@ public final class EmberCluster {
     /// construction time, so [#wiredCertificateProvider] and [#wiredQuicTls] can never drift from
     /// what a node was truly wired with.
     private final AtomicReference<Option<AetherNodeConfig>> lastNodeConfig = new AtomicReference<>(Option.empty());
+
+    /// #727 review B2 — the cluster state as it was when a start failed, retained past the teardown
+    /// that empties [#nodes], [#nodeInfos] and [#slotsByNodeId].
+    ///
+    /// Both start-failure paths ([#abortStart] and [#handleStartResults]) end in
+    /// `clearClusterStateOnFailure` BEFORE the failure reaches the caller, so a caller that reports
+    /// `status()` on a start failure reads an emptied registry and prints `leader=none` with no node
+    /// lines — empty on exactly the failures the report exists for. The snapshot is taken before the
+    /// stops begin and the first capture of a start attempt wins, because the two paths can both run
+    /// (whichever settles the outcome first) and the earlier observation is the one taken closest to
+    /// the failure. Reset at the head of every [#start] so a retry cannot report its predecessor's
+    /// state as its own.
+    private final AtomicReference<StartFailure> lastStartFailure = new AtomicReference<>();
 
     private static byte[] generateClusterSecret() {
         var secret = new byte[32];
@@ -578,7 +595,13 @@ public final class EmberCluster {
 
         nodeCounter.set(initialClusterSize);
         var startPromises = new ArrayList<Promise<NodeStartResult>>();
+        var firstFailure = Promise.<Unit> promise();
+        // #727 review B2: node id -> why its start failed, accumulated as the failures land so the
+        // snapshot below can name them. Recorded BEFORE `firstFailure` fires, so the abort path that
+        // `firstFailure` triggers always sees at least the failure that triggered it.
+        var startFailures = new ConcurrentHashMap<String, String>();
 
+        lastStartFailure.set(null);
         for (int i = 0; i < initialClusterSize; i++) {
             var nodeInfo = initialNodes.get(i);
             var nodeIdStr = nodeInfo.id().id();
@@ -596,6 +619,9 @@ public final class EmberCluster {
 
             nodes.put(nodeIdStr, node);
             startPromises.add(node.start()
+                                  .onFailure(cause -> startFailures.put(nodeIdStr,
+                                                                        cause.message()))
+                                  .onFailure(firstFailure::fail)
                                   .map(_ -> NodeStartResult.nodeStartResult(nodeIdStr,
                                                                             port,
                                                                             mgmtPort,
@@ -606,7 +632,56 @@ public final class EmberCluster {
                                                                                     Option.some(cause))));
         }
 
-        return Promise.allOf(startPromises).flatMap(this::handleStartResults);
+        var outcome = Promise.<Unit> promise();
+
+        Promise.allOf(startPromises)
+               .flatMap(results -> handleStartResults(results, startFailures))
+               .onResult(outcome::resolve);
+        firstFailure.onFailure(cause -> abortStart(cause, startFailures).onResult(outcome::resolve));
+
+        return outcome;
+    }
+
+    /// #727: the first node-start failure aborts the whole start, instead of waiting for every node.
+    ///
+    /// A node whose start FAILS settles its promise at once, but a node whose start SUCCEEDS settles
+    /// only on consensus quorum (`AetherNode.start()` resolves inside `clusterNode.start()`). So once
+    /// enough peers have failed that quorum can no longer form, every survivor's start is pending
+    /// forever, `allOf` never settles, and [#start] hangs with no bound at all. Observed 2026-09-06 on
+    /// a 3-node cluster with two management ports already taken: the third node waited 500+ s for a
+    /// quorum of one, the caller's untimed `await()` then ignored JUnit's 8-minute interrupt, and only
+    /// failsafe's 30-minute fork wall ended it — with no failing test named. Whichever path settles
+    /// `outcome` first wins (`resolve` is compare-and-set); the other's stops are bounded, recovered,
+    /// and idempotent on an already-stopped node.
+    private Promise<Unit> abortStart(Cause cause, Map<String, String> startFailures) {
+        log.error("Cluster startup aborted on first node failure: {}", cause.message());
+        // #727 review B2: BEFORE the stops and the clear that follows them, while `nodes` and
+        // `nodeInfos` still hold the attempt. Moving this below the stops empties the snapshot.
+        captureStartFailure(startFailures);
+        var stopPromises = nodes.values()
+                                .stream()
+                                .map(node -> node.stop()
+                                                 .timeout(NODE_TIMEOUT)
+                                                 .recover(_ -> Unit.unit()))
+                                .toList();
+
+        return Promise.allOf(stopPromises)
+                      .mapToUnit()
+                      .onSuccess(this::clearClusterStateOnFailure)
+                      .flatMap(_ -> cause.promise());
+    }
+
+    private void captureStartFailure(Map<String, String> startFailures) {
+        lastStartFailure.compareAndSet(null, new StartFailure(status(), Map.copyOf(startFailures)));
+    }
+
+    /// #727 review B2 — what [#status] answered at the moment the most recent [#start] failed, plus
+    /// each failing node's cause, or [Option#none] when no start of this instance has failed. Read it
+    /// when `status()` is empty: a start failure clears the live registries before the caller sees the
+    /// failure, so `status()` alone cannot distinguish "the cluster has no nodes" from "the cluster
+    /// had three nodes and the abort cleared them".
+    public Option<StartFailure> lastStartFailure() {
+        return Option.option(lastStartFailure.get());
     }
 
     /// TEST SEAM (#509 probe) — start the instances [#start] created and held back, in their original
@@ -659,7 +734,7 @@ public final class EmberCluster {
         }
     }
 
-    private Promise<Unit> handleStartResults(List<Result<NodeStartResult>> results) {
+    private Promise<Unit> handleStartResults(List<Result<NodeStartResult>> results, Map<String, String> startFailures) {
         var nodeResults = results.stream().flatMap(Result::stream).toList();
         var failed = nodeResults.stream().filter(r -> !r.succeeded()).toList();
         var succeeded = nodeResults.stream().filter(NodeStartResult::succeeded).toList();
@@ -687,6 +762,9 @@ public final class EmberCluster {
         }
 
         log.error("Cluster startup failed: {} of {} nodes failed to start", failed.size(), attempted);
+        // #727 review B2: same reason as in `abortStart` — this path also clears the registries
+        // before the caller sees the failure, so the snapshot must be taken here, not after.
+        captureStartFailure(startFailures);
         var stopPromises = succeeded.stream()
                                     .map(r -> Option.option(nodes.get(r.nodeId()))
                                                     .map(node -> node.stop()
@@ -901,8 +979,25 @@ public final class EmberCluster {
         return new NodeStatus(entry.getKey(),
                               clusterPort,
                               baseMgmtPort + (clusterPort - basePort),
-                              "healthy",
+                              observedState(entry.getValue()),
                               currentLeader().map(leaderId -> leaderId.equals(entry.getKey())).or(false));
+    }
+
+    /// #727 review B1 — [NodeStatus#state] used to be the string literal `"healthy"`, passed in
+    /// unconditionally with no code path able to produce any other value. Every node in every status
+    /// answer, every `/api/nodes/status` body and every failing test's state dump therefore read
+    /// `healthy`, including a node that never formed. A diagnostic that fabricates its own evidence is
+    /// worse than one that omits the field: the reader of the next formation stall sees `leader=none`
+    /// beside three healthy nodes and looks in the wrong place.
+    ///
+    /// The value is now read from the node: [AetherNode#isReady] is `clusterNode.isActive()`, the same
+    /// consensus-active sample the readiness pong answers from. It is named for what it measures —
+    /// [#STATE_ACTIVE] means consensus-active, NOT "healthy in every respect" — because the next
+    /// unqualified word here would be the same defect again.
+    private static String observedState(AetherNode node) {
+        return node.isReady()
+               ? STATE_ACTIVE
+               : STATE_INACTIVE;
     }
 
     public Option<AetherNode> getNode(String nodeIdStr) {
@@ -1285,6 +1380,13 @@ public final class EmberCluster {
     }
 
     public record NodeStatus(String id, int port, int mgmtPort, String state, boolean isLeader) {}
+
+    /// #727 review B2 — a start failure's evidence, taken before the abort clears the cluster.
+    ///
+    /// @param status       what [EmberCluster#status] answered at the moment of failure
+    /// @param nodeFailures node id -> the message of the cause that failed that node's `start()`;
+    ///                     empty when the start failed without any node reporting a cause
+    public record StartFailure(ClusterStatus status, Map<String, String> nodeFailures) {}
 
     public record ClusterStatus(List<NodeStatus> nodes, String leaderId) {}
 
