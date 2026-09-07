@@ -113,9 +113,20 @@ merged forward onto it, and several of the design decisions below were reversed 
   | `report` drops the snapshot | an expiry carrying no cluster state | same |
   | `bestEffort` ignores its `bound` | an unbounded teardown | `bestEffort_boundsTheWaitButDoesNotFailTheTest` |
   | `bestEffort` throws | the round-1 behaviour change, reinstated | same |
-  | `snapshot` ignores `lastStartFailure` | the empty dump on a failed start | `aClearedRegistryAfterAFailedStart_rendersWhatTheStartFailureRetained` |
+  | one-arg `snapshot` passes `Option.none()` for `present.lastStartFailure()` | the accessor discarding the retained failure | `aFailedStart_isRenderedByTheOneArgAccessor_fromTheRetainedCapture` (1 test) |
+  | two-arg `snapshot` passes `Option.none()` to `ClusterSnapshot.render` | the empty dump on a failed start | that test **plus** `aClearedRegistryAfterAFailedStart_rendersWhatTheStartFailureRetained` (2 tests) |
   | `settled` always throws | a helper that never works | `aPromiseThatSettles_returnsItsValue` (the positive control) |
   | `snapshot` stops delegating | a second, divergent renderer | `aClusterWithNothingToReport_isRenderedByTheModulesOneRenderer` |
+
+  Re-measured 2026-09-07 on a clean tree at `ad73f1bcd`, after `review-921` re-derived its own runs
+  against the same head. The two `Option.none()` rows above were previously ONE row that named the
+  one-arg mutation but recorded the two-arg mutation's red test — corrected here from measurement, not
+  from reasoning. Control 15/15 green; one-arg reddens 1; two-arg reddens 2; and gutting the one-arg
+  accessor to a bare constant reddens 3 (`aClusterWithNothingToReport` and `anAbsentCluster` join,
+  because a constant also destroys the null-cluster branch that neither `Option.none()` substitution
+  touches). Each substitution was confirmed to land on the executable expression before its result was
+  read — a mutation that lands on javadoc compiles and reddens nothing, which is indistinguishable from
+  an unpinned path. `review-921` independently reproduced the first two rows.
 
   The `observedState` probe is the one that matters most: it reddens against a REAL three-node cluster
   that formed and then reported `state=healthy` for every node — the defect in its original shape
