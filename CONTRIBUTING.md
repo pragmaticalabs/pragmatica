@@ -80,7 +80,7 @@ decision about each tree, is what #813 reports. **CI does not override the defau
 `.github/workflows/ci.yml`, the "JBCT format + lint gate" step runs
 `mvn org.pragmatica-lite:jbct-maven-plugin:check -B -pl '!jbct'` — no `-Djbct.skip=false`]. The gate
 therefore runs only where a pom opts back in: `aether/pom.xml` sets `jbct.skip` to `false` for the
-whole Aether tree, and most `examples/` modules set it individually.
+whole Aether tree, and several `examples/` poms do the same for their own subtrees.
 
 The population that matters is the reactor modules that contain a `src/main/java` at all, since
 those are the only ones the gate could examine. There are 118 of them, and **the gate examines 71
