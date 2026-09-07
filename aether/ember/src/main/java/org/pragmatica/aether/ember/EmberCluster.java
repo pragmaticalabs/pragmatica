@@ -797,12 +797,34 @@ public final class EmberCluster {
         log.info("Stopping Ember cluster");
         rollingRestartTask.cancel();
         rollingRestartActive.set(false);
-        var stopPromises = nodes.values().stream().map(node -> node.stop()
-                                                                   .timeout(NODE_TIMEOUT)).toList();
+        var stopPromises = nodes.values()
+                                .stream()
+                                .map(EmberCluster::submitStop)
+                                .toList();
 
         return Promise.allOf(stopPromises)
                       .map(_ -> Unit.unit())
                       .onSuccess(this::clearClusterState);
+    }
+
+    /// Run one node's stop OFF the caller's thread so [`#NODE_TIMEOUT`] can actually see it (#929).
+    ///
+    /// `AetherNode.stop()` runs a long SYNCHRONOUS prologue before it returns its promise, and
+    /// `.toList()` is eager — so every node's prologue used to run to completion on the caller's
+    /// thread (in forge, the JUnit thread) BEFORE there was any promise to bound. #915's
+    /// `.timeout(NODE_TIMEOUT)` therefore decorated only the async tail and could not see the part
+    /// that blocks; the same is true one level up, where `LifecycleAwait.bestEffort("cluster stop",
+    /// c, c.stop())` evaluates `c.stop()` as an ARGUMENT, fully, before its 240 s bound starts
+    /// counting. Submitting the whole call puts the prologue inside the window the timeout covers.
+    ///
+    /// This RAISES stop concurrency — the prologues now overlap instead of running in sequence, so
+    /// teardown produces more simultaneous membership churn. That is precisely the input that
+    /// triggered #929, which is why this lands only together with the `MembershipFsm` transition
+    /// guard; on its own it would make that deadlock more frequent, not less.
+    private static Promise<Unit> submitStop(AetherNode node) {
+        return Promise.<Unit> promise(promise -> node.stop()
+                                                     .onResult(promise::resolve))
+                      .timeout(NODE_TIMEOUT);
     }
 
     private void clearClusterState(Unit unit) {

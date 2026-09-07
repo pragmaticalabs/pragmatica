@@ -20,6 +20,7 @@ import java.net.InetSocketAddress;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.consensus.net.NodeInfo;
@@ -68,6 +69,17 @@ public final class NettySwimTransport implements SwimTransport {
     private static final int ANNOUNCE_RATE_PER_SECOND = 10;
     /// Evict per-source rate limiter entries idle longer than this.
     private static final long ANNOUNCE_LIMITER_IDLE_EVICT_MS = 5 * 60 * 1_000L;
+    /// Bound on EACH of the two transport-shutdown waits (#929). Netty's own `shutdownGracefully()`
+    /// timeout cannot supply this: it is enforced by `confirmShutdown()`, which runs ON the event
+    /// loop, so a wedged loop cannot enforce its own timeout — the caller must. 5 s is far above the
+    /// healthy path, which a green nine-node forge teardown measures at a constant 2.00 s per node,
+    /// and that 2 s was entirely the quiet period dropped below.
+    private static final long SHUTDOWN_TIMEOUT_MS = 5_000L;
+    /// No quiet period (#929). Netty defaults to 2 s so a graceful protocol can drain in-flight work.
+    /// SWIM is fire-and-forget UDP with nothing to drain, so the wait bought nothing and cost ~2 s
+    /// per node — ~18 s of every nine-node forge teardown, on the caller's thread.
+    private static final long SHUTDOWN_QUIET_PERIOD_MS = 0L;
+    private static final Result<Unit> SHUTDOWN_OK = Result.success(unit());
 
     private final Serializer serializer;
     private final Deserializer deserializer;
@@ -284,34 +296,63 @@ public final class NettySwimTransport implements SwimTransport {
     }
 
     private Result<Unit> doStop() {
-        return Result.lift(SwimError.TransportFailure::new, this::stopChannel);
+        return stopChannel();
     }
 
-    private void stopChannel() {
+    /// Stop the transport under a BOUND, and report what actually happened (#929).
+    ///
+    /// Both waits used to be bare `.sync()` — unbounded — and this method logged
+    /// "SWIM transport stopped" unconditionally at the end. When a deadlocked SWIM event loop could
+    /// neither run the pending close task nor reach `confirmShutdown()`, the wait ran until JUnit's
+    /// 8-minute lifecycle backstop interrupted it; `.sync()` then threw, the interrupt flag was
+    /// re-asserted, and the success line was logged anyway over a transport that was never stopped
+    /// (the surviving `nioEventLoopGroup` thread is visible in the dumps 10 s later). That false
+    /// line is why #727, #749 and #750 each looked past the wedge underneath it.
+    ///
+    /// So a shutdown that does NOT complete now returns a FAILURE and logs a warning INSTEAD of the
+    /// success line — never as well as it. Expect this to surface teardown failures that previously
+    /// read as clean: those are correctly red, not a regression.
+    private Result<Unit> stopChannel() {
         nettyResolver.getAndSet(none()).onPresent(DnsNameResolver::close);
-        channel.getAndSet(none()).onPresent(NettySwimTransport::closeChannel);
-        if (!externalGroup.isPresent()) {
-            group.getAndSet(none()).onPresent(NettySwimTransport::shutdownGroup);
-        }
 
-        LOG.info("SWIM transport stopped");
+        var channelClosed = channel.getAndSet(none())
+                                   .map(NettySwimTransport::closeChannel)
+                                   .or(SHUTDOWN_OK);
+        var groupStopped = externalGroup.isPresent()
+                           ? SHUTDOWN_OK
+                           : group.getAndSet(none())
+                                  .map(NettySwimTransport::shutdownGroup)
+                                  .or(SHUTDOWN_OK);
+
+        return channelClosed.flatMap(() -> groupStopped)
+                            .onSuccess(_ -> LOG.info("SWIM transport stopped"))
+                            .onFailure(cause -> LOG.warn("SWIM transport shutdown did NOT complete: {}",
+                                                         cause.message()));
     }
 
-    @SuppressWarnings("JBCT-EX-01")  // Adapter boundary: wrapping Netty I/O
-    private static void closeChannel(Channel ch) {
-        try {
-            ch.close().sync();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+    private static Result<Unit> closeChannel(Channel ch) {
+        return awaitBounded(ch.close(), "channel close");
     }
 
+    private static Result<Unit> shutdownGroup(EventLoopGroup g) {
+        return awaitBounded(g.shutdownGracefully(SHUTDOWN_QUIET_PERIOD_MS,
+                                                 SHUTDOWN_TIMEOUT_MS,
+                                                 TimeUnit.MILLISECONDS),
+                            "event loop group shutdown");
+    }
+
+    /// Bounded wait on a Netty future, reporting the two outcomes the pre-#929 code swallowed:
+    /// the bound elapsing, and an interrupt aborting the wait. Neither is success.
     @SuppressWarnings("JBCT-EX-01")  // Adapter boundary: wrapping Netty I/O
-    private static void shutdownGroup(EventLoopGroup g) {
+    private static Result<Unit> awaitBounded(Future<?> future, String stage) {
         try {
-            g.shutdownGracefully().sync();
+            return future.await(SHUTDOWN_TIMEOUT_MS)
+                   ? SHUTDOWN_OK
+                   : new SwimError.ShutdownTimeout(stage, SHUTDOWN_TIMEOUT_MS).result();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+
+            return new SwimError.ShutdownInterrupted(stage).result();
         }
     }
 
