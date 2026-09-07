@@ -105,9 +105,7 @@ class ScaleUpFiveToSevenProbeTest {
     @TerminalOperation
     void setUp() {
         cluster = emberCluster(INITIAL_CORES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "scale");
-        cluster.start()
-               .await()
-               .onFailure(ScaleUpFiveToSevenProbeTest::failStart);
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
 
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> countedCores() == INITIAL_CORES);
@@ -126,7 +124,7 @@ class ScaleUpFiveToSevenProbeTest {
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
     @Test
@@ -302,9 +300,6 @@ class ScaleUpFiveToSevenProbeTest {
                    .or("{}");
     }
 
-    private static void failStart(Cause cause) {
-        throw new AssertionError("Cluster start failed: " + cause.message());
-    }
 
     private static void failScenario(Cause cause) {
         throw new AssertionError("Scenario setup failed: " + cause.message());

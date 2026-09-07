@@ -7,6 +7,7 @@ package org.pragmatica.aether.forge;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.time.Duration;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.ember.EmberCluster;
@@ -45,19 +46,31 @@ final class ClusterSnapshot {
     static String render(EmberCluster.ClusterStatus live,
                          Option<EmberCluster.StartFailure> startFailure,
                          HttpOperations http) {
+        return render(live, startFailure, node -> liveNodeLine(node, http));
+    }
+
+    /// #915 — the same three branches, for a caller that holds no [HttpOperations] to probe with.
+    ///
+    /// The lifecycle awaits this serves are in `@BeforeAll`/`@AfterAll` across 36 classes, most of
+    /// which never build an http client; and a health probe on a `stop` that failed would answer
+    /// about the aftermath. What the endpoint would have told us — whether the node is
+    /// consensus-active — is already in [EmberCluster.NodeStatus#state] since #913.
+    static String render(EmberCluster.ClusterStatus live, Option<EmberCluster.StartFailure> startFailure) {
+        return render(live, startFailure, ClusterSnapshot::nodeLine);
+    }
+
+    private static String render(EmberCluster.ClusterStatus live,
+                                 Option<EmberCluster.StartFailure> startFailure,
+                                 Function<EmberCluster.NodeStatus, String> lineOf) {
         if (!live.nodes().isEmpty()) {
-            return renderLive(live, http);
+            return "  leader=" + live.leaderId() + "\n"
+                   + live.nodes()
+                         .stream()
+                         .map(lineOf)
+                         .collect(Collectors.joining("\n"));
         }
         return startFailure.map(ClusterSnapshot::renderCaptured)
                            .or(NO_STATE);
-    }
-
-    private static String renderLive(EmberCluster.ClusterStatus status, HttpOperations http) {
-        return "  leader=" + status.leaderId() + "\n"
-               + status.nodes()
-                       .stream()
-                       .map(node -> liveNodeLine(node, http))
-                       .collect(Collectors.joining("\n"));
     }
 
     /// The captured snapshot is rendered WITHOUT probing any health endpoint: the nodes it names were
@@ -83,8 +96,11 @@ final class ClusterSnapshot {
         return nodeLine(node) + " health=" + healthBody(node.mgmtPort(), http);
     }
 
+    /// #915 added the two ports. The canonical failure this dump is read for is a port that could
+    /// not be bound, and the id alone does not say which port the node was asked to take.
     private static String nodeLine(EmberCluster.NodeStatus node) {
-        return "  " + node.id() + " state=" + node.state() + " leader=" + node.isLeader();
+        return "  " + node.id() + " state=" + node.state() + " leader=" + node.isLeader()
+               + " port=" + node.port() + " mgmt=" + node.mgmtPort();
     }
 
     /// Bounded, unlike the `await()` this replaced (review N1): the failure path is the one that runs

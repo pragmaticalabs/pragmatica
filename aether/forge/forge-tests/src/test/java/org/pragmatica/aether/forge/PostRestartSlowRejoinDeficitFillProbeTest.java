@@ -204,7 +204,7 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     void setUp() {
         cluster = emberCluster(INITIAL_CORES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, NODE_PREFIX);
         cluster.withComputeProviderDecorator(recorder::wrap);
-        cluster.start().await().onFailure(PostRestartSlowRejoinDeficitFillProbeTest::failStart);
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
         expectStarted(allConfiguredIds(), "FORMATION-1 start");
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).failFast(this::failIfClusterUnhealthy).until(() -> cluster.currentLeader()
                                                                            .isPresent());
@@ -227,8 +227,7 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        option(cluster).onPresent(c -> c.stop()
-                                        .await());
+        option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
     /// THE #509 INVARIANT. Restart the cluster with 2 configured members held back, hold past every
@@ -371,11 +370,11 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     /// this probe has none of: membership, not durability, is the question here.
     @TerminalOperation
     private void restartWithHeldBackMembers() {
-        cluster.stop().await().onFailure(PostRestartSlowRejoinDeficitFillProbeTest::failScenario);
+        LifecycleAwait.settled("cluster stop in restartWithHeldBackMembers()", cluster, cluster.stop());
         recordMilestone("RESTART: cluster stopped");
         // Nothing is expected alive between stop() and the restart completing.
         expectStarted(Set.of(), "RESTART stop");
-        cluster.start(HELD_BACK).await().onFailure(PostRestartSlowRejoinDeficitFillProbeTest::failStart);
+        LifecycleAwait.settled("cluster start in restartWithHeldBackMembers()", cluster, cluster.start(HELD_BACK));
         expectStarted(startedAfterHoldBack(), "RESTART start (held back " + HELD_BACK + ")");
         recordMilestone("RESTART: started " + (INITIAL_CORES - HELD_BACK.size())
                        + " of " + INITIAL_CORES
@@ -396,7 +395,7 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
     @TerminalOperation
     private void releaseHeldBackMembers() {
         log.info("SLOWJOIN-PROBE: releasing held-back members {}", HELD_BACK);
-        cluster.startHeldBackNodes().await().onFailure(PostRestartSlowRejoinDeficitFillProbeTest::failScenario);
+        LifecycleAwait.settled("held-back node start in releaseHeldBackMembers()", cluster, cluster.startHeldBackNodes());
         expectStarted(allConfiguredIds(), "REJOIN (held-back released)");
         await().atMost(REJOIN_TIMEOUT).pollInterval(POLL).failFast(this::failIfClusterUnhealthy).until(() -> countedCores() >= INITIAL_CORES);
         await().atMost(REJOIN_TIMEOUT).pollInterval(POLL).failFast(this::failIfClusterUnhealthy).until(() -> cluster.currentLeader()
@@ -664,9 +663,6 @@ class PostRestartSlowRejoinDeficitFillProbeTest {
         recorder.recorded().forEach(call -> log.info("SLOWJOIN-PROBE {}", call.describe()));
     }
 
-    private static void failStart(Cause cause) {
-        throw new AssertionError("Cluster start failed: " + cause.message());
-    }
 
     private static void failScenario(Cause cause) {
         throw new AssertionError("Scenario setup failed: " + cause.message());

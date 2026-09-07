@@ -22,7 +22,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.TerminalOperation;
 import org.slf4j.Logger;
@@ -112,9 +111,7 @@ class CommunityFormationProbeTest {
     @TerminalOperation
     void setUp() {
         cluster = emberCluster(INITIAL_CORES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "cfm");
-        cluster.start()
-               .await()
-               .onFailure(CommunityFormationProbeTest::failStart);
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
 
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> countedCores() == INITIAL_CORES);
@@ -125,7 +122,7 @@ class CommunityFormationProbeTest {
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
     @Test
@@ -174,11 +171,11 @@ class CommunityFormationProbeTest {
     @TerminalOperation
     private void addWorkerAndSettle(int index) {
         var expectedNodeCount = INITIAL_CORES + index;
-        cluster.addNode()
-               .await()
-               .onSuccess(nodeId -> log.info("CFM-PROBE: worker {}/{} joined as {}",
-                                             index, WORKER_COUNT, nodeId.id()))
-               .onFailure(CommunityFormationProbeTest::failScenario);
+        var nodeId = LifecycleAwait.nodeSettled("worker " + index + "/" + WORKER_COUNT + " join in addWorkerAndSettle()",
+                                                cluster,
+                                                cluster.addNode());
+
+        log.info("CFM-PROBE: worker {}/{} joined as {}", index, WORKER_COUNT, nodeId.id());
 
         var settled = pollUntil(SETTLE_TIMEOUT,
                                 () -> cluster.currentLeader().isPresent()
@@ -300,13 +297,5 @@ class CommunityFormationProbeTest {
 
     private static String idStrings(Set<NodeId> ids) {
         return ids.stream().map(NodeId::id).sorted().collect(Collectors.joining(","));
-    }
-
-    private static void failStart(Cause cause) {
-        throw new AssertionError("Cluster start failed: " + cause.message());
-    }
-
-    private static void failScenario(Cause cause) {
-        throw new AssertionError("Worker join failed: " + cause.message());
     }
 }

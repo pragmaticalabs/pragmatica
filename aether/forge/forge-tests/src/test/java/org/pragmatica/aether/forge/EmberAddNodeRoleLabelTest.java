@@ -116,20 +116,22 @@ class EmberAddNodeRoleLabelTest {
 
             return provider;
         });
-        cluster.start().await().onFailure(EmberAddNodeRoleLabelTest::fail);
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
     }
 
     @AfterEach
     void releaseAddedNodes() {
-        addedNodes.forEach(id -> cluster.killNode(id).await());
+        addedNodes.forEach(id -> LifecycleAwait.nodeBestEffort("kill node " + id + " in releaseAddedNodes()",
+                                                            cluster,
+                                                            cluster.killNode(id)));
         addedNodes.clear();
     }
 
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
     /// THE REGRESSION GUARD. Every existing forge test calls `addNode()`, and a node that started
@@ -137,7 +139,10 @@ class EmberAddNodeRoleLabelTest {
     /// must stay exactly as it was: no role label at all.
     @Test
     void addNode_advertisesNoRoleLabel_soExistingBehaviourIsUnchanged() {
-        var added = add(cluster.addNode().await().onFailure(EmberAddNodeRoleLabelTest::fail).map(NodeId::id).or(""));
+        var added = add(LifecycleAwait.nodeSettled("default addNode join in addNode_advertisesNoRoleLabel_soExistingBehaviourIsUnchanged()",
+                                                   cluster,
+                                                   cluster.addNode())
+                                      .id());
         var labels = advertisedLabels(added);
 
         log.info("ROLE-LABEL: default addNode -> {} labels={}", added, labels);
@@ -151,11 +156,10 @@ class EmberAddNodeRoleLabelTest {
     /// is suppressed on it, which is exactly what made #590's fence unobservable in-JVM.
     @Test
     void addWorkerNode_advertisesTheWorkerRole_soCommunityTierMechanismsApply() {
-        var added = add(cluster.addWorkerNode()
-                               .await()
-                               .onFailure(EmberAddNodeRoleLabelTest::fail)
-                               .map(NodeId::id)
-                               .or(""));
+        var added = add(LifecycleAwait.nodeSettled("addWorkerNode join in addWorkerNode_advertisesTheWorkerRole_soCommunityTierMechanismsApply()",
+                                                   cluster,
+                                                   cluster.addWorkerNode())
+                                      .id());
         var labels = advertisedLabels(added);
 
         log.info("ROLE-LABEL: addWorkerNode -> {} labels={}", added, labels);

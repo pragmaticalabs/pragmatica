@@ -122,7 +122,7 @@ class StreamOwnershipDriverFenceTest {
     @TerminalOperation
     void setUp() {
         cluster = emberCluster(SIZE, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, PREFIX);
-        cluster.start().await().onFailure(StreamOwnershipDriverFenceTest::failStart);
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(this::allNodesReady);
         log.info("OWNERSHIP-DRIVER-FENCE: {}-node cluster formed, leader={}", SIZE, cluster.currentLeader().or("none"));
@@ -131,7 +131,7 @@ class StreamOwnershipDriverFenceTest {
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
     /// The DRIVER auto-commits ownership on a membership reconcile, and the resulting committed epoch
@@ -378,9 +378,6 @@ class StreamOwnershipDriverFenceTest {
             .isInstanceOf(StreamError.StaleEpochAppend.class);
     }
 
-    private static void failStart(Cause cause) {
-        throw new AssertionError("Cluster start failed: " + cause.message());
-    }
 
     private static void failScenario(Cause cause) {
         throw new AssertionError("Scenario setup failed: " + cause.message());

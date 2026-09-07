@@ -146,8 +146,7 @@ class StreamCrashDurabilityTest {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
             httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
-            cluster.stop()
-                   .await();
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -194,21 +193,13 @@ class StreamCrashDurabilityTest {
     // --- restart ------------------------------------------------------------
 
     private void restartCluster() {
-        cluster.stop()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster stop failed: " + cause.message());
-               });
+        LifecycleAwait.settled("cluster stop in restartCluster()", cluster, cluster.stop());
 
         startAndAwaitReady();
     }
 
     private void startAndAwaitReady() {
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
+        LifecycleAwait.settled("cluster start in startAndAwaitReady()", cluster, cluster.start());
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)

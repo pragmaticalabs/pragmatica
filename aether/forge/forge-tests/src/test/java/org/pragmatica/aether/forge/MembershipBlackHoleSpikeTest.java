@@ -79,9 +79,7 @@ class MembershipBlackHoleSpikeTest {
     @TerminalOperation
     void setUp() {
         cluster = emberCluster(SIZE, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "bh");
-        cluster.start()
-               .await()
-               .onFailure(MembershipBlackHoleSpikeTest::failStart);
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
 
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(this::allNodesHealthy);
@@ -91,7 +89,7 @@ class MembershipBlackHoleSpikeTest {
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
     @Test
@@ -121,7 +119,9 @@ class MembershipBlackHoleSpikeTest {
                  terminallyRemoved(survivorPort, victim.id()));
 
         var t0 = System.nanoTime();
-        cluster.blackhole(victim.id()).await();
+        LifecycleAwait.nodeBestEffort("blackhole node " + victim.id() + " in runSpike()",
+                                   cluster,
+                                   cluster.blackhole(victim.id()));
         log.info("BLACKHOLE-SPIKE: black-holed {} at t0 — node is now silent but NOT disconnected", victim.id());
 
         var detectedMs = observeUntilRemoved(survivorPort, victim.id(), t0);
@@ -232,9 +232,6 @@ class MembershipBlackHoleSpikeTest {
         return Option.from(items.stream().filter(predicate).findFirst());
     }
 
-    private static void failStart(Cause cause) {
-        throw new AssertionError("Cluster start failed: " + cause.message());
-    }
 
     private static void failScenario(Cause cause) {
         throw new AssertionError("Scenario setup failed: " + cause.message());

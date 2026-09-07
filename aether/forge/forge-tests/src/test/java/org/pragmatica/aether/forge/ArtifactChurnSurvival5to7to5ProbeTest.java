@@ -17,7 +17,6 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.TerminalOperation;
 import org.slf4j.Logger;
@@ -102,9 +101,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     @TerminalOperation
     void setUp() {
         cluster = emberCluster(INITIAL_CORES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "churn");
-        cluster.start()
-               .await()
-               .onFailure(ArtifactChurnSurvival5to7to5ProbeTest::failStart);
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
 
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(this::allNodesHealthy);
@@ -116,7 +113,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
     @Test
@@ -318,7 +315,4 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
                    .or(false);
     }
 
-    private static void failStart(Cause cause) {
-        throw new AssertionError("Cluster start failed: " + cause.message());
-    }
 }
