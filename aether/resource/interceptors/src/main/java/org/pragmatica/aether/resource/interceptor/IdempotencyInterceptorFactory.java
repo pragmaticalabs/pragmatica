@@ -4,15 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
@@ -20,9 +21,7 @@ import static org.pragmatica.lang.Result.success;
 
 
 public final class IdempotencyInterceptorFactory implements ResourceFactory<IdempotencyMethodInterceptor, IdempotencyConfig> {
-    private final Map<String, CacheBackend> storeRegistry = new ConcurrentHashMap<>();
-
-    private final Map<String, ConcurrentHashMap<Object, Promise<Object>>> claimRegistry = new ConcurrentHashMap<>();
+    private final NamedResourceRegistry<IdempotencyResources> resourceRegistry = new NamedResourceRegistry<>();
 
     @Override
     public Class<IdempotencyMethodInterceptor> resourceType() {
@@ -43,12 +42,23 @@ public final class IdempotencyInterceptorFactory implements ResourceFactory<Idem
     @SuppressWarnings("unchecked")
     public Promise<IdempotencyMethodInterceptor> provision(IdempotencyConfig config, ProvisioningContext context) {
         var keyExtractor = (Fn1<Object, ?>) context.keyExtractor().or(Fn1.id());
-        var claims = claimRegistry.computeIfAbsent(config.storeName(), _ -> new ConcurrentHashMap<>());
 
-        return createStore(config, context).map(store -> storeRegistry.computeIfAbsent(config.storeName(),
-                                                                                       _ -> store))
-                          .map(store -> new IdempotencyMethodInterceptor(store, claims, keyExtractor))
+        return createStore(config, context).map(store -> resourceRegistry.acquire(config.storeName(),
+                                                                                  () -> new IdempotencyResources(store,
+                                                                                                                 new ConcurrentHashMap<>()),
+                                                                                  resources -> new IdempotencyMethodInterceptor(resources.store(),
+                                                                                                                                resources.claims(),
+                                                                                                                                keyExtractor,
+                                                                                                                                Option.present(config.storeName()))))
                           .async();
+    }
+
+    @Override
+    public Promise<Unit> close(IdempotencyMethodInterceptor resource) {
+        // The boolean only reports whether this holder was registered; close is idempotent, so false is a no-op.
+        resource.storeName().onPresent(name -> resourceRegistry.release(name, resource));
+
+        return Promise.unitPromise();
     }
 
     private Result<? extends CacheBackend> createStore(IdempotencyConfig config, ProvisioningContext context) {
@@ -74,4 +84,6 @@ public final class IdempotencyInterceptorFactory implements ResourceFactory<Idem
                           success(config.storeName()))
                      .map(DHTCacheBackend::dhtCacheBackend);
     }
+
+    private record IdempotencyResources(CacheBackend store, ConcurrentHashMap<Object, Promise<Object>> claims) {}
 }
