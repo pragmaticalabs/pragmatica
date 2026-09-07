@@ -74,6 +74,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
@@ -222,6 +223,19 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                   Map<String, Integer> retryCounters,
                   Map<BlueprintId, InFlightBlueprint> inFlightBlueprints,
                   Set<BlueprintId> restoringBlueprints,
+                  // Artifacts THIS leader watched reach ACTIVE (#924 review round 2, BLOCKING).
+                  // The fast, artifact-scoped leg of [Active#everReachedActive]; the durable leg
+                  // beside it is the blueprint's SUCCEEDED outcome record. In-memory on purpose,
+                  // and NOT a substitute for the durable leg: it is rebuilt empty on failover,
+                  // which is exactly the lifetime trap that made `inFlightBlueprints` the wrong
+                  // discriminator. What it adds over the durable record is the two windows the
+                  // record cannot cover — the interval before `recordSucceededOutcome`'s write is
+                  // applied back through consensus, and the case where that write is lost and, as
+                  // [Active#handleSucceededOutcomeWriteFailure] documents, never retried.
+                  // Forgotten in [Active#issueDeallocationCommands] — the seam every path that
+                  // takes an artifact OUT of the cluster's desired state funnels through — so a
+                  // later, independent deployment of the same coordinate does not inherit it.
+                  Set<Artifact> everActiveArtifacts,
                   Set<Artifact> permanentlyFailed,
                   Set<NodeId> workerNodes,
                   Map<SliceNodeKey, Long> transitionalStateTimestamps,
@@ -1562,6 +1576,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void handleSliceActive(SliceNodeKey sliceKey) {
             retryCounters.remove(sliceKey.asString());
+            everActiveArtifacts.add(sliceKey.artifact());
             activateDependentSlices(sliceKey.artifact());
             trackBlueprintSliceActive(sliceKey.artifact());
         }
@@ -1715,11 +1730,31 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// self-healed, so the fix traded a livelock on a deployment that never succeeded for a
         /// permanent, silent, cluster-wide failure of one that had.
         ///
-        /// [#hasActiveInstanceElsewhere] is the discriminator, and the two populations are the ones
-        /// the ticket and the review name: a deployment ATTEMPT with nothing running is abandoned
-        /// (bounded — #922's case), while a RUNNING workload suffering a node-local transient keeps
-        /// being reconciled toward its desired instance count (unbounded — convergence, which is
-        /// what an orchestrator owes a workload the operator believes is up).
+        /// #924 review round 2, BLOCKING: asking [#hasActiveInstanceElsewhere] alone — *is an
+        /// instance ACTIVE right now?* — narrowed that defect without closing it. [#handleSliceFailure]
+        /// removes the failing key from `sliceStates` before either branch runs, so the question
+        /// answers "no" whenever the transient reached EVERY instance, and it can never answer "yes"
+        /// for a slice with `instances = 1`, which has no sibling to vote for it. Both shapes were
+        /// previously-healthy workloads condemned cluster-wide and permanently, and both self-healed
+        /// before #922.
+        ///
+        /// [#everReachedActive] is the discriminator instead, and it asks whether the artifact EVER
+        /// reached ACTIVE rather than whether it is ACTIVE now. That separates the two populations
+        /// the ticket and the review name: a deployment ATTEMPT that has produced nothing is
+        /// abandoned (bounded — #922's case, a coordinate that never resolves), while a workload
+        /// that was up and fell over keeps being reconciled toward its desired instance count
+        /// (unbounded — convergence, which is what an orchestrator owes a workload the operator
+        /// believes is up).
+        ///
+        /// The settle is also gated on [#coreMembershipResolved] (#924 review round 2, S2). The
+        /// evidence [#hasActiveInstanceElsewhere] weighs is KV-derived slice state diffed against
+        /// [#activeNodes], and during the boot window that supplier yields
+        /// [MembershipFsm#MEMBERSHIP_NOT_WIRED] — an empty set distinguished only by reference
+        /// identity, which makes every node fail `contains` and every artifact look abandoned.
+        /// `coreMembershipResolved`'s own contract requires exactly this consultation, and
+        /// [StaleEntryCleaner] honours it at four sites. Refusing to settle on an unresolved member
+        /// set costs a re-drive that the next exhaustion re-decides; settling on one is
+        /// irreversible.
         private void handleRetryBudgetExhausted(SliceNodeKey sliceKey, String failureReason) {
             var artifact = sliceKey.artifact();
 
@@ -1728,25 +1763,28 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
-            if (hasActiveInstanceElsewhere(artifact)) {
-                log.warn("Max retries ({}) exceeded for {} on {}: {} — NOT marking permanently failed: "
-                        + "the artifact is ACTIVE on another node, so this is a node-local transient and "
-                        + "reconciliation keeps converging toward the desired instance count",
-                         MAX_RETRIES,
-                         artifact,
-                         sliceKey.nodeId(),
-                         failureReason);
-                ctx.router()
-                   .route(DeploymentFailed.deploymentFailed(artifact,
-                                                            sliceKey.nodeId(),
-                                                            SliceState.FAILED,
-                                                            failureReason,
-                                                            ctx.nowMs()));
+            if (!coreMembershipResolved()) {
+                reportUnsettledExhaustion(sliceKey,
+                                          failureReason,
+                                          "core membership is not resolved yet, so the evidence this verdict "
+                                         + "would rest on cannot be read");
 
                 return;
             }
 
-            log.error("Max retries ({}) exceeded for {} on {}: {} — giving up, marking permanently failed",
+            if (everReachedActive(artifact)) {
+                reportUnsettledExhaustion(sliceKey,
+                                          failureReason,
+                                          "the artifact has reached ACTIVE, so this is a transient on a workload "
+                                         + "that was up, and reconciliation keeps converging toward the desired "
+                                         + "instance count");
+
+                return;
+            }
+
+            log.error("Max retries ({}) exceeded for {} on {}: {} — the retry budget for an INTERMITTENT cause is "
+                     + "spent and no instance of this artifact has ever reached ACTIVE, so the deployment attempt "
+                     + "is abandoned and the artifact marked permanently failed",
                       MAX_RETRIES,
                       artifact,
                       sliceKey.nodeId(),
@@ -1754,22 +1792,69 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             settleAsPermanentlyFailed(sliceKey, failureReason);
         }
 
-        /// Whether ANY instance of this artifact is ACTIVE on a live node — the discriminator
-        /// between a deployment ATTEMPT that has produced nothing and a RUNNING workload suffering a
-        /// node-local transient (#924 review, BLOCKING).
+        /// The non-terminal exit from [#handleRetryBudgetExhausted]: the budget is spent and the
+        /// counter cleared, but the artifact is NOT condemned, so the unload already issued by
+        /// [#handleSliceFailure] is followed by the reconcile that restores the instance. `why`
+        /// names which guard declined, because the two are diagnosed differently — an unresolved
+        /// member set is a cluster-health question, an ever-active artifact is working as designed.
+        private void reportUnsettledExhaustion(SliceNodeKey sliceKey, String failureReason, String why) {
+            log.warn("Max retries ({}) exceeded for {} on {}: {} — NOT marking permanently failed: {}",
+                     MAX_RETRIES,
+                     sliceKey.artifact(),
+                     sliceKey.nodeId(),
+                     failureReason,
+                     why);
+            ctx.router()
+               .route(DeploymentFailed.deploymentFailed(sliceKey.artifact(),
+                                                        sliceKey.nodeId(),
+                                                        SliceState.FAILED,
+                                                        failureReason,
+                                                        ctx.nowMs()));
+        }
+
+        /// Whether this artifact has EVER reached ACTIVE — the discriminator between a deployment
+        /// ATTEMPT that has produced nothing and a workload that was up and fell over (#924 review
+        /// round 2, BLOCKING).
         ///
         /// It exists to match the EVIDENCE to the BLAST RADIUS. The terminal reached by
         /// [#settleAsPermanentlyFailed] is cluster-wide (`permanentlyFailed` is a `Set<Artifact>`)
         /// and permanent; the retry budget that triggers it is per artifact AND node
         /// (`retryCounters` is keyed on `sliceKey.asString()`). A cluster-wide permanent verdict
-        /// needs cluster-wide evidence, and "nothing of this artifact is running anywhere" is it.
+        /// needs cluster-wide evidence, and "no instance of this artifact ever came up" is it.
         ///
-        /// `inFlightBlueprints` is the cheaper test and the WRONG one. [ClusterDeploymentContext#newActive]
-        /// builds it empty and only a live `AppBlueprintPutReceived` populates it, so it does not
-        /// survive leader failover: gating on it would silently stop settling — reopening #922 — for
-        /// every deployment whose leader changed mid-flight. `sliceStates` is rebuilt from durable
-        /// KV entries by [#rebuildSliceStateFromKVStoreEntries] during [#rebuildStateFromKVStore] on
-        /// activation, so this predicate reads the same answer on a new leader as on the old one.
+        /// The round-1 fix asked the PRESENT-TENSE question — is an instance ACTIVE right now —
+        /// and round 2 showed why that is not the same question. [#handleSliceFailure] removes the
+        /// failing key from `sliceStates` before either branch runs, so a present-tense read
+        /// necessarily answers "no" once the transient has reached every instance; and for a slice
+        /// with `instances = 1` it can never answer "yes", because no sibling exists to vote. The
+        /// past-tense question separates the populations the present-tense one conflates.
+        ///
+        /// It is a DISJUNCTION and every leg is fail-safe: any evidence of a past ACTIVE declines
+        /// the settle. Three legs, because no single one covers every lifetime:
+        ///
+        ///   1. [#hasActiveInstanceElsewhere] — an instance is ACTIVE now. Survives failover:
+        ///      `sliceStates` is rebuilt from durable `NodeArtifactKey` entries by
+        ///      [#rebuildSliceStateFromKVStoreEntries].
+        ///   2. `everActiveArtifacts` — THIS leader watched the artifact reach ACTIVE. In-memory,
+        ///      so empty on a new leader; it is here for the two windows leg 3 cannot cover.
+        ///   3. [#blueprintDeploymentSucceeded] — the owning blueprint has a durable SUCCEEDED
+        ///      outcome record. This is the leg that survives failover, and the reason the
+        ///      discriminator is not merely in-memory bookkeeping.
+        ///
+        /// `inFlightBlueprints` is the cheaper test and the WRONG one, in the opposite direction.
+        /// [ClusterDeploymentContext#newActive] builds it empty and only a live
+        /// `AppBlueprintPutReceived` populates it, so gating on its ABSENCE would stop settling —
+        /// reopening #922 — for every deployment whose leader changed mid-flight.
+        ///
+        /// `activeRoutings` was considered as a fourth leg and rejected. It is rebuilt from durable
+        /// KV by [#processKVEntry], but it is keyed on `ArtifactBase` — version-blind. A running v1
+        /// would vote for a v2 that never came up, which is #922's own case (a coordinate that does
+        /// not resolve) reopened through the guard meant to bound it.
+        private boolean everReachedActive(Artifact artifact) {
+            return hasActiveInstanceElsewhere(artifact) || everActiveArtifacts.contains(artifact) || blueprintDeploymentSucceeded(artifact);
+        }
+
+        /// Leg 1: an instance is ACTIVE right now on a live core node.
         ///
         /// Strictly ACTIVE, not [#isLiveState]: a sibling instance merely LOADING or LOADED is part
         /// of the same unproven attempt and must not vote to keep it alive, or a deployment stuck
@@ -1779,6 +1864,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// key from `sliceStates` before either failure branch runs, so the instance that just
         /// failed cannot count itself. That ordering is load-bearing — moving this call ahead of
         /// that removal would make every exhaustion look survivable.
+        ///
+        /// The [#activeNodes] read here is why [#handleRetryBudgetExhausted] gates on
+        /// [#coreMembershipResolved] before consulting this predicate at all.
         private boolean hasActiveInstanceElsewhere(Artifact artifact) {
             var liveNodes = activeNodes();
 
@@ -1789,6 +1877,36 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                     .equals(artifact))
                               .filter(entry -> liveNodes.contains(entry.getKey().nodeId()))
                               .anyMatch(entry -> entry.getValue() == SliceState.ACTIVE);
+        }
+
+        /// Leg 3: the durable evidence. `DeploymentOutcomeValue.SUCCEEDED` is written by
+        /// [#recordSucceededOutcome] when every slice of the owning blueprint has reached ACTIVE,
+        /// and its own contract says it survives the blueprint's teardown because it is "the record
+        /// of what happened, not part of the blueprint's active configuration". Reading it back on
+        /// a new leader is what makes [#everReachedActive] a durable question rather than an
+        /// in-memory one — the objection that made `inFlightBlueprints` unusable.
+        ///
+        /// Suppressed while the blueprint is in flight, and this is load-bearing rather than an
+        /// optimisation. Nothing removes a `DeploymentOutcomeKey` entry when a blueprint id is
+        /// re-applied, so a re-used id whose new load order carries a slice that never existed
+        /// before would hand that brand-new slice the previous attempt's SUCCEEDED record and it
+        /// would never settle — #922's livelock, reopened through the guard meant to bound it.
+        /// While the attempt is in flight the record describes the PREVIOUS attempt and must not
+        /// vote; once it fully deploys, [#recordSucceededOutcome] refreshes it.
+        ///
+        /// Absence of the key is NOT evidence of never-active — `AetherValue.DeploymentOutcomeStatus`
+        /// says so explicitly — which is why this is one leg of a disjunction and not the predicate.
+        private boolean blueprintDeploymentSucceeded(Artifact artifact) {
+            return Option.option(blueprints.get(artifact))
+                         .flatMap(Blueprint::owner)
+                         .filter(blueprintId -> !inFlightBlueprints.containsKey(blueprintId))
+                         .map(DeploymentOutcomeKey::deploymentOutcomeKey)
+                         .flatMap(key -> ctx.kvStore()
+                                            .get(key))
+                         .filter(value -> value instanceof DeploymentOutcomeValue)
+                         .map(value -> ((DeploymentOutcomeValue) value).status())
+                         .map(status -> status == DeploymentOutcomeStatus.SUCCEEDED)
+                         .or(false);
         }
 
         /// The activation gate for a slice's schema migrations, scoped to the slice's OWN blueprint.
@@ -2204,7 +2322,18 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             stuckRemediator().detectStuckTransitionalStates();
         }
 
+        /// #924 review round 2: this is also where `everActiveArtifacts` is forgotten, because
+        /// this is the one seam every "the artifact leaves the cluster's desired state" path
+        /// already funnels through — blueprint removal, rolling-update cleanup of a superseded
+        /// version, routing removal, and `unloadBlueprintSlices`. The evidence must not outlive the
+        /// deployment it describes: a LATER, independent deployment of the same coordinate that
+        /// never comes up has to settle, and would not if it inherited a previous deployment's
+        /// past-tense ACTIVE. Note the boundary is removal, NOT a re-apply of the same blueprint —
+        /// clearing on re-apply would leave a healthy, running workload one operator re-apply plus
+        /// one cluster-wide transient away from the silent permanent condemnation this whole change
+        /// exists to prevent.
         private void issueDeallocationCommands(Artifact artifact) {
+            everActiveArtifacts.remove(artifact);
             getCurrentInstances(artifact).forEach(this::issueUnloadCommand);
             removeWorkerDirective(artifact);
         }
@@ -2617,9 +2746,15 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                              failedArtifact);
                     continue;
                 }
-
-                log.warn("ALL_OR_NOTHING: Deterministic failure of {} triggers rollback of blueprint {}",
+                // #924 review round 2, N5: this used to say "Deterministic failure". Since #922 routed
+                // the exhausted-retry branch into the same terminal, that told an operator
+                // diagnosing an INTERMITTENT cause that the failure had been deterministic. The
+                // branch is already named by the log line that precedes this one in either
+                // #handleDeterministicFailure or #handleRetryBudgetExhausted; this line must not
+                // contradict it, so it names the terminal and the cause instead of the branch.
+                log.warn("ALL_OR_NOTHING: {} settled as permanently failed ({}) — rolling back blueprint {}",
                          failedArtifact,
+                         cause,
                          blueprintId.asString());
                 inFlightBlueprints.remove(blueprintId);
                 inflight.previousBlueprint()
