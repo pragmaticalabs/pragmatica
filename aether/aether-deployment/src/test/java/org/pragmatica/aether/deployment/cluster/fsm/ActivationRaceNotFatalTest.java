@@ -16,7 +16,6 @@ import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentContext;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentState;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceActionConfig;
-import org.pragmatica.aether.slice.SliceLoadingFailure.Intermittent.SliceNotInStore;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -24,12 +23,10 @@ import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -97,14 +94,6 @@ class ActivationRaceNotFatalTest {
     private static final Version V1 = Version.version("1.0.0").unwrap();
     private static final Artifact SLICE = Artifact.artifact("com.example:slice-a:1.0.0").unwrap();
 
-    /// `ClusterDeploymentState.Active.MAX_RETRIES` is private; 5 retries means the SIXTH reported
-    /// failure is the one that exhausts the budget.
-    private static final int TERMINAL_ON_REPORT = 6;
-
-    /// Twice the budget. If the deployment has not settled by here it is not going to settle at
-    /// all — the pre-fix behaviour was unbounded, so any finite cap distinguishes it.
-    private static final int REPORT_CAP = 12;
-
     private RecordingClusterNode nodeSideCluster;
     private RecordingClusterNode leaderSideCluster;
     private FsmTestHarness<NodeDeploymentState, ClusterFsmEvent> nodeHarness;
@@ -163,88 +152,6 @@ class ActivationRaceNotFatalTest {
                 .as("positive control for the assertion above: a genuinely fatal failure DOES remove "
                     + "the blueprint, so a green result in the other test is not a dead assertion")
                 .contains(AppBlueprintKey.appBlueprintKey(expanded.id()));
-    }
-
-    /// #916 review round 1 / #922 — the livelock this PR's ruling made it necessary to close.
-    ///
-    /// An `Intermittent` cause that never settles must reach a TERMINAL state within a bounded
-    /// number of reported failures. Before the fix it never did: `logMaxRetriesExceeded` cleared the
-    /// retry counter and routed `DeploymentFailed` without marking the artifact permanently failed,
-    /// so the unload that every failure issues removed the `NodeArtifactKey`, `handleSliceNodeRemoval`
-    /// found the artifact still deployable and scheduled a reconcile, and `reconcileBlueprint`
-    /// redeployed it with the counter restarting at 1 — forever, at roughly 1 Hz.
-    ///
-    /// The assertion is the ATTEMPT COUNT at which the terminal is reached, not merely that a
-    /// failure eventually happened. A test asserting only "the blueprint is rolled back" would pass
-    /// against a fix that rolled back on the FIRST failure and destroyed the retry this PR exists to
-    /// enable; a test asserting only "it failed eventually" cannot distinguish a bounded terminal
-    /// from an unbounded loop at all. Reverting the production hunk leaves `reportsUntilTerminal`
-    /// at 0 after `REPORT_CAP` reports, which is the pre-fix behaviour reported as itself.
-    @Test
-    void intermittentFailureThatNeverSettles_reachesTerminalRollback_withinTheRetryBudget() {
-        var expanded = blueprint();
-        var blueprintKey = AppBlueprintKey.appBlueprintKey(expanded.id());
-        var intermittent = NodeArtifactValue.failedNodeArtifactValue(SliceNotInStore.sliceNotInStore(SLICE.asString(),
-                                                                                                     "activation"));
-
-        assertThat(intermittent.fatal())
-                .as("precondition: the cause driven below is the INTERMITTENT one, so every report "
-                    + "takes handleTransientFailure's branch — this test says nothing about the "
-                    + "deterministic branch, which already had a terminal")
-                .isFalse();
-
-        leaderHarness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
-
-        var reportsUntilTerminal = 0;
-
-        for (var report = 1; report <= REPORT_CAP; report++) {
-            leaderHarness.dispatch(new NodeArtifactPutReceived(replayOf(intermittent)));
-            if (leaderSideCluster.removeKeys().contains(blueprintKey)) {
-                reportsUntilTerminal = report;
-                break;
-            }
-        }
-
-        assertThat(reportsUntilTerminal)
-                .as("#922: an intermittent cause that never settles must reach a terminal state. At "
-                    + "0 the deployment was still being re-driven after %d reported failures — "
-                    + "unbounded, no rollback, no terminal record, which is the livelock",
-                    REPORT_CAP)
-                .isNotZero();
-        assertThat(reportsUntilTerminal)
-                .as("the terminal must arrive when the retry budget is spent and NOT before — "
-                    + "rolling back earlier would destroy the bounded retry #916 exists to enable")
-                .isEqualTo(TERMINAL_ON_REPORT);
-
-        leaderSideCluster.commands.clear();
-        ((ClusterDeploymentState.Active) leaderHarness.state()).reconcile();
-
-        assertThat(leaderSideCluster.commandKeysFor(SLICE))
-                .as("and the terminal must HOLD: a reconcile after exhaustion must not re-drive the "
-                    + "artifact, which is the step that turned the old exhaustion into a loop")
-                .isEmpty();
-    }
-
-    /// #922 acceptance, second half: the operator must be able to SEE that the deployment did not
-    /// apply. A rollback that leaves no record is silence of a different shape, so this asserts the
-    /// explicit `DeploymentOutcomeValue` — not merely the blueprint's removal.
-    @Test
-    void intermittentFailureThatNeverSettles_recordsAnExplicitFailedOutcome() {
-        var expanded = blueprint();
-        var intermittent = NodeArtifactValue.failedNodeArtifactValue(SliceNotInStore.sliceNotInStore(SLICE.asString(),
-                                                                                                     "activation"));
-
-        leaderHarness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
-
-        for (var report = 1; report <= TERMINAL_ON_REPORT; report++) {
-            leaderHarness.dispatch(new NodeArtifactPutReceived(replayOf(intermittent)));
-        }
-
-        assertThat(leaderSideCluster.outcomeFor(expanded.id()))
-                .as("#922: exhaustion must leave an explicit FAILED deployment outcome the operator "
-                    + "can read, not an unrecorded disappearance")
-                .isNotEmpty()
-                .allSatisfy(outcome -> assertThat(outcome.failingSlices()).contains(SLICE.asString()));
     }
 
     /// NOTE 2 from review round 1 — `SLICE_NOT_LOADED_FOR_REGISTRATION` was typed by #916 but
@@ -487,32 +394,7 @@ class ActivationRaceNotFatalTest {
             }
         }
 
-        /// Every recorded command — Put or Remove — whose key names the given artifact. Used to
-        /// assert that a reconcile did NOT re-drive an artifact that has reached its terminal.
-        private List<AetherKey> commandKeysFor(Artifact artifact) {
-            synchronized (commands) {
-                return commands.stream()
-                               .map(KVCommand::key)
-                               .filter(key -> key.asString()
-                                                 .contains(artifact.asString()))
-                               .toList();
-            }
-        }
 
-        /// Every `DeploymentOutcomeValue` written for the given blueprint.
-        private List<DeploymentOutcomeValue> outcomeFor(BlueprintId blueprintId) {
-            var key = DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId);
-
-            synchronized (commands) {
-                return commands.stream()
-                               .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put
-                                                  && put.key().equals(key))
-                               .map(command -> ((KVCommand.Put<AetherKey, ?>) command).value())
-                               .filter(value -> value instanceof DeploymentOutcomeValue)
-                               .map(value -> (DeploymentOutcomeValue) value)
-                               .toList();
-            }
-        }
     }
 
     private static SchemaOrchestratorService stubSchemaOrchestrator() {

@@ -29,42 +29,34 @@
   cause closes both orderings, because neither now reaches `handleDeterministicFailure`
   [mechanism: `trackBlueprintSliceActive` removes the blueprint from `inFlightBlueprints` before
   `rollbackBlueprintForArtifact`'s loop runs; `permanentlyFailed.add` happens either way].
-- **The retry is bounded and its exhaustion is now genuinely terminal.** `handleTransientFailure`
-  allows 5 attempts with exponential backoff (1, 2, 4, 8, 16 s, capped at 30 s, jittered),
-  re-driving `reconcile()` each time. The sixth reported failure spends the budget and
-  `handleRetryBudgetExhausted` settles the artifact: it is marked permanently failed, a
-  `DeploymentFailed` event is routed, and the declared atomicity is honoured — `ALL_OR_NOTHING`
-  rolls the owning blueprint back, `BEST_EFFORT` records a FAILED outcome
-  [verified: `ActivationRaceNotFatalTest#intermittentFailureThatNeverSettles_reachesTerminalRollback_withinTheRetryBudget`
-  asserts the terminal arrives on the sixth reported failure and not before, and that a reconcile
-  afterwards does not re-drive the artifact; reverting only the `ClusterDeploymentState` hunk leaves
-  it unsettled after 12 reported failures].
-- **That exhaustion path did not previously stop, and this release fixes it (#922).** Review round 1
-  found the mechanism this fragment originally described was wrong in the mild direction. The old
-  `logMaxRetriesExceeded` cleared the retry counter and routed `DeploymentFailed` without adding the
-  artifact to `permanentlyFailed`. That is not a resting state: every failure already issues an
-  unload, the node's removal of the `NodeArtifactKey` reaches `handleSliceNodeRemoval`, which —
-  finding the artifact still deployable — scheduled a reconcile, and `reconcileBlueprint` is gated
-  by `permanentlyFailed` and nothing else, so it redeployed the artifact with the counter restarting
-  at 1. An intermittent cause that never settled was therefore re-driven at roughly 1 Hz for the
-  life of the cluster: no terminal state, no rollback, and consensus round-trips forever. This was
-  pre-existing and reachable by every intermittent cause, not only the one this ticket types
-  [mechanism: `handleSliceFailure` -> `issueUnloadCommand` -> `deleteSliceNodeKey` ->
-  `handleSliceNodeRemoval` -> `reconcile` -> `reconcileBlueprint`, with no arm that adds to
-  `permanentlyFailed`].
+- **The retry is bounded, and what happens at its end is stated accurately.** `handleTransientFailure`
+  allows 5 attempts with exponential backoff (1, 2, 4, 8, 16 s, capped at 30 s, jittered), re-driving
+  `reconcile()` each time. The budget is `ClusterDeploymentState.Active.MAX_RETRIES`, a private
+  compile-time constant — finite and knowable, but not operator-configurable. No new retry mechanism
+  was added here [mechanism: `MAX_RETRIES` = 5, `MAX_RETRY_DELAY_SECONDS` = 30].
+- **Correction: retry exhaustion does NOT stop, and this ticket originally said it did.** Review
+  round 1 caught it. `logMaxRetriesExceeded` clears the retry counter and routes `DeploymentFailed`
+  but never adds the artifact to `permanentlyFailed`, so the unload that every failure issues removes
+  the `NodeArtifactKey`, `handleSliceNodeRemoval` finds the artifact still deployable and schedules a
+  reconcile, and `reconcileBlueprint` — gated on `permanentlyFailed` and nothing else — redeploys it
+  with the counter restarting at 1. An intermittent cause that never settles is re-driven at roughly
+  1 Hz with no terminal state. **This is pre-existing and is neither fixed nor worsened here**; it is
+  tracked by #922. Its sustaining entry point is `ArtifactNotFound` on the LOAD leg, already
+  `Intermittent` before this change. The causes typed by this ticket cannot sustain it: every path
+  issuing an ACTIVATE is gated on the slice having been reported `LOADED`, so a genuinely absent
+  artifact fails earlier at `handleLoadingFailure` and never reaches them
+  [mechanism: all four call sites of `tryActivateIfDependenciesReady` filter on
+  `SliceState.LOADED` — `ClusterDeploymentState:1550`, `:694`, `:894`, `:1897`].
 - **`classify`'s catch-all deliberately STAYS fail-permanent** — the reviewable judgement of this
   change, so the reasoning is recorded rather than assumed. The cause universe on the loading and
-  activation paths is open, so the default arm is chosen for the failure mode it produces. Note the
-  original argument for it has been withdrawn: it rested on intermittent-by-default breaking
-  atomicity outright, which was true only while retry exhaustion failed to settle. Now that both
-  buckets reach a terminal state with a rollback, the gap is one of cost and latency, not of
-  guarantee, and it is narrower than this ticket first claimed. What still favours permanent: a
-  permanent cause typed intermittent pays six load/activate cycles over roughly a minute of backoff,
-  each issuing an unload and a reconcile through consensus, and holds the blueprint half-deployed
-  and in flight for that window before reaching the identical terminal, whereas a transient cause
-  typed permanent fails at once and is recovered by one redeploy; and a cause arriving here
-  unrecognised is more often a genuine defect than a blip, because the transient conditions on these
-  paths are the ones the code already knows about and types
+  activation paths is open, so the default arm is chosen for the failure mode it produces.
+  Permanent-by-default fails loudly and bounded: the blueprint is rolled back, `ALL_OR_NOTHING`
+  holds, and the operator sees something they can act on. Intermittent-by-default would fail in the
+  direction that matters, and worse than first argued: a genuinely permanent failure reaching an
+  unclassified path would not be "retried five times and then abandoned" — per the correction above
+  it would be re-driven indefinitely, with no terminal state at all. Trading a wrong rollback for an
+  unbounded loop is plainly the worse trade, so the ruling stands on a stronger footing than the one
+  originally written for it
   [verified: `SliceLoadingFailureClassifyTest#unrecognisedCause_staysPermanent`, and
   `ActivationRaceNotFatalTest#genuinelyUnclassifiedCause_stillRollsBackTheBlueprint` drives an
   untyped cause through both FSMs and asserts the rollback still happens — which doubles as the
@@ -76,8 +68,10 @@
   reason. A third cause on the same chain, `SLICE_NOT_LOADED_FOR_REGISTRATION`, is typed here too —
   the slice can be evicted between the activation lookup and the invocation-registration lookup, so
   it carried the same defect and was fixed with it
-  [mechanism: both constants in `NodeDeploymentState.Active` now build `Intermittent.SliceNotInStore`
-  rather than `Causes.forOneValue`].
+  [verified: `ActivationRaceNotFatalTest#sliceEvictedBeforeInvocationRegistration_isReportedIntermittent`
+  drives the node FSM through a store that holds the slice for the activation lookup and evicts it on
+  `activateSlice`, placing the eviction in exactly that window; reverting this second constant alone
+  to `Causes.forOneValue` turns that test red and leaves the other two green].
 - **Operator-visible: the reported failure text for this condition changed**, because the cause type
   changed. Where the blueprint status endpoint and `DeploymentFailed` events used to carry
   `"Unexpected slice loading error: Slice <artifact> state is ACTIVATE but not found in SliceStore"`,

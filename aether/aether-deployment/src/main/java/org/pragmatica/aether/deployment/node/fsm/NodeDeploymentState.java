@@ -424,9 +424,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var cause = SLICE_NOT_FOUND_FOR_ACTIVATION.apply(sliceKey.artifact().asString());
             // #916: WARN, not ERROR. This is now a retryable crossing the cluster recovers from on
             // its own; logging it at ERROR trained operators to treat a self-healing condition as an
-            // incident. The genuine terminal — retries exhausted — is still logged at ERROR, by
-            // `ClusterDeploymentState.Active.handleRetryBudgetExhausted`, which since review round 1
-            // also marks the artifact permanently failed and rolls the blueprint back.
+            // incident. `ClusterDeploymentState.Active.logMaxRetriesExceeded` still logs at ERROR
+            // when the retry budget is spent — though note it does not actually stop there; the
+            // deployment is re-driven, which is the pre-existing livelock tracked by #922.
             log.warn("Slice {} state is ACTIVATE but not found in SliceStore — reporting intermittent, cluster will retry",
                      sliceKey.artifact());
             transitionToFailed(sliceKey, cause);
