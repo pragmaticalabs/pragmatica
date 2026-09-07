@@ -1587,11 +1587,27 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
-            permanentlyFailed.add(artifact);
             log.error("Deterministic failure for {} on {}: {} — will NOT retry",
                       artifact,
                       sliceKey.nodeId(),
                       failureReason);
+            settleAsPermanentlyFailed(sliceKey, failureReason);
+        }
+
+        /// The terminal both failure branches converge on: the artifact is marked permanently
+        /// failed, the operator is told, and the declared atomicity is honoured — `ALL_OR_NOTHING`
+        /// rolls the owning blueprint back, `BEST_EFFORT` records a FAILED outcome.
+        ///
+        /// Adding to `permanentlyFailed` is what makes the state terminal, and it is load-bearing
+        /// in two places rather than one: [#reconcileBlueprint] refuses to redeploy the artifact,
+        /// and [#handleSliceNodeRemoval] refuses to schedule the reconcile that would otherwise
+        /// follow the unload every failure already issued. Reaching a failure branch without it
+        /// leaves the artifact re-driven at roughly 1 Hz indefinitely — see
+        /// [#handleRetryBudgetExhausted], which is where that hole was.
+        private void settleAsPermanentlyFailed(SliceNodeKey sliceKey, String failureReason) {
+            var artifact = sliceKey.artifact();
+
+            permanentlyFailed.add(artifact);
             ctx.router()
                .route(DeploymentFailed.deploymentFailed(artifact,
                                                         sliceKey.nodeId(),
@@ -1610,8 +1626,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// path is no longer the only terminal a BEST_EFFORT artifact can reach. A slice that
         /// reaches ACTIVE is retired via `trackBlueprintSliceActive`, whose own terminal is
         /// `recordSucceededOutcome` once every slice of the owning blueprint is active. This
-        /// method is the terminal for the other branch: `handleDeterministicFailure` marks the
-        /// artifact `permanentlyFailed` and calls here instead of retrying it. A slice with no
+        /// method is the terminal for the other branch: [#settleAsPermanentlyFailed] marks the
+        /// artifact `permanentlyFailed` and calls here instead of retrying it. Since #916 review
+        /// round 1 that reaches here from BOTH failure branches — a deterministic failure, and an
+        /// intermittent one that exhausted its retry budget — not from the deterministic one alone.
+        /// A slice with no
         /// owning blueprint (`Blueprint::owner` empty — a standalone deploy, not part of any
         /// blueprint) has no `DeploymentOutcomeKey` to write against and is correctly a no-op
         /// here. Merges into any existing FAILED record for the same blueprint (read-then-Put,
@@ -1649,7 +1668,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var retryCount = retryCounters.merge(sliceKey.asString(), 1, Integer::sum);
 
             if (retryCount > MAX_RETRIES) {
-                logMaxRetriesExceeded(sliceKey, failureReason);
+                handleRetryBudgetExhausted(sliceKey, failureReason);
 
                 return;
             }
@@ -1670,19 +1689,35 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             SharedScheduler.schedule(this::reconcile, timeSpan(jitteredMs).millis());
         }
 
-        private void logMaxRetriesExceeded(SliceNodeKey sliceKey, String failureReason) {
-            log.error("Max retries ({}) exceeded for {} on {}: {} — giving up",
+        /// #916 review round 1 — retry exhaustion is TERMINAL. It previously logged, cleared the
+        /// counter and routed `DeploymentFailed`, then returned, leaving the artifact absent from
+        /// `permanentlyFailed`. That was not a resting state. [#handleSliceFailure] issues an
+        /// unload on every failure; the node's removal of the `NodeArtifactKey` arrives at
+        /// [#handleSliceNodeRemoval], which — finding the artifact not permanently failed —
+        /// scheduled a reconcile 1 s later; [#reconcileBlueprint] is gated by nothing else, so it
+        /// redeployed the artifact and `retryCounters.merge` restarted at 1. An intermittent cause
+        /// that never settles therefore looped at roughly 1 Hz for the life of the cluster: no
+        /// terminal state, no rollback, and consensus round-trips forever.
+        ///
+        /// Settling here bounds every intermittent cause at `MAX_RETRIES` + 1 reported failures and
+        /// makes the `ALL_OR_NOTHING` promise hold on this branch as it already did on the
+        /// deterministic one. The counter is cleared first so a later redeploy of the same artifact
+        /// — which clears `permanentlyFailed` when the blueprint is applied — starts from a clean
+        /// budget rather than inheriting an exhausted one.
+        private void handleRetryBudgetExhausted(SliceNodeKey sliceKey, String failureReason) {
+            var artifact = sliceKey.artifact();
+
+            retryCounters.remove(sliceKey.asString());
+            if (permanentlyFailed.contains(artifact)) {
+                return;
+            }
+
+            log.error("Max retries ({}) exceeded for {} on {}: {} — giving up, marking permanently failed",
                       MAX_RETRIES,
-                      sliceKey.artifact(),
+                      artifact,
                       sliceKey.nodeId(),
                       failureReason);
-            retryCounters.remove(sliceKey.asString());
-            ctx.router()
-               .route(DeploymentFailed.deploymentFailed(sliceKey.artifact(),
-                                                        sliceKey.nodeId(),
-                                                        SliceState.FAILED,
-                                                        failureReason,
-                                                        ctx.nowMs()));
+            settleAsPermanentlyFailed(sliceKey, failureReason);
         }
 
         /// The activation gate for a slice's schema migrations, scoped to the slice's OWN blueprint.
