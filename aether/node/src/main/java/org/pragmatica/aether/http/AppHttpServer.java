@@ -45,12 +45,9 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.metrics.observability.HttpRequestObserver;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
-import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
@@ -98,14 +95,6 @@ public interface AppHttpServer {
     Promise<Unit> rotateCertificate(CertificateBundle newBundle);
     Option<Integer> boundPort();
 
-    @MessageReceiver
-    @Contract
-    void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut);
-
-    @MessageReceiver
-    @Contract
-    void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove);
-
     @Contract
     void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
 
@@ -143,22 +132,6 @@ public interface AppHttpServer {
 
     Option<HttpForwarder> httpForwarder();
     Option<HttpRoutePublisher> httpRoutePublisher();
-
-    default MapSubscription<HttpNodeRouteKey, HttpNodeRouteValue> asHttpRouteSubscription() {
-        return new MapSubscription<>() {
-            @Override
-            @Contract
-            public void onPut(HttpNodeRouteKey key, HttpNodeRouteValue value) {
-                onRoutePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
-            }
-
-            @Override
-            @Contract
-            public void onRemove(HttpNodeRouteKey key) {
-                onRouteRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
-            }
-        };
-    }
 
     static AppHttpServer appHttpServer(AppHttpConfig config,
                                        ForwardingTimeouts forwardingTimeouts,
@@ -760,20 +733,6 @@ class AppHttpServerAdapter implements AppHttpServer {
             log.warn("Quorum disappeared — quiescing app HTTP routing (split-brain protection)");
             context.dispatch(new ClusterFsmEvent.QuorumDisappeared());
         }
-    }
-
-    @Override
-    @Contract
-    public void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut) {
-        log.debug("HttpNodeRouteKey added, rebuilding router");
-        publishRouteTable();
-    }
-
-    @Override
-    @Contract
-    public void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove) {
-        log.debug("HttpNodeRouteKey removed, rebuilding router");
-        publishRouteTable();
     }
 
     @Override
