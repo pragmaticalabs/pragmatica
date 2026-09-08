@@ -154,11 +154,19 @@
   defect, but it raised its cost: a reader trusting the index would have been more confident, not less.
   **A `[verified:]` tag is a claim to be attacked, not one already checked.**
 
-  Counts here are per-file and stated as such: this fragment carries 10 `[verified:]`, 4
-  `[unverified:]`, 3 `[mechanism:]`; the node-health fragment carries 8 / 3 / 3; 18 / 7 / 6 across both,
-  with a bogus-tag control returning 0. An earlier note gave "10 and 4" without saying it meant one
-  file — a count with no stated space is not checkable, which is the same rule this tagging exists to
-  serve, missed inside the control built to serve it.
+  **Counts are read-point-scoped, and the census had to be fixed before they meant anything.**
+  Measured at `a49cfb47e`: this fragment carries **7 / 4 / 3** (verified / unverified / mechanism), the
+  node-health fragment **5 / 3 / 3**, **12 / 7 / 6** across both, bogus-tag control 0.
+
+  Two earlier figures were wrong, and instructively so. The first gave "10 and 4" without saying it
+  meant a single file. The second was measured with a census that matched **any occurrence of the tag
+  literal** — so this very paragraph, which discusses tagging, counted itself: writing the measurement
+  down changed the measurement. **An instrument built from the tag's own syntax cannot tell a tag from a
+  mention of a tag.** A position-anchored census fails the other way, missing real tags that follow
+  prose mid-line. The census now requires the space that a real tag has and a bracketed mention does
+  not, with two controls: no backticked mention is counted, and a bogus tag returns 0. **A count with no
+  stated space and no validated instrument is not checkable** — the rule this tagging exists to serve,
+  missed twice inside the control built to serve it.
 
 - All production hunks above were mutation-probed: each was reverted alone, its named test confirmed
   red, and the file restored.
