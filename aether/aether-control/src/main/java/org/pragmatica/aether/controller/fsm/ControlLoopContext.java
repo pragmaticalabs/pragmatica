@@ -29,6 +29,7 @@ import org.pragmatica.aether.controller.fsm.ScalingDecisionRecord.Outcome;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -199,15 +200,21 @@ public final class ControlLoopContext {
         return Option.option(blueprints.get(artifact));
     }
 
+    /// Unowned-slice convenience: records a slice that genuinely has no owning blueprint (#698).
     @Contract
     public void putBlueprint(Artifact artifact, int instances, int minInstances) {
-        putBlueprint(artifact, instances, minInstances, Option.none(), Option.none(), Option.none());
+        putBlueprint(artifact, instances, minInstances, Option.none(), Option.none(), Option.none(), Option.none());
     }
 
+    /// `owner` is threaded from the `SliceTargetValue` that triggered this registration and is
+    /// written back out by `applyScaling` (#698). There is deliberately no owner-less overload of
+    /// this arity: dropping the owner must be a decision the caller states, not a default it
+    /// inherits — that default is precisely what erased the owner on every autoscale event.
     @Contract
     public void putBlueprint(Artifact artifact,
                              int instances,
                              int minInstances,
+                             Option<BlueprintId> owner,
                              Option<Integer> maxInstances,
                              Option<Double> scaleUpThreshold,
                              Option<Double> scaleDownThreshold) {
@@ -215,6 +222,7 @@ public final class ControlLoopContext {
                        new ClusterController.Blueprint(artifact,
                                                        instances,
                                                        minInstances,
+                                                       owner,
                                                        maxInstances,
                                                        scaleUpThreshold,
                                                        scaleDownThreshold));
@@ -513,6 +521,18 @@ public final class ControlLoopContext {
         return applyScaling(change, artifact, currentBlueprint, requestedInstances, newInstances, capped);
     }
 
+    /// Emits the autoscaler's `SliceTargetValue` Put. The value is built from `currentBlueprint`,
+    /// the in-memory mirror of the last `SliceTargetValue` observed for this artifact — including
+    /// its `owningBlueprint` (#698). The owner is taken from that mirror rather than re-read from
+    /// the KV store deliberately: a re-read here would add a read-then-Put on the autoscaler's hot
+    /// path, the shape flagged by #906 and #805. This method performs no store read, so it adds no
+    /// lost-update exposure beyond the unconditional Put it already issued.
+    ///
+    /// The mirror cannot be stale in the owner: `blueprints` has exactly one writer
+    /// (`putBlueprint`), whose only production caller is `ControlLoop.onSliceTargetPut`. An artifact
+    /// with no observed `SliceTargetValue` has no blueprint entry, so `prepareChange` returns
+    /// `none()` and this method is never reached for it. The owner therefore has the same provenance
+    /// and lifetime as `maxInstances` and both thresholds, which this method already trusts.
     private Option<KVCommand<AetherKey>> applyScaling(BlueprintChange change,
                                                       Artifact artifact,
                                                       ClusterController.Blueprint currentBlueprint,
@@ -526,16 +546,20 @@ public final class ControlLoopContext {
         putBlueprint(artifact,
                      newInstances,
                      currentBlueprint.minInstances(),
+                     currentBlueprint.owningBlueprint(),
                      currentBlueprint.maxInstances(),
                      currentBlueprint.scaleUpThreshold(),
                      currentBlueprint.scaleDownThreshold());
         publishScalingEvent(change, artifact, currentBlueprint.instances(), newInstances);
         recordScaled(change, artifact, currentBlueprint, requestedInstances, newInstances, capped);
         var key = SliceTargetKey.sliceTargetKey(artifact.base());
+        // #698: the owner is carried from the registered blueprint, never rebuilt as `none()`.
+        // A fresh `SliceTargetValue` is still constructed rather than `withInstances(...)` on a
+        // re-read value because this class holds no KV-store handle — see the method javadoc.
         var value = SliceTargetValue.sliceTargetValue(artifact.version(),
                                                       newInstances,
                                                       newInstances,
-                                                      Option.none(),
+                                                      currentBlueprint.owningBlueprint(),
                                                       currentBlueprint.maxInstances(),
                                                       currentBlueprint.scaleUpThreshold(),
                                                       currentBlueprint.scaleDownThreshold());

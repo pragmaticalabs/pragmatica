@@ -859,6 +859,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var owner = sliceTargetValue.owningBlueprint();
             // Unowned slices keep the historical default (true, preserving prior behavior); owned
             // slices resolve schemaRequired via their blueprint, same as handleAppBlueprintChange.
+            // This resolution is load-bearing, not a workaround: SliceTargetValue carries no
+            // schemaRequired field, so the owner is the only route back to the deployed value.
+            // #555 added it; #698 fixed the producers that were erasing the owner, so `.or(true)`
+            // now fires only for a genuinely unowned slice, never for one whose owner was dropped
+            // in transit. Do not remove this in the belief #698 made it redundant — #698 supplied
+            // the input this line always assumed.
             boolean schemaRequired = owner.map(this::resolveSchemaRequired).or(true);
 
             blueprints.put(artifact, Blueprint.blueprint(artifact, instances, minInstances, owner, schemaRequired));
@@ -1295,6 +1301,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             // Unowned slices keep the historical default (true, preserving prior behavior); owned
             // slices resolve schemaRequired via their blueprint, same as handleAppBlueprintChange.
             // Without this, schemaRequired reverted to true on every scale event for owned slices.
+            // Kept after #698, and still load-bearing: SliceTargetValue carries no schemaRequired
+            // field, so resolving through the owner is the only route back to the deployed value.
+            // What #698 changed is this line's INPUT, not its need — the autoscaler
+            // (ControlLoopContext.applyScaling) and the A/B writer (AbTestManager) used to hand it
+            // an owner-less value, so it fell through to `true` on every real autoscale. With the
+            // producers fixed, `.or(true)` now means "genuinely unowned slice".
             boolean schemaRequired = owner.map(this::resolveSchemaRequired).or(true);
 
             log.info("Slice target changed for {}: {} instances (min: {})", newArtifact, desiredInstances, minInstances);
