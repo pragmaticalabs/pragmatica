@@ -6,6 +6,7 @@ package org.pragmatica.swim;
 
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.util.concurrent.DefaultPromise;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
@@ -154,6 +155,46 @@ class NettySwimTransportBoundedShutdownTest {
         assertThat(appender.eventsMentioning(FAILURE_LINE))
                 .as("and a healthy shutdown must not report failure")
                 .isEmpty();
+    }
+
+    /// The THIRD outcome, and the one the shipped pin could not reach (#929 verification round 1).
+    /// Netty's `Future.await(long)` returns true when the future is DONE, irrespective of outcome, so
+    /// a close that completes EXCEPTIONALLY took the success branch and `"SWIM transport stopped"` was
+    /// logged over a failed shutdown. The pre-#929 `.sync()` rethrew that cause, so this was a NEW
+    /// dishonesty introduced by the change whose whole purpose is to remove one.
+    ///
+    /// Pinned against `awaitBounded` directly because it is not reachable through `stopChannel` with a
+    /// real channel — `ch.close()` and the termination future rarely fail. A branch no scenario
+    /// reaches is precisely the branch that ships wrong.
+    @Test
+    void aShutdownFutureThatCompletedWithAFailure_isNotReportedAsSuccess() {
+        var failed = new DefaultPromise<Void>(eventLoopGroup().next());
+
+        failed.setFailure(new IllegalStateException("close refused by the channel"));
+
+        var result = NettySwimTransport.awaitBounded(failed, "channel close");
+
+        assertThat(result.isFailure()).as("a future that COMPLETED but failed is not a clean shutdown")
+                                      .isTrue();
+        assertThat(cause(result)).isInstanceOf(SwimError.ShutdownFailed.class);
+        assertThat(cause(result).message())
+                .as("and the report must carry the underlying cause, not just the stage")
+                .contains("close refused by the channel");
+    }
+
+    /// Positive control for the assertion above: a future that completes SUCCESSFULLY within the bound
+    /// IS success. Without this, `awaitBounded` failing unconditionally would satisfy the pin.
+    @Test
+    void aShutdownFutureThatCompletedSuccessfully_isReportedAsSuccess() {
+        var succeeded = new DefaultPromise<Void>(eventLoopGroup().next());
+
+        succeeded.setSuccess(null);
+
+        assertThat(NettySwimTransport.awaitBounded(succeeded, "channel close").isSuccess())
+                .as("control: a cleanly completed future must still read as success, so the failure "
+                    + "assertion above discriminates on the OUTCOME rather than on awaitBounded "
+                    + "always failing")
+                .isTrue();
     }
 
     private EventLoopGroup eventLoopGroup() {

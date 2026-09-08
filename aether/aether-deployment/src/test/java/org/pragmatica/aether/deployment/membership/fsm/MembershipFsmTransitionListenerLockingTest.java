@@ -6,6 +6,8 @@ package org.pragmatica.aether.deployment.membership.fsm;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.statemachine.FsmObserver;
+import org.pragmatica.statemachine.FsmTags;
 
 import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
@@ -19,6 +21,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.stream.IntStream;
 
@@ -60,6 +63,11 @@ class MembershipFsmTransitionListenerLockingTest {
     /// from "the probe never actually got both threads into position" — the second is scored as a
     /// broken instrument, not as a pass.
     private static final long RENDEZVOUS_BOUND_MS = 5_000L;
+
+    /// Bound for the "did NOT finish" half of the leaf probe. Short on purpose: under the invariant
+    /// the walker is BLOCKED, not slow, so waiting longer proves nothing — and the same test then
+    /// proves the walker was merely blocked by joining it after the monitor is released.
+    private static final long LEAF_PROBE_BOUND_MS = 500L;
 
     private static final int FLIP_THREADS = 4;
     private static final int FLIPS_PER_THREAD = 200;
@@ -212,6 +220,139 @@ class MembershipFsmTransitionListenerLockingTest {
                         + "published sequence chains (#929)", index, index - 1)
                     .isEqualTo(published.get(index - 1).toState());
         }
+    }
+
+    /// Verification round 1, BLOCKING finding. FIVE public ingresses reach `MemberTracking.dispatch`
+    /// WITHOUT passing through `inTransition` — `onSwimUnknown`, `onPeerConnected`,
+    /// `onJoinGraceExpired`, `onDrainRequested`, `onDownHysteresisMet`
+    /// (`MembershipFsm.java:544/550/580/590/599`). For those five, the guard taken INSIDE `dispatch`
+    /// is the ONLY serialisation that exists.
+    ///
+    /// [`#oneMembersTransitions_stayOrderedAndMatchObservedState_underConcurrentDispatch`] drives
+    /// member A exclusively through `onSwimSuspect`/`onSwimHealthy`, which are both
+    /// `inTransition`-wrapped and therefore still guarded when the guard is removed from `dispatch`
+    /// alone. That is why removing it left the suite green — and that green was recorded as "the
+    /// mutation landed somewhere that did not matter". It landed on the only lock protecting five
+    /// public entry points; the label certified as harmless the single acquisition those paths rely
+    /// on, which is a documented reason never to look again.
+    ///
+    /// This drives ONE guarded ingress (`onSwimHealthy`) against ONE direct-dispatch ingress
+    /// (`onDrainRequested`) on the SAME member, so the guard inside `dispatch` is load-bearing and
+    /// its removal is observable. MEMBER -> DEPARTING on the drain, DEPARTING -> MEMBER on a
+    /// strictly-newer healthy incarnation, so both ingresses produce real transitions.
+    @Test
+    void aDirectDispatchIngress_isSerialisedAgainstAGuardedOne_onTheSameMember() {
+        var fsm = MembershipFsm.membershipFsm();
+
+        fsm.onSwimHealthy(A, 1L);
+
+        var transitions = new AtomicInteger();
+        var staleObservations = new AtomicInteger();
+
+        fsm.onTransition(record -> {
+            transitions.incrementAndGet();
+            LockSupport.parkNanos(OBSERVATION_WINDOW_NANOS);
+            if (!record.toState().equals(fsm.memberStates().get(A))) {
+                staleObservations.incrementAndGet();
+            }
+        });
+
+        var incarnation = new AtomicLong(2L);
+        var guarded = daemon("probe-929-guarded-ingress", () -> {
+            for (var i = 0; i < FLIPS_PER_THREAD; i++) {
+                fsm.onSwimHealthy(A, incarnation.incrementAndGet());
+            }
+        });
+        var direct = daemon("probe-929-direct-ingress", () -> {
+            for (var i = 0; i < FLIPS_PER_THREAD; i++) {
+                fsm.onDrainRequested(A);
+            }
+        });
+
+        guarded.start();
+        direct.start();
+        joinQuietly(guarded, PROBE_BOUND_MS);
+        joinQuietly(direct, PROBE_BOUND_MS);
+
+        assertThat(transitions).as("instrument check: the two ingresses must have produced transitions "
+                                   + "to observe, or this probe watches nothing")
+                               .hasValueGreaterThan(0);
+        assertThat(staleObservations)
+                .as("a transition published by the DIRECT-dispatch ingress `onDrainRequested` must "
+                    + "also find its member unmoved: `dispatch`'s own guard is the only serialisation "
+                    + "those five public ingresses have (#929 verification round 1, BLOCKING)")
+                .hasValue(0);
+    }
+
+    /// The PRECONDITION this whole fix rests on, made observable — and it is not the property the
+    /// code comment originally claimed.
+    ///
+    /// "Lock order is always guard then monitor" is true and does not earn the safety: the fan-out
+    /// still holds one member's guard while acquiring every OTHER member's monitor, which is exactly
+    /// what `AetherNode.propagateMemberCount` does. What makes that acyclic is that **the per-member
+    /// monitor is a LEAF — nothing acquired under it acquires anything else.**
+    ///
+    /// That property is breakable from OUTSIDE this class. [`MembershipFsm#membershipFsm`] overloads
+    /// accept an explicit [`FsmObserver`], and `Fsm` invokes it inside the state transition, i.e.
+    /// inside `applyEvent`, i.e. under the monitor. Production happens to wire `FsmObserver.noop()`,
+    /// so today the invariant holds by accident of wiring rather than by construction. This test makes
+    /// the constraint observable: **an observer runs under the per-member monitor, therefore an
+    /// observer that takes any lock reintroduces the inversion this fix removes.**
+    ///
+    /// Read the green result as "the constraint is still real", not as "all is well". If someone moves
+    /// observer invocation out from under the monitor, this test SHOULD go red and be rewritten.
+    @Test
+    void anObserverPassedToThePublicFactory_runsUnderThePerMemberMonitor_soItMustNotTakeLocks() {
+        var fsmRef = new AtomicReference<MembershipFsm>();
+        var observerRan = new AtomicBoolean(false);
+        var walkFinishedWhileObserving = new AtomicBoolean(false);
+        var walkDoneRef = new AtomicReference<CountDownLatch>();
+
+        FsmObserver<MembershipState, MembershipEvent> observer = new FsmObserver<>() {
+            @Override
+            public void onTransition(FsmTags tags, MembershipState from, MembershipState to) {
+                observerRan.set(true);
+                var started = new CountDownLatch(1);
+                var done = new CountDownLatch(1);
+
+                walkDoneRef.set(done);
+                var walker = daemon("probe-929-leaf-walker", () -> {
+                    started.countDown();
+                    fsmRef.get().strictCoreMemberCount();
+                    done.countDown();
+                });
+
+                walker.start();
+                awaitQuietly(started, PROBE_BOUND_MS);
+                walkFinishedWhileObserving.set(awaitQuietly(done, LEAF_PROBE_BOUND_MS));
+            }
+
+            @Override
+            public void onCasLost(FsmTags tags, MembershipState expected, MembershipState actual) {}
+
+            @Override
+            public void onEventIgnored(FsmTags tags, MembershipState state, MembershipEvent event) {}
+        };
+
+        var fsm = MembershipFsm.membershipFsm(observer, System::currentTimeMillis, Long.MAX_VALUE);
+
+        fsmRef.set(fsm);
+        fsm.onSwimHealthy(A, 1L);
+
+        assertThat(observerRan).as("instrument check: the observer must have been invoked at all, or "
+                                   + "this test observes nothing")
+                               .isTrue();
+        assertThat(walkFinishedWhileObserving)
+                .as("an FsmObserver supplied through the public factory runs UNDER the per-member "
+                    + "monitor, so a concurrent member walk cannot complete while it is on the stack. "
+                    + "This is the leaf precondition the #929 fix depends on: an observer that takes "
+                    + "any lock reintroduces the inversion")
+                .isFalse();
+        assertThat(awaitQuietly(walkDoneRef.get(), PROBE_BOUND_MS))
+                .as("control: the walker must finish once the monitor is released — otherwise the "
+                    + "assertion above is satisfied by a thread that never ran rather than by one that "
+                    + "was blocked")
+                .isTrue();
     }
 
     private static void flip(MembershipFsm fsm, AtomicLong incarnation) {

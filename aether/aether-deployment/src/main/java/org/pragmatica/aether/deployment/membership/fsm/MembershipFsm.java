@@ -1161,6 +1161,21 @@ public final class MembershipFsm {
         /// state through a short `synchronized` accessor, rather than being `synchronized` itself.
         /// Their check-then-dispatch atomicity is preserved by the guard, since [`#dispatch`] is the
         /// only writer of `fsm` state and it requires the guard.
+        ///
+        /// **That lock order is true but it is NOT what earns the safety, and the distinction matters
+        /// because the real invariant is the fragile one.** The fan-out still holds member X's guard
+        /// while acquiring every OTHER member's monitor — that is exactly what
+        /// `AetherNode.propagateMemberCount` does. What makes that acyclic is that **the per-member
+        /// monitor is a LEAF: nothing acquired under it acquires anything else.** [`#applyEvent`]
+        /// reaches only the pure state table ([`MembershipState`] contains no `synchronized`), the
+        /// timer arm/cancel helpers, and a list append.
+        ///
+        /// **The leaf property is therefore a precondition of this fix, not an incidental fact.** It
+        /// can be broken from outside this class: the factories taking an explicit
+        /// [`FsmObserver`] ([`MembershipFsm#membershipFsm`] overloads) run that observer INSIDE
+        /// [`#applyEvent`], under the monitor. Production wires `FsmObserver.noop()`; an observer that
+        /// touched another member — or anything that takes a lock — would reintroduce exactly the
+        /// inversion this guard removes. Keep observers pure, or move them out of the monitor too.
         private final Object transitionGuard = new Object();
         private int healthyStreak = 0;
         private boolean swimFaultySeen = false;

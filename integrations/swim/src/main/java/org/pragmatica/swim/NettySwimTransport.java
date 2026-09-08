@@ -295,8 +295,13 @@ public final class NettySwimTransport implements SwimTransport {
         LOG.info("SWIM transport started on port {}", port);
     }
 
+    /// Exception lifting restored (#929 verification round 1). `stopChannel` calls
+    /// `DnsNameResolver::close` and `ch.close()`, neither inside a `Result.lift`, and
+    /// [`#awaitBounded`] catches only `InterruptedException` — so without this an unchecked exception
+    /// from either would leave `stop()` as a THROWN exception rather than a `Result` failure. The
+    /// inner `Result` is flattened so the two error channels stay one.
     private Result<Unit> doStop() {
-        return stopChannel();
+        return Result.<Result<Unit>> lift(SwimError.TransportFailure::new, this::stopChannel).flatMap(inner -> inner);
     }
 
     /// Stop the transport under a BOUND, and report what actually happened (#929).
@@ -314,15 +319,10 @@ public final class NettySwimTransport implements SwimTransport {
     /// read as clean: those are correctly red, not a regression.
     private Result<Unit> stopChannel() {
         nettyResolver.getAndSet(none()).onPresent(DnsNameResolver::close);
-
-        var channelClosed = channel.getAndSet(none())
-                                   .map(NettySwimTransport::closeChannel)
-                                   .or(SHUTDOWN_OK);
+        var channelClosed = channel.getAndSet(none()).map(NettySwimTransport::closeChannel).or(SHUTDOWN_OK);
         var groupStopped = externalGroup.isPresent()
                            ? SHUTDOWN_OK
-                           : group.getAndSet(none())
-                                  .map(NettySwimTransport::shutdownGroup)
-                                  .or(SHUTDOWN_OK);
+                           : group.getAndSet(none()).map(NettySwimTransport::shutdownGroup).or(SHUTDOWN_OK);
 
         return channelClosed.flatMap(() -> groupStopped)
                             .onSuccess(_ -> LOG.info("SWIM transport stopped"))
@@ -335,20 +335,32 @@ public final class NettySwimTransport implements SwimTransport {
     }
 
     private static Result<Unit> shutdownGroup(EventLoopGroup g) {
-        return awaitBounded(g.shutdownGracefully(SHUTDOWN_QUIET_PERIOD_MS,
-                                                 SHUTDOWN_TIMEOUT_MS,
-                                                 TimeUnit.MILLISECONDS),
+        return awaitBounded(g.shutdownGracefully(SHUTDOWN_QUIET_PERIOD_MS, SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS),
                             "event loop group shutdown");
     }
 
-    /// Bounded wait on a Netty future, reporting the two outcomes the pre-#929 code swallowed:
-    /// the bound elapsing, and an interrupt aborting the wait. Neither is success.
+    /// Bounded wait on a Netty future, reporting the THREE outcomes that are not success: the bound
+    /// elapsing, an interrupt aborting the wait, and the future completing with a failure.
+    ///
+    /// That third case is why `isSuccess()` is consulted separately (#929 verification round 1).
+    /// `Future.await(long)` returns true when the future is DONE, irrespective of outcome — so
+    /// testing only its boolean reports a failed close as a clean stop and logs the success line over
+    /// it. The pre-#929 `.sync()` rethrew that cause, so treating it as success would have been a NEW
+    /// dishonesty introduced by the very change that exists to remove one.
+    ///
+    /// Package-private rather than private so the failed-but-completed branch can be pinned directly:
+    /// it is not reachable through `stopChannel` with a real channel, and an honesty claim whose
+    /// third branch no test can reach is exactly the shape this ticket is about.
     @SuppressWarnings("JBCT-EX-01")  // Adapter boundary: wrapping Netty I/O
-    private static Result<Unit> awaitBounded(Future<?> future, String stage) {
+    static Result<Unit> awaitBounded(Future<?> future, String stage) {
         try {
-            return future.await(SHUTDOWN_TIMEOUT_MS)
+            if (!future.await(SHUTDOWN_TIMEOUT_MS)) {
+                return new SwimError.ShutdownTimeout(stage, SHUTDOWN_TIMEOUT_MS).result();
+            }
+
+            return future.isSuccess()
                    ? SHUTDOWN_OK
-                   : new SwimError.ShutdownTimeout(stage, SHUTDOWN_TIMEOUT_MS).result();
+                   : new SwimError.ShutdownFailed(stage, future.cause()).result();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
 

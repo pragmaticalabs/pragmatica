@@ -65,6 +65,19 @@ public sealed interface SwimError extends Cause {
         }
     }
 
+    /// Transport shutdown COMPLETED but failed (#929 verification round 1). Netty's
+    /// `Future.await(long)` returns true when the future is DONE, whatever its outcome, so a close or
+    /// group shutdown that completes exceptionally is a third case — distinct from both
+    /// [`ShutdownTimeout`] and [`ShutdownInterrupted`]. The pre-#929 `.sync()` rethrew this cause;
+    /// reporting it as success would have been a NEW dishonesty in the property part 3 exists to
+    /// establish.
+    record ShutdownFailed(String stage, Throwable cause) implements SwimError {
+        @Override
+        public String message() {
+            return "SWIM transport " + stage + " failed: " + Causes.fromThrowable(cause);
+        }
+    }
+
     /// Serialization failure.
     record SerializationFailure(Throwable cause) implements SwimError {
         @Override
