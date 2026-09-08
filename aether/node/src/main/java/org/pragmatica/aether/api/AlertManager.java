@@ -776,10 +776,53 @@ public class AlertManager {
         return List.copyOf(activeSliceFailureAlerts.values());
     }
 
+    /// Hard cap on retained node-health alerts. `activeNodeHealthAlerts` is keyed by the FAILED node's
+    /// id, and CTM auto-heal mints a FRESH random id for a replacement rather than reusing the departed
+    /// one, so an id-exact clear can never match a replaced node. Without a bound, every replacement
+    /// under churn would add a permanent entry, growing heap and the `/api/alerts` payload without
+    /// limit. Mirrors the existing `MAX_ALERT_HISTORY` bound on `alertHistory`.
+    private static final int MAX_NODE_HEALTH_ALERTS = 64;
+
+    /// Membership-event causes that mean the node ANNOUNCED its departure rather than died: a SWIM
+    /// graceful departure (normal shutdown, and therefore every rolling restart) and an operator or
+    /// controller drain. Matched against `MembershipTransitionRecord.cause()`, which is the triggering
+    /// `MembershipEvent`'s simple class name.
+    private static final java.util.Set<String> GRACEFUL_DEPARTURE_CAUSES = java.util.Set.of("SwimDeparted",
+                                                                                            "DrainRequested");
+
     /// Active node-health alerts, keyed by [`AlertEvent.NodeHealthAlert#alertId`] (derived from the
     /// failed node id). Per-node local state — never replicated, never consensus-backed — which is
-    /// precisely why it survives the conditions of #926.
+    /// precisely why it survives the conditions of #926. Bounded by [`#MAX_NODE_HEALTH_ALERTS`].
     private final Map<String, AlertEvent.NodeHealthAlert> activeNodeHealthAlerts = new ConcurrentHashMap<>();
+    /// Node ids observed announcing a graceful departure, id → wall-clock millis. Bounded by
+    /// [`#MAX_NODE_HEALTH_ALERTS`]; when full, new marks are DROPPED rather than evicting, so the
+    /// failure mode is a spurious CRITICAL alert and never a suppressed one.
+    private final Map<String, Long> announcedDeparture = new ConcurrentHashMap<>();
+
+    /// Feed for `MembershipFsm` transitions (#926 round 2). Records that `nodeId` announced a departure,
+    /// so the DEAD edge that follows can be told apart from a crash.
+    ///
+    /// The DEAD edge itself cannot make that distinction — a graceful `SwimDeparted` and a drain both
+    /// reach DEAD through the same `Stopped` transition a failure does — so without this every rolling
+    /// restart raised a CRITICAL node-health alert on every surviving node. An alert surface that fires
+    /// CRITICAL during routine planned operations gets muted, and a muted alert is the same end state
+    /// as the silence #926 exists to fix, reached from the opposite direction.
+    ///
+    /// Ordering is guaranteed, not hoped for: `MembershipFsm` queues the transition-record emission
+    /// BEFORE the confirmed-departure emission in the same `emissions` list, so the mark is always
+    /// recorded before [`#onNodeFailed`] reads it for that departure.
+    @Contract
+    public void noteMembershipTransition(NodeId nodeId, String cause) {
+        if (!GRACEFUL_DEPARTURE_CAUSES.contains(cause)) {
+            return;
+        }
+
+        if (announcedDeparture.size() >= MAX_NODE_HEALTH_ALERTS && !announcedDeparture.containsKey(nodeId.id())) {
+            return;
+        }
+
+        announcedDeparture.put(nodeId.id(), System.currentTimeMillis());
+    }
 
     /// Raise a node-health alert for a confirmed member death (#926).
     ///
@@ -789,29 +832,62 @@ public class AlertManager {
     /// "unhealthy" in `aether/node/src/main` appeared twice, both rendering a status string into an
     /// HTTP response.
     ///
-    /// GUARANTEE: **at-most-one active alert per failed node, per observing node.** The map key is
-    /// derived from the failed node alone, so a repeated observation of the same death replaces rather
-    /// than accumulates — idempotent, needing no dedup token and no coordination. Each node keeps its
-    /// own map, so there is no cross-node duplication to reconcile: the alert is a local judgment about
-    /// a remote peer, exposed on the observing node's own `/api/alerts`.
+    /// GUARANTEE: **at-most-one active alert per ABRUPTLY departed node, per observing node.** The map
+    /// key is derived from the failed node alone, so a repeated observation of the same death replaces
+    /// rather than accumulates — idempotent, needing no dedup token and no coordination. Each node keeps
+    /// its own map, so there is no cross-node duplication to reconcile: the alert is a local judgment
+    /// about a remote peer, exposed on the observing node's own `/api/alerts`.
+    ///
+    /// A departure this node saw ANNOUNCED (see [`#noteMembershipTransition`]) is logged at INFO and
+    /// raises NO alert. The mark is CONSUMED on read, so a node that gracefully departs, rejoins and
+    /// later crashes still alerts on the crash. **The bias is deliberate and one-directional:** an
+    /// unmarked departure always alerts, so a missed or dropped mark costs a spurious CRITICAL, never a
+    /// silent one. Suppressing a real failure would re-create the defect this ticket exists to remove.
     ///
     /// Cleared by [`#clearNodeHealthAlert`] when the node rejoins. Raising without clearing would leave
     /// a permanently red signal, which trains an operator to ignore the surface.
     @Contract
     public void onNodeFailed(NodeId failed, NodeId observedBy) {
+        if (announcedDeparture.remove(failed.id()) != null) {
+            log.info("Node {} departed gracefully (announced; observed by {}) — no alert raised",
+                     failed.id(),
+                     observedBy.id());
+
+            return;
+        }
+
         var alert = AlertEvent.NodeHealthAlert.nodeFailed(failed, observedBy);
 
         activeNodeHealthAlerts.put(alert.alertId(), alert);
+        evictOldestNodeHealthAlertIfOverCap();
         log.error("CRITICAL: node {} confirmed failed (observed by {}) — cluster membership degraded",
                   failed.id(),
                   observedBy.id());
     }
 
+    /// Drop the oldest alert once the map exceeds [`#MAX_NODE_HEALTH_ALERTS`]. A replaced node's alert
+    /// can never be cleared by id (the replacement carries a new one), so the bound — not the clear
+    /// path — is what keeps this map finite under sustained churn.
+    private void evictOldestNodeHealthAlertIfOverCap() {
+        while (activeNodeHealthAlerts.size() > MAX_NODE_HEALTH_ALERTS) {
+            activeNodeHealthAlerts.values()
+                                  .stream()
+                                  .min(java.util.Comparator.comparingLong(AlertEvent.NodeHealthAlert::timestamp))
+                                  .map(AlertEvent.NodeHealthAlert::alertId)
+                                  .ifPresent(activeNodeHealthAlerts::remove);
+        }
+    }
+
     /// Resolve the node-health alert for `rejoined` (#926). Wired to the transport `PeerJoined`
     /// handshake — the same ungated surface that sources NODE_JOINED — so recovery is exactly as
     /// reachable as the failure it clears. A no-op when no alert is active for that node.
+    ///
+    /// This clear is id-exact and therefore CANNOT resolve a CTM-replaced node, whose replacement boots
+    /// under a freshly minted random id. That case is handled by the bound above, not here; the honest
+    /// statement is that a replaced node's alert ages out under churn rather than being resolved.
     @Contract
     public void clearNodeHealthAlert(NodeId rejoined) {
+        announcedDeparture.remove(rejoined.id());
         Option.option(activeNodeHealthAlerts.remove(AlertEvent.NodeHealthAlert.alertId(rejoined))).onPresent(cleared -> log.info("Node-health alert resolved for {} — node rejoined (was: {})",
                                                                                                                                  rejoined.id(),
                                                                                                                                  cleared.reason()));
