@@ -259,15 +259,20 @@ public final class SliceRoutes implements RouteSource {
                                                   cause.message()));
     }
 
-    private void pushSecurityOverrides(ExpandedBlueprint expanded) {
-        nodeSupplier.get()
-                    .appHttpServer()
-                    .httpRoutePublisher()
-                    .onPresent(pub -> pub.updateSecurityOverrides(expanded.securityOverrides()));
-    }
-
+    /// #887 E2: this used to call `updateSecurityOverrides` in-process on `nodeSupplier.get()`, which
+    /// installed the blueprint's security overrides on exactly ONE node -- whichever served this
+    /// request. `/blueprints*` is a `taskGroup(DEPLOYMENT)` route, so that is a single node whose
+    /// ownership migrates, and every other node kept `SecurityOverrides.EMPTY`. A slice hosted
+    /// elsewhere then published its route entry built from EMPTY overrides, so the override was
+    /// missing from the KV entry too and no node enforced it.
+    ///
+    /// Overrides are now derived from the replicated blueprint by
+    /// [org.pragmatica.aether.http.SecurityOverrideSynchronizer], on every node, including this one.
+    /// Deliberately NOT also pushed here: two writers to one `activeOverrides` reference is the shape
+    /// that produced the divergence, and the serving node observing the same `AppBlueprintKey`
+    /// notification as its peers is what makes enforcement node-independent rather than merely
+    /// node-independent-elsewhere.
     private void onBlueprintActivated(ExpandedBlueprint expanded) {
-        pushSecurityOverrides(expanded);
         auditAndEmitBlueprintDeployed(expanded.id().asString(),
                                       expanded.loadOrder().size());
     }
