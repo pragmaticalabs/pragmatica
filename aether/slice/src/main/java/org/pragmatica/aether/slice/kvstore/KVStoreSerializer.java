@@ -318,7 +318,8 @@ public final class KVStoreSerializer {
                       .collect(Collectors.joining(","));
 
         return v.status()
-                .name() + PIPE + slices + PIPE + escapeOutcomeField(v.cause()) + PIPE + v.timestampMs();
+                .name() + PIPE + slices + PIPE + escapeOutcomeField(v.cause()) + PIPE + v.timestampMs() + PIPE
+               + v.outcomeVersion();
     }
 
     /// Backslash-escapes `\`, `|`, and `,` for a single field of the `deployment-outcome` wire form.
@@ -765,8 +766,8 @@ public final class KVStoreSerializer {
     private static Result<Map.Entry<AetherKey, AetherValue>> parseDeploymentOutcomeEntry(String identity, String raw) {
         var parts = splitOutcomeField(raw, '|');
 
-        if (parts.size() != 4) {
-            return parseFailure("deployment-outcome value requires 4 fields, got " + parts.size());
+        if (parts.size() != 5) {
+            return parseFailure("deployment-outcome value requires 5 fields, got " + parts.size());
         }
 
         return DeploymentOutcomeKey.deploymentOutcomeKey("deployment-outcome/" + identity).flatMap(key -> buildDeploymentOutcomeValue(parts).map(value -> entry(key,
@@ -796,7 +797,19 @@ public final class KVStoreSerializer {
             return parseFailure("deployment-outcome value has invalid timestamp: " + parts.get(3));
         }
 
-        return success(new DeploymentOutcomeValue(status, failingSlices, unescapeOutcomeField(parts.get(2)), timestampMs));
+        long outcomeVersion;
+
+        try {
+            outcomeVersion = Long.parseLong(parts.get(4));
+        } catch (NumberFormatException e) {
+            return parseFailure("deployment-outcome value has invalid outcome version: " + parts.get(4));
+        }
+
+        return success(new DeploymentOutcomeValue(status,
+                                                  failingSlices,
+                                                  unescapeOutcomeField(parts.get(2)),
+                                                  timestampMs,
+                                                  outcomeVersion));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseEndpointEntry(String identity, String raw) {

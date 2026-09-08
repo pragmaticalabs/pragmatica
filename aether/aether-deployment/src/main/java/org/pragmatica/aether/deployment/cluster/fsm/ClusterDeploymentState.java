@@ -260,6 +260,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                   CancellableTask reconcileTimer) implements ClusterDeploymentState {
         private static final Logger log = LoggerFactory.getLogger(Active.class);
         private static final int MAX_RETRIES = 5;
+        /// Retry budget for the fenced deployment-outcome merge (#805 item 2). Each attempt re-reads
+        /// committed state, so this bounds contention, not transport failure.
+        private static final int MAX_OUTCOME_MERGE_ATTEMPTS = 5;
         private static final long MAX_RETRY_DELAY_SECONDS = 30;
         /// The deterministic, single-community-per-source suffix (worker-membership-spec A10): one
         /// community `<source>-w-0` per source keeps community ids stable across rejoins (no
@@ -1651,35 +1654,123 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// artifact `permanentlyFailed` and calls here instead of retrying it. A slice with no
         /// owning blueprint (`Blueprint::owner` empty — a standalone deploy, not part of any
         /// blueprint) has no `DeploymentOutcomeKey` to write against and is correctly a no-op
-        /// here. Merges into any existing FAILED record for the same blueprint (read-then-Put,
-        /// not a blind overwrite) so a second independently-failing slice in one partial
-        /// deployment is added to `failingSlices` instead of erasing the first.
+        /// here. Merges into any existing FAILED record for the same blueprint so a second
+        /// independently-failing slice in one partial deployment is added to `failingSlices` instead
+        /// of erasing the first. The merge was a bare read-then-Put until #805 item 2; it is now
+        /// fenced and confirmed — see [#submitBestEffortFailureOutcome(BlueprintId, Artifact, String, int)].
         private void recordBestEffortFailureOutcome(Artifact artifact, String failureReason) {
             Option.option(blueprints.get(artifact))
                   .flatMap(Blueprint::owner)
-                  .onPresent(blueprintId -> submitBatch(List.of(bestEffortFailureCommand(blueprintId,
-                                                                                         artifact,
-                                                                                         failureReason))));
+                  .onPresent(blueprintId -> submitBestEffortFailureOutcome(blueprintId, artifact, failureReason, 1));
+        }
+
+        /// #805 item 2. This write is a read-modify-write: it merges `artifact` into whatever
+        /// `failingSlices` the committed record already carries. The read happens when the command is
+        /// BUILT; the Put applies later, after consensus. Two BEST_EFFORT failures both in flight
+        /// before either applies therefore read the same base, and — because `RabiaEngine` selects
+        /// proposals from a `ConcurrentSkipListMap` keyed by a SHA-256 content hash rather than by
+        /// submission order — which one survives is a coin flip on the happy path, not a rare
+        /// interleaving. The `VersionFenced` fence on [DeploymentOutcomeValue] makes the applier
+        /// REJECT the loser instead of letting it overwrite the winner; rejection alone still drops
+        /// the id, so this method confirms after its own apply resolves and retries the merge against
+        /// the now-current committed value.
+        ///
+        /// Deliberately NOT routed through [#submitBatch(List)]: that helper's `onFailure`-only
+        /// contract has no confirmation step, and a fenced merge is exactly the write whose apply
+        /// succeeding does not mean the change landed. `ClusterNode.apply`'s Promise resolves after
+        /// the local state machine has applied the decision (`RabiaEngine.commitChanges` calls
+        /// `stateMachine.process` before `promise.succeed`), so the re-read below observes this
+        /// batch's own effect.
+        ///
+        /// Bounded at [#MAX_OUTCOME_MERGE_ATTEMPTS] retries: each attempt is a fresh read of
+        /// committed state, so progress needs only that some attempt find no competing writer, and a
+        /// budget keeps a pathological contender from turning a failure record into an unbounded
+        /// resubmission loop. Exhaustion is logged at ERROR naming the slice that was not recorded —
+        /// the record is operator-facing history, so a lost id must not be silent.
+        private void submitBestEffortFailureOutcome(BlueprintId blueprintId,
+                                                    Artifact artifact,
+                                                    String failureReason,
+                                                    int attempt) {
+            var command = List.<KVCommand<AetherKey>> of(bestEffortFailureCommand(blueprintId,
+                                                                                  artifact,
+                                                                                  failureReason));
+
+            ctx.cluster()
+               .apply(command)
+               .onSuccess(_ -> confirmBestEffortFailureOutcome(blueprintId, artifact, failureReason, attempt))
+               .onFailure(cause -> handleBatchFailure(cause, command));
+        }
+
+        private void confirmBestEffortFailureOutcome(BlueprintId blueprintId,
+                                                     Artifact artifact,
+                                                     String failureReason,
+                                                     int attempt) {
+            if (deactivated.get() || bestEffortFailureLanded(blueprintId, artifact)) {
+                return;
+            }
+
+            if (attempt >= MAX_OUTCOME_MERGE_ATTEMPTS) {
+                log.error("BEST_EFFORT failure of {} was NOT recorded in the deployment-outcome record for blueprint {}"
+                          + " after {} merge attempts — the record under-reports this deployment's failing slices",
+                          artifact,
+                          blueprintId.asString(),
+                          attempt);
+
+                return;
+            }
+
+            log.debug("Outcome merge for {} on blueprint {} was fenced out (attempt {}), retrying against current committed value",
+                      artifact,
+                      blueprintId.asString(),
+                      attempt);
+            submitBestEffortFailureOutcome(blueprintId, artifact, failureReason, attempt + 1);
+        }
+
+        private boolean bestEffortFailureLanded(BlueprintId blueprintId, Artifact artifact) {
+            return committedOutcome(DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId)).map(DeploymentOutcomeValue::failingSlices)
+                                                                                          .map(slices -> slices.contains(artifact.asString()))
+                                                                                          .or(false);
         }
 
         private KVCommand<AetherKey> bestEffortFailureCommand(BlueprintId blueprintId,
                                                               Artifact artifact,
                                                               String failureReason) {
             var key = DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId);
-            var existingSlices = ctx.kvStore()
-                                    .get(key)
-                                    .filter(v -> v instanceof DeploymentOutcomeValue)
-                                    .map(v -> ((DeploymentOutcomeValue) v).failingSlices())
-                                    .or(List.of());
-            var slices = new ArrayList<>(existingSlices);
+            var committed = committedOutcome(key);
+            var slices = new ArrayList<>(committed.map(DeploymentOutcomeValue::failingSlices)
+                                                  .or(List.of()));
 
             if (!slices.contains(artifact.asString())) {
                 slices.add(artifact.asString());
             }
 
-            var value = DeploymentOutcomeValue.failed(slices, failureReason, ctx.nowMs());
+            var value = DeploymentOutcomeValue.failed(slices,
+                                                      failureReason,
+                                                      ctx.nowMs(),
+                                                      successorOutcomeVersion(committed));
 
             return new KVCommand.Put<>(key, value);
+        }
+
+        private Option<DeploymentOutcomeValue> committedOutcome(DeploymentOutcomeKey key) {
+            return ctx.kvStore()
+                      .get(key)
+                      .filter(DeploymentOutcomeValue.class::isInstance)
+                      .map(DeploymentOutcomeValue.class::cast);
+        }
+
+        /// The version obligation [DeploymentOutcomeValue#fenceVersion()] imposes on every writer:
+        /// derive from the CURRENT committed value and bump by exactly one, or write
+        /// [DeploymentOutcomeValue#FIRST_VERSION] against an absent key. A write built on anything
+        /// else is a write built on a stale read, and the applier drops it.
+        private long nextOutcomeVersion(DeploymentOutcomeKey key) {
+            return successorOutcomeVersion(committedOutcome(key));
+        }
+
+        private static long successorOutcomeVersion(Option<DeploymentOutcomeValue> committed) {
+            return committed.map(DeploymentOutcomeValue::outcomeVersion)
+                            .map(version -> version + 1)
+                            .or(DeploymentOutcomeValue.FIRST_VERSION);
         }
 
         private void handleTransientFailure(SliceNodeKey sliceKey, String failureReason) {
@@ -2502,7 +2593,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// site's failure needs a targeted WARN instead of `submitBatch`'s generic ERROR.
         private void recordSucceededOutcome(BlueprintId blueprintId) {
             var key = DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId);
-            var value = DeploymentOutcomeValue.succeeded(ctx.nowMs());
+            var value = DeploymentOutcomeValue.succeeded(ctx.nowMs(), nextOutcomeVersion(key));
             var command = List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(key, value));
 
             ctx.cluster()
@@ -2594,7 +2685,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                           String cause) {
             var key = DeploymentOutcomeKey.deploymentOutcomeKey(inflight.id());
             var slices = failingSlices.stream().map(Artifact::asString).toList();
-            var value = DeploymentOutcomeValue.failed(slices, cause, ctx.nowMs());
+            var value = DeploymentOutcomeValue.failed(slices, cause, ctx.nowMs(), nextOutcomeVersion(key));
 
             return new KVCommand.Put<>(key, value);
         }
@@ -2657,7 +2748,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             allSlices.addAll(inflight.activeSlices());
             var key = DeploymentOutcomeKey.deploymentOutcomeKey(inflight.id());
             var slices = allSlices.stream().map(Artifact::asString).toList();
-            var value = DeploymentOutcomeValue.rolledBack(slices, cause, ctx.nowMs());
+            var value = DeploymentOutcomeValue.rolledBack(slices, cause, ctx.nowMs(), nextOutcomeVersion(key));
 
             return new KVCommand.Put<>(key, value);
         }
