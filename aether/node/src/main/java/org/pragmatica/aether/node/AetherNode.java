@@ -100,6 +100,7 @@ import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.http.HttpRouteRegistry;
+import org.pragmatica.aether.http.SecurityOverrideSynchronizer;
 import org.pragmatica.aether.http.forward.AccessibilityFilter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage;
 import org.pragmatica.aether.http.security.SecurityValidator;
@@ -5572,9 +5573,19 @@ public interface AetherNode extends ManageableNode {
                                                                     AtomicReference<Option<ManagementServer>> managementServerRef,
                                                                     NodeId self) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
+        // #887 E2/E3: every node derives its security overrides from the replicated blueprint. The
+        // data was already here (AppBlueprintValue carries ExpandedBlueprint.securityOverrides() to
+        // every node, durably); what was missing was a reader, so overrides reached only the node
+        // that served POST /api/v1/blueprints and no other node enforced them.
+        var securityOverrideSynchronizer = SecurityOverrideSynchronizer.securityOverrideSynchronizer(kvStore,
+                                                                                                     appHttpServer::httpRoutePublisher);
         var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                                   .onPut(AetherKey.AppBlueprintKey.class,
                                                          clusterDeploymentManager::onAppBlueprintPut)
+                                                  .onPut(AetherKey.AppBlueprintKey.class,
+                                                         securityOverrideSynchronizer::onAppBlueprintPut)
+                                                  .onRemove(AetherKey.AppBlueprintKey.class,
+                                                            securityOverrideSynchronizer::onAppBlueprintRemove)
                                                   .onPut(AetherKey.SliceTargetKey.class,
                                                          clusterDeploymentManager::onSliceTargetPut)
                                                   .onPut(AetherKey.VersionRoutingKey.class,
@@ -5692,6 +5703,9 @@ public interface AetherNode extends ManageableNode {
                                               deploymentMetricsScheduler::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, scheduledTaskManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, appHttpServer::onQuorumStateChange));
+        // #887 E3: a node that just became ACTIVE restored state it never observed arriving.
+        entries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
+                                              securityOverrideSynchronizer::onQuorumStateChange));
         // E2 Phase 2b (2026-05-28): the consensus-derived `ClusterStateNotification.DISAPPEARED`
         // signal is bridged directly into the §8.2 `DrainProcedure`. Rabia's `Paused` state
         // fires on the same DISAPPEARED signal — both legacy `onQuorumDisappeared` /

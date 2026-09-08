@@ -5,6 +5,8 @@
 
 package org.pragmatica.aether.http;
 
+import io.netty.buffer.ByteBuf;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -25,13 +27,20 @@ import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.slice.MethodHandle;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.SecurityOverridePolicy;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.http.routing.SliceVersionRegistry;
 import org.pragmatica.http.routing.VersioningMetricsSink;
@@ -41,6 +50,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -253,6 +265,105 @@ class AppHttpServerOverrideEnforcementTest {
                     .as("a runtime override must govern the very next request on the hosting node")
                     .isEqualTo(403);
         }
+    }
+
+    @Nested
+    class OverrideArrivesOnlyViaReplicatedBlueprint {
+        /// #887 E2 — THE CONDITION the fix has to meet, at the outermost observable.
+        ///
+        /// This models a node that did **NOT** serve `POST /api/v1/blueprints`. Its publisher is
+        /// never handed the override directly — `updateSecurityOverrides` is not called by this test
+        /// — and learns it only by deriving from the replicated blueprint, which every node holds.
+        ///
+        /// Before E2 that node held `SecurityOverrides.EMPTY` and served this request, because the
+        /// override was installed in-process on the one node that answered the management call. A
+        /// test that only ever exercises the request-serving node cannot tell the fix from the bug.
+        @Test
+        void request_isRefused_whenOverrideLearnedFromReplicatedBlueprintAlone() throws Exception {
+            var synchronizer = synchronizerOver(replicatedStore(lockdownOverrides()));
+
+            synchronizer.resync();
+            startServer();
+
+            assertThat(getWithApiKey(REQUEST_PATH, SERVICE_KEY).statusCode())
+                    .as("a node that never served the blueprint request must still enforce the override")
+                    .isEqualTo(403);
+        }
+
+        /// #887 E3 — the survival claim, observed rather than reasoned about.
+        ///
+        /// `activeOverrides` is in-memory, so a node restart or a DEPLOYMENT task-group migration used
+        /// to bring the node up enforcing nothing. Here the node observes NO blueprint put at all —
+        /// only the `ACTIVE` edge, which is exactly what a restart looks like: state restored, never
+        /// seen arriving. Verifying what a condition MEANS is not verifying it still HOLDS.
+        @Test
+        void request_isRefused_whenOverrideRederivedOnActiveEdgeWithNoPutObserved() throws Exception {
+            var synchronizer = synchronizerOver(replicatedStore(lockdownOverrides()));
+
+            synchronizer.onQuorumStateChange(ClusterStateNotification.active());
+            startServer();
+
+            assertThat(getWithApiKey(REQUEST_PATH, SERVICE_KEY).statusCode())
+                    .as("a restarted node must re-derive overrides from restored state, not come up empty")
+                    .isEqualTo(403);
+        }
+
+        /// Control. Same wiring, blueprint carrying no override: the request is served. Without this,
+        /// a 403 caused by the synchronizer breaking the route would read as the fix working.
+        @Test
+        void request_isServed_whenReplicatedBlueprintCarriesNoOverride() throws Exception {
+            var synchronizer = synchronizerOver(replicatedStore(SecurityOverrides.EMPTY));
+
+            synchronizer.resync();
+            startServer();
+
+            var response = getWithApiKey(REQUEST_PATH, SERVICE_KEY);
+
+            assertThat(response.statusCode()).isEqualTo(200);
+            assertThat(response.body()).contains("served-locally");
+        }
+    }
+
+    private SecurityOverrideSynchronizer synchronizerOver(KVStore<AetherKey, AetherValue> store) {
+        return SecurityOverrideSynchronizer.securityOverrideSynchronizer(store, () -> Option.some(realPublisher));
+    }
+
+    private static SecurityOverrides lockdownOverrides() {
+        var entry = SecurityOverrides.Entry.entry(OverrideEnforcementRouteFactory.METHOD
+                                                  + " "
+                                                  + OverrideEnforcementRouteFactory.PATH_PREFIX,
+                                                  "role:admin");
+
+        return SecurityOverrides.securityOverrides(List.of(entry), SecurityOverridePolicy.STRENGTHEN_ONLY);
+    }
+
+    /// A KV store holding the blueprint exactly as consensus replicates it to every node.
+    private static KVStore<AetherKey, AetherValue> replicatedStore(SecurityOverrides overrides) {
+        var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+        var id = BlueprintId.blueprintId(Artifact.artifact("com.example:test-blueprint:1.0.0").unwrap());
+        var blueprint = ExpandedBlueprint.expandedBlueprint(id, List.of(), Option.none(), overrides);
+        var command = new KVCommand.Put<AetherKey, AetherValue>(AppBlueprintKey.appBlueprintKey(id),
+                                                                 AppBlueprintValue.appBlueprintValue(blueprint, false));
+
+        store.process(store.createBatch(List.of(command)));
+
+        return store;
+    }
+
+    private static Serializer stubSerializer() {
+        return new Serializer() {
+            @Override
+            public <T> void write(ByteBuf byteBuf, T object) {}
+        };
+    }
+
+    private static Deserializer stubDeserializer() {
+        return new Deserializer() {
+            @Override
+            public <T> T read(ByteBuf byteBuf) {
+                return null;
+            }
+        };
     }
 
     private HttpResponse<String> get(String path) throws Exception {
