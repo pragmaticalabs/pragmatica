@@ -1,5 +1,8 @@
 ### Fixed (2026-09-08 — #698: `SliceTargetValue.owningBlueprint` erased at reconstruction by the autoscaler and the A/B writer)
 
+_Line numbers below are derived at `origin/release-1.0.0-rc4` @ `78960de46`, not at the branch head;
+this branch adds +12 lines to `ClusterDeploymentState.java`._
+
 - **Two producers rebuilt a `SliceTargetValue` from a subset of its fields and hardcoded
   `Option.none()` for the owner**, while carefully carrying every other field forward.
   `ControlLoopContext.applyScaling` (`aether-control`) did it on every autoscale decision;
@@ -90,7 +93,7 @@
   [mechanism: `AetherValue.SliceTargetValue` factories at :95/:107/:119/:134/:169 all pass
   `DEFAULT_PLACEMENT`; producers at `ControlLoopContext.applyScaling` and
   `AbTestManager.targetPreservingOverrides` use the 7-arg overload (:169); consumer at
-  `ClusterDeploymentState:1315`. Not executed — no test in this change drives a non-default
+  `ClusterDeploymentState:1303`. Not executed — no test in this change drives a non-default
   placement through an autoscale].
 - **Separate defect, filed as #936, deliberately NOT fixed here. #698's fix does NOT fix #936.**
   They are independent bugs in the *same constructor call* — `minInstances` is argument position 3,
