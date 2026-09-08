@@ -12,12 +12,14 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.BrokenBarrierException;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.LockSupport;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -61,6 +63,10 @@ class MembershipFsmTransitionListenerLockingTest {
 
     private static final int FLIP_THREADS = 4;
     private static final int FLIPS_PER_THREAD = 200;
+    /// Deliberate widening of the publish window, so an unserialised fan-out loses the race often
+    /// rather than almost never. 20 us x 1600 dispatches is ~30 ms of added test time under the
+    /// guard, and near-certain detection without it.
+    private static final long OBSERVATION_WINDOW_NANOS = 20_000L;
 
     /// The deadlock probe. Two threads enter `MembershipFsm` through the two production ingress
     /// points that collided in the field — SWIM `onSwimSuspect` and QUIC `onLivenessGone` — on two
@@ -110,7 +116,14 @@ class MembershipFsmTransitionListenerLockingTest {
     /// Direct pin of the invariant: while the transition listener runs, ANOTHER thread must be able
     /// to acquire every `MemberTracking` monitor. `strictCoreMemberCount` is the cheapest full walk
     /// of them. Under the pre-#929 code the walker blocks on the dispatching member's monitor until
-    /// the listener returns — and the listener is waiting for the walker, so it never does.
+    /// the listener returns.
+    ///
+    /// The verdict is SNAPSHOTTED INSIDE the listener, and that is load-bearing. Asserting on the
+    /// walker's flag after `onSwimSuspect` returns is satisfied by the wrong event: the walker is
+    /// merely BLOCKED, and the instant the listener returns the monitor is released, the walk
+    /// finishes, and a later assertion reads `true` for a walk that did not overlap the listener at
+    /// all. A first cut of this pin did exactly that and stayed GREEN against the reintroduced
+    /// defect while the deadlock probe went red.
     @Test
     void transitionListener_runsWithNoMemberTrackingMonitorHeld() {
         var fsm = MembershipFsm.membershipFsm();
@@ -119,43 +132,60 @@ class MembershipFsmTransitionListenerLockingTest {
         fsm.onSwimHealthy(B, 1L);
 
         var listenerRan = new AtomicBoolean(false);
-        var walkCompleted = new AtomicBoolean(false);
+        var walkFinishedWhileListenerRan = new AtomicBoolean(false);
 
         fsm.onTransition(_ -> {
             listenerRan.set(true);
+            var walkDone = new CountDownLatch(1);
             var walker = daemon("probe-929-walker", () -> {
                 fsm.strictCoreMemberCount();
-                walkCompleted.set(true);
+                walkDone.countDown();
             });
 
             walker.start();
-            joinQuietly(walker, PROBE_BOUND_MS);
+            walkFinishedWhileListenerRan.set(awaitQuietly(walkDone, PROBE_BOUND_MS));
         });
 
         fsm.onSwimSuspect(A, 2L);
 
         assertThat(listenerRan).as("instrument check: the transition listener must have run at all")
                                .isTrue();
-        assertThat(walkCompleted).as("a second thread must complete a full member walk (which acquires "
-                                     + "EVERY MemberTracking monitor) WHILE the transition listener is "
-                                     + "running — i.e. no per-member monitor is held across "
-                                     + "transitionSink.accept (#929)")
-                                 .isTrue();
+        assertThat(walkFinishedWhileListenerRan)
+                .as("a second thread must complete a full member walk (which acquires EVERY "
+                    + "MemberTracking monitor) WHILE the transition listener is still on the stack — "
+                    + "i.e. no per-member monitor is held across transitionSink.accept (#929)")
+                .isTrue();
     }
 
-    /// The property the transition guard buys back. Publishing after the monitor is released is only
-    /// correct if ONE member's transitions stay totally ordered: the journal and every other consumer
-    /// see a chain, never a pair swapped by two threads racing to publish. Each record must therefore
-    /// start in the state its predecessor ended in.
+    /// The two properties the transition guard buys back, and the reason a bare "publish after the
+    /// monitor is released" is NOT an acceptable fix.
+    ///
+    /// 1. ONE member's transitions stay totally ordered: consumers see a chain, never a pair swapped
+    ///    by two threads racing to publish. Each record starts in the state its predecessor ended in.
+    /// 2. A listener observes the member in exactly the state its record names — the atomicity the
+    ///    old `synchronized dispatch` provided, and the one thing moving the fan-out could have cost.
+    ///
+    /// Property 2 is the sensitive one and is why this test does not rely on ordering alone: the
+    /// window for an ordering inversion is a handful of instructions wide, so a guardless
+    /// implementation can survive thousands of iterations by luck. Parking briefly inside the
+    /// listener widens that window deliberately — an ordering assertion that could not realistically
+    /// fail is not a pin. (Measured: with the guard removed and no park, all iterations passed.)
     @Test
-    void oneMembersTransitions_stayTotallyOrdered_underConcurrentDispatch() {
+    void oneMembersTransitions_stayOrderedAndMatchObservedState_underConcurrentDispatch() {
         var fsm = MembershipFsm.membershipFsm();
 
         fsm.onSwimHealthy(A, 1L);
 
         var records = Collections.<MembershipTransitionRecord> synchronizedList(new ArrayList<>());
+        var staleObservations = new AtomicInteger();
 
-        fsm.onTransition(records::add);
+        fsm.onTransition(record -> {
+            LockSupport.parkNanos(OBSERVATION_WINDOW_NANOS);
+            if (!record.toState().equals(fsm.memberStates().get(A))) {
+                staleObservations.incrementAndGet();
+            }
+            records.add(record);
+        });
 
         var incarnation = new AtomicLong(2L);
         var flippers = IntStream.range(0, FLIP_THREADS)
@@ -168,6 +198,10 @@ class MembershipFsmTransitionListenerLockingTest {
 
         assertThat(records).as("instrument check: the flippers must have produced transitions to order")
                            .isNotEmpty();
+        assertThat(staleObservations)
+                .as("while a listener runs, the member it names must not have moved on — no other "
+                    + "thread may transition that member until the fan-out returns (#929)")
+                .hasValue(0);
 
         var published = List.copyOf(records);
 
@@ -193,6 +227,16 @@ class MembershipFsmTransitionListenerLockingTest {
         thread.setDaemon(true);
 
         return thread;
+    }
+
+    private static boolean awaitQuietly(CountDownLatch latch, long boundMs) {
+        try {
+            return latch.await(boundMs, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+
+            return false;
+        }
     }
 
     private static void joinQuietly(Thread thread, long boundMs) {

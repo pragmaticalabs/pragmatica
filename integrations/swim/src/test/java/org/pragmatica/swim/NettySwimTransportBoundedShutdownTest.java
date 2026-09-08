@@ -71,10 +71,16 @@ class NettySwimTransportBoundedShutdownTest {
     /// wait, not the wedge clearing.
     private static final long WEDGE_MS = 9_000L;
     private static final long WEDGE_ARMED_BOUND_MS = 5_000L;
+    private static final long GROUP_CLEANUP_TIMEOUT_MS = 10_000L;
 
     private CapturingAppender appender;
     private LoggerConfig loggerConfig;
     private Level originalLevel;
+    /// Every group this test creates, shut down in [`#tearDown`] whatever the outcome. A Netty
+    /// `NioEventLoopGroup` runs NON-daemon threads: a group left alive by a failing assertion keeps
+    /// the surefire fork from exiting, which is how a first cut of this class turned a 6 s run into
+    /// a 17-minute one under mutation. Cleanup that only runs on the happy path is not cleanup.
+    private final List<EventLoopGroup> groups = new CopyOnWriteArrayList<>();
 
     @BeforeEach
     void setUp() {
@@ -97,12 +103,14 @@ class NettySwimTransportBoundedShutdownTest {
         loggerConfig.setLevel(originalLevel);
         ctx.updateLoggers();
         appender.stop();
+        groups.forEach(group -> group.shutdownGracefully(0L, GROUP_CLEANUP_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+        groups.clear();
     }
 
     @Test
     void shutdownThatCannotComplete_reportsFailureAndDoesNotLogSuccess() {
-        var group = new NioEventLoopGroup(1);
-        var transport = transport(group);
+        var group = eventLoopGroup();
+        var transport = externalGroupTransport(group);
 
         assertThat(transport.start(WEDGED_PORT, (_, _) -> {}).await().isSuccess())
                 .as("instrument check: the transport must bind before the loop is wedged")
@@ -124,15 +132,15 @@ class NettySwimTransportBoundedShutdownTest {
         assertThat(appender.eventsMentioning(FAILURE_LINE))
                 .as("the failure must be logged instead")
                 .hasSize(1);
-
-        group.shutdownGracefully(0L, 1L, TimeUnit.SECONDS);
     }
 
     /// Positive control for the absence assertion above, and for the appender itself: an
-    /// unobstructed shutdown succeeds AND logs the success line exactly once.
+    /// unobstructed shutdown succeeds AND logs the success line exactly once. Uses the INTERNAL
+    /// event loop group, so this also covers `shutdownGroup` and the dropped quiet period — the
+    /// wedged case above must supply an external group in order to wedge it, which skips that half.
     @Test
     void healthyShutdown_succeedsAndLogsSuccess() {
-        var transport = transport(new NioEventLoopGroup(1));
+        var transport = ownGroupTransport();
 
         assertThat(transport.start(HEALTHY_PORT, (_, _) -> {}).await().isSuccess()).isTrue();
 
@@ -148,11 +156,28 @@ class NettySwimTransportBoundedShutdownTest {
                 .isEmpty();
     }
 
-    private static SwimTransport transport(EventLoopGroup group) {
+    private EventLoopGroup eventLoopGroup() {
+        var group = new NioEventLoopGroup(1);
+
+        groups.add(group);
+
+        return group;
+    }
+
+    private static SwimTransport externalGroupTransport(EventLoopGroup group) {
         return NettySwimTransport.nettySwimTransport(mock(Serializer.class),
                                                      mock(Deserializer.class),
                                                      GossipEncryptor.none(),
                                                      group)
+                                 .unwrap();
+    }
+
+    /// Transport owning its own event loop group — `stopChannel` therefore also shuts the group
+    /// down, so nothing is left running.
+    private static SwimTransport ownGroupTransport() {
+        return NettySwimTransport.nettySwimTransport(mock(Serializer.class),
+                                                     mock(Deserializer.class),
+                                                     GossipEncryptor.none())
                                  .unwrap();
     }
 
