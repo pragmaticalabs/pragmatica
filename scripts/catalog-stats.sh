@@ -125,7 +125,9 @@ generate() {
     ' "$catalog"
 }
 
-blockfile="$(mktemp -t catalog-stats)"
+# Explicit XXXXXX template: GNU mktemp rejects `-t <prefix>` ("too few X's"), BSD mktemp rejects a
+# bare `mktemp` with no template. This form is accepted by both.
+blockfile="$(mktemp "${TMPDIR:-/tmp}/catalog-stats.XXXXXX")"
 trap 'rm -f "$blockfile"' EXIT
 generate > "$blockfile"
 
