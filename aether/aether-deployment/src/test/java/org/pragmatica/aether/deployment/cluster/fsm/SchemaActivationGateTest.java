@@ -35,12 +35,15 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Node
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
@@ -208,30 +211,103 @@ class SchemaActivationGateTest {
 
     @Nested
     class ShortCircuits {
+        /// #805 item 1 moved the source of this answer: `schema_required` is read from the COMMITTED
+        /// blueprint record, never from the node-local mirror's copy of the flag. The outcome is
+        /// unchanged — a `schema_required = false` blueprint's slice is never held — but it is now
+        /// the same source `SchemaRoutes.heldSlices` reads, which is the whole point.
         @Test
         void areSchemasReady_allows_whenSchemaNotRequired() {
             registerSlice(Option.some(OWNER), false);
+            seedOwningBlueprintSchemaRequired(OWNER, false);
             seedSchema(OWNED_DATASOURCE, SchemaStatus.FAILED, OWNER);
 
-            assertThat(schemasReady()).as("schemaRequired=false short-circuits regardless of record status")
+            assertThat(schemasReady()).as("schema_required = false in the committed blueprint means the gate never blocks")
                                       .isTrue();
         }
 
-        /// No `Blueprint` entry means no owner to match records against. Blocking would be an
-        /// unclearable hold — nothing that ever completes could be attributed to this slice.
+        /// No committed `SliceTargetValue` means no owner to match records against. Blocking would be
+        /// an unclearable hold — nothing that ever completes could be attributed to this slice.
         @Test
-        void areSchemasReady_allows_whenSliceHasNoBlueprintEntry() {
+        void areSchemasReady_allows_whenSliceHasNoCommittedTargetRecord() {
             seedSchema(OWNED_DATASOURCE, SchemaStatus.FAILED, OTHER_OWNER);
 
             assertThat(schemasReady()).isTrue();
         }
 
         @Test
-        void areSchemasReady_allows_whenBlueprintCarriesNoOwner() {
+        void areSchemasReady_allows_whenCommittedTargetRecordCarriesNoOwner() {
             registerSlice(Option.none(), true);
             seedSchema(OWNED_DATASOURCE, SchemaStatus.FAILED, OWNER);
 
             assertThat(schemasReady()).isTrue();
+        }
+    }
+
+    /// #805 item 1. The gate and `SchemaRoutes.heldSlices` share [#blocksSliceActivation], but until
+    /// this fix they fed it from two different sources: the gate from the node-local `blueprints`
+    /// mirror (owner AND a `schemaRequired` pre-filter), the route from the committed
+    /// `SliceTargetValue` with no pre-filter. The mirror is rebuilt from KV notifications and
+    /// therefore lags them, so a stale entry made the two disagree about the same slice — the
+    /// divergence #760's first round closed, running the other way.
+    ///
+    /// Each test here plants a mirror entry that CONTRADICTS the committed record and asserts the
+    /// gate follows the committed record. `plantMirrorEntry` deliberately does not seed the target
+    /// record, so the two sources disagree by construction rather than by timing.
+    @Nested
+    class StaleMirrorDivergence {
+        /// The exact shape the ticket names: a stale mirror entry naming an owner the committed
+        /// record does not name makes the gate hold a slice the route reports as NOT held. Before the
+        /// fix the gate read `OWNER` from the mirror, matched the FAILED record, and blocked.
+        @Test
+        void areSchemasReady_allows_whenStaleMirrorNamesAnOwnerTheCommittedRecordDoesNot() {
+            seedSliceTarget(Option.some(OTHER_OWNER));
+            plantMirrorEntry(Option.some(OWNER), true);
+            seedSchema(OWNED_DATASOURCE, SchemaStatus.FAILED, OWNER);
+
+            assertThat(schemasReady()).as("the committed SliceTargetValue owns this slice, and it names OTHER_OWNER — "
+                                          + "a stale mirror must not resurrect a hold the route does not report")
+                                      .isTrue();
+        }
+
+        /// The same divergence with no committed record at all — the mirror is the ONLY thing naming
+        /// an owner. The route reports nothing held (it can resolve no owner); the gate must agree.
+        @Test
+        void areSchemasReady_allows_whenOnlyTheStaleMirrorNamesAnOwner() {
+            plantMirrorEntry(Option.some(OWNER), true);
+            seedSchema(OWNED_DATASOURCE, SchemaStatus.FAILED, OWNER);
+
+            assertThat(schemasReady()).as("no committed SliceTargetValue means no owner to attribute records to")
+                                      .isTrue();
+        }
+
+        /// The pre-filter's OTHER input, and the opposite direction: a stale mirror carrying
+        /// `schemaRequired = false` short-circuited the gate to READY while the committed blueprint
+        /// declared `schema_required = true`, so the route reported the slice held and the gate let it
+        /// activate against an unmigrated schema. Dropping the pre-filter is what closes this; the
+        /// shared predicate resolves `schemaRequired` from the committed record per candidate.
+        @Test
+        void areSchemasReady_blocks_whenStaleMirrorClearsSchemaRequiredButCommittedRecordDeclaresIt() {
+            seedSliceTarget(Option.some(OWNER));
+            plantMirrorEntry(Option.some(OWNER), false);
+            seedOwningBlueprintSchemaRequired(OWNER, true);
+            seedSchema(OWNED_DATASOURCE, SchemaStatus.FAILED, OWNER);
+
+            assertThat(schemasReady()).as("the committed blueprint declares schema_required = true, so a stale mirror "
+                                          + "flag must not let the slice through the gate")
+                                      .isFalse();
+        }
+
+        /// Convergence stated directly: whatever the mirror says, the gate's verdict must equal the
+        /// verdict the route computes from the committed record via the SAME shared inputs. This is
+        /// the property #805 asks for, rather than a restatement of one case's expected boolean.
+        @Test
+        void gateVerdict_matchesRouteVerdict_underAStaleMirror() {
+            seedSliceTarget(Option.some(OTHER_OWNER));
+            plantMirrorEntry(Option.some(OWNER), true);
+            seedSchema(OWNED_DATASOURCE, SchemaStatus.FAILED, OWNER);
+
+            assertThat(schemasReady()).as("gate and route must agree on the same slice")
+                                      .isEqualTo(!routeReportsHeld());
         }
     }
 
@@ -522,9 +598,62 @@ class SchemaActivationGateTest {
         return activeState().areSchemasReady(SLICE_KEY);
     }
 
+    /// `SchemaRoutes.collectIfHeldBySchema`'s body, reproduced against this fixture: the shared
+    /// predicate fed the shared owner resolution, for a LOADED slice (the state the gate itself is
+    /// only ever reached in). Asserting the gate against this pins that `blockingSchemaRecords`
+    /// applies NO filter the route does not — which is the regression #805 names, and the thing a
+    /// reintroduced mirror pre-filter would break.
+    private boolean routeReportsHeld() {
+        return ClusterDeploymentState.blocksSliceActivation(SliceState.LOADED,
+                                                             ClusterDeploymentState.resolveSliceOwner(kvStore, SLICE),
+                                                             schemaRecord(OWNED_DATASOURCE),
+                                                             kvStore);
+    }
+
+    private SchemaVersionValue schemaRecord(String datasource) {
+        return kvStore.get(SchemaVersionKey.schemaVersionKey(datasource))
+                      .filter(SchemaVersionValue.class::isInstance)
+                      .map(SchemaVersionValue.class::cast)
+                      .or(() -> org.junit.jupiter.api.Assertions.fail("no schema record seeded for " + datasource));
+    }
+
+    /// Establishes a CONSISTENT ownership state: the committed `SliceTargetValue` the gate and the
+    /// route both read (#805 item 1), and the node-local `blueprints` mirror that mirrors it. Before
+    /// #805 the gate read only the mirror, so seeding the mirror alone was enough; it no longer is,
+    /// and seeding only one of the two is now precisely how a divergence is STAGED rather than how a
+    /// normal slice is registered — see [StaleMirrorDivergence].
     private void registerSlice(Option<BlueprintId> owner, boolean schemaRequired) {
+        seedSliceTarget(owner);
+        plantMirrorEntry(owner, schemaRequired);
+    }
+
+    /// Writes ONLY the node-local mirror, leaving the committed `SliceTargetValue` untouched. This is
+    /// the stale-map plant #805 asks the gate to become immune to.
+    private void plantMirrorEntry(Option<BlueprintId> owner, boolean schemaRequired) {
         activeState().blueprints()
                      .put(SLICE, Blueprint.blueprint(SLICE, 1, 1, owner, schemaRequired));
+    }
+
+    /// Declares `schema_required` for `owner` in the COMMITTED blueprint record — the only source
+    /// [ClusterDeploymentState#resolveSchemaRequired(KVStore, BlueprintId)] reads. Mirrors
+    /// `SchemaRouteStatusTest.seedOwningBlueprintWithoutSchemaRequirement`: a non-empty `[[slices]]`
+    /// and a `[deployment].strategy` are both required before `schema_required` is read at all.
+    private void seedOwningBlueprintSchemaRequired(BlueprintId owner, boolean schemaRequired) {
+        var resourcesToml = """
+                             id = "%s"
+
+                             [[slices]]
+                             artifact = "org.example:seed-slice:1.0.0"
+
+                             [deployment]
+                             strategy = "rolling"
+                             schema_required = %s
+                             """.formatted(owner.asString(), schemaRequired);
+
+        kvStore.put(AppBlueprintKey.appBlueprintKey(owner),
+                    AppBlueprintValue.appBlueprintValue(ExpandedBlueprint.expandedBlueprint(owner,
+                                                                                            List.of(),
+                                                                                            Option.some(resourcesToml))));
     }
 
     private void seedSchema(String datasource, SchemaStatus status, BlueprintId owner) {

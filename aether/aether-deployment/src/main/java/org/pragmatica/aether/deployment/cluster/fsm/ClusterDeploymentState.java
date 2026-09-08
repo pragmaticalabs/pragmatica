@@ -188,6 +188,31 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         return resolveDeclaredSchemaRequired(kvStore, blueprintId).or(true);
     }
 
+    /// #805 item 1: the SINGLE slice-owner resolution path for both callers of
+    /// [#blocksSliceActivation] — the activation gate (`Active.blockingSchemaRecords`) and
+    /// `SchemaRoutes.heldSlices` — reading the committed `SliceTargetKey`/`SliceTargetValue` record
+    /// that both already treat as the ownership authority.
+    ///
+    /// #760's first round made the two share this PREDICATE; they still fed it from two different
+    /// sources. The gate resolved the owner from [Active#blueprints], a node-local mirror rebuilt
+    /// from KV notifications and therefore lagging them, and additionally pre-filtered on that
+    /// mirror's `schemaRequired` flag; the route read the KV record directly and pre-filtered on
+    /// nothing. A stale mirror entry naming an owner the committed record no longer names made the
+    /// gate hold a slice the route simultaneously reported as NOT held — the same divergence #760
+    /// closed, running the other way. Sharing a predicate is not sharing a decision while its INPUTS
+    /// disagree.
+    ///
+    /// The dropped `schemaRequired` pre-filter is not a lost check: [#blocksSliceActivation] already
+    /// resolves `schemaRequired` per candidate record from this same [KVStore] via
+    /// [#resolveSchemaRequired(KVStore, BlueprintId)], so the mirror's copy was strictly a second,
+    /// divergent answer to a question the shared predicate was already asking.
+    static Option<BlueprintId> resolveSliceOwner(KVStore<AetherKey, AetherValue> kvStore, Artifact artifact) {
+        return kvStore.get(SliceTargetKey.sliceTargetKey(artifact.base()))
+                      .filter(SliceTargetValue.class::isInstance)
+                      .map(SliceTargetValue.class::cast)
+                      .flatMap(SliceTargetValue::owningBlueprint);
+    }
+
     record Dormant(ClusterDeploymentContext ctx) implements ClusterDeploymentState {
         @Contract
         @Override
@@ -235,6 +260,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                   CancellableTask reconcileTimer) implements ClusterDeploymentState {
         private static final Logger log = LoggerFactory.getLogger(Active.class);
         private static final int MAX_RETRIES = 5;
+        /// Retry budget for the fenced deployment-outcome merge (#805 item 2). Each attempt re-reads
+        /// committed state, so this bounds contention, not transport failure.
+        private static final int MAX_OUTCOME_MERGE_ATTEMPTS = 5;
         private static final long MAX_RETRY_DELAY_SECONDS = 30;
         /// The deterministic, single-community-per-source suffix (worker-membership-spec A10): one
         /// community `<source>-w-0` per source keeps community ids stable across rejoins (no
@@ -1626,35 +1654,154 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// artifact `permanentlyFailed` and calls here instead of retrying it. A slice with no
         /// owning blueprint (`Blueprint::owner` empty — a standalone deploy, not part of any
         /// blueprint) has no `DeploymentOutcomeKey` to write against and is correctly a no-op
-        /// here. Merges into any existing FAILED record for the same blueprint (read-then-Put,
-        /// not a blind overwrite) so a second independently-failing slice in one partial
-        /// deployment is added to `failingSlices` instead of erasing the first.
+        /// here. Merges into any existing FAILED record for the same blueprint so a second
+        /// independently-failing slice in one partial deployment is added to `failingSlices` instead
+        /// of erasing the first. The merge was a bare read-then-Put until #805 item 2; it is now
+        /// fenced and confirmed — see [#submitBestEffortFailureOutcome(BlueprintId, Artifact, String, int)].
         private void recordBestEffortFailureOutcome(Artifact artifact, String failureReason) {
-            Option.option(blueprints.get(artifact))
-                  .flatMap(Blueprint::owner)
-                  .onPresent(blueprintId -> submitBatch(List.of(bestEffortFailureCommand(blueprintId,
-                                                                                         artifact,
-                                                                                         failureReason))));
+            resolveOutcomeOwner(artifact).onPresent(blueprintId -> submitBestEffortFailureOutcome(blueprintId,
+                                                                                                  artifact,
+                                                                                                  failureReason,
+                                                                                                  1));
+        }
+
+        /// #805 follow-up: the owning blueprint for a BEST_EFFORT failure record, resolved from the
+        /// node-local [#blueprints] mirror FIRST and from the committed `SliceTargetValue` only when
+        /// the mirror cannot answer.
+        ///
+        /// An unresolved owner here is not a degraded record, it is NO record: there is no
+        /// `DeploymentOutcomeKey` to write against, so the failure goes unrecorded entirely. #698
+        /// closed one route to that — the autoscaler and A/B writer erasing
+        /// `SliceTargetValue.owningBlueprint`, fixed in #940. This closes the other: the mirror is
+        /// rebuilt from KV notifications and can be stale, or simply absent for an artifact whose
+        /// entry `removeNonTargetVersions` dropped, or during the window after a leader failover
+        /// before `rebuildSliceStateFromKVStoreEntries` has run.
+        ///
+        /// **Mirror FIRST, not committed-record first — the order is load-bearing.**
+        /// [Active#handleAppBlueprintChange] populates the mirror in the same pass that only QUEUES
+        /// the `SliceTargetKey` Put, and that Put applies later, after consensus. Between the two the
+        /// mirror legitimately names an owner the committed store does not yet carry, so resolving
+        /// from the store alone would stop recording failures for the whole deploy window — trading
+        /// one dropped-record bug for another. Consulting both, mirror first, strictly widens what is
+        /// recorded: the worst case is attributing a failure to an owner that is about to change,
+        /// never losing the record. For a ticket about lost records that is the right asymmetry.
+        ///
+        /// Deliberately NOT the shared [ClusterDeploymentState#resolveSliceOwner(KVStore, Artifact)]
+        /// call alone: that method is item 1's single-source rule for the SCHEMA GATE, where
+        /// convergence with `SchemaRoutes.heldSlices` is the whole point and one source is required.
+        /// Here there is no second reader to converge with, and the requirement is the opposite —
+        /// resolve from anything that can answer.
+        private Option<BlueprintId> resolveOutcomeOwner(Artifact artifact) {
+            return Option.option(blueprints.get(artifact))
+                         .flatMap(Blueprint::owner)
+                         .orElse(() -> resolveSliceOwner(ctx.kvStore(),
+                                                         artifact));
+        }
+
+        /// #805 item 2. This write is a read-modify-write: it merges `artifact` into whatever
+        /// `failingSlices` the committed record already carries. The read happens when the command is
+        /// BUILT; the Put applies later, after consensus. Two BEST_EFFORT failures both in flight
+        /// before either applies therefore read the same base, and — because `RabiaEngine` selects
+        /// proposals from a `ConcurrentSkipListMap` keyed by a SHA-256 content hash rather than by
+        /// submission order — which one survives is a coin flip on the happy path, not a rare
+        /// interleaving. The `VersionFenced` fence on [DeploymentOutcomeValue] makes the applier
+        /// REJECT the loser instead of letting it overwrite the winner; rejection alone still drops
+        /// the id, so this method confirms after its own apply resolves and retries the merge against
+        /// the now-current committed value.
+        ///
+        /// Deliberately NOT routed through [#submitBatch(List)]: that helper's `onFailure`-only
+        /// contract has no confirmation step, and a fenced merge is exactly the write whose apply
+        /// succeeding does not mean the change landed. `ClusterNode.apply`'s Promise resolves after
+        /// the local state machine has applied the decision (`RabiaEngine.commitChanges` calls
+        /// `stateMachine.process` before `promise.succeed`), so the re-read below observes this
+        /// batch's own effect.
+        ///
+        /// Bounded at [#MAX_OUTCOME_MERGE_ATTEMPTS] retries: each attempt is a fresh read of
+        /// committed state, so progress needs only that some attempt find no competing writer, and a
+        /// budget keeps a pathological contender from turning a failure record into an unbounded
+        /// resubmission loop. Exhaustion is logged at ERROR naming the slice that was not recorded —
+        /// the record is operator-facing history, so a lost id must not be silent.
+        private void submitBestEffortFailureOutcome(BlueprintId blueprintId,
+                                                    Artifact artifact,
+                                                    String failureReason,
+                                                    int attempt) {
+            var command = List.<KVCommand<AetherKey>> of(bestEffortFailureCommand(blueprintId, artifact, failureReason));
+
+            ctx.cluster()
+               .apply(command)
+               .onSuccess(_ -> confirmBestEffortFailureOutcome(blueprintId, artifact, failureReason, attempt))
+               .onFailure(cause -> handleBatchFailure(cause, command));
+        }
+
+        private void confirmBestEffortFailureOutcome(BlueprintId blueprintId,
+                                                     Artifact artifact,
+                                                     String failureReason,
+                                                     int attempt) {
+            if (deactivated.get() || bestEffortFailureLanded(blueprintId, artifact)) {
+                return;
+            }
+
+            if (attempt >= MAX_OUTCOME_MERGE_ATTEMPTS) {
+                log.error("BEST_EFFORT failure of {} was NOT recorded in the deployment-outcome record for blueprint {}"
+                         + " after {} merge attempts — the record under-reports this deployment's failing slices",
+                          artifact,
+                          blueprintId.asString(),
+                          attempt);
+
+                return;
+            }
+
+            log.debug("Outcome merge for {} on blueprint {} was fenced out (attempt {}), retrying against current committed value",
+                      artifact,
+                      blueprintId.asString(),
+                      attempt);
+            submitBestEffortFailureOutcome(blueprintId, artifact, failureReason, attempt + 1);
+        }
+
+        private boolean bestEffortFailureLanded(BlueprintId blueprintId, Artifact artifact) {
+            return committedOutcome(DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId)).map(DeploymentOutcomeValue::failingSlices)
+                                   .map(slices -> slices.contains(artifact.asString()))
+                                   .or(false);
         }
 
         private KVCommand<AetherKey> bestEffortFailureCommand(BlueprintId blueprintId,
                                                               Artifact artifact,
                                                               String failureReason) {
             var key = DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId);
-            var existingSlices = ctx.kvStore()
-                                    .get(key)
-                                    .filter(v -> v instanceof DeploymentOutcomeValue)
-                                    .map(v -> ((DeploymentOutcomeValue) v).failingSlices())
-                                    .or(List.of());
-            var slices = new ArrayList<>(existingSlices);
+            var committed = committedOutcome(key);
+            var slices = new ArrayList<>(committed.map(DeploymentOutcomeValue::failingSlices).or(List.of()));
 
             if (!slices.contains(artifact.asString())) {
                 slices.add(artifact.asString());
             }
 
-            var value = DeploymentOutcomeValue.failed(slices, failureReason, ctx.nowMs());
+            var value = DeploymentOutcomeValue.failed(slices,
+                                                      failureReason,
+                                                      ctx.nowMs(),
+                                                      successorOutcomeVersion(committed));
 
             return new KVCommand.Put<>(key, value);
+        }
+
+        private Option<DeploymentOutcomeValue> committedOutcome(DeploymentOutcomeKey key) {
+            return ctx.kvStore()
+                      .get(key)
+                      .filter(DeploymentOutcomeValue.class::isInstance)
+                      .map(DeploymentOutcomeValue.class::cast);
+        }
+
+        /// The version obligation [DeploymentOutcomeValue#fenceVersion()] imposes on every writer:
+        /// derive from the CURRENT committed value and bump by exactly one, or write
+        /// [DeploymentOutcomeValue#FIRST_VERSION] against an absent key. A write built on anything
+        /// else is a write built on a stale read, and the applier drops it.
+        private long nextOutcomeVersion(DeploymentOutcomeKey key) {
+            return successorOutcomeVersion(committedOutcome(key));
+        }
+
+        private static long successorOutcomeVersion(Option<DeploymentOutcomeValue> committed) {
+            return committed.map(DeploymentOutcomeValue::outcomeVersion)
+                            .map(version -> version + 1)
+                            .or(DeploymentOutcomeValue.FIRST_VERSION);
         }
 
         private void handleTransientFailure(SliceNodeKey sliceKey, String failureReason) {
@@ -1710,8 +1857,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// permanent failure. The hold now clears only via `/api/schema/{ds}/retry`
         /// (FAILED -> PENDING -> COMPLETED) or a redeploy that republishes the record.
         ///
-        /// A slice whose owning blueprint cannot be resolved — no `Blueprint` entry, or an entry
-        /// carrying no owner — is reported READY. No record can be attributed to it, so blocking
+        /// A slice whose owning blueprint cannot be resolved — no committed `SliceTargetValue`
+        /// record, or one carrying no owner — is reported READY. No record can be attributed to it, so blocking
         /// would be an unclearable hold: nothing that ever completes could match it, and the slice
         /// would sit in LOADED forever. Records only ever exist because some blueprint declared
         /// migrations, and that blueprint's own slices do carry its owner, so the safety property is
@@ -1723,12 +1870,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// Named records rather than a boolean so the hold can be reported with detail (#760) — the
         /// prior `noBlockingSchemaRecords` collapsed the same scan into a single flag, which is all
         /// [#areSchemasReady(SliceNodeKey)] needs but nothing an operator-facing log could name.
+        /// #805 item 1: owner resolution goes through the shared
+        /// [ClusterDeploymentState#resolveSliceOwner(KVStore, Artifact)] — the committed
+        /// `SliceTargetValue` record — instead of the node-local [#blueprints] mirror, and the
+        /// mirror's `schemaRequired` pre-filter is gone. Both were inputs the route did not share,
+        /// so the gate and `SchemaRoutes.heldSlices` could disagree about the same slice even while
+        /// calling one predicate. See that method for why dropping the pre-filter removes no check.
         private List<SchemaVersionValue> blockingSchemaRecords(SliceNodeKey sliceKey) {
-            return Option.option(blueprints.get(sliceKey.artifact()))
-                         .filter(Blueprint::schemaRequired)
-                         .flatMap(Blueprint::owner)
-                         .map(this::collectBlockingSchemaRecords)
-                         .or(List.of());
+            return resolveSliceOwner(ctx.kvStore(),
+                                     sliceKey.artifact()).map(this::collectBlockingSchemaRecords)
+                                    .or(List.of());
         }
 
         private List<SchemaVersionValue> collectBlockingSchemaRecords(BlueprintId owner) {
@@ -2474,7 +2625,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// site's failure needs a targeted WARN instead of `submitBatch`'s generic ERROR.
         private void recordSucceededOutcome(BlueprintId blueprintId) {
             var key = DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId);
-            var value = DeploymentOutcomeValue.succeeded(ctx.nowMs());
+            var value = DeploymentOutcomeValue.succeeded(ctx.nowMs(), nextOutcomeVersion(key));
             var command = List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(key, value));
 
             ctx.cluster()
@@ -2566,7 +2717,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                           String cause) {
             var key = DeploymentOutcomeKey.deploymentOutcomeKey(inflight.id());
             var slices = failingSlices.stream().map(Artifact::asString).toList();
-            var value = DeploymentOutcomeValue.failed(slices, cause, ctx.nowMs());
+            var value = DeploymentOutcomeValue.failed(slices, cause, ctx.nowMs(), nextOutcomeVersion(key));
 
             return new KVCommand.Put<>(key, value);
         }
@@ -2629,7 +2780,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             allSlices.addAll(inflight.activeSlices());
             var key = DeploymentOutcomeKey.deploymentOutcomeKey(inflight.id());
             var slices = allSlices.stream().map(Artifact::asString).toList();
-            var value = DeploymentOutcomeValue.rolledBack(slices, cause, ctx.nowMs());
+            var value = DeploymentOutcomeValue.rolledBack(slices, cause, ctx.nowMs(), nextOutcomeVersion(key));
 
             return new KVCommand.Put<>(key, value);
         }

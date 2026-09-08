@@ -77,8 +77,10 @@ public interface BlueprintService {
     Option<ExpandedBlueprint> get(BlueprintId id);
     /// Durable terminal outcome of `id`'s last deployment attempt (#759 review, BLOCKING 3). Bounded
     /// to exactly one record per blueprint id: the FSM writes via `KVCommand.Put` at
-    /// `AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(id)`, and a Put at the same key overwrites
-    /// the prior value, so the store holds only the latest outcome — cardinality is the number of
+    /// `AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(id)`, and a Put at the same key replaces
+    /// the prior value — subject, since #805 item 2, to the `VersionFenced` successor check, which
+    /// rejects a Put built on a stale read rather than letting it overwrite. The store therefore holds
+    /// only the latest outcome — cardinality is the number of
     /// distinct blueprint ids ever deployed, not the number of attempts. Survives
     /// `unloadBlueprintSlices`'s ALL_OR_NOTHING rollback, which removes only `AppBlueprintKey`, never
     /// this key — the intended read path for the node's blueprint-status route after a rollback
