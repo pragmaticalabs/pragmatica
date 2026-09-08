@@ -101,4 +101,27 @@ class ForwardedHeaderPropagationTest {
         assertThat(writer.headers).containsEntry("X-Aether-Served-By", "node-2");
         assertThat(writer.headers).containsEntry("X-Request-Id", "req-abc");
     }
+
+    /// Framing headers describe the FORWARDED response's body, not the one this server re-writes, so
+    /// copying them would corrupt the wire. No such header reaches this path today — this guards the
+    /// blanket copy against forwarded responses gaining richer headers later, and it is the assertion
+    /// that makes the skip deliberate rather than incidental.
+    @Test
+    void framingHeadersOfTheForwardedResponseAreNotCopied() {
+        var writer = new RecordingWriter();
+        var headers = new LinkedHashMap<String, String>();
+
+        headers.put("Content-Length", "12345");
+        headers.put("Transfer-Encoding", "chunked");
+        headers.put("Connection", "keep-alive");
+        headers.put("X-Aether-Served-By", "node-3");
+
+        ManagementServerImpl.copyForwardedHeaders(forwarded(headers), writer);
+
+        assertThat(writer.headers)
+                .doesNotContainKeys("Content-Length", "Transfer-Encoding", "Connection");
+        assertThat(writer.headers)
+                .describedAs("the skip list must not swallow the stamp it exists to carry")
+                .containsEntry("X-Aether-Served-By", "node-3");
+    }
 }

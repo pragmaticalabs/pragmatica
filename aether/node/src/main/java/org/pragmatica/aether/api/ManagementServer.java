@@ -1082,14 +1082,22 @@ class ManagementServerImpl implements ManagementServer {
     ///
     /// Package-visible so the propagation contract is pinnable without standing up the pipeline.
     static ResponseWriter copyForwardedHeaders(HttpResponseData responseData, ResponseWriter response) {
-        responseData.headers()
-                    .forEach((name, value) -> {
-                                 if (!"Content-Type".equalsIgnoreCase(name)) {
-                                 response.header(name, value);
-                             }
-                             });
+        responseData.headers().forEach((name, value) -> {
+            if (!isReframedHeader(name)) {
+                response.header(name, value);
+            }
+        });
 
         return response;
+    }
+
+    /// Headers that describe the FORWARDED response's own framing rather than its content, and so
+    /// must not be copied onto a response this server re-writes. `Content-Type` is consumed as the
+    /// typed argument to `write`; the rest describe a body length or transfer that no longer applies.
+    /// No such header currently reaches this path -- verified repo-wide -- so this is a guard against
+    /// forwarded responses gaining richer headers later, not a live defect.
+    private static boolean isReframedHeader(String name) {
+        return "Content-Type".equalsIgnoreCase(name) || "Content-Length".equalsIgnoreCase(name) || "Transfer-Encoding".equalsIgnoreCase(name) || "Connection".equalsIgnoreCase(name);
     }
 
     private void sendForwardError(InstrumentedResponseWriter response, String path, String requestId, Cause cause) {
