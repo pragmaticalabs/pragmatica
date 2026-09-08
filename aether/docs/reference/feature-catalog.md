@@ -3,8 +3,14 @@
 Comprehensive inventory of all Aether Unified Application Runtime capabilities.
 
 **Status legend:**
-- **Battle-tested** — Proven through multi-node E2E tests with failure injection (node kills, partitions, leader failovers)
-- **Complete** — Production-ready, tested (unit tests, possibly basic E2E)
+
+The first three form a maturity ladder, ordered by the evidence that earns them. A tier is earned by a
+run, never by an argument — a row moves up only when a run has happened, and moving a row *down* is a
+legitimate and expected outcome of re-grading.
+
+- **Complete** — Implemented and unit-tested; not run in a cluster
+- **Cluster-tested** — Deployed and exercised in a real multi-node cluster (happy path)
+- **Battle-tested** — Cluster-tested, and survives failure injection
 - **Partial** — Core implemented, gaps noted
 - **Planned** — Designed but not yet implemented
 
@@ -370,8 +376,9 @@ capability", not as 227 working capabilities.
 
 | Status | Count |
 |--------|-------|
-| Battle-tested | 23 |
 | Complete | 171 |
+| Cluster-tested | 0 |
+| Battle-tested | 23 |
 | Partial | 24 |
 | Planned | 9 |
 | Total | 227 |
