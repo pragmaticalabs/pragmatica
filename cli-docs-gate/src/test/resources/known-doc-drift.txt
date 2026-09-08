@@ -6,38 +6,56 @@
 #
 #   * a finding that is NOT listed here fails the build, so drift cannot grow;
 #   * a line here that matches NOTHING fails the build, so fixing a document forces its line to be
-#     deleted. The list can only shrink.
+#     deleted;
+#   * the entry COUNT and a DIGEST OF THE ENTRIES are both pinned in CliDocsDriftTest, so this file
+#     cannot be rewritten at constant size either. Swapping one line out for another is the move a
+#     count alone does not catch.
 #
 # Format, tab-separated:  <repository-relative path>  command: <command path that does not exist>
 #                         <repository-relative path>  option: <option> on <command path>
 #
 # Keyed by path and drift, never by line number: line numbers are tree-scoped and shift under any
-# edit above them.
+# edit above them. NOTE the consequence, since it bounds what this count means: one line here covers
+# EVERY instance of that drift in that file, so 85 entries describe more than 85 broken
+# invocations.
 #
 # Regenerate candidate lines with:
 #   mvn -pl cli-docs-gate test    ->  cli-docs-gate/target/cli-docs-gate/drift-keys.txt
 #
-# WHY THESE ARE WAIVED RATHER THAN FIXED, and what fixing them requires.
+# WHAT IS LEFT HERE, AND WHY IT IS NOT A SPELLING PROBLEM.
 #
-# The mechanical drift was fixed in the commit that introduced this gate: `aether blueprint <sub>` ->
-# `aether blueprints <sub>` and `aether artifact push` -> `aether artifacts push`, 20 substitutions,
-# each verified to name a subcommand that exists. What is left is NOT typos, and that is exactly why
-# it is listed rather than guessed at:
+# All mechanical drift is now fixed, in two passes. The first fixed 20 direct-adjacency cases
+# (`aether blueprint deploy` -> `blueprints deploy`, `aether artifact push` -> `artifacts push`). It
+# MISSED ten more that carry an option between the binary and the subcommand
+# (`aether -c "$AETHER_URL" artifact push ...`), because it was driven by a text search for the
+# literal string - in a check whose whole argument is that text searches do not reach what a parse
+# does. The second pass was driven by this gate's own extraction and fixed those ten.
+#
+# What remains is the product overclaiming its own CLI surface:
 #
 #   * `aether scale --min/--max/--target-cpu/--target-latency/--cooldown/--auto` - the shipped
 #     `aether scale` takes `-n/--instances`, `-p/--placement`, `--wait`, `--timeout`. The documented
-#     flags describe AUTOSCALING, which is a feature claim, not a spelling. Deciding whether the docs
-#     or the CLI is wrong is a product call.
-#   * `jbct init --slice` - the shipped option is `--no-slice`, the INVERSE. Rewriting the examples
-#     changes what they tell the reader to do.
-#   * `aether blueprint set`, `aether artifact upload` - unlike their siblings above, `blueprints set`
-#     and `artifacts upload` do not exist either, so there is no mechanical target to rename to.
-#   * The remaining absent commands (`aether aspects`, `aether topic`, `aether forge`, `aether logs`,
-#     `aether cluster audit`, `aether workers health`, `aether nodes decommission`, `jbct add`, ...)
-#     are surfaces the documentation describes and the CLI never grew.
+#     flags describe AUTOSCALING, a feature claim rather than a spelling.
+#   * `jbct init --slice` - the shipped option is `--no-slice`, the INVERSE. A reader who "corrects"
+#     the docs gets the opposite behaviour.
+#   * `aether blueprint set` and `aether artifact upload` - unlike the ten above, `blueprints set` and
+#     `artifacts upload` do not exist either, so there is no mechanical target to rename to.
+#   * `aether stream create` and its siblings in in-memory-streams-spec.md - the CLI ships BOTH an
+#     `aether stream` and an `aether streams` tree with divergent subcommands (#951). That spec is
+#     written against the singular tree throughout; renaming one line to the plural would leave the
+#     document internally inconsistent while four sibling commands remain absent under either tree.
+#     Resolved by #951, deliberately not by this pass.
+#   * The remaining absent commands (`aether aspects`, `topic(s)`, `forge`, `logs`, `workflows`,
+#     `landscape`, `cluster audit/heal/api-key/unregister`, `workers health/endpoints`,
+#     `nodes decommission`, `jbct add`, ...) are surfaces the documentation describes and the CLI
+#     never grew.
+#   * One entry is a false positive of this gate, kept rather than hidden: harness-resilience-spec.md
+#     waives `aether node`, whose source line is prose PROPOSING the command and saying it does not
+#     exist. The gate reads the inline span as an invocation and cannot tell a proposal from an
+#     instruction.
 #
-# Roughly 36 of these lines sit in `aether/docs/specs/**`, which this gate deliberately keeps in
-# scope: a design record for a shipped feature is making a claim about the surface that shipped.
+# Current composition: 85 entries - 29 absent commands, 56 absent options - across
+# 34 files, of which 34 are under aether/docs/specs/**.
 
 
 # --- aether/docs/aether-overview.md ---
@@ -62,7 +80,7 @@ aether/docs/articles/aether-introduction.md	command: aether blueprint
 aether/docs/articles/aether-introduction.md	option: --action on aether thresholds set
 
 # --- aether/docs/getting-started.md ---
-aether/docs/getting-started.md	option: --env on aether artifacts push
+aether/docs/getting-started.md	command: aether artifact
 
 # --- aether/docs/guides/deploy-guide.md ---
 aether/docs/guides/deploy-guide.md	option: --cleanup on aether deploy
@@ -106,8 +124,6 @@ aether/docs/reference/slice-api.md	option: --slice on jbct init
 aether/docs/slice-developers/README.md	option: --slice on jbct init
 
 # --- aether/docs/slice-developers/deployment.md ---
-aether/docs/slice-developers/deployment.md	command: aether artifact
-aether/docs/slice-developers/deployment.md	command: aether blueprint
 aether/docs/slice-developers/deployment.md	option: --slice on jbct init
 
 # --- aether/docs/slice-developers/faq.md ---
@@ -120,9 +136,6 @@ aether/docs/slice-developers/forge-guide.md	option: --slice on jbct init
 
 # --- aether/docs/slice-developers/getting-started.md ---
 aether/docs/slice-developers/getting-started.md	option: --slice on jbct init
-
-# --- aether/docs/slice-developers/migration-guide.md ---
-aether/docs/slice-developers/migration-guide.md	command: aether blueprint
 
 # --- aether/docs/slice-developers/persistence-guide.md ---
 aether/docs/slice-developers/persistence-guide.md	command: jbct add
@@ -190,12 +203,9 @@ aether/docs/specs/unified-deploy-spec.md	option: --stages on aether deploy
 aether/docs/specs/unified-deploy-spec.md	option: --strategy on aether deploy
 
 # --- aether/tests/cloud/docs/cloud-testing-spec.md ---
-aether/tests/cloud/docs/cloud-testing-spec.md	command: aether artifact
-aether/tests/cloud/docs/cloud-testing-spec.md	command: aether blueprint
 aether/tests/cloud/docs/cloud-testing-spec.md	command: aether cluster unregister
 
 # --- aether/tests/integration/README.md ---
-aether/tests/integration/README.md	command: aether blueprint
 aether/tests/integration/README.md	option: --limit on aether events
 
 # --- jbct/slice-processor/docs/HTTP-ROUTE-GENERATION.md ---

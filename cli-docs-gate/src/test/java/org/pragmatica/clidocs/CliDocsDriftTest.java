@@ -42,26 +42,30 @@ class CliDocsDriftTest {
     private static final int MINIMUM_INVOCATIONS = 300;
     private static final int MINIMUM_COMMANDS = 100;
 
-    /// Ratchets. Both lists are allowed to SHRINK and nothing else.
+    /// Ratchets. Both lists are allowed to SHRINK and nothing else, and neither may be REWRITTEN in
+    /// place.
     ///
-    /// Without these, the gate is advisory rather than enforcing: a developer who introduces new drift
-    /// can make the build green by appending one line to a text file, which is precisely the move the
-    /// waiver exists to prevent. With them, silencing a new finding requires EDITING THIS CONSTANT —
-    /// a one-line change in a Java source file, sitting under this comment, that a reviewer sees. The
-    /// point is not that it is impossible; it is that it can no longer happen quietly.
+    /// Two constants per list, because they defend against two different moves and a count alone
+    /// defends against only one:
     ///
-    /// The counts are asserted EXACTLY, not as upper bounds. An upper bound would leave headroom
-    /// behind every fix — five documents repaired would silently license five future waivers. Fixing
-    /// drift therefore costs a second edit, lowering the number here, and that is the intent: the
-    /// number belongs in the diff.
-    private static final int WAIVED_FINDINGS = 91;
+    ///   - the COUNT stops the list growing, and — being a number a human reads — it shows a reviewer
+    ///     the direction of travel: `91` becoming `81` in a diff says "drift was fixed" at a glance,
+    ///     which a digest never can;
+    ///   - the DIGEST stops the list being rewritten at constant size. Delete one entry for a document
+    ///     you fixed and add one for drift you introduced, and the count is unchanged, nothing is
+    ///     stale, nothing is unwaived — the build was green and the new drift was silenced, with no
+    ///     constant edited and nothing for a reviewer to notice. That diff looks like a virtuous
+    ///     commit. It was the one adversarial mutation the size-only version did not survive.
+    ///
+    /// Asserted exactly rather than as bounds, for the reason that also motivates the digest: an upper
+    /// bound leaves headroom behind every fix, so five repaired documents would quietly license five
+    /// future waivers. Changing either list therefore costs an edit here, in the same commit, where it
+    /// is read.
+    private static final int WAIVED_FINDINGS = 85;
+    private static final String WAIVED_FINDINGS_DIGEST = "1b51d4291fbaeee1";
     private static final int BASELINED_COMMANDS = 11;
+    private static final String BASELINED_COMMANDS_DIGEST = "19561c9ce5583edd";
 
-    /// Anchored on the repository root, not on the working directory. Surefire happens to run with
-    /// `${basedir}` as its working directory, but a gate whose corpus and whose waiver are found only
-    /// when the caller stands in the right place reports different results to CI, to a full-reactor
-    /// build and to an IDE. [DocCorpus#repositoryRoot] is derived from this class's own code-source
-    /// location, so all three agree.
     private static final Path MODULE = DocCorpus.repositoryRoot().resolve("cli-docs-gate");
     private static final Path BASELINE = MODULE.resolve("src/test/resources/undocumented-commands.txt");
     private static final Path WAIVER = MODULE.resolve("src/test/resources/known-doc-drift.txt");
@@ -126,17 +130,21 @@ class CliDocsDriftTest {
         assertTrue(scan.fencedBlocksRead() > 0, "No fenced shell blocks were read at all.");
     }
 
-    /// The waiver and the baseline may only shrink.
+    /// The waiver and the baseline may only shrink, and neither may be rewritten in place.
     ///
     /// This is the test that decides whether the gate ENFORCES or merely ADVISES. Every other check
-    /// here can be satisfied by appending a line to a text file; this one cannot.
+    /// here can be satisfied by editing a text file; this one cannot.
     @Test
     void waiverAndBaseline_canOnlyShrink() {
-        assertCeiling(readKeyList(WAIVER).size(), WAIVED_FINDINGS, "WAIVED_FINDINGS", DocCorpus.relative(WAIVER));
-        assertCeiling(readBaseline().size(), BASELINED_COMMANDS, "BASELINED_COMMANDS", DocCorpus.relative(BASELINE));
+        assertRatchet(readKeyList(WAIVER), WAIVED_FINDINGS, WAIVED_FINDINGS_DIGEST,
+                      "WAIVED_FINDINGS", DocCorpus.relative(WAIVER));
+        assertRatchet(readBaseline(), BASELINED_COMMANDS, BASELINED_COMMANDS_DIGEST,
+                      "BASELINED_COMMANDS", DocCorpus.relative(BASELINE));
     }
 
-    private static void assertCeiling(int actual, int allowed, String constant, String file) {
+    private static void assertRatchet(Set<String> entries, int allowed, String digest, String constant, String file) {
+        var actual = entries.size();
+
         if (actual > allowed) {
             fail(file + " holds " + actual + " entries but only " + allowed + " are allowed (" + constant
                  + " in CliDocsDriftTest).\n\nA line was ADDED to this list. That is how a drift gate turns "
@@ -149,6 +157,38 @@ class CliDocsDriftTest {
             fail(file + " holds " + actual + " entries and " + constant + " is still " + allowed
                  + ". Drift was fixed — thank you — now lower " + constant + " to " + actual
                  + " so the headroom is not left behind for a future waiver to fill silently.");
+        }
+
+        var actualDigest = digestOf(entries);
+
+        if (!actualDigest.equals(digest)) {
+            fail(file + " still holds " + actual + " entries, but they are NOT THE SAME ENTRIES.\n\n"
+                 + "  expected " + constant + "_DIGEST = " + digest + "\n"
+                 + "  actual                          = " + actualDigest + "\n\n"
+                 + "An entry was REPLACED. At constant size this is invisible to every other check here: "
+                 + "nothing is unwaived, nothing is stale, and the count is unchanged — which is exactly how "
+                 + "newly-introduced drift would be silenced while the diff reads like a document being "
+                 + "fixed. Look at the diff of this file. If the substitution is genuinely correct, update "
+                 + constant + "_DIGEST in the same commit.");
+        }
+    }
+
+    /// SHA-256 over the sorted entries, one per line. Truncated to 16 hex characters: enough that no
+    /// accidental edit collides, short enough to read in a diff.
+    private static String digestOf(Set<String> entries) {
+        try {
+            var sha = java.security.MessageDigest.getInstance("SHA-256");
+            var joined = new TreeSet<>(entries).stream().collect(java.util.stream.Collectors.joining("\n"));
+            var bytes = sha.digest(joined.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            var hex = new StringBuilder();
+
+            for (var index = 0; index < 8; index++) {
+                hex.append(String.format("%02x", bytes[index]));
+            }
+
+            return hex.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is required by every Java platform", e);
         }
     }
 
