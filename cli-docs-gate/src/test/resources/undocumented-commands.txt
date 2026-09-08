@@ -1,0 +1,31 @@
+# cli-docs-gate - baseline of shipped commands that no documentation mentions.
+#
+# Direction B of the drift check ("a shipped surface nobody can find") is gated against this list
+# rather than against zero, because the gap predates the gate and absorbing it into the same change
+# would have produced an unreviewable diff.
+#
+# THIS LIST IS SELF-CLEANING AND CAN ONLY SHRINK. CliDocsDriftTest fails if an entry here has since
+# been documented (delete it), and fails if an entry is no longer a real command (delete it). A new
+# undocumented command is never silently added - the gate fails and someone decides.
+#
+# One canonical command path per line, exactly as the CLI defines it.
+#
+# `aether generate-completion` is worth singling out: it is picocli's own built-in subcommand,
+# registered by class reference, and its name appears nowhere in this repository's source. No textual
+# scrape of `@Command` annotations could have found it. It is here because the gate walks the real
+# CommandSpec tree.
+#
+# Regenerate candidates with:
+#   mvn -pl cli-docs-gate test  ->  cli-docs-gate/target/cli-docs-gate/undocumented-commands-candidates.txt
+
+aether cluster create-key
+aether generate-completion
+aether nodes inflight
+aether nodes metrics
+jbct add-persistence
+jbct check-sheet
+jbct fix-slice
+jbct migrate
+jbct obligations
+jbct shape-census
+jbct update
