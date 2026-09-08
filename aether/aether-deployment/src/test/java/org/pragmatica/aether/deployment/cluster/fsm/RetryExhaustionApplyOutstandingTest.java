@@ -466,7 +466,7 @@ class RetryExhaustionApplyOutstandingTest {
                 .doesNotContain(SLICE);
     }
 
-    /// #924 round-5 BLOCKING, variant A — RED BY DESIGN. Documents the open defect; it is not a
+    /// #963 (#924 round-5 BLOCKING), variant A — RED BY DESIGN. Documents the open defect; it is not a
     /// passing pin and must not be read as one.
     ///
     /// **The apply genuinely COMPLETES and no record is ever written.** Nothing is seeded: the
@@ -483,7 +483,7 @@ class RetryExhaustionApplyOutstandingTest {
     /// not), so a present-tense health veto would rescue it. Variant B is the same defect where such
     /// a veto cannot vote.
     @Test
-    @Disabled("#922 — round-5 BLOCKING: currently FAILS. The assertion below is written as it will "
+    @Disabled("#963 — round-5 BLOCKING: currently FAILS. The assertion below is written as it will "
             + "read when correct (not condemned); it is not an inversion to undo later. Enable it with "
             + "the absence-gating redesign — it is that redesign's acceptance test.")
     void anApplyCompletedUnderANewLeader_writesNoRecord_andMustNotCondemnAHealthyWorkload() {
@@ -517,7 +517,7 @@ class RetryExhaustionApplyOutstandingTest {
                 .doesNotContain(SLICE);
     }
 
-    /// #924 round-5 BLOCKING, variant B — RED BY DESIGN, and the one that discriminates.
+    /// #963 (#924 round-5 BLOCKING), variant B — RED BY DESIGN, and the one that discriminates.
     ///
     /// Identical to variant A except that the transient reaches EVERY instance before the budget is
     /// spent, which is what a shared downstream dependency does by construction.
@@ -528,7 +528,7 @@ class RetryExhaustionApplyOutstandingTest {
     /// own BLOCKING shape, and it cannot vote here. Any fix whose safety rests on an instance being
     /// ACTIVE at decision time leaves this case condemning.
     @Test
-    @Disabled("#922 — round-5 BLOCKING: currently FAILS. The assertion below is written as it will "
+    @Disabled("#963 — round-5 BLOCKING: currently FAILS. The assertion below is written as it will "
             + "read when correct (not condemned); it is not an inversion to undo later. Enable it with "
             + "the absence-gating redesign — it is that redesign's acceptance test.")
     void anApplyCompletedUnderANewLeader_withASharedTransientOnEveryInstance_mustNotCondemn() {
