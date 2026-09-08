@@ -42,21 +42,39 @@
   [mechanism: `AlertForwarder.appendNodeHealthFields` renders `"type":"NODE_FAILED"` with `nodeId`,
   `observedBy` and `reason` **if and when** a forwarder is ever constructed — not a claim that anything
   is delivered today]
-- **A graceful departure raises no alert — so a rolling restart stays quiet.** The DEAD edge cannot
-  tell an announced departure from a crash: a graceful `SwimDeparted` (normal shutdown, i.e. every node
-  of every rolling restart) and an operator drain both reach DEAD through the same `Stopped` transition
-  a failure does. `AlertManager.noteMembershipTransition` is fed the FSM transition *cause* and marks
-  announced departures, which `onNodeFailed` then consumes. Without it this new surface would fire
-  CRITICAL on routine planned operations, and an alert operators mute is the same end state as the
-  silence #926 exists to fix, reached from the other side.
+- **An operator drain raises no alert; everything else still does.** `AlertManager.noteMembershipTransition`
+  is fed the FSM transition *cause* and marks `DrainRequested` — the operator/controller drain command,
+  the one cause nothing in SWIM's failure detection raises. `onNodeFailed` consumes the mark.
+  **`SwimDeparted` is deliberately NOT treated as graceful, and briefly was — a blocking regression
+  caught in review.** `MembershipFsm.onSwimDeparted`'s docstring calls it a graceful departure, but its
+  producer contradicts that: `SwimProtocol.emitFaultyEdgePair` delivers `FaultyObserved` and
+  `DepartedObserved` **as a pair at the FAULTY edge**, because "FAULTY IS confirmed death (canonical
+  SWIM) … The death broadcast therefore fires AT the FAULTY edge" — deliberately, to cut `NODE_FAILED`
+  latency inside the 60s SLO. `DepartedObserved` routes to `onSwimDeparted` (`AetherNode:4968`), which
+  dispatches `SwimDeparted`. **It is SWIM's death broadcast and the primary crash path**: while it was
+  in the graceful set, `kill -9` raised no CRITICAL alert at all. A comment was trusted over the code
+  that raises the event.
+  **Consequence, stated rather than smoothed over:** a non-operator-driven graceful shutdown is
+  indistinguishable from a crash at this layer, so a rolling restart still raises CRITICAL per surviving
+  observer. **That noise is the accepted trade — noisy beats silent on a failure-detection surface**,
+  which is the same one-directional bias below. Quieting it needs a signal SWIM does not carry (a drain
+  registry or an explicit shutdown announcement) and is deferred, not solved.
   **The bias is one-directional and deliberate: an UNMARKED departure always alerts**, so a mark that
   is missed or dropped costs a spurious CRITICAL and never a silent one — suppressing a real failure
-  would re-create the defect this ticket removes. The mark is consumed on read, so a node that departs
-  gracefully, rejoins and later crashes still alerts on the crash.
-  [verified: `AlertManagerNodeHealthTest#announcedDeparture_raisesNoAlert`, `#operatorDrain_raisesNoAlert`,
-  `#abruptDeparture_stillRaisesCriticalAlert`, `#unmarkedDeparture_alerts_soAMissedMarkIsNeverSilent`,
-  `#gracefulMarkIsConsumed_soALaterCrashStillAlerts`; ordering is guaranteed by `MembershipFsm` queueing
-  the transition emission before the confirmed-departure emission in the same `emissions` list]
+  re-creates the defect this ticket removes, which is exactly what the `SwimDeparted` regression did.
+  The mark is consumed on read, so a node that drains, rejoins and later crashes still alerts.
+  [verified: `AlertManagerNodeHealthTest#swimDeparted_stillAlerts_becauseItIsSwimsDeathBroadcast` (the
+  regression pin), `#operatorDrain_raisesNoAlert`, `#abruptDeparture_stillRaisesCriticalAlert`,
+  `#unmarkedDeparture_alerts_soAMissedMarkIsNeverSilent`,
+  `#gracefulMarkIsConsumed_soALaterCrashStillAlerts`]
+  [mechanism: ordering holds because `MemberTracking.dispatch` runs
+  `synchronized (transitionGuard) { applyEvent(event).forEach(Runnable::run) }` — every dispatch for a
+  member is serialised on that guard and runs its staged fan-out synchronously before returning, so an
+  earlier dispatch's transition record precedes a later dispatch's DEAD hooks. **An earlier draft
+  claimed they share one `emissions` list; they do not** — they are separate dispatches with separate
+  lists, and the guard is what actually orders them]
+  [unverified: the rolling-restart noise this leaves behind is reasoned, not measured — no run
+  quantifies how many spurious CRITICALs a restart produces]
 - **The active-alert map is bounded, because the id-exact clear cannot resolve a replaced node.** CTM
   auto-heal mints a *fresh random id* for a replacement rather than reusing the departed one, so
   `clearNodeHealthAlert` — keyed on the rejoining id — can never match it. Under sustained replacement
