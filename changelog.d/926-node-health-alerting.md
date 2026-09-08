@@ -75,6 +75,12 @@
   lists, and the guard is what actually orders them]
   [unverified: the rolling-restart noise this leaves behind is reasoned, not measured — no run
   quantifies how many spurious CRITICALs a restart produces]
+  [verified: multi-node re-run on the internal test host at this head after the regression was fixed —
+  `docker kill` of the leader plus one produced **2 CRITICAL alert lines, 0 graceful-skip lines, and 2
+  `node_health` entries on `/api/v1/alerts`** on a survivor that was never the leader, both deaths
+  arriving via the SWIM faulty path that the regression had been suppressing. This restores the
+  measurement the earlier bullet reports; while `SwimDeparted` sat in the graceful set the same
+  scenario would have produced 0 CRITICAL]
 - **The active-alert map is bounded, because the id-exact clear cannot resolve a replaced node.** CTM
   auto-heal mints a *fresh random id* for a replacement rather than reusing the departed one, so
   `clearNodeHealthAlert` — keyed on the rejoining id — can never match it. Under sustained replacement
