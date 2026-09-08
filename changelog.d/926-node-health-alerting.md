@@ -40,3 +40,9 @@
   the compiler refuses any future variant that forgets this path]
 - All production hunks above were mutation-probed: each was reverted alone, its named test confirmed
   red, and the file restored.
+- **Confirmed firing on a real cluster.** On a 3-node cluster with the leader killed, the surviving
+  node — never the leader, and at 1-of-3 unable to become one — logged
+  `ERROR o.p.a.a.AlertManager.onNodeFailed() - CRITICAL: node n926-1 confirmed failed (observed by
+  n926-3) — cluster membership degraded`, twice, once per confirmed departure. The alert path is
+  reached with no leader and no quorum, which is the whole point of raising it from the ungated DEAD
+  edge. [verified: multi-node run with failure injection on the internal test host]

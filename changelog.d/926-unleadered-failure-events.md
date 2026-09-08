@@ -63,9 +63,44 @@
   `ANY_REPLICA` router forwards to a randomly chosen CAUGHT_UP peer and propagates the failure with no
   local fallback, so with dead peers still registered CAUGHT_UP the read can fail while the event sits
   in the local ring. That is in `aether-stream`, outside this fix's boundary, and is filed separately.
-  [design intent — unverified: the end-to-end multi-node behaviour under a genuine sustained no-leader
-  condition has NOT been reproduced on a cluster; the evidence above is the original incident's, and
-  every claim tagged `verified` here is a single-JVM exercise of the real publisher, codec and
-  partition manager — not a multi-node run with failure injection]
+  [verified: multi-node, on a real 3-node cluster with failure injection and a reverted control —
+  see the A/B below. This claim was tagged `design intent — unverified` until that run; it is upgraded
+  on evidence, not on confidence]
+- **Verified on a real cluster, against a reverted control.** Three nodes on the internal test host;
+  the leader and one other node killed with `docker kill`, leaving a survivor that was **never** the
+  leader and, at 1-of-3, cannot become one. The no-leader condition is the system's own report, not an
+  inference: the survivor logs `SWIM member faulty: NodeId[id=...] (currentLeader=None(), ...)` at the
+  moment it confirms each death, and its leader-bound management routes answer
+  `No leader elected for leader-bound management route` for the whole window.
+
+  | measured on the survivor's own `/api/v1/events` | fixed | reverted control |
+  |---|---|---|
+  | `NODE_FAILED` | **2** | **0** |
+  | `LEADER_LOST` | **1** | **0** |
+  | `QUORUM_LOST` | **1** | **0** |
+  | events stamped `observedBy` = survivor | **5** | **0** |
+  | cluster-events partition watermark | **10** | **2** |
+  | successful stream reads during the window | 26/30 | **30/30** |
+  | `WARN` log lines from the same hooks | 2 / 1 / 1 | **2 / 1 / 1** |
+
+  The control reverts **only** the four emit calls, leaving the log statements in place — so the WARN
+  counts are identical in both arms, proving the hooks executed identically and the sole difference is
+  the gate. The control's **30/30 successful reads** rule out the alternative explanation that the
+  events were present but unreadable: the endpoint answered every time and the events were simply not
+  there. The partition watermark (10 vs 2) corroborates that independently of HTTP.
+- **The recovery half, measured the same way.** On a healthy quorate cluster the fixed build carries
+  **three** `QUORUM_ESTABLISHED` events — one from each node, `observedBy` = n926-1, n926-2, n926-3 —
+  while the reverted control carries **zero**, *including from the leader*. That confirms from
+  measurement what the code reading predicted: quorum forms before a leader is elected, so the gate was
+  false on every node at that instant and the cluster could never report quorum recovery at all.
+  `LEADER_ELECTED` is present in both arms, as it should be — it stays leader-gated.
+- **A limit of this scenario, stated because it bounds the evidence:** a sub-quorum survivor
+  deliberately self-fences (`QUORUM_LOSS drain INTENT ... initiating self-drain (split-brain
+  self-fence)`) about 18 seconds after quorum loss, so the window in which its HTTP surface can be read
+  at all is short, and a first attempt that polled later than that saw nothing because the node had
+  exited — not because the events were missing. The measurements above were taken inside the window.
+  A cluster that keeps quorum but cannot elect a stable leader — the ten-day incident's actual shape —
+  was not reproduced; that state cannot be induced by killing nodes.
+
 - All production hunks above were mutation-probed: each was reverted alone, its named test confirmed
   red, and the file restored.
