@@ -1799,13 +1799,31 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// A `registerOnly` blueprint is stored but never deployed, so it is never outstanding —
         /// otherwise it would look permanently mid-apply and condemn any slice that exhausted.
         private boolean deploymentApplyOutstanding(Artifact artifact) {
-            return owningBlueprintOf(artifact).filter(blueprintId -> ctx.kvStore()
-                                                                        .get(DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId))
-                                                                        .isEmpty())
-                                    .isPresent();
+            var declaring = declaringBlueprints(artifact);
+
+            return ! declaring.isEmpty() && declaring.stream()
+                                                     .allMatch(this::applyNotYetTerminal);
         }
 
-        /// Attribution from an artifact to the blueprint that declares it, read from the durable
+        /// `allMatch`, NOT `anyMatch`, and the difference decides a one-way door.
+        ///
+        /// An artifact can be declared by more than one blueprint. [#hasConflictingOwnership] rejects
+        /// a blueprint whose artifact is already owned by one with a DIFFERENT base, but blueprints
+        /// sharing a base and differing only in version are exactly the upgrade path, and a slice
+        /// unchanged across the upgrade appears in both. If one of those has already succeeded and
+        /// the other is mid-apply, the artifact is a workload that was up, so the succeeded
+        /// blueprint must be able to veto the settle. Requiring EVERY declaring blueprint to be
+        /// non-terminal gives it that veto; `anyMatch` — or picking one of them arbitrarily, which
+        /// is what the first version of this code did with `getFirst()` over a `HashMap` scan — lets
+        /// the in-flight one condemn a slice the succeeded one is still running, and does it
+        /// nondeterministically.
+        private boolean applyNotYetTerminal(BlueprintId blueprintId) {
+            return ctx.kvStore()
+                      .get(DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId))
+                      .isEmpty();
+        }
+
+        /// Attribution from an artifact to EVERY blueprint that declares it, read from the durable
         /// `AppBlueprintValue` rather than from `SliceTargetValue.owningBlueprint`.
         ///
         /// This is deliberate and it is the fix for #924 round 4's BLOCKING. The `owner` pointer is
@@ -1819,7 +1837,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// Matched on the full `Artifact` including version, not on `ArtifactBase`. A running v1
         /// must not attribute a v2 that never came up to v1's completed apply — that is #922's own
         /// case (a coordinate that does not resolve) reopened through the guard meant to bound it.
-        private Option<BlueprintId> owningBlueprintOf(Artifact artifact) {
+        private List<BlueprintId> declaringBlueprints(Artifact artifact) {
             var owners = new ArrayList<BlueprintId>();
 
             ctx.kvStore()
@@ -1827,9 +1845,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                         AppBlueprintValue.class,
                         (key, value) -> collectIfDeclaringSlice(artifact, key, value, owners));
 
-            return owners.isEmpty()
-                   ? Option.none()
-                   : Option.some(owners.getFirst());
+            return owners;
         }
 
         private static void collectIfDeclaringSlice(Artifact artifact,

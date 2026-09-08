@@ -388,6 +388,42 @@ class RetryExhaustionApplyOutstandingTest {
                 .isNotEqualTo(NO_OUTCOME);
     }
 
+    /// Multiple declaration, which `hasConflictingOwnership` permits: it rejects a blueprint whose
+    /// artifact is owned by one with a DIFFERENT base, but two blueprints sharing a base and
+    /// differing only in version are the upgrade path, and a slice unchanged across the upgrade is
+    /// declared by both.
+    ///
+    /// The older blueprint has SUCCEEDED and the newer one is mid-apply. The slice is a workload
+    /// that IS up, so it must not be condemned — the succeeded blueprint has to be able to veto.
+    /// The first version of this code picked one declaring blueprint arbitrarily
+    /// (`owners.getFirst()` over a `HashMap` scan), so this case condemned or did not depending on
+    /// iteration order. Requiring EVERY declaring blueprint to be non-terminal removes both the
+    /// nondeterminism and the one-way door.
+    @Test
+    void aSliceDeclaredByBothASucceededAndAnInFlightBlueprint_isNotCondemned() {
+        var succeeded = blueprint();
+        var upgrading = sameBaseUpgradeBlueprintAlsoDeclaring(SLICE);
+        var newLeaderStore = freshStore();
+        var newLeaderHarness = leaderHarness(new RecordingClusterNode(SELF, newLeaderStore),
+                                             newLeaderStore,
+                                             RESOLVED_MEMBERSHIP);
+
+        seed(newLeaderStore,
+             new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(succeeded.id()),
+                                 AppBlueprintValue.appBlueprintValue(succeeded)),
+             new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(succeeded.id()),
+                                 DeploymentOutcomeValue.succeeded(1L)),
+             new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(upgrading.id()),
+                                 AppBlueprintValue.appBlueprintValue(upgrading)));
+
+        exhaustRetryBudgetOn(newLeaderHarness, SELF, SLICE);
+
+        assertThat(activeState(newLeaderHarness).permanentlyFailed())
+                .as("a blueprint that already applied must be able to veto the settle for a slice it "
+                    + "declares, whatever a concurrently-applying blueprint says about the same slice")
+                .doesNotContain(SLICE);
+    }
+
     private static ClusterDeploymentState.Active activeState(FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness) {
         return (ClusterDeploymentState.Active) harness.state();
     }
@@ -456,6 +492,16 @@ class RetryExhaustionApplyOutstandingTest {
         var sliceB = ResolvedSlice.resolvedSlice(SLICE_B, 2, false).unwrap();
 
         return ExpandedBlueprint.expandedBlueprint(id, List.of(sliceA, sliceB));
+    }
+
+    /// A same-BASE, later-version blueprint that also declares `artifact` — what an upgrade looks
+    /// like for a slice that did not change. `hasConflictingOwnership` permits this precisely
+    /// because the bases match.
+    private static ExpandedBlueprint sameBaseUpgradeBlueprintAlsoDeclaring(Artifact artifact) {
+        var id = BlueprintId.blueprintId("com.example:app:1.1.0").unwrap();
+        var slice = ResolvedSlice.resolvedSlice(artifact, 3, false).unwrap();
+
+        return ExpandedBlueprint.expandedBlueprint(id, List.of(slice));
     }
 
     private static ExpandedBlueprint versionTwoBlueprint() {
