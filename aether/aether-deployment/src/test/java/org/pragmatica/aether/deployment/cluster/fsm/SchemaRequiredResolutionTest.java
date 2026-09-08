@@ -100,8 +100,19 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// `[verified: aether-control ControlLoopOwnerPreservationTest — nested ProducerPreservesOwner for
 /// the producer half, and OwnerSurvivesLeaderRestore for the restore half, which feeds the value the
 /// autoscaler actually emits into a real ClusterDeploymentContext; aether-invoke
-/// SliceTargetOverridePreservationTest]`. There is no separate test in aether/node; the restore
-/// coverage lives in the nested class named above.
+/// SliceTargetOverridePreservationTest — nested AbTestPromotePreservesOverrides]`.
+///
+/// Both halves name their nested class deliberately. `SliceTargetOverridePreservationTest`'s other
+/// nested class, `DeploymentUpdatePreservesOverrides`, exercises `DeploymentManagerImpl` rather than
+/// `AbTestManager`, so a reader checking "does this cover the A/B producer?" could otherwise land on
+/// the half that does not support the sentence. There is likewise no separate test in `aether/node`;
+/// the restore coverage lives in the nested class named above.
+///
+/// Each of the three nested classes named here was mutation-probed rather than merely resolved: the
+/// producer and restore halves redden when `owningBlueprint()` is replaced by `none()` in
+/// `ControlLoopContext.applyScaling` or at the `ControlLoop.onSliceTargetPut` feeder, and
+/// `AbTestPromotePreservesOverrides` reddens when it is replaced in
+/// `AbTestManager.targetPreservingOverrides`.
 ///
 /// The consumer-side resolution this class pins is therefore **not** obsoleted by #698 and must
 /// not be removed as a redundant workaround: `SliceTargetValue` carries no `schemaRequired` field,
