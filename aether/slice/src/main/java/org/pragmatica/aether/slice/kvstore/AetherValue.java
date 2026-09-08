@@ -256,6 +256,17 @@ public sealed interface AetherValue {
                                   List<String> failingSlices,
                                   String cause,
                                   long timestampMs) implements AetherValue {
+        /// #963 — written by `BlueprintService` in the SAME consensus batch as the blueprint's own
+        /// `AppBlueprintKey` Put, replacing the bare `Remove` that used to clear a stale terminal.
+        /// It clears the stale record exactly as the `Remove` did AND records that this attempt
+        /// started, so "no terminal yet" becomes a positive fact instead of an absence.
+        ///
+        /// `startedAtMs` is the apply's start, not a terminal's timestamp — it is what any
+        /// deadline-based abandonment must measure from.
+        public static DeploymentOutcomeValue inProgress(long startedAtMs) {
+            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.IN_PROGRESS, List.of(), "", startedAtMs);
+        }
+
         public static DeploymentOutcomeValue succeeded(long timestampMs) {
             return new DeploymentOutcomeValue(DeploymentOutcomeStatus.SUCCEEDED, List.of(), "", timestampMs);
         }
@@ -297,7 +308,23 @@ public sealed interface AetherValue {
     enum DeploymentOutcomeStatus {
         SUCCEEDED,
         FAILED,
-        ROLLED_BACK
+        ROLLED_BACK,
+        /// #963 — the apply has STARTED and has not reached a terminal.
+        ///
+        /// Appended deliberately: the generated enum codec is
+        /// `writeCompact(buf, value.ordinal())` / `values()[readCompact(buf)]`, so a constant added
+        /// anywhere but the end silently remaps every existing value. Appending is the only safe
+        /// position, and even then a node that predates this constant drops any message carrying it
+        /// (#964 — pre-GA that is accepted; post-GA the discipline is add-only).
+        ///
+        /// This is the record that makes deployment permanence gate on PRESENCE rather than absence.
+        /// The paragraph above on this class already warned that an absent key "means 'no attempt
+        /// reached a terminal write,' which is indistinguishable, from this record alone, from 'no
+        /// attempt was ever made.'" Five rounds of #924 each condemned a deployment on that
+        /// indistinguishable absence. Written at apply START, where the writer is guaranteed to run
+        /// and lands atomically with the `AppBlueprintKey` Put, rather than at completion, where it
+        /// may never run at all.
+        IN_PROGRESS
     }
 
     record SliceNodeValue(SliceState state, Option<String> failureReason, boolean fatal, long transitionedAt) implements AetherValue {

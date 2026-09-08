@@ -74,6 +74,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
@@ -1564,6 +1565,63 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             retryCounters.remove(sliceKey.asString());
             activateDependentSlices(sliceKey.artifact());
             trackBlueprintSliceActive(sliceKey.artifact());
+            recordApplyCompletionFromDurableState(sliceKey.artifact());
+        }
+
+        /// #963 — the repair that makes PRESENCE-gating correct, and the reason the two loss windows
+        /// close without the producer ever having been reliable.
+        ///
+        /// [#trackBlueprintSliceActive] is the ONLY route to [#recordSucceededOutcome], and it
+        /// iterates `inFlightBlueprints`, which [ClusterDeploymentContext#newActive] builds EMPTY and
+        /// only the live `handleAppBlueprintChange` path ever fills. So a blueprint whose slices reach
+        /// ACTIVE under a leader that did not start the apply never got its SUCCEEDED record — not
+        /// late, never. Separately, [#handleSucceededOutcomeWriteFailure] states that a failed write
+        /// "will NOT be retried". Either way the record is absent while the apply has in fact
+        /// completed, and until #963 that absence was read as "outstanding" and condemned a healthy
+        /// workload.
+        ///
+        /// This runs off DURABLE state only — the blueprint's own `loadOrder` and the slice states
+        /// rebuilt from `NodeArtifactKey` entries — so it works on any leader regardless of what its
+        /// in-memory maps contain, and it is idempotent: a lost write is simply re-attempted the next
+        /// time any slice of that blueprint reports ACTIVE.
+        ///
+        /// It repairs the state the verdict READS rather than guarding the verdict. A guard has to
+        /// win a race against a wrong inference on every path; a repair makes the inference right.
+        private void recordApplyCompletionFromDurableState(Artifact artifact) {
+            declaringBlueprints(artifact).stream()
+                               .filter(this::applyNotYetTerminal)
+                               .filter(this::everyDeclaredSliceActive)
+                               .forEach(this::recordSucceededOutcome);
+        }
+
+        /// Completeness of the APPLY, read from durable state: every artifact the blueprint declares
+        /// has at least one instance ACTIVE on a live core node.
+        ///
+        /// Deliberately NOT "is this artifact ACTIVE right now" — that is the present-tense question
+        /// #924 round 2 refuted, which cannot vote once a shared transient has reached every instance
+        /// and can never vote for a slice with `instances = 1`. This asks whether the apply
+        /// COMPLETED, which is a different question and is the one `ALL_OR_NOTHING` is about.
+        private boolean everyDeclaredSliceActive(BlueprintId blueprintId) {
+            return ctx.kvStore()
+                      .get(AppBlueprintKey.appBlueprintKey(blueprintId))
+                      .filter(value -> value instanceof AppBlueprintValue)
+                      .map(value -> ((AppBlueprintValue) value).blueprint())
+                      .map(expanded -> expanded.loadOrder()
+                                               .stream()
+                                               .allMatch(slice -> hasActiveInstance(slice.artifact())))
+                      .or(false);
+        }
+
+        private boolean hasActiveInstance(Artifact artifact) {
+            var liveNodes = activeNodes();
+
+            return sliceStates.entrySet()
+                              .stream()
+                              .filter(entry -> entry.getKey()
+                                                    .artifact()
+                                                    .equals(artifact))
+                              .filter(entry -> liveNodes.contains(entry.getKey().nodeId()))
+                              .anyMatch(entry -> entry.getValue() == SliceState.ACTIVE);
         }
 
         private void handleSliceFailure(SliceNodeKey sliceKey, SliceNodeValue sliceNodeValue) {
@@ -1818,9 +1876,17 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// the in-flight one condemn a slice the succeeded one is still running, and does it
         /// nondeterministically.
         private boolean applyNotYetTerminal(BlueprintId blueprintId) {
+            return outcomeStatusOf(blueprintId).filter(status -> status == DeploymentOutcomeStatus.IN_PROGRESS)
+                                  .isPresent();
+        }
+
+        /// #963 — the inversion. Reads the status only when a record is PRESENT; an absent record
+        /// yields `Option.none()` and every caller treats that as "do not condemn".
+        private Option<DeploymentOutcomeStatus> outcomeStatusOf(BlueprintId blueprintId) {
             return ctx.kvStore()
                       .get(DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId))
-                      .isEmpty();
+                      .filter(value -> value instanceof DeploymentOutcomeValue)
+                      .map(value -> ((DeploymentOutcomeValue) value).status());
         }
 
         /// Attribution from an artifact to EVERY blueprint that declares it, read from the durable

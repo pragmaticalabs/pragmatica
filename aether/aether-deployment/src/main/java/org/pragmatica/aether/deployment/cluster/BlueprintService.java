@@ -429,7 +429,11 @@ class BlueprintServiceInstance implements BlueprintService {
         // for `DeploymentOutcomeKey` changes (unlike `AppBlueprintKey`'s `handleAppBlueprintChange`/
         // `handleAppBlueprintRemoval`), so this Remove's position in the batch relative to the Put
         // above is NOT load-bearing — nothing subscribes to either notification.
-        commands.add(new Remove<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id())));
+        // #963: was a bare Remove. A Put of IN_PROGRESS clears the stale terminal exactly as the
+        // Remove did AND records that THIS attempt started, so "no terminal yet" is a positive fact
+        // rather than an absence. Absence was what five rounds of #924 condemned deployments on.
+        commands.add(new Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                               AetherValue.DeploymentOutcomeValue.inProgress(System.currentTimeMillis())));
         // Slice META-INF/resources.toml is intentionally NOT published to KV — it is local to
         // each node and applied via the per-slice intrinsic config layer at slice load
         // (see SliceStore.loadSlice). The resourcesConfig parameter is kept here because the
@@ -605,9 +609,12 @@ class BlueprintServiceInstance implements BlueprintService {
         // the new attempt's own terminal write. Bundled into the SAME batch as the Put for the same
         // reason as buildAllCommands's Remove: no FSM event is wired to DeploymentOutcomeKey, so
         // position within the batch is not load-bearing.
-        var outcomeClear = new Remove<AetherKey>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()));
+        // #963: same substitution as buildAllCommands — the stale terminal is replaced by a positive
+        // IN_PROGRESS marking this attempt's start, in the SAME batch as the blueprint Put.
+        KVCommand<AetherKey> outcomeStart = new Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                                      AetherValue.DeploymentOutcomeValue.inProgress(System.currentTimeMillis()));
 
-        return cluster.apply(List.of(command, outcomeClear))
+        return cluster.apply(List.of(command, outcomeStart))
                       .map(_ -> expanded);
     }
 
