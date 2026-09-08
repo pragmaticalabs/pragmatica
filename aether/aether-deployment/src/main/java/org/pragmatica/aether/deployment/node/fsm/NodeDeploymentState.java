@@ -139,10 +139,13 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private static final Fn1<Cause, SliceNodeKey> UNLOAD_FAILED = Causes.forOneValue("Failed to unload slice %s");
 
         /// #916: typed `Intermittent`, NOT a plain `Causes.forOneValue`. Untyped it fell through
-        /// `SliceLoadingFailure.classify`'s permanent catch-all, so an ACTIVATE that merely crossed
-        /// an in-flight unload of the same artifact was reported `fatal`, and the leader rolled the
-        /// blueprint back under `ALL_OR_NOTHING`. Non-fatal routes it to the cluster's existing
-        /// bounded retry (`ClusterDeploymentState.Active.handleTransientFailure`, 5 attempts).
+        /// what was then `SliceLoadingFailure.classify`'s permanent catch-all, so an ACTIVATE that
+        /// merely crossed an in-flight unload of the same artifact was reported `fatal`, and the
+        /// leader rolled the blueprint back under `ALL_OR_NOTHING`. Non-fatal routes it to the
+        /// cluster's existing bounded retry (`ClusterDeploymentState.Active.handleTransientFailure`,
+        /// 5 attempts). #930 removed that catch-all — [#handleSliceNotFoundForActivation] now
+        /// declares `Unrecognised.RETRY` — but typing the cause here still matters, because it makes
+        /// the classification a property of the cause rather than of whichever site raises it.
         private static final Fn1<Cause, String> SLICE_NOT_FOUND_FOR_ACTIVATION = artifact -> SliceNotInStore.sliceNotInStore(artifact,
                                                                                                                              "activation");
 
@@ -1790,7 +1793,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// here carries a `fatal` flag across consensus to the cluster leader, which branches a
         /// blueprint rollback on it, so the disposition is an input to this operation rather than
         /// something read off the cause's Java type on arrival.
-        private Promise<SliceNodeKey> transitionToFailed(SliceNodeKey sliceKey, Cause cause, Unrecognised unrecognised) {
+        private Promise<SliceNodeKey> transitionToFailed(SliceNodeKey sliceKey,
+                                                         Cause cause,
+                                                         Unrecognised unrecognised) {
             return transitionToFailedWithRetry(sliceKey, cause, unrecognised, 0);
         }
 
@@ -1798,13 +1803,11 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                   Cause originalCause,
                                                                   Unrecognised unrecognised,
                                                                   int attempt) {
-            return updateSliceState(sliceKey,
-                                    SliceNodeValue.failedSliceNodeValue(originalCause,
-                                                                        unrecognised)).onFailure(writeCause -> handleFailedTransitionRetry(sliceKey,
-                                                                                                                                           originalCause,
-                                                                                                                                           unrecognised,
-                                                                                                                                           writeCause,
-                                                                                                                                           attempt));
+            return updateSliceState(sliceKey, SliceNodeValue.failedSliceNodeValue(originalCause, unrecognised)).onFailure(writeCause -> handleFailedTransitionRetry(sliceKey,
+                                                                                                                                                                    originalCause,
+                                                                                                                                                                    unrecognised,
+                                                                                                                                                                    writeCause,
+                                                                                                                                                                    attempt));
         }
 
         private void handleFailedTransitionRetry(SliceNodeKey sliceKey,
@@ -1819,7 +1822,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                          MAX_TRANSITION_RETRIES,
                          ctx.transitionRetryDelay().millis(),
                          writeCause.message());
-                SharedScheduler.schedule(() -> transitionToFailedWithRetry(sliceKey, originalCause, unrecognised, attempt + 1),
+                SharedScheduler.schedule(() -> transitionToFailedWithRetry(sliceKey,
+                                                                           originalCause,
+                                                                           unrecognised,
+                                                                           attempt + 1),
                                          ctx.transitionRetryDelay());
             } else {
                 log.error("CRITICAL: Failed to write FAILED state for {} after {} attempts. Slice stuck in transitional state.",

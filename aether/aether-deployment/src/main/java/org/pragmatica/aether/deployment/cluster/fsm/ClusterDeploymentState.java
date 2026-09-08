@@ -1800,9 +1800,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// otherwise it would look permanently mid-apply and condemn any slice that exhausted.
         private boolean deploymentApplyOutstanding(Artifact artifact) {
             return owningBlueprintOf(artifact).filter(blueprintId -> ctx.kvStore()
-                                                                       .get(DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId))
-                                                                       .isEmpty())
-                                              .isPresent();
+                                                                        .get(DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId))
+                                                                        .isEmpty())
+                                    .isPresent();
         }
 
         /// Attribution from an artifact to the blueprint that declares it, read from the durable
@@ -1840,10 +1840,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
-            var declared = value.blueprint()
-                                .loadOrder()
-                                .stream()
-                                .anyMatch(slice -> slice.artifact().equals(artifact));
+            var declared = value.blueprint().loadOrder().stream().anyMatch(slice -> slice.artifact()
+                                                                                         .equals(artifact));
 
             if (declared) {
                 owners.add(key.blueprintId());

@@ -153,12 +153,19 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
         /// a previous deployment of the same artifact can still be in flight when the ACTIVATE for
         /// the new one arrives, and a retry after the unload settles succeeds.
         ///
-        /// Typed `Intermittent` at the raise site rather than left to [SliceLoadingFailure#classify],
-        /// whose catch-all is deliberately permanent. Untyped, this cause reached
+        /// Typed `Intermittent` at the raise site rather than left to
+        /// [SliceLoadingFailure#classify(Cause, Unrecognised)]. Untyped, this cause reached
         /// `Fatal.UnexpectedError`, and the cluster leader rolled the whole blueprint back under
         /// `ALL_OR_NOTHING` for a collision a bounded retry would have cleared. Same reasoning and
         /// same remedy as `SliceInvoker.verifyEndpointExists`, which typed its own activation-order
         /// race `Intermittent` for exactly this reason.
+        ///
+        /// #930 UPDATE — this paragraph used to end "whose catch-all is deliberately permanent".
+        /// There is no catch-all: the permanence of an unrecognised cause is now supplied by the
+        /// caller. Typing the cause here is still the right call and for a stronger reason than
+        /// before — permanence here is a property of the CAUSE (an in-flight unload always clears)
+        /// rather than of the operation, so it must classify the same way at every raise site,
+        /// including one that declares [Unrecognised#PERMANENT].
         record SliceNotInStore(String artifact, String operation) implements Intermittent {
             public static SliceNotInStore sliceNotInStore(String artifact, String operation) {
                 return new SliceNotInStore(artifact, operation);
