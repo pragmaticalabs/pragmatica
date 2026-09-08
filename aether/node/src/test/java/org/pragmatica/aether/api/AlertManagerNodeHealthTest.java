@@ -121,4 +121,80 @@ class AlertManagerNodeHealthTest {
         var views = manager.activeAlertsAsList().await().unwrap();
         assertThat(views.stream().filter(view -> "node_health".equals(view.source())).toList()).isEmpty();
     }
+
+    /// A graceful departure — a normal shutdown, and therefore EVERY node of EVERY rolling restart —
+    /// must not raise a CRITICAL alert. The DEAD edge cannot tell the difference on its own: a
+    /// graceful `SwimDeparted` and a crash both reach DEAD through the same `Stopped` transition. An
+    /// alert surface that fires CRITICAL during routine planned operations gets muted, and a muted
+    /// alert is the same end state as the silence #926 exists to fix, reached from the other side.
+    @Test
+    void announcedDeparture_raisesNoAlert() {
+        var manager = newManager();
+        manager.noteMembershipTransition(FAILED, "SwimDeparted");
+        manager.onNodeFailed(FAILED, OBSERVER);
+
+        assertThat(manager.getActiveNodeHealthAlerts()).isEmpty();
+    }
+
+    @Test
+    void operatorDrain_raisesNoAlert() {
+        var manager = newManager();
+        manager.noteMembershipTransition(FAILED, "DrainRequested");
+        manager.onNodeFailed(FAILED, OBSERVER);
+
+        assertThat(manager.getActiveNodeHealthAlerts()).isEmpty();
+    }
+
+    /// The discriminating half. A cause that is NOT an announced departure must still alert — otherwise
+    /// the graceful path would have been bought by suppressing real failures, which is the defect this
+    /// ticket exists to remove. `DownHysteresisMet` is the failure-detection route into DEPARTING.
+    @Test
+    void abruptDeparture_stillRaisesCriticalAlert() {
+        var manager = newManager();
+        manager.noteMembershipTransition(FAILED, "DownHysteresisMet");
+        manager.onNodeFailed(FAILED, OBSERVER);
+
+        var active = manager.getActiveNodeHealthAlerts();
+        assertThat(active).hasSize(1);
+        assertThat(active.getFirst().severity()).isEqualTo(AlertEvent.Severity.CRITICAL);
+    }
+
+    /// The bias is one-directional by design: an UNMARKED departure alerts. A mark that is missed,
+    /// dropped, or never delivered therefore costs a spurious CRITICAL and never a silent one.
+    @Test
+    void unmarkedDeparture_alerts_soAMissedMarkIsNeverSilent() {
+        var manager = newManager();
+        manager.onNodeFailed(FAILED, OBSERVER);
+
+        assertThat(manager.getActiveNodeHealthAlerts()).hasSize(1);
+    }
+
+    /// The mark is CONSUMED on read, so a node that departs gracefully, rejoins, and later crashes
+    /// still alerts on the crash. Without consumption a single graceful departure would silence that
+    /// node's failures for the lifetime of the process.
+    @Test
+    void gracefulMarkIsConsumed_soALaterCrashStillAlerts() {
+        var manager = newManager();
+        manager.noteMembershipTransition(FAILED, "SwimDeparted");
+        manager.onNodeFailed(FAILED, OBSERVER);
+        assertThat(manager.getActiveNodeHealthAlerts()).isEmpty();
+
+        manager.onNodeFailed(FAILED, OBSERVER);
+        assertThat(manager.getActiveNodeHealthAlerts()).hasSize(1);
+    }
+
+    /// CTM auto-heal mints a FRESH random id for a replacement rather than reusing the departed one, so
+    /// the id-exact clear can never match a replaced node. Without a bound every replacement under
+    /// churn would add a permanent entry, growing heap and the `/api/alerts` payload without limit.
+    @Test
+    void alertMapIsBounded_underReplacementChurn() {
+        var manager = newManager();
+
+        for (int i = 0; i < 500; i++) {
+            manager.onNodeFailed(new NodeId("replaced-" + i), OBSERVER);
+        }
+
+        assertThat(manager.getActiveNodeHealthAlerts()).hasSizeLessThanOrEqualTo(64);
+        assertThat(manager.activeAlertsAsList().await().unwrap()).hasSizeLessThanOrEqualTo(64);
+    }
 }
