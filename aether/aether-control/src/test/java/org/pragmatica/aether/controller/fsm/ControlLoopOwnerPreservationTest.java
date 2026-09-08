@@ -10,7 +10,6 @@ import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -95,12 +94,14 @@ class ControlLoopOwnerPreservationTest {
     private static final int WINDOW = 3;
 
     private CapturingClusterNode cluster;
+    private ControlLoop controlLoop;
     private ControlLoopContext ctx;
 
     @BeforeEach
     void setUp() {
         cluster = new CapturingClusterNode();
-        ctx = buildContext(scaleUpBy(2));
+        controlLoop = buildControlLoop(scaleUpBy(2));
+        ctx = ((ControlLoop.ControlLoopAdapter) controlLoop).ctx();
         ctx.setTopology(List.of(SELF,
                                 WORKER,
                                 NodeId.nodeId("n3").unwrap(),
@@ -113,7 +114,6 @@ class ControlLoopOwnerPreservationTest {
     /// the only writer of the context's blueprint map, so this is the sole route by which the
     /// autoscaler can learn an owner at all.
     private void registerOwnedSliceViaRealFeeder(Option<BlueprintId> owner) {
-        ControlLoop feeder = new ControlLoop.ControlLoopAdapter(ctx, null);
         var key = SliceTargetKey.sliceTargetKey(SLICE.base());
         var deployed = SliceTargetValue.sliceTargetValue(SLICE.version(),
                                                          2,
@@ -123,7 +123,7 @@ class ControlLoopOwnerPreservationTest {
                                                          Option.none(),
                                                          Option.none());
 
-        feeder.onSliceTargetPut(new ValuePut<>(new KVCommand.Put<>(key, deployed), Option.none()));
+        controlLoop.onSliceTargetPut(new ValuePut<>(new KVCommand.Put<>(key, deployed), Option.none()));
     }
 
     /// The single `SliceTargetValue` the autoscaler wrote during this test's evaluation cycle.
@@ -286,30 +286,20 @@ class ControlLoopOwnerPreservationTest {
         return _ -> Promise.success(ControlDecisions.controlDecisions(new BlueprintChange.ScaleUp(SLICE, additional)));
     }
 
-    private ControlLoopContext buildContext(ClusterController controller) {
-        var config = ControllerConfig.DEFAULT.withScalingConfig(smallWindowConfig());
-        var ctxHolder = new AtomicReference<ControlLoopContext>();
+    /// Assembled through the production factory (`ControlLoop.controlLoop`), which builds the
+    /// context, the FSM and the adapter the same way a node does — so the feeder driven below is the
+    /// real one, not a test-assembled stand-in.
+    private ControlLoop buildControlLoop(ClusterController controller) {
         Consumer<ScalingEvent> sink = _ -> {};
-        Function<Fsm<ControlLoopState, ClusterFsmEvent>, ControlLoopState> factory =
-                fsm -> {
-                    var context = new ControlLoopContext(fsm,
-                                                         SELF,
-                                                         controller,
-                                                         new ControlLoopContextAttributionTest.StubMetricsCollector(),
-                                                         Option.none(),
-                                                         cluster,
-                                                         TimeSpan.timeSpan(5_000).millis(),
-                                                         config,
-                                                         sink);
 
-                    ctxHolder.set(context);
-
-                    return context.dormant();
-                };
-
-        Fsm.fsm("owner-preservation-test", SELF.id(), factory);
-
-        return ctxHolder.get();
+        return ControlLoop.controlLoop(SELF,
+                                       controller,
+                                       new ControlLoopContextAttributionTest.StubMetricsCollector(),
+                                       Option.none(),
+                                       cluster,
+                                       TimeSpan.timeSpan(5_000).millis(),
+                                       ControllerConfig.DEFAULT.withScalingConfig(smallWindowConfig()),
+                                       sink);
     }
 
     private static ScalingConfig smallWindowConfig() {
