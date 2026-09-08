@@ -1054,12 +1054,42 @@ class ManagementServerImpl implements ManagementServer {
                      .option();
     }
 
-    private void sendForwardedResponse(InstrumentedResponseWriter response, HttpResponseData responseData) {
+    /// Package-visible and static so the WIRING is pinnable, not merely [#copyForwardedHeaders] in
+    /// isolation. A test that exercises the helper directly stays green if this method stops calling
+    /// it -- which is precisely the regression the header propagation exists to prevent, and the
+    /// shape that has let wiring rot behind passing tests in this repo before.
+    static ResponseWriter sendForwardedResponse(InstrumentedResponseWriter response, HttpResponseData responseData) {
         var contentType = Option.option(responseData.headers().get("Content-Type"))
                                 .map(ct -> ContentType.contentType(ct, ContentCategory.JSON))
                                 .or(CommonContentType.APPLICATION_JSON);
 
+        copyForwardedHeaders(responseData, response);
         response.write(toServerStatus(responseData.statusCode()), responseData.body(), contentType);
+
+        return response;
+    }
+
+    /// Copy the answering node's headers onto the outgoing response. `Content-Type` is skipped
+    /// because it is consumed as the typed `ContentType` argument to `write` and would otherwise be
+    /// emitted twice.
+    ///
+    /// This exists for `X-Aether-Served-By`, which `HttpForwarder` stamps onto a leader-forwarded
+    /// response so a caller can tell WHICH node produced the body. Previously only `Content-Type`
+    /// was copied out, so that stamp was computed and then dropped -- making a forwarded response
+    /// indistinguishable at the client from one the receiving node answered itself. That is the
+    /// "hall of mirrors" the stamp exists to prevent, and it silently defeated the header for every
+    /// HTTP client.
+    ///
+    /// Package-visible so the propagation contract is pinnable without standing up the pipeline.
+    static ResponseWriter copyForwardedHeaders(HttpResponseData responseData, ResponseWriter response) {
+        responseData.headers()
+                    .forEach((name, value) -> {
+                                 if (!"Content-Type".equalsIgnoreCase(name)) {
+                                 response.header(name, value);
+                             }
+                             });
+
+        return response;
     }
 
     private void sendForwardError(InstrumentedResponseWriter response, String path, String requestId, Cause cause) {
