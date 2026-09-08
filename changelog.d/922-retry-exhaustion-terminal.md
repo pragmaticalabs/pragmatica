@@ -78,6 +78,56 @@
   silently corrected record loses the fact that it was ever wrong, and this one made a second wrong
   premise (`Blueprint::owner`, contradicted by open ticket #698) invisible underneath it.
 
+- **An artifact can be declared by more than one blueprint, and the settle needs EVERY one of them
+  to be non-terminal.** `hasConflictingOwnership` rejects a blueprint whose artifact is already owned
+  by one with a DIFFERENT base, but blueprints sharing a base and differing only in version are the
+  upgrade path, and a slice unchanged across an upgrade appears in both. The first version of this
+  code resolved attribution with `owners.getFirst()` over a `HashMap` scan, so when one declaring
+  blueprint had SUCCEEDED and another was mid-apply, whether a running slice was condemned depended
+  on iteration order. `deploymentApplyOutstanding` now requires every declaring blueprint to lack a
+  terminal record, which gives the succeeded one a veto and removes the nondeterminism
+  [verified: `RetryExhaustionApplyOutstandingTest#aSliceDeclaredByBothASucceededAndAnInFlightBlueprint_isNotCondemned`;
+  weakening the veto from `allMatch` to `anyMatch` reddens that test and, across all 19 tests in the
+  three exhaustion classes, ONLY that test].
+
+- **`registerOnly` is a third conjunct, and here is why it is not a quiet qualifier.** A
+  `registerOnly` blueprint is stored in KV so a strategy-based deploy can locate the upgrade target,
+  while the `SliceTargetValue` Put that would activate it is suppressed — so it has no outcome record
+  and never will. Read without the exclusion it looks permanently mid-apply, and it is reachable
+  precisely in the case above: publishing v2 as register-only means two blueprints declare the same
+  unchanged slice, one of them never terminal. The exclusion is what keeps attribution answerable
+  [verified: `#registerOnlyBlueprint_isNeverOutstanding`; deleting the `value.registerOnly()` guard
+  reddens that test and only that test].
+
+- **The test fixture could not previously hold the state this design reads, and that is disclosed
+  rather than assumed away.** The predicate is `AppBlueprintKey` present AND `DeploymentOutcomeKey`
+  absent. The inherited `RecordingClusterNode` only RECORDED what the leader submitted — `apply`
+  never reached the `KVStore` — so the second conjunct was unconditionally true and the predicate
+  degenerated to "blueprint present". Every "does not settle" assertion would have passed without
+  exercising the mechanism. The fixture now applies each submitted batch into the same store the FSM
+  reads, as consensus does for every replica including the leader's own
+  [verified: `#instrumentCheck_theFixtureHoldsBothOutcomeStates_soTheAssertionsAreNotVacuous` asserts
+  the record absent, drives the production path (`trackBlueprintSliceActive` -> `recordSucceededOutcome`
+  -> `submitBatch` -> `cluster.apply`), then reads SUCCEEDED back through the same
+  `DeploymentOutcomeKey` the predicate consults. Reverting the fixture to record-only — deleting
+  `kvStore.process(kvStore.createBatch(batch))` — reddens 3 of the 12 tests in that class: the
+  instrument check, `#control_applyAlreadySucceeded_doesNotSettle` and
+  `#partiallyAppliedBlueprint_condemnsTheSliceThatCameUp_andRecordsIt`. The other 9 stay green, so
+  the instrument check is load-bearing for exactly those three rather than decorative].
+
+- **One parked assertion is deliberately REVERSED, and the reason is recorded so it does not read as
+  lost coverage.** Round 3b's parked
+  `aSliceThatCameUpUnderAPartiallyDeployedBlueprint_isNotCondemned`
+  (`oss/internal/park-924-round3b-2026-09-08.patch`) asserted that a slice which came up under a
+  never-completed `ALL_OR_NOTHING` blueprint must not be condemned, treating it as a workload owed
+  convergence. It is replaced by `#partiallyAppliedBlueprint_condemnsTheSliceThatCameUp_andRecordsIt`,
+  which asserts the opposite. The blueprint never applied, so the operator was promised
+  all-or-nothing and got neither; the honest terminal is a rollback WITH a record, not indefinite
+  re-driving of half a deployment. The #924 round-4 review classified this shape as class-2 harm
+  because the old design condemned it silently and wrote nothing — the objection was to the silence,
+  and the record is what removes it. The parked patch's fixture-fidelity half is carried forward and
+  is load-bearing (previous bullet).
+
 - **Mutation battery.** Applied one at a time from a committed base, tree restored via
   `git checkout --` and verified pristine after each phase; controls ran first and were green.
   A (`deploymentApplyOutstanding` body -> always true) reddens 6 of 10
