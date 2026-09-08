@@ -17,6 +17,7 @@ import org.pragmatica.aether.controller.fsm.ControlLoopState;
 import org.pragmatica.aether.controller.fsm.ScalingDecisionRecord;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
@@ -71,9 +72,13 @@ public interface ControlLoop {
     @MessageReceiver
     void onQuorumStateChange(ClusterStateNotification notification);
 
+    /// `owner` is the `SliceTargetValue`'s `owningBlueprint` (#698). It is a required parameter
+    /// rather than an optional tail so that a caller which has no owner must say so explicitly;
+    /// the autoscaler writes this value back out on every scaling Put.
     void registerBlueprint(Artifact artifact,
                            int instances,
                            int minInstances,
+                           Option<BlueprintId> owner,
                            Option<Integer> maxInstances,
                            Option<Double> scaleUpThreshold,
                            Option<Double> scaleDownThreshold);
@@ -201,6 +206,7 @@ public interface ControlLoop {
             registerBlueprint(key.artifactBase().withVersion(value.currentVersion()),
                               value.targetInstances(),
                               value.effectiveMinInstances(),
+                              value.owningBlueprint(),
                               value.maxInstances(),
                               value.scaleUpThreshold(),
                               value.scaleDownThreshold());
@@ -231,10 +237,11 @@ public interface ControlLoop {
         public void registerBlueprint(Artifact artifact,
                                       int instances,
                                       int minInstances,
+                                      Option<BlueprintId> owner,
                                       Option<Integer> maxInstances,
                                       Option<Double> scaleUpThreshold,
                                       Option<Double> scaleDownThreshold) {
-            ctx.putBlueprint(artifact, instances, minInstances, maxInstances, scaleUpThreshold, scaleDownThreshold);
+            ctx.putBlueprint(artifact, instances, minInstances, owner, maxInstances, scaleUpThreshold, scaleDownThreshold);
             log.info("Registered blueprint: {} with {} instances (min: {}, max: {})",
                      artifact,
                      instances,

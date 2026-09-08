@@ -86,15 +86,24 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// (`SliceRoutes.java`, `RollbackManager.java`) correctly preserves the owner via
 /// `AetherValue.withInstances(...)` before persisting the `SliceTargetValue`, so
 /// `handleSliceTargetChange` now resolves `schemaRequired` correctly for a manual scale event
-/// `[verified: LiveReactivePath tests in this class]`. The in-process autoscaler
-/// (`ControlLoopContext.applyScaling`, module `aether-control`) currently constructs a *fresh*
-/// `SliceTargetValue` with `Option.none()` for the owner instead of `withInstances(...)`
-/// `[mechanism: ControlLoopContext.applyScaling, aether-control, ~line 516]` — so a genuine
-/// autoscale event still reaches `handleSliceTargetChange` with no owner and falls through to the
-/// unowned-slice historical default (`true`). **`schemaRequired` still reverts to `true` on a real
-/// autoscale event until that separate owner-erasure defect is fixed**; an identical pattern
-/// exists in `AbTestManager.targetPreservingOverrides` (module `aether-invoke`). Both are outside
-/// this class's module and out of scope for #555; tracked as a follow-up.
+/// `[verified: LiveReactivePath tests in this class]`.
+///
+/// **Producer-side gap — CLOSED by #698 (was open when this class was written).** The paragraph
+/// this replaces recorded that the in-process autoscaler (`ControlLoopContext.applyScaling`,
+/// module `aether-control`) built a *fresh* `SliceTargetValue` with `Option.none()` for the owner,
+/// so a real autoscale event reached `handleSliceTargetChange` with no owner and fell through to
+/// the unowned-slice default (`true`) — i.e. `schemaRequired` still reverted on a genuine
+/// autoscale, and identically on an `AbTestManager.targetPreservingOverrides` write (module
+/// `aether-invoke`). Both producers now carry the owner: the autoscaler threads it through
+/// `ClusterController.Blueprint.owningBlueprint`, and `AbTestManager` reads it from the current
+/// value alongside the override fields it already re-read
+/// `[verified: aether-control ControlLoopOwnerPreservationTest; aether-invoke
+/// SliceTargetOverridePreservationTest; aether/node AutoscaleOwnerSurvivesRestoreTest]`.
+///
+/// The consumer-side resolution this class pins is therefore **not** obsoleted by #698 and must
+/// not be removed as a redundant workaround: `SliceTargetValue` carries no `schemaRequired` field,
+/// so resolving through the owner is the only route back to the deployed value. #698 changed the
+/// resolution's *input*, not its necessity.
 ///
 /// Unowned slices (no owning blueprint) are deliberately left at the historical default (`true`)
 /// at all three sites — every site hardcoded `true` before this fix, so an unowned slice keeps
