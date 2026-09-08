@@ -91,6 +91,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// sequential cases below deliberately do NOT await: their promises are pre-resolved, the confirm runs
 /// inline, and asserting directly keeps that distinction visible.
 ///
+/// **What keeps that asynchrony from making these tests flaky** is the `synchronized` on
+/// [InMemoryKvStore#applyBatch], which models production's single applier thread — see
+/// [HoldingClusterNode#releaseHeld] for the five-run measurement behind that statement, and for the
+/// correction of an earlier comment that credited it to the wrong mechanism.
+///
 /// Every test drives the real production path — a `NodeArtifactPutReceived` notification carrying a
 /// fatal FAILED state, exactly what `ClusterDeploymentManager.onNodeArtifactPut` dispatches — and
 /// asserts on committed KV state, never on a recorded command list. A test that inspected proposed
@@ -578,21 +583,31 @@ class BestEffortOutcomeMergeTest {
             return held.size();
         }
 
-        /// Applies the held batches in the given order, and — critically — lets each batch's
-        /// confirm-and-retry run to completion BEFORE releasing the next one.
+        /// Applies the held batches in the given order, letting each batch's confirm-and-retry run to
+        /// completion before releasing the next.
         ///
-        /// That quiescence step is what makes these tests pin the FENCE rather than a lucky
-        /// interleaving. `apply`'s Promise resolution dispatches the confirm asynchronously, so
-        /// without the wait the first batch's confirm races the second batch's apply. When it happens
-        /// to lose that race it observes the SECOND batch's value, notices its own id missing, and
-        /// repairs — which makes the whole suite pass even with the fence removed, because the retry
-        /// alone covered for it. A mutation probe caught exactly that.
+        /// **What the drain is for: fixing the SCENARIO, not detecting the bug.** It makes the release
+        /// sequence the one production reaches — a node applies A's merge, A's confirm sees A present
+        /// and correctly stops, and only then does B's merge land. That is the adversarial ordering,
+        /// and without the drain which ordering a run exercises is left to the scheduler.
         ///
-        /// Draining first is also the adversarial order, and the one production reaches: a node
-        /// applies A's merge, A's confirm sees A present and correctly stops, and only then does B's
-        /// merge land. Without the fence B's write is accepted, A is erased, and NOTHING is left to
-        /// notice — the loser already confirmed. The fence is what guarantees the loser is rejected
-        /// and therefore always observes its own absence.
+        /// **What the drain is NOT for, corrected after review.** An earlier revision of this comment
+        /// claimed the drain is what makes these tests detect a missing fence. That is false, and was
+        /// a misattribution: removing `awaitQuiescence()` alone leaves the fence-removed red set
+        /// byte-identical, message for message. The drain and the `synchronized` on
+        /// [InMemoryKvStore#applyBatch] were added in the same change, and it is the SERIALIZED
+        /// APPLIER that removes the race — it models production's single applier thread, where
+        /// `KVStore.process`'s read-then-write fence never interleaves with another apply.
+        ///
+        /// Measured, not reasoned: with the fence removed AND the drain removed AND `applyBatch`
+        /// unsynchronized, this class goes race-shaped — across five consecutive runs, 0 to 3 of its
+        /// 4 tests failed and one run came up entirely green. Restore the synchronization alone and
+        /// the red set is deterministic again. So the serialized applier is load-bearing; the drain
+        /// is retained for scenario determinism and may be removed without weakening detection.
+        ///
+        /// [ApplierFence] is the timing-independent detector: in that same five-run experiment its
+        /// stale-read and version-skip tests failed on every single run. If you are changing anything
+        /// in this class's concurrency plumbing, that is the nested class to trust.
         void releaseHeld(int... order) {
             for (var index : order) {
                 var batch = held.get(index);
@@ -680,6 +695,11 @@ class BestEffortOutcomeMergeTest {
         /// committed storage followed by a write — not atomic. Serializing here models the applier
         /// faithfully; leaving it unserialized would let the test's release thread and an async retry
         /// interleave inside the fence in a way production cannot produce.
+        ///
+        /// **Load-bearing, and measured rather than assumed:** drop this modifier and
+        /// [ConcurrentFailures] becomes race-shaped — 0 to 3 of its 4 tests failing across five
+        /// consecutive runs, one run entirely green. It is this, not
+        /// [HoldingClusterNode#releaseHeld]'s drain, that makes those tests deterministic.
         synchronized void applyBatch(List<KVCommand<AetherKey>> commands) {
             process(createBatch(List.copyOf(commands)));
         }
