@@ -374,7 +374,7 @@ class BlueprintServiceTest {
                         + "STATUS rather than `isPresent` keeps this discriminating: after #963 every "
                         + "publish leaves a record, so presence alone no longer distinguishes a fresh "
                         + "attempt from a surviving stale terminal")
-                    .contains(AetherValue.DeploymentOutcomeStatus.IN_PROGRESS);
+                    .isEqualTo(Option.some(AetherValue.DeploymentOutcomeStatus.IN_PROGRESS));
 
             var deploymentMap = DeploymentMap.deploymentMap();
             deploymentMap.onNodeArtifactPut(nodeArtifactPut(NODE_A, REDEPLOY_SLICE, SliceState.ACTIVE));
