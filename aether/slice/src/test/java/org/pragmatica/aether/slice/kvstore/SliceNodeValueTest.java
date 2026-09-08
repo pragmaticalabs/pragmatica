@@ -7,6 +7,7 @@ package org.pragmatica.aether.slice.kvstore;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.SliceLoadingFailure.Unrecognised;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.lang.Cause;
@@ -87,7 +88,7 @@ class SliceNodeValueTest {
         @Test
         void failedSliceNodeValue_transitionedAtIsZero() {
             Cause cause = Causes.cause("test failure");
-            var v = SliceNodeValue.failedSliceNodeValue(cause);
+            var v = SliceNodeValue.failedSliceNodeValue(cause, Unrecognised.PERMANENT);
 
             assertThat(v.state()).isEqualTo(SliceState.FAILED);
             assertThat(v.transitionedAt()).isZero();
@@ -136,7 +137,7 @@ class SliceNodeValueTest {
 
         @Test
         void failedNodeArtifactValue_transitionedAtIsZero() {
-            var v = NodeArtifactValue.failedNodeArtifactValue(Causes.cause("boom"));
+            var v = NodeArtifactValue.failedNodeArtifactValue(Causes.cause("boom"), Unrecognised.PERMANENT);
 
             assertThat(v.state()).isEqualTo(SliceState.FAILED);
             assertThat(v.transitionedAt()).isZero();

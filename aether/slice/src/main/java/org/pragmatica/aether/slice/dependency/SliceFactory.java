@@ -15,6 +15,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
+import org.pragmatica.aether.slice.SliceLoadingFailure.Unrecognised;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -158,7 +159,11 @@ public interface SliceFactory {
 
                                 return (Promise<Slice>) method.invoke(null, args);
                             })
-                      .mapError(SliceLoadingFailure::classify)
+                      // #930 — PERMANENT. This maps a Throwable escaping the slice's OWN factory
+                      // method under reflection. A factory that throws is a defect in the slice
+                      // being loaded, and it will throw identically on every retry and on every
+                      // node, so retrying spends the budget to reach the same verdict later.
+                      .mapError(cause -> SliceLoadingFailure.classify(cause, Unrecognised.PERMANENT))
                       .flatMap(promise -> {
                                    log.info("Factory method {} returned promise, waiting for completion",
                                             method.getName());

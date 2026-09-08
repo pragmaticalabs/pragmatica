@@ -14,6 +14,7 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
+import org.pragmatica.aether.slice.SliceLoadingFailure.Unrecognised;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -308,8 +309,12 @@ public sealed interface AetherValue {
             return new SliceNodeValue(state, none(), false, transitionedAt);
         }
 
-        public static SliceNodeValue failedSliceNodeValue(Cause cause) {
-            var classified = SliceLoadingFailure.classify(cause);
+        /// #930 — `unrecognised` is the permanence this raise site declares for a cause the
+        /// classifier does not recognise. There is no single-argument form: the `fatal` flag this
+        /// builds crosses consensus and decides whether the leader rolls a blueprint back, so a
+        /// raise site must state its intent rather than inherit one.
+        public static SliceNodeValue failedSliceNodeValue(Cause cause, Unrecognised unrecognised) {
+            var classified = SliceLoadingFailure.classify(cause, unrecognised);
 
             return new SliceNodeValue(SliceState.FAILED,
                                       Option.option(classified.message()),
@@ -958,8 +963,18 @@ public sealed interface AetherValue {
             return new NodeArtifactValue(state, Option.none(), false, 0, List.of(), transitionedAt);
         }
 
-        public static NodeArtifactValue failedNodeArtifactValue(Cause cause) {
-            var classified = SliceLoadingFailure.classify(cause);
+        /// #930 — carries the same explicit `unrecognised` disposition as
+        /// [SliceNodeValue#failedSliceNodeValue(Cause, Unrecognised)], for the same reason.
+        ///
+        /// **No production caller reaches this factory.** Both production sites that build a FAILED
+        /// `NodeArtifactValue` — `NodeDeploymentState.updateSliceStateWithRetry` and
+        /// `updateSliceStateWithExtraCommandsAndRetry` — construct the record directly, copying
+        /// `fatal` across from the already-classified `SliceNodeValue` rather than re-classifying.
+        /// So the `fatal` flag is decided exactly once per failure, at `failedSliceNodeValue`. Kept
+        /// with the explicit parameter rather than deleted so that a future caller cannot reach a
+        /// silent default through it either.
+        public static NodeArtifactValue failedNodeArtifactValue(Cause cause, Unrecognised unrecognised) {
+            var classified = SliceLoadingFailure.classify(cause, unrecognised);
 
             return new NodeArtifactValue(SliceState.FAILED,
                                          Option.option(classified.message()),

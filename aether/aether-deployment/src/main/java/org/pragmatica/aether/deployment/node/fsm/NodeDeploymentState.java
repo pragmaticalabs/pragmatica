@@ -35,6 +35,7 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceLoadingFailure.Intermittent.SliceNotInStore;
+import org.pragmatica.aether.slice.SliceLoadingFailure.Unrecognised;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -406,9 +407,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       .map(_ -> sliceKey);
         }
 
+        /// #930 — PERMANENT. A load that failed for a reason the classifier does not recognise is
+        /// most often the artifact itself: a bad or unresolvable coordinate, a malformed manifest,
+        /// an envelope this runtime cannot read. Retrying those on the same node re-runs the same
+        /// deterministic work. The genuinely retryable load failures are typed at their own raise
+        /// sites — `Intermittent.ArtifactNotFound` and `Intermittent.NetworkError` — and are
+        /// returned unchanged by `classify` regardless of what this site declares.
         private void handleLoadingFailure(SliceNodeKey sliceKey, Cause cause) {
             log.error("Failed to load slice {}: {}", sliceKey.artifact(), cause.message());
-            transitionToFailed(sliceKey, cause);
+            transitionToFailed(sliceKey, cause, Unrecognised.PERMANENT);
         }
 
         private void handleLoaded(SliceNodeKey sliceKey) {
@@ -424,12 +431,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var cause = SLICE_NOT_FOUND_FOR_ACTIVATION.apply(sliceKey.artifact().asString());
             // #916: WARN, not ERROR. This is now a retryable crossing the cluster recovers from on
             // its own; logging it at ERROR trained operators to treat a self-healing condition as an
-            // incident. `ClusterDeploymentState.Active.logMaxRetriesExceeded` still logs at ERROR
-            // when the retry budget is spent — though note it does not actually stop there; the
-            // deployment is re-driven, which is the pre-existing livelock tracked by #922.
+            // incident.
+            //
+            // #930: the declared disposition is RETRY, and it is unreachable here — the cause is
+            // already typed `Intermittent.SliceNotInStore`, so `classify` returns it unchanged. It
+            // is stated rather than defaulted because nothing prevents a future edit from raising an
+            // untyped cause at this site, and this is the intent that would then apply.
             log.warn("Slice {} state is ACTIVATE but not found in SliceStore — reporting intermittent, cluster will retry",
                      sliceKey.artifact());
-            transitionToFailed(sliceKey, cause);
+            transitionToFailed(sliceKey, cause, Unrecognised.RETRY);
         }
 
         private void performActivation(SliceNodeKey sliceKey) {
@@ -644,6 +654,22 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       .map(_ -> sliceKey);
         }
 
+        /// #930 — RETRY, and this is the site that closes #923.
+        ///
+        /// Activation is the step that touches everything outside the slice: consensus (every
+        /// `publish*` leg goes through [#applyWithRetry], which raises an UNTYPED
+        /// `Causes.cause("Consensus batch timed out after N retries")` after
+        /// `CONSENSUS_MAX_RETRIES` attempts of `CONSENSUS_OPERATION_TIMEOUT` each), resource
+        /// creation, endpoint and route publication. Those failures are properties of the cluster's
+        /// current health, not of the artifact, and they are exactly the population the old
+        /// permanent catch-all condemned: a consensus outage during activation reached
+        /// `Fatal.UnexpectedError` and rolled the whole blueprint back under `ALL_OR_NOTHING`.
+        ///
+        /// Declaring RETRY does not weaken that atomicity, because #922 gave the retry budget a
+        /// terminal: a cause that keeps failing spends the budget and then, if the owning
+        /// blueprint's apply is still outstanding, settles permanently WITH a rollback and a
+        /// durable `DeploymentOutcomeValue`. The bound moved from the cause's Java type to the
+        /// apply's own record; it did not disappear.
         private void handleActivationFailure(SliceNodeKey sliceKey, Cause cause) {
             log.error("Activation failed for {}: {}", sliceKey.artifact(), cause.message());
             unregisterSliceFromInvocation(sliceKey);
@@ -654,7 +680,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                               .withFailure(partialCause -> log.warn("Partial unpublish during activation-failure cleanup for {}: {}",
                                                                     sliceKey.artifact(),
                                                                     partialCause.message()))
-                              .withResult(_ -> transitionToFailed(sliceKey, cause));
+                              .withResult(_ -> transitionToFailed(sliceKey, cause, Unrecognised.RETRY));
         }
 
         private void handleActive(SliceNodeKey sliceKey) {
@@ -815,9 +841,13 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       .map(_ -> sliceKey);
         }
 
+        /// #930 — RETRY. A slice that cannot be DEACTIVATED says nothing about whether the artifact
+        /// can be deployed; the failure is in teardown, and the states this transition feeds are
+        /// the same ones an unload re-drives. Declaring PERMANENT here would let a failed teardown
+        /// condemn the artifact and roll back a blueprint that had already applied.
         private void handleDeactivationFailure(SliceNodeKey sliceKey, Cause cause) {
             log.error("Deactivation failed for {}: {}", sliceKey.artifact(), cause.message());
-            transitionToFailed(sliceKey, cause);
+            transitionToFailed(sliceKey, cause, Unrecognised.RETRY);
         }
 
         private Promise<SliceNodeKey> unpublishHttpRoutes(SliceNodeKey sliceKey) {
@@ -1756,21 +1786,30 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             return updateSliceStateWithExtraCommandsAndRetry(sliceKey, value, extraCommands, attempt + 1);
         }
 
-        private Promise<SliceNodeKey> transitionToFailed(SliceNodeKey sliceKey, Cause cause) {
-            return transitionToFailedWithRetry(sliceKey, cause, 0);
+        /// #930 — every caller states the permanence of an unrecognised cause. The value written
+        /// here carries a `fatal` flag across consensus to the cluster leader, which branches a
+        /// blueprint rollback on it, so the disposition is an input to this operation rather than
+        /// something read off the cause's Java type on arrival.
+        private Promise<SliceNodeKey> transitionToFailed(SliceNodeKey sliceKey, Cause cause, Unrecognised unrecognised) {
+            return transitionToFailedWithRetry(sliceKey, cause, unrecognised, 0);
         }
 
         private Promise<SliceNodeKey> transitionToFailedWithRetry(SliceNodeKey sliceKey,
                                                                   Cause originalCause,
+                                                                  Unrecognised unrecognised,
                                                                   int attempt) {
-            return updateSliceState(sliceKey, SliceNodeValue.failedSliceNodeValue(originalCause)).onFailure(writeCause -> handleFailedTransitionRetry(sliceKey,
-                                                                                                                                                      originalCause,
-                                                                                                                                                      writeCause,
-                                                                                                                                                      attempt));
+            return updateSliceState(sliceKey,
+                                    SliceNodeValue.failedSliceNodeValue(originalCause,
+                                                                        unrecognised)).onFailure(writeCause -> handleFailedTransitionRetry(sliceKey,
+                                                                                                                                           originalCause,
+                                                                                                                                           unrecognised,
+                                                                                                                                           writeCause,
+                                                                                                                                           attempt));
         }
 
         private void handleFailedTransitionRetry(SliceNodeKey sliceKey,
                                                  Cause originalCause,
+                                                 Unrecognised unrecognised,
                                                  Cause writeCause,
                                                  int attempt) {
             if (attempt < MAX_TRANSITION_RETRIES) {
@@ -1780,7 +1819,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                          MAX_TRANSITION_RETRIES,
                          ctx.transitionRetryDelay().millis(),
                          writeCause.message());
-                SharedScheduler.schedule(() -> transitionToFailedWithRetry(sliceKey, originalCause, attempt + 1),
+                SharedScheduler.schedule(() -> transitionToFailedWithRetry(sliceKey, originalCause, unrecognised, attempt + 1),
                                          ctx.transitionRetryDelay());
             } else {
                 log.error("CRITICAL: Failed to write FAILED state for {} after {} attempts. Slice stuck in transitional state.",

@@ -11,6 +11,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.SliceLoadingFailure.Unrecognised;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
@@ -883,7 +884,7 @@ class ClusterDeploymentManagerTest {
 
     private void trackSliceStateWithFailure(ClusterDeploymentManager mgr, Artifact artifact, NodeId nodeId, Cause failureReason) {
         var key = NodeArtifactKey.nodeArtifactKey(nodeId, artifact);
-        var value = NodeArtifactValue.failedNodeArtifactValue(failureReason);
+        var value = NodeArtifactValue.failedNodeArtifactValue(failureReason, Unrecognised.PERMANENT);
         var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
         mgr.onNodeArtifactPut(notification);

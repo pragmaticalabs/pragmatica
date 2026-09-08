@@ -16,6 +16,7 @@ import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentContext;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentState;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceActionConfig;
+import org.pragmatica.aether.slice.SliceLoadingFailure.Unrecognised;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -84,10 +85,15 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// and pin nothing about the wiring.
 ///
 /// [#unloadActivateCrossing_isFatalIsFalse_andBlueprintIsNotRolledBack] is the fix.
-/// [#genuinelyUnclassifiedCause_stillRollsBackTheBlueprint] is its positive control: the same
-/// crossing driven with an untyped cause still reaches `classify`'s permanent catch-all and still
-/// rolls back, which proves the rollback assertion can fail and that the #916 ruling to KEEP the
-/// catch-all permanent is in force.
+/// [#genuinelyUnclassifiedCause_stillRollsBackTheBlueprint] is its positive control: an unrecognised
+/// cause classified under [Unrecognised#PERMANENT] still reaches `Fatal.UnexpectedError` and still
+/// rolls the blueprint back, which proves the rollback assertion can fail.
+///
+/// #930 UPDATE — that control used to read "still reaches `classify`'s permanent CATCH-ALL", and
+/// asserted the #916 ruling to keep that catch-all permanent was in force. There is no catch-all
+/// any more: `classify` takes the disposition for an unrecognised cause from its caller, so the
+/// control now names the disposition it passes. What it pins is unchanged and is #930 acceptance 4
+/// — a fatal classification still settles permanently and still rolls back under `ALL_OR_NOTHING`.
 class ActivationRaceNotFatalTest {
     private static final NodeId SELF = new NodeId("node-self");
     private static final NodeId NODE_A = new NodeId("node-a");
@@ -138,19 +144,22 @@ class ActivationRaceNotFatalTest {
     @Test
     void genuinelyUnclassifiedCause_stillRollsBackTheBlueprint() {
         var expanded = blueprint();
-        var unclassified = NodeArtifactValue.failedNodeArtifactValue(Causes.cause("something nobody typed"));
+        var unclassified = NodeArtifactValue.failedNodeArtifactValue(Causes.cause("something nobody typed"),
+                                                                     Unrecognised.PERMANENT);
 
         assertThat(unclassified.fatal())
-                .as("#916 ruling: classify's catch-all stays PERMANENT — an unrecognised cause is "
-                    + "still fatal, and this control fails the moment that default is flipped")
+                .as("#930: a raise site that declares PERMANENT still produces a fatal classification "
+                    + "for an unrecognised cause — the disposition moved to the caller, the Fatal arm "
+                    + "itself did not go away, and this control fails the moment that arm is flipped")
                 .isTrue();
 
         leaderHarness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
         leaderHarness.dispatch(new NodeArtifactPutReceived(replayOf(unclassified)));
 
         assertThat(leaderSideCluster.removeKeys())
-                .as("positive control for the assertion above: a genuinely fatal failure DOES remove "
-                    + "the blueprint, so a green result in the other test is not a dead assertion")
+                .as("positive control for the assertion above, and #930 acceptance 4: a genuinely fatal "
+                    + "failure DOES roll the blueprint back under ALL_OR_NOTHING, so a green result in "
+                    + "the other test is not a dead assertion")
                 .contains(AppBlueprintKey.appBlueprintKey(expanded.id()));
     }
 

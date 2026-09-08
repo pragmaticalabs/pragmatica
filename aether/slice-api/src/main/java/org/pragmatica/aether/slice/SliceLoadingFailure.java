@@ -184,46 +184,70 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
             }
         }
 
+        /// #930 — a cause [SliceLoadingFailure#classify(Cause, Unrecognised)] does not recognise,
+        /// raised at a site that declared [Unrecognised#RETRY].
+        ///
+        /// The `Intermittent` counterpart of [Fatal.UnexpectedError], and it exists so the two
+        /// dispositions are equally expressible. Naming the cause "unrecognised" rather than
+        /// borrowing [ResourceUnavailable] is deliberate: the classifier knows nothing about this
+        /// cause beyond the raise site's declaration, and an operator reading `failureReason()`
+        /// must not be told a resource was unavailable when nothing established that.
+        record UnrecognisedFailure(Cause causeSource) implements Intermittent {
+            @Override
+            public String message() {
+                return "Unrecognised slice loading error, retryable at this site: " + causeSource.message();
+            }
+
+            @Override
+            public Option<Cause> source() {
+                return some(causeSource);
+            }
+        }
+
         interface Custom extends Intermittent {}
     }
 
-    /// Classifies an arbitrary `Cause` raised on a slice loading or activation path.
+    /// The permanence a raise site declares for a cause [#classify(Cause, Unrecognised)] does not
+    /// recognise (#930).
     ///
-    /// **The catch-all stays permanent (#916 ruling).** Every cause this method does not recognise
-    /// becomes `Fatal.UnexpectedError`, and that is deliberate, not an oversight. The cause universe
-    /// here is open — any code on the loading or activation path can raise anything — so the default
-    /// arm is chosen for the failure mode it produces, not for how often it is right.
+    /// It exists so that permanence is an input to the operation rather than an inference from a
+    /// value's Java type. Before #930 this method carried a catch-all that returned
+    /// [Fatal.UnexpectedError] for everything unrecognised, and because almost no cause raised on
+    /// the deployment path is constructed as a `SliceLoadingFailure` at all, that catch-all — not
+    /// the raise site — was what decided whether a blueprint rolled back. There is deliberately no
+    /// default here: a new raise site must name one or fail to compile.
+    enum Unrecognised {
+        /// The operation is retryable at this site: an unrecognised cause is reported
+        /// [Intermittent] and the cluster re-drives it under the retry budget.
+        RETRY,
+        /// The operation is not retryable at this site: an unrecognised cause is reported
+        /// [Fatal] and settles without consuming a retry budget.
+        PERMANENT
+    }
+
+    /// Classifies an arbitrary `Cause` raised on a slice loading or activation path, with the
+    /// permanence of an UNRECOGNISED cause supplied by the caller (#930).
     ///
-    /// Permanent-by-default fails loudly and bounded: the leader marks the artifact permanently
-    /// failed and, under `ALL_OR_NOTHING`, rolls the blueprint back, so the declared atomicity holds
-    /// and the operator sees a `ROLLED_BACK` blueprint they can act on.
+    /// Three shapes are recognised regardless of what the caller declares, because each is
+    /// evidence about the cause itself rather than about the operation: an already-typed
+    /// `SliceLoadingFailure` (the raise site already decided), transient capacity exhaustion, and
+    /// `CoreError.Timeout`. Everything else is unrecognised, and `unrecognised` decides it.
     ///
-    /// Intermittent-by-default would fail in the direction that matters, and worse than the first
-    /// version of this comment claimed. That version said a genuinely permanent failure would be
-    /// "retried five times and then abandoned" without a rollback. Retry exhaustion does not abandon
-    /// anything: `ClusterDeploymentState.Active.logMaxRetriesExceeded` clears the retry counter and
-    /// routes `DeploymentFailed` but never marks the artifact permanently failed, so the unload that
-    /// every failure issues removes the `NodeArtifactKey`, `handleSliceNodeRemoval` sees an artifact
-    /// still deployable and schedules a reconcile, and `reconcileBlueprint` — gated on
-    /// `permanentlyFailed` and nothing else — redeploys it with the counter restarting at 1. The
-    /// real cost of an intermittent default is therefore an unbounded redeploy loop at roughly 1 Hz
-    /// with no terminal state at all, not a quiet half-deployed blueprint. Trading a wrong rollback
-    /// for that is plainly the worse trade, so the ruling stands on a stronger footing than it was
-    /// first argued on.
+    /// **What replaced the #916 ruling.** #916 argued the catch-all must stay permanent, because an
+    /// intermittent default would retry a genuinely fatal cause and then abandon it without a
+    /// rollback. #930 removes the catch-all rather than re-aiming it, and #922 removes the
+    /// abandonment: retry exhaustion now consults the owning blueprint's own durable apply record,
+    /// so a spent budget on a deployment that never applied settles permanently WITH a rollback and
+    /// a `DeploymentOutcomeValue`, while a workload that already applied keeps being reconciled.
+    /// `ALL_OR_NOTHING` is therefore bounded by the apply's durable terminal, not by the Java type
+    /// of whatever cause happened to surface — which is what let a consensus outage roll a
+    /// blueprint back (#923).
     ///
-    /// That loop is **pre-existing and out of scope here** — it is tracked by #922, and its
-    /// sustaining entry point is `ArtifactNotFound` on the LOAD leg, a cause that was already
-    /// `Intermittent` before #916 and is untouched by it. The causes typed below cannot sustain it:
-    /// every path that issues an ACTIVATE is gated on the slice having been reported `LOADED`, so
-    /// they require a prior successful load and a genuinely absent artifact fails earlier, at
-    /// `handleLoadingFailure`.
-    ///
-    /// The price of keeping the permanent default is an obligation: **a transient cause on these
-    /// paths must be typed `Intermittent` where it is raised**, because reaching this method untyped
-    /// means permanent. Two causes have already been paid for this way —
-    /// `SliceInvoker.verifyEndpointExists` (activation-order race on a dependency's endpoint) and
-    /// [Intermittent.SliceNotInStore] (#916, the unload/activate crossing).
-    static SliceLoadingFailure classify(Cause cause) {
+    /// The obligation #916 created still stands and is unchanged: **a cause whose permanence is a
+    /// property of the CAUSE rather than of the operation should be typed where it is raised**, so
+    /// it classifies the same way at every site. [Intermittent.SliceNotInStore] (#916) and
+    /// `SliceInvoker.verifyEndpointExists` are the two already paid for this way.
+    static SliceLoadingFailure classify(Cause cause, Unrecognised unrecognised) {
         if (cause instanceof SliceLoadingFailure failure) {
             return failure;
         }
@@ -236,7 +260,9 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
             return new Intermittent.Timeout("slice activation", cause);
         }
 
-        return new Fatal.UnexpectedError(cause);
+        return unrecognised == Unrecognised.RETRY
+               ? new Intermittent.UnrecognisedFailure(cause)
+               : new Fatal.UnexpectedError(cause);
     }
 
     default boolean isFatal() {
