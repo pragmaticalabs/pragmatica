@@ -65,6 +65,12 @@
   `MAX_ALERT_HISTORY` bound on `alertHistory`. **Stated plainly rather than dressed up: a replaced
   node's alert ages out under churn; it is not resolved.**
   [verified: `AlertManagerNodeHealthTest#alertMapIsBounded_underReplacementChurn`]
+  [unverified: a CTM-replaced node's alert is never RESOLVED — only bounded. Properly resolving it
+  needs an identity linking a replacement to the node it replaced, which does not exist today. The
+  bound is tested; the resolution is absent by design and stated, not fixed]
+  [unverified: nothing forwards any node-health alert off the node — `AlertForwarder` is never
+  constructed in production (`alertForwarder(` = 1 hit repo-wide, its own factory; control
+  `alertManager(` = 3). The renderer handles the variant; nothing sends it]
 - **One departure reaches both surfaces, and that is now pinned as a pair.** An adversarial probe
   deleted the alert call from the `AetherNode` boot lambda and all 1217 tests stayed green — each side
   was pinned in isolation, nothing pinned the composition. The pair now lives in

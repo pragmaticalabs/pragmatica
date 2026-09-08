@@ -62,6 +62,10 @@
   for reporting cluster failure, that drop would have rebuilt the same fail-open shape one layer down.
   [mechanism: `onSuccess(promise -> promise.onFailure(...))` added; still fire-and-forget, logged and
   never propagated to the DEAD-edge caller]
+  [unverified: **no test pins this and the multi-node run never exercised it** — both arms reported
+  `publish-failure lines: 0`, i.e. no publish failed, so the new branch was never entered. It must not
+  be read as verified. Low risk, being a log statement on an already fire-and-forget path, but the
+  honest statement is that it is reasoned, not demonstrated]
 - **The operator-visible surface this closes on is the local WARN log**, not `/api/events`. The log
   needs no leader, no quorum, no replica, no partition ownership and no network, so nothing this ticket
   is about can gate it; the confirmed-departure edge previously logged nothing at all. The ticket's own
@@ -71,9 +75,12 @@
   `ANY_REPLICA` router forwards to a randomly chosen CAUGHT_UP peer and propagates the failure with no
   local fallback, so with dead peers still registered CAUGHT_UP the read can fail while the event sits
   in the local ring. That is in `aether-stream`, outside this fix's boundary, and is filed separately.
-  [verified: multi-node, on a real 3-node cluster with failure injection and a reverted control —
-  see the A/B below. This claim was tagged `design intent — unverified` until that run; it is upgraded
-  on evidence, not on confidence]
+  [verified: single-arm, multi-node — the three WARN lines (2 / 1 / 1) fired on a survivor that was
+  never the leader, during a window in which the system itself reported `currentLeader=None()`. **Not
+  the reverted control**: that control deliberately leaves the log statements in, so the WARN counts
+  are identical in both arms BY CONSTRUCTION and cannot discriminate anything about this surface. The
+  control speaks to the gate, not to the surface; this claim rests on the lines firing at all under a
+  genuine no-leader condition, which is sufficient for it and is what is cited here]
 - **Verified on a real cluster, against a reverted control.** Three nodes on the internal test host;
   the leader and one other node killed with `docker kill`, leaving a survivor that was **never** the
   leader and, at 1-of-3, cannot become one. The no-leader condition is the system's own report, not an
@@ -96,12 +103,26 @@
   the gate. The control's **30/30 successful reads** rule out the alternative explanation that the
   events were present but unreadable: the endpoint answered every time and the events were simply not
   there. The partition watermark (10 vs 2) corroborates that independently of HTTP.
-- **The recovery half, measured the same way.** On a healthy quorate cluster the fixed build carries
-  **three** `QUORUM_ESTABLISHED` events — one from each node, `observedBy` = n926-1, n926-2, n926-3 —
-  while the reverted control carries **zero**, *including from the leader*. That confirms from
-  measurement what the code reading predicted: quorum forms before a leader is elected, so the gate was
-  false on every node at that instant and the cluster could never report quorum recovery at all.
-  `LEADER_ELECTED` is present in both arms, as it should be — it stays leader-gated.
+  [verified: the A/B above — this is what the reverted control DOES support: that the gate, and nothing
+  else, decides whether the event reaches the stream. Identical WARN (2/1/1) and `onNodeFailed` ERROR
+  (2/2) counts prove both arms traversed the same path with the same cluster history, so arm B's zeros
+  cannot be a different failure sequence; 30/30 successful control reads make them a genuine absence
+  rather than a failed read]
+- **The recovery half, measured the same way — but on weaker footing than the loss half, and that
+  asymmetry is the honest report.** On a healthy quorate cluster the fixed build carries **three**
+  `QUORUM_ESTABLISHED` events — one from each node, `observedBy` = n926-1, n926-2, n926-3 — while the
+  reverted control carries **zero**, *including from the leader*. That matches what the code reading
+  predicted: quorum forms before a leader is elected, so the gate was false on every node at that
+  instant and the cluster could never report quorum recovery at all. `LEADER_ELECTED` is present in
+  both arms, as it should be — it stays leader-gated.
+  **The residual confound, not excluded:** at the time of that run there was no log line on the ACTIVE
+  branch, so **nothing witnessed that `onQuorumStateChange(ACTIVE)` was even reached in arm B**. "Zero
+  because the notification never arrived" therefore remains open; `LEADER_ELECTED` in both arms
+  witnesses a *different* handler and is only partial mitigation. The loss half has no such gap — its
+  WARN line witnesses entry directly. The `LOG.info` added on the ACTIVE branch supplies that missing
+  witness, so a re-run can control the recovery half exactly the way the loss half was controlled.
+  [verified: the three-vs-zero counts are real and were measured; **the elimination of the
+  never-arrived confound is NOT** — that requires a re-run with the new ACTIVE log line]
 - **A limit of this scenario, stated because it bounds the evidence:** a sub-quorum survivor
   deliberately self-fences (`QUORUM_LOSS drain INTENT ... initiating self-drain (split-brain
   self-fence)`) about 18 seconds after quorum loss, so the window in which its HTTP surface can be read
@@ -109,6 +130,21 @@
   exited — not because the events were missing. The measurements above were taken inside the window.
   A cluster that keeps quorum but cannot elect a stable leader — the ten-day incident's actual shape —
   was not reproduced; that state cannot be induced by killing nodes.
+  [unverified: a cluster that KEEPS quorum but cannot elect a stable leader — the incident's actual
+  shape; not inducible by killing nodes, since losing enough nodes to lose the leader also loses quorum
+  and triggers the self-fence. The un-gated path measured here is the same code that would run under
+  it, but that state was never observed]
+  [unverified: the ACTIVE-branch entry witness for the recovery-half control — see the recovery bullet
+  above; the never-arrived confound is open until a re-run with the new log line]
+  [unverified: `publishSafely`'s asynchronous-failure log — never exercised in either arm]
+
+  **Why these carry their own tag.** Seven `[verified:]` tags in this fragment are machine-findable;
+  until now the bound that limits them was untagged prose in a separate bullet. A reader running
+  `grep '\[verified:'` — the exact consumption path these tags exist for — would have got an unbounded
+  picture of what was proven. **If verified claims are greppable and their limitations are not, the
+  consumption path systematically over-reports**, and it over-reports hardest to whoever is reading in
+  a hurry during an outage, which is precisely when this code matters. The limitations are now returned
+  by the same sweep: `grep -E '\[(verified|unverified|mechanism|design intent)'`.
 
 - All production hunks above were mutation-probed: each was reverted alone, its named test confirmed
   red, and the file restored.
