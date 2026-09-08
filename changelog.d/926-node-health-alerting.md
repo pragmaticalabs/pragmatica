@@ -101,7 +101,8 @@
   `NodeDepartureNotifier`, driven against a real aggregator and a real alert manager, so deleting
   either call turns tests red. [verified:
   `NodeDepartureNotifierTest#oneDeparture_reachesBothSurfaces_withNoLeaderAndNoOwnership`,
-  `#confirmedDeparture_reachesTheAlertSurface`, `#announcedDeparture_reachesTheStreamButRaisesNoAlert`]
+  `#confirmedDeparture_reachesTheAlertSurface`, `#drainedDeparture_reachesTheStreamButRaisesNoAlert`,
+  `#swimDeath_reachesBothSurfaces_notJustTheStream`]
 - All production hunks above were mutation-probed: each was reverted alone, its named test confirmed
   red, and the file restored.
 - **Confirmed firing on a real cluster.** On a 3-node cluster with the leader killed, the surviving
