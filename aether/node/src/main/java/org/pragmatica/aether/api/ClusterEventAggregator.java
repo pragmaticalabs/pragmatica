@@ -387,11 +387,22 @@ public final class ClusterEventAggregator {
     /// that threw there (e.g. the leader's cluster-events partition not yet materialized mid-churn) would
     /// abort the death edge and starve membership recovery. The async publish Promise is fire-and-forget
     /// (observability); a synchronous failure is logged and dropped, never re-thrown.
+    ///
+    /// #926: the ASYNCHRONOUS failure is logged too. `Result.lift` catches only a synchronous throw —
+    /// `publish` returns a `Promise<Unit>`, and a failure arriving on it (e.g. `PARTITION_NOT_LOCAL`
+    /// when the ring is not materialized) was previously discarded with no log and no counter. This
+    /// path is now load-bearing for reporting cluster failure, so a drop here would rebuild the same
+    /// fail-open shape one layer down: a component that reports nothing when it cannot publish is
+    /// indistinguishable from one reporting that all is well. Still fire-and-forget — logged, not
+    /// retried, and never propagated to the DEAD-edge caller.
     @Contract
     private void publishSafely(ClusterEvent event) {
         Option.option(publisherSupplier.get())
               .onPresent(publisher -> Result.lift(Causes::fromThrowable,
                                                   () -> publisher.publish(event))
+                                            .onSuccess(promise -> promise.onFailure(cause -> LOG.warn("ClusterEventAggregator: publish of {} failed, dropped: {}",
+                                                                                                      event,
+                                                                                                      cause.message())))
                                             .onFailure(cause -> LOG.warn("ClusterEventAggregator: publish of {} threw, dropped: {}",
                                                                          event,
                                                                          cause.message())))
@@ -483,6 +494,16 @@ public final class ClusterEventAggregator {
     @Contract
     public void onSwimObservation(@SuppressWarnings("unused") org.pragmatica.swim.SwimObservation observation) {}
 
+    /// LEADER_ELECTED stays leader-gated — the newly elected leader is by definition the authoritative
+    /// emitter of its own election, and the gate holds for it.
+    ///
+    /// LEADER_LOST does NOT (#926). It was previously emitted through {@link #emitAsLeader}, which made
+    /// **the event announcing that there is no leader conditional on being the leader** — the branch is
+    /// reached precisely when `leaderId()` is empty, so no node passes the gate and the signal was
+    /// suppressed everywhere it mattered. It is emitted through the un-gated {@link #emitLocal} path
+    /// instead: this is the "no leader, degraded observability" signal, and it is worthless if it can
+    /// only be sent by a leader. Same at-least-once-per-observer contract as
+    /// {@link #onConfirmedDeparture}, with the same bounded duplication and the same `observedBy` key.
     @Contract
     public void onLeaderChange(LeaderNotification.LeaderChange event) {
         event.leaderId()
@@ -491,12 +512,41 @@ public final class ClusterEventAggregator {
                                                                    "Node " + leaderId.id() + " elected as leader",
                                                                    Map.of("leaderId",
                                                                           leaderId.id()))))
-             .onEmpty(() -> emitAsLeader(new LeaderLost(hlcClock.now(),
-                                                        Severity.WARNING,
-                                                        "Leadership lost, election in progress",
-                                                        Map.of())));
+             .onEmpty(() -> {
+                          LOG.warn("Leadership lost on {}, election in progress — cluster observability degraded",
+                                   selfNode.id());
+                          emitLocal(new LeaderLost(hlcClock.now(),
+                                                   Severity.WARNING,
+                                                   "Leadership lost, election in progress",
+                                                   Map.of("observedBy",
+                                                          selfNode.id())));
+                      });
     }
 
+    /// Quorum transitions, UN-gated via {@link #emitLocal} (#926) — previously both leader-gated.
+    ///
+    /// QUORUM_LOST is the most severe event this class emits (CRITICAL) and was the least emittable.
+    /// A cluster that has gone PASSIVE cannot commit through consensus and therefore cannot sustain a
+    /// leader lease, so `leaderCheck` is false on every node exactly when quorum is lost — the same
+    /// self-defeating shape as {@link #onLeaderChange}'s LEADER_LOST branch and
+    /// {@link #onConfirmedDeparture}.
+    ///
+    /// QUORUM_ESTABLISHED is un-gated for a second, independent reason: quorum forms BEFORE a leader is
+    /// elected, so the gate drops the recovery notice at the one moment it is guaranteed to be false.
+    /// Un-gating the loss while leaving the recovery gated would be worse than fixing neither — an
+    /// operator would see the cluster enter "quorum lost" and never see it leave, a permanently red
+    /// signal that trains its own audience to ignore it. **A failure signal is only usable if its
+    /// matching recovery signal is at least as reachable.**
+    ///
+    /// Quorum state is genuinely a per-node observation, not a cluster fact: a node partitioned away
+    /// from the majority sees PASSIVE while the majority side sees ACTIVE, and each node is the only
+    /// authority on its own consensus participation. `emitLocal` is therefore the semantically correct
+    /// path here, matching the `SelfDrainInitiated` per-node contract rather than merely a workaround.
+    ///
+    /// Per-node duplicate suppression is unchanged and still applies: `advanceSequence` drops
+    /// duplicate/out-of-order notifications on this node before any emit. Cross-node duplication is
+    /// bounded by cluster size, per the {@link #onConfirmedDeparture} contract, and `observedBy` names
+    /// the emitter.
     @Contract
     public void onQuorumStateChange(ClusterStateNotification event) {
         if (!event.advanceSequence(quorumSequence)) {
@@ -504,11 +554,25 @@ public final class ClusterEventAggregator {
         }
 
         switch (event.state()) {
-            case ACTIVE -> emitAsLeader(new QuorumEstablished(hlcClock.now(),
-                                                              Severity.INFO,
-                                                              "Quorum established",
-                                                              Map.of()));
-            case PASSIVE -> emitAsLeader(new QuorumLost(hlcClock.now(), Severity.CRITICAL, "Quorum lost", Map.of()));
+            case ACTIVE -> {
+                // The recovery line is NOT decoration. This class nominates the local log as the
+                // surface that survives a leaderless cluster, and on that surface the pair must be
+                // complete: without this, an operator reading logs sees "Quorum lost" and never sees
+                // it restored — the same latched-red failure the un-gating of QUORUM_ESTABLISHED
+                // exists to prevent, reached on a different surface.
+                LOG.info("Quorum established on {} — consensus available", selfNode.id());
+                emitLocal(new QuorumEstablished(hlcClock.now(),
+                                                Severity.INFO,
+                                                "Quorum established",
+                                                Map.of("observedBy", selfNode.id())));
+            }
+            case PASSIVE -> {
+                LOG.warn("Quorum lost on {} — consensus unavailable, cluster observability degraded", selfNode.id());
+                emitLocal(new QuorumLost(hlcClock.now(),
+                                         Severity.CRITICAL,
+                                         "Quorum lost",
+                                         Map.of("observedBy", selfNode.id())));
+            }
         }
     }
 
@@ -559,15 +623,44 @@ public final class ClusterEventAggregator {
     /// `inQuorum` gate / drainer-confined `announced` baseline during the post-kill re-election window,
     /// so NODE_FAILED never reached `/api/events`. The DEAD edge is the reliable signal — the projector
     /// derives `NodeRemoved` FROM it, so it is a strict superset — and whenever the cluster confirms a
-    /// death, the leader emits here. LEADER-gated via {@link #emitAsLeader}: the hook fires on every
-    /// node's FSM but only the leader publishes (no N-way fan-out). Mirrors the NODE_JOINED fix
-    /// (sourced from the ungated transport handshake, not the unreliable membership delta).
+    /// death, every survivor emits here. Mirrors the NODE_JOINED fix (sourced from the ungated
+    /// transport handshake, not the unreliable membership delta).
+    ///
+    /// **UN-gated via {@link #emitLocal} (#926), previously leader-gated.** The leader gate
+    /// deduplicated — one emitter instead of N — and in exchange made the report of a cluster failure
+    /// depend on the cluster electing a leader. Measured over ten days on a five-node cluster: SWIM
+    /// confirmed 8 faulty members, 1,297,717 leader-election lines were logged, and `NodeFailed`
+    /// appeared 0 times. **The observability path failed exactly when the cluster did**, and a consumer
+    /// cannot distinguish that silence from health.
+    ///
+    /// A dedup token is NOT the fix: any token whose scope matches the counted unit must be visible to
+    /// every emitter, which costs at least quorum — and the measured incident ran three of five nodes
+    /// unhealthy, below quorum. It would have been silent in the very incident it is meant to report,
+    /// and would newly bind this path to a coordination outcome it does not otherwise need (the local
+    /// append takes no leader, quorum or consensus). Gating on `leader().isEmpty()` fails for a related
+    /// reason: it makes the leadership view — the least trustworthy input in this incident — the guard
+    /// on the failure path, so a stale `currentLeader()` naming a dead node silences every survivor.
+    ///
+    /// GUARANTEE: **at-least-once per observing core member, per confirmed departure**, into that
+    /// member's LOCAL partition-0 ring. Deliberately NOT exactly-once and NOT deduplicated. Duplicates
+    /// are bounded, not unbounded — `MembershipFsm.enteredDead` is a fresh-edge fan-out firing once per
+    /// DEAD transition per member FSM — so the ceiling is one event per member confirming the death.
+    /// `details.observedBy` carries the emitting node so consumers can collapse duplicates, and the
+    /// distinct-observer count is itself signal. The `replayingCheck` gate is retained, so snapshot
+    /// replay still does not re-publish history.
+    ///
+    /// The WARN log is the surface that survives everything this contract is about: it needs no leader,
+    /// quorum, replica or network. `/api/events` read-back is NOT claimed here — that read prefers a
+    /// remote replica and can fail while the event sits in the local ring.
     @Contract
     public void onConfirmedDeparture(NodeId departed) {
-        emitAsLeader(new NodeFailed(hlcClock.now(),
-                                    Severity.CRITICAL,
-                                    "Node " + departed.id() + " failed (confirmed departure)",
-                                    Map.of("nodeId", departed.id())));
+        LOG.warn("Node {} failed (confirmed departure), observed by {} — cluster membership degraded",
+                 departed.id(),
+                 selfNode.id());
+        emitLocal(new NodeFailed(hlcClock.now(),
+                                 Severity.CRITICAL,
+                                 "Node " + departed.id() + " failed (confirmed departure)",
+                                 Map.of("nodeId", departed.id(), "observedBy", selfNode.id())));
     }
 
     /// Departure-push overrun sink (issue #427, D4). The gracefully-departing node reports the chunks

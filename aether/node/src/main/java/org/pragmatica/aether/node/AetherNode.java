@@ -35,6 +35,7 @@ import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ClusterEventAggregator;
+import org.pragmatica.aether.api.NodeDepartureNotifier;
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.OperationalEvent;
@@ -3080,11 +3081,16 @@ public interface AetherNode extends ManageableNode {
         // is in scope.
         var transitionJournal = TransitionJournal.transitionJournal();
 
-        membershipFsm.onTransition(record -> onFsmTransition(transitionJournal,
-                                                             quorumLossDetectorRef,
-                                                             membershipFsm,
-                                                             record,
-                                                             config.self()));
+        membershipFsm.onTransition(record -> {
+            // #926 round 2: feed the alert manager the transition CAUSE so it can tell an announced
+            // departure (graceful shutdown — i.e. every rolling restart — or an operator drain) from a
+            // crash. The DEAD edge alone cannot: graceful and abrupt departures both arrive there
+            // through the same `Stopped` transition. Folded into the EXISTING listener because
+            // `onTransition` is a single-listener setter — registering a second one would silently
+            // replace the transition journal.
+            alertManager.noteMembershipTransition(record.nodeId(), record.cause());
+            onFsmTransition(transitionJournal, quorumLossDetectorRef, membershipFsm, record, config.self());
+        });
         // Wave-4 (cluster-topology-overhaul, #245): the MembershipDeltaProjector is the SOLE
         // emitter of MembershipDecision, fed by the FSM's own JOINED/REMOVED delta edge —
         // installed BEFORE the boot seed below so the seeded members' OBSERVED→MEMBER
@@ -3343,6 +3349,7 @@ public interface AetherNode extends ManageableNode {
         // this same death edge — behaviour parity, sampler out of the loop. Without it the nudge
         // would wait for the sampler's natural ~nttDepartureTimeout down-hysteresis crossing.
         Consumer<NodeId> dropDeadPeerLink = clusterNetworkRef::departurePermanent;
+        var departureNotifier = NodeDepartureNotifier.nodeDepartureNotifier(eventAggregator, alertManager, config.self());
 
         membershipFsm.onConfirmedDeparture(departed -> {
             onMembershipDeath(departed,
@@ -3354,9 +3361,16 @@ public interface AetherNode extends ManageableNode {
             // #210: emit the user-facing NODE_FAILED from this ungated DEAD edge — the SAME confirmed-
             // death signal that drives auto-heal above — instead of the quorum-gated
             // MembershipDecision.NodeRemoved, which the MembershipDeltaProjector drops during the
-            // post-kill re-election window so the event never reached /api/events on cloud. Leader-gated
-            // inside the aggregator (fires on every node's FSM; only the leader publishes).
-            eventAggregator.onConfirmedDeparture(departed);
+            // post-kill re-election window so the event never reached /api/events on cloud.
+            // #926: NO LONGER leader-gated inside the aggregator. It was, and a cluster that cannot
+            // elect a leader therefore could not emit the events saying it was broken — measured at
+            // 8 SWIM-confirmed deaths and 0 NodeFailed events over ten days. Now emitted on every
+            // node that confirms the death (see ClusterEventAggregator.onConfirmedDeparture for the
+            // at-least-once-per-observer contract and why a dedup token is the wrong fix).
+            // #926 round 2: both surfaces go through ONE named unit. Written as two statements here,
+            // a probe deleted the alert call and all 1217 tests stayed green — the call site was
+            // deletable with no signal. NodeDepartureNotifier makes the pair testable as a pair.
+            departureNotifier.onConfirmedDeparture(departed);
         });
         // Join-grace leak fix: a CTM-provisioned replacement that boots but NEVER reaches
         // SWIM-healthy within the M10 join-grace window is reaped OBSERVED→DEAD by the FSM, but
@@ -5849,6 +5863,12 @@ public interface AetherNode extends ManageableNode {
         // fires for those, but the fresh QUIC handshake produces a TransportObservation.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
                                               eventAggregator::onPeerJoined));
+        // #926: resolve the node-health alert raised on the DEAD edge when the node comes back. Bound
+        // to the SAME ungated handshake that sources NODE_JOINED, so recovery is exactly as reachable
+        // as the failure it clears — a failure signal whose matching recovery signal is less reachable
+        // leaves a permanently red surface, which trains an operator to ignore it.
+        entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
+                                              msg -> alertManager.clearNodeHealthAlert(msg.nodeId())));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
         // NODE_LEFT (graceful departures) is sourced from MembershipDecision. NODE_FAILED is NO LONGER
         // sourced here (#210) — it now rides the ungated FSM DEAD edge (membershipFsm.onConfirmedDeparture
