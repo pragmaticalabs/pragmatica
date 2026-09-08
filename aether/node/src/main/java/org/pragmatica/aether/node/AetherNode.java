@@ -35,6 +35,7 @@ import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ClusterEventAggregator;
+import org.pragmatica.aether.api.NodeDepartureNotifier;
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.OperationalEvent;
@@ -3079,11 +3080,16 @@ public interface AetherNode extends ManageableNode {
         // is in scope.
         var transitionJournal = TransitionJournal.transitionJournal();
 
-        membershipFsm.onTransition(record -> onFsmTransition(transitionJournal,
-                                                             quorumLossDetectorRef,
-                                                             membershipFsm,
-                                                             record,
-                                                             config.self()));
+        membershipFsm.onTransition(record -> {
+            // #926 round 2: feed the alert manager the transition CAUSE so it can tell an announced
+            // departure (graceful shutdown — i.e. every rolling restart — or an operator drain) from a
+            // crash. The DEAD edge alone cannot: graceful and abrupt departures both arrive there
+            // through the same `Stopped` transition. Folded into the EXISTING listener because
+            // `onTransition` is a single-listener setter — registering a second one would silently
+            // replace the transition journal.
+            alertManager.noteMembershipTransition(record.nodeId(), record.cause());
+            onFsmTransition(transitionJournal, quorumLossDetectorRef, membershipFsm, record, config.self());
+        });
         // Wave-4 (cluster-topology-overhaul, #245): the MembershipDeltaProjector is the SOLE
         // emitter of MembershipDecision, fed by the FSM's own JOINED/REMOVED delta edge —
         // installed BEFORE the boot seed below so the seeded members' OBSERVED→MEMBER
@@ -3342,6 +3348,7 @@ public interface AetherNode extends ManageableNode {
         // this same death edge — behaviour parity, sampler out of the loop. Without it the nudge
         // would wait for the sampler's natural ~nttDepartureTimeout down-hysteresis crossing.
         Consumer<NodeId> dropDeadPeerLink = clusterNetworkRef::departurePermanent;
+        var departureNotifier = NodeDepartureNotifier.nodeDepartureNotifier(eventAggregator, alertManager, config.self());
 
         membershipFsm.onConfirmedDeparture(departed -> {
             onMembershipDeath(departed,
@@ -3359,13 +3366,10 @@ public interface AetherNode extends ManageableNode {
             // 8 SWIM-confirmed deaths and 0 NodeFailed events over ten days. Now emitted on every
             // node that confirms the death (see ClusterEventAggregator.onConfirmedDeparture for the
             // at-least-once-per-observer contract and why a dedup token is the wrong fix).
-            eventAggregator.onConfirmedDeparture(departed);
-            // #926 scope item 2: node health had NO alerting path at all. Raised here rather than
-            // inside the aggregator so it does not depend on the cluster-events stream being
-            // publishable OR readable — the alert is per-node local state on this node's /api/alerts,
-            // and this edge is ungated, so it needs no leader and no quorum. Cleared on rejoin at the
-            // PeerJoined route.
-            alertManager.onNodeFailed(departed, config.self());
+            // #926 round 2: both surfaces go through ONE named unit. Written as two statements here,
+            // a probe deleted the alert call and all 1217 tests stayed green — the call site was
+            // deletable with no signal. NodeDepartureNotifier makes the pair testable as a pair.
+            departureNotifier.onConfirmedDeparture(departed);
         });
         // Join-grace leak fix: a CTM-provisioned replacement that boots but NEVER reaches
         // SWIM-healthy within the M10 join-grace window is reaped OBSERVED→DEAD by the FSM, but
