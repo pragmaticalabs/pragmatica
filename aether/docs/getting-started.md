@@ -354,7 +354,7 @@ and `quorate: true`.
 ### Ship a slice to it
 
 The scaffold's `deploy-prod.sh` works out of the box now (the broken
-`aether artifacts push --env prod` call — [#515](https://github.com/pragmaticalabs/pragmatica/issues/515)
+`aether artifact push --env prod` call — [#515](https://github.com/pragmaticalabs/pragmatica/issues/515)
 — is gone). It builds and verifies, asks for a typed `yes` before doing
 anything (this is a real deploy), then pushes and deploys through the
 `aether` CLI. It doesn't hardcode a cluster address — point it at yours
