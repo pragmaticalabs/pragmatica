@@ -122,20 +122,30 @@ class AlertManagerNodeHealthTest {
         assertThat(views.stream().filter(view -> "node_health".equals(view.source())).toList()).isEmpty();
     }
 
-    /// A graceful departure — a normal shutdown, and therefore EVERY node of EVERY rolling restart —
-    /// must not raise a CRITICAL alert. The DEAD edge cannot tell the difference on its own: a
-    /// graceful `SwimDeparted` and a crash both reach DEAD through the same `Stopped` transition. An
-    /// alert surface that fires CRITICAL during routine planned operations gets muted, and a muted
-    /// alert is the same end state as the silence #926 exists to fix, reached from the other side.
+    /// **Regression pin for the round-2 blocking defect.** `SwimDeparted` was briefly treated as a
+    /// graceful goodbye, on the strength of `MembershipFsm.onSwimDeparted`'s docstring. It is not: it is
+    /// SWIM's DEATH BROADCAST. `SwimProtocol.emitFaultyEdgePair` delivers `FaultyObserved` and
+    /// `DepartedObserved` as a pair at the FAULTY edge ("FAULTY IS confirmed death (canonical SWIM)"),
+    /// `DepartedObserved` routes to `onSwimDeparted` (`AetherNode:4968`), and that dispatches
+    /// `SwimDeparted`. It is the PRIMARY crash path — with it suppressed, `kill -9` raised no CRITICAL
+    /// alert at all.
+    ///
+    /// The test it replaced fed the literal `"SwimDeparted"` and asserted NO alert, so it did not merely
+    /// miss the defect — **it encoded the defect as the specification.** Any future change that puts
+    /// `SwimDeparted` back into the graceful set turns this red.
     @Test
-    void announcedDeparture_raisesNoAlert() {
+    void swimDeparted_stillAlerts_becauseItIsSwimsDeathBroadcast() {
         var manager = newManager();
         manager.noteMembershipTransition(FAILED, "SwimDeparted");
         manager.onNodeFailed(FAILED, OBSERVER);
 
-        assertThat(manager.getActiveNodeHealthAlerts()).isEmpty();
+        var active = manager.getActiveNodeHealthAlerts();
+        assertThat(active).hasSize(1);
+        assertThat(active.getFirst().severity()).isEqualTo(AlertEvent.Severity.CRITICAL);
     }
 
+    /// The only cause that is genuinely an announced departure: the operator/controller drain command.
+    /// Nothing in SWIM's failure detection raises it.
     @Test
     void operatorDrain_raisesNoAlert() {
         var manager = newManager();
@@ -175,7 +185,7 @@ class AlertManagerNodeHealthTest {
     @Test
     void gracefulMarkIsConsumed_soALaterCrashStillAlerts() {
         var manager = newManager();
-        manager.noteMembershipTransition(FAILED, "SwimDeparted");
+        manager.noteMembershipTransition(FAILED, "DrainRequested");
         manager.onNodeFailed(FAILED, OBSERVER);
         assertThat(manager.getActiveNodeHealthAlerts()).isEmpty();
 
@@ -196,5 +206,29 @@ class AlertManagerNodeHealthTest {
 
         assertThat(manager.getActiveNodeHealthAlerts()).hasSizeLessThanOrEqualTo(64);
         assertThat(manager.activeAlertsAsList().await().unwrap()).hasSizeLessThanOrEqualTo(64);
+    }
+
+    /// Size alone does not pin eviction: flipping oldest-first to newest-first left the suite green,
+    /// because the bound test above asserts only how many survive and never WHICH. Newest-first would
+    /// discard exactly the failures an operator is still acting on while retaining ancient ones, so the
+    /// direction is the part that matters. Insertion order — not `System.currentTimeMillis()` — is what
+    /// makes this assertable at all: alerts raised in a tight loop share a millisecond, so a
+    /// timestamp-ordered eviction has no well-defined "oldest" to test.
+    @Test
+    void evictionDropsOldestFirst_keepingTheMostRecentFailures() {
+        var manager = newManager();
+
+        for (int i = 0; i < 100; i++) {
+            manager.onNodeFailed(new NodeId("node-" + i), OBSERVER);
+        }
+
+        var surviving = manager.getActiveNodeHealthAlerts()
+                               .stream()
+                               .map(alert -> alert.nodeId().id())
+                               .toList();
+
+        assertThat(surviving).hasSize(64);
+        // The 36 oldest are gone; the 64 most recent remain.
+        assertThat(surviving).contains("node-99", "node-36").doesNotContain("node-0", "node-35");
     }
 }

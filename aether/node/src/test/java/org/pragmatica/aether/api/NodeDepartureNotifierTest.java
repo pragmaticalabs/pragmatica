@@ -128,18 +128,36 @@ class NodeDepartureNotifierTest {
         assertThat(f.alerts().getActiveNodeHealthAlerts()).hasSize(1);
     }
 
-    /// A graceful departure still belongs in the stream — a `NodeFailed` record of an announced
-    /// departure is legitimate history — but must NOT raise a CRITICAL alert. This pins that the two
-    /// surfaces diverge exactly where they should, so the rolling-restart fix cannot be mistaken for
-    /// suppressing the event as well.
+    /// An operator drain still belongs in the stream — a `NodeFailed` record of a drained departure is
+    /// legitimate history — but must NOT raise a CRITICAL alert. This pins that the two surfaces diverge
+    /// exactly where they should, so the drain-quieting fix cannot be mistaken for suppressing the event
+    /// as well.
+    ///
+    /// **This test previously fed `"SwimDeparted"`** and asserted no alert — encoding the round-2
+    /// blocking defect as the specification. `SwimDeparted` is SWIM's death broadcast, not a graceful
+    /// goodbye; `DrainRequested` is the only cause that genuinely means "announced".
     @Test
-    void announcedDeparture_reachesTheStreamButRaisesNoAlert() {
+    void drainedDeparture_reachesTheStreamButRaisesNoAlert() {
         var f = Fixture.create();
-        f.alerts().noteMembershipTransition(DEAD, "SwimDeparted");
+        f.alerts().noteMembershipTransition(DEAD, "DrainRequested");
         f.notifier().onConfirmedDeparture(DEAD);
 
         assertThat(f.events()).hasSize(1);
         assertThat(f.events().getFirst()).isInstanceOf(ClusterEvent.NodeFailed.class);
         assertThat(f.alerts().getActiveNodeHealthAlerts()).isEmpty();
+    }
+
+    /// Regression pin at the composition level: a SWIM-confirmed death must reach BOTH surfaces. While
+    /// `SwimDeparted` sat in the graceful set, this path produced an event and no alert — `kill -9` was
+    /// silent on the alert surface.
+    @Test
+    void swimDeath_reachesBothSurfaces_notJustTheStream() {
+        var f = Fixture.create();
+        f.alerts().noteMembershipTransition(DEAD, "SwimDeparted");
+        f.notifier().onConfirmedDeparture(DEAD);
+
+        assertThat(f.events()).hasSize(1);
+        assertThat(f.alerts().getActiveNodeHealthAlerts()).hasSize(1);
+        assertThat(f.alerts().getActiveNodeHealthAlerts().getFirst().severity()).isEqualTo(AlertEvent.Severity.CRITICAL);
     }
 }
