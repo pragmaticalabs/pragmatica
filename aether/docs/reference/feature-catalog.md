@@ -364,9 +364,9 @@ the rows disagree.
 
 **These counts are claimed, not verified.** Each one counts what a row in this catalog
 *claims* about itself. Nothing here has been checked against the code, and the catalog is
-known to overclaim at row level -- row 39 reads `Alert management | Complete` while
-`AlertForwarder` is never constructed in production (#926). Read the total as "227 rows
-asserting a capability", not as 227 working capabilities.
+known to overclaim at row level -- row 39 reads `Alert management | Complete` while `AlertForwarder` is
+never constructed in production (#926). Read the total as "227 rows asserting a
+capability", not as 227 working capabilities.
 
 | Status | Count |
 |--------|-------|
@@ -379,11 +379,13 @@ asserting a capability", not as 227 working capabilities.
 
 **Highest-priority gap** (a priority, not a status — the row's completion level is in the
 table above):
+
 | Feature | Issue |
 |---------|-------|
 | Web dashboard (#58) | Node management dashboard requires major development — missing observability, invocation traces, log management, storage, streaming, worker pool UIs |
 
 **Partial features and their gaps:**
+
 | Feature | Key Gap |
 |---------|---------|
 | TTM predictive scaling (#11) | Disabled by default, no live model training |

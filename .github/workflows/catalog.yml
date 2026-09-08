@@ -2,7 +2,9 @@ name: Feature catalog statistics
 
 # The catalog's Statistics table is generated from its own feature rows (#928). It was hand-maintained
 # and never agreed with the body: at its last hand edit (a43c04c70) it claimed 207 while the body
-# carried 221. This check fails when the block and the rows disagree, so the drift cannot return.
+# carried 221. This check fails when the block and the rows disagree, so drift is DETECTED on every
+# PR that touches the catalog. It is not a *required* check -- release-1.0.0-rc4 is not a protected
+# branch -- so it reports drift rather than preventing a merge past it.
 on:
   push:
     branches: [main, release-*, feature/*, fix/*]
