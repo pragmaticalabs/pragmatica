@@ -1263,7 +1263,7 @@ public final class MembershipFsm {
         /// [`#evictIfStillConfirmedDead`]'s check-march-clear sequence indivisible now that it
         /// holds the guard rather than the monitor. Reentrant: nested [`#dispatch`] calls re-enter
         /// the same guard on the same thread.
-        void inTransition(Runnable action) {
+        private void inTransition(Runnable action) {
             synchronized (transitionGuard) {
                 action.run();
             }
@@ -1341,10 +1341,7 @@ public final class MembershipFsm {
 
             if (!everJoined && fsm.current() instanceof MembershipState.Member) {
                 everJoined = true;
-                var edge = new MembershipDeltaEdge(id,
-                                                   MembershipDeltaEdge.Kind.JOINED,
-                                                   incarnation(),
-                                                   descriptor.role());
+                var edge = new MembershipDeltaEdge(id, MembershipDeltaEdge.Kind.JOINED, incarnation(), descriptor.role());
 
                 emissions.add(() -> deltaSink.accept(edge));
             }

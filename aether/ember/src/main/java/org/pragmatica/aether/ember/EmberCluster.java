@@ -797,10 +797,7 @@ public final class EmberCluster {
         log.info("Stopping Ember cluster");
         rollingRestartTask.cancel();
         rollingRestartActive.set(false);
-        var stopPromises = nodes.values()
-                                .stream()
-                                .map(EmberCluster::submitStop)
-                                .toList();
+        var stopPromises = nodes.values().stream().map(EmberCluster::submitStop).toList();
 
         return Promise.allOf(stopPromises)
                       .map(_ -> Unit.unit())
@@ -823,8 +820,7 @@ public final class EmberCluster {
     /// guard; on its own it would make that deadlock more frequent, not less.
     private static Promise<Unit> submitStop(AetherNode node) {
         return Promise.<Unit> promise(promise -> node.stop()
-                                                     .onResult(promise::resolve))
-                      .timeout(NODE_TIMEOUT);
+                                                     .onResult(promise::resolve)).timeout(NODE_TIMEOUT);
     }
 
     private void clearClusterState(Unit unit) {
