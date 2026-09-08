@@ -150,6 +150,49 @@ class UnknownEnumOrdinalWireTest {
             .satisfies(e -> assertThat(e.tag()).isEqualTo(absentTag));
     }
 
+    /// **The unrecoverable half of "nested", and the case #963 must plan for.**
+    ///
+    /// "Nested" is TWO shapes with OPPOSITE recoverability. An unknown ENUM ORDINAL is recoverable
+    /// because the enum HAS a constant to name it — the ordinal tests above assert the surrounding
+    /// message survives intact. An unknown TYPE is not: there is nothing to construct, so a message
+    /// carrying a type this node lacks is lost, and when that type sits NESTED inside a message the
+    /// node otherwise understands, the WHOLE outer message goes with it, not merely the field.
+    ///
+    /// Correct per the owner's ruling, and precisely what the sentinel cannot help with.
+    /// `DeploymentOutcomeUnknownStatusCodecTest` in aether/slice draws the same contrast on the actual
+    /// record #963 changes; this one draws it through a framework container.
+    @Test
+    void unknownTagNestedInsideAKnownContainer_losesTheWholeMessage() {
+        var buf = Unpooled.buffer();
+        var absentTag = SliceCodec.USER_TAG_BASE + 5_150;
+
+        SliceCodec.writeCompact(buf, SliceCodec.TAG_ARRAY);
+        SliceCodec.writeCompact(buf, 2);
+        codec().write(buf, PEER);
+        SliceCodec.writeCompact(buf, absentTag);
+        buf.writeLong(0L);
+
+        assertThatThrownBy(() -> codec().read(buf))
+            .as("the known first element must not rescue the message — the read fails as a whole")
+            .isInstanceOf(UnknownTypeTagException.class);
+    }
+
+    /// The control: the identical container whose elements are ALL known round-trips. Without it the
+    /// failure above could be a malformed container rather than the unknown element.
+    @Test
+    void knownTagsNestedInsideTheSameContainer_roundTripIntact() {
+        var buf = Unpooled.buffer();
+
+        SliceCodec.writeCompact(buf, SliceCodec.TAG_ARRAY);
+        SliceCodec.writeCompact(buf, 2);
+        codec().write(buf, PEER);
+        codec().write(buf, PEER);
+
+        java.util.List<NodeId> decoded = codec().read(buf);
+
+        assertThat(decoded).containsExactly(PEER, PEER);
+    }
+
     /// A tag that IS registered must not raise the version-skew type, or the boundary would report a
     /// corrupt frame as a rolling upgrade and send the operator to the wrong place.
     @Test
