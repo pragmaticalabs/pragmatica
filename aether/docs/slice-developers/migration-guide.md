@@ -558,7 +558,7 @@ aether blueprints status order-system:1.0.0
 curl http://localhost:5150/api/blueprint/order-system:1.0.0/status
 
 # Or use the CLI:
-aether -c localhost:5150 blueprint status order-system:1.0.0
+aether -c localhost:5150 blueprints status order-system:1.0.0
 ```
 
 ## Step 5: Route Traffic

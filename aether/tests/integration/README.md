@@ -205,7 +205,7 @@ The quiesce barriers replace the old `self_heal` 3-step recovery. See [`aether/d
 - If `mode: "unknown"` or `epoch: null`, pings haven't propagated yet — check that the leader node is actually up.
 
 **Slice never activates**
-- Blueprint was pushed but never deployed: `aether -c $TARGET_HOST:5150 --api-key $AETHER_API_KEY blueprint list`.
+- Blueprint was pushed but never deployed: `aether -c $TARGET_HOST:5150 --api-key $AETHER_API_KEY blueprints list`.
 - Check recent events: `aether -c $TARGET_HOST:5150 --api-key $AETHER_API_KEY events --limit 50`.
 
 **Grep logs on the target**

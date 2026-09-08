@@ -324,10 +324,10 @@ echo "Building..."
 mvn clean verify
 
 echo "Pushing artifact to test..."
-aether -c "$AETHER_URL" artifact push target/*.jar
+aether -c "$AETHER_URL" artifacts push target/*.jar
 
 echo "Applying blueprint..."
-aether -c "$AETHER_URL" blueprint apply target/blueprint.toml
+aether -c "$AETHER_URL" blueprints apply target/blueprint.toml
 
 echo ""
 echo "Deployed to test: $AETHER_URL"
@@ -375,10 +375,10 @@ echo "Building..."
 mvn clean verify
 
 echo "Pushing artifact to production..."
-aether -c "$AETHER_URL" artifact push target/*.jar
+aether -c "$AETHER_URL" artifacts push target/*.jar
 
 echo "Applying blueprint..."
-aether -c "$AETHER_URL" blueprint apply target/blueprint.toml
+aether -c "$AETHER_URL" blueprints apply target/blueprint.toml
 
 echo ""
 echo "Deployed to production: $AETHER_URL"
@@ -637,7 +637,7 @@ When a blueprint deployment fails:
 
 ```bash
 # If deployment fails, you'll see the cause:
-aether -c $URL blueprint apply blueprint.toml
+aether -c $URL blueprints apply blueprint.toml
 # Error: Deployment failed: SliceLoadingFailure(OrderService) - ClassNotFoundException: ...
 # All slices rolled back to previous state.
 ```
