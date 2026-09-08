@@ -1,0 +1,218 @@
+# cli-docs-gate - waived documentation drift.
+#
+# Every line here is a CLI invocation element that this repository's documentation cites and the
+# shipped CLI does not define. This file is the drift REPORT, kept where it can be worked off - not a
+# mute button:
+#
+#   * a finding that is NOT listed here fails the build, so drift cannot grow;
+#   * a line here that matches NOTHING fails the build, so fixing a document forces its line to be
+#     deleted;
+#   * the entry COUNT and a DIGEST OF THE ENTRIES are both pinned in CliDocsDriftTest, so this file
+#     cannot be rewritten at constant size either. Swapping one line out for another is the move a
+#     count alone does not catch.
+#
+# Format, tab-separated:  <repository-relative path>  command: <command path that does not exist>
+#                         <repository-relative path>  option: <option> on <command path>
+#
+# Keyed by path and drift, never by line number: line numbers are tree-scoped and shift under any
+# edit above them. NOTE the consequence, since it bounds what this count means: one line here covers
+# EVERY instance of that drift in that file, so 85 entries describe more than 85 broken
+# invocations.
+#
+# Regenerate candidate lines with:
+#   mvn -pl cli-docs-gate test    ->  cli-docs-gate/target/cli-docs-gate/drift-keys.txt
+#
+# WHAT IS LEFT HERE, AND WHY IT IS NOT A SPELLING PROBLEM.
+#
+# All mechanical drift is now fixed, in two passes. The first fixed 20 direct-adjacency cases
+# (`aether blueprint deploy` -> `blueprints deploy`, `aether artifact push` -> `artifacts push`). It
+# MISSED ten more that carry an option between the binary and the subcommand
+# (`aether -c "$AETHER_URL" artifact push ...`), because it was driven by a text search for the
+# literal string - in a check whose whole argument is that text searches do not reach what a parse
+# does. The second pass was driven by this gate's own extraction and fixed those ten.
+#
+# What remains is the product overclaiming its own CLI surface:
+#
+#   * `aether scale --min/--max/--target-cpu/--target-latency/--cooldown/--auto` - the shipped
+#     `aether scale` takes `-n/--instances`, `-p/--placement`, `--wait`, `--timeout`. The documented
+#     flags describe AUTOSCALING, a feature claim rather than a spelling.
+#   * `jbct init --slice` - the shipped option is `--no-slice`, the INVERSE. A reader who "corrects"
+#     the docs gets the opposite behaviour.
+#   * `aether blueprint set` and `aether artifact upload` - unlike the ten above, `blueprints set` and
+#     `artifacts upload` do not exist either, so there is no mechanical target to rename to.
+#   * `aether stream create` and its siblings in in-memory-streams-spec.md - the CLI ships BOTH an
+#     `aether stream` and an `aether streams` tree with divergent subcommands (#951). That spec is
+#     written against the singular tree throughout; renaming one line to the plural would leave the
+#     document internally inconsistent while four sibling commands remain absent under either tree.
+#     Resolved by #951, deliberately not by this pass.
+#   * The remaining absent commands (`aether aspects`, `topic(s)`, `forge`, `logs`, `workflows`,
+#     `landscape`, `cluster audit/heal/api-key/unregister`, `workers health/endpoints`,
+#     `nodes decommission`, `jbct add`, ...) are surfaces the documentation describes and the CLI
+#     never grew.
+#   * One entry is a false positive of this gate, kept rather than hidden: harness-resilience-spec.md
+#     waives `aether node`, whose source line is prose PROPOSING the command and saying it does not
+#     exist. The gate reads the inline span as an invocation and cannot tell a proposal from an
+#     instruction.
+#
+# Current composition: 85 entries - 29 absent commands, 56 absent options - across
+# 34 files, of which 34 are under aether/docs/specs/**.
+
+
+# --- aether/docs/aether-overview.md ---
+aether/docs/aether-overview.md	option: --max on aether scale
+aether/docs/aether-overview.md	option: --min on aether scale
+aether/docs/aether-overview.md	option: --target-cpu on aether scale
+aether/docs/aether-overview.md	option: --target-latency on aether scale
+
+# --- aether/docs/architecture/08-scaling.md ---
+aether/docs/architecture/08-scaling.md	option: --cooldown on aether scale
+aether/docs/architecture/08-scaling.md	option: --max on aether scale
+aether/docs/architecture/08-scaling.md	option: --min on aether scale
+aether/docs/architecture/08-scaling.md	option: --target-cpu on aether scale
+aether/docs/architecture/08-scaling.md	option: --target-latency on aether scale
+
+# --- aether/docs/architecture/12-management.md ---
+aether/docs/architecture/12-management.md	option: --max on aether scale
+aether/docs/architecture/12-management.md	option: --min on aether scale
+
+# --- aether/docs/articles/aether-introduction.md ---
+aether/docs/articles/aether-introduction.md	command: aether blueprint
+aether/docs/articles/aether-introduction.md	option: --action on aether thresholds set
+
+# --- aether/docs/getting-started.md ---
+# DO NOT "FIX" THIS ONE. It looks exactly like the six singular/plural typos that WERE fixed, and
+# `aether artifacts` does exist — but the line is a sentence about a bug that was fixed in the past:
+# "the broken `aether artifact push --env prod` call (#515) is gone". Renaming it makes the sentence
+# name a call that was never the broken one. It was renamed once, in this PR's first pass, and
+# reverted for exactly that reason. The gate cannot tell historical prose from an instruction, and
+# the changelog exclusion is by DIRECTORY, so history inside a living document is unprotected.
+aether/docs/getting-started.md	command: aether artifact
+
+# --- aether/docs/guides/deploy-guide.md ---
+aether/docs/guides/deploy-guide.md	option: --cleanup on aether deploy
+
+# --- aether/docs/operators/scaling.md ---
+aether/docs/operators/scaling.md	command: aether forge
+aether/docs/operators/scaling.md	command: aether logs
+aether/docs/operators/scaling.md	option: --auto on aether scale
+aether/docs/operators/scaling.md	option: --last on aether events
+aether/docs/operators/scaling.md	option: --max on aether scale
+aether/docs/operators/scaling.md	option: --min on aether scale
+aether/docs/operators/scaling.md	option: --target-cpu on aether scale
+aether/docs/operators/scaling.md	option: --target-latency on aether scale
+aether/docs/operators/scaling.md	option: --type on aether events
+aether/docs/operators/scaling.md	option: --verbose on aether status
+aether/docs/operators/scaling.md	option: --watch on aether status
+
+# --- aether/docs/reference/cli.md ---
+aether/docs/reference/cli.md	command: aether aspects
+aether/docs/reference/cli.md	command: aether cluster audit
+aether/docs/reference/cli.md	command: aether nodes decommission
+aether/docs/reference/cli.md	command: aether topic
+aether/docs/reference/cli.md	command: aether workers endpoints
+aether/docs/reference/cli.md	command: aether workers health
+aether/docs/reference/cli.md	option: --no-follow on aether stream tail
+aether/docs/reference/cli.md	option: --variants on aether ab-tests create
+aether/docs/reference/cli.md	option: -a on aether ab-tests create
+
+# --- aether/docs/reference/feature-catalog.md ---
+aether/docs/reference/feature-catalog.md	command: jbct add
+
+# --- aether/docs/reference/management-api.md ---
+aether/docs/reference/management-api.md	command: aether workers endpoints
+aether/docs/reference/management-api.md	command: aether workers health
+
+# --- aether/docs/reference/slice-api.md ---
+aether/docs/reference/slice-api.md	option: --package on jbct init
+aether/docs/reference/slice-api.md	option: --slice on jbct init
+
+# --- aether/docs/slice-developers/README.md ---
+aether/docs/slice-developers/README.md	option: --slice on jbct init
+
+# --- aether/docs/slice-developers/deployment.md ---
+aether/docs/slice-developers/deployment.md	option: --slice on jbct init
+
+# --- aether/docs/slice-developers/faq.md ---
+aether/docs/slice-developers/faq.md	option: --max on aether scale
+aether/docs/slice-developers/faq.md	option: --min on aether scale
+aether/docs/slice-developers/faq.md	option: --target-cpu on aether scale
+
+# --- aether/docs/slice-developers/forge-guide.md ---
+aether/docs/slice-developers/forge-guide.md	option: --slice on jbct init
+
+# --- aether/docs/slice-developers/getting-started.md ---
+aether/docs/slice-developers/getting-started.md	option: --slice on jbct init
+
+# --- aether/docs/slice-developers/persistence-guide.md ---
+aether/docs/slice-developers/persistence-guide.md	command: jbct add
+
+# --- aether/docs/specs/cluster-bootstrap-spec.md ---
+aether/docs/specs/cluster-bootstrap-spec.md	option: --dry-run on aether cluster bootstrap
+aether/docs/specs/cluster-bootstrap-spec.md	option: --file on aether cluster export
+
+# --- aether/docs/specs/cluster-init-wizard-spec.md ---
+aether/docs/specs/cluster-init-wizard-spec.md	option: --cores on aether cluster init
+aether/docs/specs/cluster-init-wizard-spec.md	option: --firewall-cidr on aether cluster init
+aether/docs/specs/cluster-init-wizard-spec.md	option: --lb on aether cluster init
+
+# --- aether/docs/specs/cluster-management-spec.md ---
+aether/docs/specs/cluster-management-spec.md	command: aether cluster api-key
+aether/docs/specs/cluster-management-spec.md	option: --base on aether cluster apply
+aether/docs/specs/cluster-management-spec.md	option: --base on aether cluster bootstrap
+aether/docs/specs/cluster-management-spec.md	option: --force on aether cluster destroy
+aether/docs/specs/cluster-management-spec.md	option: --json on aether cluster status
+aether/docs/specs/cluster-management-spec.md	option: --keep-instances on aether cluster destroy
+aether/docs/specs/cluster-management-spec.md	option: --overlay on aether cluster apply
+aether/docs/specs/cluster-management-spec.md	option: --overlay on aether cluster bootstrap
+aether/docs/specs/cluster-management-spec.md	option: --strategy on aether cluster upgrade
+
+# --- aether/docs/specs/durable-entity-primitive-spec.md ---
+aether/docs/specs/durable-entity-primitive-spec.md	command: aether workflows
+
+# --- aether/docs/specs/durable-pubsub-spec.md ---
+aether/docs/specs/durable-pubsub-spec.md	command: aether topics
+
+# --- aether/docs/specs/event-stream-namespaces-spec.md ---
+aether/docs/specs/event-stream-namespaces-spec.md	command: aether stream peek
+
+# --- aether/docs/specs/harness-resilience-spec.md ---
+aether/docs/specs/harness-resilience-spec.md	command: aether node
+
+# --- aether/docs/specs/in-memory-streams-spec.md ---
+aether/docs/specs/in-memory-streams-spec.md	command: aether stream create
+aether/docs/specs/in-memory-streams-spec.md	command: aether stream lag
+aether/docs/specs/in-memory-streams-spec.md	command: aether stream migrate
+aether/docs/specs/in-memory-streams-spec.md	command: aether stream repartition
+aether/docs/specs/in-memory-streams-spec.md	command: aether stream set-replication
+
+# --- aether/docs/specs/integration-test-overhaul-v2-spec.md ---
+aether/docs/specs/integration-test-overhaul-v2-spec.md	command: aether cluster heal
+
+# --- aether/docs/specs/interactive-scaffolding-spec.md ---
+aether/docs/specs/interactive-scaffolding-spec.md	command: jbct add
+aether/docs/specs/interactive-scaffolding-spec.md	option: --with-http-client on jbct init
+aether/docs/specs/interactive-scaffolding-spec.md	option: --with-web on jbct init
+
+# --- aether/docs/specs/landscape-spec.md ---
+aether/docs/specs/landscape-spec.md	command: aether landscape
+
+# --- aether/docs/specs/runtime-observability-aspects-spec.md ---
+aether/docs/specs/runtime-observability-aspects-spec.md	command: aether observability set
+
+# --- aether/docs/specs/storage-management-api-spec.md ---
+aether/docs/specs/storage-management-api-spec.md	option: --node on aether storage snapshot
+
+# --- aether/docs/specs/unified-deploy-spec.md ---
+aether/docs/specs/unified-deploy-spec.md	option: --all on aether deploy list
+aether/docs/specs/unified-deploy-spec.md	option: --latency-ms on aether deploy
+aether/docs/specs/unified-deploy-spec.md	option: --stages on aether deploy
+aether/docs/specs/unified-deploy-spec.md	option: --strategy on aether deploy
+
+# --- aether/tests/cloud/docs/cloud-testing-spec.md ---
+aether/tests/cloud/docs/cloud-testing-spec.md	command: aether cluster unregister
+
+# --- aether/tests/integration/README.md ---
+aether/tests/integration/README.md	option: --limit on aether events
+
+# --- jbct/slice-processor/docs/HTTP-ROUTE-GENERATION.md ---
+jbct/slice-processor/docs/HTTP-ROUTE-GENERATION.md	option: --slice on jbct init

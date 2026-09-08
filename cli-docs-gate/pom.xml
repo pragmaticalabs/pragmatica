@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.pragmatica-lite</groupId>
+        <artifactId>pragmatica</artifactId>
+        <version>1.0.0-rc4</version>
+    </parent>
+
+    <artifactId>cli-docs-gate</artifactId>
+    <packaging>jar</packaging>
+
+    <name>CLI Documentation Drift Gate</name>
+    <description>
+        Test-only module. Owns no production code: it reads the live picocli CommandSpec trees of the
+        two shipped CLIs (`aether`, `jbct`) and diffs them against every CLI invocation written down in
+        this repository's Markdown.
+    </description>
+
+    <!--
+        WHY THIS MODULE EXISTS, AND WHY IT IS A TOP-LEVEL MODULE LISTED LAST.
+
+        The governing rule is "query the system, not the docs". A textual scrape of `@Command`
+        annotations cannot see programmatic registration, mixins, picocli's own built-in subcommands
+        (`generate-completion`), or the standard help and version options that `mixinStandardHelpOptions`
+        synthesises. So the gate constructs the real `CommandLine` objects and walks `CommandSpec`.
+        That requires the CLI classes on a classpath, which is why this is a Maven module and not a
+        script.
+
+        It is TOP-LEVEL rather than a child of `aether/` because it gates BOTH shipped CLIs, and
+        `jbct-cli` lives outside the `aether` reactor. It is LAST in the root <modules> list, and
+        declares test-scoped dependencies on both CLI modules, so Maven's reactor cannot schedule it
+        before either one in any build order — the same structural ordering argument that
+        aether/dead-surface-gate documents at length.
+
+        LICENSING: this module links `org.pragmatica-lite.aether:cli`, which is BSL-1.1. Its sources
+        therefore carry the BSL header, not the Apache header used by `core`, `integrations` and
+        `jbct`. It publishes nothing (see maven.deploy.skip below), so the mixed-licence reactor
+        position creates no distribution question.
+    -->
+
+    <properties>
+        <!-- Gate-only module: it produces an empty jar and must never be published. -->
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <gpg.skip>true</gpg.skip>
+    </properties>
+
+    <dependencies>
+        <!--
+            === The two subjects of the gate ===
+            Test-scoped, and load-bearing for reactor ORDERING as much as for compilation: with these
+            declared, no build order can run this module's tests against a CLI that has not been built.
+        -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>cli</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-cli</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Named directly by the surface walker; arrives transitively too, pinned here so the
+             gate does not depend on a transitive path it does not control. -->
+        <dependency>
+            <groupId>info.picocli</groupId>
+            <artifactId>picocli</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- === Test harness === -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+        </dependency>
+    </dependencies>
+</project>

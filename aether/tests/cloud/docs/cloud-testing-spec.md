@@ -386,10 +386,10 @@ REQ-D37: Verify leader elected:
 
 ```
 REQ-D38: Push example blueprint artifacts (url-shortener v1 and v2) via CLI:
-         aether -c <aether-lb-public-ip>:8081 artifact push org.pragmatica.aether.example:url-shortener:1.0.0
-         aether -c <aether-lb-public-ip>:8081 artifact push org.pragmatica.aether.example:url-shortener:1.0.1
+         aether -c <aether-lb-public-ip>:8081 artifacts push org.pragmatica.aether.example:url-shortener:1.0.0
+         aether -c <aether-lb-public-ip>:8081 artifacts push org.pragmatica.aether.example:url-shortener:1.0.1
 REQ-D39: Deploy v1 as baseline:
-         aether -c <core-node-public-ip>:8080 blueprint deploy org.pragmatica.aether.example:url-shortener:1.0.0
+         aether -c <core-node-public-ip>:8080 blueprints deploy org.pragmatica.aether.example:url-shortener:1.0.0
 REQ-D40: Wait for slices to become active (at least 1 instance running).
 REQ-D41: Export environment for test runner:
          echo "CLUSTER_ENDPOINT=http://<core-node-public-ip>:8080"

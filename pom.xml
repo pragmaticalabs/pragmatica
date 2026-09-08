@@ -51,6 +51,13 @@
         <module>jbct</module>
         <module>aether</module>
         <module>examples</module>
+        <!--
+            LAST, deliberately. cli-docs-gate reads the live picocli CommandSpec trees of aether/cli
+            and jbct/jbct-cli and diffs them against every CLI invocation in this repository's
+            Markdown. It test-depends on both CLI modules so no reactor order can run it against a
+            CLI that has not been built.
+        -->
+        <module>cli-docs-gate</module>
     </modules>
 
     <properties>

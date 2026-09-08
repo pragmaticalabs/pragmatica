@@ -317,7 +317,7 @@ Within seconds, you have a 5-node cluster running on your laptop. The dashboard 
 You deploy your slice:
 
 ```bash
-aether-cli deploy target/order-service-1.0.0.jar
+aether deploy target/order-service-1.0.0.jar
 ```
 
 The dashboard updates. Your slice appears across the cluster. The load generator starts sending requests--place order, check status, cancel. You watch latency graphs respond.
