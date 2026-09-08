@@ -85,6 +85,7 @@ import io.netty.handler.codec.http.HttpHeaders;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -394,6 +395,99 @@ class BlueprintServiceTest {
                     .isEqualTo("FAILED");
         }
 
+        /// #922/#930 — THE INVARIANT THE APPLY MARKER RESTS ON, pinned against the BATCH.
+        ///
+        /// `ClusterDeploymentState.Active.deploymentApplyOutstanding` decides whether retry
+        /// exhaustion condemns an artifact, and it reads exactly this pair: `AppBlueprintKey(id)`
+        /// present with no `DeploymentOutcomeKey(id)` record. That is only a usable marker because
+        /// #759 puts both writes into ONE consensus batch — one `ClusterNode.apply` call becomes one
+        /// `Batch` (`RabiaEngine.prepareBatch`) decided once and handed to `KVStore.process` as a
+        /// unit, so no replica applies one without the other and no crash can split them.
+        ///
+        /// The test above pins that the stale outcome is CLEARED. It stays green if the `Remove` is
+        /// moved into a second `cluster.apply`, because the end state is identical — and that is
+        /// precisely the regression that would silently un-earn the marker. This one pins the
+        /// GROUPING: it fails if the two writes stop sharing a batch, whatever the end state.
+        ///
+        /// **Bound stated honestly.** This drives `storeBlueprintWithKey` (the `publish(dsl)` path)
+        /// and, below, `removeFromStore` (the `delete` path). The third site,
+        /// `buildAllCommands` (`publishFromArtifact`), is NOT covered here — reaching it needs a
+        /// blueprint descriptor inside a real artifact, which this harness does not build. Its
+        /// grouping is identical by inspection (`commands.add(buildBlueprintPutCommand(...))` then
+        /// `commands.add(new Remove<>(...))` into the one list handed to a single `apply`), but that
+        /// is reading, not evidence, and it is recorded as a gap rather than claimed as a pass.
+        @Test
+        void publish_writesBlueprintAndClearsStaleOutcome_inOneConsensusBatch() {
+            seedFailedOutcome(liveStore, REDEPLOY_ID);
+            liveCluster.appliedBatches().clear();
+
+            var dsl = """
+                    id = "org.example:redeploy-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:redeploy-slice:1.0.0"
+                    instances = 2
+                    """;
+
+            liveService.publish(dsl)
+                       .await()
+                       .onFailure(cause -> fail("Expected DSL publish to succeed, got: " + cause.message()));
+
+            var blueprintKey = AetherKey.AppBlueprintKey.appBlueprintKey(REDEPLOY_ID);
+            var outcomeKey = AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(REDEPLOY_ID);
+
+            assertThat(batchesTouching(outcomeKey))
+                    .as("instrument check: the outcome-clearing Remove must actually be issued, or the "
+                        + "grouping assertion below would be vacuously satisfiable by its absence")
+                    .isNotEmpty();
+            assertThat(batchesContainingBoth(blueprintKey, outcomeKey))
+                    .as("#759 invariant: the blueprint Put and the outcome Remove must travel in ONE "
+                        + "consensus batch. Split across two applies, a reader between them sees a "
+                        + "blueprint present WITH the previous attempt's terminal record — and "
+                        + "deploymentApplyOutstanding would then be reading a state the mechanism "
+                        + "is supposed to make unobservable")
+                    .hasSize(1);
+        }
+
+        /// The same grouping on the deletion path (`removeFromStore`). A blueprint whose
+        /// `AppBlueprintKey` is gone while its outcome record lingers would be attributable to
+        /// nothing and is exactly the orphan #759 BLOCKING 2 removed.
+        @Test
+        void delete_removesBlueprintAndItsOutcome_inOneConsensusBatch() {
+            seedFailedOutcome(liveStore, REDEPLOY_ID);
+            liveCluster.appliedBatches().clear();
+
+            liveService.delete(REDEPLOY_ID)
+                       .await()
+                       .onFailure(cause -> fail("Expected delete to succeed, got: " + cause.message()));
+
+            var blueprintKey = AetherKey.AppBlueprintKey.appBlueprintKey(REDEPLOY_ID);
+            var outcomeKey = AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(REDEPLOY_ID);
+
+            assertThat(batchesTouching(blueprintKey))
+                    .as("instrument check: delete must issue a blueprint Remove at all")
+                    .isNotEmpty();
+            assertThat(batchesContainingBoth(blueprintKey, outcomeKey))
+                    .as("#759 BLOCKING 2: a deleted blueprint must not leave its outcome record "
+                        + "behind, and the two removals must land together")
+                    .hasSize(1);
+        }
+
+        private List<List<KVCommand<AetherKey>>> batchesTouching(AetherKey key) {
+            return liveCluster.appliedBatches()
+                              .stream()
+                              .filter(batch -> batch.stream().anyMatch(command -> key.equals(command.key())))
+                              .toList();
+        }
+
+        private List<List<KVCommand<AetherKey>>> batchesContainingBoth(AetherKey first, AetherKey second) {
+            return liveCluster.appliedBatches()
+                              .stream()
+                              .filter(batch -> batch.stream().anyMatch(command -> first.equals(command.key()))
+                                            && batch.stream().anyMatch(command -> second.equals(command.key())))
+                              .toList();
+        }
+
         private void seedFailedOutcome(TestKVStore targetStore, BlueprintId id) {
             targetStore.processCommand(new KVCommand.Put<>(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(id),
                                                             AetherValue.DeploymentOutcomeValue.failed(List.of(REDEPLOY_SLICE.asString()),
@@ -594,9 +688,17 @@ class BlueprintServiceTest {
     // Test implementation of ClusterNode that delegates to TestKVStore
     private static class TestClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         private TestKVStore store;
+        /// One entry per `apply` call, holding that call's commands. Batch BOUNDARIES are the
+        /// subject of `ApplyMarkerInvariantTests`, so flattening them here would erase exactly the
+        /// property under test.
+        private final List<List<KVCommand<AetherKey>>> appliedBatches = new ArrayList<>();
 
         void setStore(TestKVStore store) {
             this.store = store;
+        }
+
+        List<List<KVCommand<AetherKey>>> appliedBatches() {
+            return appliedBatches;
         }
 
         @Override
@@ -622,6 +724,8 @@ class BlueprintServiceTest {
         @Override
         @SuppressWarnings("unchecked")
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+            appliedBatches.add(List.copyOf(commands));
+
             // Process commands through the store
             return Promise.success(commands.stream()
                                            .map(cmd -> (R) store.processCommand(cmd))
