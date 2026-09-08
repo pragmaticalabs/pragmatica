@@ -554,10 +554,18 @@ public final class ClusterEventAggregator {
         }
 
         switch (event.state()) {
-            case ACTIVE -> emitLocal(new QuorumEstablished(hlcClock.now(),
-                                                           Severity.INFO,
-                                                           "Quorum established",
-                                                           Map.of("observedBy", selfNode.id())));
+            case ACTIVE -> {
+                // The recovery line is NOT decoration. This class nominates the local log as the
+                // surface that survives a leaderless cluster, and on that surface the pair must be
+                // complete: without this, an operator reading logs sees "Quorum lost" and never sees
+                // it restored — the same latched-red failure the un-gating of QUORUM_ESTABLISHED
+                // exists to prevent, reached on a different surface.
+                LOG.info("Quorum established on {} — consensus available", selfNode.id());
+                emitLocal(new QuorumEstablished(hlcClock.now(),
+                                                Severity.INFO,
+                                                "Quorum established",
+                                                Map.of("observedBy", selfNode.id())));
+            }
             case PASSIVE -> {
                 LOG.warn("Quorum lost on {} — consensus unavailable, cluster observability degraded", selfNode.id());
                 emitLocal(new QuorumLost(hlcClock.now(),
