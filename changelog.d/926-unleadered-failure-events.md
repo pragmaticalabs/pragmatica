@@ -138,13 +138,27 @@
   above; the never-arrived confound is open until a re-run with the new log line]
   [unverified: `publishSafely`'s asynchronous-failure log — never exercised in either arm]
 
-  **Why these carry their own tag.** Seven `[verified:]` tags in this fragment are machine-findable;
+  **Why these carry their own tag.** Ten `[verified:]` tags in this fragment are machine-findable;
   until now the bound that limits them was untagged prose in a separate bullet. A reader running
   `grep '\[verified:'` — the exact consumption path these tags exist for — would have got an unbounded
   picture of what was proven. **If verified claims are greppable and their limitations are not, the
   consumption path systematically over-reports**, and it over-reports hardest to whoever is reading in
   a hurry during an outage, which is precisely when this code matters. The limitations are now returned
   by the same sweep: `grep -E '\[(verified|unverified|mechanism|design intent)'`.
+
+  **The limit of that fix, learned the hard way on this very PR: the sweep is an INDEX, never a
+  WARRANT.** A tag sweep can only surface limitations the author already knows about, so it raises
+  confidence uniformly across claims whose real standing differs. While the `SwimDeparted` regression
+  stood, this fragment's sweep returned "abrupt departures still raise CRITICAL" as `[verified:]` — a
+  statement that was false on the primary crash path, wearing the badge. The tagging did not cause that
+  defect, but it raised its cost: a reader trusting the index would have been more confident, not less.
+  **A `[verified:]` tag is a claim to be attacked, not one already checked.**
+
+  Counts here are per-file and stated as such: this fragment carries 10 `[verified:]`, 4
+  `[unverified:]`, 3 `[mechanism:]`; the node-health fragment carries 8 / 3 / 3; 18 / 7 / 6 across both,
+  with a bogus-tag control returning 0. An earlier note gave "10 and 4" without saying it meant one
+  file — a count with no stated space is not checkable, which is the same rule this tagging exists to
+  serve, missed inside the control built to serve it.
 
 - All production hunks above were mutation-probed: each was reverted alone, its named test confirmed
   red, and the file restored.
