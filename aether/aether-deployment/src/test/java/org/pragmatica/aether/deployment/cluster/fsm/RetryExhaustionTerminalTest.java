@@ -115,8 +115,11 @@ class RetryExhaustionTerminalTest {
     private void applyBlueprint(ExpandedBlueprint expanded) {
         KVCommand<AetherKey> command = new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
                                                            AppBlueprintValue.appBlueprintValue(expanded));
+        // #963: production writes IN_PROGRESS in the same batch; the settle is gated on its PRESENCE.
+        KVCommand<AetherKey> started = new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                                           AetherValue.DeploymentOutcomeValue.inProgress(1L));
 
-        leaderStore.process(leaderStore.createBatch(List.of(command)));
+        leaderStore.process(leaderStore.createBatch(List.of(command, started)));
         leaderHarness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
     }
 

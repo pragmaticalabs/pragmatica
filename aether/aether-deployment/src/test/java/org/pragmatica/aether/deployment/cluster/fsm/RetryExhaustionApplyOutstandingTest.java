@@ -5,7 +5,6 @@
 package org.pragmatica.aether.deployment.cluster.fsm;
 
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
@@ -144,9 +143,10 @@ class RetryExhaustionApplyOutstandingTest {
         applyBlueprint(leaderHarness, leaderStore, expanded);
 
         assertThat(outcomeStatusName(leaderStore, expanded.id()))
-                .as("before every slice is ACTIVE the apply has no terminal record — this is the state "
-                    + "in which the predicate must answer OUTSTANDING")
-                .isEqualTo(NO_OUTCOME);
+                .as("before every slice is ACTIVE the apply carries IN_PROGRESS — the POSITIVE state in "
+                    + "which the predicate answers OUTSTANDING. #963 replaced the absence that used to "
+                    + "stand here, which was indistinguishable from a record that was never written")
+                .isEqualTo(DeploymentOutcomeStatus.IN_PROGRESS.name());
 
         // The production path: every slice ACTIVE retires the blueprint via trackBlueprintSliceActive,
         // whose terminal is recordSucceededOutcome -> submitBatch -> ctx.cluster().apply(...).
@@ -282,7 +282,9 @@ class RetryExhaustionApplyOutstandingTest {
 
         seed(newLeaderStore,
              new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
-                                 AppBlueprintValue.appBlueprintValue(expanded)));
+                                 AppBlueprintValue.appBlueprintValue(expanded)),
+             new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                 DeploymentOutcomeValue.inProgress(1L)));
 
         assertThat(activeState(newLeaderHarness).inFlightBlueprints())
                 .as("precondition: a new leader has NO in-memory record of the apply, which is the "
@@ -335,7 +337,9 @@ class RetryExhaustionApplyOutstandingTest {
              new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(v1.id()), AppBlueprintValue.appBlueprintValue(v1)),
              new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(v1.id()),
                                  DeploymentOutcomeValue.succeeded(1L)),
-             new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(v2.id()), AppBlueprintValue.appBlueprintValue(v2)));
+             new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(v2.id()), AppBlueprintValue.appBlueprintValue(v2)),
+             new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(v2.id()),
+                                 DeploymentOutcomeValue.inProgress(1L)));
 
         exhaustRetryBudgetOn(newLeaderHarness, SELF, SLICE_V2);
 
@@ -414,9 +418,9 @@ class RetryExhaustionApplyOutstandingTest {
         leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(SELF, SLICE, activeInstance())));
 
         assertThat(outcomeStatusName(leaderStore, expanded.id()))
-                .as("precondition: SLICE_B never came up, so the blueprint never retired and no "
-                    + "terminal record exists — the apply is genuinely outstanding")
-                .isEqualTo(NO_OUTCOME);
+                .as("precondition: SLICE_B never came up, so the apply never completed and its record "
+                    + "still reads IN_PROGRESS — genuinely outstanding, positively so")
+                .isEqualTo(DeploymentOutcomeStatus.IN_PROGRESS.name());
 
         exhaustRetryBudgetOn(leaderHarness, SELF, SLICE);
 
@@ -466,7 +470,7 @@ class RetryExhaustionApplyOutstandingTest {
                 .doesNotContain(SLICE);
     }
 
-    /// #963 (#924 round-5 BLOCKING), variant A — RED BY DESIGN. Documents the open defect; it is not a
+    /// #963 (#924 round-5 BLOCKING), variant A — the acceptance test, now GREEN. Documents the open defect; it is not a
     /// passing pin and must not be read as one.
     ///
     /// **The apply genuinely COMPLETES and no record is ever written.** Nothing is seeded: the
@@ -483,9 +487,6 @@ class RetryExhaustionApplyOutstandingTest {
     /// not), so a present-tense health veto would rescue it. Variant B is the same defect where such
     /// a veto cannot vote.
     @Test
-    @Disabled("#963 — round-5 BLOCKING: currently FAILS. The assertion below is written as it will "
-            + "read when correct (not condemned); it is not an inversion to undo later. Enable it with "
-            + "the absence-gating redesign — it is that redesign's acceptance test.")
     void anApplyCompletedUnderANewLeader_writesNoRecord_andMustNotCondemnAHealthyWorkload() {
         var expanded = blueprint();
 
@@ -505,9 +506,12 @@ class RetryExhaustionApplyOutstandingTest {
         newLeaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(SELF, SLICE, activeInstance())));
 
         assertThat(outcomeStatusName(leaderStore, expanded.id()))
-                .as("the apply COMPLETED — every declared slice reached ACTIVE — yet no outcome record "
-                    + "exists, and none ever will. Nothing here is seeded; this is the real path")
-                .isEqualTo(NO_OUTCOME);
+                .as("#963 THE REPAIR: before the fix this read NO-OUTCOME-RECORD and none would ever be "
+                    + "written — `trackBlueprintSliceActive` iterates an `inFlightBlueprints` this leader "
+                    + "built empty, so `recordSucceededOutcome` was unreachable. "
+                    + "`recordApplyCompletionFromDurableState` now writes it off the blueprint's own "
+                    + "loadOrder and durable slice states, so the completed apply is recorded on ANY leader")
+                .isEqualTo(DeploymentOutcomeStatus.SUCCEEDED.name());
 
         exhaustRetryBudgetOn(newLeaderHarness, SELF, SLICE);
 
@@ -517,7 +521,7 @@ class RetryExhaustionApplyOutstandingTest {
                 .doesNotContain(SLICE);
     }
 
-    /// #963 (#924 round-5 BLOCKING), variant B — RED BY DESIGN, and the one that discriminates.
+    /// #963 (#924 round-5 BLOCKING), variant B — the acceptance test, now GREEN, and the one that discriminates.
     ///
     /// Identical to variant A except that the transient reaches EVERY instance before the budget is
     /// spent, which is what a shared downstream dependency does by construction.
@@ -528,9 +532,6 @@ class RetryExhaustionApplyOutstandingTest {
     /// own BLOCKING shape, and it cannot vote here. Any fix whose safety rests on an instance being
     /// ACTIVE at decision time leaves this case condemning.
     @Test
-    @Disabled("#963 — round-5 BLOCKING: currently FAILS. The assertion below is written as it will "
-            + "read when correct (not condemned); it is not an inversion to undo later. Enable it with "
-            + "the absence-gating redesign — it is that redesign's acceptance test.")
     void anApplyCompletedUnderANewLeader_withASharedTransientOnEveryInstance_mustNotCondemn() {
         var expanded = blueprint();
 
@@ -544,8 +545,9 @@ class RetryExhaustionApplyOutstandingTest {
         newLeaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(SELF, SLICE, activeInstance())));
 
         assertThat(outcomeStatusName(leaderStore, expanded.id()))
-                .as("precondition: the completed apply left no record")
-                .isEqualTo(NO_OUTCOME);
+                .as("precondition: the repair recorded the completed apply, so the shared transient below "
+                    + "is judged against a workload known to have come up")
+                .isEqualTo(DeploymentOutcomeStatus.SUCCEEDED.name());
 
         // The shared transient takes the other instance down too, so nothing is ACTIVE to vouch.
         newLeaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(NODE_A, SLICE, intermittentFailure())));
@@ -554,6 +556,45 @@ class RetryExhaustionApplyOutstandingTest {
         assertThat(activeState(newLeaderHarness).permanentlyFailed())
                 .as("a previously-healthy workload must not be condemned merely because a shared "
                     + "transient reached every instance while its apply had no completion record")
+                .doesNotContain(SLICE);
+    }
+
+    /// #963 — THE ABSENCE PIN, and the one the two repair tests above no longer make.
+    ///
+    /// Once the repair works, those two pass because the record is PRESENT and says SUCCEEDED. That
+    /// leaves the original defect class untested: a blueprint whose apply reached no terminal write
+    /// at all. [Active#handleSucceededOutcomeWriteFailure] states such a write "will NOT be retried",
+    /// so this state is durable and reachable independently of any leader transition.
+    ///
+    /// Seeded as the store would actually look: the blueprint present, no outcome record of any kind.
+    /// Under the old absence-gating that read as OUTSTANDING and condemned. Under #963 an absent
+    /// record is not evidence of anything and the settle declines.
+    ///
+    /// This is the assertion that would go red if anyone re-introduced `isEmpty()` as the
+    /// outstandingness test.
+    @Test
+    void aBlueprintWhoseOutcomeRecordWasLostEntirely_isNotCondemned() {
+        var expanded = blueprint();
+        var newLeaderStore = freshStore();
+        var newLeaderHarness = leaderHarness(new RecordingClusterNode(SELF, newLeaderStore),
+                                             newLeaderStore,
+                                             RESOLVED_MEMBERSHIP);
+
+        seed(newLeaderStore,
+             new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
+                                 AppBlueprintValue.appBlueprintValue(expanded)));
+
+        assertThat(outcomeStatusName(newLeaderStore, expanded.id()))
+                .as("precondition: no outcome record of any kind — the state a permanently-lost "
+                    + "SUCCEEDED write leaves behind")
+                .isEqualTo(NO_OUTCOME);
+
+        exhaustRetryBudgetOn(newLeaderHarness, SELF, SLICE);
+
+        assertThat(activeState(newLeaderHarness).permanentlyFailed())
+                .as("an absent record is indistinguishable from one that was never written, so it must "
+                    + "never authorise an irreversible verdict — five rounds of #924 each condemned on "
+                    + "exactly this absence")
                 .doesNotContain(SLICE);
     }
 
@@ -582,7 +623,14 @@ class RetryExhaustionApplyOutstandingTest {
                                        ExpandedBlueprint expanded) {
         seed(store,
              new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
-                                 AppBlueprintValue.appBlueprintValue(expanded)));
+                                 AppBlueprintValue.appBlueprintValue(expanded)),
+             // #963: production writes IN_PROGRESS in the SAME batch as the blueprint Put
+             // (`BlueprintService.buildAllCommands` / `storeBlueprintWithKey`). A fixture that seeded
+             // only the blueprint would model a state production never produces, and — since the
+             // settle is now gated on the PRESENCE of that record — would make every "does settle"
+             // test silently unreachable.
+             new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                 DeploymentOutcomeValue.inProgress(1L)));
         harness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
     }
 
