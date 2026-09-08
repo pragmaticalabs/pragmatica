@@ -75,6 +75,13 @@ class SliceProcessorTest {
                 }
                 static void writeCompact(Object buf, int value) {}
                 static int readCompact(Object buf) { return 0; }
+                // #964: present so the GENERATED SOURCE COMPILES, and for no other purpose. This whole
+                // interface is a fake standing in for org.pragmatica.serialization.SliceCodec, so these
+                // bodies encode nothing and decode nothing. Never cite a test in this file as evidence
+                // about unknown-ordinal behaviour — that evidence is UnknownEnumOrdinalWireTest in
+                // integrations/cluster, which runs real bytes through the real generated codecs.
+                static <E extends Enum<E>> E readEnum(Object buf, E[] values, E unknown) { return unknown; }
+                static <E extends Enum<E>> E readEnumOrFail(Object buf, E[] values, Class<E> type) { return null; }
                 static SliceCodec sliceCodec(SliceCodec parent, List<TypeCodec<?>> codecs) { return parent; }
                 static SliceCodec sliceCodec(SliceCodec parent, List<TypeCodec<?>> codecs, Set<Class<?>> requiredTypes) { return parent; }
                 record TypeCodec<T>(Class<T> type, int tag, TypeWriter<T> writer, TypeReader<T> reader) {}
