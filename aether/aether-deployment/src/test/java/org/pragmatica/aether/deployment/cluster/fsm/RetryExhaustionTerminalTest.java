@@ -13,6 +13,7 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.AppB
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.SliceLoadingFailure.Unrecognised;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -95,13 +96,28 @@ class RetryExhaustionTerminalTest {
     /// Twice the budget. The pre-fix behaviour was unbounded, so any finite cap distinguishes it.
     private static final int REPORT_CAP = 12;
 
+    private KVStore<AetherKey, AetherValue> leaderStore;
     private RecordingClusterNode leaderSideCluster;
     private FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> leaderHarness;
 
     @BeforeEach
     void setUp() {
-        leaderSideCluster = new RecordingClusterNode(SELF);
-        leaderHarness = leaderHarness(leaderSideCluster);
+        leaderStore = new KVStore<>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+        leaderSideCluster = new RecordingClusterNode(SELF, leaderStore);
+        leaderHarness = leaderHarness(leaderSideCluster, leaderStore);
+    }
+
+    /// Mirrors a production blueprint publish: `BlueprintService` writes `AppBlueprintKey` through
+    /// consensus and the FSM sees the resulting notification. `KVStore.handlePut` puts into storage
+    /// BEFORE routing `ValuePut`, so in production the entry is always already readable when the
+    /// FSM processes the event — a fixture that dispatches only the notification creates a state the
+    /// system cannot produce, and `deploymentApplyOutstanding` reads the store.
+    private void applyBlueprint(ExpandedBlueprint expanded) {
+        KVCommand<AetherKey> command = new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
+                                                           AppBlueprintValue.appBlueprintValue(expanded));
+
+        leaderStore.process(leaderStore.createBatch(List.of(command)));
+        leaderHarness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
     }
 
     /// The assertion is the ATTEMPT COUNT at which the terminal is reached, not merely that a
@@ -126,7 +142,7 @@ class RetryExhaustionTerminalTest {
                     + "test of the deterministic branch, which already had a terminal")
                 .isFalse();
 
-        leaderHarness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
+        applyBlueprint(expanded);
 
         var reportsUntilTerminal = 0;
 
@@ -165,7 +181,7 @@ class RetryExhaustionTerminalTest {
     void intermittentFailureThatNeverSettles_recordsAnExplicitFailedOutcome() {
         var expanded = blueprint();
 
-        leaderHarness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
+        applyBlueprint(expanded);
 
         for (var report = 1; report <= TERMINAL_ON_REPORT; report++) {
             leaderHarness.dispatch(new NodeArtifactPutReceived(replayOf(intermittentFailure())));
@@ -283,7 +299,7 @@ class RetryExhaustionTerminalTest {
     /// A failure the leader is REQUIRED to treat as retryable, built from a cause that was already
     /// `Intermittent` before #916 and is untouched by it.
     private static NodeArtifactValue intermittentFailure() {
-        return NodeArtifactValue.failedNodeArtifactValue(new CoreError.Timeout("consensus stalled"));
+        return NodeArtifactValue.failedNodeArtifactValue(new CoreError.Timeout("consensus stalled"), Unrecognised.RETRY);
     }
 
     private static ValuePut<NodeArtifactKey, NodeArtifactValue> replayOf(NodeArtifactValue value) {
@@ -305,9 +321,9 @@ class RetryExhaustionTerminalTest {
         return ExpandedBlueprint.expandedBlueprint(id, List.of(slice));
     }
 
-    private static FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> leaderHarness(ClusterNode<KVCommand<AetherKey>> cluster) {
+    private static FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> leaderHarness(ClusterNode<KVCommand<AetherKey>> cluster,
+                                                                                        KVStore<AetherKey, AetherValue> kvStore) {
         var router = MessageRouter.mutable();
-        var kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
         LongSupplier clock = () -> 10_000_000L;
         Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
                 fsm -> new ClusterDeploymentContext(fsm,
@@ -335,9 +351,13 @@ class RetryExhaustionTerminalTest {
 
     private static final class RecordingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         private final NodeId self;
+        private final KVStore<AetherKey, AetherValue> kvStore;
         private final List<KVCommand<AetherKey>> commands = Collections.synchronizedList(new ArrayList<>());
 
-        private RecordingClusterNode(NodeId self) {this.self = self;}
+        private RecordingClusterNode(NodeId self, KVStore<AetherKey, AetherValue> kvStore) {
+            this.self = self;
+            this.kvStore = kvStore;
+        }
 
         @Override public NodeId self() {return self;}
 
@@ -347,8 +367,13 @@ class RetryExhaustionTerminalTest {
 
         @Override public Promise<Unit> stop() {return Promise.unitPromise();}
 
+        /// Records what the leader submits AND applies it, because a real `ClusterNode.apply`
+        /// reaches consensus and lands in every replica's local `KVStore`, the leader's own
+        /// included. A recorder that only records leaves the store empty, so the durable apply
+        /// marker could never be written by the production path and could not be read back.
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             commands.addAll(batch);
+            kvStore.process(kvStore.createBatch(batch));
 
             return Promise.success(Collections.emptyList());
         }
