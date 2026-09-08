@@ -783,17 +783,42 @@ public class AlertManager {
     /// limit. Mirrors the existing `MAX_ALERT_HISTORY` bound on `alertHistory`.
     private static final int MAX_NODE_HEALTH_ALERTS = 64;
 
-    /// Membership-event causes that mean the node ANNOUNCED its departure rather than died: a SWIM
-    /// graceful departure (normal shutdown, and therefore every rolling restart) and an operator or
-    /// controller drain. Matched against `MembershipTransitionRecord.cause()`, which is the triggering
-    /// `MembershipEvent`'s simple class name.
-    private static final java.util.Set<String> GRACEFUL_DEPARTURE_CAUSES = java.util.Set.of("SwimDeparted",
-                                                                                            "DrainRequested");
+    /// Membership-event causes that mean the node ANNOUNCED its departure rather than died.
+    ///
+    /// **`SwimDeparted` is NOT in this set, and putting it here was a blocking regression.** Round 2 of
+    /// #926 included it on the strength of `MembershipFsm.onSwimDeparted`'s docstring ("SWIM reported
+    /// `id` DEPARTED gracefully") — a comment that contradicts its own producer.
+    /// `SwimProtocol.emitFaultyEdgePair` delivers `FaultyObserved` and `DepartedObserved` **as a pair at
+    /// the FAULTY edge**, because "FAULTY IS confirmed death (canonical SWIM) … The death broadcast
+    /// therefore fires AT the FAULTY edge" — deliberately, to cut `NODE_FAILED` latency inside the 60s
+    /// SLO. `DepartedObserved` routes to `onSwimDeparted` (`AetherNode:4968`), which dispatches
+    /// `SwimDeparted`. **So `SwimDeparted` is SWIM's death broadcast and is the PRIMARY crash path**,
+    /// not a graceful goodbye: with it in this set, `kill -9` raised no CRITICAL alert at all.
+    ///
+    /// That is precisely the failure [`#onNodeFailed`] warns against one paragraph down — suppressing a
+    /// real failure re-creates the defect #926 exists to remove — reached by trusting a docstring
+    /// instead of its producer.
+    ///
+    /// `DrainRequested` alone is sound: it is raised only by the operator/controller drain command, and
+    /// nothing in SWIM's failure detection produces it. **Do not add a cause here without tracing it to
+    /// the code that RAISES it.** A graceful shutdown that is not operator-driven is currently
+    /// indistinguishable from a crash at this layer, so it stays noisy — noisy beats silent on a
+    /// failure-detection surface, and no signal SWIM carries can separate them.
+    private static final java.util.Set<String> GRACEFUL_DEPARTURE_CAUSES = java.util.Set.of("DrainRequested");
 
     /// Active node-health alerts, keyed by [`AlertEvent.NodeHealthAlert#alertId`] (derived from the
     /// failed node id). Per-node local state — never replicated, never consensus-backed — which is
     /// precisely why it survives the conditions of #926. Bounded by [`#MAX_NODE_HEALTH_ALERTS`].
     private final Map<String, AlertEvent.NodeHealthAlert> activeNodeHealthAlerts = new ConcurrentHashMap<>();
+
+    /// Insertion order for [`#activeNodeHealthAlerts`], oldest first — the eviction order.
+    ///
+    /// Round 2 ordered eviction by `min(timestamp)`. That was both unpinned (flipping it to `max` left
+    /// the suite green, since the bound test asserted only size) and **unpinnable**: alerts raised in a
+    /// tight loop share a `System.currentTimeMillis()` value, so "oldest" was not even well defined.
+    /// An insertion queue makes the order deterministic and therefore assertable.
+    private final java.util.concurrent.ConcurrentLinkedQueue<String> nodeHealthAlertOrder = new java.util.concurrent.ConcurrentLinkedQueue<>();
+
     /// Node ids observed announcing a graceful departure, id → wall-clock millis. Bounded by
     /// [`#MAX_NODE_HEALTH_ALERTS`]; when full, new marks are DROPPED rather than evicting, so the
     /// failure mode is a spurious CRITICAL alert and never a suppressed one.
@@ -808,9 +833,20 @@ public class AlertManager {
     /// CRITICAL during routine planned operations gets muted, and a muted alert is the same end state
     /// as the silence #926 exists to fix, reached from the opposite direction.
     ///
-    /// Ordering is guaranteed, not hoped for: `MembershipFsm` queues the transition-record emission
-    /// BEFORE the confirmed-departure emission in the same `emissions` list, so the mark is always
-    /// recorded before [`#onNodeFailed`] reads it for that departure.
+    /// Ordering is guaranteed, and by a different mechanism than round 2 claimed. The earlier note said
+    /// the transition and confirmed-departure emissions share one `emissions` list; **that is false** —
+    /// the two arrive from SEPARATE dispatches (e.g. `DrainRequested` then `Stopped`), each building
+    /// its own list. What actually holds the order is `MemberTracking.dispatch`, which runs
+    /// `synchronized (transitionGuard) { applyEvent(event).forEach(Runnable::run) }`: every dispatch for
+    /// a member is serialised on that member's guard and runs its staged fan-out synchronously before
+    /// returning, so an earlier dispatch's transition record has always run before a later dispatch's
+    /// DEAD hooks. **Recorded precisely because a guarantee resting on a fictional mechanism cannot be
+    /// re-checked when the code moves** — if that fan-out ever becomes asynchronous, this ordering is
+    /// what breaks, and the guard is where to look.
+    ///
+    /// Within a single dispatch the order is also fixed: `applyEvent` stages the calls "in the exact
+    /// order the pre-#929 inline code fired them (transition, JOINED delta, DEPARTING hook,
+    /// DEPARTING-recovery hook, then the DEAD hooks)".
     @Contract
     public void noteMembershipTransition(NodeId nodeId, String cause) {
         if (!GRACEFUL_DEPARTURE_CAUSES.contains(cause)) {
@@ -858,23 +894,29 @@ public class AlertManager {
 
         var alert = AlertEvent.NodeHealthAlert.nodeFailed(failed, observedBy);
 
-        activeNodeHealthAlerts.put(alert.alertId(), alert);
+        if (activeNodeHealthAlerts.put(alert.alertId(), alert) == null) {
+            nodeHealthAlertOrder.add(alert.alertId());
+        }
+
         evictOldestNodeHealthAlertIfOverCap();
         log.error("CRITICAL: node {} confirmed failed (observed by {}) — cluster membership degraded",
                   failed.id(),
                   observedBy.id());
     }
 
-    /// Drop the oldest alert once the map exceeds [`#MAX_NODE_HEALTH_ALERTS`]. A replaced node's alert
-    /// can never be cleared by id (the replacement carries a new one), so the bound — not the clear
-    /// path — is what keeps this map finite under sustained churn.
+    /// Drop the OLDEST-INSERTED alerts once the map exceeds [`#MAX_NODE_HEALTH_ALERTS`]. A replaced
+    /// node's alert can never be cleared by id (the replacement carries a new one), so the bound — not
+    /// the clear path — is what keeps this map finite under sustained churn. Oldest-first is the
+    /// deliberate direction: the most recent failures are the ones an operator is still acting on.
     private void evictOldestNodeHealthAlertIfOverCap() {
         while (activeNodeHealthAlerts.size() > MAX_NODE_HEALTH_ALERTS) {
-            activeNodeHealthAlerts.values()
-                                  .stream()
-                                  .min(java.util.Comparator.comparingLong(AlertEvent.NodeHealthAlert::timestamp))
-                                  .map(AlertEvent.NodeHealthAlert::alertId)
-                                  .ifPresent(activeNodeHealthAlerts::remove);
+            var oldest = nodeHealthAlertOrder.poll();
+
+            if (oldest == null) {
+                return;
+            }
+
+            activeNodeHealthAlerts.remove(oldest);
         }
     }
 
@@ -888,6 +930,7 @@ public class AlertManager {
     @Contract
     public void clearNodeHealthAlert(NodeId rejoined) {
         announcedDeparture.remove(rejoined.id());
+        nodeHealthAlertOrder.remove(AlertEvent.NodeHealthAlert.alertId(rejoined));
         Option.option(activeNodeHealthAlerts.remove(AlertEvent.NodeHealthAlert.alertId(rejoined))).onPresent(cleared -> log.info("Node-health alert resolved for {} — node rejoined (was: {})",
                                                                                                                                  rejoined.id(),
                                                                                                                                  cleared.reason()));
