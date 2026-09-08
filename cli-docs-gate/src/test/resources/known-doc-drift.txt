@@ -128,7 +128,6 @@ aether/docs/slice-developers/migration-guide.md	command: aether blueprint
 aether/docs/slice-developers/persistence-guide.md	command: jbct add
 
 # --- aether/docs/specs/cluster-bootstrap-spec.md ---
-aether/docs/specs/cluster-bootstrap-spec.md	command: aether cluster ...
 aether/docs/specs/cluster-bootstrap-spec.md	option: --dry-run on aether cluster bootstrap
 aether/docs/specs/cluster-bootstrap-spec.md	option: --file on aether cluster export
 
@@ -158,7 +157,6 @@ aether/docs/specs/durable-pubsub-spec.md	command: aether topics
 aether/docs/specs/event-stream-namespaces-spec.md	command: aether stream peek
 
 # --- aether/docs/specs/harness-resilience-spec.md ---
-aether/docs/specs/harness-resilience-spec.md	command: aether ...
 aether/docs/specs/harness-resilience-spec.md	command: aether node
 
 # --- aether/docs/specs/in-memory-streams-spec.md ---

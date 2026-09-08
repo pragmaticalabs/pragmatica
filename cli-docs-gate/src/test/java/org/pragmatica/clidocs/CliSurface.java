@@ -271,7 +271,9 @@ final class CliSurface {
                 return true;
             }
 
-            if ("<>[]{}/:=$*?\"'\\@,()".indexOf(character) >= 0) {
+            // The `.` catches the ASCII elision marker in `aether cluster ...`. No command in either
+            // CLI has a dot in its name; both spell every one in lower-case ASCII with dashes.
+            if ("<>[]{}/:=$*?\"'\\@,().".indexOf(character) >= 0) {
                 return true;
             }
         }
