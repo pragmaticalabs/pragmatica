@@ -42,6 +42,21 @@ class CliDocsDriftTest {
     private static final int MINIMUM_INVOCATIONS = 300;
     private static final int MINIMUM_COMMANDS = 100;
 
+    /// Ratchets. Both lists are allowed to SHRINK and nothing else.
+    ///
+    /// Without these, the gate is advisory rather than enforcing: a developer who introduces new drift
+    /// can make the build green by appending one line to a text file, which is precisely the move the
+    /// waiver exists to prevent. With them, silencing a new finding requires EDITING THIS CONSTANT —
+    /// a one-line change in a Java source file, sitting under this comment, that a reviewer sees. The
+    /// point is not that it is impossible; it is that it can no longer happen quietly.
+    ///
+    /// The counts are asserted EXACTLY, not as upper bounds. An upper bound would leave headroom
+    /// behind every fix — five documents repaired would silently license five future waivers. Fixing
+    /// drift therefore costs a second edit, lowering the number here, and that is the intent: the
+    /// number belongs in the diff.
+    private static final int WAIVED_FINDINGS = 91;
+    private static final int BASELINED_COMMANDS = 11;
+
     /// Anchored on the repository root, not on the working directory. Surefire happens to run with
     /// `${basedir}` as its working directory, but a gate whose corpus and whose waiver are found only
     /// when the caller stands in the right place reports different results to CI, to a full-reactor
@@ -109,6 +124,32 @@ class CliDocsDriftTest {
                    + "JbctCommand still register their subcommands.");
 
         assertTrue(scan.fencedBlocksRead() > 0, "No fenced shell blocks were read at all.");
+    }
+
+    /// The waiver and the baseline may only shrink.
+    ///
+    /// This is the test that decides whether the gate ENFORCES or merely ADVISES. Every other check
+    /// here can be satisfied by appending a line to a text file; this one cannot.
+    @Test
+    void waiverAndBaseline_canOnlyShrink() {
+        assertCeiling(readKeyList(WAIVER).size(), WAIVED_FINDINGS, "WAIVED_FINDINGS", DocCorpus.relative(WAIVER));
+        assertCeiling(readBaseline().size(), BASELINED_COMMANDS, "BASELINED_COMMANDS", DocCorpus.relative(BASELINE));
+    }
+
+    private static void assertCeiling(int actual, int allowed, String constant, String file) {
+        if (actual > allowed) {
+            fail(file + " holds " + actual + " entries but only " + allowed + " are allowed (" + constant
+                 + " in CliDocsDriftTest).\n\nA line was ADDED to this list. That is how a drift gate turns "
+                 + "advisory: new drift gets waived instead of fixed. Fix the documentation instead. If the "
+                 + "addition is genuinely correct, raise " + constant + " in the same commit — deliberately, "
+                 + "and where a reviewer will see it.");
+        }
+
+        if (actual < allowed) {
+            fail(file + " holds " + actual + " entries and " + constant + " is still " + allowed
+                 + ". Drift was fixed — thank you — now lower " + constant + " to " + actual
+                 + " so the headroom is not left behind for a future waiver to fill silently.");
+        }
     }
 
     /// DIRECTION A — the docs lie to the user. Highest severity: a reader copies the line and it fails.
