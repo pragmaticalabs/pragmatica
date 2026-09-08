@@ -21,6 +21,8 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Node
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
+import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
@@ -102,6 +104,12 @@ class BestEffortOutcomeMergeTest {
 
     @BeforeEach
     void setUp() {
+        buildHarness(DeploymentAtomicity.BEST_EFFORT);
+        registerOwnedSlice(SLICE_A);
+        registerOwnedSlice(SLICE_B);
+    }
+
+    private void buildHarness(DeploymentAtomicity atomicity) {
         var router = MessageRouter.mutable();
 
         kvStore = new InMemoryKvStore(router);
@@ -118,15 +126,13 @@ class BestEffortOutcomeMergeTest {
                                                     () -> Set.of(SELF, NODE_A),
                                                     Set::of,
                                                     Set.of(SELF, NODE_A),
-                                                    DeploymentAtomicity.BEST_EFFORT,
+                                                    atomicity,
                                                     3,
                                                     timeSpan(300).seconds(),
                                                     System::currentTimeMillis).dormant();
 
-        harness = FsmTestHarness.harness("best-effort-outcome-" + System.nanoTime(), factory);
+        harness = FsmTestHarness.harness("outcome-merge-" + System.nanoTime(), factory);
         harness.dispatch(new Activate());
-        registerOwnedSlice(SLICE_A);
-        registerOwnedSlice(SLICE_B);
     }
 
     @Nested
@@ -224,6 +230,66 @@ class BestEffortOutcomeMergeTest {
 
             assertThat(recordedFailingSlices()).containsExactly(SLICE_A.asString());
             assertThat(recordedOutcome().outcomeVersion()).isEqualTo(1L);
+        }
+    }
+
+    /// #805's acceptance clause: "no behaviour change for ALL_OR_NOTHING". Fencing
+    /// [DeploymentOutcomeValue] makes EVERY writer of that record fenceable, not just the BEST_EFFORT
+    /// merge — the three ALL_OR_NOTHING terminal writers (`recordSucceededOutcome`,
+    /// `failedOutcomeCommand`, `rolledBackOutcomeCommand`) included. A writer that kept blindly
+    /// stamping version 1 would now be REJECTED by the applier the moment a record already existed,
+    /// which would be a silent regression of exactly the kind this ticket is about.
+    ///
+    /// These tests therefore assert on COMMITTED state after the batch is applied through the real
+    /// applier. The pre-existing ALL_OR_NOTHING coverage in `ClusterDeploymentStateTransactionalTest`
+    /// cannot speak to this: it inspects the PROPOSED command list from a recording cluster node that
+    /// never applies anything, so it stays green whether the applier accepts the write or drops it.
+    @Nested
+    class AllOrNothingUnaffected {
+        @BeforeEach
+        void useAllOrNothing() {
+            buildHarness(DeploymentAtomicity.ALL_OR_NOTHING);
+            registerOwnedSlice(SLICE_A);
+        }
+
+        /// The terminal FAILED record for a rollback with no previous blueprint still lands.
+        @Test
+        void theTerminalFailedOutcome_isCommitted() {
+            trackInFlight(SLICE_A);
+
+            failSlice(SLICE_A);
+
+            assertThat(recordedOutcome().status()).isEqualTo(DeploymentOutcomeStatus.FAILED);
+            assertThat(recordedFailingSlices()).contains(SLICE_A.asString());
+        }
+
+        /// The load-bearing one. With a record ALREADY committed at version 1, the ALL_OR_NOTHING
+        /// terminal write must derive version 2 and be accepted. A blind `FIRST_VERSION` stamp would
+        /// be fenced out here and the record would still read as the seeded one.
+        @Test
+        void theTerminalOutcome_isAccepted_overAnAlreadyCommittedRecord() {
+            kvStore.applyBatch(List.of(new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(OWNER),
+                                                           DeploymentOutcomeValue.succeeded(1L))));
+            trackInFlight(SLICE_A);
+
+            failSlice(SLICE_A);
+
+            assertThat(recordedOutcome().status()).as("the terminal write must replace the committed SUCCEEDED record, "
+                                                      + "not be fenced out by it")
+                                                  .isEqualTo(DeploymentOutcomeStatus.FAILED);
+            assertThat(recordedOutcome().outcomeVersion()).as("derived as committed + 1, the only version the applier accepts")
+                                                          .isEqualTo(2L);
+        }
+
+        private void trackInFlight(Artifact artifact) {
+            var slice = ResolvedSlice.resolvedSlice(artifact, 3, false).unwrap();
+            var expanded = ExpandedBlueprint.expandedBlueprint(OWNER, List.of(slice));
+
+            activeState().inFlightBlueprints()
+                         .put(OWNER,
+                              ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(OWNER,
+                                                                                                expanded,
+                                                                                                Option.none()));
         }
     }
 
