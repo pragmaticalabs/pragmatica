@@ -25,6 +25,14 @@
   cluster enter "quorum lost" and never see it leave. A failure signal is only usable if its matching
   recovery signal is at least as reachable. [verified:
   `ClusterEventAggregatorTest#noLeader_stillEmitsQuorumEstablished`]
+- **The claimed surface no longer latches red either.** This change nominates the local log as the
+  surface that survives a leaderless cluster, and on that surface the pair was incomplete: `QUORUM_LOST`
+  logged a WARN and `QUORUM_ESTABLISHED` logged nothing, so an operator reading logs saw "Quorum lost"
+  and never saw it restored. That is the same latched-red failure the un-gating of `QuorumEstablished`
+  exists to prevent, reached on a different surface — and it violated this entry's own stated principle
+  that a failure signal is only usable if its recovery signal is at least as reachable. A matching
+  `LOG.info` on the ACTIVE branch closes it.
+  [mechanism: `ClusterEventAggregator.onQuorumStateChange`, ACTIVE branch]
 - **The guarantee, per operation.** `NodeFailed` / `LeaderLost` / `QuorumLost` / `QuorumEstablished`:
   **at-least-once per observing core member, per event, into that member's LOCAL partition-0 ring.**
   Explicitly **not** exactly-once and not deduplicated. Duplicates are bounded, not unbounded — the
