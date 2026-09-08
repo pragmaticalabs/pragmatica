@@ -70,6 +70,23 @@
   real `SliceTargetPutReceived` notification rather than by seeding the mirror; mutation-probed by
   erasing the owner as it enters the mirror, which turns the positive case red with "no
   deployment-outcome record was committed" while the owner-less negative case stays green]
+- **The owner lookup itself now consults both sources, mirror first.** #698/#940 closed *erasure*;
+  the mirror could still fail to answer for reasons unrelated to it — an artifact whose entry
+  `removeNonTargetVersions` dropped, or the window after a leader failover before
+  `rebuildSliceStateFromKVStoreEntries` runs. Either way the result is not a degraded record but no
+  record at all. `Active.resolveOutcomeOwner` reads the mirror first and falls back to the committed
+  `SliceTargetValue`.
+  **The order is load-bearing, and the obvious fix is the wrong one:** resolving from the committed
+  store alone regresses, because `handleAppBlueprintChange` populates the mirror in the same pass that
+  only *queues* the `SliceTargetKey` Put — between the two the mirror legitimately names an owner the
+  store does not yet carry, so a store-only lookup would stop recording failures for the whole deploy
+  window. Consulting both strictly widens what is recorded: the worst case is attributing a failure to
+  an owner about to change, never losing the record. For a ticket about lost records that is the right
+  asymmetry. [verified: `BestEffortOutcomeMergeTest$OwnerResolutionFallback` — each source pinned
+  alone; mutation-probed in both directions, and the two probes are orthogonal: mirror-only turns
+  `whenOnlyTheCommittedRecordNamesTheOwner` red while the other stays green, and committed-only turns
+  `whenOnlyTheMirrorNamesTheOwner` red — along with 6 further tests, which is the regression the
+  fallback ordering exists to prevent]
 - **Wire format:** the `deployment-outcome` TOML value goes from 4 fields to 5 (`outcomeVersion`
   appended). Consistent with the rc-line posture RFC-0018 O1 already records — rc releases do not
   support mixed-version co-application, and the KV serializer format already diverges between rcs.
