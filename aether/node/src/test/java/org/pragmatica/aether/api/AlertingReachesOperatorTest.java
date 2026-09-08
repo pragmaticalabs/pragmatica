@@ -125,6 +125,32 @@ class AlertingReachesOperatorTest {
         assertThat(alertManager.activeAlertCount()).isZero();
     }
 
+    /// A sustained breach must raise ONCE, not once per evaluation tick. `publishMetrics` runs every
+    /// second on every node (`DEFAULT_BROADCAST_INTERVAL_MS = 1000`, started unconditionally from
+    /// `ManagementServer.onServerStarted`), so a level-triggered implementation would append an
+    /// `alertHistory` entry every second on any node above a default threshold and overwrite the
+    /// 100-entry deque in under two minutes. `shouldTrigger` is severity-transition-gated, which is
+    /// what bounds it — this pins that, because it is the property that keeps the fix from turning
+    /// into a slow degradation of `/api/alerts` on exactly the busy nodes that need it.
+    @Test
+    void aSustainedBreachRaisesOnceNotOncePerEvaluation() {
+        var alertManager = managerWithThreshold("cpu.usage", 0.7, 0.9);
+        var node = nodeReporting("cpu.usage", 0.95);
+        var publisher = DashboardMetricsPublisher.dashboardMetricsPublisher(() -> node, alertManager);
+
+        for (var tick = 0; tick < 20; tick++) {
+            publisher.publishMetrics();
+        }
+
+        assertThat(alertManager.activeAlertCount())
+                .describedAs("20 evaluations of one sustained breach must leave ONE active alert, not 20")
+                .isEqualTo(1);
+        assertThat(alertManager.alertHistoryAsList())
+                .describedAs("and must append ONE history entry, not one per tick -- the 100-entry deque "
+                             + "would otherwise be overwritten in ~100 seconds by a single hot node")
+                .hasSize(1);
+    }
+
     /// HUNKS 2 and 3, proven at the OUTERMOST OBSERVABLE that #957 asks for: a real HTTP request
     /// arriving at a real webhook, not a renderer unit test. Crossing a threshold must produce an
     /// `AlertEvent.ThresholdAlert` AND hand it to a bound `AlertForwarder` that actually sends it.
@@ -149,7 +175,8 @@ class AlertingReachesOperatorTest {
             var url = "http://127.0.0.1:" + server.getAddress().getPort() + "/hook";
             var alertManager = managerWithThreshold("cpu.usage", 0.7, 0.9);
 
-            alertManager.bindAlertForwarder(AlertForwarder.alertForwarder(AlertConfig.alertConfig(List.of(url))));
+            // the SAME production expression AetherNode calls -- not a re-typed fixture
+            alertManager.withAlertForwarder(AlertConfig.alertConfig(List.of(url)));
 
             alertManager.checkThreshold("cpu.usage", NODE, 0.95);
 
@@ -184,7 +211,7 @@ class AlertingReachesOperatorTest {
             var url = "http://127.0.0.1:" + server.getAddress().getPort() + "/hook";
             var alertManager = managerWithThreshold("cpu.usage", 0.7, 0.9);
 
-            alertManager.bindAlertForwarder(AlertForwarder.alertForwarder(AlertConfig.alertConfig(List.of(url))));
+            alertManager.withAlertForwarder(AlertConfig.alertConfig(List.of(url)));
 
             alertManager.checkThreshold("cpu.usage", NODE, 0.10);
 

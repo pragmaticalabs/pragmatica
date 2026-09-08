@@ -16,6 +16,7 @@ import org.pragmatica.aether.api.ClusterEvent.AlertInjected;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.api.ManagementApiResponses.AlertInjectResponse;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -110,6 +111,19 @@ public class AlertManager {
     /// one (#957).
     public void bindAlertForwarder(AlertForwarder forwarder) {
         this.alertForwarder = Option.option(forwarder);
+    }
+
+    /// Construct the forwarder from config and bind it, as ONE production expression.
+    ///
+    /// This exists so a test can call the same expression production calls instead of re-typing
+    /// `bindAlertForwarder(alertForwarder(config))` in a fixture -- a fixture that rebuilds the
+    /// wiring cannot pin the wiring, and that shape has stayed green through a full revert in this
+    /// repo before. `AetherNode` calls this and nothing else; `dead-surface-gate` asserts this method
+    /// is reachable from production bytecode, so deleting that call reddens a test (#957).
+    public AlertManager withAlertForwarder(AlertConfig alertConfig) {
+        bindAlertForwarder(AlertForwarder.alertForwarder(alertConfig));
+
+        return this;
     }
 
     public static AlertManager alertManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
