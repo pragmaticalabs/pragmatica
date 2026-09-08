@@ -531,10 +531,10 @@ For deployment to a running Aether cluster, use the CLI or Management API:
 
 ```bash
 # Push artifact from local Maven repo to the cluster's artifact repository
-aether artifact push com.example:order-processor:1.0.0
+aether artifacts push com.example:order-processor:1.0.0
 
 # Apply a blueprint that includes the slice
-aether blueprint apply order-system.toml
+aether blueprints apply order-system.toml
 ```
 
 The blueprint file declares the slices and their instance counts:
@@ -552,7 +552,7 @@ Verify the deployment:
 
 ```bash
 # Check blueprint status
-aether blueprint status order-system:1.0.0
+aether blueprints status order-system:1.0.0
 
 # Or use the Management API directly
 curl http://localhost:5150/api/blueprint/order-system:1.0.0/status
@@ -837,7 +837,7 @@ curl -X POST http://localhost:5150/api/scale \
 aether -c localhost:5150 scale com.example:order-processor:1.0.0 -n 0
 
 # Or remove the blueprint entirely
-aether blueprint delete order-system:1.0.0
+aether blueprints delete order-system:1.0.0
 
 # Traffic automatically falls back to monolith
 # (if you kept the feature flag or fallback logic)

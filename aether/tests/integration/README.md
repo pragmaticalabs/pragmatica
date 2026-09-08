@@ -173,7 +173,7 @@ The machine-readable JSON report is written to `aether/tests/integration/test-re
 |-------|------------|
 | Provisioning | `deploy_docker` start → all containers reported running |
 | Cluster formation | containers up → leader elected + quorum formed + first quiesced snapshot |
-| Blueprint deploy | `aether blueprint deploy` round-trip → post-deploy generation quiesces |
+| Blueprint deploy | `aether blueprints deploy` round-trip → post-deploy generation quiesces |
 | Quiesce barrier | `await_generation_quiesced` call duration (seconds) — after destructive suites or deploy steps |
 | Per-test | individual `test_*` function wall time |
 
