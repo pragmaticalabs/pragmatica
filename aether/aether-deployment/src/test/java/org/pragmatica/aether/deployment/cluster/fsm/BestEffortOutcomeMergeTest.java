@@ -10,6 +10,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -226,6 +227,49 @@ class BestEffortOutcomeMergeTest {
         }
     }
 
+    /// The applier-level half of the fix, pinned without the FSM in the picture. These say what the
+    /// `VersionFenced` marker buys on its own: a merge built on a stale read is REJECTED, not applied.
+    ///
+    /// Kept separate from the FSM tests deliberately. The FSM tests show the id is recovered; these
+    /// show WHY it has to be — remove the marker and a stale write silently wins here, which is the
+    /// state in which a confirm that has already run can never notice the loss.
+    @Nested
+    class ApplierFence {
+        @Test
+        void aMergeBuiltOnAStaleRead_isRejected() {
+            applyOutcome(DeploymentOutcomeValue.failed(List.of(SLICE_A.asString()), FAILURE, 1L, 1L));
+            applyOutcome(DeploymentOutcomeValue.failed(List.of(SLICE_B.asString()), FAILURE, 2L, 1L));
+
+            assertThat(recordedFailingSlices()).as("the second writer read the same absent base and computed the same "
+                                                   + "version 1, so the applier must reject it rather than erase SLICE_A")
+                                               .containsExactly(SLICE_A.asString());
+        }
+
+        @Test
+        void aMergeBuiltOnTheCurrentValue_isAccepted() {
+            applyOutcome(DeploymentOutcomeValue.failed(List.of(SLICE_A.asString()), FAILURE, 1L, 1L));
+            applyOutcome(DeploymentOutcomeValue.failed(List.of(SLICE_A.asString(), SLICE_B.asString()), FAILURE, 2L, 2L));
+
+            assertThat(recordedFailingSlices()).as("the successor version is the one legitimate continuation of the chain")
+                                               .containsExactly(SLICE_A.asString(), SLICE_B.asString());
+        }
+
+        /// A version JUMP is a write built on something other than the current committed value, and is
+        /// rejected for the same reason as an equal version — pinning that the fence is a successor
+        /// check, not merely a "greater than" check.
+        @Test
+        void aMergeThatSkipsAVersion_isRejected() {
+            applyOutcome(DeploymentOutcomeValue.failed(List.of(SLICE_A.asString()), FAILURE, 1L, 1L));
+            applyOutcome(DeploymentOutcomeValue.failed(List.of(SLICE_B.asString()), FAILURE, 2L, 3L));
+
+            assertThat(recordedFailingSlices()).containsExactly(SLICE_A.asString());
+        }
+
+        private void applyOutcome(DeploymentOutcomeValue value) {
+            kvStore.applyBatch(List.of(new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(OWNER), value)));
+        }
+    }
+
     // --- fixture ---
 
     /// Drives the exact notification production dispatches on a fatal slice failure. `fatal = true`
@@ -289,7 +333,8 @@ class BestEffortOutcomeMergeTest {
         private final NodeId self;
         private final InMemoryKvStore store;
         private final List<HeldBatch> held = Collections.synchronizedList(new ArrayList<>());
-        private int holdBudget;
+        private final AtomicLong applies = new AtomicLong();
+        private volatile int holdBudget;
 
         private record HeldBatch(List<KVCommand<AetherKey>> commands, Promise<List<Object>> promise) {}
 
@@ -306,10 +351,21 @@ class BestEffortOutcomeMergeTest {
             return held.size();
         }
 
-        /// Applies the held batches in the given order, resolving each promise as it lands. Resolution
-        /// synchronously runs the FSM's confirm-and-retry for that batch, so a rejected merge is
-        /// recovered before the next held batch is released — the same sequencing the applier thread
-        /// produces in production.
+        /// Applies the held batches in the given order, and — critically — lets each batch's
+        /// confirm-and-retry run to completion BEFORE releasing the next one.
+        ///
+        /// That quiescence step is what makes these tests pin the FENCE rather than a lucky
+        /// interleaving. `apply`'s Promise resolution dispatches the confirm asynchronously, so
+        /// without the wait the first batch's confirm races the second batch's apply. When it happens
+        /// to lose that race it observes the SECOND batch's value, notices its own id missing, and
+        /// repairs — which makes the whole suite pass even with the fence removed, because the retry
+        /// alone covered for it. A mutation probe caught exactly that.
+        ///
+        /// Draining first is also the adversarial order, and the one production reaches: a node
+        /// applies A's merge, A's confirm sees A present and correctly stops, and only then does B's
+        /// merge land. Without the fence B's write is accepted, A is erased, and NOTHING is left to
+        /// notice — the loser already confirmed. The fence is what guarantees the loser is rejected
+        /// and therefore always observes its own absence.
         void releaseHeld(int... order) {
             for (var index : order) {
                 var batch = held.get(index);
@@ -317,6 +373,30 @@ class BestEffortOutcomeMergeTest {
                 store.applyBatch(batch.commands());
                 batch.promise()
                      .succeed(List.of());
+                awaitQuiescence();
+            }
+        }
+
+        /// Waits until no further batch has been applied for a stable window — i.e. the confirm-and-
+        /// retry chain triggered by the last resolution has finished.
+        private void awaitQuiescence() {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            var stableSince = 0L;
+            var lastSeen = applies.get();
+
+            while (System.nanoTime() < deadline) {
+                var current = applies.get();
+
+                if (current != lastSeen) {
+                    lastSeen = current;
+                    stableSince = 0L;
+                } else if (stableSince == 0L) {
+                    stableSince = System.nanoTime();
+                } else if (System.nanoTime() - stableSince > TimeUnit.MILLISECONDS.toNanos(250)) {
+                    return;
+                }
+
+                Thread.onSpinWait();
             }
         }
 
@@ -333,6 +413,7 @@ class BestEffortOutcomeMergeTest {
             }
 
             store.applyBatch(batch);
+            applies.incrementAndGet();
 
             return Promise.success(List.of());
         }
