@@ -199,6 +199,57 @@ class ActivationRaceNotFatalTest {
                 .contains("invocation registration");
     }
 
+    /// #923, folded into #930 — acceptance 2: consensus unavailability during deployment must not
+    /// roll the blueprint back.
+    ///
+    /// `performActivation`'s chain reaches consensus at every `publish*` leg via
+    /// `NodeDeploymentState.applyWithRetry`, which after `CONSENSUS_MAX_RETRIES` attempts of
+    /// `CONSENSUS_OPERATION_TIMEOUT` each raises an UNTYPED `Causes.cause("Consensus batch timed
+    /// out after N retries")`. Every failure on that chain lands in `handleActivationFailure`.
+    ///
+    /// Before #930 that untyped cause hit `classify`'s permanent catch-all, became
+    /// `Fatal.UnexpectedError`, and the leader rolled the whole blueprint back under
+    /// `ALL_OR_NOTHING` — a genuine cluster OUTAGE reported as a permanent deployment fault. The
+    /// site now declares [Unrecognised#RETRY], so the cluster re-drives it under the retry budget
+    /// instead, and the bound on `ALL_OR_NOTHING` comes from #922's apply terminal rather than from
+    /// the cause's Java type.
+    ///
+    /// The cause raised below is a bare `Causes.cause`, deliberately: a TYPED cause would classify
+    /// the same way whatever the site declares, so it could not detect the disposition being
+    /// flipped back to PERMANENT. Flipping `handleActivationFailure`'s argument reddens this test
+    /// and, with the blueprint assertion below, nothing else.
+    @Test
+    void activationFailingWithAnUntypedConsensusCause_isNotFatal_andDoesNotRollBackTheBlueprint() {
+        var expanded = blueprint();
+        var failing = new FailActivationSliceStore();
+        var harness = nodeHarness(nodeSideCluster, failing);
+
+        harness.dispatch(new QuorumEstablished());
+
+        var active = (NodeDeploymentState.Active) harness.state();
+
+        active.processStateTransition(SliceNodeKey.sliceNodeKey(SLICE, SELF), SliceState.ACTIVATE);
+
+        var emitted = lastFailedNodeArtifactValue();
+
+        assertThat(failing.activateCalls)
+                .as("precondition: the run must have gone THROUGH activation, or it took another "
+                    + "branch and pins a different raise site")
+                .isEqualTo(1);
+        assertThat(emitted.fatal())
+                .as("#923: a consensus timeout is a property of the cluster's health, not of the "
+                    + "artifact — reporting it fatal is what condemned a deployment during an outage")
+                .isFalse();
+
+        leaderHarness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
+        leaderHarness.dispatch(new NodeArtifactPutReceived(replayOf(emitted)));
+
+        assertThat(leaderSideCluster.removeKeys())
+                .as("#930 acceptance 2: the blueprint must survive a consensus outage during "
+                    + "activation rather than being rolled back under ALL_OR_NOTHING")
+                .doesNotContain(AppBlueprintKey.appBlueprintKey(expanded.id()));
+    }
+
     /// Drives the real node FSM through the ACTIVATE transition with an empty `SliceStore` and
     /// returns the [NodeArtifactValue] the node actually pushed to consensus.
     private NodeArtifactValue driveActivationAgainstEmptyStore() {
@@ -331,6 +382,48 @@ class ActivationRaceNotFatalTest {
             evicted = true;
 
             return Promise.success(entry);
+        }
+
+        @Override public Promise<LoadedSlice> deactivateSlice(Artifact artifact) {
+            return Promise.success(entry);
+        }
+
+        @Override public Promise<Unit> unloadSlice(Artifact artifact) {
+            return Promise.unitPromise();
+        }
+
+        @Override public Option<org.pragmatica.config.ConfigurationProvider> sliceComposite(Artifact artifact) {
+            return Option.none();
+        }
+    }
+
+    /// A store whose slice loads fine but whose ACTIVATION fails with an untyped cause — the
+    /// observable a consensus timeout on the activation chain produces.
+    private static final class FailActivationSliceStore implements SliceStore {
+        private volatile int activateCalls = 0;
+
+        private final LoadedSlice entry = new LoadedSlice() {
+            @Override public Artifact artifact() {
+                return SLICE;
+            }
+
+            @Override public org.pragmatica.aether.slice.Slice slice() {
+                return List::of;
+            }
+        };
+
+        @Override public List<LoadedSlice> loaded() {
+            return List.of(entry);
+        }
+
+        @Override public Promise<LoadedSlice> loadSlice(Artifact artifact) {
+            return Promise.success(entry);
+        }
+
+        @Override public Promise<LoadedSlice> activateSlice(Artifact artifact) {
+            activateCalls++;
+
+            return Causes.cause("Consensus batch timed out after 2 retries").promise();
         }
 
         @Override public Promise<LoadedSlice> deactivateSlice(Artifact artifact) {
