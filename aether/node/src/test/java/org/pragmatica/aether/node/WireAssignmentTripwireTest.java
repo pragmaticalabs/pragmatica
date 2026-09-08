@@ -144,15 +144,16 @@ class WireAssignmentTripwireTest {
                      ALSO exactly how a real regression gets silenced, and the two are indistinguishable \
                      once the baseline is rewritten. So, in this order:
 
-                       1. READ the diff above line by line, BEFORE re-recording. Every changed line must \
-                          be a change you meant to make.
-                       2. If a line moved that you did NOT intend — a tag you never touched, an ordinal in \
-                          an enum you never edited — STOP. Do not re-record. A merge or rebase has altered \
-                          a wire assignment that no change intended, which is the defect this test exists \
-                          to catch, arriving through the mechanism built to catch it.
-                       3. Only then re-record with the WireAssignmentBaselineWriter test in this package \
-                          (it needs -Dwire.baseline.record=true), and say in the commit message which \
-                          change the accepted delta belongs to.
+                       1. READ the diff above line by line, BEFORE re-recording.
+                          Every changed line must be a change you meant to make.
+                       2. If a line moved that you did NOT intend — a tag you never touched, or an
+                          ordinal in an enum you never edited — STOP. Do not re-record. A merge or
+                          rebase has altered a wire assignment that no change intended, which is the
+                          defect this test exists to catch, arriving through the mechanism built to
+                          catch it.
+                       3. Only then re-record with the WireAssignmentBaselineWriter test in this
+                          package (it needs -Dwire.baseline.record=true), and say in the commit
+                          message which change the accepted delta belongs to.
 
                      "The build was red so I re-recorded the baseline" is not a reason. Naming the change \
                      that the delta belongs to is.
