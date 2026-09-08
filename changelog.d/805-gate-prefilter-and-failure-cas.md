@@ -55,6 +55,21 @@
   `BestEffortOutcomeMergeTest$AllOrNothingUnaffected#theTerminalOutcome_isAccepted_overAnAlreadyCommittedRecord`,
   which asserts on committed state after a real apply and was confirmed red when
   `failedOutcomeCommand` was reverted to a blind version stamp]
+- **The owner path this record depends on was audited, not assumed.** `recordBestEffortFailureOutcome`
+  reaches `DeploymentOutcomeKey` through `Blueprint::owner`, which traces to
+  `SliceTargetValue.owningBlueprint` — the field #698 found the autoscaler and A/B writer erasing. An
+  erased owner does not corrupt the record, it means no record is written at all, so the lost-update
+  fix above would have been correct and irrelevant for every autoscaled or A/B-tested slice. All five
+  external writers of `SliceTargetValue` were enumerated: the two #698 named are fixed by #940
+  (`a75e6af42`, this branch's base) and verified to carry the owner through; the other three
+  (`DeploymentManagerImpl.addSliceTargetCommand`, `RollbackManager.updateSliceTargetForRollback`,
+  `SliceRoutes.applyDeployCommand`) all follow `existing.map(current -> current.withX(...))
+  .or(<owner-less fallback>)`, and every `withX` helper on the record preserves `owningBlueprint`, so
+  the owner-less fallback fires only for a genuinely absent record. The path is intact at this head.
+  [verified: `BestEffortOutcomeMergeTest$OwnerResolutionFromTheSliceTargetRecord`, driven through the
+  real `SliceTargetPutReceived` notification rather than by seeding the mirror; mutation-probed by
+  erasing the owner as it enters the mirror, which turns the positive case red with "no
+  deployment-outcome record was committed" while the owner-less negative case stays green]
 - **Wire format:** the `deployment-outcome` TOML value goes from 4 fields to 5 (`outcomeVersion`
   appended). Consistent with the rc-line posture RFC-0018 O1 already records — rc releases do not
   support mixed-version co-application, and the KV serializer format already diverges between rcs.
