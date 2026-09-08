@@ -400,10 +400,9 @@ public final class ClusterEventAggregator {
         Option.option(publisherSupplier.get())
               .onPresent(publisher -> Result.lift(Causes::fromThrowable,
                                                   () -> publisher.publish(event))
-                                            .onSuccess(promise -> promise.onFailure(cause -> LOG.warn(
-                                                    "ClusterEventAggregator: publish of {} failed, dropped: {}",
-                                                    event,
-                                                    cause.message())))
+                                            .onSuccess(promise -> promise.onFailure(cause -> LOG.warn("ClusterEventAggregator: publish of {} failed, dropped: {}",
+                                                                                                      event,
+                                                                                                      cause.message())))
                                             .onFailure(cause -> LOG.warn("ClusterEventAggregator: publish of {} threw, dropped: {}",
                                                                          event,
                                                                          cause.message())))
@@ -514,14 +513,14 @@ public final class ClusterEventAggregator {
                                                                    Map.of("leaderId",
                                                                           leaderId.id()))))
              .onEmpty(() -> {
-                 LOG.warn("Leadership lost on {}, election in progress — cluster observability degraded",
-                          selfNode.id());
-
-                 emitLocal(new LeaderLost(hlcClock.now(),
-                                          Severity.WARNING,
-                                          "Leadership lost, election in progress",
-                                          Map.of("observedBy", selfNode.id())));
-             });
+                          LOG.warn("Leadership lost on {}, election in progress — cluster observability degraded",
+                                   selfNode.id());
+                          emitLocal(new LeaderLost(hlcClock.now(),
+                                                   Severity.WARNING,
+                                                   "Leadership lost, election in progress",
+                                                   Map.of("observedBy",
+                                                          selfNode.id())));
+                      });
     }
 
     /// Quorum transitions, UN-gated via {@link #emitLocal} (#926) — previously both leader-gated.
@@ -561,7 +560,6 @@ public final class ClusterEventAggregator {
                                                            Map.of("observedBy", selfNode.id())));
             case PASSIVE -> {
                 LOG.warn("Quorum lost on {} — consensus unavailable, cluster observability degraded", selfNode.id());
-
                 emitLocal(new QuorumLost(hlcClock.now(),
                                          Severity.CRITICAL,
                                          "Quorum lost",
@@ -651,14 +649,10 @@ public final class ClusterEventAggregator {
         LOG.warn("Node {} failed (confirmed departure), observed by {} — cluster membership degraded",
                  departed.id(),
                  selfNode.id());
-
         emitLocal(new NodeFailed(hlcClock.now(),
                                  Severity.CRITICAL,
                                  "Node " + departed.id() + " failed (confirmed departure)",
-                                 Map.of("nodeId",
-                                        departed.id(),
-                                        "observedBy",
-                                        selfNode.id())));
+                                 Map.of("nodeId", departed.id(), "observedBy", selfNode.id())));
     }
 
     /// Departure-push overrun sink (issue #427, D4). The gracefully-departing node reports the chunks

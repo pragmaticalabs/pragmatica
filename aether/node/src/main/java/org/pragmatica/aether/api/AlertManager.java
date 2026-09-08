@@ -512,7 +512,6 @@ public class AlertManager {
                                    null,
                                    alert.timestamp));
         }
-
         // #926: node-health alerts reach the SAME /api/alerts surface as every other kind. An alert
         // raised but not rendered is not operator-visible, which is the defect this ticket is about one
         // layer up. Discriminated by source="node_health"; nodeId names the FAILED node and message
@@ -813,10 +812,9 @@ public class AlertManager {
     /// reachable as the failure it clears. A no-op when no alert is active for that node.
     @Contract
     public void clearNodeHealthAlert(NodeId rejoined) {
-        Option.option(activeNodeHealthAlerts.remove(AlertEvent.NodeHealthAlert.alertId(rejoined)))
-              .onPresent(cleared -> log.info("Node-health alert resolved for {} — node rejoined (was: {})",
-                                             rejoined.id(),
-                                             cleared.reason()));
+        Option.option(activeNodeHealthAlerts.remove(AlertEvent.NodeHealthAlert.alertId(rejoined))).onPresent(cleared -> log.info("Node-health alert resolved for {} — node rejoined (was: {})",
+                                                                                                                                 rejoined.id(),
+                                                                                                                                 cleared.reason()));
     }
 
     public List<AlertEvent.NodeHealthAlert> getActiveNodeHealthAlerts() {
