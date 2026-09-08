@@ -1,0 +1,31 @@
+name: Feature catalog statistics
+
+# The catalog's Statistics table is generated from its own feature rows (#928). It was hand-maintained
+# and never agreed with the body: at its last hand edit (a43c04c70) it claimed 207 while the body
+# carried 221. This check fails when the block and the rows disagree, so drift is DETECTED on every
+# PR that touches the catalog. It is not a *required* check -- release-1.0.0-rc4 is not a protected
+# branch -- so it reports drift rather than preventing a merge past it.
+on:
+  push:
+    branches: [main, release-*, feature/*, fix/*]
+    paths:
+      - 'aether/docs/reference/feature-catalog.md'
+      - 'scripts/catalog-stats.sh'
+      - '.github/workflows/catalog.yml'
+  pull_request:
+    branches: [main, release-*]
+    paths:
+      - 'aether/docs/reference/feature-catalog.md'
+      - 'scripts/catalog-stats.sh'
+      - '.github/workflows/catalog.yml'
+  workflow_dispatch:
+
+jobs:
+  statistics:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check the generated Statistics table
+        run: scripts/catalog-stats.sh --check

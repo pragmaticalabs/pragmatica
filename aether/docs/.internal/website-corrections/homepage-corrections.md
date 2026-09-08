@@ -102,7 +102,10 @@ Even Aether alone has nearly 3,000 @Test methods — 6x the claimed 500+.
 
 **Website claims:** "173 documented features"
 
-**Actual:** Feature catalog shows 173. This matches.
+**Actual (2026-09-08, #928): it no longer matches, and the "this matches" above is retired.** The
+catalog generates its count from its rows (`scripts/catalog-stats.sh`): **227 feature rows -- 171
+Complete, 24 Partial, 23 Battle-tested, 9 Planned.** The figure counts rows *claiming* a capability;
+none is verified against the code (#926). Re-check this page against the generator, not by hand.
 
 ---
 
