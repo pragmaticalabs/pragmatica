@@ -37,6 +37,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class AlertingWiringLivenessTest {
     private static final List<java.nio.file.Path> PRODUCTION_ROOTS = ReactorRoots.productionRoots();
 
+    /// Without this, a red here is ambiguous between "the production wiring was deleted" (the defect
+    /// these tests exist to catch) and "the node module was simply not compiled in this working copy"
+    /// -- and that ambiguity would land on whoever is debugging a CI failure at speed. Fail-safe
+    /// either way, since an uncompiled module can only make a method look LESS reachable; this makes
+    /// the red say which. Mirrors `ConfigKeyLivenessTest`'s precondition.
+    private static void assertCorpusIsComplete() {
+        var missing = ReactorRoots.missingProductionOutput();
+
+        assertTrue(missing.isEmpty(),
+                   "Corpus incomplete: these module(s) have src/main/java but no target/classes, so a "
+                   + "call site living there would read as unreachable and fail these assertions for the "
+                   + "wrong reason: " + missing + ". Run a full reactor build "
+                   + "(`mvn -pl aether install -DskipTests`) before trusting this gate's result.");
+    }
+
     /// Pinned call site: `AetherNode.assembleNode` -> `alertManager.withAlertForwarder(...)`.
     ///
     /// `withAlertForwarder` is the seam that constructs AND binds in one production expression, so it
@@ -46,6 +61,8 @@ class AlertingWiringLivenessTest {
     /// that stays true after the boot call is deleted, which is the opposite of a pin.
     @Test
     void alertForwarderIsConstructedAndBoundByProductionCode() throws Exception {
+        assertCorpusIsComplete();
+
         var reachability = BytecodeReachability.scan(PRODUCTION_ROOTS);
 
         assertTrue(reachability.isReachable(MethodRef.of(AlertManager.class.getDeclaredMethod("withAlertForwarder",
@@ -70,6 +87,8 @@ class AlertingWiringLivenessTest {
     /// test stays green — and the change would look unrelated to whoever made it.
     @Test
     void dashboardMetricsPublisherIsStartedByProductionCode() throws Exception {
+        assertCorpusIsComplete();
+
         var reachability = BytecodeReachability.scan(PRODUCTION_ROOTS);
 
         assertTrue(reachability.isReachable(MethodRef.of(DashboardMetricsPublisher.class.getDeclaredMethod("start"))),
