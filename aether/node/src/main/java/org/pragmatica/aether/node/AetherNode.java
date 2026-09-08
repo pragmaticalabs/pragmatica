@@ -4487,14 +4487,23 @@ public interface AetherNode extends ManageableNode {
     TimeSpan MEMBERSHIP_BASELINE_TRACE_INTERVAL = TimeSpan.timeSpan(30).seconds();
 
     /// Single FSM-transition fan-out installed at the central transition chokepoint
-    /// ([`MembershipFsm#onTransition`], fired once per ACTUAL per-member state change under the FSM's
-    /// synchronized per-member dispatch monitor). Records the transition into the per-node journal
+    /// ([`MembershipFsm#onTransition`], fired once per ACTUAL per-member state change at the FSM's
+    /// central dispatch chokepoint). Records the transition into the per-node journal
     /// (Wave-1 Enrichment A) AND — when the transition crosses the exact-`Member` boundary — re-feeds
     /// the strict-core count to the quorum-loss detector. This prompt re-feed (NOT only the 15s
     /// presence down-hysteresis `onNttReconcile` / DEAD `onMembershipDeath` paths) is what arms the
     /// self-drain window when several cores enter SUSPECT at once, and CANCELS it on a SUSPECT→MEMBER
-    /// refutation. Safe-by-precedent: `onMembershipDeath` already drives the same
-    /// `propagateMemberCount`→`strictCoreMemberCount` chain from inside this same dispatch monitor.
+    /// refutation.
+    ///
+    /// #929: `propagateMemberCount` walks EVERY member calling the `synchronized`
+    /// `MemberTracking.isStrictCoreMember`. Until #929 this listener ran while the FSM held the
+    /// DISPATCHING member's monitor, so this method held one member's monitor and requested all the
+    /// others' — in `ConcurrentHashMap` iteration order. Two of this node's event loops (SWIM
+    /// `onSwimSuspect`, QUIC `onLivenessGone`) dispatching on two different members deadlocked AB/BA,
+    /// wedging both loops. The FSM now publishes with the per-member monitor RELEASED (serialised by
+    /// `MemberTracking.transitionGuard`), which is what makes this member walk safe. The old
+    /// "safe-by-precedent" note here cited `onMembershipDeath` driving the same chain from inside
+    /// that monitor — that was the same defect, not a precedent for it.
     @Contract
     private static void onFsmTransition(TransitionJournal journal,
                                         AtomicReference<QuorumLossDetector> quorumLossDetectorRef,

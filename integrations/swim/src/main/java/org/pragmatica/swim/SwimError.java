@@ -45,6 +45,39 @@ public sealed interface SwimError extends Cause {
         }
     }
 
+    /// Transport shutdown did not complete within its bound (#929). Distinct from
+    /// [`TransportFailure`] because nothing threw: the wait simply ran out while the event loop was
+    /// still wedged. Reported instead of the pre-#929 unconditional "SWIM transport stopped" log,
+    /// which claimed success on exactly this path.
+    record ShutdownTimeout(String stage, long timeoutMs) implements SwimError {
+        @Override
+        public String message() {
+            return "SWIM transport " + stage + " did not complete within " + timeoutMs + " ms";
+        }
+    }
+
+    /// Transport shutdown was INTERRUPTED before completing (#929). The interrupt flag is
+    /// re-asserted by the caller; this reports that the shutdown was aborted, not finished.
+    record ShutdownInterrupted(String stage) implements SwimError {
+        @Override
+        public String message() {
+            return "SWIM transport " + stage + " was interrupted before completing";
+        }
+    }
+
+    /// Transport shutdown COMPLETED but failed (#929 verification round 1). Netty's
+    /// `Future.await(long)` returns true when the future is DONE, whatever its outcome, so a close or
+    /// group shutdown that completes exceptionally is a third case — distinct from both
+    /// [`ShutdownTimeout`] and [`ShutdownInterrupted`]. The pre-#929 `.sync()` rethrew this cause;
+    /// reporting it as success would have been a NEW dishonesty in the property part 3 exists to
+    /// establish.
+    record ShutdownFailed(String stage, Throwable cause) implements SwimError {
+        @Override
+        public String message() {
+            return "SWIM transport " + stage + " failed: " + Causes.fromThrowable(cause);
+        }
+    }
+
     /// Serialization failure.
     record SerializationFailure(Throwable cause) implements SwimError {
         @Override

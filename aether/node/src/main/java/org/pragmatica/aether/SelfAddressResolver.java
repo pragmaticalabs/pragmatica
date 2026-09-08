@@ -148,6 +148,9 @@ public final class SelfAddressResolver {
     /// whether the probe succeeded or failed.
     private static Promise<String> stopThen(SwimTransport transport, Result<String> carried) {
         return transport.stop()
+                        .onFailure(cause -> log.warn("Transient WhoAmI transport stop did not complete: {}",
+                                                     cause.message()))
+                        .recover(_ -> Unit.unit())
                         .flatMap(_ -> carried.async());
     }
 
