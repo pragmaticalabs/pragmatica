@@ -17,10 +17,13 @@ import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.Exhaustion;
 import org.pragmatica.aether.stream.SystemStreamFactories;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -225,11 +228,10 @@ class ClusterEventAggregatorTest {
 
     // --- leader-gated departure emit (#94: NODE_FAILED delivery for replacement deaths) ----------
 
-    /// Membership FAILURES route through {@link ClusterEventAggregator#onConfirmedDeparture} →
-    /// {@link ClusterEventAggregator#emitAsLeader}, gated on `leaderCheck` rather than `ownerCheck`. The
-    /// just-failed node is frequently the cluster-events partition owner, so owner-gating would suppress
-    /// its own `NODE_FAILED`. The leader — never the failed node for its own committed view — MUST emit
-    /// even when it is NOT the partition owner.
+    /// Membership FAILURES route through {@link ClusterEventAggregator#onConfirmedDeparture}. Since
+    /// #926 that path is UN-gated ({@code emitLocal}); this test additionally pins that the OWNER gate
+    /// does not suppress it either. The just-failed node is frequently the cluster-events partition
+    /// owner, so owner-gating would suppress its own `NODE_FAILED`.
     @Test
     void leader_emitsDeparture_evenWhenNotOwner() {
         var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, LEADER);
@@ -240,14 +242,97 @@ class ClusterEventAggregatorTest {
         assertThat(events.getFirst().details()).containsEntry("nodeId", "dead");
     }
 
-    /// The leader-gate is a real gate: a non-leader observer must NOT advertise a membership failure
-    /// (the leader owns that cluster-canonical statement), even when it IS the partition owner. The FSM
-    /// DEAD edge fires on EVERY node's FSM, so this gate is what collapses the fan-out to a single emit.
+    /// #926 — THE ticket, and the direct reversal of the contract this test file previously pinned.
+    ///
+    /// The replaced test (`nonLeader_suppressesDepartureEmit`) asserted that a non-leader observer must
+    /// NOT emit `NODE_FAILED`, on the reasoning that the leader gate "is what collapses the fan-out to a
+    /// single emit". That reasoning was correct about the fan-out and wrong about the cost: the FSM DEAD
+    /// edge fires on EVERY node, so when NO node is leader the gate holds everywhere at once and the
+    /// event is emitted NOWHERE. Measured on a five-node cluster over ten days: SWIM confirmed 8 faulty
+    /// members, 1,297,717 leader-election lines were logged, and `NodeFailed` appeared 0 times.
+    ///
+    /// This test models the failing condition honestly. Every observer's `leaderCheck` is the CONSTANT
+    /// `NOT_LEADER`, so "the cluster has no leader" is not merely true at the instant of one assertion —
+    /// it holds by construction for every call in the window under test, and no election can complete
+    /// behind the test's back. Owner-checks are deliberately mixed so that neither gate can be the one
+    /// letting the event through.
     @Test
-    void nonLeader_suppressesDepartureEmit() {
-        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER);
+    void noLeaderAnywhere_stillEmitsNodeFailed_onEveryObserver() {
+        var observers = List.of(Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER),
+                                Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER),
+                                Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER));
+
+        observers.forEach(h -> h.aggregator().onConfirmedDeparture(new NodeId("dead")));
+
+        for (var h : observers) {
+            var events = h.events();
+            assertThat(events).hasSize(1);
+            assertThat(events.getFirst()).isInstanceOf(ClusterEvent.NodeFailed.class);
+            assertThat(events.getFirst().details()).containsEntry("nodeId", "dead");
+            // `observedBy` is what makes the bounded duplication collapsible by a consumer.
+            assertThat(events.getFirst().details()).containsEntry("observedBy", SELF.id());
+        }
+    }
+
+    /// #926 — the replay gate is the ONE suppression that must survive un-gating. Without this, moving
+    /// `NODE_FAILED` to `emitLocal` would re-publish historical departures on every snapshot/resync.
+    /// `emitLocal` keeps `replayingCheck`; this pins that it still does, with no leader involved.
+    @Test
+    void noLeader_stillSuppressesDepartureDuringReplay() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> true, NOT_LEADER);
         h.aggregator().onConfirmedDeparture(new NodeId("dead"));
         assertThat(h.events()).isEmpty();
+    }
+
+    /// #926 — `LEADER_LOST` was unreachable by construction. It is emitted from the branch where
+    /// `leaderId()` is EMPTY, and it went through `emitAsLeader`, so the event announcing "there is no
+    /// leader" required the emitter to BE the leader. No node could ever satisfy both at once.
+    @Test
+    void noLeader_stillEmitsLeaderLost() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.none(), false));
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.LeaderLost.class);
+        assertThat(events.getFirst().details()).containsEntry("observedBy", SELF.id());
+    }
+
+    /// `LEADER_ELECTED` stays leader-gated — the new leader is the authoritative emitter of its own
+    /// election and the gate holds for it. Pinned so the #926 change is not read as "un-gate everything".
+    @Test
+    void nonLeader_stillSuppressesLeaderElected() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.some(new NodeId("other")), false));
+        assertThat(h.events()).isEmpty();
+    }
+
+    /// #926 — `QUORUM_LOST` is the most severe event this class emits and was the least emittable: a
+    /// cluster that has gone PASSIVE cannot commit through consensus and so cannot sustain a leader
+    /// lease, meaning `leaderCheck` is false on every node exactly when quorum is lost.
+    @Test
+    void noLeader_stillEmitsQuorumLost() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.QuorumLost.class);
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
+    }
+
+    /// #926 — the recovery half. Quorum forms BEFORE a leader is elected, so the old gate dropped this
+    /// notice at the one moment it was guaranteed false. Un-gating the loss while leaving the recovery
+    /// gated would be worse than fixing neither: an operator would watch the cluster enter "quorum lost"
+    /// and never see it leave. A failure signal is only usable if its recovery signal is as reachable.
+    @Test
+    void noLeader_stillEmitsQuorumEstablished() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.active());
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.QuorumEstablished.class);
     }
 
     /// NODE_JOINED is now LEADER-gated too (the join analog of the departure fix). The transport
