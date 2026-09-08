@@ -371,6 +371,23 @@ class CliDocsDriftTest {
                            + "between clustered short options and a long option), option VALUES, positional "
                            + "argument shapes, or fenced blocks whose language is outside "
                            + new TreeSet<>(DocScanner.shellLanguages()) + ".");
+
+        var waiver = readKeyList(WAIVER);
+        var waivedFiles = waiver.stream().map(entry -> entry.split("\t", 2)[0]).distinct().count();
+
+        System.out.println(
+            "cli-docs-gate KEY COLLISION — the blind spot in the waiver itself, and the one that leaves no "
+            + "diff:\n"
+            + "  A finding is keyed by (file, drift), so one waiver entry covers EVERY instance of that drift "
+            + "in that file, not one line. Adding another broken invocation whose (file, drift) key is already "
+            + "waived therefore creates no new entry: the count does not move, the digest does not change, and "
+            + "nothing appears in any diff for a reviewer to see. The count stops the waiver GROWING and the "
+            + "digest stops it being REWRITTEN; neither can stop this.\n"
+            + "  Present exposure: " + waiver.size() + " waived finding(s) across " + waivedFiles + " file(s). "
+            + "Those " + waiver.size() + " entries therefore describe MORE than " + waiver.size() + " broken "
+            + "invocations, and that surface is where a new one can hide.\n"
+            + "  Closing it means keying by (file, drift, instance-count), which preserves the deliberate "
+            + "independence from line numbers.");
     }
 
     private static void addIfAmbiguous(Set<String> out, String path, CliSurface.Node node) {

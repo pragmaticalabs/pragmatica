@@ -80,6 +80,12 @@ aether/docs/articles/aether-introduction.md	command: aether blueprint
 aether/docs/articles/aether-introduction.md	option: --action on aether thresholds set
 
 # --- aether/docs/getting-started.md ---
+# DO NOT "FIX" THIS ONE. It looks exactly like the six singular/plural typos that WERE fixed, and
+# `aether artifacts` does exist — but the line is a sentence about a bug that was fixed in the past:
+# "the broken `aether artifact push --env prod` call (#515) is gone". Renaming it makes the sentence
+# name a call that was never the broken one. It was renamed once, in this PR's first pass, and
+# reverted for exactly that reason. The gate cannot tell historical prose from an instruction, and
+# the changelog exclusion is by DIRECTORY, so history inside a living document is unprotected.
 aether/docs/getting-started.md	command: aether artifact
 
 # --- aether/docs/guides/deploy-guide.md ---
