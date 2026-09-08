@@ -18,6 +18,7 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Bluepri
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetPutReceived;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -26,10 +27,12 @@ import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -233,6 +236,65 @@ class BestEffortOutcomeMergeTest {
         }
     }
 
+    /// Relayed from `fix-930-922` while #930/#922 were in flight: `recordBestEffortFailureOutcome`
+    /// reaches `DeploymentOutcomeKey` through `Blueprint::owner`, and that owner traces back to
+    /// `SliceTargetValue.owningBlueprint` — the field #698 found the autoscaler and the A/B writer
+    /// erasing. An erased owner does not corrupt the record, it means NO record is written at all, so
+    /// the lost-update fix above would have been correct and irrelevant for every autoscaled or
+    /// A/B-tested slice.
+    ///
+    /// #940 (`a75e6af42`, this branch's base) fixed both producers. These tests are the regression
+    /// sensor for that coupling, driven through the REAL `SliceTargetPutReceived` path — the same
+    /// notification an autoscale write produces — rather than by hand-seeding the mirror, so an owner
+    /// erased anywhere between the KV record and `Blueprint::owner` shows up here.
+    @Nested
+    class OwnerResolutionFromTheSliceTargetRecord {
+        @BeforeEach
+        void freshHarness() {
+            buildHarness(DeploymentAtomicity.BEST_EFFORT);
+        }
+
+        /// The positive case, and the one that would have been red before #940: an autoscale-shaped
+        /// `SliceTargetValue` carrying its owner must still produce a committed outcome record on a
+        /// deterministic failure.
+        @Test
+        void theOutcomeRecord_isWritten_whenTheSliceTargetRecordCarriesItsOwner() {
+            publishSliceTarget(SLICE_A, Option.some(OWNER));
+
+            failSlice(SLICE_A);
+
+            assertThat(recordedFailingSlices()).as("owner preserved on the SliceTargetValue (#698/#940) — the failure "
+                                                   + "record must be attributable and therefore written")
+                                               .contains(SLICE_A.asString());
+        }
+
+        /// The failure mode itself, pinned so it is visible rather than inferred: with no owner on the
+        /// record there is no `DeploymentOutcomeKey` to write against and the failure is silently
+        /// unrecorded. This is what #698's erasure produced for every autoscaled slice, and it is the
+        /// shape a future erasure would take.
+        @Test
+        void noOutcomeRecord_isWritten_whenTheSliceTargetRecordCarriesNoOwner() {
+            publishSliceTarget(SLICE_A, Option.none());
+
+            failSlice(SLICE_A);
+
+            assertThat(committedOutcome().isEmpty()).as("an owner-less slice has no blueprint to record the failure "
+                                                        + "against — the record is dropped entirely, not merely incomplete")
+                                                    .isTrue();
+        }
+
+        /// Drives the real notification `handleSliceTargetChange` consumes, so the owner reaches
+        /// `Active.blueprints` the same way an autoscaler write delivers it.
+        private void publishSliceTarget(Artifact artifact, Option<BlueprintId> owner) {
+            var key = SliceTargetKey.sliceTargetKey(artifact.base());
+            var value = SliceTargetValue.sliceTargetValue(artifact.version(), 1, owner);
+
+            kvStore.applyBatch(List.of(new KVCommand.Put<>(key, value)));
+            harness.dispatch(new SliceTargetPutReceived(new ValuePut<>(new KVCommand.Put<>(key, value),
+                                                                       Option.none())));
+        }
+    }
+
     /// #805's acceptance clause: "no behaviour change for ALL_OR_NOTHING". Fencing
     /// [DeploymentOutcomeValue] makes EVERY writer of that record fenceable, not just the BEST_EFFORT
     /// merge — the three ALL_OR_NOTHING terminal writers (`recordSucceededOutcome`,
@@ -373,6 +435,12 @@ class BestEffortOutcomeMergeTest {
 
     private List<String> recordedFailingSlices() {
         return recordedOutcome().failingSlices();
+    }
+
+    private Option<DeploymentOutcomeValue> committedOutcome() {
+        return kvStore.get(DeploymentOutcomeKey.deploymentOutcomeKey(OWNER))
+                      .filter(DeploymentOutcomeValue.class::isInstance)
+                      .map(DeploymentOutcomeValue.class::cast);
     }
 
     private DeploymentOutcomeValue recordedOutcome() {
