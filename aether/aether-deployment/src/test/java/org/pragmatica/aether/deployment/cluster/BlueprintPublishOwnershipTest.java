@@ -34,6 +34,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.repository.Location;
@@ -215,20 +216,23 @@ class BlueprintPublishOwnershipTest {
 
             publish(OWNER_COORDS, withoutMigrations(OWNER_COORDS)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
 
-            assertThat(recordedOutcome().isEmpty())
-                    .as("a fresh publish of a previously FAILED id must clear the stale outcome — outcome(id) "
-                        + "must be empty until the NEW attempt's own terminal write, never carry the PREVIOUS "
-                        + "attempt's result forward")
-                    .isTrue();
+            assertThat(recordedOutcomeStatus())
+                    .as("a fresh publish of a previously FAILED id must not carry the PREVIOUS attempt's "
+                        + "result forward. #963: the guarantee is unchanged, but it is now met by a Put of "
+                        + "IN_PROGRESS rather than a Remove — the stale terminal is gone AND the new attempt's "
+                        + "start is recorded, so 'no terminal yet' is a fact rather than an absence")
+                    .isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
         }
 
         @Test
         void publishFromArtifact_leavesNoOutcome_whenIdNeverHadOne() {
             publish(OWNER_COORDS, withoutMigrations(OWNER_COORDS)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
 
-            assertThat(recordedOutcome().isEmpty()).as("a first-ever publish has no prior outcome to clear; the "
-                                                        + "Remove of an absent key is a no-op")
-                                                    .isTrue();
+            assertThat(recordedOutcomeStatus())
+                    .as("#963: a first-ever publish has no prior outcome to clear, but it DOES record that "
+                        + "this attempt started — the write is unconditional, which is what makes the "
+                        + "record's presence trustworthy evidence rather than a best effort")
+                    .isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
         }
 
         /// #759 review round 2, BLOCKING 1: `publish(String dsl)` — the live path behind
@@ -241,11 +245,10 @@ class BlueprintPublishOwnershipTest {
 
             publishDsl(OWNER_COORDS).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
 
-            assertThat(recordedOutcome().isEmpty())
-                    .as("a DSL republish of a previously FAILED id must clear the stale outcome too — the "
-                        + "SliceRoutes.handleBlueprint live path must give the same guarantee "
-                        + "publishFromArtifact already does")
-                    .isTrue();
+            assertThat(recordedOutcomeStatus())
+                    .as("the SliceRoutes.handleBlueprint live path must give the same guarantee "
+                        + "publishFromArtifact does — stale terminal replaced by this attempt's IN_PROGRESS")
+                    .isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
         }
 
         /// #759 review round 2, BLOCKING 2: `delete(id)` went through `removeFromStore`, a
@@ -268,6 +271,14 @@ class BlueprintPublishOwnershipTest {
 
         private Option<AetherValue> recordedOutcome() {
             return store.get(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(OWNER));
+        }
+
+        /// The STATUS rather than mere presence: after #963 every publish leaves a record, so
+        /// `isPresent` no longer discriminates between "this attempt started" and "the previous
+        /// attempt's terminal survived", which is the whole point of the #759 guarantee.
+        private Option<DeploymentOutcomeStatus> recordedOutcomeStatus() {
+            return recordedOutcome().filter(value -> value instanceof AetherValue.DeploymentOutcomeValue)
+                                    .map(value -> ((AetherValue.DeploymentOutcomeValue) value).status());
         }
     }
 

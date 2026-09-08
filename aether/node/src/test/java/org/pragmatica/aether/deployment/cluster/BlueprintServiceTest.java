@@ -365,10 +365,16 @@ class BlueprintServiceTest {
                        .await()
                        .onFailure(cause -> fail("Expected DSL publish to succeed, got: " + cause.message()));
 
-            assertThat(liveService.outcome(REDEPLOY_ID).isPresent())
-                    .as("#818: republish of a previously FAILED id must clear the stale outcome in the "
-                        + "same consensus batch as the republish")
-                    .isFalse();
+            assertThat(liveService.outcome(REDEPLOY_ID)
+                                  .map(AetherValue.DeploymentOutcomeValue::status))
+                    .as("#818: republish of a previously FAILED id must not carry the stale outcome "
+                        + "forward. #963 changed HOW — the same consensus batch now Puts IN_PROGRESS "
+                        + "instead of Removing, so the guarantee is met by replacement rather than by "
+                        + "absence, and 'this attempt started' becomes a positive fact. Asserting the "
+                        + "STATUS rather than `isPresent` keeps this discriminating: after #963 every "
+                        + "publish leaves a record, so presence alone no longer distinguishes a fresh "
+                        + "attempt from a surviving stale terminal")
+                    .contains(AetherValue.DeploymentOutcomeStatus.IN_PROGRESS);
 
             var deploymentMap = DeploymentMap.deploymentMap();
             deploymentMap.onNodeArtifactPut(nodeArtifactPut(NODE_A, REDEPLOY_SLICE, SliceState.ACTIVE));
