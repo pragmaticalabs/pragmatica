@@ -118,6 +118,47 @@ class RetryExhaustionApplyOutstandingTest {
         leaderHarness = leaderHarness(new RecordingClusterNode(SELF, leaderStore), leaderStore, RESOLVED_MEMBERSHIP);
     }
 
+    /// INSTRUMENT CHECK, and it is a precondition for every other test in this class.
+    ///
+    /// `deploymentApplyOutstanding` is `AppBlueprintKey` present AND `DeploymentOutcomeKey` absent.
+    /// In a fixture where nothing ever lands in the `KVStore`, the second conjunct is
+    /// UNCONDITIONALLY TRUE — the predicate degenerates to "blueprint present", and every
+    /// `doesNotContain` assertion below would pass without exercising the mechanism at all. Green,
+    /// fast, and vacuous.
+    ///
+    /// **What the fixture could not do before, and can now.** The inherited `RecordingClusterNode`
+    /// only RECORDED what the leader submitted; `cluster.apply` never reached the store, so no
+    /// `DeploymentOutcomeValue` written by the production path was ever readable back and the store
+    /// could only ever be in one of the two states this predicate distinguishes. It now applies each
+    /// submitted batch into the same `KVStore` the FSM reads, as consensus does for every replica
+    /// including the leader's own.
+    ///
+    /// This test drives that end to end: absent before, SUCCEEDED after, read back through
+    /// `DeploymentOutcomeKey` — the same key and store `applyNotYetTerminal` consults. If the
+    /// fixture ever regresses to record-only, this fails first and names the reason.
+    @Test
+    void instrumentCheck_theFixtureHoldsBothOutcomeStates_soTheAssertionsAreNotVacuous() {
+        var expanded = blueprint();
+
+        applyBlueprint(leaderHarness, leaderStore, expanded);
+
+        assertThat(outcomeStatusName(leaderStore, expanded.id()))
+                .as("before every slice is ACTIVE the apply has no terminal record — this is the state "
+                    + "in which the predicate must answer OUTSTANDING")
+                .isEqualTo(NO_OUTCOME);
+
+        // The production path: every slice ACTIVE retires the blueprint via trackBlueprintSliceActive,
+        // whose terminal is recordSucceededOutcome -> submitBatch -> ctx.cluster().apply(...).
+        leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(NODE_A, SLICE, activeInstance())));
+        leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(SELF, SLICE, activeInstance())));
+
+        assertThat(outcomeStatusName(leaderStore, expanded.id()))
+                .as("and after, the record the FSM wrote through cluster.apply must be READABLE BACK "
+                    + "from the store — a record-only fixture leaves this at NO_OUTCOME and silently "
+                    + "makes every 'does not settle' test in this class pass for the wrong reason")
+                .isEqualTo(DeploymentOutcomeStatus.SUCCEEDED.name());
+    }
+
     /// CONTROL A (positive polarity). The apply is outstanding and nothing ever came up, so
     /// exhaustion MUST settle. Without this the suite cannot observe settling at all, and every
     /// `doesNotContain` below would be satisfied by a fix that simply never settles. This is #922's
