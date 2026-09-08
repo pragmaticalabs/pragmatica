@@ -118,12 +118,14 @@ class SecurityOverrideSynchronizerTest {
 
     @Nested
     class DeterministicAcrossNodes {
-        /// Every node derives from consensus-ordered state, so the ORDER of the merged entries — which
-        /// decides `findMatch`'s first match — must not depend on iteration or arrival order. A
-        /// derivation that varied here would reproduce the node-dependent enforcement #887 is about,
-        /// one level up.
+        /// Every node derives from consensus-ordered state, so the merged result must not depend on
+        /// iteration or arrival order. A derivation that varied here would reproduce the
+        /// node-dependent enforcement #887 is about, one level up.
+        ///
+        /// Equal strength on both sides (`role:first` / `role:second` both score 30), so this isolates
+        /// ORDER-independence from the strength rule tested below.
         @Test
-        void deriveOverrides_ordersEntriesByBlueprintId_regardlessOfInsertionOrder() {
+        void deriveOverrides_derivesSameResult_regardlessOfInsertionOrder() {
             var forward = store();
 
             putBlueprint(forward, "com.example:aaa:1.0.0", lockdown("role:first"), false);
@@ -141,8 +143,99 @@ class SecurityOverrideSynchronizerTest {
                     .as("two nodes seeing the same blueprints in different orders must derive the same overrides")
                     .isEqualTo(fromReverse.entries());
             assertThat(fromForward.findMatch("GET", "/undeclared/").or("<none>"))
-                    .as("the lowest blueprint id must win the first match, on every node")
+                    .as("equally-strong claims resolve to the lower blueprint id, identically on every node")
                     .isEqualTo("role:first");
+        }
+    }
+
+    /// SF-3. Cross-blueprint conflict on one pattern must resolve to the STRONGER policy.
+    ///
+    /// The defect these pin: entries used to be concatenated in blueprint-id order and resolved by
+    /// `findMatch`'s first match, so an alphabetically earlier blueprint's weaker policy silently
+    /// MASKED a later one's stronger policy. On an authorization path an ambiguous state has to fail
+    /// closed, and alphabetical order carries no security meaning.
+    @Nested
+    class ConflictResolvesToStrongerPolicy {
+        /// The exact masking case: `aaa` sorts first and declares the WEAKER policy. Pre-fix its
+        /// `authenticated` won and the `role:admin` lockdown in `zzz` was silently discarded.
+        @Test
+        void deriveOverrides_keepsStrongerPolicy_whenLowerBlueprintIdDeclaresWeaker() {
+            var store = store();
+
+            putBlueprint(store, "com.example:aaa:1.0.0", lockdown("authenticated"), false);
+            putBlueprint(store, "com.example:zzz:1.0.0", lockdown("role:admin"), false);
+
+            assertThat(SecurityOverrideSynchronizer.deriveOverrides(store).findMatch("GET", "/undeclared/").or("<none>"))
+                    .as("a weaker policy in an earlier-sorting blueprint must not mask a stronger one")
+                    .isEqualTo("role:admin");
+        }
+
+        /// The mirror, so the rule is strength and not merely "the other one wins": here the STRONGER
+        /// policy is in the earlier-sorting blueprint and must still win.
+        @Test
+        void deriveOverrides_keepsStrongerPolicy_whenLowerBlueprintIdDeclaresStronger() {
+            var store = store();
+
+            putBlueprint(store, "com.example:aaa:1.0.0", lockdown("role:admin"), false);
+            putBlueprint(store, "com.example:zzz:1.0.0", lockdown("authenticated"), false);
+
+            assertThat(SecurityOverrideSynchronizer.deriveOverrides(store).findMatch("GET", "/undeclared/").or("<none>"))
+                    .as("strength decides, in both directions — not blueprint order")
+                    .isEqualTo("role:admin");
+        }
+
+        /// A conflicting pattern must collapse to ONE entry, not linger as a shadowed duplicate that a
+        /// later matching change could resurrect.
+        @Test
+        void deriveOverrides_collapsesConflictToSingleEntry() {
+            var store = store();
+
+            putBlueprint(store, "com.example:aaa:1.0.0", lockdown("authenticated"), false);
+            putBlueprint(store, "com.example:zzz:1.0.0", lockdown("role:admin"), false);
+
+            assertThat(SecurityOverrideSynchronizer.deriveOverrides(store).entries())
+                    .as("the losing claim must be dropped, not merely out-ordered")
+                    .hasSize(1);
+        }
+
+        /// Non-conflicting entries from several blueprints must all survive — the conflict rule must
+        /// not silently drop unrelated overrides.
+        @Test
+        void deriveOverrides_keepsBothEntries_whenPatternsDiffer() {
+            var store = store();
+            var other = SecurityOverrides.securityOverrides(List.of(SecurityOverrides.Entry.entry("GET /other/",
+                                                                                                   "role:admin")),
+                                                             SecurityOverridePolicy.STRENGTHEN_ONLY);
+
+            putBlueprint(store, "com.example:aaa:1.0.0", lockdown("authenticated"), false);
+            putBlueprint(store, "com.example:zzz:1.0.0", other, false);
+
+            var derived = SecurityOverrideSynchronizer.deriveOverrides(store);
+
+            assertThat(derived.entries()).hasSize(2);
+            assertThat(derived.findMatch("GET", "/undeclared/").or("<none>")).isEqualTo("authenticated");
+            assertThat(derived.findMatch("GET", "/other/").or("<none>")).isEqualTo("role:admin");
+        }
+
+        /// A single blueprint's own entries keep their DECLARED order, so a deliberate exception after
+        /// a wildcard still works. This is why strength is applied across blueprints and not to the
+        /// whole flattened list — a global strength sort would move the wildcard in front of its own
+        /// exception and shadow it.
+        @Test
+        void deriveOverrides_preservesDeclaredOrder_withinOneBlueprint() {
+            var store = store();
+            var wildcardThenException =
+                    SecurityOverrides.securityOverrides(List.of(SecurityOverrides.Entry.entry("GET /area/*",
+                                                                                               "role:admin"),
+                                                                 SecurityOverrides.Entry.entry("GET /area/open/*",
+                                                                                                "authenticated")),
+                                                         SecurityOverridePolicy.STRENGTHEN_ONLY);
+
+            putBlueprint(store, "com.example:aaa:1.0.0", wildcardThenException, false);
+
+            assertThat(SecurityOverrideSynchronizer.deriveOverrides(store).entries())
+                    .as("one blueprint's declared order is the author's intent and must survive")
+                    .containsExactlyElementsOf(wildcardThenException.entries());
         }
 
         /// Conflicting policies have no defined answer. The fallback is a refusal to guess, and it is

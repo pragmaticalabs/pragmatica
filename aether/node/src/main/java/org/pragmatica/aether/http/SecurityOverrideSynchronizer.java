@@ -6,10 +6,12 @@ package org.pragmatica.aether.http;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.function.Supplier;
 
+import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.slice.blueprint.SecurityOverridePolicy;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -102,12 +104,106 @@ public interface SecurityOverrideSynchronizer {
         }
 
         contributors.sort(Comparator.comparing(Contribution::blueprintId));
-        var entries = new ArrayList<SecurityOverrides.Entry>();
 
-        contributors.forEach(contribution -> entries.addAll(contribution.overrides().entries()));
-
-        return SecurityOverrides.securityOverrides(entries, resolvePolicy(contributors));
+        return SecurityOverrides.securityOverrides(resolveEntries(contributors), resolvePolicy(contributors));
     }
+
+    /// Cross-blueprint conflict on the same route pattern resolves to the STRONGEST policy, loudly.
+    ///
+    /// This is an authorization path, so an ambiguous state must fail closed, and an arbitrary
+    /// tiebreak is not a decision. The previous revision concatenated every blueprint's entries in
+    /// blueprint-id order and let `SecurityOverrides.findMatch` take the first match, which meant an
+    /// alphabetically earlier blueprint's `authenticated` silently MASKED a later one's `role:admin`.
+    /// Alphabetical order carries no security meaning, and of the two available directions that one
+    /// picked the weaker policy. A silent weakening survives every audit, because nothing records that
+    /// a choice was made.
+    ///
+    /// ## Why strength is applied ACROSS blueprints and not to the whole list
+    ///
+    /// Sorting every entry strongest-first would break a legitimate declaration WITHIN one blueprint:
+    /// `GET /x/*` = `role:admin` followed by `GET /x/public` = `public` is a deliberate exception, and
+    /// a global strength sort would move the wildcard in front of it and shadow it. Each blueprint's
+    /// own entries therefore keep their declared order, which is the author's expressed intent;
+    /// strength decides only between DIFFERENT blueprints claiming the SAME pattern.
+    ///
+    /// ## Residual, stated rather than left to be discovered
+    ///
+    /// Two patterns that OVERLAP without being equal -- `GET /x/*` in one blueprint and `GET /x/admin`
+    /// in another -- are not detected as a conflict here, and are still resolved by position. Deciding
+    /// those needs pattern-subsumption analysis and a rule for whose intent wins, which is a larger
+    /// change than this fix. Declaring the wildcard and its exceptions in the SAME blueprint keeps
+    /// them governed by declared order, which is well-defined.
+    private static List<SecurityOverrides.Entry> resolveEntries(List<Contribution> contributors) {
+        var winners = new LinkedHashMap<String, Claim>();
+
+        for (var contribution : contributors) {
+            for (var entry : contribution.overrides().entries()) {
+                winners.merge(entry.routePattern(),
+                              new Claim(contribution.blueprintId(), entry),
+                              SecurityOverrideSynchronizer::strongerClaim);
+            }
+        }
+
+        return winners.values()
+                      .stream()
+                      .map(Claim::entry)
+                      .toList();
+    }
+
+    private static Claim strongerClaim(Claim held, Claim incoming) {
+        var heldStrength = strengthOf(held);
+        var incomingStrength = strengthOf(incoming);
+
+        if (heldStrength == incomingStrength) {
+            return sameStrengthClaim(held, incoming);
+        }
+
+        var winner = incomingStrength > heldStrength
+                     ? incoming
+                     : held;
+
+        log.warn("Security override CONFLICT on '{}': blueprint {} declares '{}' (strength {}), blueprint {} declares "
+                + "'{}' (strength {}). Applying the STRONGER, '{}' from {}. Give the pattern one policy -- this is "
+                + "resolved to fail closed, not agreed.",
+                 held.entry().routePattern(),
+                 held.blueprintId(),
+                 held.entry().securityLevel(),
+                 heldStrength,
+                 incoming.blueprintId(),
+                 incoming.entry().securityLevel(),
+                 incomingStrength,
+                 winner.entry().securityLevel(),
+                 winner.blueprintId());
+
+        return winner;
+    }
+
+    /// Equal strength is not necessarily agreement: `role:admin` and `role:ops` both score 30 and mean
+    /// different things, and no ordering of the two is safer than the other. Keep the lower blueprint
+    /// id so every node picks the same one, and say so -- an unannounced pick here is the same silent
+    /// choice this method exists to remove.
+    private static Claim sameStrengthClaim(Claim held, Claim incoming) {
+        if (!held.entry().securityLevel().equalsIgnoreCase(incoming.entry().securityLevel())) {
+            log.warn("Security override AMBIGUITY on '{}': blueprint {} declares '{}' and blueprint {} declares '{}'. "
+                    + "Both are equally strong, so neither is safer; keeping '{}' from {} for determinism. Resolve this "
+                    + "in the blueprints -- it is not decidable here.",
+                     held.entry().routePattern(),
+                     held.blueprintId(),
+                     held.entry().securityLevel(),
+                     incoming.blueprintId(),
+                     incoming.entry().securityLevel(),
+                     held.entry().securityLevel(),
+                     held.blueprintId());
+        }
+
+        return held;
+    }
+
+    private static int strengthOf(Claim claim) {
+        return SecurityPolicy.fromBlueprintString(claim.entry().securityLevel()).strength();
+    }
+
+    record Claim(String blueprintId, SecurityOverrides.Entry entry) {}
 
     private static void collectContribution(List<Contribution> contributors,
                                             AppBlueprintKey key,

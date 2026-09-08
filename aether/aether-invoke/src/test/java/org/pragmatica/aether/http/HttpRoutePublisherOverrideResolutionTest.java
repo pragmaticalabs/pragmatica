@@ -26,6 +26,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -182,6 +183,104 @@ class HttpRoutePublisherOverrideResolutionTest {
         }
     }
 
+    /// SF-4. `updateSecurityOverrides` is called by `SecurityOverrideSynchronizer.resync`, which runs
+    /// once per KV notification ON EVERY NODE. An unconditional republish therefore turns one
+    /// `AppBlueprintKey` put anywhere in the cluster into "every node rewrites every local artifact's
+    /// route entry through consensus", and `KVStore.reset()` — one `ValueRemove` per key — multiplies
+    /// that by the key count during a state-machine reset. Load, not divergence, but load proportional
+    /// to nodes x blueprints x artifacts.
+    @Nested
+    class RepublishesOnlyWhenOverridesChange {
+        @Test
+        void updateSecurityOverrides_doesNotRepublish_whenOverridesUnchanged() {
+            publisher.updateSecurityOverrides(lockdownToAdmin());
+            var afterFirst = cluster.routePublishCount();
+
+            publisher.updateSecurityOverrides(lockdownToAdmin());
+
+            assertThat(cluster.routePublishCount())
+                    .as("an unchanged override set must not rewrite the cluster route entry again")
+                    .isEqualTo(afterFirst);
+        }
+
+        @Test
+        void updateSecurityOverrides_doesNotRepublish_whenBothCallsAreEmpty() {
+            var afterPublish = cluster.routePublishCount();
+
+            publisher.updateSecurityOverrides(SecurityOverrides.EMPTY);
+
+            assertThat(cluster.routePublishCount())
+                    .as("EMPTY equals the initial state, so the common resync case must be a no-op")
+                    .isEqualTo(afterPublish);
+        }
+
+        @Test
+        void updateSecurityOverrides_stillRepublishes_whenOverridesActuallyChange() {
+            publisher.updateSecurityOverrides(lockdownToAdmin());
+            var afterFirst = cluster.routePublishCount();
+
+            publisher.updateSecurityOverrides(SecurityOverrides.EMPTY);
+
+            assertThat(cluster.routePublishCount())
+                    .as("the guard must suppress only NO-OP updates, never a real change")
+                    .isGreaterThan(afterFirst);
+        }
+
+        /// The guard is deliberately not a bare equality check. A republish that FAILED left the KV
+        /// entry advertising the previous policy; short-circuiting a later identical resync would
+        /// strand it there until the next genuine change, turning a transient consensus failure into a
+        /// permanent divergence between enforced and reported state.
+        @Test
+        void updateSecurityOverrides_retriesRepublish_whenPreviousAttemptFailed() throws Exception {
+            cluster.failApplies(true);
+            publisher.updateSecurityOverrides(lockdownToAdmin());
+
+            var afterFailedAttempt = awaitStableCount();
+
+            assertThat(afterFailedAttempt)
+                    .as("the failing attempt and its retries must actually have reached the cluster")
+                    .isGreaterThan(1);
+
+            cluster.failApplies(false);
+
+            // The failure flag is set from the republish Promise's onFailure callback, which may not
+            // have run by the time updateSecurityOverrides returns. Polling here is not papering over
+            // that race: in production `resync` recurs on every blueprint change and every ACTIVE
+            // edge, so "a repeated identical resync eventually retries" IS the property. Bounded, so
+            // a guard that never retries fails rather than hanging.
+            var deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+
+            while (cluster.routePublishCount() <= afterFailedAttempt && System.nanoTime() < deadline) {
+                publisher.updateSecurityOverrides(lockdownToAdmin());
+                Thread.sleep(25);
+            }
+
+            assertThat(cluster.routePublishCount())
+                    .as("an identical resync after a FAILED republish must retry, not short-circuit forever")
+                    .isGreaterThan(afterFailedAttempt);
+        }
+
+        /// Wait for the retry burst to finish so the baseline is a settled number rather than one
+        /// sampled mid-flight.
+        private int awaitStableCount() throws Exception {
+            var previous = -1;
+            var deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+
+            while (System.nanoTime() < deadline) {
+                var current = cluster.routePublishCount();
+
+                if (current == previous) {
+                    return current;
+                }
+
+                previous = current;
+                Thread.sleep(50);
+            }
+
+            return cluster.routePublishCount();
+        }
+    }
+
     private static SliceInvokerFacade stubInvokerFacade() {
         return new SliceInvokerFacade() {
             @Override
@@ -198,6 +297,11 @@ class HttpRoutePublisherOverrideResolutionTest {
     /// the route entry was rewritten and WHAT policy it carries.
     private static final class CapturingCluster implements ClusterNode<KVCommand<AetherKey>> {
         private final List<KVCommand<AetherKey>> applied = new CopyOnWriteArrayList<>();
+        private volatile boolean failApplies;
+
+        void failApplies(boolean fail) {
+            this.failApplies = fail;
+        }
 
         int routePublishCount() {
             return (int) applied.stream().filter(CapturingCluster::isRoutePut).count();
@@ -241,6 +345,9 @@ class HttpRoutePublisherOverrideResolutionTest {
         @Override
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             applied.addAll(commands);
+            if (failApplies) {
+                return Causes.cause("consensus unavailable").promise();
+            }
 
             return (Promise<List<R>>) (Promise<?>) Promise.success(List.of());
         }
