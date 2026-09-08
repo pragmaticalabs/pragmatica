@@ -233,13 +233,9 @@ public interface SliceCodec extends Serializer, Deserializer {
     static <E extends Enum<E>> E readEnum(ByteBuf buf, E[] values, E unknown) {
         var ordinal = readCompact(buf);
 
-        if (ordinal >= 0 && ordinal < values.length) {
-            return values[ordinal];
-        }
-
-        UnknownEnumOrdinals.report(unknown.getDeclaringClass(), ordinal, values.length);
-
-        return unknown;
+        return ordinal >= 0 && ordinal < values.length
+               ? values[ordinal]
+               : UnknownEnumOrdinals.reportAndFallBack(ordinal, values, unknown);
     }
 
     /// Bounds-checked ordinal read for an enum with no `UNKNOWN` sentinel — see [#readEnum].

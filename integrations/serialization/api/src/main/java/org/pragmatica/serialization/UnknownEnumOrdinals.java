@@ -46,10 +46,18 @@ final class UnknownEnumOrdinals {
 
     private UnknownEnumOrdinals() {}
 
-    static void report(Class<?> enumType, int ordinal, int knownConstantCount) {
+    /// Records the unknown ordinal and YIELDS THE SENTINEL, rather than returning void and leaving the
+    /// caller to supply it.
+    ///
+    /// Shaped this way so the method has a value to return: a void helper here is a JBCT-RET-01
+    /// violation, and annotating it away would leave the gate green over a standing violation — the
+    /// same shape as every examined-nothing green result this ticket exists to remove.
+    static <E extends Enum<E>> E reportAndFallBack(int ordinal, E[] values, E unknown) {
+        var enumType = unknown.getDeclaringClass();
+
         occurrences.increment();
         if (reportedKeys.size() >= DISTINCT_KEY_LIMIT || !reportedKeys.add(enumType.getName() + '#' + ordinal)) {
-            return;
+            return unknown;
         }
 
         log.warn("Decoded ordinal {} for enum {}, which has {} constant(s) on this node."
@@ -58,7 +66,9 @@ final class UnknownEnumOrdinals {
                 + " paths refuse UNKNOWN. Further occurrences of this pair are not logged.",
                  ordinal,
                  enumType.getName(),
-                 knownConstantCount);
+                 values.length);
+
+        return unknown;
     }
 
     /// Total unknown-ordinal decodes since JVM start, across every enum. Untruncated by the log
