@@ -30,6 +30,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -512,6 +513,24 @@ public class AlertManager {
                                    alert.timestamp));
         }
 
+        // #926: node-health alerts reach the SAME /api/alerts surface as every other kind. An alert
+        // raised but not rendered is not operator-visible, which is the defect this ticket is about one
+        // layer up. Discriminated by source="node_health"; nodeId names the FAILED node and message
+        // carries the reason.
+        for (var alert : activeNodeHealthAlerts.values()) {
+            list.add(new AlertView(alert.alertId(),
+                                   "node.failed",
+                                   alert.severity().name(),
+                                   alert.reason(),
+                                   "node_health",
+                                   null,
+                                   null,
+                                   alert.nodeId().id(),
+                                   null,
+                                   alert.timestamp(),
+                                   alert.timestamp()));
+        }
+
         return appendClusterWideInjectedAlerts(list, seenInjectedIds).map(_ -> List.copyOf(list));
     }
 
@@ -756,6 +775,52 @@ public class AlertManager {
 
     public List<SliceFailureAlert> getActiveSliceFailureAlerts() {
         return List.copyOf(activeSliceFailureAlerts.values());
+    }
+
+    /// Active node-health alerts, keyed by [`AlertEvent.NodeHealthAlert#alertId`] (derived from the
+    /// failed node id). Per-node local state — never replicated, never consensus-backed — which is
+    /// precisely why it survives the conditions of #926.
+    private final Map<String, AlertEvent.NodeHealthAlert> activeNodeHealthAlerts = new ConcurrentHashMap<>();
+
+    /// Raise a node-health alert for a confirmed member death (#926).
+    ///
+    /// Invoked from the ungated `MembershipFsm` DEAD edge on EVERY node that confirms the death, so it
+    /// is reachable with no leader and no quorum. Node health previously had no alerting path at all:
+    /// `AlertEvent` carried only threshold, slice-failure and resolved variants, and repo-wide
+    /// "unhealthy" in `aether/node/src/main` appeared twice, both rendering a status string into an
+    /// HTTP response.
+    ///
+    /// GUARANTEE: **at-most-one active alert per failed node, per observing node.** The map key is
+    /// derived from the failed node alone, so a repeated observation of the same death replaces rather
+    /// than accumulates — idempotent, needing no dedup token and no coordination. Each node keeps its
+    /// own map, so there is no cross-node duplication to reconcile: the alert is a local judgment about
+    /// a remote peer, exposed on the observing node's own `/api/alerts`.
+    ///
+    /// Cleared by [`#clearNodeHealthAlert`] when the node rejoins. Raising without clearing would leave
+    /// a permanently red signal, which trains an operator to ignore the surface.
+    @Contract
+    public void onNodeFailed(NodeId failed, NodeId observedBy) {
+        var alert = AlertEvent.NodeHealthAlert.nodeFailed(failed, observedBy);
+
+        activeNodeHealthAlerts.put(alert.alertId(), alert);
+        log.error("CRITICAL: node {} confirmed failed (observed by {}) — cluster membership degraded",
+                  failed.id(),
+                  observedBy.id());
+    }
+
+    /// Resolve the node-health alert for `rejoined` (#926). Wired to the transport `PeerJoined`
+    /// handshake — the same ungated surface that sources NODE_JOINED — so recovery is exactly as
+    /// reachable as the failure it clears. A no-op when no alert is active for that node.
+    @Contract
+    public void clearNodeHealthAlert(NodeId rejoined) {
+        Option.option(activeNodeHealthAlerts.remove(AlertEvent.NodeHealthAlert.alertId(rejoined)))
+              .onPresent(cleared -> log.info("Node-health alert resolved for {} — node rejoined (was: {})",
+                                             rejoined.id(),
+                                             cleared.reason()));
+    }
+
+    public List<AlertEvent.NodeHealthAlert> getActiveNodeHealthAlerts() {
+        return List.copyOf(activeNodeHealthAlerts.values());
     }
 
     public void clearSliceFailureAlert(Artifact artifact, MethodName method) {

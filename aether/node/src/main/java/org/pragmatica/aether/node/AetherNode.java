@@ -3353,9 +3353,19 @@ public interface AetherNode extends ManageableNode {
             // #210: emit the user-facing NODE_FAILED from this ungated DEAD edge — the SAME confirmed-
             // death signal that drives auto-heal above — instead of the quorum-gated
             // MembershipDecision.NodeRemoved, which the MembershipDeltaProjector drops during the
-            // post-kill re-election window so the event never reached /api/events on cloud. Leader-gated
-            // inside the aggregator (fires on every node's FSM; only the leader publishes).
+            // post-kill re-election window so the event never reached /api/events on cloud.
+            // #926: NO LONGER leader-gated inside the aggregator. It was, and a cluster that cannot
+            // elect a leader therefore could not emit the events saying it was broken — measured at
+            // 8 SWIM-confirmed deaths and 0 NodeFailed events over ten days. Now emitted on every
+            // node that confirms the death (see ClusterEventAggregator.onConfirmedDeparture for the
+            // at-least-once-per-observer contract and why a dedup token is the wrong fix).
             eventAggregator.onConfirmedDeparture(departed);
+            // #926 scope item 2: node health had NO alerting path at all. Raised here rather than
+            // inside the aggregator so it does not depend on the cluster-events stream being
+            // publishable OR readable — the alert is per-node local state on this node's /api/alerts,
+            // and this edge is ungated, so it needs no leader and no quorum. Cleared on rejoin at the
+            // PeerJoined route.
+            alertManager.onNodeFailed(departed, config.self());
         });
         // Join-grace leak fix: a CTM-provisioned replacement that boots but NEVER reaches
         // SWIM-healthy within the M10 join-grace window is reaped OBSERVED→DEAD by the FSM, but
@@ -5835,6 +5845,12 @@ public interface AetherNode extends ManageableNode {
         // fires for those, but the fresh QUIC handshake produces a TransportObservation.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
                                               eventAggregator::onPeerJoined));
+        // #926: resolve the node-health alert raised on the DEAD edge when the node comes back. Bound
+        // to the SAME ungated handshake that sources NODE_JOINED, so recovery is exactly as reachable
+        // as the failure it clears — a failure signal whose matching recovery signal is less reachable
+        // leaves a permanently red surface, which trains an operator to ignore it.
+        entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
+                                              msg -> alertManager.clearNodeHealthAlert(msg.nodeId())));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
         // NODE_LEFT (graceful departures) is sourced from MembershipDecision. NODE_FAILED is NO LONGER
         // sourced here (#210) — it now rides the ungated FSM DEAD edge (membershipFsm.onConfirmedDeparture
