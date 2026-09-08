@@ -22,12 +22,10 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.http.routing.QueryParameter;
@@ -190,15 +188,15 @@ public final class SchemaRoutes implements RouteSource {
     /// `SliceNodeValue` carries no ownership — that lives on `SliceTargetKey`/`SliceTargetValue`
     /// (the same desired/ownership record `ClusterDeploymentState.Active.blueprints` mirrors), so
     /// live state and ownership are joined here per slice, one KV read per artifact.
+    ///
+    /// #805 item 1: delegates to [ClusterDeploymentState#resolveSliceOwner(KVStore, Artifact)] — the
+    /// SAME static the activation gate now calls. The route already read the committed record; it
+    /// was the gate that read the node-local `blueprints` mirror, so this delegation is what makes
+    /// the shared source a fact rather than a coincidence of two identical bodies.
     private Option<BlueprintId> sliceOwner(Artifact artifact) {
-        var targetKey = SliceTargetKey.sliceTargetKey(artifact.base());
-
-        return nodeSupplier.get()
-                           .kvStore()
-                           .get(targetKey)
-                           .filter(v -> v instanceof SliceTargetValue)
-                           .map(v -> (SliceTargetValue) v)
-                           .flatMap(SliceTargetValue::owningBlueprint);
+        return ClusterDeploymentState.resolveSliceOwner(nodeSupplier.get()
+                                                                    .kvStore(),
+                                                        artifact);
     }
 
     /// #760 review BLOCKING 1: `/migrate` writing MIGRATING has no orchestrator effect by itself —

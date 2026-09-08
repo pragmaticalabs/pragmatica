@@ -188,6 +188,31 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         return resolveDeclaredSchemaRequired(kvStore, blueprintId).or(true);
     }
 
+    /// #805 item 1: the SINGLE slice-owner resolution path for both callers of
+    /// [#blocksSliceActivation] — the activation gate (`Active.blockingSchemaRecords`) and
+    /// `SchemaRoutes.heldSlices` — reading the committed `SliceTargetKey`/`SliceTargetValue` record
+    /// that both already treat as the ownership authority.
+    ///
+    /// #760's first round made the two share this PREDICATE; they still fed it from two different
+    /// sources. The gate resolved the owner from [Active#blueprints], a node-local mirror rebuilt
+    /// from KV notifications and therefore lagging them, and additionally pre-filtered on that
+    /// mirror's `schemaRequired` flag; the route read the KV record directly and pre-filtered on
+    /// nothing. A stale mirror entry naming an owner the committed record no longer names made the
+    /// gate hold a slice the route simultaneously reported as NOT held — the same divergence #760
+    /// closed, running the other way. Sharing a predicate is not sharing a decision while its INPUTS
+    /// disagree.
+    ///
+    /// The dropped `schemaRequired` pre-filter is not a lost check: [#blocksSliceActivation] already
+    /// resolves `schemaRequired` per candidate record from this same [KVStore] via
+    /// [#resolveSchemaRequired(KVStore, BlueprintId)], so the mirror's copy was strictly a second,
+    /// divergent answer to a question the shared predicate was already asking.
+    static Option<BlueprintId> resolveSliceOwner(KVStore<AetherKey, AetherValue> kvStore, Artifact artifact) {
+        return kvStore.get(SliceTargetKey.sliceTargetKey(artifact.base()))
+                      .filter(SliceTargetValue.class::isInstance)
+                      .map(SliceTargetValue.class::cast)
+                      .flatMap(SliceTargetValue::owningBlueprint);
+    }
+
     record Dormant(ClusterDeploymentContext ctx) implements ClusterDeploymentState {
         @Contract
         @Override
@@ -1710,8 +1735,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// permanent failure. The hold now clears only via `/api/schema/{ds}/retry`
         /// (FAILED -> PENDING -> COMPLETED) or a redeploy that republishes the record.
         ///
-        /// A slice whose owning blueprint cannot be resolved — no `Blueprint` entry, or an entry
-        /// carrying no owner — is reported READY. No record can be attributed to it, so blocking
+        /// A slice whose owning blueprint cannot be resolved — no committed `SliceTargetValue`
+        /// record, or one carrying no owner — is reported READY. No record can be attributed to it, so blocking
         /// would be an unclearable hold: nothing that ever completes could match it, and the slice
         /// would sit in LOADED forever. Records only ever exist because some blueprint declared
         /// migrations, and that blueprint's own slices do carry its owner, so the safety property is
@@ -1723,12 +1748,15 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// Named records rather than a boolean so the hold can be reported with detail (#760) — the
         /// prior `noBlockingSchemaRecords` collapsed the same scan into a single flag, which is all
         /// [#areSchemasReady(SliceNodeKey)] needs but nothing an operator-facing log could name.
+        /// #805 item 1: owner resolution goes through the shared
+        /// [ClusterDeploymentState#resolveSliceOwner(KVStore, Artifact)] — the committed
+        /// `SliceTargetValue` record — instead of the node-local [#blueprints] mirror, and the
+        /// mirror's `schemaRequired` pre-filter is gone. Both were inputs the route did not share,
+        /// so the gate and `SchemaRoutes.heldSlices` could disagree about the same slice even while
+        /// calling one predicate. See that method for why dropping the pre-filter removes no check.
         private List<SchemaVersionValue> blockingSchemaRecords(SliceNodeKey sliceKey) {
-            return Option.option(blueprints.get(sliceKey.artifact()))
-                         .filter(Blueprint::schemaRequired)
-                         .flatMap(Blueprint::owner)
-                         .map(this::collectBlockingSchemaRecords)
-                         .or(List.of());
+            return resolveSliceOwner(ctx.kvStore(), sliceKey.artifact()).map(this::collectBlockingSchemaRecords)
+                                                                       .or(List.of());
         }
 
         private List<SchemaVersionValue> collectBlockingSchemaRecords(BlueprintId owner) {
