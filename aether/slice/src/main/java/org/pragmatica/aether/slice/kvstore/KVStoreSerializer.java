@@ -318,8 +318,7 @@ public final class KVStoreSerializer {
                       .collect(Collectors.joining(","));
 
         return v.status()
-                .name() + PIPE + slices + PIPE + escapeOutcomeField(v.cause()) + PIPE + v.timestampMs() + PIPE
-               + v.outcomeVersion();
+                .name() + PIPE + slices + PIPE + escapeOutcomeField(v.cause()) + PIPE + v.timestampMs() + PIPE + v.outcomeVersion();
     }
 
     /// Backslash-escapes `\`, `|`, and `,` for a single field of the `deployment-outcome` wire form.

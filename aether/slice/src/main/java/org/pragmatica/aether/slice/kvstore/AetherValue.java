@@ -305,7 +305,11 @@ public sealed interface AetherValue {
         }
 
         public static DeploymentOutcomeValue succeeded(long timestampMs, long outcomeVersion) {
-            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.SUCCEEDED, List.of(), "", timestampMs, outcomeVersion);
+            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.SUCCEEDED,
+                                              List.of(),
+                                              "",
+                                              timestampMs,
+                                              outcomeVersion);
         }
 
         public static DeploymentOutcomeValue failed(List<String> failingSlices,

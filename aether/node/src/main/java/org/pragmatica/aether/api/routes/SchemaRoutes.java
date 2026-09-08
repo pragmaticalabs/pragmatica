@@ -194,8 +194,7 @@ public final class SchemaRoutes implements RouteSource {
     /// was the gate that read the node-local `blueprints` mirror, so this delegation is what makes
     /// the shared source a fact rather than a coincidence of two identical bodies.
     private Option<BlueprintId> sliceOwner(Artifact artifact) {
-        return ClusterDeploymentState.resolveSliceOwner(nodeSupplier.get()
-                                                                    .kvStore(),
+        return ClusterDeploymentState.resolveSliceOwner(nodeSupplier.get().kvStore(),
                                                         artifact);
     }
 

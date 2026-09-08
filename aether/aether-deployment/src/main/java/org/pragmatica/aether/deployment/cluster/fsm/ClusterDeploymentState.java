@@ -1691,9 +1691,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                     Artifact artifact,
                                                     String failureReason,
                                                     int attempt) {
-            var command = List.<KVCommand<AetherKey>> of(bestEffortFailureCommand(blueprintId,
-                                                                                  artifact,
-                                                                                  failureReason));
+            var command = List.<KVCommand<AetherKey>> of(bestEffortFailureCommand(blueprintId, artifact, failureReason));
 
             ctx.cluster()
                .apply(command)
@@ -1711,7 +1709,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             if (attempt >= MAX_OUTCOME_MERGE_ATTEMPTS) {
                 log.error("BEST_EFFORT failure of {} was NOT recorded in the deployment-outcome record for blueprint {}"
-                          + " after {} merge attempts — the record under-reports this deployment's failing slices",
+                         + " after {} merge attempts — the record under-reports this deployment's failing slices",
                           artifact,
                           blueprintId.asString(),
                           attempt);
@@ -1728,8 +1726,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private boolean bestEffortFailureLanded(BlueprintId blueprintId, Artifact artifact) {
             return committedOutcome(DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId)).map(DeploymentOutcomeValue::failingSlices)
-                                                                                          .map(slices -> slices.contains(artifact.asString()))
-                                                                                          .or(false);
+                                   .map(slices -> slices.contains(artifact.asString()))
+                                   .or(false);
         }
 
         private KVCommand<AetherKey> bestEffortFailureCommand(BlueprintId blueprintId,
@@ -1737,8 +1735,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                               String failureReason) {
             var key = DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId);
             var committed = committedOutcome(key);
-            var slices = new ArrayList<>(committed.map(DeploymentOutcomeValue::failingSlices)
-                                                  .or(List.of()));
+            var slices = new ArrayList<>(committed.map(DeploymentOutcomeValue::failingSlices).or(List.of()));
 
             if (!slices.contains(artifact.asString())) {
                 slices.add(artifact.asString());
@@ -1846,8 +1843,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// so the gate and `SchemaRoutes.heldSlices` could disagree about the same slice even while
         /// calling one predicate. See that method for why dropping the pre-filter removes no check.
         private List<SchemaVersionValue> blockingSchemaRecords(SliceNodeKey sliceKey) {
-            return resolveSliceOwner(ctx.kvStore(), sliceKey.artifact()).map(this::collectBlockingSchemaRecords)
-                                                                       .or(List.of());
+            return resolveSliceOwner(ctx.kvStore(),
+                                     sliceKey.artifact()).map(this::collectBlockingSchemaRecords)
+                                    .or(List.of());
         }
 
         private List<SchemaVersionValue> collectBlockingSchemaRecords(BlueprintId owner) {
