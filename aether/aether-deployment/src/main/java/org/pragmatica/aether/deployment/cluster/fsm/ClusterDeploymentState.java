@@ -1694,7 +1694,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private Option<BlueprintId> resolveOutcomeOwner(Artifact artifact) {
             return Option.option(blueprints.get(artifact))
                          .flatMap(Blueprint::owner)
-                         .orElse(() -> resolveSliceOwner(ctx.kvStore(), artifact));
+                         .orElse(() -> resolveSliceOwner(ctx.kvStore(),
+                                                         artifact));
         }
 
         /// #805 item 2. This write is a read-modify-write: it merges `artifact` into whatever
