@@ -146,8 +146,8 @@ public interface SecurityOverrideApplier {
     /// cannot see `aether-config`'s `SecurityMode` from either call site. They remain open, and they
     /// remain reachable on the hosting node exactly as they are on any other.
     private static HttpRouteDefinition applyToUndeclaredRoute(HttpRouteDefinition route,
-                                                               SecurityPolicy newPolicy,
-                                                               Announce announce) {
+                                                              SecurityPolicy newPolicy,
+                                                              Announce announce) {
         if (newPolicy instanceof SecurityPolicy.Public) {
             if (announce == Announce.LOG) {
                 LOG.warn("Security override rejected (STRENGTHEN_ONLY): {} {} has no declared policy; "

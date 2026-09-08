@@ -325,12 +325,11 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     }
 
     private void republishRoutes(Artifact artifact, List<HttpRouteDefinition> routes) {
-        publishRoutesToCluster(routes,
-                               artifact).onFailure(cause -> log.error("Failed to republish routes for {} after a security-override "
-                                                                      + "update: {} -- this node ENFORCES the new overrides, but its "
-                                                                      + "cluster route entry still advertises the previous policy",
-                                                                      artifact,
-                                                                      cause.message()));
+        publishRoutesToCluster(routes, artifact).onFailure(cause -> log.error("Failed to republish routes for {} after a security-override "
+                                                                             + "update: {} -- this node ENFORCES the new overrides, but its "
+                                                                             + "cluster route entry still advertises the previous policy",
+                                                                              artifact,
+                                                                              cause.message()));
     }
 
     private Promise<Unit> publishRoutesToCluster(List<HttpRouteDefinition> routes, Artifact artifact) {
@@ -550,7 +549,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
             for (var route : routes) {
                 if (route.httpMethod().equalsIgnoreCase(httpMethod) && normalizedPath.startsWith(route.pathPrefix())) {
                     return Option.some(LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(route,
-                                                                                                            overrides)));
+                                                                                                           overrides)));
                 }
             }
         }
