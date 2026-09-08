@@ -91,10 +91,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// sequential cases below deliberately do NOT await: their promises are pre-resolved, the confirm runs
 /// inline, and asserting directly keeps that distinction visible.
 ///
-/// **What keeps that asynchrony from making these tests flaky** is the `synchronized` on
-/// [InMemoryKvStore#applyBatch], which models production's single applier thread — see
-/// [HoldingClusterNode#releaseHeld] for the five-run measurement behind that statement, and for the
-/// correction of an earlier comment that credited it to the wrong mechanism.
+/// **What keeps that asynchrony from making these tests flaky is the confirm-drain** in
+/// [HoldingClusterNode#releaseHeld], not the `synchronized` on [InMemoryKvStore#applyBatch]. See that
+/// method for the interleaved measurement establishing it, and for two earlier comments here that got
+/// the attribution wrong in opposite directions.
 ///
 /// Every test drives the real production path — a `NodeArtifactPutReceived` notification carrying a
 /// fatal FAILED state, exactly what `ClusterDeploymentManager.onNodeArtifactPut` dispatches — and
@@ -586,28 +586,41 @@ class BestEffortOutcomeMergeTest {
         /// Applies the held batches in the given order, letting each batch's confirm-and-retry run to
         /// completion before releasing the next.
         ///
-        /// **What the drain is for: fixing the SCENARIO, not detecting the bug.** It makes the release
-        /// sequence the one production reaches — a node applies A's merge, A's confirm sees A present
-        /// and correctly stops, and only then does B's merge land. That is the adversarial ordering,
-        /// and without the drain which ordering a run exercises is left to the scheduler.
+        /// **The drain is what makes detection deterministic. Do not remove it.** With the fence
+        /// removed it is the difference between always catching the regression and sometimes catching
+        /// it. Measured across five rounds with three configurations INTERLEAVED inside each round, so
+        /// load drift could not bias one against another; the numbers are reds out of this class's 4
+        /// tests, one entry per round:
         ///
-        /// **What the drain is NOT for, corrected after review.** An earlier revision of this comment
-        /// claimed the drain is what makes these tests detect a missing fence. That is false, and was
-        /// a misattribution: removing `awaitQuiescence()` alone leaves the fence-removed red set
-        /// byte-identical, message for message. The drain and the `synchronized` on
-        /// [InMemoryKvStore#applyBatch] were added in the same change, and it is the SERIALIZED
-        /// APPLIER that removes the race — it models production's single applier thread, where
-        /// `KVStore.process`'s read-then-write fence never interleaves with another apply.
+        /// | configuration | reds per round |
+        /// |---|---|
+        /// | drain ON, applier synchronized (as shipped) | 4, 4, 4, 4, 4 |
+        /// | drain OFF, applier synchronized | 4, 4, 3, 1, 4 |
+        /// | drain OFF, applier unsynchronized | 1, 4, 2, 2, 3 |
         ///
-        /// Measured, not reasoned: with the fence removed AND the drain removed AND `applyBatch`
-        /// unsynchronized, this class goes race-shaped — across five consecutive runs, 0 to 3 of its
-        /// 4 tests failed and one run came up entirely green. Restore the synchronization alone and
-        /// the red set is deterministic again. So the serialized applier is load-bearing; the drain
-        /// is retained for scenario determinism and may be removed without weakening detection.
+        /// The first two rows differ ONLY in the drain and isolate it: without it, detection falls
+        /// from a deterministic 4/4 to as low as 1/4. The last two rows differ only in the
+        /// `synchronized` on [InMemoryKvStore#applyBatch] and show no measurable effect on the
+        /// distribution.
         ///
-        /// [ApplierFence] is the timing-independent detector: in that same five-run experiment its
-        /// stale-read and version-skip tests failed on every single run. If you are changing anything
-        /// in this class's concurrency plumbing, that is the nested class to trust.
+        /// The mechanism agrees with the numbers, which is why this is stated rather than hedged: the
+        /// drain forces A's confirm to complete before B's apply, so the loss is always observed;
+        /// `synchronized` only orders what happens WITHIN one apply and cannot order a confirm against
+        /// the next apply.
+        ///
+        /// **Two earlier versions of this comment were wrong, in opposite directions.** The history is
+        /// kept because it is the reusable part. The first said removing the drain makes the whole
+        /// suite pass — overstated. Its correction said the drain is optional and the serialized
+        /// applier does the work — inverted, and worse, because "may be removed" is an INSTRUCTION: a
+        /// maintainer following it would have silently degraded this pin from always-catching to
+        /// sometimes-catching. Both were written from small samples of a flaky distribution that
+        /// happened to look clean — one run, and five sequential runs of a single configuration. More
+        /// care at either step would not have caught it; interleaving the configurations did. A claim
+        /// about a flaky mechanism is not reportable without its sample size and its control.
+        ///
+        /// [ApplierFence] is the timing-independent detector: exactly 2 of its 3 tests red in all
+        /// fifteen runs above, never varying. If you are changing this class's concurrency plumbing,
+        /// that is the nested class to trust.
         void releaseHeld(int... order) {
             for (var index : order) {
                 var batch = held.get(index);
@@ -696,10 +709,13 @@ class BestEffortOutcomeMergeTest {
         /// faithfully; leaving it unserialized would let the test's release thread and an async retry
         /// interleave inside the fence in a way production cannot produce.
         ///
-        /// **Load-bearing, and measured rather than assumed:** drop this modifier and
-        /// [ConcurrentFailures] becomes race-shaped — 0 to 3 of its 4 tests failing across five
-        /// consecutive runs, one run entirely green. It is this, not
-        /// [HoldingClusterNode#releaseHeld]'s drain, that makes those tests deterministic.
+        /// **Kept on modelling grounds, NOT because it was measured to matter.** Interleaved against
+        /// an unsynchronized applier across five rounds, it showed no measurable effect on
+        /// [ConcurrentFailures]'s red distribution — both configurations were flaky. It is the drain
+        /// in [HoldingClusterNode#releaseHeld], not this modifier, that makes those tests
+        /// deterministic; see that method for the measurement. Retained because an unsynchronized
+        /// applier admits an interleaving production cannot produce, which would make any future
+        /// failure here ambiguous.
         synchronized void applyBatch(List<KVCommand<AetherKey>> commands) {
             process(createBatch(List.copyOf(commands)));
         }
