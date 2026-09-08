@@ -127,7 +127,6 @@ final class IndexedDeploymentMap implements DeploymentMap {
         if (a == SliceState.ACTIVE || b == SliceState.ACTIVE) {
             return SliceState.ACTIVE;
         }
-
         // #964: UNKNOWN carries the HIGHEST ordinal, so the comparison at the end of this method would
         // let a state this node cannot read displace one it can, on every merge. It loses to everything
         // and survives only when both sides are unreadable. Placed above the FAILED arms deliberately:

@@ -549,9 +549,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 case MIGRATING -> log.debug("Schema migration in progress for datasource: {}", datasource);
                 // #964: neither completed nor failed nor pending. Treating it as any of the three would
                 // advance a migration on a status this node cannot read.
-                case UNKNOWN -> log.warn("Schema record for datasource {} carries a status this node cannot decode —"
-                                         + " the writer is running a newer SchemaStatus (#964). No migration action"
-                                         + " is taken.",
+                case UNKNOWN -> log.warn("Schema record for datasource {} carries a status this node cannot decode —" + " the writer is running a newer SchemaStatus (#964). No migration action" + " is taken.",
                                          datasource);
             }
         }

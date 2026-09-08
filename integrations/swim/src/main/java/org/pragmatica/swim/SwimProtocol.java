@@ -1380,7 +1380,6 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     private void handleAnnounce(InetSocketAddress sender, Announce announce) {
         var expectedName = config.clusterName();
-
         // Cross-cluster ANNOUNCE gate. Both sides must CLAIM a name for the comparison to mean
         // anything: an empty expectation is "this node was not told its cluster", and an empty
         // announced name is "the sender did not tell us its cluster" — neither is evidence of a
@@ -1397,8 +1396,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         // ANNOUNCE clears tombstones and introduces the sender as an observed member, so the
         // realistic failure this catches is a stale or copy-pasted seed list pointing at another
         // cluster's addresses — the wire-level counterpart to `Main.verifyClusterLabelConsistency`.
-        if (!expectedName.isEmpty() && !announce.clusterName().isEmpty()
-            && !expectedName.equals(announce.clusterName())) {
+        if (!expectedName.isEmpty() && !announce.clusterName().isEmpty() && !expectedName.equals(announce.clusterName())) {
             LOG.warn("ANNOUNCE from {} rejected: cluster name mismatch (got '{}', expected '{}')",
                      announce.nodeInfo().id().id(),
                      announce.clusterName(),
@@ -1777,8 +1775,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             // #964: the peer gossiped a member state this node's MemberState does not have. Admitting
             // it as any real state would fabricate membership evidence, so the update is dropped -- but
             // named, because a silent drop here is the defect the sentinel exists to remove.
-            case UNKNOWN -> LOG.warn("SWIM dropping membership update for {} carrying a member state this node "
-                                     + "cannot decode — the peer is running a newer MemberState (#964)",
+            case UNKNOWN -> LOG.warn("SWIM dropping membership update for {} carrying a member state this node " + "cannot decode — the peer is running a newer MemberState (#964)",
                                      update.nodeId().id());
         }
         // Re-broadcast based on the LOCAL stored state, NOT the raw wire update (#336/#241 wire-leak,

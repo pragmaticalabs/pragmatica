@@ -31,9 +31,9 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     /// #964: raised when the configured consistency mode decoded to `UNKNOWN`, i.e. the blueprint was
     /// written by a node running a newer `ConsistencyMode`. Publishing anyway would mean promising an
     /// acknowledgement semantics this node picked by default.
-    private static final Cause UNREADABLE_CONSISTENCY_MODE =
-        Causes.cause("Stream consistency mode was written by a node running a newer ConsistencyMode and cannot be"
-                     + " read here (#964); nothing is published rather than defaulting to EVENTUAL or STRONG");
+    private static final Cause UNREADABLE_CONSISTENCY_MODE = Causes.cause("Stream consistency mode was written by a node running a newer ConsistencyMode and cannot be"
+                                                                         + " read here (#964); nothing is published rather than defaulting to EVENTUAL or STRONG");
+
     private final StreamPartitionManager partitionManager;
     private final Serializer serializer;
     private final String streamName;
@@ -188,7 +188,6 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
         if (consistencyMode == ConsistencyMode.STRONG) {
             return publishBatchStrong(events);
         }
-
         // #964: the batch path tested only for STRONG, so an UNKNOWN mode would have taken the
         // EVENTUAL branch by default -- the same fail-open the single-event switch above refuses.
         if (consistencyMode == ConsistencyMode.UNKNOWN) {

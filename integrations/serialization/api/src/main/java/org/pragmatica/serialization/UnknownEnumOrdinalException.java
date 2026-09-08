@@ -32,16 +32,19 @@ package org.pragmatica.serialization;
 /// not a valid encoding of this type.
 public final class UnknownEnumOrdinalException extends IllegalArgumentException {
     private static final long serialVersionUID = 1L;
+
     private final String enumType;
     private final int ordinal;
     private final int knownConstantCount;
 
     UnknownEnumOrdinalException(String enumType, int ordinal, int knownConstantCount) {
-        super("Enum %s received ordinal %d but this node knows only %d constant(s) [0, %d)."
-              .formatted(enumType, ordinal, knownConstantCount, knownConstantCount)
-              + " The sender is running a version of this enum with constants this node does not have,"
-              + " so the message is dropped. Give the enum a last constant named UNKNOWN to have"
-              + " unrecognised values decode to it instead, leaving the rest of the message usable.");
+        super("Enum %s received ordinal %d but this node knows only %d constant(s) [0, %d).".formatted(enumType,
+                                                                                                       ordinal,
+                                                                                                       knownConstantCount,
+                                                                                                       knownConstantCount)
+             + " The sender is running a version of this enum with constants this node does not have,"
+             + " so the message is dropped. Give the enum a last constant named UNKNOWN to have"
+             + " unrecognised values decode to it instead, leaving the rest of the message usable.");
         this.enumType = enumType;
         this.ordinal = ordinal;
         this.knownConstantCount = knownConstantCount;

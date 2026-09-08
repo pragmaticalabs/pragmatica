@@ -5942,12 +5942,9 @@ public interface AetherNode extends ManageableNode {
         switch (request.pipeline()) {
             case MANAGEMENT -> managementServer.onPresent(ms -> ms.onHttpForwardRequest(request));
             case APP -> appHttpServer.onHttpForwardRequest(request);
-            case UNKNOWN -> LoggerFactory.getLogger(AetherNode.class)
-                                         .warn("Dropping forwarded HTTP request {} from {}: its target pipeline was"
-                                               + " written by a node running a newer Pipeline and cannot be read"
-                                               + " here (#964). It is NOT routed to the app pipeline.",
-                                               request.requestId(),
-                                               request.sender());
+            case UNKNOWN -> LoggerFactory.getLogger(AetherNode.class).warn("Dropping forwarded HTTP request {} from {}: its target pipeline was" + " written by a node running a newer Pipeline and cannot be read" + " here (#964). It is NOT routed to the app pipeline.",
+                                                                           request.requestId(),
+                                                                           request.sender());
         }
     }
 
@@ -5959,11 +5956,8 @@ public interface AetherNode extends ManageableNode {
         switch (response.pipeline()) {
             case MANAGEMENT -> managementServer.onPresent(ms -> ms.onHttpForwardResponse(response));
             case APP -> appHttpServer.onHttpForwardResponse(response);
-            case UNKNOWN -> LoggerFactory.getLogger(AetherNode.class)
-                                         .warn("Dropping forwarded HTTP response for {}: its target pipeline was"
-                                               + " written by a node running a newer Pipeline and cannot be read"
-                                               + " here (#964). It is NOT routed to the app pipeline.",
-                                               response.correlationId());
+            case UNKNOWN -> LoggerFactory.getLogger(AetherNode.class).warn("Dropping forwarded HTTP response for {}: its target pipeline was" + " written by a node running a newer Pipeline and cannot be read" + " here (#964). It is NOT routed to the app pipeline.",
+                                                                           response.correlationId());
         }
     }
 

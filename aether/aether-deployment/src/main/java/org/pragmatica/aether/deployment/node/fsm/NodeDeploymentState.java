@@ -391,8 +391,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 // FSM on a state this node cannot name would act on evidence it does not have, so
                 // nothing is driven -- but it is said out loud, because an empty arm here is exactly
                 // the silence this ticket exists to remove.
-                case UNKNOWN -> log.warn("Slice {} carries a state this node cannot decode — the writer is running a"
-                                         + " newer SliceState (#964). No transition is driven for it.",
+                case UNKNOWN -> log.warn("Slice {} carries a state this node cannot decode — the writer is running a" + " newer SliceState (#964). No transition is driven for it.",
                                          sliceKey);
             }
         }

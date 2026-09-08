@@ -67,7 +67,6 @@ public sealed interface ClusterQuiescenceEvaluator {
             if (hint == HealthHint.FAULTY) {
                 faulty++;
             }
-
             // #964: UNKNOWN counts as suspected, never as healthy. A hint this node cannot read is
             // absence of evidence about the member, and quiescence is a claim that there is nothing
             // outstanding -- which an unreadable member contradicts.

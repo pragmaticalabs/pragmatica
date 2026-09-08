@@ -34,12 +34,13 @@ package org.pragmatica.serialization;
 /// unchanged keep working.
 public final class UnknownTypeTagException extends IllegalArgumentException {
     private static final long serialVersionUID = 1L;
+
     private final int tag;
 
     UnknownTypeTagException(int tag) {
         super("No codec registered for tag: " + tag
-              + ". The sender is running a codec version this node does not know;"
-              + " the message cannot be decoded and is dropped.");
+             + ". The sender is running a codec version this node does not know;"
+             + " the message cannot be decoded and is dropped.");
         this.tag = tag;
     }
 

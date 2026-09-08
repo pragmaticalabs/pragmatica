@@ -22,6 +22,7 @@ import java.util.concurrent.atomic.LongAdder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// Operator-visible reporting for enum ordinals this node cannot name (#964).
 ///
 /// The `UNKNOWN` sentinel makes the value visible to the HANDLER. This makes the event visible to the
@@ -47,15 +48,14 @@ final class UnknownEnumOrdinals {
 
     static void report(Class<?> enumType, int ordinal, int knownConstantCount) {
         occurrences.increment();
-
         if (reportedKeys.size() >= DISTINCT_KEY_LIMIT || !reportedKeys.add(enumType.getName() + '#' + ordinal)) {
             return;
         }
 
         log.warn("Decoded ordinal {} for enum {}, which has {} constant(s) on this node."
-                 + " A peer is running a codec version this node does not know; the value was surfaced as"
-                 + " UNKNOWN and the rest of the message kept. Handlers on authorization and condemnation"
-                 + " paths refuse UNKNOWN. Further occurrences of this pair are not logged.",
+                + " A peer is running a codec version this node does not know; the value was surfaced as"
+                + " UNKNOWN and the rest of the message kept. Handlers on authorization and condemnation"
+                + " paths refuse UNKNOWN. Further occurrences of this pair are not logged.",
                  ordinal,
                  enumType.getName(),
                  knownConstantCount);

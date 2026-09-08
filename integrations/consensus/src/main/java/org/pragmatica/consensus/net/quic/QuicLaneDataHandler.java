@@ -101,9 +101,9 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
             // what carries the volume.
             quicMetrics.onUnknownTypeTagDrop();
             log.warn("Dropped a message from peer {} on lane {}: wire tag {} names no codec on this node."
-                     + " The peer is running a codec version this node does not have — finish the rolling"
-                     + " upgrade, or check that both nodes ship the same blueprint. Counter:"
-                     + " quic_unknown_type_tag_drops_total.",
+                    + " The peer is running a codec version this node does not have — finish the rolling"
+                    + " upgrade, or check that both nodes ship the same blueprint. Counter:"
+                    + " quic_unknown_type_tag_drops_total.",
                      peerId,
                      lane,
                      e.tag());

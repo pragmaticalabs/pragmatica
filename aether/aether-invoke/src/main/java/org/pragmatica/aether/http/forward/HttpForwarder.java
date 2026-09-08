@@ -690,7 +690,6 @@ public interface HttpForwarder {
                 if (pipeline == Pipeline.MANAGEMENT) {
                     return connectedCoreNodes();
                 }
-
                 // #964: an unreadable pipeline gets NO candidates, so the forward fails rather than
                 // being attempted against the app route table it was never addressed to.
                 if (pipeline == Pipeline.UNKNOWN) {

@@ -331,7 +331,8 @@ public class CodecProcessor extends AbstractProcessor {
         var constants = element.getEnclosedElements()
                                .stream()
                                .filter(enclosed -> enclosed.getKind() == ElementKind.ENUM_CONSTANT)
-                               .map(enclosed -> enclosed.getSimpleName().toString())
+                               .map(enclosed -> enclosed.getSimpleName()
+                                                        .toString())
                                .toList();
 
         if (!constants.isEmpty() && SENTINEL.equals(constants.getLast())) {
@@ -340,14 +341,16 @@ public class CodecProcessor extends AbstractProcessor {
 
         error(element,
               "@Codec enum '" + element.getQualifiedName()
-              + "' must declare " + SENTINEL + " as its LAST constant. Enums cross the wire as ordinals,"
-              + " so a node receiving an ordinal it does not have needs a constant to decode it to;"
-              + " without one the message is dropped silently and permanently (#964)."
-              + " Current constants: " + (constants.isEmpty()
-                                          ? "(none)"
-                                          : String.join(", ", constants))
-              + ". Append " + SENTINEL + " at the end and handle it wherever the enum is consumed —"
-              + " on an authorization or condemnation path it must refuse, never fall through.");
+             + "' must declare " + SENTINEL
+             + " as its LAST constant. Enums cross the wire as ordinals,"
+             + " so a node receiving an ordinal it does not have needs a constant to decode it to;"
+             + " without one the message is dropped silently and permanently (#964)."
+             + " Current constants: " + (constants.isEmpty()
+                                         ? "(none)"
+                                         : String.join(", ", constants))
+             + ". Append " + SENTINEL
+             + " at the end and handle it wherever the enum is consumed —"
+             + " on an authorization or condemnation path it must refuse, never fall through.");
 
         return false;
     }

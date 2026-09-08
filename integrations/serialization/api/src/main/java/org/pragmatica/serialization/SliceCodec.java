@@ -81,7 +81,7 @@ public interface SliceCodec extends Serializer, Deserializer {
     int SYSTEM_TAG_MAX = 16383;
     int TAG_SPACE_SIZE = 16384;
     int USER_TAG_BASE = 16384;
-    int USER_TAG_LIMIT = 1 << 21;
+    int USER_TAG_LIMIT = 1<< 21;
     int USER_TAG_SPACE_SIZE = USER_TAG_LIMIT - USER_TAG_BASE;
     // --- Stream header ---
     int MAGIC = 0xAE01;
@@ -282,6 +282,7 @@ public interface SliceCodec extends Serializer, Deserializer {
 
     // --- Internal lookup (package-private contract) ---
     TypeCodec<?> lookupByClass(Class<?> type);
+
     TypeCodec<?> lookupByTag(int tag);
 
     /// Every type registered in this registry, with the codec that claims it.
@@ -344,17 +345,20 @@ public interface SliceCodec extends Serializer, Deserializer {
     static SliceCodec systemCodec(SliceCodec parent, List<TypeCodec<?>> codecs, Set<Class<?>> requiredTypes) {
         var unpinned = codecs.stream()
                              .filter(codec -> codec.tag() > SYSTEM_TAG_MAX)
-                             .map(codec -> codec.type().getName().replace('$', '.'))
+                             .map(codec -> codec.type()
+                                                .getName()
+                                                .replace('$', '.'))
                              .distinct()
                              .sorted()
                              .toList();
 
         if (!unpinned.isEmpty()) {
             throw new IllegalStateException("System types with no hand-assigned tag: " + String.join(", ", unpinned)
-                                            + ". Every type in the system registry needs a pin in SystemTags"
-                                            + " (system range is [0, " + SYSTEM_TAG_MAX + "]); these fell through to the hash"
-                                            + " and landed in the user range. Add each to the block for its subsystem taking"
-                                            + " the next free tag — never renumber or reuse an existing one.");
+                                           + ". Every type in the system registry needs a pin in SystemTags"
+                                           + " (system range is [0, " + SYSTEM_TAG_MAX
+                                           + "]); these fell through to the hash"
+                                           + " and landed in the user range. Add each to the block for its subsystem taking"
+                                           + " the next free tag — never renumber or reuse an existing one.");
         }
 
         return sliceCodec(parent, codecs, requiredTypes);
@@ -526,28 +530,35 @@ final class CodecHolder implements SliceCodec {
     private List<SliceCodec.TypeCodec<?>> assignableCandidates(Class<?> type) {
         return byClass.values()
                       .stream()
-                      .filter(codec -> codec.type().isAssignableFrom(type))
-                      .sorted(Comparator.comparing(codec -> codec.type().getName()))
+                      .filter(codec -> codec.type()
+                                            .isAssignableFrom(type))
+                      .sorted(Comparator.comparing(codec -> codec.type()
+                                                                 .getName()))
                       .toList();
     }
 
     private static List<SliceCodec.TypeCodec<?>> mostSpecific(List<SliceCodec.TypeCodec<?>> candidates) {
-        return candidates.stream().filter(candidate -> isMinimal(candidate, candidates)).toList();
+        return candidates.stream()
+                         .filter(candidate -> isMinimal(candidate, candidates))
+                         .toList();
     }
 
     private static boolean isMinimal(SliceCodec.TypeCodec<?> candidate, List<SliceCodec.TypeCodec<?>> candidates) {
-        return candidates.stream().noneMatch(other -> isStrictSubtype(other.type(), candidate.type()));
+        return candidates.stream()
+                         .noneMatch(other -> isStrictSubtype(other.type(),
+                                                             candidate.type()));
     }
 
     private static boolean isStrictSubtype(Class<?> subtype, Class<?> supertype) {
-        return !subtype.equals(supertype) && supertype.isAssignableFrom(subtype);
+        return ! subtype.equals(supertype) && supertype.isAssignableFrom(subtype);
     }
 
     /// Documented tie-break for equally specific candidates: prefer the class over unrelated
     /// interfaces. Java's single-inheritance class chain is totally ordered, so at most one class
     /// candidate can be minimal; when none is, the candidates stay ambiguous.
     private static List<SliceCodec.TypeCodec<?>> preferClassCandidate(List<SliceCodec.TypeCodec<?>> minimal) {
-        var classes = minimal.stream().filter(codec -> !codec.type().isInterface()).toList();
+        var classes = minimal.stream().filter(codec -> !codec.type()
+                                                             .isInterface()).toList();
 
         return classes.size() == 1
                ? classes
@@ -555,9 +566,8 @@ final class CodecHolder implements SliceCodec {
     }
 
     private static String ambiguousCandidates(Class<?> type, List<SliceCodec.TypeCodec<?>> candidates) {
-        var names = candidates.stream()
-                              .map(codec -> codec.type().getName())
-                              .collect(Collectors.joining(", "));
+        var names = candidates.stream().map(codec -> codec.type()
+                                                          .getName()).collect(Collectors.joining(", "));
 
         return "Ambiguous codec resolution for class %s: equally specific registered supertypes [%s]. Register an explicit codec for %s.".formatted(type.getName(),
                                                                                                                                                     names,
