@@ -10,7 +10,6 @@ import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.stream.Stream;
 
 /// Which Markdown files the drift gate reads, and — just as load-bearing — which it does not.
 ///
@@ -99,18 +98,62 @@ final class DocCorpus {
     }
 
     /// Every Markdown file in the corpus, sorted so failure output is stable between runs.
+    ///
+    /// Excluded directories are PRUNED during the walk rather than filtered out of its results, and
+    /// that distinction is load-bearing twice over. CI builds this reactor with `-T 1C` (the flag
+    /// lives in `.mvn/maven.config`, which Maven reads automatically, so it appears in no workflow
+    /// file): sibling modules are compiling, and deleting, their own `target/` directories WHILE this
+    /// test runs. A walk that descends into them before filtering races a directory tree that is
+    /// being rewritten underneath it, and can fail with a `NoSuchFileException` on a file that was
+    /// real when the walk listed it. Pruning also skips `.git` and `.m2-local`, which together hold
+    /// far more files than the repository's actual sources.
     static List<Path> markdownFiles() {
         var root = repositoryRoot();
+        var found = new java.util.ArrayList<Path>();
 
-        try (Stream<Path> walk = Files.walk(root)) {
-            return walk.filter(Files::isRegularFile)
-                       .filter(path -> path.getFileName().toString().endsWith(".md"))
-                       .filter(DocCorpus::included)
-                       .sorted()
-                       .toList();
+        try {
+            Files.walkFileTree(root, new java.nio.file.SimpleFileVisitor<Path>() {
+                @Override
+                public java.nio.file.FileVisitResult preVisitDirectory(Path dir,
+                                                                       java.nio.file.attribute.BasicFileAttributes attrs) {
+                    return excludedDirectory(dir)
+                           ? java.nio.file.FileVisitResult.SKIP_SUBTREE
+                           : java.nio.file.FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public java.nio.file.FileVisitResult visitFile(Path file,
+                                                               java.nio.file.attribute.BasicFileAttributes attrs) {
+                    if (attrs.isRegularFile() && file.getFileName().toString().endsWith(".md") && included(file)) {
+                        found.add(file);
+                    }
+
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+
+                /// A file that vanished mid-walk was, by construction, inside a directory this gate
+                /// does not read — nothing in the corpus is written during a build. Skipping it keeps
+                /// a concurrent sibling module from failing this test for an unrelated reason.
+                @Override
+                public java.nio.file.FileVisitResult visitFileFailed(Path file, IOException exception) {
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+            });
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+
+        return found.stream().sorted().toList();
+    }
+
+    private static boolean excludedDirectory(Path dir) {
+        if (dir.equals(ROOT)) {
+            return false;
+        }
+
+        var normalized = "/" + ROOT.relativize(dir).toString().replace('\\', '/') + "/";
+
+        return EXCLUDED_SEGMENTS.stream().anyMatch(normalized::contains);
     }
 
     private static boolean included(Path path) {
