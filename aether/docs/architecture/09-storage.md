@@ -209,9 +209,22 @@ The DHT hosts two classes of data with **different** guarantees. The distinction
 | Data class | Config | Consistency | Durability | Under partition |
 |------------|--------|-------------|------------|-----------------|
 | Artifact repository, cache | Quorum (default RF=3, W=R=2) | Quorum LWW by HLC — eventual, concurrent writes LWW-dropped; anti-entropy repairs replicas | In-memory, replicated; artifacts also resolvable from Maven | Majority |
-| **System maps** — slice-node, HTTP-route, endpoint | `DHTConfig.FULL` (W=R=1) | **Eventual, not linearizable** — a write acks after one local put, a read returns the first non-empty response with no version reconciliation and **no read-repair**; `FULL` also disables anti-entropy and rebalancing (`DHTConfig.FULL`, `integrations/dht/.../DHTConfig.java`; wired at `AetherNode.java:1069` via `AetherMaps`) | **Not crash-durable** — in-memory engine (`MemoryStorageEngine`, `AetherNode.java:421`); a full-cluster restart loses this state | Side with ≥1 replica serves; **reads may be stale across nodes** |
+| ~~**System maps** — slice-node, HTTP-route, endpoint~~ **REMOVED (#943, 2026-09-08)** | — | This class no longer exists. The `AetherMaps` plane it described had no production reader **and no production writer**, so it was permanently empty; it has been deleted. Slice-node state, HTTP routes and RPC endpoints are served by the **consensus KV** (`DeploymentMap` / `HttpRouteRegistry` / `EndpointRegistry`) and keep that plane's guarantees | — | — |
 
-**The system-maps guarantee is a deliberate downgrade, not only a performance win.** Slice-node, HTTP-route, and endpoint state was migrated *off* consensus (where it was CP and quorum-durable) *onto* the eventual DHT `ReplicatedMap` to trade O(N) consensus write-amplification for O(3) replication (feature-catalog rows 94/95/152/281). The trade Aether accepts in return: these reads can be stale across nodes, and the state is reconstructed (not recovered) after a full restart. This is safe because the maps are **derived, self-healing state** — nodes re-register their slices, routes, and endpoints on activation, so the cluster re-converges rather than depending on the DHT surviving a crash.
+> ⚠️ **The paragraph that stood here described a downgrade that never took effect (#943, 2026-09-08).**
+> It read: "The system-maps guarantee is a deliberate downgrade, not only a performance win" — slice-node,
+> HTTP-route and endpoint state "was migrated *off* consensus (where it was CP and quorum-durable) *onto*
+> the eventual DHT `ReplicatedMap`" for an O(3)-vs-O(N) trade (feature-catalog rows 94/95/152/281).
+>
+> **The read path never moved and the maps were never written**, so that state stayed on the consensus
+> plane and kept its CP, quorum-durable guarantee the whole time. Operators who read this section and
+> planned around stale routing reads or restart-lossy route state were planning around a downgrade that
+> did not exist. The DHT plane's remaining, real use is the **artifact repository / cache** row above,
+> plus the ownership fence described below.
+>
+> Note also that the deleted row cited `AetherNode.java:1069` for a wiring site that had already moved to
+> `:1403` before this removal — a bare line number in prose goes stale silently. First recorded as #681
+> (2026-08-29); see [`../reference/guarantees.md`](../reference/guarantees.md) §1.
 
 The same DHT storage engine also **enforces** the cluster's ownership fence: `HighWaterOwnerEpochGate` rejects a deposed writer's entity-keyed put by reading a node-local high-water whose **authority is the consensus KV** — an enforcement point inside the engine, not a DHT keyspace (neither FULL nor quorum). See [`../reference/guarantees.md`](../reference/guarantees.md) §2 (`dht.epoch-gate`).
 
