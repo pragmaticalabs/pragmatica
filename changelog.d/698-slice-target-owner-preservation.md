@@ -74,7 +74,28 @@
   door 2 — a partially deployed blueprint across a leader failover — needs no autoscaler and
   survives this fix untouched. #933 was filed for this same defect and is closed as a duplicate of
   #698. There is no gating relationship between this change and #924.
-- **Separate defect found at the same expression, deliberately NOT fixed here (no ticket yet).**
+- **`SliceTargetValue.placement` is erased by the SAME two producers — a third instance of this
+  bug class, found by re-auditing the construction sites for field *values* rather than field
+  presence. Not fixed, no ticket yet.** Every `sliceTargetValue(...)` factory overload except the
+  one taking an explicit `placement` hardcodes `DEFAULT_PLACEMENT` (`"CORE_ONLY"`), and both
+  `applyScaling` and `targetPreservingOverrides` use overloads that do. A non-default placement is
+  operator-settable through the management API (`POST /api/slices/scale`, `ScaleRequest.placement`)
+  and is preserved correctly on that path by `applyScaleToExisting` → `withPlacement`. It is then
+  reset to `CORE_ONLY` by the first autoscale or A/B write, and the reset value is acted on:
+  `handleSliceTargetChange` calls `issueAllocationCommandsWithPlacement(newArtifact,
+  desiredInstances, value.effectivePlacement())`, so the slice is re-allocated under the default
+  placement. `ControlLoopContext` cannot fix this the way it fixes the owner —
+  `ClusterController.Blueprint` has no `placement` field either, so it needs the same model-field
+  treatment or a deliberate ruling that placement is not autoscaler-preserved
+  [mechanism: `AetherValue.SliceTargetValue` factories at :95/:107/:119/:134/:169 all pass
+  `DEFAULT_PLACEMENT`; producers at `ControlLoopContext.applyScaling` and
+  `AbTestManager.targetPreservingOverrides` use the 7-arg overload (:169); consumer at
+  `ClusterDeploymentState:1315`. Not executed — no test in this change drives a non-default
+  placement through an autoscale].
+- **Separate defect, filed as #936, deliberately NOT fixed here. #698's fix does NOT fix #936.**
+  They are independent bugs in the *same constructor call* — `minInstances` is argument position 3,
+  `owningBlueprint` position 4 — so a reader who sees the owner preserved must not assume the whole
+  call was audited.
   `applyScaling` writes `newInstances` as **both** `targetInstances` and `minInstances`, while the
   in-memory model it updates one line earlier keeps `currentBlueprint.minInstances()`. The Put then
   feeds `onSliceTargetPut`, which overwrites the model with `minInstances = newInstances`. So a
@@ -82,10 +103,13 @@
   `computeRequestedInstances`' `Math.max(minInstances, instances - reduceBy)` can never return
   anything below it — **the autoscaler cannot scale down after its first scale-up**. Left untouched
   under #698's scope discipline; it is a different field, a different failure, and needs its own
-  ticket and its own test
+  ticket and its own test. It also **fails silently**: `prepareChangeToBlueprint` returns
+  `Option.none()` when `newInstances == currentBlueprint.instances()`, so a slice pinned at a
+  ratcheted floor emits no command, no event and no log — indistinguishable from an autoscaler with
+  nothing to do
   [mechanism: `ControlLoopContext.applyScaling` 7-arg `sliceTargetValue(version, newInstances,
   newInstances, ...)` vs. `putBlueprint(artifact, newInstances, currentBlueprint.minInstances(),
   ...)` immediately above it; `AetherValue.SliceTargetValue.effectiveMinInstances()` returns
   `Math.max(1, minInstances)`. Searched open issues for `minInstances` and `applyScaling` via
-  `oss/internal/related-tickets.sh` — only #698 and the generic tech-debt umbrella #175 hit, so no
-  existing ticket covers it].
+  `oss/internal/related-tickets.sh` before filing — only #698 and the generic tech-debt umbrella
+  #175 hit].
