@@ -1659,9 +1659,42 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// of erasing the first. The merge was a bare read-then-Put until #805 item 2; it is now
         /// fenced and confirmed — see [#submitBestEffortFailureOutcome(BlueprintId, Artifact, String, int)].
         private void recordBestEffortFailureOutcome(Artifact artifact, String failureReason) {
-            Option.option(blueprints.get(artifact))
-                  .flatMap(Blueprint::owner)
-                  .onPresent(blueprintId -> submitBestEffortFailureOutcome(blueprintId, artifact, failureReason, 1));
+            resolveOutcomeOwner(artifact).onPresent(blueprintId -> submitBestEffortFailureOutcome(blueprintId,
+                                                                                                  artifact,
+                                                                                                  failureReason,
+                                                                                                  1));
+        }
+
+        /// #805 follow-up: the owning blueprint for a BEST_EFFORT failure record, resolved from the
+        /// node-local [#blueprints] mirror FIRST and from the committed `SliceTargetValue` only when
+        /// the mirror cannot answer.
+        ///
+        /// An unresolved owner here is not a degraded record, it is NO record: there is no
+        /// `DeploymentOutcomeKey` to write against, so the failure goes unrecorded entirely. #698
+        /// closed one route to that — the autoscaler and A/B writer erasing
+        /// `SliceTargetValue.owningBlueprint`, fixed in #940. This closes the other: the mirror is
+        /// rebuilt from KV notifications and can be stale, or simply absent for an artifact whose
+        /// entry `removeNonTargetVersions` dropped, or during the window after a leader failover
+        /// before `rebuildSliceStateFromKVStoreEntries` has run.
+        ///
+        /// **Mirror FIRST, not committed-record first — the order is load-bearing.**
+        /// [Active#handleAppBlueprintChange] populates the mirror in the same pass that only QUEUES
+        /// the `SliceTargetKey` Put, and that Put applies later, after consensus. Between the two the
+        /// mirror legitimately names an owner the committed store does not yet carry, so resolving
+        /// from the store alone would stop recording failures for the whole deploy window — trading
+        /// one dropped-record bug for another. Consulting both, mirror first, strictly widens what is
+        /// recorded: the worst case is attributing a failure to an owner that is about to change,
+        /// never losing the record. For a ticket about lost records that is the right asymmetry.
+        ///
+        /// Deliberately NOT the shared [ClusterDeploymentState#resolveSliceOwner(KVStore, Artifact)]
+        /// call alone: that method is item 1's single-source rule for the SCHEMA GATE, where
+        /// convergence with `SchemaRoutes.heldSlices` is the whole point and one source is required.
+        /// Here there is no second reader to converge with, and the requirement is the opposite —
+        /// resolve from anything that can answer.
+        private Option<BlueprintId> resolveOutcomeOwner(Artifact artifact) {
+            return Option.option(blueprints.get(artifact))
+                         .flatMap(Blueprint::owner)
+                         .orElse(() -> resolveSliceOwner(ctx.kvStore(), artifact));
         }
 
         /// #805 item 2. This write is a read-modify-write: it merges `artifact` into whatever

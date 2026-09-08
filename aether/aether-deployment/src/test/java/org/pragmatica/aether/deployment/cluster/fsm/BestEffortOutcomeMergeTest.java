@@ -17,6 +17,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.AppBlueprintPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetPutReceived;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
@@ -25,10 +26,12 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
@@ -295,6 +298,88 @@ class BestEffortOutcomeMergeTest {
         }
     }
 
+    /// The two sources `resolveOutcomeOwner` consults, each pinned ALONE — because each is the only
+    /// one that can answer in a real situation, and a fix that dropped either would look correct
+    /// against the other's test.
+    ///
+    /// An unresolved owner means NO record, not a degraded one, so both of these are dropped-record
+    /// bugs. #698/#940 closed the erasure route; these close the mirror-availability route.
+    @Nested
+    class OwnerResolutionFallback {
+        @BeforeEach
+        void freshHarness() {
+            buildHarness(DeploymentAtomicity.BEST_EFFORT);
+        }
+
+        /// Mirror cannot answer, committed record can: the artifact has no `blueprints` entry at all
+        /// (dropped by `removeNonTargetVersions`, or not yet rebuilt after a failover) while the
+        /// committed `SliceTargetValue` still names its owner. Before the fallback this failure went
+        /// unrecorded.
+        @Test
+        void theOutcomeRecord_isWritten_whenOnlyTheCommittedRecordNamesTheOwner() {
+            commitSliceTargetWithoutNotifying(SLICE_A, OWNER);
+
+            assertThat(activeState().blueprints()).as("the mirror must be genuinely unable to answer, or this test "
+                                                      + "proves nothing about the fallback")
+                                                  .doesNotContainKey(SLICE_A);
+
+            failSlice(SLICE_A);
+
+            assertThat(recordedFailingSlices()).contains(SLICE_A.asString());
+        }
+
+        /// The non-regression, and the reason the mirror is consulted FIRST.
+        /// `handleAppBlueprintChange` populates the mirror in the same pass that only QUEUES the
+        /// `SliceTargetKey` Put; that Put applies after consensus. In between, the mirror names an
+        /// owner the committed store does not carry. A committed-record-only lookup would stop
+        /// recording failures for that entire deploy window — swapping one dropped-record bug for
+        /// another. Here the slice-target write is dropped outright, which is the adversarial form of
+        /// that window.
+        @Test
+        void theOutcomeRecord_isWritten_whenOnlyTheMirrorNamesTheOwner() {
+            cluster.dropSliceTargetWrites();
+            publishBlueprintDeploy(SLICE_A);
+
+            assertThat(committedSliceTarget(SLICE_A).isEmpty()).as("the committed store must NOT carry the record yet, "
+                                                                   + "or this is not the deploy window")
+                                                              .isTrue();
+            assertThat(activeState().blueprints()).containsKey(SLICE_A);
+
+            failSlice(SLICE_A);
+
+            assertThat(recordedFailingSlices()).as("the mirror leads the store during a deploy — the failure must still "
+                                                   + "be recorded")
+                                               .contains(SLICE_A.asString());
+        }
+
+        /// Writes the committed record WITHOUT dispatching the notification, so the FSM never mirrors
+        /// it — the only way to leave the mirror genuinely empty while the store is authoritative.
+        private void commitSliceTargetWithoutNotifying(Artifact artifact, BlueprintId owner) {
+            kvStore.applyBatch(List.of(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
+                                                           SliceTargetValue.sliceTargetValue(artifact.version(),
+                                                                                             1,
+                                                                                             Option.some(owner)))));
+        }
+
+        /// Drives the real `AppBlueprintPutReceived` notification, so the mirror is populated by
+        /// `handleAppBlueprintChange` itself rather than by hand.
+        private void publishBlueprintDeploy(Artifact artifact) {
+            var slice = ResolvedSlice.resolvedSlice(artifact, 1, false).unwrap();
+            var expanded = ExpandedBlueprint.expandedBlueprint(OWNER, List.of(slice));
+            var key = AppBlueprintKey.appBlueprintKey(OWNER);
+            var value = AppBlueprintValue.appBlueprintValue(expanded);
+
+            harness.dispatch(new AppBlueprintPutReceived(new ValuePut<>(new KVCommand.Put<>(key, value),
+                                                                        Option.none())));
+        }
+
+        private Option<SliceTargetValue> committedSliceTarget(Artifact artifact) {
+            return kvStore.get(SliceTargetKey.sliceTargetKey(artifact.base()))
+                          .filter(SliceTargetValue.class::isInstance)
+                          .map(SliceTargetValue.class::cast);
+        }
+    }
+
     /// #805's acceptance clause: "no behaviour change for ALL_OR_NOTHING". Fencing
     /// [DeploymentOutcomeValue] makes EVERY writer of that record fenceable, not just the BEST_EFFORT
     /// merge — the three ALL_OR_NOTHING terminal writers (`recordSucceededOutcome`,
@@ -469,6 +554,7 @@ class BestEffortOutcomeMergeTest {
         private final List<HeldBatch> held = Collections.synchronizedList(new ArrayList<>());
         private final AtomicLong applies = new AtomicLong();
         private volatile int holdBudget;
+        private volatile boolean dropSliceTargets;
 
         private record HeldBatch(List<KVCommand<AetherKey>> commands, Promise<List<Object>> promise) {}
 
@@ -479,6 +565,13 @@ class BestEffortOutcomeMergeTest {
 
         void holdOutcomeBatches(int count) {
             holdBudget = count;
+        }
+
+        /// Models `handleAppBlueprintChange`'s deploy window: the `SliceTargetKey` Put is queued for
+        /// consensus but has not applied, so the committed store does not carry it while the mirror
+        /// already does. Dropping it outright is the adversarial form of "not yet applied".
+        void dropSliceTargetWrites() {
+            dropSliceTargets = true;
         }
 
         int heldCount() {
@@ -546,10 +639,18 @@ class BestEffortOutcomeMergeTest {
                 return (Promise<List<R>>) (Promise<?>) pending;
             }
 
-            store.applyBatch(batch);
+            store.applyBatch(retained(batch));
             applies.incrementAndGet();
 
             return Promise.success(List.of());
+        }
+
+        private List<KVCommand<AetherKey>> retained(List<KVCommand<AetherKey>> batch) {
+            return dropSliceTargets
+                   ? batch.stream()
+                          .filter(command -> !(command.key() instanceof SliceTargetKey))
+                          .toList()
+                   : batch;
         }
 
         private static boolean touchesOutcomeRecord(List<KVCommand<AetherKey>> batch) {
