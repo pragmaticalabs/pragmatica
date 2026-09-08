@@ -241,7 +241,13 @@ public interface ControlLoop {
                                       Option<Integer> maxInstances,
                                       Option<Double> scaleUpThreshold,
                                       Option<Double> scaleDownThreshold) {
-            ctx.putBlueprint(artifact, instances, minInstances, owner, maxInstances, scaleUpThreshold, scaleDownThreshold);
+            ctx.putBlueprint(artifact,
+                             instances,
+                             minInstances,
+                             owner,
+                             maxInstances,
+                             scaleUpThreshold,
+                             scaleDownThreshold);
             log.info("Registered blueprint: {} with {} instances (min: {}, max: {})",
                      artifact,
                      instances,
