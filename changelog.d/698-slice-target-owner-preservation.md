@@ -8,9 +8,14 @@ this branch adds +12 lines to `ClusterDeploymentState.java`._
   `ControlLoopContext.applyScaling` (`aether-control`) did it on every autoscale decision;
   `AbTestManager.targetPreservingOverrides` (`aether-invoke`) did it on every A/B lifecycle write,
   in a method whose name and javadoc both promise preservation. Both now carry the owner
-  [verified: `ControlLoopOwnerPreservationTest$ProducerPreservesOwner#applyScaling_ownedSlice_carriesOwnerOntoTheScaledValue`
-  (`aether-control`), `SliceTargetOverridePreservationTest$AbTestPromotePreservesOverrides#concludeTest_preserves_autoscaler_overrides_on_promoted_version`
-  (`aether-invoke`)].
+  [verified: mutation-probed. Replacing `currentBlueprint.owningBlueprint()` with `Option.none()` in
+  `ControlLoopContext.applyScaling` turns 2 of 5 red in `ControlLoopOwnerPreservationTest`
+  (`applyScaling_ownedSlice_carriesOwnerOntoTheScaledValue`: "expected: Some(org.example:owning-app:1.0.0)
+  but was: None()"); restoring returns 5/5 green. Replacing
+  `current.flatMap(SliceTargetValue::owningBlueprint)` with `Option.none()` in `AbTestManager` turns
+  1 of 2 red in `SliceTargetOverridePreservationTest`
+  (`AbTestPromotePreservesOverrides#concludeTest_preserves_autoscaler_overrides_on_promoted_version`);
+  restoring returns 2/2 green].
 - **The loss was only observable at the consumer, one failover later.** `ClusterDeploymentState`
   resolves a slice's `schemaRequired` through its owner (`restoreSliceTarget`,
   `handleSliceTargetChange`); an absent owner takes the historical unowned default `true`. A slice
@@ -18,9 +23,19 @@ this branch adds +12 lines to `ClusterDeploymentState.java`._
   restore asserting schema *was* required — #555's original symptom, moved one layer upstream. The
   end-to-end path is now pinned by feeding **the exact value the autoscaler emits** into a real
   `ClusterDeploymentContext` restore
-  [verified: `ControlLoopOwnerPreservationTest$OwnerSurvivesLeaderRestore#autoscalerOutput_restoredAfterFailover_keepsSchemaRequiredFalse`,
-  with `#autoscalerOutput_restoredAfterFailover_resolvesSchemaRequiredTrue` as the opposite polarity
-  so a hardcoded `false` cannot pass].
+  [verified: mutation-probed. `#autoscalerOutput_restoredAfterFailover_keepsSchemaRequiredFalse` goes
+  red under BOTH producer-side mutations with "expected: false but was: true" — literally #698's
+  symptom reproduced — and green on restore].
+  **Stated precisely, because the tag would otherwise overclaim:** its opposite-polarity twin
+  `#autoscalerOutput_restoredAfterFailover_resolvesSchemaRequiredTrue` did **NOT** redden under any
+  of the three mutations, and is not pinned by them. It cannot: with the owner erased the resolution
+  falls through to the historical default `true`, which is the value that test expects, so it passes
+  *for the wrong reason*. It guards a different failure — an implementation hardcoding `false` — and
+  that is all it is evidence of. The same is true of
+  `#applyScaling_unownedSlice_leavesOwnerAbsent` and
+  `#applyScaling_ownedSlice_carriesOperatorOverridesOntoTheScaledValue`, both green under mutation by
+  design. Of the 5 tests in the class, 2 are pinned by these probes; the other 3 are polarity and
+  companion guards, not owner-erasure detectors.
 - **Schema-failure reports also under-counted.** `handleSchemaFailed` lists `slicesOwnedBy(owner)`;
   a slice whose owner had been dropped was invisible to it, so an operator was told fewer slices
   were blocked than actually were. No code change was needed for this beyond the producer fix — the
@@ -40,7 +55,12 @@ this branch adds +12 lines to `ClusterDeploymentState.java`._
   and changes no control flow
   [mechanism: `ControlLoopContext` has no `KVStore` field — only `ClusterNode`, the command channel;
   `blueprints.put` has exactly one call site (`putBlueprint`), whose only production caller is
-  `ControlLoop.onSliceTargetPut`].
+  `ControlLoop.onSliceTargetPut`]
+  [verified: that feeder is a real enforcement point, not incidental plumbing — a third probe
+  replacing `value.owningBlueprint()` with `Option.<BlueprintId>none()` at
+  `ControlLoop.onSliceTargetPut` turns the same 2 of 5 red and restores to 5/5 green. The owner
+  invariant therefore has three enforcement sites (two producers plus the feeder) and each was
+  mutated independently, rather than one instance being taken as proof of the set].
 - **Stated plainly, not claimed away: neither write is lost-update-safe, and this fix does not make
   it so.** `applyScaling` emits an unconditional `KVCommand.Put`, so a concurrent writer's update to
   the same `SliceTargetKey` can still be clobbered. That exposure is pre-existing and unchanged in
