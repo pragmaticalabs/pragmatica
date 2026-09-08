@@ -78,16 +78,47 @@ class DeploymentMapUnknownStateTest {
         assertThat(aggregate(map)).isEqualTo(SliceState.FAILED);
     }
 
-    /// Only when NOTHING is decodable does the aggregate report UNKNOWN — the sentinel survives rather
-    /// than being suppressed into a state nobody observed.
+    /// An all-undecodable artifact aggregates to **FAILED, not UNKNOWN**, and that is a consequence of
+    /// the merge above rather than a second decision.
+    ///
+    /// The reduce's IDENTITY ELEMENT is `SliceState.FAILED`, so the first fold is
+    /// `higherState(FAILED, UNKNOWN)`, and the guard being pinned here — a real FAILED beats UNKNOWN,
+    /// because FAILED is information and UNKNOWN is the absence of it — cannot distinguish the
+    /// identity from a node that genuinely reported FAILED. Wanting UNKNOWN here and wanting FAILED in
+    /// [#unknownDoesNotDisplaceFailed] are mutually exclusive given that identity, and of the two the
+    /// second matters more: hiding a real failure behind "I could not read it" is the worse error.
+    ///
+    /// This test asserted UNKNOWN when first written and went red. **The test was wrong, not the
+    /// code** — it was written without accounting for the identity element. Recorded rather than
+    /// quietly re-expected, because "a test failed after my fix so I changed the test" is also the
+    /// shape of a defect being re-buried, and the two are indistinguishable in a summary.
+    ///
+    /// The residual imprecision is real and stated: an artifact whose every node runs a newer
+    /// SliceState reads as FAILED in the status route rather than as unreadable. Conservative, not
+    /// fail-open — but it can prompt a rollback of a deployment that is fine. Fixing it means changing
+    /// the reduce's identity, which is outside #964.
     @Test
-    void unknownSurvives_whenEveryNodeIsUndecodable() {
+    void everyNodeUndecodable_aggregatesToFailed_becauseFailedIsTheReduceIdentity() {
         var map = DeploymentMap.deploymentMap();
 
         put(map, NODE_A, SliceState.UNKNOWN);
         put(map, NODE_B, SliceState.UNKNOWN);
 
-        assertThat(aggregate(map)).isEqualTo(SliceState.UNKNOWN);
+        assertThat(aggregate(map)).isEqualTo(SliceState.FAILED);
+    }
+
+    /// The per-instance detail is NOT collapsed: whatever the aggregate says, the status route can
+    /// still show that each node reported an undecodable state. That is what keeps the imprecision
+    /// above diagnosable rather than silent — the operator can see WHY it says FAILED.
+    @Test
+    void perInstanceDetail_stillReportsUnknown_whenTheAggregateSaysFailed() {
+        var map = DeploymentMap.deploymentMap();
+
+        put(map, NODE_A, SliceState.UNKNOWN);
+        put(map, NODE_B, SliceState.UNKNOWN);
+
+        assertThat(map.allDeployments().getFirst().instances()).allSatisfy(instance ->
+            assertThat(instance.state()).isEqualTo(SliceState.UNKNOWN));
     }
 
     /// The control: with the sentinel absent entirely, the ordinal merge still picks the higher real
