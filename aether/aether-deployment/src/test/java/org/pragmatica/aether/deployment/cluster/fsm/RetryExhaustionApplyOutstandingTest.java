@@ -465,6 +465,91 @@ class RetryExhaustionApplyOutstandingTest {
                 .doesNotContain(SLICE);
     }
 
+    /// #924 round-5 BLOCKING, variant A — RED BY DESIGN. Documents the open defect; it is not a
+    /// passing pin and must not be read as one.
+    ///
+    /// **The apply genuinely COMPLETES and no record is ever written.** Nothing is seeded: the
+    /// blueprint is applied under one leader, the leader changes, and the slices reach ACTIVE under
+    /// the new one. [ClusterDeploymentContext#newActive] builds `inFlightBlueprints` EMPTY and only
+    /// the live `handleAppBlueprintChange` path ever populates it, so `trackBlueprintSliceActive`
+    /// iterates an empty map and `recordSucceededOutcome` is never reached — not late, never.
+    ///
+    /// The store is then byte-identical to a deployment that never started, which
+    /// [Active#deploymentApplyOutstanding] reads as OUTSTANDING and condemns. A fully-ACTIVE
+    /// workload is marked permanently failed cluster-wide and its blueprint rolled back.
+    ///
+    /// In THIS variant one instance is still ACTIVE at decision time (`SELF` fails, `NODE_A` does
+    /// not), so a present-tense health veto would rescue it. Variant B is the same defect where such
+    /// a veto cannot vote.
+    @Test
+    void anApplyCompletedUnderANewLeader_writesNoRecord_andMustNotCondemnAHealthyWorkload() {
+        var expanded = blueprint();
+
+        applyBlueprint(leaderHarness, leaderStore, expanded);
+
+        // FAILOVER onto the same durable store. Every in-memory collection starts empty.
+        var newLeaderHarness = leaderHarness(new RecordingClusterNode(SELF, leaderStore),
+                                             leaderStore,
+                                             RESOLVED_MEMBERSHIP);
+
+        assertThat(activeState(newLeaderHarness).inFlightBlueprints())
+                .as("precondition: the new leader has no in-memory record of the apply, which is why "
+                    + "the completion write below never happens")
+                .doesNotContainKey(expanded.id());
+
+        newLeaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(NODE_A, SLICE, activeInstance())));
+        newLeaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(SELF, SLICE, activeInstance())));
+
+        assertThat(outcomeStatusName(leaderStore, expanded.id()))
+                .as("the apply COMPLETED — every declared slice reached ACTIVE — yet no outcome record "
+                    + "exists, and none ever will. Nothing here is seeded; this is the real path")
+                .isEqualTo(NO_OUTCOME);
+
+        exhaustRetryBudgetOn(newLeaderHarness, SELF, SLICE);
+
+        assertThat(activeState(newLeaderHarness).permanentlyFailed())
+                .as("a workload whose apply completed must never be condemned because the completion "
+                    + "record was never written — absence of the record is not evidence of failure")
+                .doesNotContain(SLICE);
+    }
+
+    /// #924 round-5 BLOCKING, variant B — RED BY DESIGN, and the one that discriminates.
+    ///
+    /// Identical to variant A except that the transient reaches EVERY instance before the budget is
+    /// spent, which is what a shared downstream dependency does by construction.
+    /// [Active#handleSliceFailure] removes each failing key from `sliceStates` before either branch
+    /// runs, so at decision time NO instance is ACTIVE anywhere.
+    ///
+    /// This is why a present-tense health veto narrows the defect without closing it: it is round-2's
+    /// own BLOCKING shape, and it cannot vote here. Any fix whose safety rests on an instance being
+    /// ACTIVE at decision time leaves this case condemning.
+    @Test
+    void anApplyCompletedUnderANewLeader_withASharedTransientOnEveryInstance_mustNotCondemn() {
+        var expanded = blueprint();
+
+        applyBlueprint(leaderHarness, leaderStore, expanded);
+
+        var newLeaderHarness = leaderHarness(new RecordingClusterNode(SELF, leaderStore),
+                                             leaderStore,
+                                             RESOLVED_MEMBERSHIP);
+
+        newLeaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(NODE_A, SLICE, activeInstance())));
+        newLeaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(SELF, SLICE, activeInstance())));
+
+        assertThat(outcomeStatusName(leaderStore, expanded.id()))
+                .as("precondition: the completed apply left no record")
+                .isEqualTo(NO_OUTCOME);
+
+        // The shared transient takes the other instance down too, so nothing is ACTIVE to vouch.
+        newLeaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(NODE_A, SLICE, intermittentFailure())));
+        exhaustRetryBudgetOn(newLeaderHarness, SELF, SLICE);
+
+        assertThat(activeState(newLeaderHarness).permanentlyFailed())
+                .as("a previously-healthy workload must not be condemned merely because a shared "
+                    + "transient reached every instance while its apply had no completion record")
+                .doesNotContain(SLICE);
+    }
+
     private static ClusterDeploymentState.Active activeState(FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness) {
         return (ClusterDeploymentState.Active) harness.state();
     }
