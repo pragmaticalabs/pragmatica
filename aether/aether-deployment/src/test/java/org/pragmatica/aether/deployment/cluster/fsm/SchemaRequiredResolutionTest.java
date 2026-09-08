@@ -97,8 +97,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// `aether-invoke`). Both producers now carry the owner: the autoscaler threads it through
 /// `ClusterController.Blueprint.owningBlueprint`, and `AbTestManager` reads it from the current
 /// value alongside the override fields it already re-read
-/// `[verified: aether-control ControlLoopOwnerPreservationTest; aether-invoke
-/// SliceTargetOverridePreservationTest; aether/node AutoscaleOwnerSurvivesRestoreTest]`.
+/// `[verified: aether-control ControlLoopOwnerPreservationTest — nested ProducerPreservesOwner for
+/// the producer half, and OwnerSurvivesLeaderRestore for the restore half, which feeds the value the
+/// autoscaler actually emits into a real ClusterDeploymentContext; aether-invoke
+/// SliceTargetOverridePreservationTest]`. There is no separate test in aether/node; the restore
+/// coverage lives in the nested class named above.
 ///
 /// The consumer-side resolution this class pins is therefore **not** obsoleted by #698 and must
 /// not be removed as a redundant workaround: `SliceTargetValue` carries no `schemaRequired` field,

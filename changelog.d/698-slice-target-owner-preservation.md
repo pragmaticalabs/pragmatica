@@ -9,7 +9,7 @@ this branch adds +12 lines to `ClusterDeploymentState.java`._
   `AbTestManager.targetPreservingOverrides` (`aether-invoke`) did it on every A/B lifecycle write,
   in a method whose name and javadoc both promise preservation. Both now carry the owner
   [verified: mutation-probed. Replacing `currentBlueprint.owningBlueprint()` with `Option.none()` in
-  `ControlLoopContext.applyScaling` turns 2 of 5 red in `ControlLoopOwnerPreservationTest`
+  `ControlLoopContext.applyScaling` turns 3 of 5 red in `ControlLoopOwnerPreservationTest`
   (`applyScaling_ownedSlice_carriesOwnerOntoTheScaledValue`: "expected: Some(org.example:owning-app:1.0.0)
   but was: None()"); restoring returns 5/5 green. Replacing
   `current.flatMap(SliceTargetValue::owningBlueprint)` with `Option.none()` in `AbTestManager` turns
@@ -64,7 +64,7 @@ this branch adds +12 lines to `ClusterDeploymentState.java`._
   `ControlLoop.onSliceTargetPut`]
   [verified: that feeder is a real enforcement point, not incidental plumbing — a third probe
   replacing `value.owningBlueprint()` with `Option.<BlueprintId>none()` at
-  `ControlLoop.onSliceTargetPut` turns the same 2 of 5 red and restores to 5/5 green. The owner
+  `ControlLoop.onSliceTargetPut` turns the same 3 of 5 red and restores to 5/5 green. The owner
   invariant therefore has three enforcement sites (two producers plus the feeder) and each was
   mutated independently, rather than one instance being taken as proof of the set].
 - **Stated plainly, not claimed away: neither write is lost-update-safe, and this fix does not make
@@ -105,7 +105,7 @@ this branch adds +12 lines to `ClusterDeploymentState.java`._
   #698. There is no gating relationship between this change and #924.
 - **`SliceTargetValue.placement` is erased by the SAME two producers — a third instance of this
   bug class, found by re-auditing the construction sites for field *values* rather than field
-  presence. Not fixed, no ticket yet.** Every `sliceTargetValue(...)` factory overload except the
+  presence. Not fixed here; filed as #937.** Every `sliceTargetValue(...)` factory overload except the
   one taking an explicit `placement` hardcodes `DEFAULT_PLACEMENT` (`"CORE_ONLY"`), and both
   `applyScaling` and `targetPreservingOverrides` use overloads that do. A non-default placement is
   operator-settable through the management API (`POST /api/slices/scale`, `ScaleRequest.placement`)
