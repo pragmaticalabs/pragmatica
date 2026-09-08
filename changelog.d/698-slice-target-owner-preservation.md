@@ -26,16 +26,22 @@ this branch adds +12 lines to `ClusterDeploymentState.java`._
   [verified: mutation-probed. `#autoscalerOutput_restoredAfterFailover_keepsSchemaRequiredFalse` goes
   red under BOTH producer-side mutations with "expected: false but was: true" — literally #698's
   symptom reproduced — and green on restore].
-  **Stated precisely, because the tag would otherwise overclaim:** its opposite-polarity twin
-  `#autoscalerOutput_restoredAfterFailover_resolvesSchemaRequiredTrue` did **NOT** redden under any
-  of the three mutations, and is not pinned by them. It cannot: with the owner erased the resolution
-  falls through to the historical default `true`, which is the value that test expects, so it passes
-  *for the wrong reason*. It guards a different failure — an implementation hardcoding `false` — and
-  that is all it is evidence of. The same is true of
-  `#applyScaling_unownedSlice_leavesOwnerAbsent` and
-  `#applyScaling_ownedSlice_carriesOperatorOverridesOntoTheScaledValue`, both green under mutation by
-  design. Of the 5 tests in the class, 2 are pinned by these probes; the other 3 are polarity and
-  companion guards, not owner-erasure detectors.
+  **A decorative test was found and repaired rather than documented.** As first written, the
+  opposite-polarity twin `#autoscalerOutput_restoredAfterFailover_resolvesSchemaRequiredTrue` did
+  **not** redden under any of the three mutations. It could not: with the owner erased the resolution
+  falls through to the historical default `true` — the very value that test expects — so it passed
+  *for the wrong reason* while looking like coverage of the defect it could not see. It now also
+  asserts the restored blueprint's **owner**, which the erased path predicts as `None()` and the
+  correct path as `Some(OWNER)` — mutually exclusive with the default, hence discriminating
+  [verified: adding that assertion moves the measured failure count from 2 of 5 to **3 of 5** under
+  both `applyScaling-owner` and `feeder-owner`; Maven's own total line reads
+  `Tests run: 5, Failures: 3` and the surefire XML testcase count agrees. Unmutated baseline and
+  post-restore run are both 5 tests / 0 failures, so the greens are real runs, not empty selectors].
+  Two tests remain deliberately unpinned by these probes and are labelled as such:
+  `#applyScaling_unownedSlice_leavesOwnerAbsent` (guards against a fabricated owner) and
+  `#applyScaling_ownedSlice_carriesOperatorOverridesOntoTheScaledValue` (guards the override fields).
+  **3 of 5 are owner-erasure detectors; the other 2 are companion guards, and the distinction is
+  recorded in the test file itself so a future reader cannot miscount it.**
 - **Schema-failure reports also under-counted.** `handleSchemaFailed` lists `slicesOwnedBy(owner)`;
   a slice whose owner had been dropped was invisible to it, so an operator was told fewer slices
   were blocked than actually were. No code change was needed for this beyond the producer fix — the

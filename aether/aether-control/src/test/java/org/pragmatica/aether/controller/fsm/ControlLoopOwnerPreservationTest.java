@@ -29,6 +29,7 @@ import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.controller.ScalingConfig;
 import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.controller.ScalingMetric;
+import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentContext;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
@@ -228,9 +229,13 @@ class ControlLoopOwnerPreservationTest {
             kvStore.put(SliceTargetKey.sliceTargetKey(SLICE.base()), autoscalerOutput);
             harness.dispatch(new Activate());
 
-            assertThat(restoredSchemaRequired()).as("#698: a schema_required=false slice must not come back requiring schema"
-                                                    + " after an autoscale event followed by a leader restore")
-                                                .isEqualTo(false);
+            var restored = restoredBlueprint();
+
+            assertThat(restored.owner()).as("#698: the restored blueprint must still name its owning blueprint")
+                                        .isEqualTo(Option.some(OWNER));
+            assertThat(restored.schemaRequired()).as("#698: a schema_required=false slice must not come back requiring schema"
+                                                     + " after an autoscale event followed by a leader restore")
+                                                 .isEqualTo(false);
         }
 
         /// Opposite polarity, same path: proves the restore actually consults the owning blueprint
@@ -246,10 +251,21 @@ class ControlLoopOwnerPreservationTest {
             kvStore.put(SliceTargetKey.sliceTargetKey(SLICE.base()), emittedTarget());
             harness.dispatch(new Activate());
 
-            assertThat(restoredSchemaRequired()).isEqualTo(true);
+            var restored = restoredBlueprint();
+
+            // The owner assertion is what makes this test discriminating, and it must not be removed.
+            // `schemaRequired == true` ALONE cannot detect owner erasure: with the owner dropped the
+            // resolution falls through to the historical unowned default, which is `true` — the same
+            // value this test expects, so it would pass for the wrong reason and look like coverage
+            // of the very defect it cannot see. Asserting the owner makes the erased path predict
+            // None() and the correct path Some(OWNER) — mutually exclusive, hence mutation-sensitive.
+            assertThat(restored.owner()).as("#698: schemaRequired=true is ALSO the erased-owner default —"
+                                            + " only the owner discriminates the two paths")
+                                        .isEqualTo(Option.some(OWNER));
+            assertThat(restored.schemaRequired()).isEqualTo(true);
         }
 
-        private boolean restoredSchemaRequired() {
+        private Blueprint restoredBlueprint() {
             var active = (ClusterDeploymentState.Active) harness.state();
             var scaledArtifact = SLICE.base().withVersion(SLICE.version());
             var blueprint = active.blueprints().get(scaledArtifact);
@@ -257,7 +273,7 @@ class ControlLoopOwnerPreservationTest {
             assertThat(blueprint).as("expected a restored blueprint entry for %s", scaledArtifact)
                                  .isNotNull();
 
-            return blueprint.schemaRequired();
+            return blueprint;
         }
 
         /// Minimal but complete blueprint document — `id`, a non-empty `[[slices]]` and an explicit
