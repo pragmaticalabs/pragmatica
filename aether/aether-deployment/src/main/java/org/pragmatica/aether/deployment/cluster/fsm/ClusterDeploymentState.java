@@ -547,6 +547,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 case COMPLETED -> handleSchemaCompleted(datasource);
                 case FAILED -> handleSchemaFailed(value);
                 case MIGRATING -> log.debug("Schema migration in progress for datasource: {}", datasource);
+                // #964: neither completed nor failed nor pending. Treating it as any of the three would
+                // advance a migration on a status this node cannot read.
+                case UNKNOWN -> log.warn("Schema record for datasource {} carries a status this node cannot decode —"
+                                         + " the writer is running a newer SchemaStatus (#964). No migration action"
+                                         + " is taken.",
+                                         datasource);
             }
         }
 
@@ -2438,6 +2444,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                  ? CommunityState.ACTIVE
                                  : CommunityState.DEGRADED;
                 case DISSOLVING, DISSOLVED -> current;
+                // #964: never promoted to ACTIVE. `CommunityPlacementPlanner` admits placement only for
+                // ACTIVE, so an undecodable community state stays inert rather than becoming eligible.
+                case UNKNOWN -> current;
             };
         }
 

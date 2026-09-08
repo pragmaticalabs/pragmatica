@@ -14,5 +14,10 @@ public enum TaskGroup {
     STRATEGIES,
     DEPLOYMENT,
     STORAGE,
-    STREAMING
+    STREAMING,
+    /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+    /// Resolves to no owner, so forwarding fails closed as NotAssigned.
+    /// Must stay LAST — a new constant appended after it, or inserted before it, is read as UNKNOWN
+    /// by an older node either way.
+    UNKNOWN
 }

@@ -20,6 +20,7 @@ import org.pragmatica.consensus.net.quic.QuicClusterServer.MessageReceiver;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.UnknownTypeTagException;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
@@ -90,6 +91,22 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
             var message = deserializer.decode(bytes);
 
             messageReceiver.onMessage(peerId, message);
+        } catch (UnknownTypeTagException e) {
+            // #964: split out of the generic arm below. Dropping a message whose TYPE this node does
+            // not have is correct — an old node is not expected to handle a new message type — but the
+            // drop used to be indistinguishable from a corrupt frame, logged with a stack trace under
+            // the same sentence, and counted nowhere. An operator saw "failed to deserialize" and had
+            // no way to reach "this cluster is running mixed codec versions". WARN and not ERROR
+            // because during a rolling upgrade this is expected and self-resolving; the counter is
+            // what carries the volume.
+            quicMetrics.onUnknownTypeTagDrop();
+            log.warn("Dropped a message from peer {} on lane {}: wire tag {} names no codec on this node."
+                     + " The peer is running a codec version this node does not have — finish the rolling"
+                     + " upgrade, or check that both nodes ship the same blueprint. Counter:"
+                     + " quic_unknown_type_tag_drops_total.",
+                     peerId,
+                     lane,
+                     e.tag());
         } catch (Exception e) {
             log.error("Failed to deserialize message from peer {} on lane {}", peerId, lane, e);
         }

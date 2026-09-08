@@ -58,7 +58,12 @@ public record SwimMember(NodeId nodeId,
         ALIVE,
         SUSPECT,
         FAULTY,
-        OBSERVED
+        OBSERVED,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+        /// Never ALIVE and never FAULTY: it neither keeps a member in the group nor condemns it.
+        /// Must stay LAST — a new constant appended after it, or inserted before it, is read as UNKNOWN
+        /// by an older node either way.
+        UNKNOWN
     }
 
     /// Factory creating a member with all parameters and explicit labels.

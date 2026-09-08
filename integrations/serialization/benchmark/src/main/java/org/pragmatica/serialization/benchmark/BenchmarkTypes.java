@@ -14,7 +14,9 @@ public sealed interface BenchmarkTypes {
 
     record ComplexRecord(String id, List<SimpleRecord> items, long timestamp) {}
 
-    enum BenchmarkEnum { A, B, C, D, E }
+    // UNKNOWN last, mirroring every framework @Codec enum (#964), so the benchmark measures the
+    // bounds-checked read the generator now emits rather than the unchecked index it replaced.
+    enum BenchmarkEnum { A, B, C, D, E, UNKNOWN }
 
     record MixedRecord(SimpleRecord source, BenchmarkEnum state, int count, String payload) {}
 
@@ -79,7 +81,7 @@ public sealed interface BenchmarkTypes {
     }
 
     private static BenchmarkEnum readBenchmarkEnum(SliceCodec codec, ByteBuf buf) {
-        return BenchmarkEnum.values()[SliceCodec.readCompact(buf)];
+        return SliceCodec.readEnum(buf, BenchmarkEnum.values(), BenchmarkEnum.UNKNOWN);
     }
 
     // --- MixedRecord codec ---

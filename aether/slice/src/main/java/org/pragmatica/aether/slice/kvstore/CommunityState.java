@@ -17,5 +17,10 @@ public enum CommunityState {
     ACTIVE,
     DEGRADED,
     DISSOLVING,
-    DISSOLVED
+    DISSOLVED,
+    /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+    /// Never ACTIVE, so placement is refused and the community cannot be promoted.
+    /// Must stay LAST — a new constant appended after it, or inserted before it, is read as UNKNOWN
+    /// by an older node either way.
+    UNKNOWN
 }

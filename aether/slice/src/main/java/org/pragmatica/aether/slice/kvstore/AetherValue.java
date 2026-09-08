@@ -357,7 +357,12 @@ public sealed interface AetherValue {
     enum DeploymentOutcomeStatus {
         SUCCEEDED,
         FAILED,
-        ROLLED_BACK
+        ROLLED_BACK,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+        /// Never SUCCEEDED; reported as an unreadable outcome rather than a successful one.
+        /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as
+        /// UNKNOWN by an older node either way.
+        UNKNOWN
     }
 
     record SliceNodeValue(SliceState state, Option<String> failureReason, boolean fatal, long transitionedAt) implements AetherValue {
@@ -924,7 +929,12 @@ public sealed interface AetherValue {
     enum ClusterPhase {
         COLD_BOOT,
         NORMAL,
-        RECOVERING
+        RECOVERING,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+        /// Never NORMAL, so the topology action gated on NORMAL stays closed.
+        /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as
+        /// UNKNOWN by an older node either way.
+        UNKNOWN
     }
 
     record ClusterPhaseValue(ClusterPhase phase, long updatedAt) implements AetherValue {
@@ -1182,7 +1192,12 @@ public sealed interface AetherValue {
         PENDING,
         MIGRATING,
         COMPLETED,
-        FAILED
+        FAILED,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+        /// Never re-arms a migration -- an unreadable schema status must not start one.
+        /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as
+        /// UNKNOWN by an older node either way.
+        UNKNOWN
     }
 
     record AbTestValue(String testId,
@@ -1797,7 +1812,12 @@ public sealed interface AetherValue {
     enum SpokesmanStatus {
         ASSIGNED,
         ACTIVE,
-        FAILED
+        FAILED,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+        /// Never ACTIVE, so a spokesman whose status cannot be read is not treated as serving.
+        /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as
+        /// UNKNOWN by an older node either way.
+        UNKNOWN
     }
 
     /// Desired-state community record (worker-membership-spec §2 line 78): the leader-authored

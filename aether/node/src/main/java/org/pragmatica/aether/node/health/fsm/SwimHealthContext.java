@@ -259,6 +259,9 @@ public final class SwimHealthContext {
             case HEALTHY -> HealthHintWire.HEALTHY;
             case SUSPECTED -> HealthHintWire.SUSPECTED;
             case FAULTY -> HealthHintWire.FAULTY;
+            // #964: an unreadable hint stays unreadable on the wire. Re-encoding it as HEALTHY would
+            // let this node launder a value it never understood into a peer's health accounting.
+            case UNKNOWN -> HealthHintWire.UNKNOWN;
         };
     }
 

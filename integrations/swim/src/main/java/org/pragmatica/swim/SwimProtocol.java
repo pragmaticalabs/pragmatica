@@ -575,6 +575,10 @@ public final class SwimProtocol implements SwimMessageHandler {
             // HEALTHY, so the early return above already classifies it UNKNOWN; this arm
             // keeps the switch exhaustive.
             case OBSERVED -> SwimHealth.UNKNOWN;
+            // #964: a member state this node cannot name classifies as UNKNOWN health -- never
+            // HEALTHY (which would keep a member the peer may have condemned) and never FAULTY
+            // (which would condemn one on evidence this node cannot read).
+            case UNKNOWN -> SwimHealth.UNKNOWN;
         };
     }
 
@@ -1770,6 +1774,12 @@ public final class SwimProtocol implements SwimMessageHandler {
             // Drop it rather than treat it as a real membership event.
             case OBSERVED -> LOG.warn("SWIM dropping gossiped OBSERVED update for {} — OBSERVED is a " + "local-only birth state and must never arrive on the wire",
                                       update.nodeId().id());
+            // #964: the peer gossiped a member state this node's MemberState does not have. Admitting
+            // it as any real state would fabricate membership evidence, so the update is dropped -- but
+            // named, because a silent drop here is the defect the sentinel exists to remove.
+            case UNKNOWN -> LOG.warn("SWIM dropping membership update for {} carrying a member state this node "
+                                     + "cannot decode — the peer is running a newer MemberState (#964)",
+                                     update.nodeId().id());
         }
         // Re-broadcast based on the LOCAL stored state, NOT the raw wire update (#336/#241 wire-leak,
         // Finding B): a gossiped SUSPECT-of-unknown is birthed OBSERVED ([#applyNewSuspectMember]) and
@@ -1906,6 +1916,10 @@ public final class SwimProtocol implements SwimMessageHandler {
             case SUSPECT -> 1;
             case FAULTY -> 2;
             case OBSERVED -> - 1;
+            // #964: WEAKER than OBSERVED, so an undecodable gossiped state is rejected against every
+            // resident state including the local birth state, and can never overwrite one this node
+            // does understand.
+            case UNKNOWN -> - 2;
         };
     }
 
@@ -1921,6 +1935,9 @@ public final class SwimProtocol implements SwimMessageHandler {
             // Defensive: OBSERVED never arrives on the wire, so a gossip-driven state change
             // INTO OBSERVED is impossible; no listener/observation fires for it.
             case OBSERVED -> { /* no-op: OBSERVED is a local-only birth state, never gossiped */ }
+            // #964: no listener fires for a state this node cannot name. notifyFaulty is a
+            // condemnation, and it must never be reached by a value that only failed to decode.
+            case UNKNOWN -> { /* no-op: undecodable state carries no membership evidence */ }
         }
     }
 

@@ -35,7 +35,17 @@ public enum SliceState {
     DEACTIVATING(timeSpan(30).seconds()),
     FAILED,
     UNLOAD,
-    UNLOADING(timeSpan(2).minutes());
+    UNLOADING(timeSpan(2).minutes()),
+    /// Wire sentinel (#964): a state ordinal this node cannot name decodes here instead of throwing.
+    /// It is INERT by construction -- no timeout, so it is not transitional and the stuck-transitional
+    /// remediator will not force-unload a slice whose state was authored by a newer node; no valid
+    /// transitions, so nothing can be driven out of it; and it loses every merge in
+    /// `DeploymentMap.higherState`, which special-cases it rather than trusting ordinal order.
+    /// Deliberately absent from `STRING_TO_STATE`, so `sliceState("UNKNOWN")` fails: this is a decode
+    /// artifact, not a state an operator or a config file may ask for.
+    /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as UNKNOWN
+    /// by an older node either way.
+    UNKNOWN;
     private final Option<TimeSpan> timeout;
     SliceState() {
         this(Option.none());
@@ -58,7 +68,7 @@ public enum SliceState {
     public boolean isInProgress() {
         return switch (this) {
             case LOAD, LOADING, ACTIVATE, ACTIVATING, ROUTING, DEACTIVATE, DEACTIVATING, UNLOAD, UNLOADING -> true;
-            case LOADED, ACTIVE, FAILED -> false;
+            case LOADED, ACTIVE, FAILED, UNKNOWN -> false;
         };
     }
     public Set<SliceState> validTransitions() {
@@ -74,6 +84,8 @@ public enum SliceState {
             case FAILED -> Set.of(UNLOAD);
             case UNLOAD -> Set.of(UNLOADING);
             case UNLOADING -> Set.of();
+            // No transition out of an unreadable state: this node cannot know what the peer meant.
+            case UNKNOWN -> Set.of();
         };
     }
     public boolean canTransitionTo(SliceState target) {
@@ -92,6 +104,7 @@ public enum SliceState {
             case FAILED -> success(UNLOAD);
             case UNLOAD -> success(UNLOADING);
             case UNLOADING -> TERMINAL_STATE_ERROR.result();
+            case UNKNOWN -> UNREADABLE_STATE_ERROR.result();
         };
     }
     private static final Map<String, SliceState> STRING_TO_STATE;
@@ -117,4 +130,5 @@ public enum SliceState {
     }
     private static final Fn1<Cause, String> UNKNOWN_STATE = Causes.forOneValue("Unknown slice state [%s]");
     private static final Cause TERMINAL_STATE_ERROR = Causes.cause("Cannot transition from UNLOADING terminal state");
+    private static final Cause UNREADABLE_STATE_ERROR = Causes.cause("Cannot advance from UNKNOWN: the state was written by a node running a newer SliceState (#964)");
 }

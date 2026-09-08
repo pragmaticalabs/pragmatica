@@ -70,6 +70,11 @@ public record DeferredSliceCodec(String label, AtomicReference<Option<SliceCodec
     }
 
     @Override
+    public java.util.Map<Class<?>, TypeCodec<?>> registeredTypes() {
+        return resolve("an enumeration of registered types").registeredTypes();
+    }
+
+    @Override
     public <T> void write(ByteBuf byteBuf, T object) {
         resolve(subjectOf(object)).write(byteBuf, object);
     }

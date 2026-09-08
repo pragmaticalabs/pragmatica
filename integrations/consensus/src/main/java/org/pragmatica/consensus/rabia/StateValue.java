@@ -26,5 +26,10 @@ public enum StateValue {
     /// Positive vote (agreement).
     V1,
     /// Uncertain/question (needs coin flip).
-    VQUESTION
+    VQUESTION,
+    /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+    /// Counted as neither V0 nor V1, so it can never contribute to a quorum it was not part of.
+    /// Must stay LAST — a new constant appended after it, or inserted before it, is read as UNKNOWN
+    /// by an older node either way.
+    UNKNOWN
 }

@@ -206,6 +206,10 @@ public class CodecProcessor extends AbstractProcessor {
     }
 
     private void processEnum(TypeElement element, Map<String, List<String>> packageToCodecNames) {
+        if (!validateEnumSentinel(element)) {
+            return;
+        }
+
         var tag = extractTag(element);
         var result = generator.generateEnumCodec(element, tag);
 
@@ -245,7 +249,7 @@ public class CodecProcessor extends AbstractProcessor {
 
                 processNestedHelperTypes(subtypeElement, packageToCodecNames);
             } else if (subtypeKind == ElementKind.ENUM) {
-                if (generator.generateEnumCodec(subtypeElement, tag)) {
+                if (validateEnumSentinel(subtypeElement) && generator.generateEnumCodec(subtypeElement, tag)) {
                     registerCodec(subtypeElement, packageToCodecNames);
                     note(subtypeElement, "Generated codec: " + subtypeElement.getSimpleName() + "Codec");
                 }
@@ -293,12 +297,59 @@ public class CodecProcessor extends AbstractProcessor {
 
                 processNestedHelperTypes(nested, packageToCodecNames);
             } else if (nestedKind == ElementKind.ENUM) {
-                if (generator.generateEnumCodec(nested, tag)) {
+                if (validateEnumSentinel(nested) && generator.generateEnumCodec(nested, tag)) {
                     registerCodec(nested, packageToCodecNames);
                     note(nested, "Generated codec for nested type: " + nested.getSimpleName() + "Codec");
                 }
             }
         }
+    }
+
+    /// The name of the mandatory unknown-value sentinel. Flipping the wire contract to any other
+    /// spelling is a one-constant edit here plus the matching reference in
+    /// `CodecClassGenerator.writeEnumReadBody`.
+    static final String SENTINEL = "UNKNOWN";
+
+    /// Refuses to generate a codec for an enum that cannot represent a value it does not know (#964).
+    ///
+    /// Every framework `@Codec` enum crosses the cluster wire as its `ordinal()`. A node receiving an
+    /// ordinal past its own `values()` array has nowhere to put it unless the enum HAS a constant for
+    /// it — the failure this rule exists to make impossible was that the decode threw, both boundaries
+    /// caught the throw, and every message carrying the constant was dropped silently and forever.
+    ///
+    /// The sentinel must be LAST, and that is the load-bearing half of the rule rather than a style
+    /// preference. Last keeps BOTH natural edits safe: a constant appended after `UNKNOWN` takes an
+    /// ordinal an old node reads as out-of-range, and a constant inserted before `UNKNOWN` takes the
+    /// ordinal `UNKNOWN` itself used to hold — so an old node decodes it as its own `UNKNOWN` either
+    /// way. A sentinel in the MIDDLE has neither property: constants after it are silently remapped
+    /// onto other legitimate values, which is corruption rather than a clean unknown.
+    ///
+    /// Errors rather than warns because a warning here buys nothing — the generated code would not
+    /// compile without the constant, and the author would get a reference-to-missing-symbol error
+    /// inside generated source instead of this sentence.
+    private boolean validateEnumSentinel(TypeElement element) {
+        var constants = element.getEnclosedElements()
+                               .stream()
+                               .filter(enclosed -> enclosed.getKind() == ElementKind.ENUM_CONSTANT)
+                               .map(enclosed -> enclosed.getSimpleName().toString())
+                               .toList();
+
+        if (!constants.isEmpty() && SENTINEL.equals(constants.getLast())) {
+            return true;
+        }
+
+        error(element,
+              "@Codec enum '" + element.getQualifiedName()
+              + "' must declare " + SENTINEL + " as its LAST constant. Enums cross the wire as ordinals,"
+              + " so a node receiving an ordinal it does not have needs a constant to decode it to;"
+              + " without one the message is dropped silently and permanently (#964)."
+              + " Current constants: " + (constants.isEmpty()
+                                          ? "(none)"
+                                          : String.join(", ", constants))
+              + ". Append " + SENTINEL + " at the end and handle it wherever the enum is consumed —"
+              + " on an authorization or condemnation path it must refuse, never fall through.");
+
+        return false;
     }
 
     private void registerCodec(TypeElement element, Map<String, List<String>> packageToCodecNames) {

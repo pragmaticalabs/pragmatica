@@ -387,6 +387,13 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 case FAILED -> handleFailed(sliceKey);
                 case UNLOAD -> handleUnloading(sliceKey);
                 case UNLOADING -> {}
+                // #964: a slice state written by a node running a newer SliceState. Driving the local
+                // FSM on a state this node cannot name would act on evidence it does not have, so
+                // nothing is driven -- but it is said out loud, because an empty arm here is exactly
+                // the silence this ticket exists to remove.
+                case UNKNOWN -> log.warn("Slice {} carries a state this node cannot decode — the writer is running a"
+                                         + " newer SliceState (#964). No transition is driven for it.",
+                                         sliceKey);
             }
         }
 

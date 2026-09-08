@@ -2233,17 +2233,18 @@ public class FactoryClassGenerator {
     private record CodecTypeEntry(String qualifiedName,
                                   String simpleName,
                                   CodecTypeKind kind,
-                                  List<ComponentInfo> components) {
+                                  List<ComponentInfo> components,
+                                  boolean hasUnknownSentinel) {
         static CodecTypeEntry record(String qualifiedName, String simpleName, List<ComponentInfo> components) {
-            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.RECORD, components);
+            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.RECORD, components, false);
         }
 
-        static CodecTypeEntry enumType(String qualifiedName, String simpleName) {
-            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.ENUM, List.of());
+        static CodecTypeEntry enumType(String qualifiedName, String simpleName, boolean hasUnknownSentinel) {
+            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.ENUM, List.of(), hasUnknownSentinel);
         }
 
         static CodecTypeEntry opaque(String qualifiedName, String simpleName) {
-            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.OPAQUE, List.of());
+            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.OPAQUE, List.of(), false);
         }
     }
 
@@ -2350,10 +2351,18 @@ public class FactoryClassGenerator {
         switch (entry.kind()) {
             case RECORD -> generateRecordTypeCodec(out, entry, comma);
             case ENUM -> {
+                // #964: never the raw values()[readCompact(buf)] index. An ordinal past this node's
+                // values() array threw AIOOBE, both transport boundaries caught it, and the message was
+                // dropped silently and permanently. Which form is emitted depends on whether the
+                // application enum can represent a value it does not know — see declaresUnknownSentinel.
+                var reader = entry.hasUnknownSentinel()
+                             ? "(codec, buf) -> SliceCodec.readEnum(buf, " + name + ".values(), " + name + ".UNKNOWN)"
+                             : "(codec, buf) -> SliceCodec.readEnumOrFail(buf, " + name + ".values(), " + name + ".class)";
+
                 out.println("                    new SliceCodec.TypeCodec<" + name + ">(" + name + ".class,");
                 out.println("                        SliceCodec.deterministicTag(\"" + escapeJavaString(fqn) + "\"),");
                 out.println("                        (codec, buf, val) -> SliceCodec.writeCompact(buf, val.ordinal()),");
-                out.println("                        (codec, buf) -> " + name + ".values()[SliceCodec.readCompact(buf)])" + comma);
+                out.println("                        " + reader + ")" + comma);
             }
             case OPAQUE -> {
                 out.println("                    new SliceCodec.TypeCodec<" + name + ">(" + name + ".class,");
@@ -2642,12 +2651,48 @@ public class FactoryClassGenerator {
         }
     }
 
+    /// Whether an application enum can represent a value this node does not know (#964).
+    ///
+    /// Framework `@Codec` enums are REQUIRED to declare a last `UNKNOWN` by `CodecProcessor`, because
+    /// they are the cluster's own protocol: a node has to keep parsing a consensus or membership
+    /// message whose enum field it cannot read. Slice enums are APPLICATION types, so the same rule
+    /// would be an API tax on every enum an author ever puts in a durable entity. Here it is opt-in:
+    /// declare `UNKNOWN` last and an unrecognised ordinal decodes to it with the rest of the message
+    /// intact; leave it off and the decode fails with a typed exception naming the enum and the
+    /// ordinal, which drops the message exactly as before but ATTRIBUTABLY.
+    ///
+    /// To make it mandatory for slice enums too, turn the warning below into a
+    /// `Diagnostic.Kind.ERROR` — the generator already emits the correct call for both shapes.
+    private boolean declaresUnknownSentinel(TypeElement te) {
+        var constants = te.getEnclosedElements()
+                          .stream()
+                          .filter(enclosed -> enclosed.getKind() == ElementKind.ENUM_CONSTANT)
+                          .map(enclosed -> enclosed.getSimpleName().toString())
+                          .toList();
+
+        if (!constants.isEmpty() && "UNKNOWN".equals(constants.getLast())) {
+            return true;
+        }
+
+        processingEnv.getMessager()
+                     .printMessage(Diagnostic.Kind.WARNING,
+                                   "Enum " + te.getQualifiedName()
+                                   + " crosses the wire as an ordinal but declares no UNKNOWN sentinel,"
+                                   + " so a node running an older copy of it cannot decode a constant added"
+                                   + " later — the whole message is dropped, with a named error rather than"
+                                   + " silently (#964). Append UNKNOWN as the LAST constant to have"
+                                   + " unrecognised values decode to it and keep the rest of the message.",
+                                   te);
+
+        return false;
+    }
+
     private CodecTypeEntry buildCodecEntryFromElement(TypeElement te,
                                                       String qualifiedName,
                                                       String simpleName,
                                                       ImportTracker importTracker) {
         if (te.getKind() == ElementKind.ENUM) {
-            return CodecTypeEntry.enumType(qualifiedName, simpleName);
+            return CodecTypeEntry.enumType(qualifiedName, simpleName, declaresUnknownSentinel(te));
         }
 
         if (te.getKind() == ElementKind.RECORD) {
