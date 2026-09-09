@@ -225,7 +225,7 @@ class BlueprintPublishOwnershipTest {
         }
 
         @Test
-        void publishFromArtifact_leavesNoOutcome_whenIdNeverHadOne() {
+        void publishFromArtifact_marksTheAttemptInProgress_whenIdNeverHadOne() {
             publish(OWNER_COORDS, withoutMigrations(OWNER_COORDS)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
 
             assertThat(recordedOutcomeStatus())

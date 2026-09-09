@@ -1835,27 +1835,41 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         /// Whether a blueprint APPLY is still outstanding for the blueprint declaring `artifact`.
         ///
-        /// The whole #922 verdict rests on this predicate, so the guarantee it depends on is named
-        /// rather than assumed. `BlueprintService` writes `Put(AppBlueprintKey(id))` and
-        /// `Remove(DeploymentOutcomeKey(id))` into ONE `ClusterNode.apply` batch at all three of its
-        /// write paths (`buildAllCommands`, `storeBlueprintWithKey`, `removeFromStore`), and one
-        /// `apply` call becomes exactly one `Batch` (`RabiaEngine.prepareBatch`) decided once by
-        /// consensus and handed to `KVStore.process` as a unit. So no replica applies one without
-        /// the other, and no crash can leave them split — the pairing is what #759 bought.
+        /// The whole #922/#963 verdict rests on this predicate, so the guarantee it depends on is
+        /// named rather than assumed. `BlueprintService` pairs its `Put(AppBlueprintKey(id))` with a
+        /// write to `DeploymentOutcomeKey(id)` in ONE `ClusterNode.apply` batch on all three of its
+        /// write paths — a `Put` of IN_PROGRESS at the two publish paths (`buildAllCommands`,
+        /// `storeBlueprintWithKey`) and a `Remove` at `removeFromStore` — and one `apply` call
+        /// becomes exactly one `Batch` (`RabiaEngine.prepareBatch`) decided once by consensus and
+        /// handed to `KVStore.process` as a unit. So no replica applies one without the other, and
+        /// no crash can leave them split — the pairing is what #759 bought.
+        ///
+        /// **What answers TRUE, stated the right way round.** Outstanding requires the outcome record
+        /// to be PRESENT and IN_PROGRESS. An ABSENT record answers FALSE — that inversion is #963
+        /// itself, and the sentence that stood here before said the opposite. Absence is
+        /// indistinguishable from a write that never happened
+        /// ([AetherValue.DeploymentOutcomeStatus] says so in its own javadoc), and five rounds of
+        /// #924 each condemned a deployment on it.
         ///
         /// **The bound stated honestly.** `KVStore.process` applies a batch's commands one at a time
         /// into a `ConcurrentHashMap` under no cross-command lock, so a reader on another thread CAN
         /// observe the map between the two writes. The pairing is atomic per consensus DECISION, not
-        /// per instant, and #759's "at any instant" is stronger than the mechanism earns. It does not
-        /// matter here, and that is a property of this predicate rather than luck: both torn states
-        /// answer FALSE — `AppBlueprintKey` present with the previous attempt's outcome still there,
-        /// and `AppBlueprintKey` not yet visible — so a torn read declines to settle and the
-        /// exhaustion re-drives. Only the fully-applied state, blueprint present AND outcome absent,
-        /// answers TRUE. Every failure mode of this predicate is on the reversible side of the
-        /// one-way door, which is the property the three previous discriminators lacked.
+        /// per instant, and #759's "at any instant" is stronger than the mechanism earns. It still
+        /// does not matter here, and that is a property of this predicate rather than luck — both
+        /// torn states decline:
         ///
-        /// A `registerOnly` blueprint is stored but never deployed, so it is never outstanding —
-        /// otherwise it would look permanently mid-apply and condemn any slice that exhausted.
+        ///   - blueprint visible, outcome still the previous terminal or absent →
+        ///     [#applyNotYetTerminal] false → declines;
+        ///   - outcome IN_PROGRESS visible, blueprint not yet visible → [#declaringBlueprints] empty
+        ///     → declines.
+        ///
+        /// Every failure mode is on the reversible side of the one-way door, which is the property
+        /// the four previous discriminators lacked.
+        ///
+        /// A `registerOnly` blueprint is stored but deliberately never deployed, so it is never
+        /// outstanding. Note it DOES carry an IN_PROGRESS record — `buildAllCommands` writes that
+        /// Put unconditionally — so the exclusion is enforced solely by
+        /// [#collectIfDeclaringSlice]'s early return, not by the record's absence.
         private boolean deploymentApplyOutstanding(Artifact artifact) {
             var declaring = declaringBlueprints(artifact);
 

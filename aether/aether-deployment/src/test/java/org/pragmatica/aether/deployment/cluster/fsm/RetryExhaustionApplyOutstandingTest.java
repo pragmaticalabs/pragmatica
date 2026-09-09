@@ -298,9 +298,20 @@ class RetryExhaustionApplyOutstandingTest {
                 .contains(SLICE);
     }
 
-    /// A `registerOnly` blueprint is stored but deliberately never deployed, so it has no outcome
-    /// record and never will. Read without the `registerOnly` check it looks permanently mid-apply,
-    /// which would condemn any slice it declares on the first exhaustion.
+    /// A `registerOnly` blueprint is stored but deliberately never deployed.
+    ///
+    /// #963 UPDATE — this docstring used to say it "has no outcome record and never will". That is
+    /// now FALSE: `buildAllCommands` writes the IN_PROGRESS Put UNCONDITIONALLY, so a register-only
+    /// blueprint carries a **permanent** IN_PROGRESS record, and the repair cannot clear it because
+    /// [Active#collectIfDeclaringSlice] returns early on `registerOnly` before ever seeing it. The
+    /// seed below is that real state, not the weaker one this test used to model.
+    ///
+    /// That early return is now the SOLE thing standing between a register-only blueprint and
+    /// permanent condemnability — before #963 the safety was double-guarded, by no record existing
+    /// AND by the attribution filter. This test is what goes red if anyone weakens it.
+    ///
+    /// The permanent IN_PROGRESS itself is adjacent to #970 (an apply that never resolves leaves a
+    /// record with no terminal); it is disclosed there rather than fixed here.
     @Test
     void registerOnlyBlueprint_isNeverOutstanding() {
         var expanded = blueprint();
@@ -311,7 +322,9 @@ class RetryExhaustionApplyOutstandingTest {
 
         seed(newLeaderStore,
              new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
-                                 AppBlueprintValue.appBlueprintValue(expanded, true)));
+                                 AppBlueprintValue.appBlueprintValue(expanded, true)),
+             new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                 DeploymentOutcomeValue.inProgress(1L)));
 
         exhaustRetryBudgetOn(newLeaderHarness, SELF, SLICE);
 
@@ -470,10 +483,10 @@ class RetryExhaustionApplyOutstandingTest {
                 .doesNotContain(SLICE);
     }
 
-    /// #963 (#924 round-5 BLOCKING), variant A — the acceptance test, now GREEN. Documents the open defect; it is not a
-    /// passing pin and must not be read as one.
+    /// #963 (#924 round-5 BLOCKING), variant A — the acceptance test, now GREEN.
     ///
-    /// **The apply genuinely COMPLETES and no record is ever written.** Nothing is seeded: the
+    /// **The apply genuinely COMPLETES, and before #963 no record was ever written.** Nothing is
+    /// seeded: the
     /// blueprint is applied under one leader, the leader changes, and the slices reach ACTIVE under
     /// the new one. [ClusterDeploymentContext#newActive] builds `inFlightBlueprints` EMPTY and only
     /// the live `handleAppBlueprintChange` path ever populates it, so `trackBlueprintSliceActive`
@@ -487,7 +500,7 @@ class RetryExhaustionApplyOutstandingTest {
     /// not), so a present-tense health veto would rescue it. Variant B is the same defect where such
     /// a veto cannot vote.
     @Test
-    void anApplyCompletedUnderANewLeader_writesNoRecord_andMustNotCondemnAHealthyWorkload() {
+    void anApplyCompletedUnderANewLeader_isRecordedByTheRepair_andNotCondemned() {
         var expanded = blueprint();
 
         applyBlueprint(leaderHarness, leaderStore, expanded);
