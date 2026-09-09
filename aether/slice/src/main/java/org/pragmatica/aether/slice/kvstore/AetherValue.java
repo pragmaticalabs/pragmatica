@@ -389,13 +389,19 @@ public sealed interface AetherValue {
         ///
         /// Position, corrected at the #963/#964 merge: this constant is inserted BEFORE `UNKNOWN`,
         /// not appended at the end. #963 authored it as an append, which was the only safe position
-        /// while the enum ended at `ROLLED_BACK`; #964 then added a trailing sentinel that must stay
-        /// last. Inserting here is now the safe position AND a strictly better one: a node that
-        /// predates this constant reads ordinal 3 as its own `UNKNOWN` — an unreadable-but-named
-        /// value it can carry — instead of dropping the message. The reasoning #963 recorded is
-        /// unchanged; only the claim about where the constant sits needed correcting, because a
-        /// comment that says "appended" about a constant that is not last is exactly the kind of
-        /// false-but-authoritative note this pair of tickets exists to remove.
+        /// while the enum ended at `ROLLED_BACK`; #964 then added a trailing sentinel.
+        ///
+        /// The reason it must go here is MECHANICAL, not a wire-safety argument:
+        /// `CodecProcessor.validateEnumSentinel` refuses to generate a codec for a `@Codec` enum whose
+        /// last constant is not `UNKNOWN`, so appending past the sentinel is a BUILD ERROR (pinned by
+        /// `enumCodec_failsCompilation_whenSentinelIsNotLast`). At DECODE both orderings are equally
+        /// safe at one-version skew — inserted-before lands on the old sentinel's ordinal and reads as
+        /// `UNKNOWN` in range; appended-after lands past `values().length` and reads as `UNKNOWN` out
+        /// of range. Stated this way because two earlier drafts of this note argued from a node state
+        /// instead, and both were false: the only build that reads ordinal 3 as `UNKNOWN` is #964
+        /// WITHOUT #963, and #963 merged first, so that node never exists.
+        ///
+        /// Only this position claim changed. #963's analysis below is theirs, unaltered.
         ///
         /// This is the record that makes deployment permanence gate on PRESENCE rather than absence.
         /// The paragraph above on this class already warned that an absent key "means 'no attempt
