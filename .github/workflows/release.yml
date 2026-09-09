@@ -31,7 +31,19 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          # A `-candidate` tag marks the artifact UNDER TEST. Neither the `latest` image tag nor
+          # the GitHub "Latest release" pointer may follow it: doing so aims every un-pinned
+          # `docker pull` and every install script at a build that has not been smoke-tested.
+          # Measured 2026-09-09: pushing v1.0.0-rc4-candidate made an 11-of-23-asset release the
+          # answer to /releases/latest, and would have moved the `latest` image tag with it.
+          if [[ "$VERSION" == *-candidate ]]; then
+            echo "IS_CANDIDATE=true"  >> $GITHUB_OUTPUT
+          else
+            echo "IS_CANDIDATE=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Build distribution archives (linux-amd64)
         run: |
@@ -53,7 +65,7 @@ jobs:
         with:
           name: Pragmatica ${{ steps.version.outputs.VERSION }}
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.version.outputs.IS_CANDIDATE }}
           generate_release_notes: true
           files: |
             jbct/jbct-cli/target/jbct.jar
@@ -90,7 +102,19 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          # A `-candidate` tag marks the artifact UNDER TEST. Neither the `latest` image tag nor
+          # the GitHub "Latest release" pointer may follow it: doing so aims every un-pinned
+          # `docker pull` and every install script at a build that has not been smoke-tested.
+          # Measured 2026-09-09: pushing v1.0.0-rc4-candidate made an 11-of-23-asset release the
+          # answer to /releases/latest, and would have moved the `latest` image tag with it.
+          if [[ "$VERSION" == *-candidate ]]; then
+            echo "IS_CANDIDATE=true"  >> $GITHUB_OUTPUT
+          else
+            echo "IS_CANDIDATE=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Build distribution archives (macOS)
         run: |
@@ -124,7 +148,19 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          # A `-candidate` tag marks the artifact UNDER TEST. Neither the `latest` image tag nor
+          # the GitHub "Latest release" pointer may follow it: doing so aims every un-pinned
+          # `docker pull` and every install script at a build that has not been smoke-tested.
+          # Measured 2026-09-09: pushing v1.0.0-rc4-candidate made an 11-of-23-asset release the
+          # answer to /releases/latest, and would have moved the `latest` image tag with it.
+          if [[ "$VERSION" == *-candidate ]]; then
+            echo "IS_CANDIDATE=true"  >> $GITHUB_OUTPUT
+          else
+            echo "IS_CANDIDATE=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Bootstrap jbct-maven-plugin and slice-processor
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor -am
@@ -165,7 +201,19 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          # A `-candidate` tag marks the artifact UNDER TEST. Neither the `latest` image tag nor
+          # the GitHub "Latest release" pointer may follow it: doing so aims every un-pinned
+          # `docker pull` and every install script at a build that has not been smoke-tested.
+          # Measured 2026-09-09: pushing v1.0.0-rc4-candidate made an 11-of-23-asset release the
+          # answer to /releases/latest, and would have moved the `latest` image tag with it.
+          if [[ "$VERSION" == *-candidate ]]; then
+            echo "IS_CANDIDATE=true"  >> $GITHUB_OUTPUT
+          else
+            echo "IS_CANDIDATE=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -196,7 +244,7 @@ jobs:
           build-args: VERSION=${{ steps.version.outputs.VERSION }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/aether-node:${{ steps.version.outputs.VERSION }}
-            ghcr.io/${{ github.repository_owner }}/aether-node:latest
+            ${{ steps.version.outputs.IS_CANDIDATE == 'false' && format('ghcr.io/{0}/aether-node:latest', github.repository_owner) || '' }}
 
       - name: Build and push aether-forge
         uses: docker/build-push-action@v6
@@ -208,7 +256,7 @@ jobs:
           build-args: VERSION=${{ steps.version.outputs.VERSION }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/aether-forge:${{ steps.version.outputs.VERSION }}
-            ghcr.io/${{ github.repository_owner }}/aether-forge:latest
+            ${{ steps.version.outputs.IS_CANDIDATE == 'false' && format('ghcr.io/{0}/aether-forge:latest', github.repository_owner) || '' }}
 
   e2e-tests:
     runs-on: ubuntu-latest
