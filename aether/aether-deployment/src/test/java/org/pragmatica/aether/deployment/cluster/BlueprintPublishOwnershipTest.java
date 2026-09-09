@@ -41,6 +41,7 @@ import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.VersionFenced;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.source.MapConfigSource;
@@ -278,6 +279,40 @@ class BlueprintPublishOwnershipTest {
             assertThat(recordedOutcome().map(value -> ((AetherValue.DeploymentOutcomeValue) value).cause()))
                     .as("and carries no accumulated cause text, for the same reason")
                     .isEqualTo(Option.some(""));
+        }
+
+        /// #963 F1 — pins `BlueprintService.confirmOutcomeStart` ITSELF: the retry, not the fence.
+        ///
+        /// The earlier race test hand-seeded the successor version the retry was supposed to derive,
+        /// so it pinned the applier's fence and left the retry untested — deleting
+        /// `confirmOutcomeStart` outright was **0 red across the whole suite**. That is the
+        /// fixture-supplies-the-thing failure, in the test written to close a race, in a ticket whose
+        /// subject is an unpinned mechanism nobody could see was gone.
+        ///
+        /// Here nothing is seeded. A terminal for the PREVIOUS apply is injected by the cluster node
+        /// at the moment the publish's first outcome Put is in flight, so that Put is genuinely
+        /// fenced out. The publish must then notice — via a re-read, not a seeded value — re-derive
+        /// against the moved committed version, and win.
+        ///
+        /// Without the retry the record keeps the injected SUCCEEDED and the new apply is
+        /// permanently uncondemnable, which is #963's own defect returning by a different route.
+        @Test
+        void publish_whoseApplyStartLosesToATerminal_retriesUntilItLands() {
+            store.processCommand(new KVCommand.Put<>(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(OWNER),
+                                                     AetherValue.DeploymentOutcomeValue.inProgress(1L, 1L)));
+            cluster.injectTerminalBeforeNextOutcomeWrite(OWNER);
+
+            publish(OWNER_COORDS, withoutMigrations(OWNER_COORDS)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(cluster.terminalInjections())
+                    .as("instrument check: the injected terminal must actually have fired, or this test "
+                        + "never created the race it claims to pin")
+                    .isEqualTo(1);
+            assertThat(recordedOutcomeStatus())
+                    .as("the publish's apply-start lost the first round to a terminal for the previous "
+                        + "apply; confirmOutcomeStart must re-read, re-derive and win, or the new apply "
+                        + "is left uncondemnable behind a stale terminal")
+                    .isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
         }
 
         /// #759 review round 2, BLOCKING 1: `publish(String dsl)` — the live path behind
@@ -593,14 +628,49 @@ class BlueprintPublishOwnershipTest {
             return Promise.unitPromise();
         }
 
+        /// One-shot: the next batch carrying a `DeploymentOutcomeKey` Put has a terminal for the
+        /// PREVIOUS apply landed immediately ahead of it, so that batch's outcome write is fenced
+        /// out. Models a completion writer winning the race a publish cannot see coming.
+        private Option<BlueprintId> pendingTerminalFor = Option.none();
+        private int terminalInjections = 0;
+
+        void injectTerminalBeforeNextOutcomeWrite(BlueprintId id) {
+            pendingTerminalFor = Option.some(id);
+        }
+
+        int terminalInjections() {
+            return terminalInjections;
+        }
+
         @Override
         @SuppressWarnings("unchecked")
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             batches.add(List.copyOf(commands));
+            injectTerminalIfArmed(commands);
 
             return Promise.success(commands.stream()
                                            .map(command -> (R) store.processCommand(command))
                                            .toList());
+        }
+
+        private void injectTerminalIfArmed(List<KVCommand<AetherKey>> commands) {
+            var touchesOutcome = commands.stream()
+                                         .anyMatch(command -> command.key() instanceof AetherKey.DeploymentOutcomeKey);
+
+            pendingTerminalFor.filter(_ -> touchesOutcome)
+                              .onPresent(id -> {
+                                  var key = AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(id);
+                                  var committed = store.get(key)
+                                                       .filter(value -> value instanceof AetherValue.DeploymentOutcomeValue)
+                                                       .map(value -> ((AetherValue.DeploymentOutcomeValue) value).outcomeVersion())
+                                                       .or(0L);
+
+                                  store.processCommand(new KVCommand.Put<>(key,
+                                                                           AetherValue.DeploymentOutcomeValue.succeeded(9L,
+                                                                                                                        committed + 1)));
+                                  pendingTerminalFor = Option.none();
+                                  terminalInjections++;
+                              });
         }
     }
 
@@ -647,10 +717,27 @@ class BlueprintPublishOwnershipTest {
                         .toList();
         }
 
+        /// #963 F1 — this double now enforces the applier's successor fence for [VersionFenced]
+        /// values, mirroring `KVStore.staleSuccessorWrite`.
+        ///
+        /// It previously accepted every Put unconditionally, and that omission was load-bearing in
+        /// the worst way: it is the exact mechanism `DeploymentOutcomeValue` is fenced by, so every
+        /// test in this suite ran against a store that could not reproduce the failure the fence
+        /// exists to prevent. Two mutations were invisible because of it — reverting the successor
+        /// derivation, and deleting `BlueprintService.confirmOutcomeStart` entirely — each leaving
+        /// the whole suite green while breaking the guarantee it is here to pin.
+        ///
+        /// A rejected write mutates nothing and does NOT fail the batch it rode in, exactly as the
+        /// real applier behaves, so a fenced-out outcome Put still lets its sibling blueprint Put
+        /// land — which is the state `confirmOutcomeStart` has to detect.
         @SuppressWarnings({"unchecked", "rawtypes"})
         Option<AetherValue> processCommand(KVCommand command) {
             return switch (command) {
                 case KVCommand.Put<?, ?> put -> {
+                    if (fencedOut((AetherKey) put.key(), put.value())) {
+                        yield Option.option(storage.get((AetherKey) put.key()));
+                    }
+
                     storage.put((AetherKey) put.key(), (AetherValue) put.value());
                     yield Option.none();
                 }
@@ -661,6 +748,16 @@ class BlueprintPublishOwnershipTest {
                 case KVCommand.Get<?> get -> Option.option(storage.get((AetherKey) get.key()));
                 default -> Option.none();
             };
+        }
+
+        /// Mirrors `KVStore.staleSuccessorWrite`: a write is rejected when both the incoming and the
+        /// committed value are [VersionFenced] and the incoming version is not the immediate
+        /// successor. A first write against an absent or non-fenced value passes — there is no chain
+        /// to fence yet.
+        private boolean fencedOut(AetherKey key, Object incoming) {
+            return incoming instanceof VersionFenced in
+                   && storage.get(key) instanceof VersionFenced stored
+                   && in.fenceVersion() != stored.fenceVersion() + 1;
         }
     }
 
