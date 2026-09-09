@@ -370,16 +370,18 @@ the rows disagree.
 
 **These counts are claimed, not verified.** Each one counts what a row in this catalog
 *claims* about itself. Nothing here has been checked against the code, and the catalog is
-known to overclaim at row level -- row 39 reads `Alert management | Complete` while `AlertForwarder` is
-never constructed in production (#926). Read the total as "227 rows asserting a
-capability", not as 227 working capabilities.
+known to have overclaimed at row level: row 39 (`Alert management`) read `Complete` while `AlertForwarder`
+was never constructed in production (#926). It now reads `Partial`, and the wiring was fixed
+in #957 -- which is what correcting ONE row looks like, not evidence that the rest have
+been checked. Read the total as "227 rows asserting a capability", not as 227 working
+capabilities.
 
 | Status | Count |
 |--------|-------|
-| Complete | 171 |
+| Complete | 170 |
 | Cluster-tested | 0 |
 | Battle-tested | 23 |
-| Partial | 24 |
+| Partial | 25 |
 | Planned | 9 |
 | Total | 227 |
 <!-- END GENERATED STATISTICS -->
