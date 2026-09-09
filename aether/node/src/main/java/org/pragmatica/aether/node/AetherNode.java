@@ -31,7 +31,6 @@ import java.util.stream.Stream;
 import java.net.InetSocketAddress;
 
 import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
-import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.api.ClusterEvent;
@@ -235,6 +234,7 @@ import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.worker.metrics.SpokesmanPingLoop;
 import org.pragmatica.aether.worker.metrics.WorkerMetricsAggregator;
 import org.pragmatica.aether.worker.mutation.MutationForwarder;
+import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.BuildInfo;
@@ -641,6 +641,14 @@ public interface AetherNode extends ManageableNode {
             return "storage.encryption is configured but no SecretsProvider is available "
                  + "(environment integration is absent or does not provide secrets)";
         }
+    }
+
+    /// #957/#969 — the node's alert config, or the shipped defaults when no `[alerts]` section was
+    /// loaded. Validation already happened at boot in `Main.resolveAlertConfig`, so anything arriving
+    /// here has passed [org.pragmatica.aether.config.AlertConfig#check]; an absent section needs none.
+    private static AlertConfig resolveAlertConfig(AetherNodeConfig config) {
+        return config.alerts()
+                     .or(AlertConfig.alertConfig());
     }
 
     private static RabiaPersistence<KVCommand<AetherKey>> resolvePersistence(AetherNodeConfig config) {
@@ -2482,6 +2490,8 @@ public interface AetherNode extends ManageableNode {
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
         var deploymentManager = DeploymentManager.deploymentManager(clusterNode, kvStore);
         var alertManager = AlertManager.alertManager(clusterNode, kvStore);
+
+        alertManager.bindAlertConfig(resolveAlertConfig(config));
         var dynamicConfigManager = resourceProviderSetup.dynamicProvider()
                                                         .map(dp -> DynamicConfigManager.dynamicConfigManager(clusterNode,
                                                                                                              kvStore,
@@ -2545,7 +2555,15 @@ public interface AetherNode extends ManageableNode {
                                                                             clusterEventsHlcClock,
                                                                             clusterTopologyManager.observer()::clusterSize,
                                                                             kvStore::isReplaying,
-                                                                            clusterEventsLeaderCheck);
+                                                                            clusterEventsLeaderCheck,
+                                                                            () -> clusterEventsControllerRef.get() != null
+                                                                            // #957: ownership is RESOLVABLE once the controller ref is
+                                                                            // bound. Until then `clusterEventsOwnerCheck` returns false
+                                                                            // via its `.or(false)` fallback on EVERY node, so nobody
+                                                                            // publishes and the event is lost rather than merely
+                                                                            // suppressed. This supplier is what lets the aggregator tell
+                                                                            // that hole apart from ordinary non-ownership.
+                                                                           );
         // Item-8 graft: best-effort SelfDrainInitiated emit on drain initiation. The aggregator is
         // forward-declared to DrainProcedure (constructed earlier) via this ref; the emitter lambda
         // resolves it lazily and no-ops until bound. NOT leader-gated — the draining node is the only
@@ -2580,10 +2598,14 @@ public interface AetherNode extends ManageableNode {
         alertManager.bindEventSink(eventAggregator::emit, clusterEventsHlcClock);
         alertManager.bindClusterEventsSource(eventAggregator::events);
         // #957: AlertForwarder was never constructed anywhere in src/main, so no alert left this
-        // process by any path. Construct it here, next to the other AlertManager bindings. The
-        // default AlertConfig has webhooks DISABLED with no URLs, so this is inert until an
-        // operator configures one -- see the report for the config-plumbing gap that remains.
-        alertManager.withAlertForwarder(AlertConfig.alertConfig());
+        // process by any path. Construct it here, next to the other AlertManager bindings.
+        //
+        // The argument is load-bearing and the wrong one is SILENT: AlertConfig.alertConfig()
+        // compiles and yields a forwarder built from the DEFAULT config, whose webhooks are
+        // DISABLED with no URLs -- an operator who configured a webhook would still get nothing,
+        // with no error anywhere. resolveAlertConfig(config) carries the operator's own section.
+        // The rc4 merge produced NO conflict marker here; both sides compiled.
+        alertManager.withAlertForwarder(resolveAlertConfig(config));
         traceStore.bindTraceEventSink((operation, requestId, depth, durationMs, metadata) -> eventAggregator.emit(new ClusterEvent.TraceInjected(clusterEventsHlcClock.now(),
                                                                                                                                                  ClusterEvent.Severity.INFO,
                                                                                                                                                  "Injected trace: " + operation,

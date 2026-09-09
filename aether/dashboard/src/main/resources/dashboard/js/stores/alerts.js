@@ -51,11 +51,6 @@ document.addEventListener('alpine:init', function() {
             }
         },
 
-        async clearAll() {
-            await RestClient.post('/api/alerts/clear');
-            this.active = [];
-        },
-
         acknowledge(alert) {
             this.active = this.active.filter(function(a) { return a !== alert; });
             this.history.unshift(Object.assign({}, alert, { resolvedAt: new Date().toISOString() }));

@@ -853,9 +853,6 @@ aether alerts active
 # Show alert history
 aether alerts history
 
-# Clear all active alerts
-aether alerts clear
-
 # Inject a synthetic alert (operator-driven; visible via 'aether alerts list')
 aether alerts inject \
     --name test-alert \

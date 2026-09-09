@@ -135,7 +135,7 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 | 36 | Invocation metrics | Complete | Per-method call count, success/failure rates, latency percentiles (P50/P95/P99), slow invocation detection |
 | 37 | Cluster metrics API | Battle-tested | Aggregated load, deployment timeline, error rates, saturation, health score, capacity prediction |
 | 38 | Historical metrics | Complete | Time-range queries (5m, 15m, 1h, 2h) with per-node snapshots |
-| 39 | Alert management | Complete | Active/historical alerts, threshold-based triggering, KV-Store persistence, CLI control |
+| 39 | Alert management | Partial | Threshold-based triggering with hysteresis (#969), evaluated on every node and published as owner-gated `THRESHOLD_BREACHED`/`THRESHOLD_CLEARED` cluster events (#957). **Only THRESHOLDS are KV-Store persisted** — the previous "KV-Store persistence" claim covered alerts and was false; alerts were node-local volatile state. Active alerts are a view DERIVED from live metrics (re-established within one ~1s evaluation tick after restart or failover, without log replay); history is a bounded projection over the cluster event log, retained by `RetentionPolicy` (10,000 events OR 16 MB OR 24 h, `ANY`) rather than the removed 100-entry deque. `POST /alerts/clear` removed — it was already a no-op, since injected alerts were re-read from the replicated log on the next poll. REST + CLI. `[verified: AlertManagerThresholdEventTest 17, ClusterEventAggregatorOwnerlessDropTest 4, AlertConfigTest 9 — all unit-level]` `[unverified: no multi-node cluster run; end-to-end delivery to an operator is untested, and webhook delivery stays opt-in and inert until an `[alerts.webhook]` section is configured]` **Not `Complete`:** graded down from an overclaim, not up from progress |
 | 40 | Dynamic thresholds | Complete | Runtime warning/critical threshold configuration per metric |
 | 41 | Prometheus export | Battle-tested | Micrometer integration with Prometheus scrape endpoint |
 | 42 | Unified invocation observability | Complete | Sampling-based tracing + depth-to-SLF4J bridge + adaptive per-node sampling. Replaces DynamicAspect system. CLI and REST API |
@@ -184,7 +184,7 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 49 | REST management API | Battle-tested | 188 routes (`ManagementRoute` enum) across 32 `RouteSource` classes in `aether/node/.../api/routes/` (verified 2026-09-03): status, health, blueprints, slices, scaling, rolling updates, config, thresholds, alerts, aspects, logging, TTM, invocation metrics, controller config, node lifecycle |
+| 49 | REST management API | Battle-tested | 187 routes (`ManagementRoute` enum; was 188 before #957 removed `ALERTS_CLEAR`) across 32 `RouteSource` classes in `aether/node/.../api/routes/` (verified 2026-09-03): status, health, blueprints, slices, scaling, rolling updates, config, thresholds, alerts, aspects, logging, TTM, invocation metrics, controller config, node lifecycle |
 | 50 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, routes, metrics, health, scale, artifact, blueprint, deploy, invocation-metrics, controller, alerts, thresholds, aspects, traces, observability, config, logging, events, node lifecycle/drain/activate/shutdown |
 | 213 | Cluster init wizard | Complete | `aether cluster init` interactive wizard + batch-mode flags generating a ready-to-bootstrap `cluster-config.toml`. All 4 deployment targets (Docker / SSH / Cloud / Forge), topology auto-derive (refuses N<3, requires odd core), firewall presets (Standard / Restrictive / Open / Custom), TLS auto-generate vs env-var, optional database, offline IP auto-detect for restrictive admin CIDR. Shared `Prompt` utility consolidates 3 ad-hoc stdin readers. 67 tests across 6 classes. |
 | 51 | WebSocket streams | Complete | `/ws/dashboard` (metrics), `/ws/status` (cluster state), `/ws/events` (real-time cluster events with delta broadcasting) |
@@ -370,16 +370,18 @@ the rows disagree.
 
 **These counts are claimed, not verified.** Each one counts what a row in this catalog
 *claims* about itself. Nothing here has been checked against the code, and the catalog is
-known to overclaim at row level -- row 39 reads `Alert management | Complete` while `AlertForwarder` is
-never constructed in production (#926). Read the total as "227 rows asserting a
-capability", not as 227 working capabilities.
+known to have overclaimed at row level: row 39 (`Alert management`) read `Complete` while `AlertForwarder`
+was never constructed in production (#926). It now reads `Partial`, and the wiring was fixed
+in #957 -- which is what correcting ONE row looks like, not evidence that the rest have
+been checked. Read the total as "227 rows asserting a capability", not as 227 working
+capabilities.
 
 | Status | Count |
 |--------|-------|
-| Complete | 171 |
+| Complete | 170 |
 | Cluster-tested | 0 |
 | Battle-tested | 23 |
-| Partial | 24 |
+| Partial | 25 |
 | Planned | 9 |
 | Total | 227 |
 <!-- END GENERATED STATISTICS -->

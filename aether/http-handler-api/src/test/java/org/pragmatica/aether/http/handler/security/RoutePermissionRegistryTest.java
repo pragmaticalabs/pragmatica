@@ -214,11 +214,6 @@ class RoutePermissionRegistryTest {
         }
 
         @Test
-        void resolve_operatorAndAbove_forAlertsClear() {
-            assertThat(RoutePermissionRegistry.resolve("POST", "/api/v1/alerts/clear")).isEqualTo(OPERATOR_AND_ABOVE);
-        }
-
-        @Test
         void resolve_operatorAndAbove_forConfigSet() {
             assertThat(RoutePermissionRegistry.resolve("POST", "/api/v1/config")).isEqualTo(OPERATOR_AND_ABOVE);
         }

@@ -9,6 +9,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -23,6 +24,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AlertThresholdValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Promise;
@@ -57,6 +59,23 @@ import static org.mockito.ArgumentMatchers.eq;
 /// [#raisedThresholdAlertReachesARealWebhook].
 class AlertingReachesOperatorTest {
     private static final NodeId NODE = new NodeId("node-1");
+    private static final HlcClock HLC = HlcClock.hlcClock(new NodeId("test-node"));
+
+    /// Records what reaches the cluster event log. The redesign replaced AlertManager's in-process
+    /// history deque with the log, so this — not `alertHistoryAsList()` — is where "raised once" is
+    /// now observable synchronously.
+    private static final class RecordingSink implements AlertManager.EventSink {
+        private final List<ClusterEvent> events = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void emit(ClusterEvent event) {
+            events.add(event);
+        }
+
+        List<ClusterEvent> breaches() {
+            return events.stream().filter(event -> event instanceof ClusterEvent.ThresholdBreached).toList();
+        }
+    }
 
     // Mockito's Answer contract for the void-returning KVStore.forEach requires returning null;
     // this method itself always returns AlertManager.readOnly(kvStore).
@@ -144,6 +163,10 @@ class AlertingReachesOperatorTest {
         Mockito.when(forwarder.forward(any())).thenReturn(Promise.success(Unit.unit()));
         alertManager.bindAlertForwarder(forwarder);
 
+        var sink = new RecordingSink();
+
+        alertManager.bindEventSink(sink, HLC);
+
         for (var tick = 0; tick < 20; tick++) {
             publisher.publishMetrics();
         }
@@ -152,10 +175,12 @@ class AlertingReachesOperatorTest {
         // `metric + ":" + nodeId` and `handleAlertValue` uses `put`, which REPLACES -- so the count is
         // 1 under level-triggering too, and an "is 1, not 20" assertion cannot fail. It reads as a
         // check and discriminates nothing. Both assertions below DO differ under level-triggering.
-        assertThat(alertManager.alertHistoryAsList())
-                .describedAs("20 evaluations of ONE sustained breach must append ONE history entry, not one "
-                             + "per tick -- the 100-entry deque would otherwise be overwritten in ~100s by a "
-                             + "single hot node")
+        assertThat(sink.breaches())
+                .describedAs("20 evaluations of ONE sustained breach must raise ONE ThresholdBreached event, not "
+                             + "one per tick. RE-POINTED at the cluster event log: the redesign moved history off "
+                             + "the in-process deque, so alertHistoryAsList() now returns a Promise reading the "
+                             + "log. Fixing the compile break with .await().or(List.of()) would assert 0 here and "
+                             + "read as a passing test that pins nothing")
                 .hasSize(1);
         Mockito.verify(forwarder, Mockito.times(1))
                .forward(any());

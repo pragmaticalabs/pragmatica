@@ -58,7 +58,7 @@ public sealed interface ManagementRoutePermissions {
 
     /// Operational mutations — day-2 operations an OPERATOR performs: deploy strategies, scaling,
     /// schema migrations, streams, scheduled-task actions, backups (create), config set/delete,
-    /// thresholds, alerts clear, controller tuning, cluster topology remediation, artifact publish,
+    /// thresholds, alert injection, controller tuning, cluster topology remediation, artifact publish,
     /// cluster-config apply, key listing/audit (read-shaped POSTs are absent — those are GET).
     private static void assignOperatorMutations(Map<ManagementRoute, RoutePermission> table) {
         for (var route : operatorRoutes()) {
@@ -113,7 +113,6 @@ public sealed interface ManagementRoutePermissions {
                        ManagementRoute.CONTROLLER_EVALUATE,
                        ManagementRoute.THRESHOLD_SET,
                        ManagementRoute.THRESHOLD_DELETE,
-                       ManagementRoute.ALERTS_CLEAR,
                        ManagementRoute.CONFIG_SET,
                        ManagementRoute.CONFIG_DELETE,
                        ManagementRoute.INVOCATION_METRICS_STRATEGY_SET,

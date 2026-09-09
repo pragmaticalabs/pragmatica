@@ -163,6 +163,22 @@ public final class ClusterEventAggregator {
 
     private final IntSupplier clusterSizeSupplier;
 
+    /// Default for the legacy factories: ownership is always resolvable, so they never take the
+    /// ownerless-drop branch. Those factories pass `ALWAYS_OWNER` and therefore never suppress at all.
+    private static final BooleanSupplier OWNERSHIP_ALWAYS_RESOLVABLE = () -> true;
+
+    /// Distinguishes the two DIFFERENT falses `ownerCheck` returns (#957).
+    ///
+    /// `ownerCheck` is false both when ANOTHER node owns partition 0 — the normal steady state on N-1
+    /// nodes, where the event IS published, just not by this node — and when ownership cannot be
+    /// determined at all, where NO node publishes and the event is lost. A single boolean cannot tell
+    /// them apart, so logging the first at WARN would emit a line per suppressed event per non-owner
+    /// per tick and report correct operation as a fault.
+    private final BooleanSupplier ownershipResolvable;
+    /// Count of events dropped because ownership was unresolvable — the size of the audit-log hole.
+    /// Read by [#ownerlessDrops].
+    private final AtomicLong ownerlessDrops = new AtomicLong();
+
     private ClusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
                                    Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
                                    BooleanSupplier ownerCheck,
@@ -170,7 +186,8 @@ public final class ClusterEventAggregator {
                                    HlcClock hlcClock,
                                    IntSupplier clusterSizeSupplier,
                                    BooleanSupplier replayingCheck,
-                                   BooleanSupplier leaderCheck) {
+                                   BooleanSupplier leaderCheck,
+                                   BooleanSupplier ownershipResolvable) {
         this.publisherSupplier = publisherSupplier;
         this.consumerSupplier = consumerSupplier;
         this.ownerCheck = ownerCheck;
@@ -179,6 +196,7 @@ public final class ClusterEventAggregator {
         this.clusterSizeSupplier = clusterSizeSupplier;
         this.replayingCheck = replayingCheck;
         this.leaderCheck = leaderCheck;
+        this.ownershipResolvable = ownershipResolvable;
     }
 
     public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
@@ -192,7 +210,8 @@ public final class ClusterEventAggregator {
                                           hlcClock,
                                           UNKNOWN_CLUSTER_SIZE,
                                           NEVER_REPLAYING,
-                                          LEADER_ALWAYS);
+                                          LEADER_ALWAYS,
+                                          OWNERSHIP_ALWAYS_RESOLVABLE);
     }
 
     public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
@@ -207,7 +226,8 @@ public final class ClusterEventAggregator {
                                           hlcClock,
                                           clusterSizeSupplier,
                                           NEVER_REPLAYING,
-                                          LEADER_ALWAYS);
+                                          LEADER_ALWAYS,
+                                          OWNERSHIP_ALWAYS_RESOLVABLE);
     }
 
     /// Legacy production factory (pre-leader-gate): owner-gated emit + replay-gate, with the
@@ -228,7 +248,8 @@ public final class ClusterEventAggregator {
                                           hlcClock,
                                           clusterSizeSupplier,
                                           replayingCheck,
-                                          LEADER_ALWAYS);
+                                          LEADER_ALWAYS,
+                                          OWNERSHIP_ALWAYS_RESOLVABLE);
     }
 
     /// Production factory (B5b): emit is gated by `ownerCheck` — only the owner of
@@ -255,7 +276,31 @@ public final class ClusterEventAggregator {
                                           hlcClock,
                                           clusterSizeSupplier,
                                           replayingCheck,
-                                          leaderCheck);
+                                          leaderCheck,
+                                          OWNERSHIP_ALWAYS_RESOLVABLE);
+    }
+
+    /// Production factory (#957) — as above, plus `ownershipResolvable`, which reports whether this node
+    /// can determine partition-0 ownership AT ALL. See [#ownershipResolvable] for why the extra supplier
+    /// is needed rather than reusing `ownerCheck`.
+    public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
+                                                                Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
+                                                                BooleanSupplier ownerCheck,
+                                                                NodeId selfNode,
+                                                                HlcClock hlcClock,
+                                                                IntSupplier clusterSizeSupplier,
+                                                                BooleanSupplier replayingCheck,
+                                                                BooleanSupplier leaderCheck,
+                                                                BooleanSupplier ownershipResolvable) {
+        return new ClusterEventAggregator(publisherSupplier,
+                                          consumerSupplier,
+                                          ownerCheck,
+                                          selfNode,
+                                          hlcClock,
+                                          clusterSizeSupplier,
+                                          replayingCheck,
+                                          leaderCheck,
+                                          ownershipResolvable);
     }
 
     /// Read all events currently retained in the system stream's partition.
@@ -332,12 +377,45 @@ public final class ClusterEventAggregator {
         }
 
         if (!ownerCheck.getAsBoolean()) {
-            LOG.debug("ClusterEventAggregator: not owner of cluster-events partition — suppressing emit of {}", event);
+            suppressUnowned(event);
 
             return;
         }
 
         publishSafely(event);
+    }
+
+    /// Split the owner-gate's two falses (#957) so the loud one is actually loud.
+    ///
+    /// **Another node owns** — the steady state on every non-owner, once per emit per tick. The event
+    /// reaches the log via the owner, nothing is lost, DEBUG.
+    ///
+    /// **Ownership unresolvable** — bootstrap window, quorum loss, partition 0 not yet materialized.
+    /// NO node passes the gate, so the event is dropped by all of them and **never queued or retried**.
+    /// That is a permanent hole in the audit log, and it is the same shape as the #926 defect where the
+    /// event announcing there is no leader was itself leader-gated. WARN plus a counter, so the hole is
+    /// measurable rather than inferred: a reader asking "did we lose alerts during that outage?" gets a
+    /// number instead of an argument.
+    ///
+    /// The operator surface does NOT go dark in this window — `AlertManager` serves "what is firing now"
+    /// from its locally-derived view, which needs no ownership. Only the durable history gaps.
+    private void suppressUnowned(ClusterEvent event) {
+        if (ownershipResolvable.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: not owner of cluster-events partition — suppressing emit of {}", event);
+
+            return;
+        }
+
+        LOG.warn("ClusterEventAggregator: cluster-events ownership UNRESOLVABLE — {} dropped, not queued;"
+                + " the audit log will gap here. Ownerless drops on this node since start: {}",
+                 event.type(),
+                 ownerlessDrops.incrementAndGet());
+    }
+
+    /// Events lost on this node because ownership could not be determined. Non-decreasing; the audit
+    /// hole's size. Zero is the claim "no event was lost this way", and it is checkable.
+    public long ownerlessDrops() {
+        return ownerlessDrops.get();
     }
 
     /// Leader-gated emit for consensus-committed membership-DEPARTURE facts (NODE_FAILED / NODE_LEFT).

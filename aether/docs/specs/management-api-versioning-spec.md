@@ -82,7 +82,7 @@ Covers all 181 enum entries. HTTP methods and path parameters are unchanged unle
 | `/api/ab-tests/metrics` | `/api/v1/ab-tests/metrics` |
 | `/api/alerts` | `/api/v1/alerts` |
 | `/api/alerts/active` | `/api/v1/alerts/active` |
-| `/api/alerts/clear` | `/api/v1/alerts/clear` |
+| ~~`/api/alerts/clear`~~ | **Route removed in #957** — neither the unversioned nor the `/v1` form exists |
 | `/api/alerts/history` | `/api/v1/alerts/history` |
 | `/api/alerts/inject` | `/api/v1/alerts/inject` |
 | `/api/artifacts/metrics` | `/api/v1/artifacts/metrics` |

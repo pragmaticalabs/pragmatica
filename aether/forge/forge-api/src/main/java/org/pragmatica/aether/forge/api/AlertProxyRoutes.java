@@ -25,8 +25,6 @@ public sealed interface AlertProxyRoutes {
 
     record AlertListResponse(String body) {}
 
-    record AlertClearResponse(boolean success, String body) {}
-
     record ThresholdListResponse(String body) {}
 
     record ThresholdSetResponse(boolean success, String body) {}
@@ -38,7 +36,6 @@ public sealed interface AlertProxyRoutes {
 
         return in("/api/alerts").serve(activeAlertsRoute(cluster, http),
                                        alertHistoryRoute(cluster, http),
-                                       clearAlertsRoute(cluster, http),
                                        thresholdsGetRoute(cluster, http),
                                        thresholdsSetRoute(cluster, http),
                                        thresholdsDeleteRoute(cluster, http));
@@ -56,22 +53,11 @@ public sealed interface AlertProxyRoutes {
                     .asJson();
     }
 
-    private static Route<AlertClearResponse> clearAlertsRoute(EmberCluster cluster, JdkHttpOperations http) {
-        return Route.<AlertClearResponse> post("/clear").toJson(_ -> proxyClear(cluster, http));
-    }
-
     private static Promise<AlertListResponse> proxyGet(EmberCluster cluster, JdkHttpOperations http, String path) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
                       .flatMap(port -> sendGet(http, port, path))
                       .map(AlertListResponse::new);
-    }
-
-    private static Promise<AlertClearResponse> proxyClear(EmberCluster cluster, JdkHttpOperations http) {
-        return cluster.getLeaderManagementPort()
-                      .async(LeaderNotAvailable.INSTANCE)
-                      .flatMap(port -> sendPost(http, port, "/api/alerts/clear"))
-                      .map(body -> new AlertClearResponse(true, body));
     }
 
     private static Route<ThresholdListResponse> thresholdsGetRoute(EmberCluster cluster, JdkHttpOperations http) {
@@ -124,19 +110,6 @@ public sealed interface AlertProxyRoutes {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + path))
                                  .GET()
-                                 .timeout(HTTP_TIMEOUT)
-                                 .build();
-
-        return http.sendString(request)
-                   .flatMap(result -> result.toResult()
-                                            .async());
-    }
-
-    private static Promise<String> sendPost(JdkHttpOperations http, int port, String path) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .header("Content-Type", "application/json")
-                                 .POST(HttpRequest.BodyPublishers.noBody())
                                  .timeout(HTTP_TIMEOUT)
                                  .build();
 

@@ -27,10 +27,14 @@ end="<!-- END GENERATED STATISTICS -->"
 
 # The worked overclaim example quoted in the generated prose. Its name and status are read from the
 # row; generation FAILS if the row disappears or stops carrying this status, so the illustration
-# cannot go quietly stale. The code-side half of the claim (that `AlertForwarder` is never constructed
-# in production) is a statement about the codebase, not the catalog, and is cited to #926.
+# cannot go quietly stale -- and it DID fail, which is how this update came about.
+#
+# The example is now a DISCHARGED overclaim: row 39 read `Complete` while `AlertForwarder` was never
+# constructed in production (#926). The row has since been graded down to `Partial` and the wiring
+# fixed (#957), so both halves of the original claim are false and the citation had to move with them.
+# Pinning `Partial` keeps the guard live: if row 39 is re-graded, generation fails again.
 example_row_id="39"
-example_row_status="Complete"
+example_row_status="Partial"
 
 mode="${1:---check}"
 case "$mode" in
@@ -144,9 +148,11 @@ generate() {
         print ""
         print "**These counts are claimed, not verified.** Each one counts what a row in this catalog"
         print "*claims* about itself. Nothing here has been checked against the code, and the catalog is"
-        printf "known to overclaim at row level -- row %s reads `%s | %s` while `AlertForwarder` is\n", exampleId, exName, exStatus
-        printf "never constructed in production (#926). Read the total as \"%d rows asserting a\n", total
-        printf "capability\", not as %d working capabilities.\n", total
+        printf "known to have overclaimed at row level: row %s (`%s`) read `Complete` while `AlertForwarder`\n", exampleId, exName
+        printf "was never constructed in production (#926). It now reads `%s`, and the wiring was fixed\n", exStatus
+        print "in #957 -- which is what correcting ONE row looks like, not evidence that the rest have"
+        printf "been checked. Read the total as \"%d rows asserting a capability\", not as %d working\n", total, total
+        print "capabilities."
         print ""
         print "| Status | Count |"
         print "|--------|-------|"

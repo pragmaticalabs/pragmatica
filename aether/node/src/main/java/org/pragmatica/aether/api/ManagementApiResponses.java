@@ -382,8 +382,6 @@ public sealed interface ManagementApiResponses {
 
     record ThresholdRemovedResponse(String status, String metric) {}
 
-    record AlertsClearedResponse(String status) {}
-
     record AlertsResponse(List<AlertManager.AlertView> active, List<AlertManager.AlertHistoryView> history) {}
 
     record AlertInjectResponse(String alertId, String name, String severity, String message, long timestamp) {}

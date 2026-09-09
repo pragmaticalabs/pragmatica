@@ -15,6 +15,137 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class ConfigLoaderTest {
 
+    /// #957 — `[alerts]`. Before this ticket NO `.toml` in the repo carried an `[alert...]` section and
+    /// `AlertConfig` was not a component of `AetherConfig`, so webhook delivery was unreachable by any
+    /// configuration and the #969 hysteresis margin had nowhere to live.
+    @Test
+    void loadFromString_parsesAlertsSection() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [alerts]
+            enabled = true
+            hysteresis_margin = 0.10
+
+            [alerts.webhook]
+            enabled = true
+            urls = ["https://example.invalid/hook"]
+            retry_count = 5
+            timeout = "9s"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> config.alerts()
+                                       .onEmpty(() -> Assertions.fail("[alerts] must populate AetherConfig.alerts()"))
+                                       .onPresent(alerts -> {
+                                           assertThat(alerts.hysteresisMargin()).isEqualTo(0.10);
+                                           assertThat(alerts.webhook().enabled()).isTrue();
+                                           assertThat(alerts.webhook().urls()).containsExactly("https://example.invalid/hook");
+                                           assertThat(alerts.webhook().retryCount()).isEqualTo(5);
+                                           assertThat(alerts.check().isSuccess()).isTrue();
+                                       }));
+    }
+
+    /// An `[alerts]` section that sets only the margin must NOT switch webhooks on. This is what keeps
+    /// plumbing the config from enabling delivery by side effect — the operator opts in per section.
+    @Test
+    void loadFromString_alertsWithoutWebhookSection_leavesDeliveryDisabled() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [alerts]
+            hysteresis_margin = 0.02
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> config.alerts()
+                                       .onEmpty(() -> Assertions.fail("[alerts] must populate AetherConfig.alerts()"))
+                                       .onPresent(alerts -> {
+                                           assertThat(alerts.hysteresisMargin()).isEqualTo(0.02);
+                                           assertThat(alerts.webhook().enabled())
+                                                   .describedAs("webhooks stay opt-in when no [alerts.webhook] section is given")
+                                                   .isFalse();
+                                           assertThat(alerts.webhook().urls()).isEmpty();
+                                       }));
+    }
+
+    /// `[alerts.webhook]` written WITHOUT a bare `[alerts]` header — the natural thing an operator
+    /// writes when all they want is a webhook.
+    ///
+    /// `TomlDocument.hasSection` is an exact key match, so `[alerts.webhook]` alone does not make
+    /// `hasSection("alerts")` true. Keying the populate on the bare header therefore discarded this
+    /// file's entire alert config **silently, with the boot gate never running** — no webhook, no
+    /// error. A silent config trap inside the plumbing added to make configuration reachable.
+    @Test
+    void loadFromString_acceptsWebhookSubSectionWithoutABareAlertsHeader() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [alerts.webhook]
+            enabled = true
+            urls = ["https://example.invalid/hook"]
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> config.alerts()
+                                       .onEmpty(() -> Assertions.fail("[alerts.webhook] alone must still populate "
+                                                                      + "AetherConfig.alerts() — otherwise the whole "
+                                                                      + "section is silently discarded"))
+                                       .onPresent(alerts -> {
+                                           assertThat(alerts.webhook().enabled()).isTrue();
+                                           assertThat(alerts.webhook().urls()).containsExactly("https://example.invalid/hook");
+                                           assertThat(alerts.hysteresisMargin())
+                                                   .describedAs("unstated margin falls back to the shipped default")
+                                                   .isEqualTo(AlertConfig.DEFAULT_HYSTERESIS_MARGIN);
+                                           assertThat(alerts.check().isSuccess())
+                                                   .describedAs("and the boot gate runs on it")
+                                                   .isTrue();
+                                       }));
+    }
+
+    /// The same trap for the other sub-section, so a fix that special-cased only `webhook` is caught.
+    @Test
+    void loadFromString_acceptsEventsSubSectionWithoutABareAlertsHeader() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [alerts.events]
+            enabled = true
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> config.alerts()
+                                       .onEmpty(() -> Assertions.fail("[alerts.events] alone must populate alerts()"))
+                                       .onPresent(alerts -> assertThat(alerts.events().enabled()).isTrue()));
+    }
+
+    /// The control for both tests above: no `[alerts]` section leaves `alerts()` absent, and the node
+    /// falls back to the shipped defaults rather than to a half-populated config.
+    @Test
+    void loadFromString_withoutAlertsSection_leavesAlertsAbsent() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.alerts().isEmpty()).isTrue());
+    }
+
     @Test
     void loadFromString_parsesMinimalConfig() {
         var toml = """

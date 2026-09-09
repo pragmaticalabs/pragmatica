@@ -18,15 +18,15 @@ import org.pragmatica.serialization.Codec;
 /// {@link ExtendedEvent} non-sealed extension hatch for framework plugins to introduce
 /// additional variants without modifying the sealed parent.
 ///
-/// Closed-set count is **33 variants** (25 prior framework events + STREAM_REGISTERED/DELETED +
+/// Closed-set count is **35 variants** (25 prior framework events + STREAM_REGISTERED/DELETED +
 /// ALERT_INJECTED/TRACE_INJECTED/SELF_DRAIN_INITIATED + STREAM_MEMORY_EXCEEDED +
-/// DEPARTURE_PUSH_INCOMPLETE + SCALE_CAPPED).
+/// DEPARTURE_PUSH_INCOMPLETE + SCALE_CAPPED + THRESHOLD_BREACHED/THRESHOLD_CLEARED).
 ///
 /// Consumers exhaust the sealed parent via pattern-matching `switch`; the compiler enforces that
 /// every closed variant is handled and that an `ExtendedEvent` arm is present (typically a
 /// discriminator-keyed dispatch, structured log, or no-op).
 @Codec
-public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.GenerationChanged, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ClusterEvent.ScaleCapped, ExtendedEvent {
+public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.GenerationChanged, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ClusterEvent.ScaleCapped, ClusterEvent.ThresholdBreached, ClusterEvent.ThresholdCleared, ExtendedEvent {
     /// Restart-safe identity + total cluster ordering: HLC physical micros + logical counter + origin nodeId.
     HlcTimestamp at();
 
@@ -188,4 +188,48 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
     /// should notice a slice pinned at its cap). `details` carries `artifact`, `requestedInstances`,
     /// `cappedAtInstances`, and `reason` (one of `max-instances` | `cluster-cap`).
     record ScaleCapped(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    /// A configured metric threshold was crossed upward on some node (#957).
+    ///
+    /// **This is a DERIVED fact, not a node-local observation, and that is what decides its gating.**
+    /// `ClusterSyncCollector.allMetrics()` returns every node's metrics on every node, so every node
+    /// evaluates the same input and reaches the same conclusion. An un-gated emit would therefore write
+    /// the same breach once per node. It is emitted through the aggregator's owner-gated
+    /// {@link ClusterEventAggregator#emit} path, which is exactly the shape that gate exists for —
+    /// deduplication comes free and no per-node partitioning or routing hop is needed.
+    ///
+    /// **Evaluation still runs on EVERY node; only publication is gated.** Edge-triggering state
+    /// (`shouldTrigger`) lives in the evaluator, so an owner that evaluated only while it held the gate
+    /// would start with empty state and re-fire every active breach on each ownership change. Because
+    /// every node evaluates continuously, an incoming owner already holds the correct edge state and
+    /// the ownership change emits nothing.
+    ///
+    /// **Not the source of truth for "what is firing now."** Stream retention is `RetentionMode.ANY`
+    /// (count OR bytes OR age), so a breach older than the age floor has had this event evicted while
+    /// still firing — a fold over the log would then report it as clear. The live answer is derived
+    /// from current metrics by `AlertManager`'s maintained view; this event is the durable HISTORY.
+    ///
+    /// `details` carries `metric`, `nodeId` (whose metric breached), `value`, `threshold` and
+    /// `alertSeverity` (`WARNING` | `CRITICAL` — the alert's own ladder, distinct from [#severity]).
+    record ThresholdBreached(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
+
+    /// A previously-breached metric threshold returned below its clear point (#957, #969).
+    ///
+    /// The complement of {@link ThresholdBreached}, and it must be its own event because **an
+    /// append-only log cannot represent absence** — nothing can be deleted to signal a clear.
+    ///
+    /// **The clear point is not the breach point, and it differs by severity.** A hysteresis margin
+    /// damps a metric oscillating across the boundary. A CRITICAL alert clears below
+    /// `max(critical * (1 - margin), warning)`; a WARNING alert clears below `warning * (1 - margin)`,
+    /// with no clamp — there is no lower rung for it to invert into. The clamp on the CRITICAL arm is
+    /// what keeps the severity ladder from inverting: without it a CRITICAL clearing below the WARNING
+    /// threshold would immediately re-raise as WARNING, manufacturing the flapping the margin exists to
+    /// damp. The margin applies to the CLEAR edge only: raising is already edge-triggered, and delaying
+    /// it would delay first detection.
+    ///
+    /// Owner-gated like its breach counterpart, for the same derived-fact reason.
+    ///
+    /// `details` carries `metric`, `nodeId`, `value`, `clearedFrom` (the severity being left) and
+    /// `clearPoint` (the hysteresis-adjusted value the metric fell below).
+    record ThresholdCleared(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
 }

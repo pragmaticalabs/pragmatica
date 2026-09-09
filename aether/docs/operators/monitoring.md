@@ -23,8 +23,6 @@ aether thresholds set cpu.usage 0.7 0.9
 # View active alerts
 aether alerts active
 
-# Clear all alerts
-aether alerts clear
 ```
 
 ## Threshold Configuration
@@ -149,13 +147,28 @@ curl http://localhost:8080/alerts/history
 
 ### Clearing Alerts
 
-```bash
-# CLI
-aether alerts clear
+**There is no clear operation, and this is deliberate (#957).** Threshold alerts are re-derived from
+live metrics roughly once per second, so a cleared alert whose metric is still over its threshold
+reappears on the next evaluation — clearing could only ever have hidden it for about a second.
 
-# REST API
-curl -X POST http://localhost:8080/alerts/clear
-```
+An alert clears when its metric falls below its **clear point**, which hysteresis places slightly
+below the threshold that raised it. **The clear point differs by severity, and the clamp applies to
+CRITICAL only:**
+
+| Alert severity | Clears below | With `cpu.usage` 0.7/0.9 at the default 5% margin |
+|---|---|---|
+| CRITICAL | `max(critical * (1 - margin), warning)` | **0.855** |
+| WARNING | `warning * (1 - margin)` — no clamp | **0.665**, not 0.7 |
+
+The clamp exists so a CRITICAL alert can never clear beneath its own WARNING threshold and immediately
+re-raise as WARNING. A WARNING alert needs no clamp because there is no lower rung to invert into.
+
+`margin` defaults to 5% and is configurable as `hysteresis_margin` in the `[alerts]` section. A
+`THRESHOLD_CLEARED` event is written to the cluster event log and the alert leaves `GET /alerts/active`.
+
+Operator-injected alerts (`POST /alerts/inject`) currently have **no supported dismissal path**. That
+was also true before #957 — clearing them appeared to work but did not, since they were re-read from
+the replicated event log on the next poll.
 
 ## Cluster-Wide Persistence
 
@@ -248,14 +261,6 @@ List alert history.
 aether alerts history
 ```
 
-### alerts clear
-
-Clear all active alerts.
-
-```bash
-aether alerts clear
-```
-
 ## REST API Reference
 
 | Method | Endpoint | Description |
@@ -266,7 +271,6 @@ aether alerts clear
 | GET | `/alerts` | Get all alerts |
 | GET | `/alerts/active` | Get active alerts |
 | GET | `/alerts/history` | Get alert history |
-| POST | `/alerts/clear` | Clear active alerts |
 
 See [Management API Reference](../reference/management-api.md) for complete details.
 
@@ -343,4 +347,4 @@ Thresholds are replicated via consensus:
 
 1. Increase warning threshold to reduce noise
 2. Consider if metric is appropriate for alerting
-3. Use `aether alerts clear` to reset
+3. Alerts clear themselves once the metric falls below its clear point — see [Clearing Alerts](#clearing-alerts); there is no manual reset

@@ -6,6 +6,8 @@ package org.pragmatica.aether.api;
 
 import org.pragmatica.aether.api.ClusterEvent.AccessDenied;
 import org.pragmatica.aether.api.ClusterEvent.AlertInjected;
+import org.pragmatica.aether.api.ClusterEvent.ThresholdBreached;
+import org.pragmatica.aether.api.ClusterEvent.ThresholdCleared;
 import org.pragmatica.aether.api.ClusterEvent.BackupCreated;
 import org.pragmatica.aether.api.ClusterEvent.BackupRestored;
 import org.pragmatica.aether.api.ClusterEvent.BlueprintDeleted;
@@ -353,7 +355,37 @@ class ClusterEventCodecTest {
                        new SelfDrainInitiated(ts, sev, "SelfDrainInitiated", d),
                        new StreamMemoryExceeded(ts, sev, "StreamMemoryExceeded", d),
                        new DeparturePushIncomplete(ts, sev, "DeparturePushIncomplete", d),
-                       new ScaleCapped(ts, sev, "ScaleCapped", d));
+                       new ScaleCapped(ts, sev, "ScaleCapped", d),
+                       new ThresholdBreached(ts, sev, "ThresholdBreached", d),
+                       new ThresholdCleared(ts, sev, "ThresholdCleared", d));
+    }
+
+    /// Guards [#allClosedVariants] against silent drift.
+    ///
+    /// That list is hand-maintained, and nothing checked it against the sealed hierarchy before #957.
+    /// A new variant therefore escaped codec round-trip coverage by simply not being added — the suite
+    /// stayed green and reported nothing, because a list that is too short still round-trips everything
+    /// in it. Adding `ThresholdBreached`/`ThresholdCleared` was the second time this list needed a
+    /// manual edit that no instrument would have demanded.
+    ///
+    /// `ExtendedEvent` is excluded by design: it is the non-sealed extension hatch and gets no
+    /// parent-level codec, which `extendedEvent_roundTrips_viaOwnCodec` covers separately.
+    ///
+    /// Mirrors the same guard `KVStoreSerializerTest.permittedKeyTypes` applies to `AetherKey`.
+    @Test
+    void allClosedVariants_coversEveryPermittedSubclass() {
+        var covered = allClosedVariants().stream()
+                                         .map(event -> event.getClass().getSimpleName())
+                                         .collect(java.util.stream.Collectors.toSet());
+        var permitted = java.util.Arrays.stream(ClusterEvent.class.getPermittedSubclasses())
+                                        .map(Class::getSimpleName)
+                                        .filter(name -> !"ExtendedEvent".equals(name))
+                                        .collect(java.util.stream.Collectors.toSet());
+
+        assertThat(covered)
+                .describedAs("every sealed ClusterEvent variant must appear in allClosedVariants(),"
+                             + " or it crosses the wire with no round-trip coverage")
+                .containsExactlyInAnyOrderElementsOf(permitted);
     }
 
     /// `ExtendedEvent` is the non-sealed extension hatch: it gets NO parent-level codec (the

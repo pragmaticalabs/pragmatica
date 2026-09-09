@@ -2619,7 +2619,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "alerts", description = "Alert management", subcommands = {AlertsCommand.ListCommand.class, AlertsCommand.ActiveCommand.class, AlertsCommand.HistoryCommand.class, AlertsCommand.ClearCommand.class, AlertsCommand.InjectCommand.class})
+    @Command(name = "alerts", description = "Alert management", subcommands = {AlertsCommand.ListCommand.class, AlertsCommand.ActiveCommand.class, AlertsCommand.HistoryCommand.class, AlertsCommand.InjectCommand.class})
     static class AlertsCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -2668,19 +2668,6 @@ public class AetherCli implements Runnable {
                 var response = alertsParent.parent.fetch(ALERTS_HISTORY);
 
                 return OutputFormatter.printQuery(response, alertsParent.parent.outputOptions());
-            }
-        }
-
-        @Command(name = "clear", description = "Clear all active alerts")
-        static class ClearCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private AlertsCommand alertsParent;
-
-            @Override
-            public Integer call() {
-                var response = alertsParent.parent.post(ALERTS_CLEAR, "{}");
-
-                return OutputFormatter.printAction(response, alertsParent.parent.outputOptions(), "Alerts cleared");
             }
         }
 
