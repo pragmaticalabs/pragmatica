@@ -78,6 +78,8 @@ TAG  org.pragmatica.aether.api.ClusterEvent$SliceFailure 285
 TAG  org.pragmatica.aether.api.ClusterEvent$StreamDeleted 286
 TAG  org.pragmatica.aether.api.ClusterEvent$StreamMemoryExceeded 287
 TAG  org.pragmatica.aether.api.ClusterEvent$StreamRegistered 288
+TAG  org.pragmatica.aether.api.ClusterEvent$ThresholdBreached 290
+TAG  org.pragmatica.aether.api.ClusterEvent$ThresholdCleared 291
 TAG  org.pragmatica.aether.api.ClusterEvent$TraceInjected 289
 TAG  org.pragmatica.aether.artifact.Artifact 192
 TAG  org.pragmatica.aether.artifact.ArtifactBase 193
