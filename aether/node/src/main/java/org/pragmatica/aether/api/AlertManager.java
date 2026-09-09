@@ -30,6 +30,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -511,6 +512,23 @@ public class AlertManager {
                                    null,
                                    alert.timestamp));
         }
+        // #926: node-health alerts reach the SAME /api/alerts surface as every other kind. An alert
+        // raised but not rendered is not operator-visible, which is the defect this ticket is about one
+        // layer up. Discriminated by source="node_health"; nodeId names the FAILED node and message
+        // carries the reason.
+        for (var alert : activeNodeHealthAlerts.values()) {
+            list.add(new AlertView(alert.alertId(),
+                                   "node.failed",
+                                   alert.severity().name(),
+                                   alert.reason(),
+                                   "node_health",
+                                   null,
+                                   null,
+                                   alert.nodeId().id(),
+                                   null,
+                                   alert.timestamp(),
+                                   alert.timestamp()));
+        }
 
         return appendClusterWideInjectedAlerts(list, seenInjectedIds).map(_ -> List.copyOf(list));
     }
@@ -756,6 +774,170 @@ public class AlertManager {
 
     public List<SliceFailureAlert> getActiveSliceFailureAlerts() {
         return List.copyOf(activeSliceFailureAlerts.values());
+    }
+
+    /// Hard cap on retained node-health alerts. `activeNodeHealthAlerts` is keyed by the FAILED node's
+    /// id, and CTM auto-heal mints a FRESH random id for a replacement rather than reusing the departed
+    /// one, so an id-exact clear can never match a replaced node. Without a bound, every replacement
+    /// under churn would add a permanent entry, growing heap and the `/api/alerts` payload without
+    /// limit. Mirrors the existing `MAX_ALERT_HISTORY` bound on `alertHistory`.
+    private static final int MAX_NODE_HEALTH_ALERTS = 64;
+
+    /// Membership-event causes that mean the node ANNOUNCED its departure rather than died.
+    ///
+    /// **`SwimDeparted` is NOT in this set, and putting it here was a blocking regression.** Round 2 of
+    /// #926 included it on the strength of `MembershipFsm.onSwimDeparted`'s docstring ("SWIM reported
+    /// `id` DEPARTED gracefully") — a comment that contradicts its own producer.
+    /// `SwimProtocol.emitFaultyEdgePair` delivers `FaultyObserved` and `DepartedObserved` **as a pair at
+    /// the FAULTY edge**, because "FAULTY IS confirmed death (canonical SWIM) … The death broadcast
+    /// therefore fires AT the FAULTY edge" — deliberately, to cut `NODE_FAILED` latency inside the 60s
+    /// SLO. `DepartedObserved` routes to `onSwimDeparted` (`AetherNode:4968`), which dispatches
+    /// `SwimDeparted`. **So `SwimDeparted` is SWIM's death broadcast and is the PRIMARY crash path**,
+    /// not a graceful goodbye: with it in this set, `kill -9` raised no CRITICAL alert at all.
+    ///
+    /// That is precisely the failure [`#onNodeFailed`] warns against one paragraph down — suppressing a
+    /// real failure re-creates the defect #926 exists to remove — reached by trusting a docstring
+    /// instead of its producer.
+    ///
+    /// `DrainRequested` alone is sound: it is raised only by the operator/controller drain command, and
+    /// nothing in SWIM's failure detection produces it. **Do not add a cause here without tracing it to
+    /// the code that RAISES it.** A graceful shutdown that is not operator-driven is currently
+    /// indistinguishable from a crash at this layer, so it stays noisy — noisy beats silent on a
+    /// failure-detection surface, and no signal SWIM carries can separate them.
+    private static final java.util.Set<String> GRACEFUL_DEPARTURE_CAUSES = java.util.Set.of("DrainRequested");
+
+    /// Active node-health alerts, keyed by [`AlertEvent.NodeHealthAlert#alertId`] (derived from the
+    /// failed node id). Per-node local state — never replicated, never consensus-backed — which is
+    /// precisely why it survives the conditions of #926. Bounded by [`#MAX_NODE_HEALTH_ALERTS`].
+    private final Map<String, AlertEvent.NodeHealthAlert> activeNodeHealthAlerts = new ConcurrentHashMap<>();
+
+    /// Insertion order for [`#activeNodeHealthAlerts`], oldest first — the eviction order.
+    ///
+    /// Round 2 ordered eviction by `min(timestamp)`. That was both unpinned (flipping it to `max` left
+    /// the suite green, since the bound test asserted only size) and **unpinnable**: alerts raised in a
+    /// tight loop share a `System.currentTimeMillis()` value, so "oldest" was not even well defined.
+    /// An insertion queue makes the order deterministic and therefore assertable.
+    private final java.util.concurrent.ConcurrentLinkedQueue<String> nodeHealthAlertOrder = new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    /// Node ids observed announcing a graceful departure, id → wall-clock millis. Bounded by
+    /// [`#MAX_NODE_HEALTH_ALERTS`]; when full, new marks are DROPPED rather than evicting, so the
+    /// failure mode is a spurious CRITICAL alert and never a suppressed one.
+    private final Map<String, Long> announcedDeparture = new ConcurrentHashMap<>();
+
+    /// Feed for `MembershipFsm` transitions (#926 round 2). Records that `nodeId` announced a departure,
+    /// so the DEAD edge that follows can be told apart from a crash.
+    ///
+    /// The DEAD edge itself cannot make that distinction — a graceful `SwimDeparted` and a drain both
+    /// reach DEAD through the same `Stopped` transition a failure does — so without this every rolling
+    /// restart raised a CRITICAL node-health alert on every surviving node. An alert surface that fires
+    /// CRITICAL during routine planned operations gets muted, and a muted alert is the same end state
+    /// as the silence #926 exists to fix, reached from the opposite direction.
+    ///
+    /// Ordering is guaranteed, and by a different mechanism than round 2 claimed. The earlier note said
+    /// the transition and confirmed-departure emissions share one `emissions` list; **that is false** —
+    /// the two arrive from SEPARATE dispatches (e.g. `DrainRequested` then `Stopped`), each building
+    /// its own list. What actually holds the order is `MemberTracking.dispatch`, which runs
+    /// `synchronized (transitionGuard) { applyEvent(event).forEach(Runnable::run) }`: every dispatch for
+    /// a member is serialised on that member's guard and runs its staged fan-out synchronously before
+    /// returning, so an earlier dispatch's transition record has always run before a later dispatch's
+    /// DEAD hooks. **Recorded precisely because a guarantee resting on a fictional mechanism cannot be
+    /// re-checked when the code moves** — if that fan-out ever becomes asynchronous, this ordering is
+    /// what breaks, and the guard is where to look.
+    ///
+    /// Within a single dispatch the order is also fixed: `applyEvent` stages the calls "in the exact
+    /// order the pre-#929 inline code fired them (transition, JOINED delta, DEPARTING hook,
+    /// DEPARTING-recovery hook, then the DEAD hooks)".
+    @Contract
+    public void noteMembershipTransition(NodeId nodeId, String cause) {
+        if (!GRACEFUL_DEPARTURE_CAUSES.contains(cause)) {
+            return;
+        }
+
+        if (announcedDeparture.size() >= MAX_NODE_HEALTH_ALERTS && !announcedDeparture.containsKey(nodeId.id())) {
+            return;
+        }
+
+        announcedDeparture.put(nodeId.id(), System.currentTimeMillis());
+    }
+
+    /// Raise a node-health alert for a confirmed member death (#926).
+    ///
+    /// Invoked from the ungated `MembershipFsm` DEAD edge on EVERY node that confirms the death, so it
+    /// is reachable with no leader and no quorum. Node health previously had no alerting path at all:
+    /// `AlertEvent` carried only threshold, slice-failure and resolved variants, and repo-wide
+    /// "unhealthy" in `aether/node/src/main` appeared twice, both rendering a status string into an
+    /// HTTP response.
+    ///
+    /// GUARANTEE: **at-most-one active alert per ABRUPTLY departed node, per observing node.** The map
+    /// key is derived from the failed node alone, so a repeated observation of the same death replaces
+    /// rather than accumulates — idempotent, needing no dedup token and no coordination. Each node keeps
+    /// its own map, so there is no cross-node duplication to reconcile: the alert is a local judgment
+    /// about a remote peer, exposed on the observing node's own `/api/alerts`.
+    ///
+    /// A departure this node saw ANNOUNCED (see [`#noteMembershipTransition`]) is logged at INFO and
+    /// raises NO alert. The mark is CONSUMED on read, so a node that gracefully departs, rejoins and
+    /// later crashes still alerts on the crash. **The bias is deliberate and one-directional:** an
+    /// unmarked departure always alerts, so a missed or dropped mark costs a spurious CRITICAL, never a
+    /// silent one. Suppressing a real failure would re-create the defect this ticket exists to remove.
+    ///
+    /// Cleared by [`#clearNodeHealthAlert`] when the node rejoins. Raising without clearing would leave
+    /// a permanently red signal, which trains an operator to ignore the surface.
+    @Contract
+    public void onNodeFailed(NodeId failed, NodeId observedBy) {
+        if (announcedDeparture.remove(failed.id()) != null) {
+            log.info("Node {} departed gracefully (announced; observed by {}) — no alert raised",
+                     failed.id(),
+                     observedBy.id());
+
+            return;
+        }
+
+        var alert = AlertEvent.NodeHealthAlert.nodeFailed(failed, observedBy);
+
+        if (activeNodeHealthAlerts.put(alert.alertId(), alert) == null) {
+            nodeHealthAlertOrder.add(alert.alertId());
+        }
+
+        evictOldestNodeHealthAlertIfOverCap();
+        log.error("CRITICAL: node {} confirmed failed (observed by {}) — cluster membership degraded",
+                  failed.id(),
+                  observedBy.id());
+    }
+
+    /// Drop the OLDEST-INSERTED alerts once the map exceeds [`#MAX_NODE_HEALTH_ALERTS`]. A replaced
+    /// node's alert can never be cleared by id (the replacement carries a new one), so the bound — not
+    /// the clear path — is what keeps this map finite under sustained churn. Oldest-first is the
+    /// deliberate direction: the most recent failures are the ones an operator is still acting on.
+    private void evictOldestNodeHealthAlertIfOverCap() {
+        while (activeNodeHealthAlerts.size() > MAX_NODE_HEALTH_ALERTS) {
+            var oldest = nodeHealthAlertOrder.poll();
+
+            if (oldest == null) {
+                return;
+            }
+
+            activeNodeHealthAlerts.remove(oldest);
+        }
+    }
+
+    /// Resolve the node-health alert for `rejoined` (#926). Wired to the transport `PeerJoined`
+    /// handshake — the same ungated surface that sources NODE_JOINED — so recovery is exactly as
+    /// reachable as the failure it clears. A no-op when no alert is active for that node.
+    ///
+    /// This clear is id-exact and therefore CANNOT resolve a CTM-replaced node, whose replacement boots
+    /// under a freshly minted random id. That case is handled by the bound above, not here; the honest
+    /// statement is that a replaced node's alert ages out under churn rather than being resolved.
+    @Contract
+    public void clearNodeHealthAlert(NodeId rejoined) {
+        announcedDeparture.remove(rejoined.id());
+        nodeHealthAlertOrder.remove(AlertEvent.NodeHealthAlert.alertId(rejoined));
+        Option.option(activeNodeHealthAlerts.remove(AlertEvent.NodeHealthAlert.alertId(rejoined))).onPresent(cleared -> log.info("Node-health alert resolved for {} — node rejoined (was: {})",
+                                                                                                                                 rejoined.id(),
+                                                                                                                                 cleared.reason()));
+    }
+
+    public List<AlertEvent.NodeHealthAlert> getActiveNodeHealthAlerts() {
+        return List.copyOf(activeNodeHealthAlerts.values());
     }
 
     public void clearSliceFailureAlert(Artifact artifact, MethodName method) {

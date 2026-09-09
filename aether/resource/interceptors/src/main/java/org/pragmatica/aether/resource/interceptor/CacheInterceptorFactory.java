@@ -4,15 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
@@ -20,7 +19,7 @@ import static org.pragmatica.lang.Result.success;
 
 
 public final class CacheInterceptorFactory implements ResourceFactory<CacheMethodInterceptor, CacheConfig> {
-    private final Map<String, CacheBackend> cacheRegistry = new ConcurrentHashMap<>();
+    private final NamedResourceRegistry<CacheBackend> cacheRegistry = new NamedResourceRegistry<>();
 
     @Override
     public Class<CacheMethodInterceptor> resourceType() {
@@ -42,12 +41,21 @@ public final class CacheInterceptorFactory implements ResourceFactory<CacheMetho
     public Promise<CacheMethodInterceptor> provision(CacheConfig config, ProvisioningContext context) {
         var keyExtractor = (Fn1<Object, ?>) context.keyExtractor().or(Fn1.id());
 
-        return createCache(config, context).map(cache -> cacheRegistry.computeIfAbsent(config.cacheName(),
-                                                                                       _ -> cache))
-                          .map(cache -> new CacheMethodInterceptor(cache,
-                                                                   config.strategy(),
-                                                                   keyExtractor))
+        return createCache(config, context).map(cache -> cacheRegistry.acquire(config.cacheName(),
+                                                                               () -> cache,
+                                                                               sharedCache -> new CacheMethodInterceptor(sharedCache,
+                                                                                                                         config.strategy(),
+                                                                                                                         keyExtractor,
+                                                                                                                         Option.present(config.cacheName()))))
                           .async();
+    }
+
+    @Override
+    public Promise<Unit> close(CacheMethodInterceptor resource) {
+        // The boolean only reports whether this holder was registered; close is idempotent, so false is a no-op.
+        resource.cacheName().onPresent(name -> cacheRegistry.release(name, resource));
+
+        return Promise.unitPromise();
     }
 
     private Result<? extends CacheBackend> createCache(CacheConfig config, ProvisioningContext context) {

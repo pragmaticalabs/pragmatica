@@ -971,13 +971,13 @@ For cases requiring partition count reduction or schema changes, the recommended
 aether stream create order-events-v2 --partitions 12 --replication 3
 
 # 2. Deploy bridge slice that reads from old, writes to new
-aether blueprint deploy bridge-blueprint.toml
+aether blueprints deploy bridge-blueprint.toml
 
 # 3. Wait for bridge to catch up (consumer lag = 0)
 aether stream lag order-events --group bridge
 
 # 4. Switch producers to new stream (blueprint update)
-aether blueprint deploy updated-blueprint.toml
+aether blueprints deploy updated-blueprint.toml
 
 # 5. Delete old stream after verification
 aether stream delete order-events

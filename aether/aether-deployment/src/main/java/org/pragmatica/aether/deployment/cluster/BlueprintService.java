@@ -77,8 +77,10 @@ public interface BlueprintService {
     Option<ExpandedBlueprint> get(BlueprintId id);
     /// Durable terminal outcome of `id`'s last deployment attempt (#759 review, BLOCKING 3). Bounded
     /// to exactly one record per blueprint id: the FSM writes via `KVCommand.Put` at
-    /// `AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(id)`, and a Put at the same key overwrites
-    /// the prior value, so the store holds only the latest outcome — cardinality is the number of
+    /// `AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(id)`, and a Put at the same key replaces
+    /// the prior value — subject, since #805 item 2, to the `VersionFenced` successor check, which
+    /// rejects a Put built on a stale read rather than letting it overwrite. The store therefore holds
+    /// only the latest outcome — cardinality is the number of
     /// distinct blueprint ids ever deployed, not the number of attempts. Survives
     /// `unloadBlueprintSlices`'s ALL_OR_NOTHING rollback, which removes only `AppBlueprintKey`, never
     /// this key — the intended read path for the node's blueprint-status route after a rollback
@@ -313,6 +315,27 @@ class BlueprintServiceInstance implements BlueprintService {
         return result;
     }
 
+    /// #963 × #956 — the apply-start record, carrying the SUCCESSOR fence version.
+    ///
+    /// `DeploymentOutcomeValue` became [VersionFenced] in #805 item 2 while #963 was in flight, and
+    /// the applier rejects any write whose version is not the immediate successor of the committed
+    /// one. The two publish paths write this record over a **possibly-committed** value — replacing a
+    /// stale terminal is precisely why the write exists — so the first-write form
+    /// (`inProgress(startedAtMs)`, carrying `FIRST_VERSION`) is wrong here: against an existing
+    /// record the applier would drop it silently and the stale terminal would survive, defeating
+    /// both #818 and #963's presence-gate, which would then read the PREVIOUS attempt's status.
+    ///
+    /// Mirrors `ClusterDeploymentState.Active.nextOutcomeVersion`, which is the same derivation for
+    /// the FSM's own write sites. Read-then-write is safe against a concurrent republish for the
+    /// reason the fence exists: the loser is rejected rather than silently overwriting.
+    private AetherValue.DeploymentOutcomeValue startedOutcome(BlueprintId id) {
+        var successor = outcome(id).map(AetherValue.DeploymentOutcomeValue::outcomeVersion)
+                               .map(version -> version + 1)
+                               .or(AetherValue.DeploymentOutcomeValue.FIRST_VERSION);
+
+        return AetherValue.DeploymentOutcomeValue.inProgress(System.currentTimeMillis(), successor);
+    }
+
     @Override
     public Promise<Unit> delete(BlueprintId id) {
         return removeFromStore(AetherKey.AppBlueprintKey.appBlueprintKey(id)).onFailure(cause -> log.warn("Failed to delete blueprint {}: {}",
@@ -433,7 +456,7 @@ class BlueprintServiceInstance implements BlueprintService {
         // Remove did AND records that THIS attempt started, so "no terminal yet" is a positive fact
         // rather than an absence. Absence was what five rounds of #924 condemned deployments on.
         commands.add(new Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
-                               AetherValue.DeploymentOutcomeValue.inProgress(System.currentTimeMillis())));
+                               startedOutcome(expanded.id())));
         // Slice META-INF/resources.toml is intentionally NOT published to KV — it is local to
         // each node and applied via the per-slice intrinsic config layer at slice load
         // (see SliceStore.loadSlice). The resourcesConfig parameter is kept here because the
@@ -612,7 +635,7 @@ class BlueprintServiceInstance implements BlueprintService {
         // #963: same substitution as buildAllCommands — the stale terminal is replaced by a positive
         // IN_PROGRESS marking this attempt's start, in the SAME batch as the blueprint Put.
         KVCommand<AetherKey> outcomeStart = new Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
-                                                      AetherValue.DeploymentOutcomeValue.inProgress(System.currentTimeMillis()));
+                                                      startedOutcome(expanded.id()));
 
         return cluster.apply(List.of(command, outcomeStart))
                       .map(_ -> expanded);

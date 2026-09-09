@@ -141,7 +141,7 @@ class ControlLoopContextAttributionTest {
             cluster = new CapturingClusterNode();
             var capCtx = buildContext(scaleUpBy(2));
 
-            capCtx.putBlueprint(HOT, 2, 1, Option.some(3), Option.none(), Option.none());
+            capCtx.putBlueprint(HOT, 2, 1, Option.none(), Option.some(3), Option.none(), Option.none());
             capCtx.setTopology(FIVE_NODES);
 
             capCtx.runEvaluationCycle();
@@ -188,7 +188,7 @@ class ControlLoopContextAttributionTest {
             cluster = new CapturingClusterNode();
             var capCtx = buildContext(scaleUpBy(3), events::add);
 
-            capCtx.putBlueprint(HOT, 2, 1, Option.some(3), Option.none(), Option.none());
+            capCtx.putBlueprint(HOT, 2, 1, Option.none(), Option.some(3), Option.none(), Option.none());
             capCtx.setTopology(FIVE_NODES);
 
             capCtx.runEvaluationCycle();

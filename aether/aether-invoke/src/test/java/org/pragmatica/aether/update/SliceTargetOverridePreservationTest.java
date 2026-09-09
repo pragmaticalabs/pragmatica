@@ -15,6 +15,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -46,11 +47,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// the A/B lifecycle writer (`AbTestManager.targetPreservingOverrides`, exercised via promote) must
 /// re-read the current `SliceTargetValue` and carry the operator's per-slice autoscaler overrides
 /// onto the rewritten version instead of resetting them to `none()`.
+///
+/// #698 extends the same requirement to `owningBlueprint`, which `targetPreservingOverrides` was
+/// dropping while carefully preserving every override beside it — despite its name and its javadoc
+/// both promising preservation. The seeded fixture is therefore blueprint-owned, and every path
+/// below asserts the owner survives alongside the overrides. The consequence of losing it is not
+/// visible here: `ClusterDeploymentState` resolves a slice's `schemaRequired` through its owner, so
+/// an erased owner silently flips a `schema_required = false` slice to `true` on the next restore.
 class SliceTargetOverridePreservationTest {
     static final NodeId SELF = NodeId.nodeId("node-1").unwrap();
     static final ArtifactBase BASE = Artifact.artifact("org.test:my-slice:2.0.0").unwrap().base();
     static final Version V1 = Version.version("1.0.0").unwrap();
     static final Version V2 = Version.version("2.0.0").unwrap();
+    static final BlueprintId OWNER = BlueprintId.blueprintId("org.test:owning-app:1.0.0").unwrap();
 
     @Nested
     class DeploymentUpdatePreservesOverrides {
@@ -88,6 +97,8 @@ class SliceTargetOverridePreservationTest {
                 assertThat(target.maxInstances()).isEqualTo(Option.some(5));
                 assertThat(target.scaleUpThreshold()).isEqualTo(Option.some(0.8));
                 assertThat(target.scaleDownThreshold()).isEqualTo(Option.some(0.2));
+                assertThat(target.owningBlueprint()).as("#698: the deployment-update writer must not erase the slice's owner")
+                                                    .isEqualTo(Option.some(OWNER));
             });
         }
 
@@ -158,15 +169,19 @@ class SliceTargetOverridePreservationTest {
                 assertThat(target.maxInstances()).isEqualTo(Option.some(5));
                 assertThat(target.scaleUpThreshold()).isEqualTo(Option.some(0.8));
                 assertThat(target.scaleDownThreshold()).isEqualTo(Option.some(0.2));
+                assertThat(target.owningBlueprint()).as("#698: AbTestManager.targetPreservingOverrides must not erase the slice's owner")
+                                                    .isEqualTo(Option.some(OWNER));
             });
         }
     }
 
+    /// Owner-bearing since #698: a blueprint-owned slice is what both writers actually receive in
+    /// production, and an unowned fixture cannot observe an owner being dropped.
     static SliceTargetValue targetWithOverrides(Version version) {
         return SliceTargetValue.sliceTargetValue(version,
                                                  3,
                                                  1,
-                                                 Option.none(),
+                                                 Option.some(OWNER),
                                                  Option.some(5),
                                                  Option.some(0.8),
                                                  Option.some(0.2));

@@ -150,6 +150,7 @@ public class AlertForwarder {
             case AlertEvent.SliceFailureAlert sfa -> appendSliceFailureFields(sb, sfa);
             case AlertEvent.ThresholdAlert ta -> appendThresholdFields(sb, ta);
             case AlertEvent.AlertResolved ar -> appendResolvedFields(sb, ar);
+            case AlertEvent.NodeHealthAlert nha -> appendNodeHealthFields(sb, nha);
         }
 
         sb.append("}");
@@ -174,6 +175,16 @@ public class AlertForwarder {
 
         sb.append("],");
         sb.append("\"lastError\":\"").append(escapeJson(sfa.lastError())).append("\"");
+    }
+
+    /// #926: node-health alerts forward to the configured webhooks like every other alert kind. This is
+    /// the one alerting surface that leaves the cluster entirely, so it is the surface least affected by
+    /// the failure being reported — a webhook POST needs no leader, no quorum and no healthy peer.
+    private void appendNodeHealthFields(StringBuilder sb, AlertEvent.NodeHealthAlert nha) {
+        sb.append("\"type\":\"NODE_FAILED\",");
+        sb.append("\"nodeId\":\"").append(nha.nodeId().id()).append("\",");
+        sb.append("\"observedBy\":\"").append(nha.observedBy().id()).append("\",");
+        sb.append("\"reason\":\"").append(escapeJson(nha.reason())).append("\"");
     }
 
     private void appendThresholdFields(StringBuilder sb, AlertEvent.ThresholdAlert ta) {

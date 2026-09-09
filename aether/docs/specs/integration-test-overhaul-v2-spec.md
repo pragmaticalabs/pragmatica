@@ -25,8 +25,8 @@ run-tests.sh --env docker|remote|cloud [--suites X,Y] [--skip-build] [--skip-dep
     +-- aether cluster bootstrap env/docker.toml    --> Cluster A (5 nodes, non-destructive)
     +-- aether cluster bootstrap env/docker-b.toml  --> Cluster B (5 nodes, destructive)
     |
-    +-- aether artifact push (test-echo, test-persistence, test-full)
-    +-- aether blueprint deploy (per cluster)
+    +-- aether artifacts push (test-echo, test-persistence, test-full)
+    +-- aether blueprints deploy (per cluster)
     |
     +-- wait_for_lb_ready (both clusters)
     |
@@ -78,7 +78,7 @@ run-tests.sh --env docker|remote|cloud [--suites X,Y] [--skip-build] [--skip-dep
    a. Resolve TOML template: `env/${env}.toml` -> expand `${env:...}` placeholders
    b. `aether cluster bootstrap env/${env}.toml --cluster cluster-a --yes --wait --timeout 300`
    c. `aether cluster bootstrap env/${env}-b.toml --cluster cluster-b --yes --wait --timeout 300`
-   d. Push test artifacts: `aether artifact push` for each blueprint JAR
+   d. Push test artifacts: `aether artifacts push` for each blueprint JAR
    e. Deploy blueprints to each cluster per suite requirements
 4. Wait for LB ready on both clusters (poll `/api/health` via cluster status endpoint)
 5. Detect capabilities (Section 8)

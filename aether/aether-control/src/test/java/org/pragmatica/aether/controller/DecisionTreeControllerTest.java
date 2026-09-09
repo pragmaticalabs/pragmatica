@@ -221,6 +221,7 @@ class DecisionTreeControllerTest {
                              instances,
                              minInstances,
                              Option.none(),
+                             Option.none(),
                              Option.some(scaleUpThreshold),
                              Option.none());
     }

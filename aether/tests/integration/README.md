@@ -173,7 +173,7 @@ The machine-readable JSON report is written to `aether/tests/integration/test-re
 |-------|------------|
 | Provisioning | `deploy_docker` start → all containers reported running |
 | Cluster formation | containers up → leader elected + quorum formed + first quiesced snapshot |
-| Blueprint deploy | `aether blueprint deploy` round-trip → post-deploy generation quiesces |
+| Blueprint deploy | `aether blueprints deploy` round-trip → post-deploy generation quiesces |
 | Quiesce barrier | `await_generation_quiesced` call duration (seconds) — after destructive suites or deploy steps |
 | Per-test | individual `test_*` function wall time |
 
@@ -205,7 +205,7 @@ The quiesce barriers replace the old `self_heal` 3-step recovery. See [`aether/d
 - If `mode: "unknown"` or `epoch: null`, pings haven't propagated yet — check that the leader node is actually up.
 
 **Slice never activates**
-- Blueprint was pushed but never deployed: `aether -c $TARGET_HOST:5150 --api-key $AETHER_API_KEY blueprint list`.
+- Blueprint was pushed but never deployed: `aether -c $TARGET_HOST:5150 --api-key $AETHER_API_KEY blueprints list`.
 - Check recent events: `aether -c $TARGET_HOST:5150 --api-key $AETHER_API_KEY events --limit 50`.
 
 **Grep logs on the target**

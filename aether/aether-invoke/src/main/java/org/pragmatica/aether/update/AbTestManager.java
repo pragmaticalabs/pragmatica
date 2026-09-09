@@ -263,9 +263,23 @@ public interface AbTestManager {
                 return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
             }
 
-            /// A/B lifecycle writes must not evaporate the operator's per-slice bounds (#424 review).
-            /// Reads the current SliceTargetValue and carries its `maxInstances`/threshold overrides
-            /// onto the new version (canary/promote/restore stay at 1 instance).
+            /// A/B lifecycle writes must not evaporate the operator's per-slice bounds (#424 review)
+            /// nor the slice's ownership (#698). Reads the current `SliceTargetValue` once and carries
+            /// **every** field it is not deliberately replacing onto the new version.
+            ///
+            /// Replaced: `currentVersion` (the variant/promoted version being written) and
+            /// `targetInstances`/`minInstances` (canary/promote/restore stay at 1 instance).
+            /// Preserved from the current value: `owningBlueprint`, `maxInstances`,
+            /// `scaleUpThreshold`, `scaleDownThreshold`.
+            /// Not carried: `placement` and `updatedAt` — the factory re-derives both, matching the
+            /// pre-#698 behaviour of this method.
+            ///
+            /// `owningBlueprint` matters beyond bookkeeping: `ClusterDeploymentState` resolves a
+            /// slice's `schemaRequired` from its owner, and an erased owner silently takes the
+            /// historical default `true`, flipping a `schema_required = false` slice on the next A/B
+            /// write. The single `kvStore.get` below is the same read this method already performed
+            /// for the override fields — #698 widens its field set by one and changes no control
+            /// flow, so it introduces no read-then-Put beyond the one already present here.
             private SliceTargetValue targetPreservingOverrides(SliceTargetKey key, Version version) {
                 var current = kvStore.get(key)
                                      .filter(SliceTargetValue.class::isInstance)
@@ -274,7 +288,7 @@ public interface AbTestManager {
                 return SliceTargetValue.sliceTargetValue(version,
                                                          1,
                                                          1,
-                                                         Option.none(),
+                                                         current.flatMap(SliceTargetValue::owningBlueprint),
                                                          current.flatMap(SliceTargetValue::maxInstances),
                                                          current.flatMap(SliceTargetValue::scaleUpThreshold),
                                                          current.flatMap(SliceTargetValue::scaleDownThreshold));

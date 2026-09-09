@@ -35,6 +35,7 @@ import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ClusterEventAggregator;
+import org.pragmatica.aether.api.NodeDepartureNotifier;
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.OperationalEvent;
@@ -100,6 +101,7 @@ import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.http.HttpRouteRegistry;
+import org.pragmatica.aether.http.SecurityOverrideSynchronizer;
 import org.pragmatica.aether.http.forward.AccessibilityFilter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage;
 import org.pragmatica.aether.http.security.SecurityValidator;
@@ -3079,11 +3081,16 @@ public interface AetherNode extends ManageableNode {
         // is in scope.
         var transitionJournal = TransitionJournal.transitionJournal();
 
-        membershipFsm.onTransition(record -> onFsmTransition(transitionJournal,
-                                                             quorumLossDetectorRef,
-                                                             membershipFsm,
-                                                             record,
-                                                             config.self()));
+        membershipFsm.onTransition(record -> {
+            // #926 round 2: feed the alert manager the transition CAUSE so it can tell an announced
+            // departure (graceful shutdown — i.e. every rolling restart — or an operator drain) from a
+            // crash. The DEAD edge alone cannot: graceful and abrupt departures both arrive there
+            // through the same `Stopped` transition. Folded into the EXISTING listener because
+            // `onTransition` is a single-listener setter — registering a second one would silently
+            // replace the transition journal.
+            alertManager.noteMembershipTransition(record.nodeId(), record.cause());
+            onFsmTransition(transitionJournal, quorumLossDetectorRef, membershipFsm, record, config.self());
+        });
         // Wave-4 (cluster-topology-overhaul, #245): the MembershipDeltaProjector is the SOLE
         // emitter of MembershipDecision, fed by the FSM's own JOINED/REMOVED delta edge —
         // installed BEFORE the boot seed below so the seeded members' OBSERVED→MEMBER
@@ -3342,6 +3349,7 @@ public interface AetherNode extends ManageableNode {
         // this same death edge — behaviour parity, sampler out of the loop. Without it the nudge
         // would wait for the sampler's natural ~nttDepartureTimeout down-hysteresis crossing.
         Consumer<NodeId> dropDeadPeerLink = clusterNetworkRef::departurePermanent;
+        var departureNotifier = NodeDepartureNotifier.nodeDepartureNotifier(eventAggregator, alertManager, config.self());
 
         membershipFsm.onConfirmedDeparture(departed -> {
             onMembershipDeath(departed,
@@ -3353,9 +3361,16 @@ public interface AetherNode extends ManageableNode {
             // #210: emit the user-facing NODE_FAILED from this ungated DEAD edge — the SAME confirmed-
             // death signal that drives auto-heal above — instead of the quorum-gated
             // MembershipDecision.NodeRemoved, which the MembershipDeltaProjector drops during the
-            // post-kill re-election window so the event never reached /api/events on cloud. Leader-gated
-            // inside the aggregator (fires on every node's FSM; only the leader publishes).
-            eventAggregator.onConfirmedDeparture(departed);
+            // post-kill re-election window so the event never reached /api/events on cloud.
+            // #926: NO LONGER leader-gated inside the aggregator. It was, and a cluster that cannot
+            // elect a leader therefore could not emit the events saying it was broken — measured at
+            // 8 SWIM-confirmed deaths and 0 NodeFailed events over ten days. Now emitted on every
+            // node that confirms the death (see ClusterEventAggregator.onConfirmedDeparture for the
+            // at-least-once-per-observer contract and why a dedup token is the wrong fix).
+            // #926 round 2: both surfaces go through ONE named unit. Written as two statements here,
+            // a probe deleted the alert call and all 1217 tests stayed green — the call site was
+            // deletable with no signal. NodeDepartureNotifier makes the pair testable as a pair.
+            departureNotifier.onConfirmedDeparture(departed);
         });
         // Join-grace leak fix: a CTM-provisioned replacement that boots but NEVER reaches
         // SWIM-healthy within the M10 join-grace window is reaped OBSERVED→DEAD by the FSM, but
@@ -4487,14 +4502,23 @@ public interface AetherNode extends ManageableNode {
     TimeSpan MEMBERSHIP_BASELINE_TRACE_INTERVAL = TimeSpan.timeSpan(30).seconds();
 
     /// Single FSM-transition fan-out installed at the central transition chokepoint
-    /// ([`MembershipFsm#onTransition`], fired once per ACTUAL per-member state change under the FSM's
-    /// synchronized per-member dispatch monitor). Records the transition into the per-node journal
+    /// ([`MembershipFsm#onTransition`], fired once per ACTUAL per-member state change at the FSM's
+    /// central dispatch chokepoint). Records the transition into the per-node journal
     /// (Wave-1 Enrichment A) AND — when the transition crosses the exact-`Member` boundary — re-feeds
     /// the strict-core count to the quorum-loss detector. This prompt re-feed (NOT only the 15s
     /// presence down-hysteresis `onNttReconcile` / DEAD `onMembershipDeath` paths) is what arms the
     /// self-drain window when several cores enter SUSPECT at once, and CANCELS it on a SUSPECT→MEMBER
-    /// refutation. Safe-by-precedent: `onMembershipDeath` already drives the same
-    /// `propagateMemberCount`→`strictCoreMemberCount` chain from inside this same dispatch monitor.
+    /// refutation.
+    ///
+    /// #929: `propagateMemberCount` walks EVERY member calling the `synchronized`
+    /// `MemberTracking.isStrictCoreMember`. Until #929 this listener ran while the FSM held the
+    /// DISPATCHING member's monitor, so this method held one member's monitor and requested all the
+    /// others' — in `ConcurrentHashMap` iteration order. Two of this node's event loops (SWIM
+    /// `onSwimSuspect`, QUIC `onLivenessGone`) dispatching on two different members deadlocked AB/BA,
+    /// wedging both loops. The FSM now publishes with the per-member monitor RELEASED (serialised by
+    /// `MemberTracking.transitionGuard`), which is what makes this member walk safe. The old
+    /// "safe-by-precedent" note here cited `onMembershipDeath` driving the same chain from inside
+    /// that monitor — that was the same defect, not a precedent for it.
     @Contract
     private static void onFsmTransition(TransitionJournal journal,
                                         AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
@@ -5563,9 +5587,19 @@ public interface AetherNode extends ManageableNode {
                                                                     AtomicReference<Option<ManagementServer>> managementServerRef,
                                                                     NodeId self) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
+        // #887 E2/E3: every node derives its security overrides from the replicated blueprint. The
+        // data was already here (AppBlueprintValue carries ExpandedBlueprint.securityOverrides() to
+        // every node, durably); what was missing was a reader, so overrides reached only the node
+        // that served POST /api/v1/blueprints and no other node enforced them.
+        var securityOverrideSynchronizer = SecurityOverrideSynchronizer.securityOverrideSynchronizer(kvStore,
+                                                                                                     appHttpServer::httpRoutePublisher);
         var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                                   .onPut(AetherKey.AppBlueprintKey.class,
                                                          clusterDeploymentManager::onAppBlueprintPut)
+                                                  .onPut(AetherKey.AppBlueprintKey.class,
+                                                         securityOverrideSynchronizer::onAppBlueprintPut)
+                                                  .onRemove(AetherKey.AppBlueprintKey.class,
+                                                            securityOverrideSynchronizer::onAppBlueprintRemove)
                                                   .onPut(AetherKey.SliceTargetKey.class,
                                                          clusterDeploymentManager::onSliceTargetPut)
                                                   .onPut(AetherKey.VersionRoutingKey.class,
@@ -5683,6 +5717,9 @@ public interface AetherNode extends ManageableNode {
                                               deploymentMetricsScheduler::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, scheduledTaskManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, appHttpServer::onQuorumStateChange));
+        // #887 E3: a node that just became ACTIVE restored state it never observed arriving.
+        entries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
+                                              securityOverrideSynchronizer::onQuorumStateChange));
         // E2 Phase 2b (2026-05-28): the consensus-derived `ClusterStateNotification.DISAPPEARED`
         // signal is bridged directly into the §8.2 `DrainProcedure`. Rabia's `Paused` state
         // fires on the same DISAPPEARED signal — both legacy `onQuorumDisappeared` /
@@ -5826,6 +5863,12 @@ public interface AetherNode extends ManageableNode {
         // fires for those, but the fresh QUIC handshake produces a TransportObservation.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
                                               eventAggregator::onPeerJoined));
+        // #926: resolve the node-health alert raised on the DEAD edge when the node comes back. Bound
+        // to the SAME ungated handshake that sources NODE_JOINED, so recovery is exactly as reachable
+        // as the failure it clears — a failure signal whose matching recovery signal is less reachable
+        // leaves a permanently red surface, which trains an operator to ignore it.
+        entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
+                                              msg -> alertManager.clearNodeHealthAlert(msg.nodeId())));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
         // NODE_LEFT (graceful departures) is sourced from MembershipDecision. NODE_FAILED is NO LONGER
         // sourced here (#210) — it now rides the ungated FSM DEAD edge (membershipFsm.onConfirmedDeparture

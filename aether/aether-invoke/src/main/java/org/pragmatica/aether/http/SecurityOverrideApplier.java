@@ -19,50 +19,86 @@ import org.slf4j.LoggerFactory;
 public interface SecurityOverrideApplier {
     Logger LOG = LoggerFactory.getLogger(SecurityOverrideApplier.class);
 
+    /// Publish-path form: resolves every route's override and ANNOUNCES each decision, because a
+    /// publication is a discrete operator-facing event worth one log line per route.
     static List<HttpRouteDefinition> applyOverrides(List<HttpRouteDefinition> routes, SecurityOverrides overrides) {
         if (overrides.isEmpty()) {
             return routes;
         }
 
         return routes.stream()
-                     .map(route -> applyOverrideToRoute(route, overrides))
+                     .map(route -> applyOverrideToRoute(route, overrides, Announce.LOG))
                      .toList();
     }
 
-    private static HttpRouteDefinition applyOverrideToRoute(HttpRouteDefinition route, SecurityOverrides overrides) {
+    /// Request-path form (#887): resolves ONE route's override without logging.
+    ///
+    /// Same rule, same code, different verbosity — the decision below has exactly one
+    /// implementation, and the `Announce` flag chooses only whether it narrates itself. Splitting
+    /// the RULE in two so the request path could stay quiet is precisely how the published entry and
+    /// the local decision came to disagree in the first place; that must not be re-introduced to
+    /// save a log line.
+    ///
+    /// Quiet because this runs per REQUEST: `HttpRoutePublisherImpl.findLocalRoute` calls it on the
+    /// matched route so the hosting node's authorization decision reads the same overridden policy
+    /// the KV entry advertises. Announcing here would emit a line per request.
+    static HttpRouteDefinition applyOverride(HttpRouteDefinition route, SecurityOverrides overrides) {
+        if (overrides.isEmpty()) {
+            return route;
+        }
+
+        return applyOverrideToRoute(route, overrides, Announce.QUIET);
+    }
+
+    /// Whether an override decision narrates itself. Publication announces; per-request resolution
+    /// does not.
+    enum Announce {
+        LOG,
+        QUIET
+    }
+
+    private static HttpRouteDefinition applyOverrideToRoute(HttpRouteDefinition route,
+                                                            SecurityOverrides overrides,
+                                                            Announce announce) {
         return overrides.findMatch(route.httpMethod(),
                                    route.pathPrefix())
                         .map(SecurityPolicy::fromBlueprintString)
                         .map(newPolicy -> applyWithPolicy(route,
                                                           newPolicy,
-                                                          overrides.policy()))
+                                                          overrides.policy(),
+                                                          announce))
                         .or(route);
     }
 
     private static HttpRouteDefinition applyWithPolicy(HttpRouteDefinition route,
                                                        SecurityPolicy newPolicy,
-                                                       SecurityOverridePolicy policy) {
+                                                       SecurityOverridePolicy policy,
+                                                       Announce announce) {
         return switch (policy) {
-            case FULL -> applyAndLog(route, newPolicy);
-            case STRENGTHEN_ONLY -> applyIfStronger(route, newPolicy);
-            case NONE -> rejectOverride(route, newPolicy);
+            case FULL -> applyAndLog(route, newPolicy, announce);
+            case STRENGTHEN_ONLY -> applyIfStronger(route, newPolicy, announce);
+            case NONE -> rejectOverride(route, newPolicy, announce);
         };
     }
 
-    private static HttpRouteDefinition applyIfStronger(HttpRouteDefinition route, SecurityPolicy newPolicy) {
+    private static HttpRouteDefinition applyIfStronger(HttpRouteDefinition route,
+                                                       SecurityPolicy newPolicy,
+                                                       Announce announce) {
         if (route.security() instanceof SecurityPolicy.Unspecified) {
-            return applyToUndeclaredRoute(route, newPolicy);
+            return applyToUndeclaredRoute(route, newPolicy, announce);
         }
 
         if (newPolicy.strength() >= route.security().strength()) {
-            return applyAndLog(route, newPolicy);
+            return applyAndLog(route, newPolicy, announce);
         }
 
-        LOG.warn("Security override rejected (STRENGTHEN_ONLY): {} {} would weaken from {} to {}",
-                 route.httpMethod(),
-                 route.pathPrefix(),
-                 route.security().asString(),
-                 newPolicy.asString());
+        if (announce == Announce.LOG) {
+            LOG.warn("Security override rejected (STRENGTHEN_ONLY): {} {} would weaken from {} to {}",
+                     route.httpMethod(),
+                     route.pathPrefix(),
+                     route.security().asString(),
+                     newPolicy.asString());
+        }
 
         return route;
     }
@@ -77,24 +113,20 @@ public interface SecurityOverrideApplier {
     /// the floor. It is refused. Every other override is applied, where the previous revision refused
     /// them all.
     ///
-    /// ## What this rule does NOT do -- read before relying on it (#866 review G2)
+    /// ## Reach of this rule on the HOSTING node -- CHANGED by #887, read the dates
     ///
-    /// It does not make an operator override effective on the node HOSTING the route. This function's
-    /// output reaches only the replicated KV entry: `HttpRoutePublisher` writes RAW routes into
-    /// `publishedRoutes` and applies overrides into a local `effectiveRoutes` used solely to build
-    /// that entry. The local authorization decision (`AppHttpServer.findRouteSecurityPolicy` ->
-    /// `HttpRoutePublisher.findLocalRoute`) reads `publishedRoutes`, i.e. PRE-override state; and the
-    /// node's own KV entry is excluded from its own `remoteRoutes` by identity, so the overridden
-    /// value cannot arrive that way either.
+    /// Until #887 this rule's output reached ONLY the replicated KV entry, while the hosting node's
+    /// own authorization decision read the raw pre-override routes -- so an override governed
+    /// requests arriving at other nodes and not requests arriving at the node actually serving them.
+    /// The #866 review G2 note recording that is superseded and has been removed rather than left
+    /// standing, because a comment describing a hole that is now closed reads as a live warning.
     ///
-    /// Consequence: an override governs requests that arrive at OTHER nodes (which resolve it from
-    /// the KV entry and enforce it before forwarding) and does NOT govern requests that arrive
-    /// directly at the hosting node. Enforcement depends on which node the client connects to. That
-    /// mis-plumbing is PRE-EXISTING, not introduced here, and is tracked as #887; fixing it means
-    /// deciding where override resolution belongs, which is a design change with its own review.
-    ///
-    /// So: this rule restores the applier's half of the F1 fix -- a strengthening override is no
-    /// longer refused outright -- and does not by itself close the privilege escalation F1 described.
+    /// It now reaches both. `HttpRoutePublisherImpl.findLocalRoute` calls [#applyOverride] on the
+    /// matched route at REQUEST time, so the local decision and the published entry are derived by
+    /// this same function from the same `activeOverrides`. Read-time resolution -- rather than
+    /// applying overrides into `publishedRoutes` at publication -- is deliberate: `activeOverrides`
+    /// changes at runtime, so any second collection holding a pre-resolved copy would be a snapshot
+    /// that can disagree with the current overrides, which is the shape of the original defect.
     ///
     /// ## Residuals this rule leaves open
     ///
@@ -109,27 +141,38 @@ public interface SecurityOverrideApplier {
     ///      (`SecurityError.UNENFORCEABLE_POLICY`); before #866 review G1 they were served with no
     ///      credential inspected at all.
     ///
-    /// Closing 1 and 2 requires the applier to know the global security mode at publish time.
-    private static HttpRouteDefinition applyToUndeclaredRoute(HttpRouteDefinition route, SecurityPolicy newPolicy) {
+    /// Closing 1 and 2 requires the applier to know the global security mode. #887 did NOT close
+    /// them: it changed WHERE this rule is consulted, not WHAT it decides, and `aether-invoke` still
+    /// cannot see `aether-config`'s `SecurityMode` from either call site. They remain open, and they
+    /// remain reachable on the hosting node exactly as they are on any other.
+    private static HttpRouteDefinition applyToUndeclaredRoute(HttpRouteDefinition route,
+                                                              SecurityPolicy newPolicy,
+                                                              Announce announce) {
         if (newPolicy instanceof SecurityPolicy.Public) {
-            LOG.warn("Security override rejected (STRENGTHEN_ONLY): {} {} has no declared policy; "
-                    + "refusing override to {}, which weakens the route under every global security mode",
-                     route.httpMethod(),
-                     route.pathPrefix(),
-                     newPolicy.asString());
+            if (announce == Announce.LOG) {
+                LOG.warn("Security override rejected (STRENGTHEN_ONLY): {} {} has no declared policy; "
+                        + "refusing override to {}, which weakens the route under every global security mode",
+                         route.httpMethod(),
+                         route.pathPrefix(),
+                         newPolicy.asString());
+            }
 
             return route;
         }
 
-        return applyAndLog(route, newPolicy);
+        return applyAndLog(route, newPolicy, announce);
     }
 
-    private static HttpRouteDefinition applyAndLog(HttpRouteDefinition route, SecurityPolicy newPolicy) {
-        LOG.info("Security override applied: {} {} changed from {} to {}",
-                 route.httpMethod(),
-                 route.pathPrefix(),
-                 route.security().asString(),
-                 newPolicy.asString());
+    private static HttpRouteDefinition applyAndLog(HttpRouteDefinition route,
+                                                   SecurityPolicy newPolicy,
+                                                   Announce announce) {
+        if (announce == Announce.LOG) {
+            LOG.info("Security override applied: {} {} changed from {} to {}",
+                     route.httpMethod(),
+                     route.pathPrefix(),
+                     route.security().asString(),
+                     newPolicy.asString());
+        }
 
         return HttpRouteDefinition.httpRouteDefinition(route.httpMethod(),
                                                        route.pathPrefix(),
@@ -138,11 +181,15 @@ public interface SecurityOverrideApplier {
                                                        newPolicy);
     }
 
-    private static HttpRouteDefinition rejectOverride(HttpRouteDefinition route, SecurityPolicy newPolicy) {
-        LOG.warn("Security override rejected (policy=NONE): {} {} override to {} ignored",
-                 route.httpMethod(),
-                 route.pathPrefix(),
-                 newPolicy.asString());
+    private static HttpRouteDefinition rejectOverride(HttpRouteDefinition route,
+                                                      SecurityPolicy newPolicy,
+                                                      Announce announce) {
+        if (announce == Announce.LOG) {
+            LOG.warn("Security override rejected (policy=NONE): {} {} override to {} ignored",
+                     route.httpMethod(),
+                     route.pathPrefix(),
+                     newPolicy.asString());
+        }
 
         return route;
     }

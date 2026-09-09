@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -43,13 +44,26 @@ public interface ClusterController {
     /// Per-artifact scaling blueprint. `maxInstances` (#424) bounds autoscaler scale-up before the
     /// cluster-size cap; `scaleUpThreshold`/`scaleDownThreshold` override the cluster ScalingConfig
     /// tier for this slice when present. All three are optional — absent means "use cluster default".
+    ///
+    /// `owningBlueprint` (#698) carries the `BlueprintId` that owns this slice, mirrored from the
+    /// `SliceTargetValue` that registered it. It exists solely so the autoscaler can write the owner
+    /// back out on a scaling Put instead of erasing it: downstream, `ClusterDeploymentState` resolves
+    /// `schemaRequired` from the owner, and an absent owner silently takes the historical default
+    /// `true`. `none()` here means "genuinely unowned slice", never "owner not carried forward" —
+    /// every value in this field originates from a `SliceTargetValue` observed at
+    /// `ControlLoop.onSliceTargetPut`, the sole feeder of the blueprint map.
     record Blueprint(Artifact artifact,
                      int instances,
                      int minInstances,
+                     Option<BlueprintId> owningBlueprint,
                      Option<Integer> maxInstances,
                      Option<Double> scaleUpThreshold,
                      Option<Double> scaleDownThreshold) {
         public Blueprint {
+            if (owningBlueprint == null) {
+                owningBlueprint = Option.none();
+            }
+
             if (maxInstances == null) {
                 maxInstances = Option.none();
             }
@@ -63,8 +77,16 @@ public interface ClusterController {
             }
         }
 
+        /// Unowned-slice factory: `owningBlueprint` is `none()` because the slice genuinely has no
+        /// owning blueprint, not because the caller declined to carry one forward (#698).
         public static Blueprint blueprint(Artifact artifact, int instances, int minInstances) {
-            return new Blueprint(artifact, instances, minInstances, Option.none(), Option.none(), Option.none());
+            return new Blueprint(artifact,
+                                 instances,
+                                 minInstances,
+                                 Option.none(),
+                                 Option.none(),
+                                 Option.none(),
+                                 Option.none());
         }
     }
 

@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -43,6 +44,7 @@ import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.routing.SliceVersionRegistry;
 import org.pragmatica.http.routing.VersioningMetricsSink;
 import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -144,6 +146,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     private final RouteMetadataExtractor routeMetadataExtractor = RouteMetadataExtractor.routeMetadataExtractor();
 
     private final AtomicReference<SecurityOverrides> activeOverrides = new AtomicReference<>(SecurityOverrides.EMPTY);
+
+    /// Set when a republish fails, so an identical later resync retries instead of short-circuiting.
+    private final AtomicBoolean republishFailed = new AtomicBoolean(false);
 
     private final AtomicReference<ObservabilityCellRegistrar> cellRegistrar = new AtomicReference<>(ObservabilityCellRegistrar.NOOP);
 
@@ -292,14 +297,73 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                                .hasNext();
     }
 
+    /// Overrides take effect on the LOCAL authorization decision immediately, because
+    /// `findLocalRoute` resolves them at request time against this reference -- no republication is
+    /// needed for enforcement (#887 acceptance 3).
+    ///
+    /// The republication below exists for the REPORTED state (#887 acceptance 4): `GET
+    /// /api/v1/routes` answers from the replicated KV entries, and those were written when the
+    /// routes were published. Without this, an override changed at runtime would leave every node's
+    /// entry -- and the management API's answer -- advertising the previous policy.
+    ///
+    /// Honest guarantee, per operation. ENFORCEMENT on this node changes atomically with the `set`
+    /// below. The REPORTED state converges after one consensus apply, which always settles:
+    /// `publishRoutesToCluster` -> `applyWithRetry` bounds it at CONSENSUS_OPERATION_TIMEOUT x
+    /// (1 + CONSENSUS_MAX_RETRIES) == 90s worst case, then fails loudly. During that window the two
+    /// can disagree, and the direction matters: STRENGTHENING an override enforces before it is
+    /// reported (the report understates protection -- safe), while WEAKENING or REMOVING one is
+    /// enforced before the report stops advertising the stronger policy. That second direction is
+    /// the one an operator can be misled by, and it is bounded by the same 90s, not eliminated.
     @Override
     public Unit updateSecurityOverrides(SecurityOverrides overrides) {
-        activeOverrides.set(overrides);
+        var previous = activeOverrides.getAndSet(overrides);
+
+        if (overrides.equals(previous) && !republishFailed.get()) {
+            return Unit.unit();
+        }
+
         log.info("Updated security overrides: {} entries, policy={}",
                  overrides.entries().size(),
                  overrides.policy());
+        republishAllRoutes();
 
         return Unit.unit();
+    }
+
+    /// Republish only when the overrides actually CHANGED, or when the previous attempt failed.
+    ///
+    /// `SecurityOverrides` is a record over a list and an enum, so value equality is exact and free.
+    /// Without this guard the call is unconditional, and `SecurityOverrideSynchronizer.resync` runs
+    /// once per notification on EVERY node: one `AppBlueprintKey` put anywhere would make every node
+    /// rewrite every local artifact's route entry through consensus, and `KVStore.reset()` — which
+    /// emits one `ValueRemove` per key — would multiply that by the number of keys, during a
+    /// state-machine reset. That is load, not divergence (`publishRoutesToCluster` writes
+    /// `NodeRoutesKey`, never `AppBlueprintKey`, so there is no feedback loop), but it is load
+    /// proportional to cluster size times blueprint count times artifact count.
+    ///
+    /// The `republishFailed` half is why this is not a bare equality check. A republish that failed
+    /// left the KV entry advertising the previous policy; short-circuiting a later identical resync
+    /// would strand it there until the next genuine change, quietly converting a transient consensus
+    /// failure into a permanent divergence between enforced and reported state. The flag makes the
+    /// next resync — a blueprint change or an ACTIVE edge, both of which recur — retry it instead.
+    /// The flag is racy under concurrent rounds by construction, and the race is benign in the safe
+    /// direction: the worst outcome is one redundant republish.
+    private void republishAllRoutes() {
+        republishFailed.set(false);
+        publishedRoutes.forEach(this::republishRoutes);
+    }
+
+    private void republishRoutes(Artifact artifact, List<HttpRouteDefinition> routes) {
+        publishRoutesToCluster(routes, artifact).onFailure(cause -> recordRepublishFailure(artifact, cause));
+    }
+
+    private void recordRepublishFailure(Artifact artifact, Cause cause) {
+        republishFailed.set(true);
+        log.error("Failed to republish routes for {} after a security-override update: {} -- this node ENFORCES the "
+                 + "new overrides, but its cluster route entry still advertises the previous policy. The next override "
+                 + "change or ACTIVE edge will retry.",
+                  artifact,
+                  cause.message());
     }
 
     private Promise<Unit> publishRoutesToCluster(List<HttpRouteDefinition> routes, Artifact artifact) {
@@ -501,14 +565,25 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         return Option.none();
     }
 
+    /// #887: the matched route's security policy is resolved against the CURRENT overrides here,
+    /// at read time, because this is the value the hosting node's authorization decision uses
+    /// (`AppHttpServer.findRouteSecurityPolicy`). `publishedRoutes` deliberately keeps the RAW
+    /// routes: they are the input to the override rule, not its output, and storing a pre-resolved
+    /// copy alongside them would create a second collection that goes stale the moment
+    /// `updateSecurityOverrides` runs -- which is the defect this fixes, re-introduced one layer up.
+    ///
+    /// One `activeOverrides.get()` for the whole scan, so a concurrent `updateSecurityOverrides`
+    /// cannot make a single lookup resolve two different routes against two different override sets.
     @Override
     public Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path) {
         var normalizedPath = normalizePath(path);
+        var overrides = activeOverrides.get();
 
         for (var routes : publishedRoutes.values()) {
             for (var route : routes) {
                 if (route.httpMethod().equalsIgnoreCase(httpMethod) && normalizedPath.startsWith(route.pathPrefix())) {
-                    return Option.some(LocalRouteInfo.localRouteInfo(route));
+                    return Option.some(LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(route,
+                                                                                                           overrides)));
                 }
             }
         }

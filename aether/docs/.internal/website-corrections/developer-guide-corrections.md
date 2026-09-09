@@ -322,7 +322,14 @@ This is correct but incomplete. Should also mention:
 
 ## 11. Feature Count Discrepancy
 
-Website mentions "172 capabilities" in the feature catalog reference. Repo has 173.
+Website mentions "172 capabilities" in the feature catalog reference.
+
+**Retired 2026-09-08 (#928).** The "173" recorded here matches nothing at this tip, as does the
+"268 rows / ~230" belief carried in the CTO handovers. The catalog now generates its own count from
+its rows (`scripts/catalog-stats.sh`): **227 feature rows -- 171 Complete, 24 Partial, 23
+Battle-tested, 9 Planned.** Every one of those counts a *claim* a row makes about itself; none has
+been verified against the code (row 39 claims `Alert management | Complete` while `AlertForwarder`
+is never constructed in production, #926). Do not re-derive this figure by hand -- run the script.
 
 ---
 
@@ -339,4 +346,4 @@ Website mentions "172 capabilities" in the feature catalog reference. Repo has 1
 | **Medium** | Config priority table | Verify `META-INF/config.toml` vs `resources.toml`, verify `[app.*]` prefix |
 | **Medium** | Config update return type | Verify `Result<Unit>` vs `Promise<Unit>` |
 | **Medium** | Interceptor code example missing | Add `@ResourceQualifier(type = MethodInterceptor.class)` pattern |
-| **Low** | Feature count | Update "172" → "173" |
+| **Low** | Feature count | Update "172" → "227 feature rows (claimed, not verified)"; see §11 and `scripts/catalog-stats.sh` |

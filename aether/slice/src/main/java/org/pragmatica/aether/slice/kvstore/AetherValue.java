@@ -255,7 +255,44 @@ public sealed interface AetherValue {
     record DeploymentOutcomeValue(DeploymentOutcomeStatus status,
                                   List<String> failingSlices,
                                   String cause,
-                                  long timestampMs) implements AetherValue {
+                                  long timestampMs,
+                                  long outcomeVersion) implements AetherValue, VersionFenced {
+        /// The first version of a chain — the value written when no outcome record is committed yet.
+        /// The applier does not fence a first write (there is no chain to fence), so this constant is
+        /// what every write against an absent key carries.
+        public static final long FIRST_VERSION = 1L;
+
+        public DeploymentOutcomeValue {
+            failingSlices = List.copyOf(failingSlices);
+        }
+
+        /// Lost-update fence version (RFC-0018, #570) — added for #805 item 2.
+        ///
+        /// `recordBestEffortFailureOutcome` merges a newly-failed slice into this record by READING
+        /// the committed value and PUTTING a merged one. The read happens when the command is built;
+        /// the Put applies later, after consensus. Two BEST_EFFORT slice failures that are both
+        /// in flight before either applies therefore both read the same base and each Put the other's
+        /// id away — and the loser is decided by SHA-256 batch-id order (`RabiaEngine.pendingBatches`
+        /// is a `ConcurrentSkipListMap` keyed by a content hash and every proposal site takes
+        /// `firstEntry()`), NOT by submission order, so this is a coin flip on the happy path rather
+        /// than a narrow window needing a failed consensus round.
+        ///
+        /// Fencing the record makes the applier reject the second writer instead of letting it
+        /// silently overwrite the first. Rejection alone does not preserve the id — the write is
+        /// simply dropped — so the merge path pairs this with a bounded re-read-and-retry after its
+        /// apply resolves, which is the confirmation protocol [VersionFenced] itself prescribes.
+        ///
+        /// **Every writer of this record must derive its version from the CURRENT committed value and
+        /// bump by exactly one.** `ClusterDeploymentState.Active.nextOutcomeVersion` is that
+        /// derivation; all four production write sites go through it.
+        @Override
+        public long fenceVersion() {
+            return outcomeVersion;
+        }
+
+        /// First-write forms, carrying [#FIRST_VERSION]. Correct only against an absent key — a
+        /// writer that may find a committed record must use the version-carrying overload, because
+        /// the applier rejects any non-successor write.
         /// #963 — written by `BlueprintService` in the SAME consensus batch as the blueprint's own
         /// `AppBlueprintKey` Put, replacing the bare `Remove` that used to clear a stale terminal.
         /// It clears the stale record exactly as the `Remove` did AND records that this attempt
@@ -263,26 +300,65 @@ public sealed interface AetherValue {
         ///
         /// `startedAtMs` is the apply's start, not a terminal's timestamp — it is what any
         /// deadline-based abandonment must measure from.
+        ///
+        /// **MERGE #956 (#805 item 2):** this record became [VersionFenced] while #963 was in
+        /// flight, so the first-write form below is correct ONLY against an absent key. The publish
+        /// paths that call it write over a POSSIBLY-COMMITTED record — clearing a stale terminal is
+        /// their whole purpose — so they must use the version-carrying overload, or the applier
+        /// rejects the write and the stale terminal survives. `BlueprintService.nextOutcomeVersion`
+        /// is that derivation.
         public static DeploymentOutcomeValue inProgress(long startedAtMs) {
-            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.IN_PROGRESS, List.of(), "", startedAtMs);
+            return inProgress(startedAtMs, FIRST_VERSION);
+        }
+
+        public static DeploymentOutcomeValue inProgress(long startedAtMs, long outcomeVersion) {
+            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.IN_PROGRESS,
+                                              List.of(),
+                                              "",
+                                              startedAtMs,
+                                              outcomeVersion);
         }
 
         public static DeploymentOutcomeValue succeeded(long timestampMs) {
-            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.SUCCEEDED, List.of(), "", timestampMs);
+            return succeeded(timestampMs, FIRST_VERSION);
         }
 
         public static DeploymentOutcomeValue failed(List<String> failingSlices, String cause, long timestampMs) {
-            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.FAILED,
-                                              List.copyOf(failingSlices),
-                                              cause,
-                                              timestampMs);
+            return failed(failingSlices, cause, timestampMs, FIRST_VERSION);
         }
 
         public static DeploymentOutcomeValue rolledBack(List<String> failingSlices, String cause, long timestampMs) {
-            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.ROLLED_BACK,
-                                              List.copyOf(failingSlices),
+            return rolledBack(failingSlices, cause, timestampMs, FIRST_VERSION);
+        }
+
+        public static DeploymentOutcomeValue succeeded(long timestampMs, long outcomeVersion) {
+            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.SUCCEEDED,
+                                              List.of(),
+                                              "",
+                                              timestampMs,
+                                              outcomeVersion);
+        }
+
+        public static DeploymentOutcomeValue failed(List<String> failingSlices,
+                                                    String cause,
+                                                    long timestampMs,
+                                                    long outcomeVersion) {
+            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.FAILED,
+                                              failingSlices,
                                               cause,
-                                              timestampMs);
+                                              timestampMs,
+                                              outcomeVersion);
+        }
+
+        public static DeploymentOutcomeValue rolledBack(List<String> failingSlices,
+                                                        String cause,
+                                                        long timestampMs,
+                                                        long outcomeVersion) {
+            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.ROLLED_BACK,
+                                              failingSlices,
+                                              cause,
+                                              timestampMs,
+                                              outcomeVersion);
         }
     }
 
