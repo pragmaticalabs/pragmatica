@@ -14,6 +14,7 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
+import org.pragmatica.aether.slice.SliceLoadingFailure.Unrecognised;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -292,6 +293,32 @@ public sealed interface AetherValue {
         /// First-write forms, carrying [#FIRST_VERSION]. Correct only against an absent key — a
         /// writer that may find a committed record must use the version-carrying overload, because
         /// the applier rejects any non-successor write.
+        /// #963 — written by `BlueprintService` in the SAME consensus batch as the blueprint's own
+        /// `AppBlueprintKey` Put, replacing the bare `Remove` that used to clear a stale terminal.
+        /// It clears the stale record exactly as the `Remove` did AND records that this attempt
+        /// started, so "no terminal yet" becomes a positive fact instead of an absence.
+        ///
+        /// `startedAtMs` is the apply's start, not a terminal's timestamp — it is what any
+        /// deadline-based abandonment must measure from.
+        ///
+        /// **MERGE #956 (#805 item 2):** this record became [VersionFenced] while #963 was in
+        /// flight, so the first-write form below is correct ONLY against an absent key. The publish
+        /// paths that call it write over a POSSIBLY-COMMITTED record — clearing a stale terminal is
+        /// their whole purpose — so they must use the version-carrying overload, or the applier
+        /// rejects the write and the stale terminal survives. `BlueprintService.nextOutcomeVersion`
+        /// is that derivation.
+        public static DeploymentOutcomeValue inProgress(long startedAtMs) {
+            return inProgress(startedAtMs, FIRST_VERSION);
+        }
+
+        public static DeploymentOutcomeValue inProgress(long startedAtMs, long outcomeVersion) {
+            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.IN_PROGRESS,
+                                              List.of(),
+                                              "",
+                                              startedAtMs,
+                                              outcomeVersion);
+        }
+
         public static DeploymentOutcomeValue succeeded(long timestampMs) {
             return succeeded(timestampMs, FIRST_VERSION);
         }
@@ -357,7 +384,23 @@ public sealed interface AetherValue {
     enum DeploymentOutcomeStatus {
         SUCCEEDED,
         FAILED,
-        ROLLED_BACK
+        ROLLED_BACK,
+        /// #963 — the apply has STARTED and has not reached a terminal.
+        ///
+        /// Appended deliberately: the generated enum codec is
+        /// `writeCompact(buf, value.ordinal())` / `values()[readCompact(buf)]`, so a constant added
+        /// anywhere but the end silently remaps every existing value. Appending is the only safe
+        /// position, and even then a node that predates this constant drops any message carrying it
+        /// (#964 — pre-GA that is accepted; post-GA the discipline is add-only).
+        ///
+        /// This is the record that makes deployment permanence gate on PRESENCE rather than absence.
+        /// The paragraph above on this class already warned that an absent key "means 'no attempt
+        /// reached a terminal write,' which is indistinguishable, from this record alone, from 'no
+        /// attempt was ever made.'" Five rounds of #924 each condemned a deployment on that
+        /// indistinguishable absence. Written at apply START, where the writer is guaranteed to run
+        /// and lands atomically with the `AppBlueprintKey` Put, rather than at completion, where it
+        /// may never run at all.
+        IN_PROGRESS
     }
 
     record SliceNodeValue(SliceState state, Option<String> failureReason, boolean fatal, long transitionedAt) implements AetherValue {
@@ -369,8 +412,12 @@ public sealed interface AetherValue {
             return new SliceNodeValue(state, none(), false, transitionedAt);
         }
 
-        public static SliceNodeValue failedSliceNodeValue(Cause cause) {
-            var classified = SliceLoadingFailure.classify(cause);
+        /// #930 — `unrecognised` is the permanence this raise site declares for a cause the
+        /// classifier does not recognise. There is no single-argument form: the `fatal` flag this
+        /// builds crosses consensus and decides whether the leader rolls a blueprint back, so a
+        /// raise site must state its intent rather than inherit one.
+        public static SliceNodeValue failedSliceNodeValue(Cause cause, Unrecognised unrecognised) {
+            var classified = SliceLoadingFailure.classify(cause, unrecognised);
 
             return new SliceNodeValue(SliceState.FAILED,
                                       Option.option(classified.message()),
@@ -1019,8 +1066,18 @@ public sealed interface AetherValue {
             return new NodeArtifactValue(state, Option.none(), false, 0, List.of(), transitionedAt);
         }
 
-        public static NodeArtifactValue failedNodeArtifactValue(Cause cause) {
-            var classified = SliceLoadingFailure.classify(cause);
+        /// #930 — carries the same explicit `unrecognised` disposition as
+        /// [SliceNodeValue#failedSliceNodeValue(Cause, Unrecognised)], for the same reason.
+        ///
+        /// **No production caller reaches this factory.** Both production sites that build a FAILED
+        /// `NodeArtifactValue` — `NodeDeploymentState.updateSliceStateWithRetry` and
+        /// `updateSliceStateWithExtraCommandsAndRetry` — construct the record directly, copying
+        /// `fatal` across from the already-classified `SliceNodeValue` rather than re-classifying.
+        /// So the `fatal` flag is decided exactly once per failure, at `failedSliceNodeValue`. Kept
+        /// with the explicit parameter rather than deleted so that a future caller cannot reach a
+        /// silent default through it either.
+        public static NodeArtifactValue failedNodeArtifactValue(Cause cause, Unrecognised unrecognised) {
+            var classified = SliceLoadingFailure.classify(cause, unrecognised);
 
             return new NodeArtifactValue(SliceState.FAILED,
                                          Option.option(classified.message()),

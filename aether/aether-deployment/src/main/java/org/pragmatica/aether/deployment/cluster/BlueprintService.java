@@ -315,6 +315,108 @@ class BlueprintServiceInstance implements BlueprintService {
         return result;
     }
 
+    /// #963 × #956 — the apply-start record, carrying the SUCCESSOR fence version.
+    ///
+    /// `DeploymentOutcomeValue` became [VersionFenced] in #805 item 2 while #963 was in flight, and
+    /// the applier rejects any write whose version is not the immediate successor of the committed
+    /// one. The two publish paths write this record over a **possibly-committed** value — replacing a
+    /// stale terminal is precisely why the write exists — so the first-write form
+    /// (`inProgress(startedAtMs)`, carrying `FIRST_VERSION`) is wrong here: against an existing
+    /// record the applier would drop it silently and the stale terminal would survive, defeating
+    /// both #818 and #963's presence-gate, which would then read the PREVIOUS attempt's status.
+    ///
+    /// Mirrors `ClusterDeploymentState.Active.nextOutcomeVersion`, which is the same derivation for
+    /// the FSM's own write sites.
+    ///
+    /// **This is a read-then-write, the lost-update shape #956 fences, so it is paired with the same
+    /// bounded confirm-and-retry — see [#confirmOutcomeStart].**
+    ///
+    /// An earlier version of this argued no retry was needed, because every racing writer produces
+    /// an identical value (IN_PROGRESS, empty `failingSlices`, empty cause) differing only in
+    /// `startedAtMs`, so losing one loses nothing. **That premise covers publish racing publish and
+    /// does not reach publish racing a TERMINAL write.** Nothing orders the two: terminals are
+    /// written from four sites in `ClusterDeploymentState.Active`, driven asynchronously by KV
+    /// notifications, while a publish is admitted by the Management API with no in-flight gate. A
+    /// redeploy of id X issued while the previous apply of X is still settling therefore races its
+    /// completion — and those two writers do NOT produce the same value. If the terminal wins, the
+    /// publish's IN_PROGRESS is dropped, the previous attempt's terminal survives, and
+    /// `applyNotYetTerminal` reads it as the state of the NEW apply. That is #818 broken and #963's
+    /// gate reading the wrong attempt.
+    /// Retry budget for the fenced apply-start write, mirroring
+    /// `ClusterDeploymentState.Active.MAX_OUTCOME_MERGE_ATTEMPTS`. Each attempt re-reads committed
+    /// state, so this bounds CONTENTION, not transport failure.
+    int MAX_OUTCOME_START_ATTEMPTS = 5;
+
+    private AetherValue.DeploymentOutcomeValue startedOutcome(BlueprintId id) {
+        var successor = outcome(id).map(AetherValue.DeploymentOutcomeValue::outcomeVersion)
+                               .map(version -> version + 1)
+                               .or(AetherValue.DeploymentOutcomeValue.FIRST_VERSION);
+
+        return AetherValue.DeploymentOutcomeValue.inProgress(System.currentTimeMillis(), successor);
+    }
+
+    /// The confirmation step [VersionFenced] prescribes, and the reason the publish path is safe
+    /// against a racing terminal write.
+    ///
+    /// A fenced rejection mutates nothing, emits no notification and does NOT fail the batch it rode
+    /// in — `KVStore.handlePut` returns the committed value untouched — so `cluster.apply`
+    /// succeeding says nothing about whether the apply-start record landed. The only way to know is
+    /// to re-read committed state after the apply resolves.
+    ///
+    /// "Landed" is `status == IN_PROGRESS`, not "the value I wrote". A competing PUBLISH writes an
+    /// identical record, so its win is as good as ours and needs no retry; a competing TERMINAL
+    /// leaves SUCCEEDED/FAILED/ROLLED_BACK, which is the case that must retry — and it retries with
+    /// a freshly derived successor, so it makes progress against a moving committed version.
+    ///
+    /// Bounded, for the same reason #956 bounds its merge: each attempt is a fresh read, so progress
+    /// needs only that some attempt find no competing writer, and a budget stops a pathological
+    /// contender turning a publish into an unbounded resubmission loop. Exhaustion FAILS the publish
+    /// rather than returning success — a caller told its blueprint published, whose apply-start
+    /// record never landed, would be told the opposite of the truth.
+    private Promise<ExpandedBlueprint> confirmOutcomeStart(ExpandedBlueprint expanded, int attempt) {
+        if (outcomeStartLanded(expanded.id())) {
+            return Promise.success(expanded);
+        }
+
+        if (attempt >= MAX_OUTCOME_START_ATTEMPTS) {
+            // #963 F3: the blueprint is ALREADY COMMITTED when this fires — it landed in the first
+            // batch and only the outcome write was fenced out. "The publish failed" is therefore true
+            // of the record and FALSE of the blueprint, and saying only the former sends an operator
+            // looking for a deployment that is in fact live. Compensating by removing the blueprint
+            // was considered and rejected: it would tear down a possibly-running deployment to tidy
+            // up a bookkeeping failure, trading a legible degraded state for an outage on the rarest
+            // path in this change.
+            log.error("Blueprint {} IS PUBLISHED AND LIVE, but its apply-start record was fenced out after"
+                     + " {} attempts by terminal writes for a previous apply. Consequence: this apply"
+                     + " carries the PREVIOUS attempt's outcome, so retry exhaustion will not condemn it"
+                     + " and the blueprint status route reports that older outcome. Remedy: re-publish {}"
+                     + " — the retry re-derives against current committed state and normally wins.",
+                      expanded.id().asString(),
+                      attempt,
+                      expanded.id().asString());
+
+            return Causes.cause("Blueprint " + expanded.id()
+                                                       .asString()
+                               + " is published and live, but its apply-start record could not be written after " + attempt
+                               + " attempts — it carries the previous apply's outcome until re-published").promise();
+        }
+
+        log.debug("Apply-start record for blueprint {} was fenced out (attempt {}), retrying against the"
+                 + " current committed value",
+                  expanded.id().asString(),
+                  attempt);
+
+        return cluster.apply(List.<KVCommand<AetherKey>> of(new Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                                                      startedOutcome(expanded.id()))))
+                      .flatMap(_ -> confirmOutcomeStart(expanded, attempt + 1));
+    }
+
+    private boolean outcomeStartLanded(BlueprintId id) {
+        return outcome(id).map(AetherValue.DeploymentOutcomeValue::status)
+                      .filter(status -> status == AetherValue.DeploymentOutcomeStatus.IN_PROGRESS)
+                      .isPresent();
+    }
+
     @Override
     public Promise<Unit> delete(BlueprintId id) {
         return removeFromStore(AetherKey.AppBlueprintKey.appBlueprintKey(id)).onFailure(cause -> log.warn("Failed to delete blueprint {}: {}",
@@ -368,7 +470,7 @@ class BlueprintServiceInstance implements BlueprintService {
         var commands = buildAllCommands(expanded, resourcesConfig, roleHints, migrations, artifactCoords, registerOnly);
 
         return cluster.apply(commands)
-                      .map(_ -> expanded);
+                      .flatMap(_ -> confirmOutcomeStart(expanded, 0));
     }
 
     /// Deploy-time single-migrator gate. Every datasource this artifact declares migrations for must
@@ -431,7 +533,11 @@ class BlueprintServiceInstance implements BlueprintService {
         // for `DeploymentOutcomeKey` changes (unlike `AppBlueprintKey`'s `handleAppBlueprintChange`/
         // `handleAppBlueprintRemoval`), so this Remove's position in the batch relative to the Put
         // above is NOT load-bearing — nothing subscribes to either notification.
-        commands.add(new Remove<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id())));
+        // #963: was a bare Remove. A Put of IN_PROGRESS clears the stale terminal exactly as the
+        // Remove did AND records that THIS attempt started, so "no terminal yet" is a positive fact
+        // rather than an absence. Absence was what five rounds of #924 condemned deployments on.
+        commands.add(new Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                               startedOutcome(expanded.id())));
         // Slice META-INF/resources.toml is intentionally NOT published to KV — it is local to
         // each node and applied via the per-slice intrinsic config layer at slice load
         // (see SliceStore.loadSlice). The resourcesConfig parameter is kept here because the
@@ -607,10 +713,13 @@ class BlueprintServiceInstance implements BlueprintService {
         // the new attempt's own terminal write. Bundled into the SAME batch as the Put for the same
         // reason as buildAllCommands's Remove: no FSM event is wired to DeploymentOutcomeKey, so
         // position within the batch is not load-bearing.
-        var outcomeClear = new Remove<AetherKey>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()));
+        // #963: same substitution as buildAllCommands — the stale terminal is replaced by a positive
+        // IN_PROGRESS marking this attempt's start, in the SAME batch as the blueprint Put.
+        KVCommand<AetherKey> outcomeStart = new Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                                      startedOutcome(expanded.id()));
 
-        return cluster.apply(List.of(command, outcomeClear))
-                      .map(_ -> expanded);
+        return cluster.apply(List.of(command, outcomeStart))
+                      .flatMap(_ -> confirmOutcomeStart(expanded, 0));
     }
 
     private Promise<Unit> removeFromStore(AetherKey.AppBlueprintKey key) {
