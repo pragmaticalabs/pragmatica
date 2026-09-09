@@ -447,12 +447,27 @@ class BlueprintServiceTest {
                         + "grouping assertion below would be vacuously satisfiable by its absence")
                     .isNotEmpty();
             assertThat(batchesContainingBoth(blueprintKey, outcomeKey))
-                    .as("#759 invariant: the blueprint Put and the outcome Remove must travel in ONE "
+                    .as("#759 invariant: the blueprint write and the outcome write must travel in ONE "
                         + "consensus batch. Split across two applies, a reader between them sees a "
                         + "blueprint present WITH the previous attempt's terminal record — and "
                         + "deploymentApplyOutstanding would then be reading a state the mechanism "
                         + "is supposed to make unobservable")
                     .hasSize(1);
+            // #963 F2 — assert the COMMAND, not merely the key. Keying alone cannot distinguish the
+            // #963 Put of IN_PROGRESS from the pre-#963 Remove, so reverting the publish paths to a
+            // Remove left this test green: `confirmOutcomeStart` then writes the record on a LATER
+            // apply, repairing the end state while silently losing #759's same-batch property. The
+            // retry makes the system robust in a way that hid the breakage from the mutation that
+            // used to catch it, and this line is what restores the discrimination.
+            assertThat(batchesContainingBoth(blueprintKey, outcomeKey).getFirst()
+                                                                      .stream()
+                                                                      .filter(command -> outcomeKey.equals(command.key()))
+                                                                      .toList())
+                    .as("the outcome write in that batch must be a Put of the apply-start record — a "
+                        + "Remove satisfies the key-level assertion above while leaving the record to "
+                        + "be written later, outside the batch #759 guarantees")
+                    .singleElement()
+                    .isInstanceOf(KVCommand.Put.class);
         }
 
         /// The same grouping on the deletion path (`removeFromStore`). A blueprint whose

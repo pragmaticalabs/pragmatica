@@ -383,6 +383,19 @@ class BlueprintPublishOwnershipTest {
                         + "must land in the SAME cluster.apply batch, not merely both somewhere in "
                         + "this node's apply history")
                     .isTrue();
+            // #963 F2 — assert the COMMAND, not merely the key. Key-level matching cannot tell the
+            // #963 Put of the apply-start record from the pre-#963 Remove, so reverting this path to
+            // a Remove left this test green: `confirmOutcomeStart` writes the record on a LATER
+            // apply, repairing the end state while silently losing the same-batch property this
+            // test exists to pin. The retry made the system robust in a way that hid the breakage
+            // from the mutation that used to catch it.
+            assertThat(outcomeCommandInSameBatchAs(AppBlueprintKey.appBlueprintKey(OWNER),
+                                                   AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(OWNER))
+                               .map(command -> command instanceof KVCommand.Put))
+                    .as("buildAllCommands's outcome write in that batch must be a Put of the apply-start "
+                        + "record — a Remove satisfies the key-level assertion above while leaving the "
+                        + "record to be written outside the guaranteed batch")
+                    .isEqualTo(Option.some(true));
         }
 
         @Test
@@ -396,6 +409,19 @@ class BlueprintPublishOwnershipTest {
                     .as("storeBlueprintWithKey's Put and its DeploymentOutcomeKey Remove must land in "
                         + "the SAME batch")
                     .isTrue();
+            // #963 F2 — assert the COMMAND, not merely the key. Key-level matching cannot tell the
+            // #963 Put of the apply-start record from the pre-#963 Remove, so reverting this path to
+            // a Remove left this test green: `confirmOutcomeStart` writes the record on a LATER
+            // apply, repairing the end state while silently losing the same-batch property this
+            // test exists to pin. The retry made the system robust in a way that hid the breakage
+            // from the mutation that used to catch it.
+            assertThat(outcomeCommandInSameBatchAs(AppBlueprintKey.appBlueprintKey(OWNER),
+                                                   AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(OWNER))
+                               .map(command -> command instanceof KVCommand.Put))
+                    .as("storeBlueprintWithKey's outcome write in that batch must be a Put of the apply-start "
+                        + "record — a Remove satisfies the key-level assertion above while leaving the "
+                        + "record to be written outside the guaranteed batch")
+                    .isEqualTo(Option.some(true));
         }
 
         @Test
@@ -593,6 +619,17 @@ class BlueprintPublishOwnershipTest {
                 return new Metrics(0, 0, 0L);
             }
         };
+    }
+
+    /// The outcome-key command riding in the same batch as `blueprintKey`, so a test can assert its
+    /// TYPE rather than only its presence.
+    private Option<KVCommand<AetherKey>> outcomeCommandInSameBatchAs(AetherKey blueprintKey, AetherKey outcomeKey) {
+        return cluster.batches.stream()
+                              .filter(batch -> batch.stream().anyMatch(command -> blueprintKey.equals(command.key())))
+                              .flatMap(batch -> batch.stream().filter(command -> outcomeKey.equals(command.key())))
+                              .findFirst()
+                              .map(Option::some)
+                              .orElseGet(Option::none);
     }
 
     private static final class TestClusterNode implements ClusterNode<KVCommand<AetherKey>> {
