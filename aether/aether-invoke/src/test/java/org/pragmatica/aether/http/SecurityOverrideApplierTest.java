@@ -246,4 +246,47 @@ class SecurityOverrideApplierTest {
             assertThat(result.get(2).security()).isInstanceOf(SecurityPolicy.Public.class);
         }
     }
+
+    /// #964, fail closed. `applyWithPolicy` switches on the policy, and before the sentinel existed a
+    /// policy decoded from a peer running a newer `SecurityOverridePolicy` could not be represented at
+    /// all. Now it can, and what it must mean is REFUSE: an unreadable policy is not authority to
+    /// weaken a route's security.
+    ///
+    /// Asserted against the WEAKENING case specifically, because that is the one where a wrong answer
+    /// is a security regression — a `FULL`-shaped fall-through here would silently downgrade an
+    /// authenticated route to public on the say-so of a value this node never understood.
+    @Nested
+    class UnknownPolicyRefusesEveryOverride {
+
+        @Test
+        void applyOverrides_refusesWeakening_withUnknownPolicy() {
+            var routes = List.of(route("GET", "/api/v1/urls/", SecurityPolicy.authenticated()));
+            var overrides = SecurityOverrides.securityOverrides(
+                List.of(SecurityOverrides.Entry.entry("GET /api/v1/urls/*", "public")),
+                SecurityOverridePolicy.UNKNOWN
+            );
+
+            var result = SecurityOverrideApplier.applyOverrides(routes, overrides);
+
+            assertThat(result).hasSize(1);
+            assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.Authenticated.class);
+        }
+
+        /// Refusal is total, not "refuse only downgrades". STRENGTHEN_ONLY would have allowed this one,
+        /// so this is what separates UNKNOWN from the nearest legitimate policy rather than merely
+        /// showing it is not FULL.
+        @Test
+        void applyOverrides_refusesStrengthening_withUnknownPolicy() {
+            var routes = List.of(route("GET", "/api/v1/urls/", SecurityPolicy.publicRoute()));
+            var overrides = SecurityOverrides.securityOverrides(
+                List.of(SecurityOverrides.Entry.entry("GET /api/v1/urls/*", "authenticated")),
+                SecurityOverridePolicy.UNKNOWN
+            );
+
+            var result = SecurityOverrideApplier.applyOverrides(routes, overrides);
+
+            assertThat(result).hasSize(1);
+            assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.Public.class);
+        }
+    }
 }

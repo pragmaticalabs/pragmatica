@@ -57,6 +57,12 @@ public final class QuicTransportMetrics {
     /// stream lane after the pipeline has already stripped QUIC/TLS overhead. Symmetric with
     /// [#bytesSent] on the same honesty boundary.
     private final LongAdder bytesReceived = new LongAdder();
+    /// #964: inbound messages DROPPED because their type tag names no codec on this node — the
+    /// signature of a peer running a codec version this node does not have. Counted separately from
+    /// every other decode failure because the two call for opposite operator actions: this one means
+    /// "finish the rolling upgrade", a decode failure on a KNOWN tag means "a frame or a codec is
+    /// broken". Before this counter the two shared one log line and neither had a number at all.
+    private final LongAdder unknownTypeTagDrops = new LongAdder();
 
     private QuicTransportMetrics() {}
 
@@ -161,6 +167,12 @@ public final class QuicTransportMetrics {
         bytesReceived.add(byteCount);
     }
 
+    /// #964: records an inbound message dropped because its type tag names no codec here.
+    @Contract
+    public void onUnknownTypeTagDrop() {
+        unknownTypeTagDrops.increment();
+    }
+
     // --- Snapshot ---
     /// Returns a snapshot of all QUIC transport metrics as a map
     /// suitable for JSON serialization and Prometheus exposition.
@@ -185,6 +197,8 @@ public final class QuicTransportMetrics {
         // not a wire-byte or bandwidth figure.
         metrics.put("quic_bytes_sent_total", bytesSent.sum());
         metrics.put("quic_bytes_received_total", bytesReceived.sum());
+        // #964: messages dropped for an unknown type tag — non-zero means mixed codec versions.
+        metrics.put("quic_unknown_type_tag_drops_total", unknownTypeTagDrops.sum());
 
         return Map.copyOf(metrics);
     }
@@ -251,5 +265,10 @@ public final class QuicTransportMetrics {
     /// for the exact boundary this counts at.
     public long bytesReceivedCount() {
         return bytesReceived.sum();
+    }
+
+    /// #964: inbound messages dropped for a type tag with no codec on this node, cumulative.
+    public long unknownTypeTagDropCount() {
+        return unknownTypeTagDrops.sum();
     }
 }

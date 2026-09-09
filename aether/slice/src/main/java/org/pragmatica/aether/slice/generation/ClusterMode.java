@@ -10,5 +10,10 @@ import org.pragmatica.serialization.Codec;
 @Codec
 public enum ClusterMode {
     CORE_ONLY,
-    HIERARCHICAL
+    HIERARCHICAL,
+    /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+    /// Descriptive only; surfaces as UNKNOWN in generation reports.
+    /// Must stay LAST — a new constant appended after it, or inserted before it, is read as UNKNOWN
+    /// by an older node either way.
+    UNKNOWN
 }
