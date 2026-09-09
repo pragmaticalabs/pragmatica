@@ -16,7 +16,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 public record AlertConfig(boolean enabled, WebhookConfig webhook, EventConfig events, double hysteresisMargin) {
     /// Default hysteresis margin (#969, #957): a breached threshold clears only once the metric falls
-    /// to `max(threshold * (1 - margin), warningThreshold)`.
+    /// below its clear point, and **the clear point differs by severity** —
+    /// `max(critical * (1 - margin), warning)` for a CRITICAL alert, and plain `warning * (1 - margin)`
+    /// for a WARNING one. The clamp applies to CRITICAL ONLY, because WARNING has no lower rung to
+    /// invert into. At the shipped `cpu.usage` 0.7/0.9 and a 5% margin that is 0.855 and **0.665**
+    /// respectively — a WARNING alert does NOT clear at 0.7.
     ///
     /// **RELATIVE, not absolute, and that is forced by the API rather than chosen.** `POST
     /// /api/v1/thresholds` accepts an arbitrary metric name and a bare `double`, so a threshold may be

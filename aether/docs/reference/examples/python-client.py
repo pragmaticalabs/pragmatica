@@ -142,10 +142,6 @@ class AetherClient:
         """Get active alerts."""
         return self._get("/api/v1/alerts/active")
 
-    def clear_alerts(self) -> dict:
-        """Clear all alerts."""
-        return self._post("/api/v1/alerts/clear", {})
-
     # Thresholds
     def thresholds(self) -> dict:
         """Get all thresholds."""

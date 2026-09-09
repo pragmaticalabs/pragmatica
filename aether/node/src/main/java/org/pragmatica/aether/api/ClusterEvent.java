@@ -213,9 +213,11 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
     /// The complement of {@link ThresholdBreached}, and it must be its own event because **an
     /// append-only log cannot represent absence** — nothing can be deleted to signal a clear.
     ///
-    /// **The clear point is not the breach point.** A hysteresis margin damps a metric oscillating
-    /// across the boundary: clearing at `max(threshold * (1 - margin), warningThreshold)`. The clamp is
-    /// what keeps the severity ladder from inverting — without it a CRITICAL clearing below the WARNING
+    /// **The clear point is not the breach point, and it differs by severity.** A hysteresis margin
+    /// damps a metric oscillating across the boundary. A CRITICAL alert clears below
+    /// `max(critical * (1 - margin), warning)`; a WARNING alert clears below `warning * (1 - margin)`,
+    /// with no clamp — there is no lower rung for it to invert into. The clamp on the CRITICAL arm is
+    /// what keeps the severity ladder from inverting: without it a CRITICAL clearing below the WARNING
     /// threshold would immediately re-raise as WARNING, manufacturing the flapping the margin exists to
     /// damp. The margin applies to the CLEAR edge only: raising is already edge-triggered, and delaying
     /// it would delay first detection.

@@ -32,8 +32,10 @@
   incoming owner would start empty and re-fire every active alert on each ownership change. Because
   every node evaluates continuously, an ownership change now emits nothing.
 
-- **Hysteresis (#969).** A breach clears at `max(threshold * (1 - margin), warning_threshold)`,
-  `margin` defaulting to 5% and configurable via `hysteresis_margin`. Applied to the CLEAR and
+- **Hysteresis (#969).** A breach clears below its severity's clear point: a CRITICAL alert at
+  `max(critical * (1 - margin), warning)`, a WARNING alert at plain `warning * (1 - margin)` with no
+  clamp. At the shipped `cpu.usage` 0.7/0.9 and a 5% margin that is 0.855 and **0.665** — a WARNING
+  alert does not clear at 0.7. `margin` is configurable via `hysteresis_margin`. Applied to the CLEAR and
   DOWNGRADE edges only — raising stays undamped (damping it would delay first detection) and an
   escalation from WARNING to CRITICAL is never held back. **The clamp, not the margin's value, is
   what prevents a ladder inversion**: without it a CRITICAL alert on a threshold pair closer together
