@@ -37,7 +37,13 @@ public record CoreMember(NodeId nodeId,
                                         HealthHint healthHint,
                                         Epoch joinedEpoch,
                                         Epoch lastSeenEpoch) {
-        return new CoreMember(nodeId, host, port, healthHint, joinedEpoch, lastSeenEpoch, ProvisioningSource.UNRECOGNISED);
+        return new CoreMember(nodeId,
+                              host,
+                              port,
+                              healthHint,
+                              joinedEpoch,
+                              lastSeenEpoch,
+                              ProvisioningSource.UNRECOGNISED);
     }
 
     public static CoreMember coreMember(NodeId nodeId,
