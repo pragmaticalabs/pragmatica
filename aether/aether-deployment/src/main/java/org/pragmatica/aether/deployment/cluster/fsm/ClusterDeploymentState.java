@@ -74,6 +74,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
@@ -1608,6 +1609,63 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             retryCounters.remove(sliceKey.asString());
             activateDependentSlices(sliceKey.artifact());
             trackBlueprintSliceActive(sliceKey.artifact());
+            recordApplyCompletionFromDurableState(sliceKey.artifact());
+        }
+
+        /// #963 — the repair that makes PRESENCE-gating correct, and the reason the two loss windows
+        /// close without the producer ever having been reliable.
+        ///
+        /// [#trackBlueprintSliceActive] is the ONLY route to [#recordSucceededOutcome], and it
+        /// iterates `inFlightBlueprints`, which [ClusterDeploymentContext#newActive] builds EMPTY and
+        /// only the live `handleAppBlueprintChange` path ever fills. So a blueprint whose slices reach
+        /// ACTIVE under a leader that did not start the apply never got its SUCCEEDED record — not
+        /// late, never. Separately, [#handleSucceededOutcomeWriteFailure] states that a failed write
+        /// "will NOT be retried". Either way the record is absent while the apply has in fact
+        /// completed, and until #963 that absence was read as "outstanding" and condemned a healthy
+        /// workload.
+        ///
+        /// This runs off DURABLE state only — the blueprint's own `loadOrder` and the slice states
+        /// rebuilt from `NodeArtifactKey` entries — so it works on any leader regardless of what its
+        /// in-memory maps contain, and it is idempotent: a lost write is simply re-attempted the next
+        /// time any slice of that blueprint reports ACTIVE.
+        ///
+        /// It repairs the state the verdict READS rather than guarding the verdict. A guard has to
+        /// win a race against a wrong inference on every path; a repair makes the inference right.
+        private void recordApplyCompletionFromDurableState(Artifact artifact) {
+            declaringBlueprints(artifact).stream()
+                               .filter(this::applyNotYetTerminal)
+                               .filter(this::everyDeclaredSliceActive)
+                               .forEach(this::recordSucceededOutcome);
+        }
+
+        /// Completeness of the APPLY, read from durable state: every artifact the blueprint declares
+        /// has at least one instance ACTIVE on a live core node.
+        ///
+        /// Deliberately NOT "is this artifact ACTIVE right now" — that is the present-tense question
+        /// #924 round 2 refuted, which cannot vote once a shared transient has reached every instance
+        /// and can never vote for a slice with `instances = 1`. This asks whether the apply
+        /// COMPLETED, which is a different question and is the one `ALL_OR_NOTHING` is about.
+        private boolean everyDeclaredSliceActive(BlueprintId blueprintId) {
+            return ctx.kvStore()
+                      .get(AppBlueprintKey.appBlueprintKey(blueprintId))
+                      .filter(value -> value instanceof AppBlueprintValue)
+                      .map(value -> ((AppBlueprintValue) value).blueprint())
+                      .map(expanded -> expanded.loadOrder()
+                                               .stream()
+                                               .allMatch(slice -> hasActiveInstance(slice.artifact())))
+                      .or(false);
+        }
+
+        private boolean hasActiveInstance(Artifact artifact) {
+            var liveNodes = activeNodes();
+
+            return sliceStates.entrySet()
+                              .stream()
+                              .filter(entry -> entry.getKey()
+                                                    .artifact()
+                                                    .equals(artifact))
+                              .filter(entry -> liveNodes.contains(entry.getKey().nodeId()))
+                              .anyMatch(entry -> entry.getValue() == SliceState.ACTIVE);
         }
 
         private void handleSliceFailure(SliceNodeKey sliceKey, SliceNodeValue sliceNodeValue) {
@@ -1631,11 +1689,27 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
-            permanentlyFailed.add(artifact);
             log.error("Deterministic failure for {} on {}: {} — will NOT retry",
                       artifact,
                       sliceKey.nodeId(),
                       failureReason);
+            settleAsPermanentlyFailed(sliceKey, failureReason);
+        }
+
+        /// The terminal both failure branches converge on: the artifact is marked permanently
+        /// failed, the operator is told, and the declared atomicity is honoured — `ALL_OR_NOTHING`
+        /// rolls the owning blueprint back, `BEST_EFFORT` records a FAILED outcome.
+        ///
+        /// Adding to `permanentlyFailed` is what makes the state terminal, and it is load-bearing
+        /// in two places rather than one: [#reconcileBlueprint] refuses to redeploy the artifact,
+        /// and [#handleSliceNodeRemoval] refuses to schedule the reconcile that would otherwise
+        /// follow the unload every failure already issued. Reaching a failure branch without it
+        /// leaves the artifact re-driven at roughly 1 Hz indefinitely — see
+        /// [#handleRetryBudgetExhausted], which is where that hole was.
+        private void settleAsPermanentlyFailed(SliceNodeKey sliceKey, String failureReason) {
+            var artifact = sliceKey.artifact();
+
+            permanentlyFailed.add(artifact);
             ctx.router()
                .route(DeploymentFailed.deploymentFailed(artifact,
                                                         sliceKey.nodeId(),
@@ -1654,8 +1728,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// path is no longer the only terminal a BEST_EFFORT artifact can reach. A slice that
         /// reaches ACTIVE is retired via `trackBlueprintSliceActive`, whose own terminal is
         /// `recordSucceededOutcome` once every slice of the owning blueprint is active. This
-        /// method is the terminal for the other branch: `handleDeterministicFailure` marks the
-        /// artifact `permanentlyFailed` and calls here instead of retrying it. A slice with no
+        /// method is the terminal for the other branch: [#settleAsPermanentlyFailed] marks the
+        /// artifact `permanentlyFailed` and calls here instead of retrying it. Since #922 that
+        /// reaches here from BOTH failure branches — a deterministic failure, and an intermittent
+        /// one that exhausted its retry budget — not from the deterministic one alone.
+        /// A slice with no
         /// owning blueprint (`Blueprint::owner` empty — a standalone deploy, not part of any
         /// blueprint) has no `DeploymentOutcomeKey` to write against and is correctly a no-op
         /// here. Merges into any existing FAILED record for the same blueprint so a second
@@ -1812,7 +1889,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var retryCount = retryCounters.merge(sliceKey.asString(), 1, Integer::sum);
 
             if (retryCount > MAX_RETRIES) {
-                logMaxRetriesExceeded(sliceKey, failureReason);
+                handleRetryBudgetExhausted(sliceKey, failureReason);
 
                 return;
             }
@@ -1833,19 +1910,201 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             SharedScheduler.schedule(this::reconcile, timeSpan(jitteredMs).millis());
         }
 
-        private void logMaxRetriesExceeded(SliceNodeKey sliceKey, String failureReason) {
-            log.error("Max retries ({}) exceeded for {} on {}: {} — giving up",
+        /// #922 — retry exhaustion is TERMINAL for a deployment attempt that never applied, and is
+        /// NOT terminal for a workload that already did.
+        ///
+        /// Before #922 this branch logged, cleared the counter and routed `DeploymentFailed`, then
+        /// returned, leaving the artifact absent from `permanentlyFailed`. That was not a resting
+        /// state. [#handleSliceFailure] issues an unload on every failure; the node's removal of the
+        /// `NodeArtifactKey` arrives at [#handleSliceNodeRemoval], which — finding the artifact not
+        /// permanently failed — scheduled a reconcile 1 s later; [#reconcileBlueprint] is gated by
+        /// nothing else, so it redeployed the artifact and `retryCounters.merge` restarted at 1. An
+        /// intermittent cause that never settles therefore looped at roughly 1 Hz for the life of
+        /// the cluster: no terminal state, no rollback, and consensus round-trips forever.
+        ///
+        /// Settling unconditionally was a worse defect than that livelock, because the terminal is
+        /// cluster-wide and permanent while the retry budget it hangs on is per artifact AND node
+        /// (`retryCounters` is keyed on `sliceKey.asString()`). A slice healthy on three nodes whose
+        /// instance on ONE node suffered a transient longer than the budget was condemned for the
+        /// whole cluster, and — its blueprint having already left `inFlightBlueprints` — not even an
+        /// outcome record was written.
+        ///
+        /// **The discriminator is [#deploymentApplyOutstanding], and the question it asks is about
+        /// the OPERATION, not about the artifact's history.** Three earlier rounds asked "has this
+        /// artifact ever been healthy?" and each was defeated by a different store failing to answer:
+        /// present-tense liveness (erased by [#handleSliceFailure] before either branch runs), an
+        /// in-memory `everActiveArtifacts` (empty on a new leader), and a durable SUCCEEDED record
+        /// reached through `Blueprint::owner` (a pointer the autoscaler and the A/B lifecycle
+        /// overwrite with `Option.none()` — #698). Every one of those failures is silent, and
+        /// silence on that question meant CONDEMN, which is the irreversible direction.
+        ///
+        /// `ALL_OR_NOTHING` is a promise about a blueprint APPLY — an operation with a beginning and
+        /// an end — not about an artifact for the rest of time. So the question is whether an apply
+        /// is still outstanding for the blueprint that declares this artifact. Outstanding means the
+        /// apply failed: settle, roll back, record it. Not outstanding means the blueprint already
+        /// reached its terminal and this is reconciliation of a running workload, which converges
+        /// forever and is never condemned.
+        ///
+        /// The membership gate that stood here (#924 review round 2, S2) is GONE, deliberately and
+        /// with its reason: it existed because the old evidence was KV slice state diffed against
+        /// [#activeNodes], and during the boot window that supplier yields
+        /// [MembershipFsm#MEMBERSHIP_NOT_WIRED], making every artifact look abandoned. This
+        /// predicate reads no membership at all.
+        private void handleRetryBudgetExhausted(SliceNodeKey sliceKey, String failureReason) {
+            var artifact = sliceKey.artifact();
+
+            retryCounters.remove(sliceKey.asString());
+            if (permanentlyFailed.contains(artifact)) {
+                return;
+            }
+
+            if (!deploymentApplyOutstanding(artifact)) {
+                reportUnsettledExhaustion(sliceKey,
+                                          failureReason,
+                                          "no blueprint apply is outstanding for this artifact, so this is a transient "
+                                         + "on a workload whose deployment already reached its terminal — reconciliation "
+                                         + "keeps converging toward the desired instance count");
+
+                return;
+            }
+
+            log.error("Max retries ({}) exceeded for {} on {}: {} — the retry budget for an INTERMITTENT cause is "
+                     + "spent while the owning blueprint's apply is still outstanding, so the deployment attempt "
+                     + "is abandoned and the artifact marked permanently failed",
                       MAX_RETRIES,
-                      sliceKey.artifact(),
+                      artifact,
                       sliceKey.nodeId(),
                       failureReason);
-            retryCounters.remove(sliceKey.asString());
+            settleAsPermanentlyFailed(sliceKey, failureReason);
+        }
+
+        /// The non-terminal exit from [#handleRetryBudgetExhausted]: the budget is spent and the
+        /// counter cleared, but the artifact is NOT condemned, so the unload already issued by
+        /// [#handleSliceFailure] is followed by the reconcile that restores the instance.
+        private void reportUnsettledExhaustion(SliceNodeKey sliceKey, String failureReason, String why) {
+            log.warn("Max retries ({}) exceeded for {} on {}: {} — NOT marking permanently failed: {}",
+                     MAX_RETRIES,
+                     sliceKey.artifact(),
+                     sliceKey.nodeId(),
+                     failureReason,
+                     why);
             ctx.router()
                .route(DeploymentFailed.deploymentFailed(sliceKey.artifact(),
                                                         sliceKey.nodeId(),
                                                         SliceState.FAILED,
                                                         failureReason,
                                                         ctx.nowMs()));
+        }
+
+        /// Whether a blueprint APPLY is still outstanding for the blueprint declaring `artifact`.
+        ///
+        /// The whole #922/#963 verdict rests on this predicate, so the guarantee it depends on is
+        /// named rather than assumed. `BlueprintService` pairs its `Put(AppBlueprintKey(id))` with a
+        /// write to `DeploymentOutcomeKey(id)` in ONE `ClusterNode.apply` batch on all three of its
+        /// write paths — a `Put` of IN_PROGRESS at the two publish paths (`buildAllCommands`,
+        /// `storeBlueprintWithKey`) and a `Remove` at `removeFromStore` — and one `apply` call
+        /// becomes exactly one `Batch` (`RabiaEngine.prepareBatch`) decided once by consensus and
+        /// handed to `KVStore.process` as a unit. So no replica applies one without the other, and
+        /// no crash can leave them split — the pairing is what #759 bought.
+        ///
+        /// **What answers TRUE, stated the right way round.** Outstanding requires the outcome record
+        /// to be PRESENT and IN_PROGRESS. An ABSENT record answers FALSE — that inversion is #963
+        /// itself, and the sentence that stood here before said the opposite. Absence is
+        /// indistinguishable from a write that never happened
+        /// ([AetherValue.DeploymentOutcomeStatus] says so in its own javadoc), and five rounds of
+        /// #924 each condemned a deployment on it.
+        ///
+        /// **The bound stated honestly.** `KVStore.process` applies a batch's commands one at a time
+        /// into a `ConcurrentHashMap` under no cross-command lock, so a reader on another thread CAN
+        /// observe the map between the two writes. The pairing is atomic per consensus DECISION, not
+        /// per instant, and #759's "at any instant" is stronger than the mechanism earns. It still
+        /// does not matter here, and that is a property of this predicate rather than luck — both
+        /// torn states decline:
+        ///
+        ///   - blueprint visible, outcome still the previous terminal or absent →
+        ///     [#applyNotYetTerminal] false → declines;
+        ///   - outcome IN_PROGRESS visible, blueprint not yet visible → [#declaringBlueprints] empty
+        ///     → declines.
+        ///
+        /// Every failure mode is on the reversible side of the one-way door, which is the property
+        /// the four previous discriminators lacked.
+        ///
+        /// A `registerOnly` blueprint is stored but deliberately never deployed, so it is never
+        /// outstanding. Note it DOES carry an IN_PROGRESS record — `buildAllCommands` writes that
+        /// Put unconditionally — so the exclusion is enforced solely by
+        /// [#collectIfDeclaringSlice]'s early return, not by the record's absence.
+        private boolean deploymentApplyOutstanding(Artifact artifact) {
+            var declaring = declaringBlueprints(artifact);
+
+            return ! declaring.isEmpty() && declaring.stream()
+                                                     .allMatch(this::applyNotYetTerminal);
+        }
+
+        /// `allMatch`, NOT `anyMatch`, and the difference decides a one-way door.
+        ///
+        /// An artifact can be declared by more than one blueprint. [#hasConflictingOwnership] rejects
+        /// a blueprint whose artifact is already owned by one with a DIFFERENT base, but blueprints
+        /// sharing a base and differing only in version are exactly the upgrade path, and a slice
+        /// unchanged across the upgrade appears in both. If one of those has already succeeded and
+        /// the other is mid-apply, the artifact is a workload that was up, so the succeeded
+        /// blueprint must be able to veto the settle. Requiring EVERY declaring blueprint to be
+        /// non-terminal gives it that veto; `anyMatch` — or picking one of them arbitrarily, which
+        /// is what the first version of this code did with `getFirst()` over a `HashMap` scan — lets
+        /// the in-flight one condemn a slice the succeeded one is still running, and does it
+        /// nondeterministically.
+        private boolean applyNotYetTerminal(BlueprintId blueprintId) {
+            return outcomeStatusOf(blueprintId).filter(status -> status == DeploymentOutcomeStatus.IN_PROGRESS)
+                                  .isPresent();
+        }
+
+        /// #963 — the inversion. Reads the status only when a record is PRESENT; an absent record
+        /// yields `Option.none()` and every caller treats that as "do not condemn".
+        private Option<DeploymentOutcomeStatus> outcomeStatusOf(BlueprintId blueprintId) {
+            return ctx.kvStore()
+                      .get(DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId))
+                      .filter(value -> value instanceof DeploymentOutcomeValue)
+                      .map(value -> ((DeploymentOutcomeValue) value).status());
+        }
+
+        /// Attribution from an artifact to EVERY blueprint that declares it, read from the durable
+        /// `AppBlueprintValue` rather than from `SliceTargetValue.owningBlueprint`.
+        ///
+        /// This is deliberate and it is the fix for #924 round 4's BLOCKING. The `owner` pointer is
+        /// written `Option.none()` unconditionally by `ControlLoopContext.applyScaling` and
+        /// `AbTestManager.targetPreservingOverrides` (#698), so from an artifact's first autoscale
+        /// or A/B event onward it is erased durably and across failover, and every consumer reaching
+        /// the blueprint through it silently loses the artifact. `ExpandedBlueprint.loadOrder()` is
+        /// the blueprint's own declaration of its slices, written once by `BlueprintService` and
+        /// owned by no other subsystem.
+        ///
+        /// Matched on the full `Artifact` including version, not on `ArtifactBase`. A running v1
+        /// must not attribute a v2 that never came up to v1's completed apply — that is #922's own
+        /// case (a coordinate that does not resolve) reopened through the guard meant to bound it.
+        private List<BlueprintId> declaringBlueprints(Artifact artifact) {
+            var owners = new ArrayList<BlueprintId>();
+
+            ctx.kvStore()
+               .forEach(AppBlueprintKey.class,
+                        AppBlueprintValue.class,
+                        (key, value) -> collectIfDeclaringSlice(artifact, key, value, owners));
+
+            return owners;
+        }
+
+        private static void collectIfDeclaringSlice(Artifact artifact,
+                                                    AppBlueprintKey key,
+                                                    AppBlueprintValue value,
+                                                    List<BlueprintId> owners) {
+            if (value.registerOnly()) {
+                return;
+            }
+
+            var declared = value.blueprint().loadOrder().stream().anyMatch(slice -> slice.artifact()
+                                                                                         .equals(artifact));
+
+            if (declared) {
+                owners.add(key.blueprintId());
+            }
         }
 
         /// The activation gate for a slice's schema migrations, scoped to the slice's OWN blueprint.
@@ -2681,9 +2940,15 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                              failedArtifact);
                     continue;
                 }
-
-                log.warn("ALL_OR_NOTHING: Deterministic failure of {} triggers rollback of blueprint {}",
+                // #924 review round 2, N5: this used to say "Deterministic failure". Since #922 routed
+                // the exhausted-retry branch into the same terminal, that told an operator
+                // diagnosing an INTERMITTENT cause that the failure had been deterministic. The
+                // branch is already named by the log line that precedes this one in either
+                // #handleDeterministicFailure or #handleRetryBudgetExhausted; this line must not
+                // contradict it, so it names the terminal and the cause instead of the branch.
+                log.warn("ALL_OR_NOTHING: {} settled as permanently failed ({}) — rolling back blueprint {}",
                          failedArtifact,
+                         cause,
                          blueprintId.asString());
                 inFlightBlueprints.remove(blueprintId);
                 inflight.previousBlueprint()

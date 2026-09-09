@@ -34,12 +34,14 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.VersionFenced;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.source.MapConfigSource;
@@ -215,20 +217,102 @@ class BlueprintPublishOwnershipTest {
 
             publish(OWNER_COORDS, withoutMigrations(OWNER_COORDS)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
 
-            assertThat(recordedOutcome().isEmpty())
-                    .as("a fresh publish of a previously FAILED id must clear the stale outcome — outcome(id) "
-                        + "must be empty until the NEW attempt's own terminal write, never carry the PREVIOUS "
-                        + "attempt's result forward")
-                    .isTrue();
+            assertThat(recordedOutcomeStatus())
+                    .as("a fresh publish of a previously FAILED id must not carry the PREVIOUS attempt's "
+                        + "result forward. #963: the guarantee is unchanged, but it is now met by a Put of "
+                        + "IN_PROGRESS rather than a Remove — the stale terminal is gone AND the new attempt's "
+                        + "start is recorded, so 'no terminal yet' is a fact rather than an absence")
+                    .isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
         }
 
         @Test
-        void publishFromArtifact_leavesNoOutcome_whenIdNeverHadOne() {
+        void publishFromArtifact_marksTheAttemptInProgress_whenIdNeverHadOne() {
             publish(OWNER_COORDS, withoutMigrations(OWNER_COORDS)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
 
-            assertThat(recordedOutcome().isEmpty()).as("a first-ever publish has no prior outcome to clear; the "
-                                                        + "Remove of an absent key is a no-op")
-                                                    .isTrue();
+            assertThat(recordedOutcomeStatus())
+                    .as("#963: a first-ever publish has no prior outcome to clear, but it DOES record that "
+                        + "this attempt started — the write is unconditional, which is what makes the "
+                        + "record's presence trustworthy evidence rather than a best effort")
+                    .isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
+        }
+
+        /// #963 × #956 — the apply-start record must carry the SUCCESSOR fence version, and this
+        /// pins it BY VALUE rather than by status.
+        ///
+        /// `DeploymentOutcomeValue` became [VersionFenced] in #805 item 2 while #963 was in flight.
+        /// The applier rejects any write whose version is not the immediate successor of the
+        /// committed one, so the first-write form (`inProgress(startedAtMs)`, carrying
+        /// `FIRST_VERSION`) is wrong on this path: publish writes over a POSSIBLY-COMMITTED record —
+        /// replacing a stale terminal is why the write exists — and against one the applier would
+        /// drop it silently, leaving the previous attempt's terminal in place.
+        ///
+        /// **Why this test exists and a status assertion does not suffice.** A mutation reverting
+        /// `startedOutcome` to the first-write form left every other test in this suite GREEN: the
+        /// seeded record is at version 1, both forms produce status IN_PROGRESS, and this fixture's
+        /// store does not run the applier's successor check — so nothing could see the difference.
+        /// The merge resolution was an unpinned judgement until this assertion existed. It asserts
+        /// the derivation itself: seeded at 1, the publish must write 2.
+        @Test
+        void publishFromArtifact_marksTheAttemptWithTheSuccessorFenceVersion() {
+            seedFailedOutcome(OWNER);
+
+            assertThat(recordedOutcome().map(value -> ((AetherValue.DeploymentOutcomeValue) value).outcomeVersion()))
+                    .as("precondition: the committed record sits at FIRST_VERSION")
+                    .isEqualTo(Option.some(AetherValue.DeploymentOutcomeValue.FIRST_VERSION));
+
+            publish(OWNER_COORDS, withoutMigrations(OWNER_COORDS)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(recordedOutcome().map(value -> ((AetherValue.DeploymentOutcomeValue) value).outcomeVersion()))
+                    .as("the apply-start record must be the immediate SUCCESSOR of the committed one, or "
+                        + "the VersionFenced applier drops it and the stale terminal survives")
+                    .isEqualTo(Option.some(AetherValue.DeploymentOutcomeValue.FIRST_VERSION + 1));
+
+            // The property that makes this path's un-retried read-then-write safe, asserted rather
+            // than assumed: the record ACCUMULATES NOTHING, so two racing publishes produce values
+            // differing only in startedAtMs and losing either loses no information. That is what
+            // distinguishes it from recordBestEffortFailureOutcome, which merges failingSlices and
+            // therefore does need #956's bounded re-read-and-retry.
+            assertThat(recordedOutcome().map(value -> ((AetherValue.DeploymentOutcomeValue) value).failingSlices()))
+                    .as("an apply-start record accumulates no slice ids — if it ever gains any, the "
+                        + "no-retry reasoning in BlueprintService.startedOutcome stops holding")
+                    .isEqualTo(Option.some(List.<String> of()));
+            assertThat(recordedOutcome().map(value -> ((AetherValue.DeploymentOutcomeValue) value).cause()))
+                    .as("and carries no accumulated cause text, for the same reason")
+                    .isEqualTo(Option.some(""));
+        }
+
+        /// #963 F1 — pins `BlueprintService.confirmOutcomeStart` ITSELF: the retry, not the fence.
+        ///
+        /// The earlier race test hand-seeded the successor version the retry was supposed to derive,
+        /// so it pinned the applier's fence and left the retry untested — deleting
+        /// `confirmOutcomeStart` outright was **0 red across the whole suite**. That is the
+        /// fixture-supplies-the-thing failure, in the test written to close a race, in a ticket whose
+        /// subject is an unpinned mechanism nobody could see was gone.
+        ///
+        /// Here nothing is seeded. A terminal for the PREVIOUS apply is injected by the cluster node
+        /// at the moment the publish's first outcome Put is in flight, so that Put is genuinely
+        /// fenced out. The publish must then notice — via a re-read, not a seeded value — re-derive
+        /// against the moved committed version, and win.
+        ///
+        /// Without the retry the record keeps the injected SUCCEEDED and the new apply is
+        /// permanently uncondemnable, which is #963's own defect returning by a different route.
+        @Test
+        void publish_whoseApplyStartLosesToATerminal_retriesUntilItLands() {
+            store.processCommand(new KVCommand.Put<>(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(OWNER),
+                                                     AetherValue.DeploymentOutcomeValue.inProgress(1L, 1L)));
+            cluster.injectTerminalBeforeNextOutcomeWrite(OWNER);
+
+            publish(OWNER_COORDS, withoutMigrations(OWNER_COORDS)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(cluster.terminalInjections())
+                    .as("instrument check: the injected terminal must actually have fired, or this test "
+                        + "never created the race it claims to pin")
+                    .isEqualTo(1);
+            assertThat(recordedOutcomeStatus())
+                    .as("the publish's apply-start lost the first round to a terminal for the previous "
+                        + "apply; confirmOutcomeStart must re-read, re-derive and win, or the new apply "
+                        + "is left uncondemnable behind a stale terminal")
+                    .isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
         }
 
         /// #759 review round 2, BLOCKING 1: `publish(String dsl)` — the live path behind
@@ -241,11 +325,10 @@ class BlueprintPublishOwnershipTest {
 
             publishDsl(OWNER_COORDS).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
 
-            assertThat(recordedOutcome().isEmpty())
-                    .as("a DSL republish of a previously FAILED id must clear the stale outcome too — the "
-                        + "SliceRoutes.handleBlueprint live path must give the same guarantee "
-                        + "publishFromArtifact already does")
-                    .isTrue();
+            assertThat(recordedOutcomeStatus())
+                    .as("the SliceRoutes.handleBlueprint live path must give the same guarantee "
+                        + "publishFromArtifact does — stale terminal replaced by this attempt's IN_PROGRESS")
+                    .isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
         }
 
         /// #759 review round 2, BLOCKING 2: `delete(id)` went through `removeFromStore`, a
@@ -268,6 +351,14 @@ class BlueprintPublishOwnershipTest {
 
         private Option<AetherValue> recordedOutcome() {
             return store.get(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(OWNER));
+        }
+
+        /// The STATUS rather than mere presence: after #963 every publish leaves a record, so
+        /// `isPresent` no longer discriminates between "this attempt started" and "the previous
+        /// attempt's terminal survived", which is the whole point of the #759 guarantee.
+        private Option<DeploymentOutcomeStatus> recordedOutcomeStatus() {
+            return recordedOutcome().filter(value -> value instanceof AetherValue.DeploymentOutcomeValue)
+                                    .map(value -> ((AetherValue.DeploymentOutcomeValue) value).status());
         }
     }
 
@@ -292,6 +383,19 @@ class BlueprintPublishOwnershipTest {
                         + "must land in the SAME cluster.apply batch, not merely both somewhere in "
                         + "this node's apply history")
                     .isTrue();
+            // #963 F2 — assert the COMMAND, not merely the key. Key-level matching cannot tell the
+            // #963 Put of the apply-start record from the pre-#963 Remove, so reverting this path to
+            // a Remove left this test green: `confirmOutcomeStart` writes the record on a LATER
+            // apply, repairing the end state while silently losing the same-batch property this
+            // test exists to pin. The retry made the system robust in a way that hid the breakage
+            // from the mutation that used to catch it.
+            assertThat(outcomeCommandInSameBatchAs(AppBlueprintKey.appBlueprintKey(OWNER),
+                                                   AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(OWNER))
+                               .map(command -> command instanceof KVCommand.Put))
+                    .as("buildAllCommands's outcome write in that batch must be a Put of the apply-start "
+                        + "record — a Remove satisfies the key-level assertion above while leaving the "
+                        + "record to be written outside the guaranteed batch")
+                    .isEqualTo(Option.some(true));
         }
 
         @Test
@@ -305,6 +409,19 @@ class BlueprintPublishOwnershipTest {
                     .as("storeBlueprintWithKey's Put and its DeploymentOutcomeKey Remove must land in "
                         + "the SAME batch")
                     .isTrue();
+            // #963 F2 — assert the COMMAND, not merely the key. Key-level matching cannot tell the
+            // #963 Put of the apply-start record from the pre-#963 Remove, so reverting this path to
+            // a Remove left this test green: `confirmOutcomeStart` writes the record on a LATER
+            // apply, repairing the end state while silently losing the same-batch property this
+            // test exists to pin. The retry made the system robust in a way that hid the breakage
+            // from the mutation that used to catch it.
+            assertThat(outcomeCommandInSameBatchAs(AppBlueprintKey.appBlueprintKey(OWNER),
+                                                   AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(OWNER))
+                               .map(command -> command instanceof KVCommand.Put))
+                    .as("storeBlueprintWithKey's outcome write in that batch must be a Put of the apply-start "
+                        + "record — a Remove satisfies the key-level assertion above while leaving the "
+                        + "record to be written outside the guaranteed batch")
+                    .isEqualTo(Option.some(true));
         }
 
         @Test
@@ -504,6 +621,17 @@ class BlueprintPublishOwnershipTest {
         };
     }
 
+    /// The outcome-key command riding in the same batch as `blueprintKey`, so a test can assert its
+    /// TYPE rather than only its presence.
+    private Option<KVCommand<AetherKey>> outcomeCommandInSameBatchAs(AetherKey blueprintKey, AetherKey outcomeKey) {
+        return cluster.batches.stream()
+                              .filter(batch -> batch.stream().anyMatch(command -> blueprintKey.equals(command.key())))
+                              .flatMap(batch -> batch.stream().filter(command -> outcomeKey.equals(command.key())))
+                              .findFirst()
+                              .map(Option::some)
+                              .orElseGet(Option::none);
+    }
+
     private static final class TestClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         private final TestKVStore store;
         // #759 review round 2, BLOCKING 3: tracks each apply() call's batch verbatim (mirrors
@@ -537,14 +665,49 @@ class BlueprintPublishOwnershipTest {
             return Promise.unitPromise();
         }
 
+        /// One-shot: the next batch carrying a `DeploymentOutcomeKey` Put has a terminal for the
+        /// PREVIOUS apply landed immediately ahead of it, so that batch's outcome write is fenced
+        /// out. Models a completion writer winning the race a publish cannot see coming.
+        private Option<BlueprintId> pendingTerminalFor = Option.none();
+        private int terminalInjections = 0;
+
+        void injectTerminalBeforeNextOutcomeWrite(BlueprintId id) {
+            pendingTerminalFor = Option.some(id);
+        }
+
+        int terminalInjections() {
+            return terminalInjections;
+        }
+
         @Override
         @SuppressWarnings("unchecked")
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             batches.add(List.copyOf(commands));
+            injectTerminalIfArmed(commands);
 
             return Promise.success(commands.stream()
                                            .map(command -> (R) store.processCommand(command))
                                            .toList());
+        }
+
+        private void injectTerminalIfArmed(List<KVCommand<AetherKey>> commands) {
+            var touchesOutcome = commands.stream()
+                                         .anyMatch(command -> command.key() instanceof AetherKey.DeploymentOutcomeKey);
+
+            pendingTerminalFor.filter(_ -> touchesOutcome)
+                              .onPresent(id -> {
+                                  var key = AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(id);
+                                  var committed = store.get(key)
+                                                       .filter(value -> value instanceof AetherValue.DeploymentOutcomeValue)
+                                                       .map(value -> ((AetherValue.DeploymentOutcomeValue) value).outcomeVersion())
+                                                       .or(0L);
+
+                                  store.processCommand(new KVCommand.Put<>(key,
+                                                                           AetherValue.DeploymentOutcomeValue.succeeded(9L,
+                                                                                                                        committed + 1)));
+                                  pendingTerminalFor = Option.none();
+                                  terminalInjections++;
+                              });
         }
     }
 
@@ -591,10 +754,27 @@ class BlueprintPublishOwnershipTest {
                         .toList();
         }
 
+        /// #963 F1 — this double now enforces the applier's successor fence for [VersionFenced]
+        /// values, mirroring `KVStore.staleSuccessorWrite`.
+        ///
+        /// It previously accepted every Put unconditionally, and that omission was load-bearing in
+        /// the worst way: it is the exact mechanism `DeploymentOutcomeValue` is fenced by, so every
+        /// test in this suite ran against a store that could not reproduce the failure the fence
+        /// exists to prevent. Two mutations were invisible because of it — reverting the successor
+        /// derivation, and deleting `BlueprintService.confirmOutcomeStart` entirely — each leaving
+        /// the whole suite green while breaking the guarantee it is here to pin.
+        ///
+        /// A rejected write mutates nothing and does NOT fail the batch it rode in, exactly as the
+        /// real applier behaves, so a fenced-out outcome Put still lets its sibling blueprint Put
+        /// land — which is the state `confirmOutcomeStart` has to detect.
         @SuppressWarnings({"unchecked", "rawtypes"})
         Option<AetherValue> processCommand(KVCommand command) {
             return switch (command) {
                 case KVCommand.Put<?, ?> put -> {
+                    if (fencedOut((AetherKey) put.key(), put.value())) {
+                        yield Option.option(storage.get((AetherKey) put.key()));
+                    }
+
                     storage.put((AetherKey) put.key(), (AetherValue) put.value());
                     yield Option.none();
                 }
@@ -605,6 +785,16 @@ class BlueprintPublishOwnershipTest {
                 case KVCommand.Get<?> get -> Option.option(storage.get((AetherKey) get.key()));
                 default -> Option.none();
             };
+        }
+
+        /// Mirrors `KVStore.staleSuccessorWrite`: a write is rejected when both the incoming and the
+        /// committed value are [VersionFenced] and the incoming version is not the immediate
+        /// successor. A first write against an absent or non-fenced value passes — there is no chain
+        /// to fence yet.
+        private boolean fencedOut(AetherKey key, Object incoming) {
+            return incoming instanceof VersionFenced in
+                   && storage.get(key) instanceof VersionFenced stored
+                   && in.fenceVersion() != stored.fenceVersion() + 1;
         }
     }
 
