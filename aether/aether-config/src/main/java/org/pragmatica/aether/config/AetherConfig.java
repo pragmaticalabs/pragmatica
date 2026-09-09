@@ -468,7 +468,6 @@ public record AetherConfig(ClusterConfig cluster,
             var withStreaming = option(streamingConfig).map(withEp::withStreaming).or(withEp);
             var withCloudConfig = option(cloudConfig).fold(() -> withStreaming, withStreaming::withCloud);
             var withMembership = option(membershipConfig).fold(() -> withCloudConfig, withCloudConfig::withMembership);
-
             var withStorageEncryption = option(storageEncryptionConfig).fold(() -> withMembership,
                                                                              withMembership::withStorageEncryption);
 

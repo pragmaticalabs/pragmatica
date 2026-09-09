@@ -647,7 +647,8 @@ public interface AetherNode extends ManageableNode {
     /// loaded. Validation already happened at boot in `Main.resolveAlertConfig`, so anything arriving
     /// here has passed [org.pragmatica.aether.config.AlertConfig#check]; an absent section needs none.
     private static AlertConfig resolveAlertConfig(AetherNodeConfig config) {
-        return config.alerts().or(AlertConfig.alertConfig());
+        return config.alerts()
+                     .or(AlertConfig.alertConfig());
     }
 
     private static RabiaPersistence<KVCommand<AetherKey>> resolvePersistence(AetherNodeConfig config) {
@@ -2555,13 +2556,14 @@ public interface AetherNode extends ManageableNode {
                                                                             clusterTopologyManager.observer()::clusterSize,
                                                                             kvStore::isReplaying,
                                                                             clusterEventsLeaderCheck,
+                                                                            () -> clusterEventsControllerRef.get() != null
                                                                             // #957: ownership is RESOLVABLE once the controller ref is
                                                                             // bound. Until then `clusterEventsOwnerCheck` returns false
                                                                             // via its `.or(false)` fallback on EVERY node, so nobody
                                                                             // publishes and the event is lost rather than merely
                                                                             // suppressed. This supplier is what lets the aggregator tell
                                                                             // that hole apart from ordinary non-ownership.
-                                                                            () -> clusterEventsControllerRef.get() != null);
+                                                                           );
         // Item-8 graft: best-effort SelfDrainInitiated emit on drain initiation. The aggregator is
         // forward-declared to DrainProcedure (constructed earlier) via this ref; the emitter lambda
         // resolves it lazily and no-ops until bound. NOT leader-gated — the draining node is the only

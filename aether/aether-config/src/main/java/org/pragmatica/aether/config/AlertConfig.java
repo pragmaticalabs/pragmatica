@@ -72,8 +72,7 @@ public record AlertConfig(boolean enabled, WebhookConfig webhook, EventConfig ev
     private Result<AlertConfig> checkHysteresisMargin() {
         return hysteresisMargin >= 0.0 && hysteresisMargin < 1.0
                ? success(this)
-               : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("alerts.hysteresis_margin must be in [0.0, 1.0), got "
-                                                                       + hysteresisMargin).result();
+               : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("alerts.hysteresis_margin must be in [0.0, 1.0), got " + hysteresisMargin).result();
     }
 
     @SuppressWarnings("JBCT-ZONE-02")

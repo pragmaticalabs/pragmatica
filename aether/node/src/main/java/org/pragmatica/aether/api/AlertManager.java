@@ -58,7 +58,6 @@ public class AlertManager {
     /// RetentionPolicy (count + bytes + age) replaces the 100-entry cap. Renamed rather than left as
     /// `MAX_ALERT_HISTORY`, which would have named a thing that no longer exists.
     private static final int MAX_SLICE_FAILURE_HISTORY = 100;
-
     /// Default bound on a history read. The dashboard polls `/api/alerts/history` every 2s, so this
     /// read must NOT become a full scan of the retained event window (up to 10,000 events) — it takes
     /// the most recent entries, preserving the effective shape of the 100-entry deque it replaces.
@@ -84,7 +83,6 @@ public class AlertManager {
     /// evaluated only while holding the gate would start empty and re-fire every active alert on each
     /// ownership change.
     private final Map<String, ActiveAlert> derivedActiveAlerts = new ConcurrentHashMap<>();
-
     private final Map<String, InjectedAlert> injectedAlerts = new ConcurrentHashMap<>();
     private final AtomicLong injectionSequence = new AtomicLong();
 
@@ -336,15 +334,19 @@ public class AlertManager {
         var alertKey = metric + ":" + nodeId.id();
         var existing = Option.option(derivedActiveAlerts.get(alertKey));
 
-        return effectiveSeverity(threshold, existing, value)
-                        .onEmpty(() -> resolveExistingAlert(alertKey, existing, threshold, metric, nodeId, value))
-                        .flatMap(severity -> handleAlertValue(alertKey,
-                                                              existing,
-                                                              severity,
-                                                              metric,
-                                                              nodeId,
-                                                              value,
-                                                              threshold));
+        return effectiveSeverity(threshold, existing, value).onEmpty(() -> resolveExistingAlert(alertKey,
+                                                                                                existing,
+                                                                                                threshold,
+                                                                                                metric,
+                                                                                                nodeId,
+                                                                                                value))
+                                .flatMap(severity -> handleAlertValue(alertKey,
+                                                                      existing,
+                                                                      severity,
+                                                                      metric,
+                                                                      nodeId,
+                                                                      value,
+                                                                      threshold));
     }
 
     /// The severity this metric holds AFTER hysteresis (#969) — the whole of the damping logic.
@@ -377,7 +379,8 @@ public class AlertManager {
     }
 
     private static boolean isUpgrade(String current, Option<String> raw) {
-        return SEVERITY_WARNING.equals(current) && raw.filter(SEVERITY_CRITICAL::equals).isPresent();
+        return SEVERITY_WARNING.equals(current) && raw.filter(SEVERITY_CRITICAL::equals)
+                                                      .isPresent();
     }
 
     private void resolveExistingAlert(String alertKey,
@@ -483,10 +486,12 @@ public class AlertManager {
     private void emitThresholdBreached(ActiveAlert alert) {
         emitClusterEvent(clock -> new ClusterEvent.ThresholdBreached(clock.now(),
                                                                      severityFor(alert.severity),
-                                                                     "Metric " + alert.metric + " on node "
-                                                                     + alert.nodeId.id() + " breached its "
-                                                                     + alert.severity + " threshold ("
-                                                                     + alert.value + " >= " + alert.threshold + ")",
+                                                                     "Metric " + alert.metric
+                                                                    + " on node " + alert.nodeId.id()
+                                                                    + " breached its " + alert.severity
+                                                                    + " threshold (" + alert.value
+                                                                    + " >= " + alert.threshold
+                                                                    + ")",
                                                                      Map.of("metric",
                                                                             alert.metric,
                                                                             "nodeId",
@@ -504,14 +509,21 @@ public class AlertManager {
     ///
     /// `clearPoint` is recorded alongside the value so an operator can see WHY it cleared here rather
     /// than at the breach threshold: the hysteresis margin moved the boundary.
-    private void emitThresholdCleared(Threshold threshold, String metric, NodeId nodeId, double value, ActiveAlert alert) {
+    private void emitThresholdCleared(Threshold threshold,
+                                      String metric,
+                                      NodeId nodeId,
+                                      double value,
+                                      ActiveAlert alert) {
         var clearPoint = threshold.clearPoint(alert.severity, hysteresisMargin);
 
         emitClusterEvent(clock -> new ClusterEvent.ThresholdCleared(clock.now(),
                                                                     Severity.INFO,
-                                                                    "Metric " + metric + " on node " + nodeId.id()
-                                                                    + " cleared its " + alert.severity
-                                                                    + " threshold (" + value + " < " + clearPoint + ")",
+                                                                    "Metric " + metric
+                                                                   + " on node " + nodeId.id()
+                                                                   + " cleared its " + alert.severity
+                                                                   + " threshold (" + value
+                                                                   + " < " + clearPoint
+                                                                   + ")",
                                                                     Map.of("metric",
                                                                            metric,
                                                                            "nodeId",
@@ -759,18 +771,18 @@ public class AlertManager {
     /// preserves the wire contract the deque produced: TRIGGERED / RESOLVED / INJECTED.
     private static Option<AlertHistoryView> historyViewOf(ClusterEvent event) {
         return switch (event) {
-            case ClusterEvent.ThresholdBreached breached ->
-                    Option.option(historyRow(breached, breached.details().getOrDefault("alertSeverity",
-                                                                                       breached.severity().name()),
-                                             "TRIGGERED"));
-            case ClusterEvent.ThresholdCleared cleared ->
-                    Option.option(historyRow(cleared, cleared.details().getOrDefault("clearedFrom",
-                                                                                     cleared.severity().name()),
-                                             "RESOLVED"));
-            case AlertInjected injected ->
-                    Option.option(historyRow(injected, injected.details().getOrDefault("severity",
-                                                                                       injected.severity().name()),
-                                             "INJECTED"));
+            case ClusterEvent.ThresholdBreached breached -> Option.option(historyRow(breached,
+                                                                                     breached.details().getOrDefault("alertSeverity",
+                                                                                                                     breached.severity().name()),
+                                                                                     "TRIGGERED"));
+            case ClusterEvent.ThresholdCleared cleared -> Option.option(historyRow(cleared,
+                                                                                   cleared.details().getOrDefault("clearedFrom",
+                                                                                                                  cleared.severity().name()),
+                                                                                   "RESOLVED"));
+            case AlertInjected injected -> Option.option(historyRow(injected,
+                                                                    injected.details().getOrDefault("severity",
+                                                                                                    injected.severity().name()),
+                                                                    "INJECTED"));
             default -> Option.none();
         };
     }
@@ -779,9 +791,7 @@ public class AlertManager {
     /// not shift under consumers that already parse it.
     private static AlertHistoryView historyRow(ClusterEvent event, String severity, String status) {
         var details = event.details();
-        var value = org.pragmatica.lang.parse.Number.parseDouble(details.getOrDefault("value", "0"))
-                                                    .option()
-                                                    .or(0.0);
+        var value = org.pragmatica.lang.parse.Number.parseDouble(details.getOrDefault("value", "0")).option().or(0.0);
 
         return new AlertHistoryView(event.at().physicalMillis(),
                                     details.getOrDefault("metric", event.summary()),
@@ -876,7 +886,6 @@ public class AlertManager {
         // `activeAlertsAsJson()` is being phased out per the AlertView migration note at line 427.
         return java.util.List.of();
     }
-
 
     @MessageReceiver
     public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {

@@ -162,9 +162,11 @@ public final class ClusterEventAggregator {
     private static final long STREAM_MEMORY_EVENT_THROTTLE_MS = 60_000L;
 
     private final IntSupplier clusterSizeSupplier;
+
     /// Default for the legacy factories: ownership is always resolvable, so they never take the
     /// ownerless-drop branch. Those factories pass `ALWAYS_OWNER` and therefore never suppress at all.
     private static final BooleanSupplier OWNERSHIP_ALWAYS_RESOLVABLE = () -> true;
+
     /// Distinguishes the two DIFFERENT falses `ownerCheck` returns (#957).
     ///
     /// `ownerCheck` is false both when ANOTHER node owns partition 0 — the normal steady state on N-1
@@ -405,7 +407,7 @@ public final class ClusterEventAggregator {
         }
 
         LOG.warn("ClusterEventAggregator: cluster-events ownership UNRESOLVABLE — {} dropped, not queued;"
-                 + " the audit log will gap here. Ownerless drops on this node since start: {}",
+                + " the audit log will gap here. Ownerless drops on this node since start: {}",
                  event.type(),
                  ownerlessDrops.incrementAndGet());
     }
