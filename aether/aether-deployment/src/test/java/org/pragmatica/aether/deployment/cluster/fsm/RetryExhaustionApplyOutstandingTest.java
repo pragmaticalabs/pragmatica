@@ -611,8 +611,60 @@ class RetryExhaustionApplyOutstandingTest {
                 .doesNotContain(SLICE);
     }
 
+    /// #963 × #956 — the publish path's read-then-write DOES race, and the race is harmless. Shown
+    /// against the REAL `KVStore`, whose `staleSuccessorWrite` fence actually applies; the publish
+    /// suites use a test double with a bare `storage.put` and cannot exercise this at all.
+    ///
+    /// `BlueprintService.startedOutcome` derives the successor from the committed record, which is
+    /// the lost-update shape #956 fences. `recordBestEffortFailureOutcome` answers that with a
+    /// bounded re-read-and-retry. This path deliberately does NOT, and this test is the reason
+    /// rather than an assertion that publishes cannot race — they can.
+    ///
+    /// The difference is that this write **accumulates nothing**: both racers produce an identical
+    /// value but for `startedAtMs`. So the loser being dropped costs only its own timestamp, while
+    /// the guarantee that matters — the previous attempt's terminal never survives a republish
+    /// (#818), and the gate reads IN_PROGRESS rather than a stale terminal (#963) — is met by
+    /// whichever wins. Contrast a dropped `recordBestEffortFailureOutcome`, which would lose a slice
+    /// id recorded nowhere else.
+    ///
+    /// Both halves are asserted: that the fence really did drop the second write (otherwise this
+    /// proves nothing about a fenced store), and that the surviving state is IN_PROGRESS.
+    @Test
+    void twoRacingPublishStarts_dropOneWrite_butNeverResurrectTheStaleTerminal() {
+        var store = freshStore();
+        var id = blueprint().id();
+        var key = DeploymentOutcomeKey.deploymentOutcomeKey(id);
+
+        seed(store,
+             new KVCommand.Put<>(key,
+                                 DeploymentOutcomeValue.failed(List.of(SLICE.asString()),
+                                                               "previous attempt",
+                                                               1L)));
+
+        // Two publishes racing: each reads the committed version 1 and each builds version 2 —
+        // exactly what two concurrent `startedOutcome` calls produce.
+        seed(store, new KVCommand.Put<>(key, DeploymentOutcomeValue.inProgress(10L, 2L)));
+        seed(store, new KVCommand.Put<>(key, DeploymentOutcomeValue.inProgress(20L, 2L)));
+
+        assertThat(outcomeTimestamp(store, id))
+                .as("instrument check: the fence must actually have REJECTED the second writer. If "
+                    + "this reads 20 the store is not fencing and the rest of this test proves nothing")
+                .isEqualTo(10L);
+        assertThat(outcomeStatusName(store, id))
+                .as("and the guarantee survives the lost write: the previous attempt's FAILED terminal "
+                    + "is gone and the gate reads IN_PROGRESS, which is why this path needs no retry")
+                .isEqualTo(DeploymentOutcomeStatus.IN_PROGRESS.name());
+    }
+
     private static ClusterDeploymentState.Active activeState(FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness) {
         return (ClusterDeploymentState.Active) harness.state();
+    }
+
+    private static long outcomeTimestamp(KVStore<AetherKey, AetherValue> store, BlueprintId blueprintId) {
+        return store.get(DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId))
+                    .filter(value -> value instanceof DeploymentOutcomeValue)
+                    .map(value -> ((DeploymentOutcomeValue) value).timestampMs())
+                    .or(-1L);
     }
 
     /// Returns the outcome status NAME, or the sentinel [#NO_OUTCOME] when no record exists.
