@@ -652,8 +652,51 @@ class RetryExhaustionApplyOutstandingTest {
                 .isEqualTo(10L);
         assertThat(outcomeStatusName(store, id))
                 .as("and the guarantee survives the lost write: the previous attempt's FAILED terminal "
-                    + "is gone and the gate reads IN_PROGRESS, which is why this path needs no retry")
+                    + "is gone and the gate reads IN_PROGRESS")
                 .isEqualTo(DeploymentOutcomeStatus.IN_PROGRESS.name());
+    }
+
+    /// #963 × #956 — the case the publish-vs-publish argument does NOT reach, and the reason
+    /// `BlueprintService.confirmOutcomeStart` exists.
+    ///
+    /// Nothing orders a publish against a TERMINAL write for a previous apply of the same id:
+    /// terminals come from four sites in [Active], driven asynchronously by KV notifications, while
+    /// a publish is admitted by the Management API with no in-flight gate. Those two writers do not
+    /// produce the same value, so "every racer writes an identical record" — true of two publishes —
+    /// says nothing here.
+    ///
+    /// This is the terminal winning. The publish's IN_PROGRESS is fenced out and a SUCCEEDED record
+    /// for the PREVIOUS apply survives into the new one, where [Active#applyNotYetTerminal] reads it
+    /// as the new apply's state. Without the retry that is #818 broken and #963's gate reading the
+    /// wrong attempt; with it, the publish re-derives against the moved version and wins.
+    @Test
+    void aTerminalWinningTheRaceAgainstAPublishStart_leavesTheGateReadingThePreviousAttempt() {
+        var store = freshStore();
+        var id = blueprint().id();
+        var key = DeploymentOutcomeKey.deploymentOutcomeKey(id);
+
+        seed(store, new KVCommand.Put<>(key, DeploymentOutcomeValue.inProgress(1L, 1L)));
+
+        // The previous apply completes and the publish for the NEW apply both derive version 2.
+        seed(store, new KVCommand.Put<>(key, DeploymentOutcomeValue.succeeded(10L, 2L)));
+        seed(store, new KVCommand.Put<>(key, DeploymentOutcomeValue.inProgress(20L, 2L)));
+
+        assertThat(outcomeStatusName(store, id))
+                .as("the terminal won and the publish's apply-start was fenced out — this is the state "
+                    + "BlueprintService.confirmOutcomeStart must detect and retry out of, and the "
+                    + "publish-vs-publish identical-values argument never covered it")
+                .isEqualTo(DeploymentOutcomeStatus.SUCCEEDED.name());
+
+        // The retry: re-derive against the MOVED committed version rather than the stale read.
+        seed(store, new KVCommand.Put<>(key, DeploymentOutcomeValue.inProgress(30L, 3L)));
+
+        assertThat(outcomeStatusName(store, id))
+                .as("a retry derived from current committed state wins, so the new apply's gate reads "
+                    + "IN_PROGRESS rather than the previous attempt's terminal")
+                .isEqualTo(DeploymentOutcomeStatus.IN_PROGRESS.name());
+        assertThat(outcomeTimestamp(store, id))
+                .as("and it is the RETRY's record, not a resurrected earlier one")
+                .isEqualTo(30L);
     }
 
     private static ClusterDeploymentState.Active activeState(FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness) {
