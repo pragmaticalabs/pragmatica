@@ -265,6 +265,19 @@ class BlueprintPublishOwnershipTest {
                     .as("the apply-start record must be the immediate SUCCESSOR of the committed one, or "
                         + "the VersionFenced applier drops it and the stale terminal survives")
                     .isEqualTo(Option.some(AetherValue.DeploymentOutcomeValue.FIRST_VERSION + 1));
+
+            // The property that makes this path's un-retried read-then-write safe, asserted rather
+            // than assumed: the record ACCUMULATES NOTHING, so two racing publishes produce values
+            // differing only in startedAtMs and losing either loses no information. That is what
+            // distinguishes it from recordBestEffortFailureOutcome, which merges failingSlices and
+            // therefore does need #956's bounded re-read-and-retry.
+            assertThat(recordedOutcome().map(value -> ((AetherValue.DeploymentOutcomeValue) value).failingSlices()))
+                    .as("an apply-start record accumulates no slice ids — if it ever gains any, the "
+                        + "no-retry reasoning in BlueprintService.startedOutcome stops holding")
+                    .isEqualTo(Option.some(List.<String> of()));
+            assertThat(recordedOutcome().map(value -> ((AetherValue.DeploymentOutcomeValue) value).cause()))
+                    .as("and carries no accumulated cause text, for the same reason")
+                    .isEqualTo(Option.some(""));
         }
 
         /// #759 review round 2, BLOCKING 1: `publish(String dsl)` — the live path behind

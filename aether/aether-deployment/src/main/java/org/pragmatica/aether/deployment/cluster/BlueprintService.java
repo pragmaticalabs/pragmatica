@@ -326,8 +326,26 @@ class BlueprintServiceInstance implements BlueprintService {
     /// both #818 and #963's presence-gate, which would then read the PREVIOUS attempt's status.
     ///
     /// Mirrors `ClusterDeploymentState.Active.nextOutcomeVersion`, which is the same derivation for
-    /// the FSM's own write sites. Read-then-write is safe against a concurrent republish for the
-    /// reason the fence exists: the loser is rejected rather than silently overwriting.
+    /// the FSM's own write sites.
+    ///
+    /// **This is a read-then-write, which is the lost-update shape #956 exists to fence — and it
+    /// carries NO retry. The reason is stated rather than left implicit.**
+    ///
+    /// `recordBestEffortFailureOutcome` needs #956's bounded re-read-and-retry because it MERGES:
+    /// it accumulates a newly-failed slice id into the committed `failingSlices`, so a dropped write
+    /// loses information that existed nowhere else. **This path accumulates nothing.** Every racing
+    /// writer produces the identical value — status IN_PROGRESS, empty `failingSlices`, empty cause —
+    /// differing only in `startedAtMs`.
+    ///
+    /// So under a race between two publishes of the same id: both read `N`, both build `N+1`, the
+    /// applier accepts exactly one (`staleSuccessorWrite` rejects the second without mutating and
+    /// without failing the rest of its batch) and the record ends at IN_PROGRESS either way. The
+    /// stale terminal is cleared by whichever wins, so #818's guarantee holds; the loser forfeits
+    /// only its own `startedAtMs`. Nothing reads that field today — #970's proposed apply deadline
+    /// would be the first, and it should revisit this if it lands.
+    ///
+    /// The exactly-one-succeeds step is not an assumption: the first writer to apply derived its
+    /// version from the then-committed value, so its write is by construction the successor.
     private AetherValue.DeploymentOutcomeValue startedOutcome(BlueprintId id) {
         var successor = outcome(id).map(AetherValue.DeploymentOutcomeValue::outcomeVersion)
                                .map(version -> version + 1)
