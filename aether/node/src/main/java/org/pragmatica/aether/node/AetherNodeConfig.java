@@ -14,6 +14,7 @@ import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.StorageEncryptionConfig;
 import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.config.WorkerConfig;
@@ -78,7 +79,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                StreamingConfig streaming,
                                ClusterFormationConfig clusterFormation,
                                Option<ClusterName> clusterName,
-                               Option<StorageEncryptionConfig> storageEncryption) {
+                               Option<StorageEncryptionConfig> storageEncryption,
+                               Option<AlertConfig> alerts) {
     /// Cluster-wide deployment defaults. `canaryEvaluationInterval` / `defaultCanaryStages` drive
     /// progressive rollout; `communitySizing` is the leader's per-community target size and viability
     /// floor (worker-membership-spec §3.3 / §4.1) read by the cluster deployment FSM. A test/dev
@@ -141,6 +143,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                         streaming,
                                         clusterFormation,
                                         Option.empty(),
+                                        Option.empty(),
                                         Option.empty());
         };
     }
@@ -192,7 +195,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     streaming,
                                     clusterFormation,
                                     clusterName,
-                                    storageEncryption);
+                                    storageEncryption,
+                                    alerts);
     }
 
     public AetherNodeConfig withClusterName(Option<ClusterName> clusterName) {
@@ -226,7 +230,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     streaming,
                                     clusterFormation,
                                     clusterName,
-                                    storageEncryption);
+                                    storageEncryption,
+                                    alerts);
     }
 
     /// #253 — the `[storage.encryption]` keyring, when configured. Same post-build shape as
@@ -264,7 +269,47 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     streaming,
                                     clusterFormation,
                                     clusterName,
-                                    storageEncryption);
+                                    storageEncryption,
+                                    alerts);
+    }
+
+    /// #957 — the `[alerts]` section: hysteresis margin (#969) and webhook delivery config. Same
+    /// post-build stamp as [#withStorageEncryption], and stamped from the same place in `Main`, after
+    /// [org.pragmatica.aether.config.AlertConfig#check] has validated it. Absent means the shipped
+    /// defaults: damping on, webhooks disabled.
+    public AetherNodeConfig withAlerts(Option<AlertConfig> alerts) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    quicTls,
+                                    ttm,
+                                    rollback,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    atomicity,
+                                    activationGated,
+                                    timeouts,
+                                    certificateProvider,
+                                    workerConfig,
+                                    deploymentDefaults,
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig,
+                                    membership,
+                                    streaming,
+                                    clusterFormation,
+                                    clusterName,
+                                    storageEncryption,
+                                    alerts);
     }
 
     public interface SelfStage {

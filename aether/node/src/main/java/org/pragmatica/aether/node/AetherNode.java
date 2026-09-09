@@ -234,6 +234,7 @@ import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.worker.metrics.SpokesmanPingLoop;
 import org.pragmatica.aether.worker.metrics.WorkerMetricsAggregator;
 import org.pragmatica.aether.worker.mutation.MutationForwarder;
+import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.BuildInfo;
@@ -640,6 +641,13 @@ public interface AetherNode extends ManageableNode {
             return "storage.encryption is configured but no SecretsProvider is available "
                  + "(environment integration is absent or does not provide secrets)";
         }
+    }
+
+    /// #957/#969 — the node's alert config, or the shipped defaults when no `[alerts]` section was
+    /// loaded. Validation already happened at boot in `Main.resolveAlertConfig`, so anything arriving
+    /// here has passed [org.pragmatica.aether.config.AlertConfig#check]; an absent section needs none.
+    private static AlertConfig resolveAlertConfig(AetherNodeConfig config) {
+        return config.alerts().or(AlertConfig.alertConfig());
     }
 
     private static RabiaPersistence<KVCommand<AetherKey>> resolvePersistence(AetherNodeConfig config) {
@@ -2481,6 +2489,8 @@ public interface AetherNode extends ManageableNode {
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
         var deploymentManager = DeploymentManager.deploymentManager(clusterNode, kvStore);
         var alertManager = AlertManager.alertManager(clusterNode, kvStore);
+
+        alertManager.bindAlertConfig(resolveAlertConfig(config));
         var dynamicConfigManager = resourceProviderSetup.dynamicProvider()
                                                         .map(dp -> DynamicConfigManager.dynamicConfigManager(clusterNode,
                                                                                                              kvStore,
@@ -2544,7 +2554,14 @@ public interface AetherNode extends ManageableNode {
                                                                             clusterEventsHlcClock,
                                                                             clusterTopologyManager.observer()::clusterSize,
                                                                             kvStore::isReplaying,
-                                                                            clusterEventsLeaderCheck);
+                                                                            clusterEventsLeaderCheck,
+                                                                            // #957: ownership is RESOLVABLE once the controller ref is
+                                                                            // bound. Until then `clusterEventsOwnerCheck` returns false
+                                                                            // via its `.or(false)` fallback on EVERY node, so nobody
+                                                                            // publishes and the event is lost rather than merely
+                                                                            // suppressed. This supplier is what lets the aggregator tell
+                                                                            // that hole apart from ordinary non-ownership.
+                                                                            () -> clusterEventsControllerRef.get() != null);
         // Item-8 graft: best-effort SelfDrainInitiated emit on drain initiation. The aggregator is
         // forward-declared to DrainProcedure (constructed earlier) via this ref; the emitter lambda
         // resolves it lazily and no-ops until bound. NOT leader-gated — the draining node is the only

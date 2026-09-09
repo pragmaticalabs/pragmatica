@@ -113,7 +113,6 @@ public sealed interface ManagementRoutePermissions {
                        ManagementRoute.CONTROLLER_EVALUATE,
                        ManagementRoute.THRESHOLD_SET,
                        ManagementRoute.THRESHOLD_DELETE,
-                       ManagementRoute.ALERTS_CLEAR,
                        ManagementRoute.CONFIG_SET,
                        ManagementRoute.CONFIG_DELETE,
                        ManagementRoute.INVOCATION_METRICS_STRATEGY_SET,

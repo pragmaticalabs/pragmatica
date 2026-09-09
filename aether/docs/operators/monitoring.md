@@ -149,13 +149,18 @@ curl http://localhost:8080/alerts/history
 
 ### Clearing Alerts
 
-```bash
-# CLI
-aether alerts clear
+**There is no clear operation, and this is deliberate (#957).** Threshold alerts are re-derived from
+live metrics roughly once per second, so a cleared alert whose metric is still over its threshold
+reappears on the next evaluation — clearing could only ever have hidden it for about a second.
 
-# REST API
-curl -X POST http://localhost:8080/alerts/clear
-```
+An alert clears when its metric falls below the **clear point**, which hysteresis places slightly below
+the threshold that raised it: `max(threshold * (1 - margin), warning_threshold)`, with `margin`
+defaulting to 5% and configurable as `hysteresis_margin` in the `[alerts]` section. A `THRESHOLD_CLEARED`
+event is written to the cluster event log and the alert leaves `GET /alerts/active`.
+
+Operator-injected alerts (`POST /alerts/inject`) currently have **no supported dismissal path**. That
+was also true before #957 — clearing them appeared to work but did not, since they were re-read from
+the replicated event log on the next poll.
 
 ## Cluster-Wide Persistence
 
@@ -266,7 +271,6 @@ aether alerts clear
 | GET | `/alerts` | Get all alerts |
 | GET | `/alerts/active` | Get active alerts |
 | GET | `/alerts/history` | Get alert history |
-| POST | `/alerts/clear` | Clear active alerts |
 
 See [Management API Reference](../reference/management-api.md) for complete details.
 

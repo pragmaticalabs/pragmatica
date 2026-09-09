@@ -273,6 +273,13 @@ public interface SystemTags {
         pin(table, 287, "org.pragmatica.aether.api.ClusterEvent.StreamMemoryExceeded");
         pin(table, 288, "org.pragmatica.aether.api.ClusterEvent.StreamRegistered");
         pin(table, 289, "org.pragmatica.aether.api.ClusterEvent.TraceInjected");
+        // #957: threshold alerting moved onto the cluster event log. These two APPEND at 290/291 rather
+        // than slotting alphabetically between StreamRegistered (288) and TraceInjected (289) — the
+        // alphabetical order of this block is incidental, the numbers are the contract, and this file's
+        // Rules forbid renumbering. Two variants, not one: an append-only log cannot represent absence,
+        // so the clear edge must be its own event.
+        pin(table, 290, "org.pragmatica.aether.api.ClusterEvent.ThresholdBreached");
+        pin(table, 291, "org.pragmatica.aether.api.ClusterEvent.ThresholdCleared");
 
         // HTTP handling and forwarding  [base 512]
         pin(table, 512, "org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest");

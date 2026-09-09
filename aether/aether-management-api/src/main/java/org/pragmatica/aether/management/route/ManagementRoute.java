@@ -358,7 +358,6 @@ public enum ManagementRoute {
     ALERTS(GET, "/alerts", List.of(), LOCAL),
     ALERTS_ACTIVE(GET, "/alerts/active", List.of(), LOCAL),
     ALERTS_HISTORY(GET, "/alerts/history", List.of(), LOCAL),
-    ALERTS_CLEAR(POST, "/alerts/clear", List.of(), LOCAL),
     ALERTS_INJECT(POST, "/alerts/inject", List.of(), LOCAL),
     BACKUP_TRIGGER(POST, "/backups", List.of(), taskGroup(DEPLOYMENT)),
     BACKUPS_LIST(GET, "/backups", List.of(), LOCAL),

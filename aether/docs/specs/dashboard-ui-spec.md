@@ -1588,7 +1588,7 @@ Extracted from `DashboardWebSocketHandler.java` and `DashboardMetricsPublisher.j
 | `POST /api/scale` | 2 | Manual scaling |
 | `GET /api/alerts/active` | 2 | Active alerts |
 | `GET /api/alerts/history` | 2 | Alert history |
-| `POST /api/alerts/clear` | 2 | Clear active alerts |
+| ~~`POST /api/alerts/clear`~~ | — | **Removed (#957).** Was already a no-op: threshold alerts re-derive within a tick and injected alerts were re-read from the cluster event log on the next poll |
 | `GET /api/thresholds` | 2 | Alert thresholds |
 | `POST /api/thresholds` | 2 | Set/update threshold |
 | `DELETE /api/thresholds/{metric}` | 2 | Delete threshold |

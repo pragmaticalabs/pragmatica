@@ -21,6 +21,7 @@ import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 import java.util.concurrent.TimeUnit;
 
+import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ClusterConfig;
 import org.pragmatica.aether.config.ClusterSizeGate;
@@ -129,7 +130,8 @@ public record Main(String[] args) {
                                      // were missing or malformed, so the value is present and validated.
                                      .withClusterName(resolveClusterName())
                                      .withAutoHeal(resolveAutoHeal(aetherConfig))
-                                     .withStorageEncryption(resolveStorageEncryption(aetherConfig));
+                                     .withStorageEncryption(resolveStorageEncryption(aetherConfig))
+                                     .withAlerts(resolveAlertConfig(aetherConfig));
 
         enforceWalDurabilityBootable(config);
         // Review catch (#634 batch): assembly failures — the routed-type codec guard included — get
@@ -379,6 +381,24 @@ public record Main(String[] args) {
 
     private static Option<StorageEncryptionConfig> resolveStorageEncryption(Option<AetherConfig> aetherConfig) {
         return aetherConfig.flatMap(AetherConfig::storageEncryption);
+    }
+
+    /// #957 boot gate — resolve `[alerts]` and REFUSE TO BOOT on an invalid one.
+    ///
+    /// This is the ticket's fail-closed clause, and it needed no new validator:
+    /// [AlertConfig#check] composes `WebhookConfig.check()`, which was fully written — url, retry-count
+    /// and timeout guards, each with a typed cause — and called by NOTHING before this. A webhook
+    /// enabled with no URLs, or a hysteresis margin outside `[0.0, 1.0)`, now aborts boot with a FATAL
+    /// naming the field, instead of the node starting and silently dropping every alert it should have
+    /// delivered.
+    ///
+    /// No `[alerts]` section resolves to `Option.empty()` and the shipped defaults, unvalidated because
+    /// there is nothing to validate.
+    private Option<AlertConfig> resolveAlertConfig(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.flatMap(AetherConfig::alerts)
+                           .map(alerts -> alerts.check()
+                                                .onFailure(this::abortBoot)
+                                                .expect("unreachable: abortBoot exits"));
     }
 
     private static Option<BackupConfig> resolveBackup(Option<AetherConfig> aetherConfig) {

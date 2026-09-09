@@ -32,7 +32,8 @@ public record AetherConfig(ClusterConfig cluster,
                            Map<String, EndpointConfig> endpoints,
                            StreamingConfig streaming,
                            Option<MembershipConfigBinding> membership,
-                           Option<StorageEncryptionConfig> storageEncryption) {
+                           Option<StorageEncryptionConfig> storageEncryption,
+                           Option<AlertConfig> alerts) {
     public static Result<AetherConfig> aetherConfig(ClusterConfig cluster,
                                                     NodeConfig node,
                                                     Option<TlsConfig> tls,
@@ -59,6 +60,7 @@ public record AetherConfig(ClusterConfig cluster,
                                         none(),
                                         Map.of(),
                                         StreamingConfig.streamingConfig(),
+                                        none(),
                                         none(),
                                         none()));
     }
@@ -107,7 +109,8 @@ public record AetherConfig(ClusterConfig cluster,
                                 endpoints,
                                 streaming,
                                 membership,
-                                storageEncryption);
+                                storageEncryption,
+                                alerts);
     }
 
     public AetherConfig withEndpoints(Map<String, EndpointConfig> endpoints) {
@@ -127,7 +130,8 @@ public record AetherConfig(ClusterConfig cluster,
                                 endpoints,
                                 streaming,
                                 membership,
-                                storageEncryption);
+                                storageEncryption,
+                                alerts);
     }
 
     public AetherConfig withCloud(CloudConfig cloud) {
@@ -147,7 +151,8 @@ public record AetherConfig(ClusterConfig cluster,
                                 endpoints,
                                 streaming,
                                 membership,
-                                storageEncryption);
+                                storageEncryption,
+                                alerts);
     }
 
     public AetherConfig withStreaming(StreamingConfig streaming) {
@@ -167,7 +172,8 @@ public record AetherConfig(ClusterConfig cluster,
                                 endpoints,
                                 streaming,
                                 membership,
-                                storageEncryption);
+                                storageEncryption,
+                                alerts);
     }
 
     public AetherConfig withMembership(MembershipConfigBinding membership) {
@@ -187,7 +193,8 @@ public record AetherConfig(ClusterConfig cluster,
                                 endpoints,
                                 streaming,
                                 some(membership),
-                                storageEncryption);
+                                storageEncryption,
+                                alerts);
     }
 
     public AetherConfig withStorageEncryption(StorageEncryptionConfig storageEncryption) {
@@ -207,7 +214,29 @@ public record AetherConfig(ClusterConfig cluster,
                                 endpoints,
                                 streaming,
                                 membership,
-                                some(storageEncryption));
+                                some(storageEncryption),
+                                alerts);
+    }
+
+    public AetherConfig withAlerts(AlertConfig alerts) {
+        return new AetherConfig(cluster,
+                                node,
+                                tls,
+                                docker,
+                                kubernetes,
+                                ttm,
+                                slice,
+                                appHttp,
+                                backup,
+                                dhtReplication,
+                                timeouts,
+                                storage,
+                                cloud,
+                                endpoints,
+                                streaming,
+                                membership,
+                                storageEncryption,
+                                some(alerts));
     }
 
     public static Builder builder() {
@@ -256,6 +285,7 @@ public record AetherConfig(ClusterConfig cluster,
         private StreamingConfig streamingConfig;
         private MembershipConfigBinding membershipConfig;
         private StorageEncryptionConfig storageEncryptionConfig;
+        private AlertConfig alertConfig;
 
         @SuppressWarnings("JBCT-NAM-01")
         public Builder withEnvironment(Environment environment) {
@@ -397,6 +427,12 @@ public record AetherConfig(ClusterConfig cluster,
             return this;
         }
 
+        public Builder alerts(AlertConfig alertConfig) {
+            this.alertConfig = alertConfig;
+
+            return this;
+        }
+
         public AetherConfig build() {
             var base = AetherConfig.aetherConfig(environment);
             var clusterConfig = applyClusterOverrides(base.cluster());
@@ -433,7 +469,10 @@ public record AetherConfig(ClusterConfig cluster,
             var withCloudConfig = option(cloudConfig).fold(() -> withStreaming, withStreaming::withCloud);
             var withMembership = option(membershipConfig).fold(() -> withCloudConfig, withCloudConfig::withMembership);
 
-            return option(storageEncryptionConfig).fold(() -> withMembership, withMembership::withStorageEncryption);
+            var withStorageEncryption = option(storageEncryptionConfig).fold(() -> withMembership,
+                                                                             withMembership::withStorageEncryption);
+
+            return option(alertConfig).fold(() -> withStorageEncryption, withStorageEncryption::withAlerts);
         }
 
         private ClusterConfig applyClusterOverrides(ClusterConfig base) {

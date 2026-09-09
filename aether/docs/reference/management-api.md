@@ -60,7 +60,7 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 | Deployment strategies | OPERATOR | `POST /api/v1/deploy`, `POST /api/v1/deploy/promote/*`, `POST /api/v1/deploy/rollback/*`, `POST /api/v1/deploy/complete/*`, `POST /api/v1/ab-tests/*` |
 | Backup trigger | OPERATOR | `POST /api/v1/backups` |
 | Config overrides | OPERATOR | `PUT /api/v1/config/*` |
-| Alert management | OPERATOR | `POST /api/v1/alerts/clear` |
+| Alert management | OPERATOR | `POST /api/v1/alerts/inject` |
 | Scheduled tasks | OPERATOR | `POST /api/v1/scheduled-tasks/*` |
 | Controller config | OPERATOR | `PUT /api/v1/controller/*` |
 | Threshold config | OPERATOR | `PUT /api/v1/thresholds/*` |
@@ -1734,24 +1734,22 @@ Get active alerts only.
 
 ### GET /api/v1/alerts/history
 
-Get alert history only.
+Get alert history only. Projected from the cluster event log (`THRESHOLD_BREACHED` as `TRIGGERED`,
+`THRESHOLD_CLEARED` as `RESOLVED`, `ALERT_INJECTED` as `INJECTED`), so it is **cluster-wide** — a
+breach observed on any node is visible from any node. Before #957 this endpoint returned only what the
+receiving node had itself observed, from an in-memory 100-entry deque.
 
-### POST /api/v1/alerts/clear
-
-Clear all active alerts.
-
-**Response:**
-```json
-{
-  "status": "alerts_cleared"
-}
-```
+**Retention, stated precisely because "durable" would overclaim it:** history is bounded by the
+cluster-events stream's `RetentionPolicy` — by default 10,000 events **OR** 16 MB **OR** 24 hours,
+`RetentionMode.ANY`, whichever floor is reached first. It is not unbounded and it is not permanent.
+The read itself is bounded to the most recent 100 entries.
+`[mechanism: RetentionPolicy on system:cluster-events:1.0.0, configured in AetherNode]`
 
 ### POST /api/v1/alerts/inject
 
 Insert a synthetic alert entry directly, bypassing threshold evaluation. The entry is visible via `GET /api/v1/alerts` (active list) immediately after this call returns and is also written to alert history with status `INJECTED`. Used by integration tests and operator tooling when no threshold-driven path can produce the alert under test.
 
-**RBAC:** OPERATOR · **Routing:** ANY (node-local; alerts are not consensus-replicated)
+**RBAC:** OPERATOR · **Routing:** ANY (the injected alert is published to the cluster event stream, so any node serves it back)
 
 **Request:**
 ```json
@@ -4053,7 +4051,6 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | GET | `/api/v1/alerts` | Alert Management |
 | GET | `/api/v1/alerts/active` | Alert Management |
 | GET | `/api/v1/alerts/history` | Alert Management |
-| POST | `/api/v1/alerts/clear` | Alert Management |
 | GET | `/api/v1/thresholds` | Threshold Configuration |
 | POST | `/api/v1/thresholds` | Threshold Configuration |
 | DELETE | `/api/v1/thresholds/{metric}` | Threshold Configuration |

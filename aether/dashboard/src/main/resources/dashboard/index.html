@@ -572,7 +572,7 @@
             <!-- Alerts Page -->
             <div x-show="currentPage === 'alerts'" x-cloak>
                 <div class="panel">
-                    <h2 class="panel-header">ACTIVE ALERTS <button class="btn btn-small btn-warning" @click="$store.alerts.clearAll()">Clear All</button></h2>
+                    <h2 class="panel-header">ACTIVE ALERTS</h2>
                     <template x-for="alert in $store.alerts.active" :key="alert.id || alert.metric + alert.nodeId">
                         <div class="alert-item" :class="'severity-' + alert.severity.toLowerCase()">
                             <span class="alert-severity" x-text="alert.severity"></span>

@@ -29,6 +29,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// Covers the synthetic alert injection endpoint surface on `AlertManager`, ported to the
 /// stream-namespaces cluster-events model (Stage 4):
 ///   - inject + read-back via `activeAlertsAsJson` (correlation by `alertId`)
+///   - history read-back via `alertHistoryAsList`, projected from the cluster event log (#957 —
+///     the node-local `alertHistory` deque and `alertHistoryAsJson` were removed with it)
 ///   - inject emits a sealed `ClusterEvent.AlertInjected` through the bound `EventSink`
 ///     (was: an `EventLogPublisher.publish(EventType, ...)` call against the deleted KV log)
 ///   - cross-node UNION read via the async `clusterEventsSource` (Supplier<Promise<List>>)
@@ -93,9 +95,27 @@ class AlertManagerInjectTest {
             assertTrue(activeJson.contains("\"source\":\"injected\""),
                        "activeAlertsAsJson must mark synthetic entries with source=injected: actual=" + activeJson);
 
-            var historyJson = manager.alertHistoryAsJson();
-            assertTrue(historyJson.contains("\"status\":\"INJECTED\""),
-                       "alertHistoryAsJson must record an INJECTED history entry: actual=" + historyJson);
+            // #957: history is projected from the cluster event log, not from the removed node-local
+            // deque. The behaviour asserted here is unchanged — an injected alert must still appear in
+            // history marked INJECTED — so this re-points the instrument, it does not weaken the claim.
+            var injectedEvent = new ClusterEvent.AlertInjected(HLC.now(),
+                                                               ClusterEvent.Severity.CRITICAL,
+                                                               "must appear in active list",
+                                                               Map.of("alertId",
+                                                                      alertId,
+                                                                      "name",
+                                                                      "readback-alert",
+                                                                      "severity",
+                                                                      "CRITICAL"));
+
+            manager.bindClusterEventsSource(() -> Promise.success(List.of(injectedEvent)));
+
+            var history = manager.alertHistoryAsList().await().or(List.of());
+
+            assertTrue(history.stream().anyMatch(row -> "INJECTED".equals(row.status())),
+                       "alertHistoryAsList must project an INJECTED row from the cluster event log: actual=" + history);
+            assertTrue(history.stream().anyMatch(row -> "CRITICAL".equals(row.severity())),
+                       "the projected row must carry the injected severity: actual=" + history);
         }
     }
 

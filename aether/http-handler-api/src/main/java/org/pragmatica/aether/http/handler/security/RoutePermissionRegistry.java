@@ -44,7 +44,6 @@ public sealed interface RoutePermissionRegistry {
                                                      "/api/v1/scheduled-tasks",
                                                      "/api/v1/controller",
                                                      "/api/v1/thresholds",
-                                                     "/api/v1/alerts/clear",
                                                      "/api/v1/config",
                                                      "/api/v1/invocations/metrics/strategy",
                                                      "/api/v1/streams",

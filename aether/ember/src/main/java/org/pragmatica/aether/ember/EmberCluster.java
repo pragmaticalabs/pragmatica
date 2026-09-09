@@ -1180,6 +1180,10 @@ public final class EmberCluster {
         Option.empty(),
 
         // #253 — forge/Ember nodes don't exercise storage encryption; opt-in only.
+        Option.empty(),
+
+        // #957 — no [alerts] section in-process; AlertManager falls back to the shipped
+        // defaults (damping at AlertConfig.DEFAULT_HYSTERESIS_MARGIN, webhooks disabled).
         Option.empty());
 
         lastNodeConfig.set(Option.some(config));

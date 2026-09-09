@@ -122,6 +122,7 @@ public final class ConfigLoader {
         populateEndpointsConfig(doc, builder);
         populateStreamingConfig(doc, builder);
         populateMembershipConfig(doc, builder);
+        populateAlertConfig(doc, builder);
 
         return builder;
     }
@@ -479,6 +480,52 @@ public final class ConfigLoader {
         var keys = doc.getSection("storage.encryption.keys");
 
         builder.storageEncryption(StorageEncryptionConfig.storageEncryptionConfig(keys, activeKeyId, streamsEncrypted));
+    }
+
+    /// #957: `[alerts]` -- the section that did not exist. Before this, `AlertConfig` was referenced in
+    /// `src/main` by `AlertForwarder` alone, was not a component of [AetherConfig], and no `.toml` in the
+    /// repo carried an `[alert...]` section, so webhook delivery was unreachable by any configuration and
+    /// the hysteresis margin (#969) would have had nowhere to live.
+    ///
+    /// Absent section -> builder untouched (`Option.none()` default), so a node with no `[alerts]` keeps
+    /// the shipped defaults: damping ON at [AlertConfig#DEFAULT_HYSTERESIS_MARGIN], webhooks DISABLED.
+    /// **Plumbing this does not enable webhook delivery** -- it makes it opt-in reachable; the default
+    /// `WebhookConfig` still carries no URLs and `AlertForwarder.forward` still early-returns.
+    ///
+    /// Validation is deliberately NOT done here. It runs at node boot via [AlertConfig#check], which is
+    /// what makes a misconfigured webhook refuse at boot instead of accepting and dropping (#957's
+    /// fail-closed clause). Building here and validating there keeps the loader total.
+    private static void populateAlertConfig(TomlDocument doc, AetherConfig.Builder builder) {
+        if (!doc.hasSection("alerts")) {
+            return;
+        }
+
+        var enabled = doc.getBoolean("alerts", "enabled").or(true);
+        var margin = doc.getDouble("alerts", "hysteresis_margin").or(AlertConfig.DEFAULT_HYSTERESIS_MARGIN);
+
+        builder.alerts(AlertConfig.alertConfig(enabled, webhookFromToml(doc), eventsFromToml(doc), margin).unwrap());
+    }
+
+    /// `[alerts.webhook]`. Absent sub-section -> the DISABLED default, which is what keeps delivery
+    /// opt-in for an operator who writes `[alerts]` only to set a hysteresis margin.
+    private static AlertConfig.WebhookConfig webhookFromToml(TomlDocument doc) {
+        if (!doc.hasSection("alerts.webhook")) {
+            return AlertConfig.WebhookConfig.webhookConfig();
+        }
+
+        var enabled = doc.getBoolean("alerts.webhook", "enabled").or(false);
+        var urls = doc.getStringList("alerts.webhook", "urls").or(List.of());
+        var retryCount = parseInt(doc, "alerts.webhook", "retry_count", 3);
+        var timeout = parseTimeSpan(doc, "alerts.webhook", "timeout", timeSpan(5).seconds());
+
+        return AlertConfig.WebhookConfig.webhookConfig(enabled, urls, retryCount, timeout).unwrap();
+    }
+
+    /// `[alerts.events]`. Absent sub-section -> the disabled default, matching [AlertConfig].
+    private static AlertConfig.EventConfig eventsFromToml(TomlDocument doc) {
+        return doc.hasSection("alerts.events")
+               ? AlertConfig.EventConfig.eventConfig(doc.getBoolean("alerts.events", "enabled").or(false)).unwrap()
+               : AlertConfig.EventConfig.eventConfig();
     }
 
     private static StorageConfig storageFromSection(TomlDocument doc, String sectionName) {
