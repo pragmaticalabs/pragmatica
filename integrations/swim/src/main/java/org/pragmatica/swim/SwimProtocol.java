@@ -1759,6 +1759,21 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void applyNewMember(MembershipUpdate update) {
+        // #964 S1: refuse BEFORE the put. The `case UNKNOWN` arm below runs AFTER `members.put`, so it
+        // only skipped the listener notification — the member was still stored as UNKNOWN, never probed
+        // (`isProbable` is an ALIVE/SUSPECT/OBSERVED allowlist) and never swept (`isFaultyAndExpired`
+        // requires FAULTY). A brand-new id gossiped as UNKNOWN therefore became a permanent membership
+        // zombie exactly as an existing one did. Admitting a member whose state this node cannot name
+        // fabricates membership evidence; there is nothing to admit it AS.
+        if (update.state() == MemberState.UNKNOWN) {
+            LOG.warn("SWIM refusing to admit {} at incarnation {}: the update carries a member state this node"
+                     + " cannot decode — the peer is running a newer MemberState (#964). The member is not added.",
+                     update.nodeId().id(),
+                     update.incarnation());
+
+            return;
+        }
+
         var member = SwimMember.swimMember(update.nodeId(), update.state(), update.incarnation(), update.address());
 
         members.put(update.nodeId(), member);
@@ -1772,11 +1787,11 @@ public final class SwimProtocol implements SwimMessageHandler {
             // Drop it rather than treat it as a real membership event.
             case OBSERVED -> LOG.warn("SWIM dropping gossiped OBSERVED update for {} — OBSERVED is a " + "local-only birth state and must never arrive on the wire",
                                       update.nodeId().id());
-            // #964: the peer gossiped a member state this node's MemberState does not have. Admitting
-            // it as any real state would fabricate membership evidence, so the update is dropped -- but
-            // named, because a silent drop here is the defect the sentinel exists to remove.
-            case UNKNOWN -> LOG.warn("SWIM dropping membership update for {} carrying a member state this node " + "cannot decode — the peer is running a newer MemberState (#964)",
-                                     update.nodeId().id());
+            // #964: unreachable — the guard at the top of this method returns before the put above.
+            // Kept so the switch stays exhaustive and so the next MemberState constant is a compile
+            // error here. NOTE for whoever reads the OBSERVED arm beside it: these arms run AFTER
+            // `members.put`, so "drop" in that comment means "fire no listener", NOT "do not store".
+            case UNKNOWN -> { }
         }
         // Re-broadcast based on the LOCAL stored state, NOT the raw wire update (#336/#241 wire-leak,
         // Finding B): a gossiped SUSPECT-of-unknown is birthed OBSERVED ([#applyNewSuspectMember]) and
@@ -1841,6 +1856,29 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// state is ignored (our own probe-timeout decides), #336/#241.
     private void applyExistingMember(SwimMember existing, MembershipUpdate update, NodeId accuser) {
         if (update.incarnation() < existing.incarnation()) {
+            return;
+        }
+        // #964 S1: an undecodable state is rejected at EVERY incarnation, not merely at an equal one.
+        //
+        // The statePriority guard below is gated on `incarnation ==`, so a HIGHER-incarnation gossiped
+        // UNKNOWN sailed past it and was stored. That left a membership zombie: `members` said UNKNOWN
+        // while every listener still believed the prior state (no listener fires for UNKNOWN), while
+        // `isProbable` is an ALIVE/SUSPECT/OBSERVED allowlist so the member was never probed again,
+        // while `isFaultyAndExpired` requires FAULTY so it was never swept — and `detectSelfIsolation`
+        // could never latch while one was resident. That is the #966 family, created by a robustness
+        // fix, so it is refused here rather than ranked.
+        //
+        // Ranking cannot express this: priority answers "which of two states this node UNDERSTANDS
+        // wins", and UNKNOWN is the absence of a state, not a weaker one. Matches `applyNewMember`,
+        // which already drops an UNKNOWN update instead of storing it — the two paths now agree.
+        if (update.state() == MemberState.UNKNOWN) {
+            LOG.warn("SWIM dropping membership update for {} at incarnation {}: it carries a member state this"
+                     + " node cannot decode — the peer is running a newer MemberState (#964). The last decodable"
+                     + " state {} is kept.",
+                     update.nodeId().id(),
+                     update.incarnation(),
+                     existing.state());
+
             return;
         }
         // OBSERVED is a not-yet-confirmed local placeholder: a gossiped Alive (propagated probe-ack
@@ -1913,9 +1951,11 @@ public final class SwimProtocol implements SwimMessageHandler {
             case SUSPECT -> 1;
             case FAULTY -> 2;
             case OBSERVED -> - 1;
-            // #964: WEAKER than OBSERVED, so an undecodable gossiped state is rejected against every
-            // resident state including the local birth state, and can never overwrite one this node
-            // does understand.
+            // #964: ranked WEAKEST as a backstop only. This arm does NOT keep an undecodable state out
+            // of `members` — priority is consulted only at EQUAL incarnation, so a higher-incarnation
+            // UNKNOWN bypassed it entirely and was stored (verified by probe, #964 S1). The rejection
+            // that actually holds is the explicit UNKNOWN guard at the top of `applyExistingMember`;
+            // this value merely makes the equal-incarnation case agree with it.
             case UNKNOWN -> - 2;
         };
     }

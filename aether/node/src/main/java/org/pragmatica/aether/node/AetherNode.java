@@ -4794,7 +4794,8 @@ public interface AetherNode extends ManageableNode {
         return switch (raw) {
             case "ctm" -> AetherValue.ProvisioningSource.CTM;
             case "manual" -> AetherValue.ProvisioningSource.MANUAL;
-            default -> AetherValue.ProvisioningSource.UNKNOWN;
+            // #964 S2: an unparseable config string is UNRECOGNISED, never the wire sentinel.
+            default -> AetherValue.ProvisioningSource.UNRECOGNISED;
         };
     }
 

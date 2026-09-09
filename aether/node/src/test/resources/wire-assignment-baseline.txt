@@ -22,7 +22,7 @@ ENUM org.pragmatica.aether.slice.generation.GenerationReason LEADER_ELECTED=0,ME
 ENUM org.pragmatica.aether.slice.generation.HealthHint HEALTHY=0,SUSPECTED=1,FAULTY=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$ClusterPhase COLD_BOOT=0,NORMAL=1,RECOVERING=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentOutcomeStatus SUCCEEDED=0,FAILED=1,ROLLED_BACK=2,UNKNOWN=3
-ENUM org.pragmatica.aether.slice.kvstore.AetherValue$ProvisioningSource CTM=0,MANUAL=1,UNKNOWN=2
+ENUM org.pragmatica.aether.slice.kvstore.AetherValue$ProvisioningSource CTM=0,MANUAL=1,UNRECOGNISED=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$SchemaStatus PENDING=0,MIGRATING=1,COMPLETED=2,FAILED=3,UNKNOWN=4
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$SpokesmanStatus ASSIGNED=0,ACTIVE=1,FAILED=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.CommunityState FORMING=0,ACTIVE=1,DEGRADED=2,DISSOLVING=3,DISSOLVED=4,UNKNOWN=5

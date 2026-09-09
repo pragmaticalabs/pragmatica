@@ -26,7 +26,8 @@ public record CoreMember(NodeId nodeId,
                          ProvisioningSource provisioningSource) {
     public CoreMember {
         if (provisioningSource == null) {
-            provisioningSource = ProvisioningSource.UNKNOWN;
+            // #964 S2: a missing value is a LOCAL gap, not evidence of a version-skewed peer.
+            provisioningSource = ProvisioningSource.UNRECOGNISED;
         }
     }
 
@@ -36,7 +37,7 @@ public record CoreMember(NodeId nodeId,
                                         HealthHint healthHint,
                                         Epoch joinedEpoch,
                                         Epoch lastSeenEpoch) {
-        return new CoreMember(nodeId, host, port, healthHint, joinedEpoch, lastSeenEpoch, ProvisioningSource.UNKNOWN);
+        return new CoreMember(nodeId, host, port, healthHint, joinedEpoch, lastSeenEpoch, ProvisioningSource.UNRECOGNISED);
     }
 
     public static CoreMember coreMember(NodeId nodeId,

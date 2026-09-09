@@ -976,9 +976,24 @@ public sealed interface AetherValue {
     }
 
     @Codec
+    /// How a node came to be in the cluster. Provenance only — nothing branches on it.
+    ///
+    /// #964 S2: `UNRECOGNISED` and `UNKNOWN` are DELIBERATELY separate, because they have different
+    /// causes and an operator acts differently on each. `UNRECOGNISED` is local and self-inflicted —
+    /// a config value this node could not parse, or no value at all — and is fixed by editing
+    /// configuration. `UNKNOWN` is the wire sentinel: the node that wrote this record runs a newer
+    /// `ProvisioningSource`, and it is fixed by finishing the rolling upgrade.
+    ///
+    /// Before they were split, both produced `UNKNOWN` and were indistinguishable at the point of use.
+    /// That is the same conflation `SliceState` avoids by keeping its sentinel out of `STRING_TO_STATE`
+    /// — a decode artifact must not be something a config file can ask for. A diagnostic that cannot
+    /// tell its two causes apart has stopped discriminating.
     enum ProvisioningSource {
         CTM,
         MANUAL,
+        /// Local: unparseable or absent configuration. Never produced by decoding.
+        UNRECOGNISED,
+        /// Wire sentinel (#964) — see the type docstring. Must stay LAST.
         UNKNOWN
     }
 
