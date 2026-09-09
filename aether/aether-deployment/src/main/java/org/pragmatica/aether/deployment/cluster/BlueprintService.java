@@ -379,16 +379,26 @@ class BlueprintServiceInstance implements BlueprintService {
         }
 
         if (attempt >= MAX_OUTCOME_START_ATTEMPTS) {
-            log.error("Apply-start record for blueprint {} was fenced out after {} attempts — a concurrent"
-                     + " terminal write keeps winning, so this publish is reported failed rather than"
-                     + " silently leaving the PREVIOUS attempt's outcome in place",
+            // #963 F3: the blueprint is ALREADY COMMITTED when this fires — it landed in the first
+            // batch and only the outcome write was fenced out. "The publish failed" is therefore true
+            // of the record and FALSE of the blueprint, and saying only the former sends an operator
+            // looking for a deployment that is in fact live. Compensating by removing the blueprint
+            // was considered and rejected: it would tear down a possibly-running deployment to tidy
+            // up a bookkeeping failure, trading a legible degraded state for an outage on the rarest
+            // path in this change.
+            log.error("Blueprint {} IS PUBLISHED AND LIVE, but its apply-start record was fenced out after"
+                     + " {} attempts by terminal writes for a previous apply. Consequence: this apply"
+                     + " carries the PREVIOUS attempt's outcome, so retry exhaustion will not condemn it"
+                     + " and the blueprint status route reports that older outcome. Remedy: re-publish {}"
+                     + " — the retry re-derives against current committed state and normally wins.",
                       expanded.id().asString(),
-                      attempt);
+                      attempt,
+                      expanded.id().asString());
 
-            return Causes.cause("Apply-start record for " + expanded.id()
-                                                                    .asString()
-                               + " could not be recorded after " + attempt
-                               + " attempts").promise();
+            return Causes.cause("Blueprint " + expanded.id()
+                                                       .asString()
+                               + " is published and live, but its apply-start record could not be written after " + attempt
+                               + " attempts — it carries the previous apply's outcome until re-published").promise();
         }
 
         log.debug("Apply-start record for blueprint {} was fenced out (attempt {}), retrying against the"
