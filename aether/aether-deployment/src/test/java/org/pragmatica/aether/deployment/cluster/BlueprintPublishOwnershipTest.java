@@ -235,6 +235,38 @@ class BlueprintPublishOwnershipTest {
                     .isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
         }
 
+        /// #963 × #956 — the apply-start record must carry the SUCCESSOR fence version, and this
+        /// pins it BY VALUE rather than by status.
+        ///
+        /// `DeploymentOutcomeValue` became [VersionFenced] in #805 item 2 while #963 was in flight.
+        /// The applier rejects any write whose version is not the immediate successor of the
+        /// committed one, so the first-write form (`inProgress(startedAtMs)`, carrying
+        /// `FIRST_VERSION`) is wrong on this path: publish writes over a POSSIBLY-COMMITTED record —
+        /// replacing a stale terminal is why the write exists — and against one the applier would
+        /// drop it silently, leaving the previous attempt's terminal in place.
+        ///
+        /// **Why this test exists and a status assertion does not suffice.** A mutation reverting
+        /// `startedOutcome` to the first-write form left every other test in this suite GREEN: the
+        /// seeded record is at version 1, both forms produce status IN_PROGRESS, and this fixture's
+        /// store does not run the applier's successor check — so nothing could see the difference.
+        /// The merge resolution was an unpinned judgement until this assertion existed. It asserts
+        /// the derivation itself: seeded at 1, the publish must write 2.
+        @Test
+        void publishFromArtifact_marksTheAttemptWithTheSuccessorFenceVersion() {
+            seedFailedOutcome(OWNER);
+
+            assertThat(recordedOutcome().map(value -> ((AetherValue.DeploymentOutcomeValue) value).outcomeVersion()))
+                    .as("precondition: the committed record sits at FIRST_VERSION")
+                    .isEqualTo(Option.some(AetherValue.DeploymentOutcomeValue.FIRST_VERSION));
+
+            publish(OWNER_COORDS, withoutMigrations(OWNER_COORDS)).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(recordedOutcome().map(value -> ((AetherValue.DeploymentOutcomeValue) value).outcomeVersion()))
+                    .as("the apply-start record must be the immediate SUCCESSOR of the committed one, or "
+                        + "the VersionFenced applier drops it and the stale terminal survives")
+                    .isEqualTo(Option.some(AetherValue.DeploymentOutcomeValue.FIRST_VERSION + 1));
+        }
+
         /// #759 review round 2, BLOCKING 1: `publish(String dsl)` — the live path behind
         /// `SliceRoutes.handleBlueprint` — went through `storeBlueprintWithKey`, a single-command
         /// batch touching only `AppBlueprintKey`, bypassing `buildAllCommands` and its Remove
