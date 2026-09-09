@@ -75,6 +75,13 @@ class SliceProcessorTest {
                 }
                 static void writeCompact(Object buf, int value) {}
                 static int readCompact(Object buf) { return 0; }
+                // #964: present so the GENERATED SOURCE COMPILES, and for no other purpose. This whole
+                // interface is a fake standing in for org.pragmatica.serialization.SliceCodec, so these
+                // bodies encode nothing and decode nothing. Never cite a test in this file as evidence
+                // about unknown-ordinal behaviour — that evidence is UnknownEnumOrdinalWireTest in
+                // integrations/cluster, which runs real bytes through the real generated codecs.
+                static <E extends Enum<E>> E readEnum(Object buf, E[] values, E unknown) { return unknown; }
+                static <E extends Enum<E>> E readEnumOrFail(Object buf, E[] values, Class<E> type) { return null; }
                 static SliceCodec sliceCodec(SliceCodec parent, List<TypeCodec<?>> codecs) { return parent; }
                 static SliceCodec sliceCodec(SliceCodec parent, List<TypeCodec<?>> codecs, Set<Class<?>> requiredTypes) { return parent; }
                 record TypeCodec<T>(Class<T> type, int tag, TypeWriter<T> writer, TypeReader<T> reader) {}
@@ -2194,12 +2201,67 @@ class SliceProcessorTest {
         assertThat(factoryContent).contains("new SliceCodec.TypeCodec<test.state.OrderState>(test.state.OrderState.class");
         assertThat(factoryContent).contains("codec.write(buf, val.status())");
         assertThat(factoryContent).contains("return new test.state.OrderState(status, amount);");
-        // The enum state type gets the ordinal codec.
+        // The enum state type gets the ordinal codec — bounds-checked (#964), never the raw
+        // values()[readCompact(buf)] index. AuditLevel declares no UNKNOWN sentinel, so it takes the
+        // STRICT form: the ordinal is still range-checked and the failure names the enum, rather than
+        // an AIOOBE from generated code that the transport boundary swallows.
         assertThat(factoryContent).contains("new SliceCodec.TypeCodec<test.state.AuditLevel>(test.state.AuditLevel.class");
-        assertThat(factoryContent).contains("test.state.AuditLevel.values()[SliceCodec.readCompact(buf)]");
+        assertThat(factoryContent).contains(
+            "SliceCodec.readEnumOrFail(buf, test.state.AuditLevel.values(), test.state.AuditLevel.class)");
+        assertThat(factoryContent).doesNotContain("test.state.AuditLevel.values()[SliceCodec.readCompact(buf)]");
         // The String key is served by FrameworkCodecs, so no entry and no checklist for it.
         assertThat(factoryContent).doesNotContain("java.lang.String.class");
         assertThat(factoryContent).doesNotContain("Set.of(");
+    }
+
+    /// #964, the OTHER arm of the slice-enum rule: an application enum that DOES declare `UNKNOWN` as
+    /// its last constant opts into the sentinel, and its unrecognised ordinals decode to it with the
+    /// rest of the message intact — the same contract framework `@Codec` enums get, without forcing
+    /// every application enum to carry a wire concern.
+    ///
+    /// Paired deliberately with the strict-form assertion above: the two fixtures differ ONLY in
+    /// whether the enum ends with `UNKNOWN`, so a generator that emitted one form unconditionally
+    /// would redden exactly one of them. Asserting only the form it produced would not distinguish
+    /// "the branch works" from "there is no branch".
+    @Test
+    void codec_generatesSentinelEnumRead_whenEnumDeclaresUnknownLast() throws Exception {
+        var auditLevel = JavaFileObjects.forSourceString("test.state.AuditLevel",
+                                                         """
+            package test.state;
+            public enum AuditLevel { OFF, FULL, UNKNOWN }
+            """);
+        var source = JavaFileObjects.forSourceString("test.EntitySlice",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AuditEntity;
+            import test.infra.DurableEntity;
+            import test.state.AuditLevel;
+            @Slice
+            public interface EntitySlice {
+                Promise<String> create(String orderId);
+                static EntitySlice entitySlice(@AuditEntity DurableEntity<String, AuditLevel> audit) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+
+        sources.add(DURABLE_ENTITY);
+        sources.add(entityQualifier("AuditEntity", "entities.audit"));
+        sources.add(auditLevel);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.EntitySliceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains(
+            "SliceCodec.readEnum(buf, test.state.AuditLevel.values(), test.state.AuditLevel.UNKNOWN)");
+        assertThat(factoryContent).doesNotContain("readEnumOrFail");
     }
 
     @Test

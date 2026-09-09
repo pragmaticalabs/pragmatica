@@ -389,6 +389,55 @@ class SchemaRouteStatusTest {
         }
     }
 
+    /// #964. `guardReactivation` ended in `default -> writeMigratingStatus`, so ANY status it did not
+    /// name started a migration — including, once the sentinel existed, a status decoded as `UNKNOWN`
+    /// because the record was written by a node running a newer `SchemaStatus`. That is a fail-open on
+    /// a state-changing route, reached by falling through rather than by any decision, and it is the
+    /// exact shape the sentinel was added to prevent rather than introduce. The arms are now
+    /// enumerated, so the next `SchemaStatus` constant is a compile error here instead of a silent
+    /// migration.
+    @Nested
+    class UndecodableStatus {
+        @Test
+        void migrateRoute_respondsConflict_whenStatusIsUndecodable() {
+            seed(SchemaStatus.UNKNOWN);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_MIGRATE)).isEqualTo(HttpStatus.CONFLICT);
+        }
+
+        @Test
+        void migrateRoute_propagatesCauseUnwrapped_whenStatusIsUndecodable() {
+            seed(SchemaStatus.UNKNOWN);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_MIGRATE))
+                .isEqualTo(SchemaRouteError.SchemaStatusUndecodable.schemaStatusUndecodable(DATASOURCE));
+        }
+
+        /// THE load-bearing assertion of this class. A 409 alone would still be satisfied by a handler
+        /// that refused the response after writing; this shows the record was not touched, which is
+        /// what "no migration was started" actually means.
+        @Test
+        void migrateRoute_writesNothing_whenStatusIsUndecodable() {
+            seed(SchemaStatus.UNKNOWN);
+
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none());
+
+            assertThat(recorded().status()).as("a refused migrate must not have re-armed the record")
+                      .isEqualTo(SchemaStatus.UNKNOWN);
+        }
+
+        /// The control: the SAME call against a status this node can read DOES write MIGRATING. Without
+        /// it, the assertion above is equally satisfied by a route that writes nothing ever.
+        @Test
+        void migrateRoute_writesMigrating_forAReadableStatus() {
+            seed(SchemaStatus.FAILED);
+
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none());
+
+            assertThat(recorded().status()).isEqualTo(SchemaStatus.MIGRATING);
+        }
+    }
+
     /// A present-but-unparseable version parameter used to throw `NumberFormatException` out of the
     /// handler; nothing between the route builder and `ManagementRouter` lifts, so it was caught only
     /// by the outermost Netty guard, which answers 500 with a bare `{"error":"Internal Server Error"}`

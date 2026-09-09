@@ -14,6 +14,7 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
+import org.pragmatica.aether.slice.SliceLoadingFailure.Unrecognised;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -292,6 +293,32 @@ public sealed interface AetherValue {
         /// First-write forms, carrying [#FIRST_VERSION]. Correct only against an absent key — a
         /// writer that may find a committed record must use the version-carrying overload, because
         /// the applier rejects any non-successor write.
+        /// #963 — written by `BlueprintService` in the SAME consensus batch as the blueprint's own
+        /// `AppBlueprintKey` Put, replacing the bare `Remove` that used to clear a stale terminal.
+        /// It clears the stale record exactly as the `Remove` did AND records that this attempt
+        /// started, so "no terminal yet" becomes a positive fact instead of an absence.
+        ///
+        /// `startedAtMs` is the apply's start, not a terminal's timestamp — it is what any
+        /// deadline-based abandonment must measure from.
+        ///
+        /// **MERGE #956 (#805 item 2):** this record became [VersionFenced] while #963 was in
+        /// flight, so the first-write form below is correct ONLY against an absent key. The publish
+        /// paths that call it write over a POSSIBLY-COMMITTED record — clearing a stale terminal is
+        /// their whole purpose — so they must use the version-carrying overload, or the applier
+        /// rejects the write and the stale terminal survives. `BlueprintService.nextOutcomeVersion`
+        /// is that derivation.
+        public static DeploymentOutcomeValue inProgress(long startedAtMs) {
+            return inProgress(startedAtMs, FIRST_VERSION);
+        }
+
+        public static DeploymentOutcomeValue inProgress(long startedAtMs, long outcomeVersion) {
+            return new DeploymentOutcomeValue(DeploymentOutcomeStatus.IN_PROGRESS,
+                                              List.of(),
+                                              "",
+                                              startedAtMs,
+                                              outcomeVersion);
+        }
+
         public static DeploymentOutcomeValue succeeded(long timestampMs) {
             return succeeded(timestampMs, FIRST_VERSION);
         }
@@ -357,7 +384,38 @@ public sealed interface AetherValue {
     enum DeploymentOutcomeStatus {
         SUCCEEDED,
         FAILED,
-        ROLLED_BACK
+        ROLLED_BACK,
+        /// #963 — the apply has STARTED and has not reached a terminal.
+        ///
+        /// Position, corrected at the #963/#964 merge: this constant is inserted BEFORE `UNKNOWN`,
+        /// not appended at the end. #963 authored it as an append, which was the only safe position
+        /// while the enum ended at `ROLLED_BACK`; #964 then added a trailing sentinel.
+        ///
+        /// The reason it must go here is MECHANICAL, not a wire-safety argument:
+        /// `CodecProcessor.validateEnumSentinel` refuses to generate a codec for a `@Codec` enum whose
+        /// last constant is not `UNKNOWN`, so appending past the sentinel is a BUILD ERROR (pinned by
+        /// `enumCodec_failsCompilation_whenSentinelIsNotLast`). At DECODE both orderings are equally
+        /// safe at one-version skew — inserted-before lands on the old sentinel's ordinal and reads as
+        /// `UNKNOWN` in range; appended-after lands past `values().length` and reads as `UNKNOWN` out
+        /// of range. Stated this way because two earlier drafts of this note argued from a node state
+        /// instead, and both were false: the only build that reads ordinal 3 as `UNKNOWN` is #964
+        /// WITHOUT #963, and #963 merged first, so that node never exists.
+        ///
+        /// Only this position claim changed. #963's analysis below is theirs, unaltered.
+        ///
+        /// This is the record that makes deployment permanence gate on PRESENCE rather than absence.
+        /// The paragraph above on this class already warned that an absent key "means 'no attempt
+        /// reached a terminal write,' which is indistinguishable, from this record alone, from 'no
+        /// attempt was ever made.'" Five rounds of #924 each condemned a deployment on that
+        /// indistinguishable absence. Written at apply START, where the writer is guaranteed to run
+        /// and lands atomically with the `AppBlueprintKey` Put, rather than at completion, where it
+        /// may never run at all.
+        IN_PROGRESS,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+        /// Never SUCCEEDED; reported as an unreadable outcome rather than a successful one.
+        /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as
+        /// UNKNOWN by an older node either way.
+        UNKNOWN
     }
 
     record SliceNodeValue(SliceState state, Option<String> failureReason, boolean fatal, long transitionedAt) implements AetherValue {
@@ -369,8 +427,12 @@ public sealed interface AetherValue {
             return new SliceNodeValue(state, none(), false, transitionedAt);
         }
 
-        public static SliceNodeValue failedSliceNodeValue(Cause cause) {
-            var classified = SliceLoadingFailure.classify(cause);
+        /// #930 — `unrecognised` is the permanence this raise site declares for a cause the
+        /// classifier does not recognise. There is no single-argument form: the `fatal` flag this
+        /// builds crosses consensus and decides whether the leader rolls a blueprint back, so a
+        /// raise site must state its intent rather than inherit one.
+        public static SliceNodeValue failedSliceNodeValue(Cause cause, Unrecognised unrecognised) {
+            var classified = SliceLoadingFailure.classify(cause, unrecognised);
 
             return new SliceNodeValue(SliceState.FAILED,
                                       Option.option(classified.message()),
@@ -924,7 +986,12 @@ public sealed interface AetherValue {
     enum ClusterPhase {
         COLD_BOOT,
         NORMAL,
-        RECOVERING
+        RECOVERING,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+        /// Never NORMAL, so the topology action gated on NORMAL stays closed.
+        /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as
+        /// UNKNOWN by an older node either way.
+        UNKNOWN
     }
 
     record ClusterPhaseValue(ClusterPhase phase, long updatedAt) implements AetherValue {
@@ -966,9 +1033,24 @@ public sealed interface AetherValue {
     }
 
     @Codec
+    /// How a node came to be in the cluster. Provenance only — nothing branches on it.
+    ///
+    /// #964 S2: `UNRECOGNISED` and `UNKNOWN` are DELIBERATELY separate, because they have different
+    /// causes and an operator acts differently on each. `UNRECOGNISED` is local and self-inflicted —
+    /// a config value this node could not parse, or no value at all — and is fixed by editing
+    /// configuration. `UNKNOWN` is the wire sentinel: the node that wrote this record runs a newer
+    /// `ProvisioningSource`, and it is fixed by finishing the rolling upgrade.
+    ///
+    /// Before they were split, both produced `UNKNOWN` and were indistinguishable at the point of use.
+    /// That is the same conflation `SliceState` avoids by keeping its sentinel out of `STRING_TO_STATE`
+    /// — a decode artifact must not be something a config file can ask for. A diagnostic that cannot
+    /// tell its two causes apart has stopped discriminating.
     enum ProvisioningSource {
         CTM,
         MANUAL,
+        /// Local: unparseable or absent configuration. Never produced by decoding.
+        UNRECOGNISED,
+        /// Wire sentinel (#964) — see the type docstring. Must stay LAST.
         UNKNOWN
     }
 
@@ -1019,8 +1101,18 @@ public sealed interface AetherValue {
             return new NodeArtifactValue(state, Option.none(), false, 0, List.of(), transitionedAt);
         }
 
-        public static NodeArtifactValue failedNodeArtifactValue(Cause cause) {
-            var classified = SliceLoadingFailure.classify(cause);
+        /// #930 — carries the same explicit `unrecognised` disposition as
+        /// [SliceNodeValue#failedSliceNodeValue(Cause, Unrecognised)], for the same reason.
+        ///
+        /// **No production caller reaches this factory.** Both production sites that build a FAILED
+        /// `NodeArtifactValue` — `NodeDeploymentState.updateSliceStateWithRetry` and
+        /// `updateSliceStateWithExtraCommandsAndRetry` — construct the record directly, copying
+        /// `fatal` across from the already-classified `SliceNodeValue` rather than re-classifying.
+        /// So the `fatal` flag is decided exactly once per failure, at `failedSliceNodeValue`. Kept
+        /// with the explicit parameter rather than deleted so that a future caller cannot reach a
+        /// silent default through it either.
+        public static NodeArtifactValue failedNodeArtifactValue(Cause cause, Unrecognised unrecognised) {
+            var classified = SliceLoadingFailure.classify(cause, unrecognised);
 
             return new NodeArtifactValue(SliceState.FAILED,
                                          Option.option(classified.message()),
@@ -1182,7 +1274,12 @@ public sealed interface AetherValue {
         PENDING,
         MIGRATING,
         COMPLETED,
-        FAILED
+        FAILED,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+        /// Never re-arms a migration -- an unreadable schema status must not start one.
+        /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as
+        /// UNKNOWN by an older node either way.
+        UNKNOWN
     }
 
     record AbTestValue(String testId,
@@ -1797,7 +1894,12 @@ public sealed interface AetherValue {
     enum SpokesmanStatus {
         ASSIGNED,
         ACTIVE,
-        FAILED
+        FAILED,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+        /// Never ACTIVE, so a spokesman whose status cannot be read is not treated as serving.
+        /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as
+        /// UNKNOWN by an older node either way.
+        UNKNOWN
     }
 
     /// Desired-state community record (worker-membership-spec §2 line 78): the leader-authored

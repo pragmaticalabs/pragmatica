@@ -127,4 +127,54 @@ class SliceStateTest {
                   .onSuccessRun(Assertions::fail)
                   .onFailure(cause -> assertThat(cause.message()).contains("Unknown slice state"));
     }
+
+    /// #964: `UNKNOWN` is the wire sentinel, and every property asserted here is a way of saying it is
+    /// INERT. It is deliberately not merely "another state": each of these would otherwise let a value
+    /// this node could not decode drive real behaviour.
+    @org.junit.jupiter.api.Nested
+    class UnknownSentinelIsInert {
+
+        /// No timeout means not transitional, which is what keeps `StuckTransitionalRemediator` from
+        /// force-unloading a slice whose state was authored by a node running a newer SliceState.
+        @Test
+        void unknown_hasNoTimeoutAndIsNotTransitional() {
+            assertThat(SliceState.UNKNOWN.hasTimeout()).isFalse();
+            assertThat(SliceState.UNKNOWN.isTransitional()).isFalse();
+        }
+
+        @Test
+        void unknown_isNotInProgress() {
+            assertThat(SliceState.UNKNOWN.isInProgress()).isFalse();
+        }
+
+        /// Nothing can be driven out of a state this node cannot interpret.
+        @Test
+        void unknown_hasNoValidTransitions() {
+            assertThat(SliceState.UNKNOWN.validTransitions()).isEmpty();
+
+            for (var target : SliceState.values()) {
+                assertThat(SliceState.UNKNOWN.canTransitionTo(target)).isFalse();
+            }
+        }
+
+        @Test
+        void unknown_hasNoNextState() {
+            assertThat(SliceState.UNKNOWN.nextState().isFailure()).isTrue();
+        }
+
+        /// The sentinel is a DECODE artifact, not an addressable state. Keeping it out of the string
+        /// map is what stops an operator or a config file from asking for it by name — otherwise
+        /// "UNKNOWN" would become a writable slice state through every text-parsing path.
+        @Test
+        void unknown_isNotReachableByName() {
+            assertThat(SliceState.sliceState("UNKNOWN").isFailure()).isTrue();
+        }
+
+        /// The control for the test above: a real state IS reachable by name, so the failure is about
+        /// UNKNOWN specifically rather than a broken parser.
+        @Test
+        void aRealState_isStillReachableByName() {
+            assertThat(SliceState.sliceState("ACTIVE").isSuccess()).isTrue();
+        }
+    }
 }

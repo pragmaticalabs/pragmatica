@@ -78,6 +78,10 @@ public interface SecurityOverrideApplier {
             case FULL -> applyAndLog(route, newPolicy, announce);
             case STRENGTHEN_ONLY -> applyIfStronger(route, newPolicy, announce);
             case NONE -> rejectOverride(route, newPolicy, announce);
+            // #964, fail closed: a policy this node cannot read must never authorise weakening a
+            // route's security. Refusing is the same outcome as NONE, reached deliberately rather
+            // than by falling through to the most permissive arm.
+            case UNKNOWN -> rejectOverride(route, newPolicy, announce);
         };
     }
 

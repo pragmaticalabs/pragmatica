@@ -11,5 +11,10 @@ import org.pragmatica.serialization.Codec;
 public enum HealthHint {
     HEALTHY,
     SUSPECTED,
-    FAULTY
+    FAULTY,
+    /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+    /// Counted as SUSPECTED, never HEALTHY: an unreadable hint must not clear a member.
+    /// Must stay LAST — a new constant appended after it, or inserted before it, is read as UNKNOWN
+    /// by an older node either way.
+    UNKNOWN
 }

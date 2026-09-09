@@ -147,4 +147,28 @@ class RetentionPolicyTest {
             assertThat(policy.mode()).isEqualTo(RetentionMode.ANY);
         }
     }
+
+    /// #964, fail closed. `shouldEvict` authorises DELETING DATA, so a retention mode this node cannot
+    /// read must not be resolved into either ALL or ANY. The limits below are all exceeded, so both
+    /// real modes would evict — which is what makes `false` here a statement about the sentinel rather
+    /// than about the numbers.
+    @Nested
+    class UnknownModeNeverEvicts {
+
+        @Test
+        void shouldEvict_isFalse_whenEveryLimitIsExceededButTheModeIsUnknown() {
+            var policy = new RetentionPolicy(10, 10, 10, RetentionMode.UNKNOWN, org.pragmatica.lang.Option.none());
+
+            assertThat(policy.shouldEvict(1_000, 1_000, 1_000)).isFalse();
+        }
+
+        /// The control: the identical inputs under a mode this node CAN read do evict. Without it a
+        /// green result above could mean the limits were never exceeded.
+        @Test
+        void shouldEvict_isTrue_forTheSameInputsUnderAKnownMode() {
+            var policy = new RetentionPolicy(10, 10, 10, RetentionMode.ANY, org.pragmatica.lang.Option.none());
+
+            assertThat(policy.shouldEvict(1_000, 1_000, 1_000)).isTrue();
+        }
+    }
 }

@@ -18,5 +18,10 @@ public enum GenerationReason {
     PARTITION_TRANSFERRED,
     CLUSTER_SIZE_CHANGED,
     SPOKESMAN_REBALANCED,
-    PERIODIC_REFRESH
+    PERIODIC_REFRESH,
+    /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+    /// Descriptive only; carried into the generation notice as UNKNOWN.
+    /// Must stay LAST — a new constant appended after it, or inserted before it, is read as UNKNOWN
+    /// by an older node either way.
+    UNKNOWN
 }

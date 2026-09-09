@@ -12,5 +12,10 @@ public enum CommunityQuiescence {
     QUIESCED,
     CONVERGING,
     DEGRADED,
-    DISSOLVING
+    DISSOLVING,
+    /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+    /// Counted as degraded: an unreadable community state is not evidence of health.
+    /// Must stay LAST — a new constant appended after it, or inserted before it, is read as UNKNOWN
+    /// by an older node either way.
+    UNKNOWN
 }

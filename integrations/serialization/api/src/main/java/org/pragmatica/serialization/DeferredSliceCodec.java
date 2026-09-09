@@ -56,7 +56,8 @@ public record DeferredSliceCodec(String label, AtomicReference<Option<SliceCodec
     }
 
     public boolean isBound() {
-        return delegate.get().isPresent();
+        return delegate.get()
+                       .isPresent();
     }
 
     @Override
@@ -70,6 +71,11 @@ public record DeferredSliceCodec(String label, AtomicReference<Option<SliceCodec
     }
 
     @Override
+    public java.util.Map<Class<?>, TypeCodec<?>> registeredTypes() {
+        return resolve("an enumeration of registered types").registeredTypes();
+    }
+
+    @Override
     public <T> void write(ByteBuf byteBuf, T object) {
         resolve(subjectOf(object)).write(byteBuf, object);
     }
@@ -80,17 +86,19 @@ public record DeferredSliceCodec(String label, AtomicReference<Option<SliceCodec
     }
 
     private SliceCodec resolve(String subject) {
-        return delegate.get().or(() -> unbound(subject));
+        return delegate.get()
+                       .or(() -> unbound(subject));
     }
 
     private SliceCodec unbound(String subject) {
         throw new IllegalStateException("Codec for slice %s was used for %s before it was bound. The slice codec is bound right after the slice instance is created; a resource reaching it earlier means the load order is wrong.".formatted(label,
-                                                                                                                                                                                                                                            subject));
+                                                                                                                                                                                                                                              subject));
     }
 
     private static String subjectOf(Object object) {
         return Option.option(object)
-                     .map(value -> value.getClass().getName())
+                     .map(value -> value.getClass()
+                                        .getName())
                      .or("null");
     }
 
