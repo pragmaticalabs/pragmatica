@@ -108,7 +108,7 @@ public class DashboardMetricsPublisher {
     }
 
     @SuppressWarnings("JBCT-EX-01")
-    private void publishMetrics() {
+    void publishMetrics() {
         if (DashboardWebSocketHandler.connectedClients() == 0) {
             return;
         }
