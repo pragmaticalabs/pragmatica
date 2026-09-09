@@ -496,7 +496,7 @@ public final class ConfigLoader {
     /// what makes a misconfigured webhook refuse at boot instead of accepting and dropping (#957's
     /// fail-closed clause). Building here and validating there keeps the loader total.
     private static void populateAlertConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        if (!doc.hasSection("alerts")) {
+        if (!hasAnyAlertSection(doc)) {
             return;
         }
 
@@ -504,6 +504,22 @@ public final class ConfigLoader {
         var margin = doc.getDouble("alerts", "hysteresis_margin").or(AlertConfig.DEFAULT_HYSTERESIS_MARGIN);
 
         builder.alerts(AlertConfig.alertConfig(enabled, webhookFromToml(doc), eventsFromToml(doc), margin).unwrap());
+    }
+
+    /// Any alert section at all, INCLUDING a sub-section written without its parent header.
+    ///
+    /// `TomlDocument.hasSection` is an exact key match, so `[alerts.webhook]` alone does NOT make
+    /// `hasSection("alerts")` true. Keying the whole populate on the bare `[alerts]` header therefore
+    /// discarded a config file whose only alert content was `[alerts.webhook]` — **silently, and with
+    /// the boot gate never running**, so an operator who wrote the natural thing got no webhook
+    /// delivery and no error. That is the failure mode this plumbing exists to remove, reintroduced one
+    /// level up.
+    ///
+    /// Accepting the sub-header is strictly more permissive than refusing it: nothing that parsed
+    /// before stops parsing, and `AlertConfig.check()` still runs at boot on whatever is built, so a
+    /// webhook enabled with no URLs is refused rather than accepted-and-dropped.
+    private static boolean hasAnyAlertSection(TomlDocument doc) {
+        return doc.hasSection("alerts") || doc.hasSection("alerts.webhook") || doc.hasSection("alerts.events");
     }
 
     /// `[alerts.webhook]`. Absent sub-section -> the DISABLED default, which is what keeps delivery
