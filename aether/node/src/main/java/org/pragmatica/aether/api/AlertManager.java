@@ -16,6 +16,7 @@ import org.pragmatica.aether.api.ClusterEvent.AlertInjected;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.api.ManagementApiResponses.AlertInjectResponse;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -76,6 +77,8 @@ public class AlertManager {
     /// Optional cluster-wide read source for cross-node visibility on `/api/alerts`. Returns a
     /// Promise because the underlying namespace-stream consumer is async.
     private volatile Option<Supplier<Promise<List<ClusterEvent>>>> clusterEventsSource = Option.none();
+    /// Optional outbound hop for raised threshold alerts. See [#bindAlertForwarder].
+    private volatile Option<AlertForwarder> alertForwarder = Option.none();
 
     private AlertManager(RabiaNode<KVCommand<AetherKey>> clusterNode, KVStore<AetherKey, AetherValue> kvStore) {
         this.clusterNode = clusterNode;
@@ -95,6 +98,32 @@ public class AlertManager {
     /// projection-agnostic.
     public void bindClusterEventsSource(Supplier<Promise<List<ClusterEvent>>> source) {
         this.clusterEventsSource = Option.option(source);
+    }
+
+    /// Bind the forwarder that carries raised alerts OUT of this process (webhooks). Bound
+    /// post-construction from `AetherNode`, mirroring `bindEventSink`. When unbound -- the
+    /// `readOnly` factory and unit tests without a forwarder -- alerts are still raised, recorded
+    /// and broadcast exactly as before; only the outbound hop is skipped.
+    ///
+    /// Before this binding existed, `AlertEvent.ThresholdAlert` was declared, pattern-matched by
+    /// `AlertForwarder`'s renderer and received by its `@MessageReceiver` -- and constructed
+    /// NOWHERE in `src/main`. The renderer handling a variant is not the same as anything emitting
+    /// one (#957).
+    public void bindAlertForwarder(AlertForwarder forwarder) {
+        this.alertForwarder = Option.option(forwarder);
+    }
+
+    /// Construct the forwarder from config and bind it, as ONE production expression.
+    ///
+    /// This exists so a test can call the same expression production calls instead of re-typing
+    /// `bindAlertForwarder(alertForwarder(config))` in a fixture -- a fixture that rebuilds the
+    /// wiring cannot pin the wiring, and that shape has stayed green through a full revert in this
+    /// repo before. `AetherNode` calls this and nothing else; `dead-surface-gate` asserts this method
+    /// is reachable from production bytecode, so deleting that call reddens a test (#957).
+    public AlertManager withAlertForwarder(AlertConfig alertConfig) {
+        bindAlertForwarder(AlertForwarder.alertForwarder(alertConfig));
+
+        return this;
     }
 
     public static AlertManager alertManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
@@ -350,6 +379,33 @@ public class AlertManager {
         DashboardWebSocketHandler.broadcast(message);
     }
 
+    /// Emit the raised threshold as an `AlertEvent.ThresholdAlert` on the outbound hop. Failure to
+    /// forward is logged and never propagated: an unreachable webhook must not suppress the alert's
+    /// in-process recording, which is the operator's other surface.
+    private void forwardThresholdAlert(String alertKey,
+                                       String metric,
+                                       NodeId nodeId,
+                                       double value,
+                                       String severity,
+                                       Threshold threshold) {
+        alertForwarder.onPresent(forwarder -> forwarder.forward(new AlertEvent.ThresholdAlert(alertKey,
+                                                                                              System.currentTimeMillis(),
+                                                                                              toEventSeverity(severity),
+                                                                                              metric,
+                                                                                              nodeId,
+                                                                                              value,
+                                                                                              threshold.forSeverity(severity)))
+                                                       .onFailure(cause -> log.error("Failed to forward threshold alert {}: {}",
+                                                                                     alertKey,
+                                                                                     cause.message())));
+    }
+
+    private static AlertEvent.Severity toEventSeverity(String severity) {
+        return "CRITICAL".equals(severity)
+               ? AlertEvent.Severity.CRITICAL
+               : AlertEvent.Severity.WARNING;
+    }
+
     private Option<String> handleAlertValue(String alertKey,
                                             Option<ActiveAlert> existing,
                                             String severity,
@@ -369,6 +425,7 @@ public class AlertManager {
 
             activeAlerts.put(alertKey, alert);
             addToHistory(metric, nodeId, value, severity, "TRIGGERED");
+            forwardThresholdAlert(alertKey, metric, nodeId, value, severity, threshold);
 
             return Option.option(buildAlertMessage(alert));
         }

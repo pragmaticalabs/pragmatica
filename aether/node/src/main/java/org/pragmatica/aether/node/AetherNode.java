@@ -31,6 +31,7 @@ import java.util.stream.Stream;
 import java.net.InetSocketAddress;
 
 import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
+import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.api.ClusterEvent;
@@ -2578,6 +2579,11 @@ public interface AetherNode extends ManageableNode {
         // ClusterEvent dependency.
         alertManager.bindEventSink(eventAggregator::emit, clusterEventsHlcClock);
         alertManager.bindClusterEventsSource(eventAggregator::events);
+        // #957: AlertForwarder was never constructed anywhere in src/main, so no alert left this
+        // process by any path. Construct it here, next to the other AlertManager bindings. The
+        // default AlertConfig has webhooks DISABLED with no URLs, so this is inert until an
+        // operator configures one -- see the report for the config-plumbing gap that remains.
+        alertManager.withAlertForwarder(AlertConfig.alertConfig());
         traceStore.bindTraceEventSink((operation, requestId, depth, durationMs, metadata) -> eventAggregator.emit(new ClusterEvent.TraceInjected(clusterEventsHlcClock.now(),
                                                                                                                                                  ClusterEvent.Severity.INFO,
                                                                                                                                                  "Injected trace: " + operation,
