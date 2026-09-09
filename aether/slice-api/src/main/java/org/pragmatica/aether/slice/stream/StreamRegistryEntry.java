@@ -34,7 +34,12 @@ public record StreamRegistryEntry(ResourceAddress address,
         /// Framework-internal streams (system namespace) registered at cluster bootstrap.
         FRAMEWORK,
         /// Application streams registered by blueprint deploy.
-        BLUEPRINT
+        BLUEPRINT,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+        /// Provenance only; nothing branches on it.
+        /// Must stay LAST — a new constant appended after it, or inserted before it, is read as UNKNOWN
+        /// by an older node either way.
+        UNKNOWN
     }
 
     public Instant registeredAt() {

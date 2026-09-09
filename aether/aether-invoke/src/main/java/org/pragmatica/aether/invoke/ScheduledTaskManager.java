@@ -267,6 +267,10 @@ public interface ScheduledTaskManager {
             return switch (task.executionMode()) {
                 case ALL -> state instanceof Following || state instanceof Leading;
                 case SINGLE -> state instanceof Leading;
+                // #964, fail closed: an execution mode this node cannot read must not be guessed into
+                // either leader-only or run-everywhere. Running nowhere is recoverable once the mode is
+                // legible; running everywhere is not.
+                case UNKNOWN -> false;
             };
         }
     }

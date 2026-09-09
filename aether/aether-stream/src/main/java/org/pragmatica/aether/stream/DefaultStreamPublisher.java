@@ -19,13 +19,21 @@ import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Functions.Fn0;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Serializer;
 
 
 public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
+    /// #964: raised when the configured consistency mode decoded to `UNKNOWN`, i.e. the blueprint was
+    /// written by a node running a newer `ConsistencyMode`. Publishing anyway would mean promising an
+    /// acknowledgement semantics this node picked by default.
+    private static final Cause UNREADABLE_CONSISTENCY_MODE = Causes.cause("Stream consistency mode was written by a node running a newer ConsistencyMode and cannot be"
+                                                                         + " read here (#964); nothing is published rather than defaulting to EVENTUAL or STRONG");
+
     private final StreamPartitionManager partitionManager;
     private final Serializer serializer;
     private final String streamName;
@@ -164,6 +172,10 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
         return switch (consistencyMode) {
             case EVENTUAL -> publishEventual(partition, bytes, timestamp);
             case STRONG -> publishStrong(partition, bytes, timestamp);
+            // #964, fail closed: EVENTUAL and STRONG differ in what the caller is promised on
+            // acknowledgement, so guessing either one is a durability claim this node cannot back.
+            // Refusing hands the choice back to the caller with a diagnosable cause.
+            case UNKNOWN -> UNREADABLE_CONSISTENCY_MODE.promise();
         };
     }
 
@@ -175,6 +187,11 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
 
         if (consistencyMode == ConsistencyMode.STRONG) {
             return publishBatchStrong(events);
+        }
+        // #964: the batch path tested only for STRONG, so an UNKNOWN mode would have taken the
+        // EVENTUAL branch by default -- the same fail-open the single-event switch above refuses.
+        if (consistencyMode == ConsistencyMode.UNKNOWN) {
+            return UNREADABLE_CONSISTENCY_MODE.promise();
         }
 
         return publishBatchEventual(events);

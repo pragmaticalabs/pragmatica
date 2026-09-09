@@ -73,7 +73,12 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
     enum Severity {
         INFO,
         WARNING,
-        CRITICAL
+        CRITICAL,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+        /// Descriptive only; surfaced verbatim in the management-API JSON.
+        /// Must stay LAST — a new constant appended after it, or inserted before it, is read as UNKNOWN
+        /// by an older node either way.
+        UNKNOWN
     }
 
     record NodeJoined(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}

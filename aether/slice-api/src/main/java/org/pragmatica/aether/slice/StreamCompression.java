@@ -11,5 +11,10 @@ import org.pragmatica.serialization.Codec;
 public enum StreamCompression {
     NONE,
     LZ4,
-    ZSTD
+    ZSTD,
+    /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+    /// Rejected by blueprint validation, which already refuses everything that is not NONE.
+    /// Must stay LAST — a new constant appended after it, or inserted before it, is read as UNKNOWN
+    /// by an older node either way.
+    UNKNOWN
 }

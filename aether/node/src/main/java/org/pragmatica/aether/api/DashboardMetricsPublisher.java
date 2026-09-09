@@ -107,17 +107,22 @@ public class DashboardMetricsPublisher {
         log.info("Dashboard metrics publisher stopped");
     }
 
+    /// Package-visible so the "evaluation is not conditioned on a dashboard client" contract is
+    /// directly pinnable, with zero WebSocket clients connected -- precisely the state in which
+    /// threshold evaluation used to be skipped.
     @SuppressWarnings("JBCT-EX-01")
     void publishMetrics() {
-        if (DashboardWebSocketHandler.connectedClients() == 0) {
-            return;
-        }
-
         try {
-            var message = buildMetricsUpdate();
-
-            DashboardWebSocketHandler.broadcast(message);
+            // Threshold evaluation is an operator-facing capability, not a UI feature: it runs
+            // whether or not anyone has the dashboard open. It used to sit AFTER the
+            // connected-clients guard below, so a headless cluster -- the normal production state --
+            // never evaluated a threshold, however far a metric exceeded it.
             checkAndBroadcastAlerts();
+            if (DashboardWebSocketHandler.connectedClients() == 0) {
+                return;
+            }
+
+            DashboardWebSocketHandler.broadcast(buildMetricsUpdate());
         } catch (Exception e) {
             log.error("Error publishing metrics", e);
         }

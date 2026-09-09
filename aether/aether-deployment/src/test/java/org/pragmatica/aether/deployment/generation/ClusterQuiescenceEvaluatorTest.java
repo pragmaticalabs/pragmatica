@@ -108,4 +108,41 @@ class ClusterQuiescenceEvaluatorTest {
                                              HlcTimestamp.ZERO,
                                              dissolved);
     }
+
+    /// #964, fail closed. An unreadable health hint is ABSENCE OF EVIDENCE about a member, and
+    /// quiescence is the claim that nothing is outstanding — which an unassessable member contradicts.
+    /// Counting UNKNOWN as suspected rather than ignoring it is what keeps the barrier honest.
+    @Test
+    void evaluateCluster_returnsDegraded_whenAMemberHintIsUnreadable() {
+        var result = ClusterQuiescenceEvaluator.evaluateCluster(List.of(HealthHint.HEALTHY, HealthHint.UNKNOWN),
+                                                                List.of(),
+                                                                0);
+
+        assertThat(result.quiescence()).isEqualTo(ClusterQuiescence.DEGRADED);
+        assertThat(result.detail()).isEqualTo("1 members SUSPECTED");
+    }
+
+    /// The control that makes the assertion above mean something: the SAME shape with a healthy hint
+    /// in place of the unreadable one is QUIESCED. Without it, DEGRADED could have come from the empty
+    /// community list or the member count rather than from the hint.
+    @Test
+    void evaluateCluster_returnsQuiesced_forTheSameShapeWithAReadableHint() {
+        var result = ClusterQuiescenceEvaluator.evaluateCluster(List.of(HealthHint.HEALTHY, HealthHint.HEALTHY),
+                                                                List.of(),
+                                                                0);
+
+        assertThat(result.quiescence()).isEqualTo(ClusterQuiescence.QUIESCED);
+    }
+
+    /// An unreadable COMMUNITY state counts as degraded for the same reason, and the empty `QUIESCED`
+    /// arm next to it in the switch is what made this worth pinning: a `case UNKNOWN -> {}` would have
+    /// been indistinguishable from a quiesced community.
+    @Test
+    void evaluateCluster_returnsDegraded_whenACommunityStateIsUnreadable() {
+        var result = ClusterQuiescenceEvaluator.evaluateCluster(List.of(HealthHint.HEALTHY),
+                                                                List.of(CommunityQuiescence.UNKNOWN),
+                                                                0);
+
+        assertThat(result.quiescence()).isEqualTo(ClusterQuiescence.DEGRADED);
+    }
 }

@@ -2597,6 +2597,15 @@ public interface AetherNode extends ManageableNode {
         // ClusterEvent dependency.
         alertManager.bindEventSink(eventAggregator::emit, clusterEventsHlcClock);
         alertManager.bindClusterEventsSource(eventAggregator::events);
+        // #957: AlertForwarder was never constructed anywhere in src/main, so no alert left this
+        // process by any path. Construct it here, next to the other AlertManager bindings.
+        //
+        // The argument is load-bearing and the wrong one is SILENT: AlertConfig.alertConfig()
+        // compiles and yields a forwarder built from the DEFAULT config, whose webhooks are
+        // DISABLED with no URLs -- an operator who configured a webhook would still get nothing,
+        // with no error anywhere. resolveAlertConfig(config) carries the operator's own section.
+        // The rc4 merge produced NO conflict marker here; both sides compiled.
+        alertManager.withAlertForwarder(resolveAlertConfig(config));
         traceStore.bindTraceEventSink((operation, requestId, depth, durationMs, metadata) -> eventAggregator.emit(new ClusterEvent.TraceInjected(clusterEventsHlcClock.now(),
                                                                                                                                                  ClusterEvent.Severity.INFO,
                                                                                                                                                  "Injected trace: " + operation,
@@ -4813,7 +4822,8 @@ public interface AetherNode extends ManageableNode {
         return switch (raw) {
             case "ctm" -> AetherValue.ProvisioningSource.CTM;
             case "manual" -> AetherValue.ProvisioningSource.MANUAL;
-            default -> AetherValue.ProvisioningSource.UNKNOWN;
+            // #964 S2: an unparseable config string is UNRECOGNISED, never the wire sentinel.
+            default -> AetherValue.ProvisioningSource.UNRECOGNISED;
         };
     }
 
@@ -5953,10 +5963,17 @@ public interface AetherNode extends ManageableNode {
     private static void demuxHttpForwardRequest(HttpForwardMessage.HttpForwardRequest request,
                                                 AppHttpServer appHttpServer,
                                                 Option<ManagementServer> managementServer) {
-        if (request.pipeline() == HttpForwardMessage.Pipeline.MANAGEMENT) {
-            managementServer.onPresent(ms -> ms.onHttpForwardRequest(request));
-        } else {
-            appHttpServer.onHttpForwardRequest(request);
+        // #964: switch rather than `== MANAGEMENT ? management : app`. Every pipeline test in this
+        // codebase asked "is it MANAGEMENT?", so an UNKNOWN decoded from a peer running a newer
+        // Pipeline would have landed on the APP pipeline by default — a forwarded request routed into
+        // a server it was not addressed to. UNKNOWN goes to NEITHER, and the next Pipeline constant is
+        // now a compile error here instead of another silent fall-through onto app.
+        switch (request.pipeline()) {
+            case MANAGEMENT -> managementServer.onPresent(ms -> ms.onHttpForwardRequest(request));
+            case APP -> appHttpServer.onHttpForwardRequest(request);
+            case UNKNOWN -> LoggerFactory.getLogger(AetherNode.class).warn("Dropping forwarded HTTP request {} from {}: its target pipeline was" + " written by a node running a newer Pipeline and cannot be read" + " here (#964). It is NOT routed to the app pipeline.",
+                                                                           request.requestId(),
+                                                                           request.sender());
         }
     }
 
@@ -5964,10 +5981,12 @@ public interface AetherNode extends ManageableNode {
     private static void demuxHttpForwardResponse(HttpForwardMessage.HttpForwardResponse response,
                                                  AppHttpServer appHttpServer,
                                                  Option<ManagementServer> managementServer) {
-        if (response.pipeline() == HttpForwardMessage.Pipeline.MANAGEMENT) {
-            managementServer.onPresent(ms -> ms.onHttpForwardResponse(response));
-        } else {
-            appHttpServer.onHttpForwardResponse(response);
+        // #964: see demuxHttpForwardRequest — UNKNOWN must not default onto the app pipeline.
+        switch (response.pipeline()) {
+            case MANAGEMENT -> managementServer.onPresent(ms -> ms.onHttpForwardResponse(response));
+            case APP -> appHttpServer.onHttpForwardResponse(response);
+            case UNKNOWN -> LoggerFactory.getLogger(AetherNode.class).warn("Dropping forwarded HTTP response for {}: its target pipeline was" + " written by a node running a newer Pipeline and cannot be read" + " here (#964). It is NOT routed to the app pipeline.",
+                                                                           response.correlationId());
         }
     }
 

@@ -11,7 +11,12 @@ import org.pragmatica.serialization.Codec;
 public enum SecurityOverridePolicy {
     STRENGTHEN_ONLY,
     FULL,
-    NONE;
+    NONE,
+    /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+    /// Rejects every override -- an unreadable policy must never authorise weakening a route.
+    /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as UNKNOWN
+    /// by an older node either way.
+    UNKNOWN;
     public static SecurityOverridePolicy fromString(String raw) {
         return switch (raw.toLowerCase()
                           .strip()) {

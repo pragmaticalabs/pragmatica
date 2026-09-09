@@ -93,7 +93,7 @@ class CodecProcessorTest {
                 import org.pragmatica.serialization.Codec;
 
                 @Codec
-                public enum Color { RED, GREEN, BLUE }
+                public enum Color { RED, GREEN, BLUE, UNKNOWN }
                 """);
 
             var compilation = compileWith(source);
@@ -105,9 +105,87 @@ class CodecProcessorTest {
             assertThat(compilation).generatedSourceFile("com.example.ColorCodec")
                                    .contentsAsUtf8String()
                                    .contains("SliceCodec.writeCompact(buf, value.ordinal());");
+            // #964: the bounds-checked read, NOT the raw values()[readCompact(buf)] index this
+            // replaced. The literal is asserted because the generated string IS the wire behaviour —
+            // an ordinal past values() must reach the sentinel rather than throw AIOOBE into a
+            // boundary that drops the message.
             assertThat(compilation).generatedSourceFile("com.example.ColorCodec")
                                    .contentsAsUtf8String()
-                                   .contains("Color.values()[SliceCodec.readCompact(buf)]");
+                                   .contains("SliceCodec.readEnum(buf, Color.values(), Color.UNKNOWN)");
+            assertThat(compilation).generatedSourceFile("com.example.ColorCodec")
+                                   .contentsAsUtf8String()
+                                   .doesNotContain("values()[SliceCodec.readCompact(buf)]");
+        }
+
+        /// #964: the processor REFUSES an enum that cannot represent a value it does not know.
+        ///
+        /// An error rather than a warning, and rejected here rather than left to fail later inside
+        /// generated source: the generated `readBody` references `X.UNKNOWN`, so without this the
+        /// author's diagnostic would be "cannot find symbol" pointing at a file they did not write.
+        @Test
+        void enumCodec_failsCompilation_whenSentinelIsMissing() {
+            var source = JavaFileObjects.forSourceString("com.example.NoSentinel",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+
+                @Codec
+                public enum NoSentinel { RED, GREEN }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("must declare UNKNOWN as its LAST constant");
+            assertThat(compilation).hadErrorContaining("com.example.NoSentinel");
+        }
+
+        /// LAST is the load-bearing half of the rule, so it is enforced rather than merely documented.
+        /// A sentinel in the middle silently REMAPS every constant after it onto other legitimate
+        /// values when an older node reads them — corruption, which is strictly worse than the
+        /// unknown-value case the sentinel exists to handle.
+        @Test
+        void enumCodec_failsCompilation_whenSentinelIsNotLast() {
+            var source = JavaFileObjects.forSourceString("com.example.SentinelInMiddle",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+
+                @Codec
+                public enum SentinelInMiddle { RED, UNKNOWN, GREEN }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("must declare UNKNOWN as its LAST constant");
+        }
+
+        /// The nested/sealed and @CodecFor paths call `generateEnumCodec` directly rather than through
+        /// `processEnum`, so each needed its own guard. Without this test a nested enum could slip past
+        /// the rule while the top-level tests stayed green — the same shape as a check that examines a
+        /// smaller space than the claim it supports.
+        @Test
+        void enumCodec_failsCompilation_whenNestedSentinelIsMissing() {
+            var source = JavaFileObjects.forSourceString("com.example.Holder",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+
+                @Codec
+                public record Holder(String name, Holder.Kind kind) {
+                    @Codec
+                    enum Kind { A, B }
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("must declare UNKNOWN as its LAST constant");
         }
     }
 
@@ -170,7 +248,7 @@ class CodecProcessorTest {
                 import org.pragmatica.serialization.Codec;
 
                 @Codec
-                public enum Role { ADMIN, USER }
+                public enum Role { ADMIN, USER, UNKNOWN }
                 """);
             var recordSource = JavaFileObjects.forSourceString("com.example.Account",
                 """
@@ -355,7 +433,7 @@ class CodecProcessorTest {
                 """
                 package com.example;
 
-                public enum ExternalEnum { A, B, C }
+                public enum ExternalEnum { A, B, C, UNKNOWN }
                 """);
             var source = JavaFileObjects.forSourceString("com.example.Wrapper",
                 """

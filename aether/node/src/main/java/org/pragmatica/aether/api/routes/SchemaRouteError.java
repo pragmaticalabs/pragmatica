@@ -144,6 +144,31 @@ public sealed interface SchemaRouteError extends Cause, HttpStatusAware {
     /// metrics. An unparseable parameter is the caller's error, so it is a 400 with a body naming
     /// the offending parameter and value. An ABSENT parameter keeps its documented default
     /// (`0` for undo, `1` for baseline) and is not an error.
+    /// 409 — the addressed record's `status` decoded to `SchemaStatus.UNKNOWN`, meaning the node that
+    /// wrote it is running a `SchemaStatus` with constants this node does not have (#964).
+    ///
+    /// A conflict rather than a 500: the request is well-formed and the datasource exists; what this
+    /// node cannot do is reason about a status it cannot name. The arm it replaces was a `default ->`
+    /// that STARTED A MIGRATION, so an unreadable status previously armed one — a fail-open on a
+    /// state-changing route, reached by falling through rather than by any decision.
+    record SchemaStatusUndecodable(String datasource) implements SchemaRouteError {
+        public static SchemaStatusUndecodable schemaStatusUndecodable(String datasource) {
+            return new SchemaStatusUndecodable(datasource);
+        }
+
+        @Override
+        public String message() {
+            return "Schema status for datasource '" + datasource
+                 + "' was written by a node running a newer SchemaStatus and cannot be read here;"
+                 + " no migration was started. Address this route at a node on the newer version.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
     record InvalidVersionParameter(String parameterName, String value) implements SchemaRouteError {
         public static InvalidVersionParameter invalidVersionParameter(String parameterName, String value) {
             return new InvalidVersionParameter(parameterName, value);

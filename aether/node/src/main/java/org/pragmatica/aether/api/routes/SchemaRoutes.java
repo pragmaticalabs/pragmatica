@@ -39,6 +39,7 @@ import org.pragmatica.lang.parse.Number;
 
 import static org.pragmatica.aether.api.routes.SchemaRouteError.InvalidVersionParameter.invalidVersionParameter;
 import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaAlreadyPending.schemaAlreadyPending;
+import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaStatusUndecodable.schemaStatusUndecodable;
 import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaAlreadyServing.schemaAlreadyServing;
 import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaNotFailed.schemaNotFailed;
 import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaNotLeader.schemaNotLeader;
@@ -223,7 +224,12 @@ public final class SchemaRoutes implements RouteSource {
         return switch (current.status()) {
             case COMPLETED -> refuseIfActiveSlicesPresent(current, datasource);
             case PENDING -> schemaAlreadyPending(datasource).promise();
-            default -> writeMigratingStatus(current, datasource);
+            case MIGRATING, FAILED -> writeMigratingStatus(current, datasource);
+            // #964: the `default` arm this replaces STARTED A MIGRATION for anything it did not
+            // recognise, so a status decoded as UNKNOWN would have armed one on a record this node
+            // cannot read. Enumerating the arms also makes the next SchemaStatus constant a compile
+            // error here rather than a silent migration.
+            case UNKNOWN -> schemaStatusUndecodable(datasource).promise();
         };
     }
 

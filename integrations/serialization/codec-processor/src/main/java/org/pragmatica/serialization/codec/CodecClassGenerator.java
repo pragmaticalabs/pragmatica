@@ -485,9 +485,15 @@ public class CodecClassGenerator {
         writer.println("    }");
     }
 
+    /// Emits the bounds-checked read, never the raw `values()[readCompact(buf)]` index (#964).
+    ///
+    /// The sentinel argument is `UNKNOWN`, and `CodecProcessor.validateEnumSentinel` has already
+    /// refused to reach here for an enum that does not declare it as its LAST constant — so this
+    /// reference always compiles, and the wire contract "an ordinal I do not know decodes to UNKNOWN"
+    /// holds for every framework `@Codec` enum without exception.
     private static void writeEnumReadBody(PrintWriter writer, String typeRef) {
         writer.println("    static " + typeRef + " readBody(SliceCodec codec, ByteBuf buf) {");
-        writer.println("        return " + typeRef + ".values()[SliceCodec.readCompact(buf)];");
+        writer.println("        return SliceCodec.readEnum(buf, " + typeRef + ".values(), " + typeRef + ".UNKNOWN);");
         writer.println("    }");
     }
 

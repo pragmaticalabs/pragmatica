@@ -85,6 +85,11 @@ public final class SwimHintsRegistry {
             case FAULTY -> Option.some(HealthHint.FAULTY);
             case SUSPECTED -> Option.some(HealthHint.SUSPECTED);
             case HEALTHY -> Option.none();
+            // #964: an unreadable wire hint is carried through as UNKNOWN rather than dropped like
+            // HEALTHY. Dropping it would make a member this node cannot assess indistinguishable from
+            // one it has assessed as healthy, and `ClusterQuiescenceEvaluator` counts UNKNOWN as
+            // suspected -- an unreadable hint is not evidence of health.
+            case UNKNOWN -> Option.some(HealthHint.UNKNOWN);
         };
     }
 

@@ -51,6 +51,9 @@ public record RetentionPolicy(long maxCount,
         return switch (mode) {
             case ANY -> count > maxCount || bytes > maxBytes || ageMs > maxAgeMs;
             case ALL -> exceedsAllConfiguredLimits(count, bytes, ageMs);
+            // #964, fail closed: eviction destroys data. A retention rule this node cannot read is
+            // not authority to delete a segment, so nothing is evicted until the rule is legible.
+            case UNKNOWN -> false;
         };
     }
 

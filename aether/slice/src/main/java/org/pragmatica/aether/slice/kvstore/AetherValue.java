@@ -387,11 +387,21 @@ public sealed interface AetherValue {
         ROLLED_BACK,
         /// #963 — the apply has STARTED and has not reached a terminal.
         ///
-        /// Appended deliberately: the generated enum codec is
-        /// `writeCompact(buf, value.ordinal())` / `values()[readCompact(buf)]`, so a constant added
-        /// anywhere but the end silently remaps every existing value. Appending is the only safe
-        /// position, and even then a node that predates this constant drops any message carrying it
-        /// (#964 — pre-GA that is accepted; post-GA the discipline is add-only).
+        /// Position, corrected at the #963/#964 merge: this constant is inserted BEFORE `UNKNOWN`,
+        /// not appended at the end. #963 authored it as an append, which was the only safe position
+        /// while the enum ended at `ROLLED_BACK`; #964 then added a trailing sentinel.
+        ///
+        /// The reason it must go here is MECHANICAL, not a wire-safety argument:
+        /// `CodecProcessor.validateEnumSentinel` refuses to generate a codec for a `@Codec` enum whose
+        /// last constant is not `UNKNOWN`, so appending past the sentinel is a BUILD ERROR (pinned by
+        /// `enumCodec_failsCompilation_whenSentinelIsNotLast`). At DECODE both orderings are equally
+        /// safe at one-version skew — inserted-before lands on the old sentinel's ordinal and reads as
+        /// `UNKNOWN` in range; appended-after lands past `values().length` and reads as `UNKNOWN` out
+        /// of range. Stated this way because two earlier drafts of this note argued from a node state
+        /// instead, and both were false: the only build that reads ordinal 3 as `UNKNOWN` is #964
+        /// WITHOUT #963, and #963 merged first, so that node never exists.
+        ///
+        /// Only this position claim changed. #963's analysis below is theirs, unaltered.
         ///
         /// This is the record that makes deployment permanence gate on PRESENCE rather than absence.
         /// The paragraph above on this class already warned that an absent key "means 'no attempt
@@ -400,7 +410,12 @@ public sealed interface AetherValue {
         /// indistinguishable absence. Written at apply START, where the writer is guaranteed to run
         /// and lands atomically with the `AppBlueprintKey` Put, rather than at completion, where it
         /// may never run at all.
-        IN_PROGRESS
+        IN_PROGRESS,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+        /// Never SUCCEEDED; reported as an unreadable outcome rather than a successful one.
+        /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as
+        /// UNKNOWN by an older node either way.
+        UNKNOWN
     }
 
     record SliceNodeValue(SliceState state, Option<String> failureReason, boolean fatal, long transitionedAt) implements AetherValue {
@@ -971,7 +986,12 @@ public sealed interface AetherValue {
     enum ClusterPhase {
         COLD_BOOT,
         NORMAL,
-        RECOVERING
+        RECOVERING,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+        /// Never NORMAL, so the topology action gated on NORMAL stays closed.
+        /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as
+        /// UNKNOWN by an older node either way.
+        UNKNOWN
     }
 
     record ClusterPhaseValue(ClusterPhase phase, long updatedAt) implements AetherValue {
@@ -1013,9 +1033,24 @@ public sealed interface AetherValue {
     }
 
     @Codec
+    /// How a node came to be in the cluster. Provenance only — nothing branches on it.
+    ///
+    /// #964 S2: `UNRECOGNISED` and `UNKNOWN` are DELIBERATELY separate, because they have different
+    /// causes and an operator acts differently on each. `UNRECOGNISED` is local and self-inflicted —
+    /// a config value this node could not parse, or no value at all — and is fixed by editing
+    /// configuration. `UNKNOWN` is the wire sentinel: the node that wrote this record runs a newer
+    /// `ProvisioningSource`, and it is fixed by finishing the rolling upgrade.
+    ///
+    /// Before they were split, both produced `UNKNOWN` and were indistinguishable at the point of use.
+    /// That is the same conflation `SliceState` avoids by keeping its sentinel out of `STRING_TO_STATE`
+    /// — a decode artifact must not be something a config file can ask for. A diagnostic that cannot
+    /// tell its two causes apart has stopped discriminating.
     enum ProvisioningSource {
         CTM,
         MANUAL,
+        /// Local: unparseable or absent configuration. Never produced by decoding.
+        UNRECOGNISED,
+        /// Wire sentinel (#964) — see the type docstring. Must stay LAST.
         UNKNOWN
     }
 
@@ -1239,7 +1274,12 @@ public sealed interface AetherValue {
         PENDING,
         MIGRATING,
         COMPLETED,
-        FAILED
+        FAILED,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+        /// Never re-arms a migration -- an unreadable schema status must not start one.
+        /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as
+        /// UNKNOWN by an older node either way.
+        UNKNOWN
     }
 
     record AbTestValue(String testId,
@@ -1854,7 +1894,12 @@ public sealed interface AetherValue {
     enum SpokesmanStatus {
         ASSIGNED,
         ACTIVE,
-        FAILED
+        FAILED,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+        /// Never ACTIVE, so a spokesman whose status cannot be read is not treated as serving.
+        /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as
+        /// UNKNOWN by an older node either way.
+        UNKNOWN
     }
 
     /// Desired-state community record (worker-membership-spec §2 line 78): the leader-authored

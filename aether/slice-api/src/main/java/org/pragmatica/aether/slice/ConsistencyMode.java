@@ -10,5 +10,10 @@ import org.pragmatica.serialization.Codec;
 @Codec
 public enum ConsistencyMode {
     EVENTUAL,
-    STRONG
+    STRONG,
+    /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+    /// Refused by the publish path: an unreadable consistency mode must not silently become EVENTUAL.
+    /// Must stay LAST — a new constant appended after it, or inserted before it, is read as UNKNOWN
+    /// by an older node either way.
+    UNKNOWN
 }
