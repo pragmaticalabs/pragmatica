@@ -58,7 +58,12 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     }
 
     @SuppressWarnings("unused")
-    record unused() implements SecurityPolicy {}
+    record unused() implements SecurityPolicy {
+        @Override
+        public <T extends RequestSecurityContext> Access canAccess(T context) {
+            return Access.DENY;
+        }
+    }
 
     /// Codegen-only sentinel: no route declared a security level (routes.toml has no `[security]`
     /// section, or a slice-authored route never called `.withSecurity(...)`). Never served: resolved
@@ -125,8 +130,14 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     /// It simply has no construction site TODAY, and a comment asserting otherwise would be greppable
     /// as a guarantee long after someone adds the first one.
     ///
-    /// Both of its arms are therefore chosen to fail CLOSED if it is ever constructed, rather than to
-    /// mirror `Unspecified`:
+    /// All three of its arms are therefore chosen to fail CLOSED if it is ever constructed, rather
+    /// than to mirror `Unspecified`:
+    ///
+    ///   - `canAccess()` returns `Access.DENY`. It used to declare NOTHING and inherit
+    ///     [RouteSecurityPolicy]'s ALLOW default -- so the one member of this hierarchy documented
+    ///     as failing closed everywhere was, on the security interface's own method, the single
+    ///     implementor in the codebase that answered ALLOW (#876). That default is now removed, so
+    ///     this arm is a compile requirement rather than a thing to remember.
     ///
     ///   - `strength()` returns `Integer.MAX_VALUE`, so `SecurityOverrideApplier.applyIfStronger` (the
     ///     only consumer of `strength()`) refuses EVERY override on such a route. The previous value

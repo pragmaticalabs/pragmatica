@@ -1463,7 +1463,11 @@ class ManagementServerImpl implements ManagementServer {
     /// ([ManagementRoute#match]) against the per-operation table, rather than coarse path-prefix
     /// containment. A path with no matching ManagementRoute (e.g. an unknown or future route) falls
     /// back to the prefix registry, which itself denies-by-default (ADMIN) for unrecognized mutations.
-    private static RoutePermission resolvePermission(String methodName, String path) {
+    /// Package-visible for the same reason as [#resolveSecurityErrorStatus] below: a test asserting
+    /// that a boot-window request is refused by AUTHENTICATION must show, in the same run, that the
+    /// route it aimed at resolves to a permission the refused caller would otherwise have satisfied
+    /// -- otherwise "denied" is indistinguishable from "never matched a route" (#908).
+    static RoutePermission resolvePermission(String methodName, String path) {
         return parseRoutingMethod(methodName).flatMap(m -> ManagementRoute.match(m, path).option())
                                  .map(matched -> ManagementRoutePermissions.permissionFor(matched.route()))
                                  .or(RoutePermissionRegistry.resolve(methodName, path));
@@ -1542,7 +1546,12 @@ class ManagementServerImpl implements ManagementServer {
         };
     }
 
-    private static HttpStatus resolveSecurityErrorStatus(Cause cause) {
+    /// Package-visible so the status an authentication failure actually reaches the response writer
+    /// with can be asserted without standing up the HTTP pipeline -- the same reason
+    /// [#isSystemStreamWriteOverHttp] is (see `ManagementBootWindowAuthTest`, #908). This switch,
+    /// not [org.pragmatica.aether.http.security.SecurityError#httpStatus()], is what decides the
+    /// wire status on this plane.
+    static HttpStatus resolveSecurityErrorStatus(Cause cause) {
         return switch (cause) {
             case SecurityError.MissingCredentials _ -> HttpStatus.UNAUTHORIZED;
             case SecurityError.InvalidCredentials _ -> HttpStatus.FORBIDDEN;

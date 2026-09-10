@@ -346,6 +346,32 @@ class SecurityValueObjectsTest {
             var context = SecurityContext.securityContext("key", Set.of(Role.USER)).unwrap();
             assertThat(policy.canAccess(context)).isEqualTo(Access.DENY);
         }
+
+        /// #876: `unused()` declared no `canAccess` at all and therefore inherited
+        /// `RouteSecurityPolicy`'s ALLOW default -- the only implementor in the codebase that
+        /// answered ALLOW, sitting inside the one policy member documented as failing closed on
+        /// every other arm. Completes the canAccess matrix over the sealed sum together with the
+        /// `Unspecified` case below; the four cases above cover the served members.
+        @Test
+        void canAccess_unused_denies() {
+            var policy = new SecurityPolicy.unused();
+            var anonymous = SecurityContext.securityContext();
+            assertThat(policy.canAccess(anonymous)).isEqualTo(Access.DENY);
+        }
+
+        @Test
+        void canAccess_unused_deniesEvenAnAdminApiKey() {
+            var policy = new SecurityPolicy.unused();
+            var admin = SecurityContext.securityContext("key", Set.of(Role.ADMIN)).unwrap();
+            assertThat(policy.canAccess(admin)).isEqualTo(Access.DENY);
+        }
+
+        @Test
+        void canAccess_unspecified_denies() {
+            var policy = SecurityPolicy.unspecified();
+            var anonymous = SecurityContext.securityContext();
+            assertThat(policy.canAccess(anonymous)).isEqualTo(Access.DENY);
+        }
     }
 
     @Nested

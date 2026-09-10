@@ -1396,7 +1396,7 @@ class RouteBuilderTest {
     @Nested
     class SecurityTests {
         @Test
-        void route_defaultSecurity_allowsAll() {
+        void route_undeclaredSecurity_permitsAll() {
             Route<TestResponse> route = Route.<TestResponse>get("/public")
                 .to(_ -> Promise.success(new TestResponse("OK")))
                 .asJson();
@@ -1424,7 +1424,7 @@ class RouteBuilderTest {
 
         @Test
         void route_withSecurity_preservedThroughNamed() {
-            RouteSecurityPolicy customPolicy = new RouteSecurityPolicy() {};
+            RouteSecurityPolicy customPolicy = RouteSecurityPolicy.permitAll();
 
             Route<TestResponse> route = Route.<TestResponse>get("/named-secured")
                 .to(_ -> Promise.success(new TestResponse("OK")))
