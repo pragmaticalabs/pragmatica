@@ -62,7 +62,6 @@ public class LintMojo extends AbstractJbctMojo {
         LayerCoverage.coverage(filesToProcess, context)
                      .map(LayerCoverage::render)
                      .onPresent(getLog()::info);
-
         var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), parseErrors.get());
         // Print diagnostics
         for (var d : allDiagnostics) {
@@ -74,8 +73,7 @@ public class LintMojo extends AbstractJbctMojo {
         }
         // Print summary. `Linting N Java file(s)` above announces what was COLLECTED; this line
         // carries what was ANALYSED, because that is the denominator the counts were taken over (#977).
-        coverage.gapReport("lint")
-                .onPresent(getLog()::error);
+        coverage.gapReport("lint").onPresent(getLog()::error);
         getLog().info("Lint results (checked " + coverage.render()
                      + "): " + errors.get()
                      + " error(s), " + warnings.get()
@@ -87,8 +85,7 @@ public class LintMojo extends AbstractJbctMojo {
         var failures = new ArrayList<String>();
 
         if (coverage.isPartial()) {
-            failures.add(coverage.unparseable()
-                        + " file(s) could not be read or parsed and were NOT analysed");
+            failures.add(coverage.unparseable() + " file(s) could not be read or parsed and were NOT analysed");
         }
 
         if (errors.get() > 0) {

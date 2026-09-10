@@ -113,12 +113,10 @@ public class ProcessMojo extends AbstractJbctMojo {
                 case INFO -> getLog().info(formatDiagnostic(d));
             }
         }
-
         // `Processing N Java file(s)` above announces what was COLLECTED. Both summary lines carry
         // what was ANALYSED, separately, because a reader quotes ONE line as evidence and each has to
         // be honest on its own about the denominator its counts were taken over (#977).
-        coverage.gapReport("process")
-                .onPresent(getLog()::error);
+        coverage.gapReport("process").onPresent(getLog()::error);
         getLog().info("Format (checked " + coverage.render()
                      + "): " + formatted.get()
                      + " formatted, " + unchanged.get()
@@ -138,8 +136,7 @@ public class ProcessMojo extends AbstractJbctMojo {
         var failures = new ArrayList<String>();
 
         if (coverage.isPartial()) {
-            failures.add(coverage.unparseable()
-                        + " file(s) could not be read or parsed and were NOT analysed");
+            failures.add(coverage.unparseable() + " file(s) could not be read or parsed and were NOT analysed");
         }
 
         if (lintErrors.get() > 0) {

@@ -73,7 +73,6 @@ public class CheckCommand implements Callable<Integer> {
         LayerCoverage.coverage(filesToProcess, context)
                      .map(LayerCoverage::render)
                      .onPresent(System.err::println);
-
         var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), parseErrors.get());
         // Report format issues
         if (!needsFormatting.isEmpty()) {
@@ -94,8 +93,7 @@ public class CheckCommand implements Callable<Integer> {
         // that could not be read or parsed contributes zero of everything, so an unqualified
         // `0 lint error(s)` reads as clean when it means unexamined (#977).
         System.out.println();
-        coverage.gapReport("check")
-                .onPresent(System.out::println);
+        coverage.gapReport("check").onPresent(System.out::println);
         System.out.println("Check results (checked " + coverage.render()
                           + "): " + needsFormatting.size()
                           + " format issue(s), " + lintErrors.get()

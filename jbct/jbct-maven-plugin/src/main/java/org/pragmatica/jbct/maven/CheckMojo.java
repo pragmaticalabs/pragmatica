@@ -68,7 +68,6 @@ public class CheckMojo extends AbstractJbctMojo {
         LayerCoverage.coverage(filesToProcess, context)
                      .map(LayerCoverage::render)
                      .onPresent(getLog()::info);
-
         var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), parseErrors.get());
         // Report format issues
         if (!needsFormatting.isEmpty()) {
@@ -90,8 +89,7 @@ public class CheckMojo extends AbstractJbctMojo {
         // zero of everything, and an unqualified `0 lint error(s)` reads as clean when it means
         // unexamined (#977). This is the line quoted as gate evidence, so it is the line that has to
         // be honest about its own denominator.
-        coverage.gapReport("check")
-                .onPresent(getLog()::error);
+        coverage.gapReport("check").onPresent(getLog()::error);
         getLog().info("Check results (checked " + coverage.render()
                      + "): " + needsFormatting.size()
                      + " format issue(s), " + lintErrors.get()
@@ -118,8 +116,7 @@ public class CheckMojo extends AbstractJbctMojo {
         }
 
         if (coverage.isPartial()) {
-            failures.add(coverage.unparseable()
-                        + " file(s) could not be read or parsed and were NOT analysed");
+            failures.add(coverage.unparseable() + " file(s) could not be read or parsed and were NOT analysed");
             hasFailures = true;
         }
 

@@ -73,7 +73,6 @@ public class LintCommand implements Callable<Integer> {
         LayerCoverage.coverage(filesToProcess, context)
                      .map(LayerCoverage::render)
                      .onPresent(System.err::println);
-
         var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), counters[3]);
         // Output results
         printResults(allDiagnostics);
@@ -246,9 +245,7 @@ public class LintCommand implements Callable<Integer> {
     /// partial line are prefixed by the coverage clause that says which denominator they belong to.
     private void printSummary(AnalysisCoverage coverage, int errors, int warnings, int infos) {
         System.out.println();
-        coverage.gapReport("lint")
-                .onPresent(System.out::println);
-
+        coverage.gapReport("lint").onPresent(System.out::println);
         if (coverage.isPartial()) {
             System.out.println("✗ Checked " + coverage.render()
                               + ": " + errors

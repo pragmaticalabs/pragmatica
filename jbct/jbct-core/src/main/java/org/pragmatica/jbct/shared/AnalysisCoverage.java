@@ -2,6 +2,9 @@ package org.pragmatica.jbct.shared;
 
 import org.pragmatica.lang.Option;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
+
 
 /// How much of a collected file set a run actually ANALYSED (#977).
 ///
@@ -63,10 +66,10 @@ public record AnalysisCoverage(int collected, int unparseable) {
     /// it never read, which is the sentence #740 established for the same failure one state earlier.
     public Option<String> gapReport(String goalName) {
         return isPartial()
-               ? Option.some("Parse errors: " + unparseable + " — " + unparseable
-                             + " file(s) could not be read or parsed and were NOT analysed by JBCT "
-                             + goalName
-                             + ". This is a COVERAGE GAP, not a pass: this run is not evidence about those file(s).")
-               : Option.none();
+               ? some("Parse errors: " + unparseable
+                     + " — " + unparseable
+                     + " file(s) could not be read or parsed and were NOT analysed by JBCT " + goalName
+                     + ". This is a COVERAGE GAP, not a pass: this run is not evidence about those file(s).")
+               : none();
     }
 }
