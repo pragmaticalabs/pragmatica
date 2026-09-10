@@ -26,28 +26,51 @@ public interface StorageInstance {
     Promise<Option<byte[]>> get(BlockId id);
     /// Check if a block exists in any tier.
     Promise<Boolean> exists(BlockId id);
-    /// Create a named reference to a block.
+    /// Adds a named reference to a block this instance ALREADY holds, crediting one reference for the
+    /// new name. This is the aliasing primitive -- a second (third, ...) name for a block that some
+    /// other reference is already keeping alive.
+    ///
+    /// NEVER pair it with [#put] for the same block. [#put] already credits the block it writes -- a
+    /// fresh write starts at refCount 1, a deduplicating write increments an existing one -- so
+    /// `put`-then-`createRef` leaves refCount 2 for ONE logical reference, and an explicit
+    /// [#deleteRef] afterwards only brings it back to 1. The block never reaches zero, never reports
+    /// [BlockLifecycle#isOrphaned], and [StorageGarbageCollector] can never collect it (#812). To
+    /// write content and name it, use [#putRef], which credits exactly once.
     Promise<Unit> createRef(String name, BlockId id);
     /// Resolve a named reference to its block ID.
     Option<BlockId> resolveRef(String name);
     /// Delete a named reference.
     Promise<Unit> deleteRef(String name);
 
-    /// Replaces what `name` points to: writes (or deduplicates) the block for `content`, then points
-    /// `name` at it. Never leaves `name` absent -- unlike `deleteRef` then `createRef`, it resolves to
-    /// the old target or the new one at every instant. [DefaultStorageInstance]'s composite: the
-    /// metadata pointer swap itself is atomic, but the new block's credit and the displaced block's
-    /// decrement are only ordered, not atomic together -- a crash between them over-counts the
-    /// displaced block (#737).
+    /// Writes (or deduplicates) `content` and points `name` at the resulting block -- the write-and-ref
+    /// primitive, and the only correct way to store content under a name.
     ///
-    /// Default falls back to [#put] + [#createRef], which has two independent counting defects: it
-    /// never decrements the superseded block (leaks its refcount forever -- only
-    /// [DefaultStorageInstance] reclaims it), AND it double-counts the NEW block -- [#put] already
-    /// credits it (fresh write or dedup, +1), then [#createRef] credits it again (+1), so it sits at
-    /// refCount 2 for one logical reference. Even an explicit [#deleteRef] afterward only brings it to
-    /// 1; it never reaches zero and is never GC-eligible.
+    /// Credits the block EXACTLY ONE reference, for the one named reference it creates, and releases
+    /// whatever `name` previously pointed to. Both halves are load-bearing: crediting twice ([#put]
+    /// followed by [#createRef]) produces a block that can never reach refCount 0 (#812), and failing
+    /// to release the displaced target leaks that block's count forever. Creating and replacing are
+    /// therefore the same operation -- creating replaces nothing -- so `name` never has to be known to
+    /// be absent for this to be correct, and re-storing the SAME content under the same name is a
+    /// no-op on the count rather than a leak.
+    ///
+    /// Never leaves `name` absent: it resolves to the old target or the new one at every instant,
+    /// unlike [#deleteRef] followed by [#createRef] (#264).
+    Promise<BlockId> putRef(String name, byte[] content);
+
+    /// Replaces what `name` points to. The replace-oriented name for [#putRef] -- the same operation
+    /// with the same counting -- kept because #737's caller (cursor commits) expresses replacement
+    /// rather than creation.
+    ///
+    /// Routing the default through [#putRef] is what keeps it honest on every implementor: the
+    /// previous default composed [#put] with [#createRef] and so carried two independent counting
+    /// defects onto anything that did not override it -- it never decremented the superseded block,
+    /// AND it double-counted the new one (#812).
+    ///
+    /// [DefaultStorageInstance]'s composite: the metadata pointer swap itself is atomic, but the new
+    /// block's credit and the displaced block's decrement are only ordered, not atomic together -- a
+    /// crash between them over-counts the displaced block (#737).
     default Promise<BlockId> replaceRef(String name, byte[] content) {
-        return put(content).flatMap(id -> createRef(name, id).map(_ -> id));
+        return putRef(name, content);
     }
 
     /// Delete a block from all tiers and remove its lifecycle metadata. Used by GC.
@@ -176,7 +199,7 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     @Override
-    public Promise<BlockId> replaceRef(String refName, byte[] content) {
+    public Promise<BlockId> putRef(String refName, byte[] content) {
         return BlockId.blockId(content)
                       .async()
                       .flatMap(id -> handlePut(id, content))

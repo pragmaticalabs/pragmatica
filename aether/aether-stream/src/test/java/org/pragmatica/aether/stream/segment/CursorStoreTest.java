@@ -130,8 +130,8 @@ class CursorStoreTest {
         /// resumed from the earliest RETAINED offset and redelivered the whole window.
         ///
         /// Two independent assertions, because either alone can be satisfied by accident: no `deleteRef`
-        /// is issued for the cursor at all, and at the instant the replacing `createRef` runs the previous
-        /// ref is still resolvable.
+        /// is issued for the cursor at all, and at the instant the replacing write-and-ref runs the
+        /// previous ref is still resolvable.
         @Test
         void commit_overExistingCursor_neverRemovesTheRef_andTheOldValueStandsUntilReplaced() {
             var observing = new RefObservingStorage(storage);
@@ -145,10 +145,10 @@ class CursorStoreTest {
                         + " is the #264 window, and an absent ref resumes from the earliest retained offset")
                     .noneMatch(operation -> operation.startsWith("deleteRef"));
 
-            assertThat(observing.previousRefAtCreate)
+            assertThat(observing.previousRefAtWrite)
                     .as("the second commit is the replacement; the old ref must still be in place when it runs")
                     .hasSize(2);
-            assertThat(observing.previousRefAtCreate.get(1).isPresent())
+            assertThat(observing.previousRefAtWrite.get(1).isPresent())
                     .as("the ref was absent at replacement time — that is exactly the window #264 closes")
                     .isTrue();
 
@@ -160,20 +160,34 @@ class CursorStoreTest {
     }
 
     /// Delegating [StorageInstance] that records the ref operations a commit performs, and the ref's state
-    /// at the moment each `createRef` is issued. Everything else passes straight through.
+    /// at the moment each write-and-ref is issued. Everything else passes straight through.
+    ///
+    /// #812: the observation point is [StorageInstance#putRef], not `createRef`. A commit reaches storage
+    /// through `replaceRef`, which this double does not override -- so before #812 it inherited the
+    /// interface default (`put` then `createRef`) and what these assertions observed was that FALLBACK,
+    /// not the single upsert the production [DefaultStorageInstance] performs. `putRef` is now the
+    /// primitive both paths go through, so the double and production observe the same call.
     private static final class RefObservingStorage implements StorageInstance {
         private final StorageInstance delegate;
         private final List<String> refOperations = new ArrayList<>();
-        private final List<Option<BlockId>> previousRefAtCreate = new ArrayList<>();
+        private final List<Option<BlockId>> previousRefAtWrite = new ArrayList<>();
 
         private RefObservingStorage(StorageInstance delegate) {
             this.delegate = delegate;
         }
 
         @Override
+        public Promise<BlockId> putRef(String refName, byte[] content) {
+            refOperations.add("putRef:" + refName);
+            previousRefAtWrite.add(delegate.resolveRef(refName));
+
+            return delegate.putRef(refName, content);
+        }
+
+        @Override
         public Promise<Unit> createRef(String refName, BlockId id) {
             refOperations.add("createRef:" + refName);
-            previousRefAtCreate.add(delegate.resolveRef(refName));
+            previousRefAtWrite.add(delegate.resolveRef(refName));
 
             return delegate.createRef(refName, id);
         }

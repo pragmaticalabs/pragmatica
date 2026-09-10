@@ -622,6 +622,14 @@ class ArtifactStoreTest {
             return Promise.unitPromise();
         }
 
+        /// This double keeps no ref map -- `createRef`/`resolveRef` are no-ops -- so the write-and-ref
+        /// primitive is exactly the write. Routed through `put` so this double's put behaviour
+        /// (failure injection, concurrency accounting) still applies (#812).
+        @Override
+        public Promise<BlockId> putRef(String name, byte[] content) {
+            return put(content);
+        }
+
         @Override
         public Promise<Unit> delete(BlockId id) {
             blocks.remove(id);
@@ -792,6 +800,14 @@ class ArtifactStoreTest {
             return Promise.unitPromise();
         }
 
+        /// This double keeps no ref map -- `createRef`/`resolveRef` are no-ops -- so the write-and-ref
+        /// primitive is exactly the write. Routed through `put` so this double's put behaviour
+        /// (failure injection, concurrency accounting) still applies (#812).
+        @Override
+        public Promise<BlockId> putRef(String name, byte[] content) {
+            return put(content);
+        }
+
         @Override
         public Promise<Unit> delete(BlockId id) {
             blocks.remove(id);
@@ -860,6 +876,14 @@ class ArtifactStoreTest {
         @Override
         public Promise<Unit> deleteRef(String name) {
             return Promise.unitPromise();
+        }
+
+        /// This double keeps no ref map -- `createRef`/`resolveRef` are no-ops -- so the write-and-ref
+        /// primitive is exactly the write. Routed through `put` so this double's put behaviour
+        /// (failure injection, concurrency accounting) still applies (#812).
+        @Override
+        public Promise<BlockId> putRef(String name, byte[] content) {
+            return put(content);
         }
 
         @Override
