@@ -1,5 +1,13 @@
 ### Fixed (2026-09-10 — `aether cluster init` produced configs that could not bootstrap, and silently swallowed input it ignored)
 
+**Owner ruling:** the cloud placement parameters — **zone and instance type — are mandatory.** They
+are not defaultable, and the reason is that the two fail in opposite and equally unacceptable ways:
+a defaulted **instance type fails late**, at the provider API, after the operator has waited; a
+defaulted **region or zone succeeds wrongly**, provisioning perfectly into a jurisdiction nobody
+chose. Neither is acceptable for a parameter that decides where infrastructure physically lives.
+This is the ruling, not an inference from the `cx21` breakage below — that breakage is an
+illustration of the first failure mode, not the argument.
+
 **The unifying defect:** `cluster init` must emit a config that `cluster bootstrap` can actually
 use, and must never accept a flag or an answer it then discards. It did neither. Five faults, all
 of the same shape — a decision the tool made silently, or an input it dropped without saying so —
@@ -51,6 +59,19 @@ plus a sixth, reported and not fixed, that explains why the first one was so har
   `isErrorEnabled=false` and emits nothing between markers; the same probe on `aether-node.jar`
   reports `Log4jLoggerFactory` and emits all three lines, which is the positive control proving the
   probe can see output at all]
+
+- **`zone` and `region` are distinct concepts here, and only one of them needed the guard.**
+  `SourceProfile` carries three separate fields — `region`, `zone` and `zones`. `region` is the
+  provider-level default location; `zone`/`zones` are per-source placement that override it and are
+  what the bootstrap rotates through on capacity exhaustion. So the ruling's word "zone" is not a
+  synonym for the config key `region`.
+  **No separate guard is needed for zone, and that is a verified claim rather than a convenience:**
+  an absent zone produces no placement hint at all (`CloudProviderSupport.withZonePlacement` treats
+  both empty and the literal `"default"` as "no hint"), so provisioning falls through to
+  `ProviderDefaults.zone()`, which is the provider's `region` — the value `cluster init` now
+  *requires* the operator to supply. Either the operator set a zone explicitly, or they set the
+  region explicitly; there is no path on which Aether picks a jurisdiction. Making `region`
+  mandatory closes the hole for both.
 
 - **The region default silently chose a jurisdiction.** `defaultRegionFor` is removed for a
   different and stronger reason than catalogue rot: a defaulted region decides where the operator's
