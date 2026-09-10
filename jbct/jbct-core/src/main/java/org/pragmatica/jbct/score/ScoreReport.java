@@ -63,6 +63,7 @@ public sealed interface ScoreReport permits ScoreReport.unused {
         return Stream.of(Stream.of("{",
                                    String.format(Locale.ROOT, "  \"linesOfCode\": %d,", score.linesOfCode()),
                                    String.format(Locale.ROOT, "  \"filesAnalyzed\": %d,", score.filesAnalyzed()),
+                                   String.format(Locale.ROOT, "  \"filesUnanalyzed\": %d,", score.filesUnanalyzed()),
                                    "  \"breakdown\": {"),
                          categoryEntries(score),
                          Stream.of("  },",
@@ -80,12 +81,27 @@ public sealed interface ScoreReport permits ScoreReport.unused {
         return String.format(Locale.ROOT, "%.1f", densityPerKloc) + DENSITY_UNIT;
     }
 
+    /// `JBCT DENSITY — 4821 LOC, 38 files`, and when some file could not be read or parsed,
+    /// `JBCT DENSITY — 4821 LOC, 38 of 40 files, 2 UNPARSEABLE`.
+    ///
+    /// The header already carried the denominators on the principle that no ratio is shown alone.
+    /// It carried the wrong one for coverage: `filesAnalyzed` renders identically whether two files
+    /// were measured or two of forty were, so a density over a fragment read exactly like a density
+    /// over the whole (#977). The `UNPARSEABLE` clause appears only when the gap does.
     private static String headerLine(ScoreResult score) {
+        var coverage = score.coverage();
+
         return String.format(Locale.ROOT,
-                             "%s — %d LOC, %d files",
+                             "%s — %d LOC, %s",
                              HEADER_LABEL,
                              score.linesOfCode(),
-                             score.filesAnalyzed());
+                             coverage.isPartial()
+                             ? String.format(Locale.ROOT,
+                                             "%d of %d files, %d UNPARSEABLE",
+                                             coverage.analysed(),
+                                             coverage.collected(),
+                                             coverage.unparseable())
+                             : score.filesAnalyzed() + " files");
     }
 
     private static List<Row> rowsFor(ScoreResult score, List<ScoreCategory> categories, String marker, int countWidth) {

@@ -8,6 +8,7 @@ import java.util.concurrent.Callable;
 import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.format.JbctFormatter;
+import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.jbct.shared.FileCollector;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
@@ -62,7 +63,7 @@ public class FormatCommand implements Callable<Integer> {
             processFile(file, counters, needsFormatting);
         }
         // Print summary
-        printSummary(counters[0], counters[1], counters[2], needsFormatting);
+        printSummary(counters[0], counters[1], counters[2], needsFormatting, filesToProcess.size());
         // Return appropriate exit code
         if (counters[2]> 0) {
             return 2;
@@ -140,18 +141,45 @@ public class FormatCommand implements Callable<Integer> {
                                          });
     }
 
-    private void printSummary(int formatted, int unchanged, int errors, List<Path> needsFormatting) {
+    /// The run's summary, which may never claim a clean sweep over files it could not read.
+    ///
+    /// `--check` printed `All files are properly formatted.` whenever nothing NEEDED formatting —
+    /// evaluated before the exit-code logic and blind to the unreadable tally, so a file the
+    /// formatter could not parse produced that sentence beside a non-zero exit (#977). The exit code
+    /// was honest and the line was not, and this workspace's standing rule is to quote the summary
+    /// line as evidence rather than the exit status, which is exactly the consumption path the line
+    /// misled.
+    private void printSummary(int formatted, int unchanged, int errors, List<Path> needsFormatting, int collected) {
+        var coverage = AnalysisCoverage.analysisCoverage(collected, errors);
+
         System.out.println();
+        coverage.gapReport("format").onPresent(System.out::println);
         if (checkOnly) {
-            if (needsFormatting.isEmpty()) {
-                System.out.println("All files are properly formatted.");
-            } else {
-                System.out.println(needsFormatting.size() + " file(s) need formatting.");
-            }
+            printCheckSummary(needsFormatting, coverage);
         } else if (dryRun) {
             System.out.println("Dry run: " + needsFormatting.size() + " file(s) would be formatted.");
         } else {
             System.out.println("Formatted: " + formatted + ", Unchanged: " + unchanged + ", Errors: " + errors);
         }
+    }
+
+    /// The ✓ sentence is reachable only when every collected file was actually read; otherwise the
+    /// line states the coverage the verdict was reached over.
+    private void printCheckSummary(List<Path> needsFormatting, AnalysisCoverage coverage) {
+        if (coverage.isPartial()) {
+            System.out.println("✗ Checked " + coverage.render()
+                              + ": " + needsFormatting.size()
+                              + " file(s) need formatting");
+
+            return;
+        }
+
+        if (needsFormatting.isEmpty()) {
+            System.out.println("All files are properly formatted.");
+
+            return;
+        }
+
+        System.out.println(needsFormatting.size() + " file(s) need formatting.");
     }
 }

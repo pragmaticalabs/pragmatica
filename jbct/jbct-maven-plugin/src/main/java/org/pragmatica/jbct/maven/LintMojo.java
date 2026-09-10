@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.lint.layer.LayerCoverage;
+import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.jbct.shared.SourceFile;
 
 import org.apache.maven.plugin.MojoExecutionException;
@@ -61,6 +62,7 @@ public class LintMojo extends AbstractJbctMojo {
         LayerCoverage.coverage(filesToProcess, context)
                      .map(LayerCoverage::render)
                      .onPresent(getLog()::info);
+        var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), parseErrors.get());
         // Print diagnostics
         for (var d : allDiagnostics) {
             switch (d.severity()) {
@@ -69,19 +71,33 @@ public class LintMojo extends AbstractJbctMojo {
                 case INFO -> getLog().info(formatDiagnostic(d));
             }
         }
-        // Print summary
-        getLog().info("Lint results: " + errors.get()
+        // Print summary. `Linting N Java file(s)` above announces what was COLLECTED; this line
+        // carries what was ANALYSED, because that is the denominator the counts were taken over (#977).
+        coverage.gapReport("lint").onPresent(getLog()::error);
+        getLog().info("Lint results (checked " + coverage.render()
+                     + "): " + errors.get()
                      + " error(s), " + warnings.get()
                      + " warning(s), " + infos.get()
                      + " info(s)");
-        // Fail build if needed
-        if (parseErrors.get() > 0 || errors.get() > 0) {
-            throw new MojoFailureException("JBCT lint found " + errors.get() + " error(s)");
+        // Fail build if needed. Every reason is named: the old message reported the LINT ERROR count
+        // for a failure caused by a parse error, so a build stopped by files it could not read said
+        // `JBCT lint found 0 error(s)` — true, and the opposite of an explanation.
+        var failures = new ArrayList<String>();
+
+        if (coverage.isPartial()) {
+            failures.add(coverage.unparseable() + " file(s) could not be read or parsed and were NOT analysed");
+        }
+
+        if (errors.get() > 0) {
+            failures.add(errors.get() + " lint error(s)");
         }
 
         if (jbctConfig.lint().failOnWarning() && warnings.get() > 0) {
-            throw new MojoFailureException("JBCT lint found " + warnings.get()
-                                          + " warning(s) (failOnWarning is enabled)");
+            failures.add(warnings.get() + " warning(s) (failOnWarning is enabled)");
+        }
+
+        if (!failures.isEmpty()) {
+            throw new MojoFailureException("JBCT lint failed: " + String.join(", ", failures));
         }
     }
 

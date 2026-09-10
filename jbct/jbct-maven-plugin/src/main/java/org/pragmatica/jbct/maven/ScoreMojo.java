@@ -69,6 +69,19 @@ public class ScoreMojo extends AbstractJbctMojo {
                      .map(LayerCoverage::render)
                      .onPresent(getLog()::info);
         outputScore(score);
+        var coverage = score.coverage();
+        // A coverage gap outranks the density check and fails even with no maxDensity set: the goal
+        // announced `Measuring N Java file(s)` and then reported a ratio over fewer, returning BUILD
+        // SUCCESS over files it never read (#977).
+        if (coverage.isPartial()) {
+            coverage.gapReport("score")
+                    .onPresent(getLog()::error);
+
+            throw new MojoFailureException("JBCT score failed: " + coverage.unparseable()
+                                          + " file(s) could not be read or parsed and were NOT analysed,"
+                                          + " so the reported density does not cover them");
+        }
+
         if (maxDensity != null && DensityGate.exceeds(score.totalDensityPerKloc(), maxDensity)) {
             throw new MojoFailureException(DensityGate.breachMessage(score.totalDensityPerKloc(), maxDensity));
         }

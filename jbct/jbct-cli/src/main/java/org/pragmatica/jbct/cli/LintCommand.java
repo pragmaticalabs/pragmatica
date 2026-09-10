@@ -12,6 +12,7 @@ import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.layer.LayerCoverage;
+import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.jbct.shared.FileCollector;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
@@ -64,7 +65,7 @@ public class LintCommand implements Callable<Integer> {
 
         var allDiagnostics = new ArrayList<Diagnostic>();
         var counters = new int[4];
-        // 0=errors, 1=warnings, 2=infos, 3=parseErrors
+        // 0=errors, 1=warnings, 2=infos, 3=unanalysed (unreadable or unparseable)
         for (var file : filesToProcess) {
             processFile(file, linter, allDiagnostics, counters);
         }
@@ -72,13 +73,21 @@ public class LintCommand implements Callable<Integer> {
         LayerCoverage.coverage(filesToProcess, context)
                      .map(LayerCoverage::render)
                      .onPresent(System.err::println);
+        var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), counters[3]);
         // Output results
         printResults(allDiagnostics);
         // Print summary
-        printSummary(filesToProcess.size(), counters[0], counters[1], counters[2], counters[3]);
-        // Return appropriate exit code
-        if (counters[3]> 0 || counters[0]> 0) {
+        printSummary(coverage, counters[0], counters[1], counters[2]);
+        // Exit code. 2 is reserved for "the tool could not do its job" — a coverage gap — and 1 for
+        // rule violations, which the tool CAN speak to. Both used to be 2, which conflated a silent
+        // coverage gap with a complete run that found real errors, so a job could not tell "your code
+        // is wrong" from "I never read your code" (#977). This is the split `jbct check` already uses.
+        if (coverage.isPartial()) {
             return 2;
+        }
+
+        if (counters[0]> 0) {
+            return 1;
         }
 
         if (failOnWarning && counters[1]> 0) {
@@ -228,20 +237,35 @@ public class LintCommand implements Callable<Integer> {
                 .replace("\t", "\\t");
     }
 
-    private void printSummary(int filesChecked, int errors, int warnings, int infos, int parseErrors) {
+    /// The run's verdict, in one line that can never claim more coverage than the run has.
+    ///
+    /// A partial run is never rendered as a pass, however clean the files it managed to read were:
+    /// zero findings over a set the linter never analysed is silence, not compliance. The ✓ branch is
+    /// therefore reachable only when [AnalysisCoverage#isPartial()] is false, and the counts on the
+    /// partial line are prefixed by the coverage clause that says which denominator they belong to.
+    private void printSummary(AnalysisCoverage coverage, int errors, int warnings, int infos) {
         System.out.println();
-        if (parseErrors > 0) {
-            System.out.println("Parse errors: " + parseErrors);
-        }
-
-        if (errors == 0 && warnings == 0 && infos == 0) {
-            System.out.println("✓ All " + filesChecked + " file(s) passed JBCT compliance check.");
-        } else {
-            System.out.println("Checked " + filesChecked
-                              + " file(s): " + errors
+        coverage.gapReport("lint").onPresent(System.out::println);
+        if (coverage.isPartial()) {
+            System.out.println("✗ Checked " + coverage.render()
+                              + ": " + errors
                               + " error(s), " + warnings
                               + " warning(s), " + infos
                               + " info(s)");
+
+            return;
         }
+
+        if (errors == 0 && warnings == 0 && infos == 0) {
+            System.out.println("✓ All " + coverage.collected() + " file(s) passed JBCT compliance check.");
+
+            return;
+        }
+
+        System.out.println("Checked " + coverage.render()
+                          + ": " + errors
+                          + " error(s), " + warnings
+                          + " warning(s), " + infos
+                          + " info(s)");
     }
 }

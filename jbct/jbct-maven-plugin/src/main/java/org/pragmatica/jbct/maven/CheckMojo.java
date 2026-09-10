@@ -9,6 +9,7 @@ import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.lint.layer.LayerCoverage;
+import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.jbct.shared.SourceFile;
 
 import org.apache.maven.plugin.MojoExecutionException;
@@ -67,6 +68,7 @@ public class CheckMojo extends AbstractJbctMojo {
         LayerCoverage.coverage(filesToProcess, context)
                      .map(LayerCoverage::render)
                      .onPresent(getLog()::info);
+        var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), parseErrors.get());
         // Report format issues
         if (!needsFormatting.isEmpty()) {
             getLog().error("Files not properly formatted:");
@@ -82,8 +84,14 @@ public class CheckMojo extends AbstractJbctMojo {
                 case INFO -> getLog().info(formatDiagnostic(d));
             }
         }
-        // Summary
-        getLog().info("Check results: " + needsFormatting.size()
+        // Summary. `Running JBCT check on N Java file(s)` above announces what was COLLECTED — this
+        // line carries what was ANALYSED, because a file that could not be read or parsed contributes
+        // zero of everything, and an unqualified `0 lint error(s)` reads as clean when it means
+        // unexamined (#977). This is the line quoted as gate evidence, so it is the line that has to
+        // be honest about its own denominator.
+        coverage.gapReport("check").onPresent(getLog()::error);
+        getLog().info("Check results (checked " + coverage.render()
+                     + "): " + needsFormatting.size()
                      + " format issue(s), " + lintErrors.get()
                      + " lint error(s), " + warnings.get()
                      + " warning(s)");
@@ -107,8 +115,8 @@ public class CheckMojo extends AbstractJbctMojo {
             hasFailures = true;
         }
 
-        if (parseErrors.get() > 0) {
-            failures.add(parseErrors.get() + " parse error(s)");
+        if (coverage.isPartial()) {
+            failures.add(coverage.unparseable() + " file(s) could not be read or parsed and were NOT analysed");
             hasFailures = true;
         }
 
