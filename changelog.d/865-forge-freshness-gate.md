@@ -29,6 +29,16 @@
   module), which is the ticket's option (c) — a reader can see what was executed instead of inferring
   it. The opt-in `--rebuild` of option (b) was deliberately not added: the refusal already names the
   remedy, and a gate that silently rebuilds hides the same staleness it exists to reveal.
+- **The new `script-gate` module gates itself**, which the repository default does not do.
+  `jbct.includeTests` is false repo-wide, so every test-only module — including the modules that
+  exist to enforce gates — is examined by nothing, and the goal exits green having looked at zero
+  files while #740's WARNING says so out loud. A gate module exempt from the gate is the same defect
+  this module was built to catch, so `jbct.skip=false` and `jbct.includeTests=true` are set on
+  `script-gate` alone (NOT at the root — that is #938, held behind #974). Turning it on cost a
+  rewrite rather than a flag: 43 lint errors and 6 format issues, almost all `JBCT-EX-01` (`throws`
+  on a JUnit method). The harness now returns `Result<T>` from every IO operation and no test method
+  declares a checked exception, so `ScriptRunner` and `SyntheticRepo` read like production code —
+  under this property they are held to production rules.
 - [verified: `script-gate` — `ForgeFreshnessGateTest` 8/8 (fresh; touched source; touched *resource*;
   absent artifact named and never counted as fresh; no artifact at all → exit 2; missing local
   repository → exit 2; absent forge module → exit 2; and a stale module OUTSIDE the closure that must
@@ -43,8 +53,15 @@
   Live: on this tree (jars 2026-09-08, sources checked out today) the checker reports
   `examined 70 module(s): 51 fresh, 19 stale, 0 with no installed artifact` and `forge.sh smoke`
   exits 1 with Maven never invoked.
-  `mvn jbct:check -pl aether/forge/forge-core` — 2 Java files, 0 format issues, 0 lint errors.
-  Root `mvn clean install` — BUILD SUCCESS, 145 modules, 13,445 tests, 0 failures/errors, 19 skipped]
+  The full matrix was re-run after the JBCT rewrite of the test sources and produced IDENTICAL red
+  sets, so the rewrite did not weaken the instruments.
+  `mvn jbct:check -pl aether/forge/forge-core` — 2 Java files, 0 format issues, 0 lint errors;
+  `-pl script-gate` — **7 Java files**, 0 format issues, 0 lint errors, `JBCT check passed` (the
+  count is the point: it was 0 files before `jbct.includeTests=true`).
+  Root `mvn clean install`, run under the shared suite lock — BUILD SUCCESS, 145 modules, 0 SKIPPED,
+  13,445 tests, 0 failures/errors, 19 skipped = **10 surefire + 9 failsafe**; the 9 are
+  `HetznerCloudIT`, gated on an unset `HETZNER_CLOUD_TESTS` and invisible to a surefire-only count.
+  All 31 tests this branch adds ran; none skipped, and none carries `@Disabled` or an assumption]
 - **What is NOT covered:** the freshness check is a MTIME comparison, so it cannot see a jar whose
   content differs from its source at the same timestamp, and a `git checkout` that rewrites source
   mtimes marks a tree stale even when the bytecode matches — deliberately fail-closed, since the
