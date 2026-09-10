@@ -1075,6 +1075,7 @@ cluster_name = "e2e-test"
 # EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 server_type = "cx32"
 image = "ubuntu-24.04"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "nbg1"
 ```
 

@@ -50,7 +50,7 @@ Step 3/8: Cloud Provider
   3. GCP
   4. Azure
   Select: 1
-  Region [fsn1]: ↵
+  Region (required — a hetzner location; decides where your data resides): fsn1
   Zone (optional): ↵
   Credentials env var [HCLOUD_TOKEN]: ↵
 
@@ -132,10 +132,13 @@ aether cluster init --name staging \
   --db-password-env DB_PASSWORD
 
 # Cloud cluster
+# The region and instance type below are EXAMPLES — the region decides where your data resides,
+# and providers retire instance types; choose both deliberately from your provider's catalogue.
 aether cluster init --name production \
   --target cloud --provider hetzner --region fsn1 \
   --nodes 7 --cores 5 --instance-type cpx32 \
-  --firewall restrictive --firewall-cidr 203.0.113.0/24 \
+  --ssh-public-key ~/.ssh/id_ed25519.pub \
+  --firewall restrictive --admin-cidr 203.0.113.0/24 \
   --lb elected --tls auto \
   --db-host db.internal --db-name production
 ```
@@ -213,8 +216,12 @@ Collected:
 - Provider (Hetzner/AWS/GCP/Azure)
 - Region, zone (optional)
 - Credentials env var (provider-specific default: `HCLOUD_TOKEN`, `AWS_ACCESS_KEY_ID`, etc.)
+- Region — **no default is offered**; the operator must supply one. A defaulted region silently
+  decides which jurisdiction the cluster's data lives in.
 - Instance type — **no default is offered**; the operator must supply one. Providers retire
   instance types, so a baked-in suggestion becomes unprovisionable without any signal here.
+- SSH **public** key path — **required**; written to `[infrastructure.ssh] public_key_file`, which
+  is where `SshKeyResolver` looks. Without it `bootstrap` refuses the config `init` just wrote.
 - Node count (total, then core/worker split)
 
 Provider-specific credential defaults:
@@ -414,6 +421,7 @@ max_unavailable = 1
 [source.primary]
 type = "cloud"
 provider = "hetzner"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 credentials = "${env:HCLOUD_TOKEN}"
 load_balancer = "elected"
@@ -542,8 +550,10 @@ Each step validates input before proceeding:
 | Cluster name | Regex `^[a-z][a-z0-9-]{0,62}$` |
 | Version | Valid semver X.Y.Z |
 | Provider | Must be known enum value |
-| Region | Non-empty for cloud |
-| Credentials env var | Non-empty, valid env var name |
+| Region | Non-empty for cloud; **no default** — must be answered (a defaulted region picks a jurisdiction) |
+| Credentials env var | Non-empty, valid env var name. Keeps its provider default: it names where a secret is READ FROM and fails loud when wrong, unlike region |
+| SSH public key | Required for cloud (injected into provisioned VMs) |
+| Admin CIDR | Required for cloud on STANDARD and RESTRICTIVE — both scope SSH and the management API to it |
 | Node count | ≥ 1 (warn if 1), ≥ 3 for production |
 | Core count | Odd, ≥ 3, ≤ total |
 | Instance type | Non-empty for cloud; **no default** — must be answered (any value shown in this spec is an EXAMPLE) |

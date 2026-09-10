@@ -77,8 +77,9 @@ public class ClusterConfigWizard {
                     state = history.pop();
                     index = previousIndex;
                 }
-                case StepResult.Abort _ -> {
-                    return ClusterInitError.Aborted.INSTANCE.result();
+                case StepResult.Abort abort -> {
+                    return abort.cause()
+                                .result();
                 }
             }
         }
@@ -226,16 +227,26 @@ public class ClusterConfigWizard {
         var provider = prompt.choice("Cloud provider",
                                      Arrays.asList(CloudProviderName.values()),
                                      defaultProvider);
-        var defaultRegion = existing.filter(cloud -> cloud.provider() == provider)
-                                    .map(CloudAnswers::region)
-                                    .or(defaultRegionFor(provider));
+
+        return cloudRegionPrompt(state, provider, existing, prompt);
+    }
+
+    /// A rejected region re-asks the REGION, not the whole cloud step. Re-entering `stepCloud` would
+    /// re-ask the provider as well and, on exhausted input, recurse without bound — a
+    /// `StackOverflowError` for `aether cluster init < /dev/null`. Mirrors [#cloudInstancePrompt],
+    /// which already retried only itself.
+    private static StepResult cloudRegionPrompt(ClusterConfigAnswers state,
+                                                CloudProviderName provider,
+                                                Option<CloudAnswers> existing,
+                                                Prompt prompt) {
+        var defaultRegion = existing.filter(cloud -> cloud.provider() == provider).map(CloudAnswers::region).or("");
 
         return guardedPrompt(prompt,
-                             "Region",
+                             regionQuestion(provider),
                              defaultRegion,
                              regionRaw -> validatedContinue(regionRaw,
-                                                            ClusterConfigWizard::nonEmpty,
-                                                            _ -> stepCloud(state, prompt),
+                                                            raw -> requireRegion(provider, raw),
+                                                            _ -> cloudRegionPrompt(state, provider, existing, prompt),
                                                             region -> cloudInstancePrompt(state,
                                                                                           provider,
                                                                                           region,
@@ -268,6 +279,23 @@ public class ClusterConfigWizard {
                                                                                                 instance,
                                                                                                 existing,
                                                                                                 prompt)));
+    }
+
+    /// The provider is named in the question because no suggestion is offered: a region is a
+    /// jurisdiction choice, and the operator has to make it deliberately. See
+    /// [ClusterInitError.RegionRequired].
+    private static String regionQuestion(CloudProviderName provider) {
+        return "Region (required — a " + provider.value() + " location; decides where your data resides)";
+    }
+
+    /// There is NO region default, on purpose — see [ClusterInitError.RegionRequired]. Unlike the
+    /// instance type, the argument is not catalogue rot: a defaulted region SUCCEEDS and silently
+    /// places the cluster's data in a jurisdiction nobody chose.
+    private static Result<String> requireRegion(CloudProviderName provider, String raw) {
+        return Verify.ensure(raw,
+                             Verify.Is::present,
+                             new ClusterInitError.RegionRequired(provider.value()))
+                     .map(String::trim);
     }
 
     /// The provider is named in the question because no suggestion is offered: the operator has to
@@ -309,11 +337,52 @@ public class ClusterConfigWizard {
                                                                                     instance,
                                                                                     existing,
                                                                                     prompt),
-                                                         envVar -> new StepResult.Continue(stateWithCloud(state,
-                                                                                                          new CloudAnswers(provider,
-                                                                                                                           region,
-                                                                                                                           instance,
-                                                                                                                           envVar)))));
+                                                         envVar -> cloudSshKeyPrompt(state,
+                                                                                     provider,
+                                                                                     region,
+                                                                                     instance,
+                                                                                     envVar,
+                                                                                     existing,
+                                                                                     prompt)));
+    }
+
+    /// The last cloud answer, and the one whose absence used to make the generated config
+    /// un-bootstrappable — see [ClusterInitError.SshPublicKeyRequired]. Required, and NOT inferred
+    /// from `~/.ssh`: which identity may administer the cluster is the operator's decision.
+    private static StepResult cloudSshKeyPrompt(ClusterConfigAnswers state,
+                                                CloudProviderName provider,
+                                                String region,
+                                                String instance,
+                                                String envVar,
+                                                Option<CloudAnswers> existing,
+                                                Prompt prompt) {
+        var defaultKey = existing.map(CloudAnswers::sshPublicKeyPath).or("");
+
+        return guardedPrompt(prompt,
+                             "SSH public key path (required — injected into provisioned VMs, e.g. ~/.ssh/id_ed25519.pub)",
+                             defaultKey,
+                             keyRaw -> validatedContinue(keyRaw,
+                                                         ClusterConfigWizard::requireSshPublicKey,
+                                                         _ -> cloudSshKeyPrompt(state,
+                                                                                provider,
+                                                                                region,
+                                                                                instance,
+                                                                                envVar,
+                                                                                existing,
+                                                                                prompt),
+                                                         keyPath -> new StepResult.Continue(stateWithCloud(state,
+                                                                                                           new CloudAnswers(provider,
+                                                                                                                            region,
+                                                                                                                            instance,
+                                                                                                                            envVar,
+                                                                                                                            keyPath)))));
+    }
+
+    private static Result<String> requireSshPublicKey(String raw) {
+        return Verify.ensure(raw,
+                             Verify.Is::present,
+                             new ClusterInitError.SshPublicKeyRequired())
+                     .map(String::trim);
     }
 
     private static ClusterConfigAnswers stateWithCloud(ClusterConfigAnswers state, CloudAnswers cloud) {
@@ -332,19 +401,15 @@ public class ClusterConfigWizard {
                                         state.secret());
     }
 
-    /// Regions are NOT instance types: a provider's location set is small, stable and effectively
-    /// never retired, so a suggestion here does not carry the rot that removed
-    /// `defaultInstanceFor` (see [ClusterInitError.InstanceTypeRequired]). The asymmetry is
-    /// deliberate — if a location ever IS retired, this default has to go the same way.
-    private static String defaultRegionFor(CloudProviderName provider) {
-        return switch (provider) {
-            case HETZNER -> "hel1";
-            case AWS -> "us-east-1";
-            case GCP -> "us-central1";
-            case AZURE -> "eastus";
-        };
-    }
-
+    /// The credential env var keeps its default while region and instance type lost theirs, and the
+    /// distinction is the FAILURE MODE, not the stability of the value.
+    ///
+    /// These are provider-defined conventional names, not catalogue entries, and the default names
+    /// only WHERE A SECRET IS READ FROM — it decides nothing about the deployed system. A wrong or
+    /// unset var fails loud: the placeholder is left unresolved with a WARN
+    /// (`PlaceholderConfigResolver.warnUnresolved`) and the provider then rejects the credential.
+    /// Region is the opposite — it succeeds and puts the data in the wrong jurisdiction — which is
+    /// why it was removed and this was kept.
     private static String defaultCredentialEnvVarFor(CloudProviderName provider) {
         return switch (provider) {
             case HETZNER -> "HCLOUD_TOKEN";
@@ -747,26 +812,49 @@ public class ClusterConfigWizard {
                                    state.firewallPreset());
 
         return switch (preset) {
-            case STANDARD -> new StepResult.Continue(stateWithFirewall(state,
-                                                                       FirewallPreset.STANDARD,
-                                                                       Option.none(),
-                                                                       Option.none(),
-                                                                       List.of()));
+            case STANDARD -> firewallStandard(state, prompt);
             case RESTRICTIVE -> firewallRestrictive(state, prompt);
             case CUSTOM -> firewallCustom(state, prompt);
             case OPEN -> firewallOpen(state, prompt);
         };
     }
 
-    private static StepResult firewallRestrictive(ClusterConfigAnswers state, Prompt prompt) {
-        var detected = IpDetector.suggestAdminCidr();
-        var defaultAdmin = state.adminCidr().or(detected.isEmpty()
-                                                ? ""
-                                                : detected);
-
+    /// STANDARD opens bootstrap SSH and the management API to the admin network exactly as
+    /// RESTRICTIVE does (`FirewallPresets.addAdminScoped` is called from both), so it must collect
+    /// the CIDR. It previously did not, and STANDARD is the DEFAULT preset — see
+    /// [ClusterInitError.AdminCidrRequired]. No internal CIDR is collected: `standardRules` never
+    /// reads one.
+    private static StepResult firewallStandard(ClusterConfigAnswers state, Prompt prompt) {
         return guardedPrompt(prompt,
-                             "Admin CIDR",
-                             defaultAdmin,
+                             adminCidrQuestion(),
+                             state.adminCidr().or(""),
+                             adminRaw -> validatedContinue(adminRaw,
+                                                           InputValidators::validateCidr,
+                                                           _ -> firewallStandard(state, prompt),
+                                                           admin -> new StepResult.Continue(stateWithFirewall(state,
+                                                                                                              FirewallPreset.STANDARD,
+                                                                                                              Option.some(admin),
+                                                                                                              Option.none(),
+                                                                                                              List.of()))));
+    }
+
+    /// The detected address is shown as INFORMATION, never as an accept-on-Enter default. Baking in
+    /// a detected address is the same silent-decision failure as a defaulted region: behind NAT, on
+    /// a dynamic IP, or when the cluster is administered from elsewhere, it is simply wrong — and
+    /// pressing Enter would make that the answer without anyone choosing it.
+    private static String adminCidrQuestion() {
+        var detected = IpDetector.suggestAdminCidr();
+
+        return detected.isEmpty()
+               ? "Admin CIDR (required — the network allowed to reach SSH and the management API)"
+               : "Admin CIDR (required — the network allowed to reach SSH and the management API; this host appears to be " + detected
+                + ")";
+    }
+
+    private static StepResult firewallRestrictive(ClusterConfigAnswers state, Prompt prompt) {
+        return guardedPrompt(prompt,
+                             adminCidrQuestion(),
+                             state.adminCidr().or(""),
                              adminRaw -> validatedContinue(adminRaw,
                                                            InputValidators::validateCidr,
                                                            _ -> firewallRestrictive(state, prompt),
@@ -923,7 +1011,7 @@ public class ClusterConfigWizard {
         var generate = prompt.confirm("Generate config?", true);
 
         if (!generate) {
-            return new StepResult.Abort();
+            return new StepResult.Abort(ClusterInitError.Aborted.INSTANCE);
         }
 
         return new StepResult.Continue(state);
@@ -1012,7 +1100,12 @@ public class ClusterConfigWizard {
         }
 
         if (ABORT_KEYWORD.equalsIgnoreCase(raw)) {
-            return new StepResult.Abort();
+            return new StepResult.Abort(ClusterInitError.Aborted.INSTANCE);
+        }
+        // Every required prompt re-asks on an empty answer, and at EOF each re-ask reads "" again.
+        // Stopping here is what keeps that from recursing without bound.
+        if (prompt.isInputExhausted()) {
+            return new StepResult.Abort(ClusterInitError.InputExhausted.INSTANCE);
         }
 
         return onValue.apply(raw);
@@ -1052,7 +1145,7 @@ public class ClusterConfigWizard {
 
         record Back() implements StepResult {}
 
-        record Abort() implements StepResult {}
+        record Abort(Cause cause) implements StepResult {}
     }
 
     @FunctionalInterface

@@ -21,6 +21,7 @@ import org.pragmatica.lang.Result;
 public class Prompt {
     private final BufferedReader reader;
     private final PrintStream out;
+    private boolean inputExhausted;
 
     public Prompt() {
         this(System.in, System.out);
@@ -35,12 +36,27 @@ public class Prompt {
         try {
             var line = reader.readLine();
 
-            return line == null
-                   ? ""
-                   : line.trim();
+            if (line == null) {
+                inputExhausted = true;
+
+                return "";
+            }
+
+            return line.trim();
         } catch (IOException _) {
+            inputExhausted = true;
+
             return "";
         }
+    }
+
+    /// True once stdin has run out. `readLine` reports EOF and an empty line identically (both
+    /// ""), which is fine for a prompt that has a default and fatal for one that does not: a
+    /// required prompt re-asks on an empty answer, and at EOF every re-ask reads "" again. Callers
+    /// that retry MUST consult this or they recurse without bound — `aether cluster init` piped
+    /// from a truncated file would die with a `StackOverflowError` instead of a clean message.
+    public boolean isInputExhausted() {
+        return inputExhausted;
     }
 
     public String prompt(String question, String defaultValue) {

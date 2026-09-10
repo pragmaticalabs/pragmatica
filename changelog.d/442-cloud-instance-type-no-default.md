@@ -1,48 +1,81 @@
-### Fixed (2026-09-10 — cloud instance type: no default, and a provisioning failure that explains itself)
+### Fixed (2026-09-10 — `aether cluster init` produced configs that could not bootstrap, and silently swallowed input it ignored)
 
-- **`aether cluster init` shipped `cx21` as Hetzner's instance-type default, and Hetzner has deleted
-  that server type.** Any operator who pressed Enter through the wizard's `Instance type [cx21]`
-  prompt got a config that could not provision in ANY region: three consecutive
-  `aether cluster bootstrap` runs on 2026-09-10, in two different regions, died on
-  `422 (invalid_input): unsupported location for server type` — a message naming neither the
-  offending value nor the alternatives. Owner ruling: cloud providers retire instance types often,
-  so ship no default at all.
-- **`ClusterConfigWizard.defaultInstanceFor` is removed**, along with the AWS (`t3.medium`), GCP
-  (`e2-medium`) and Azure (`Standard_B2s`) defaults in the same switch — identical rot. The
-  interactive prompt now requires an answer and names the provider whose catalogue governs it; an
-  empty or blank answer re-prompts instead of falling back. The `--non-interactive` path already
-  refused a missing `--instance-type` and now raises the same cause as the wizard. Both render
-  `ClusterInitError.InstanceTypeRequired`, which names the flag, the provider, and the reason
-  (types are retired and availability varies by location).
-  [verified: `ClusterConfigWizardTest$InstanceTypeHasNoDefault` — `run_cloudEmptyInstanceType_reprompts_andAcceptsTheNextAnswer`
-  pins the absence positionally (a restored default would consume the next typed line as the
-  credential env var), `run_cloudBlankInstanceType_reprompts_andAcceptsTheNextAnswer`,
-  `message_namesTheFlagAndTheProviderCatalogue`]
-- **The REGION default (`hel1`, `us-east-1`, …) is deliberately kept.** A provider's location set is
-  small and effectively never retired, so it does not carry the same rot; the asymmetry is recorded
-  at `ClusterConfigWizard.defaultRegionFor`.
-- **`EnvironmentError.ProvisionFailed` now carries the requested instance type and location.** It
-  previously rendered only `"Node provisioning failed: " + cause.getMessage()`, so the operator saw
-  the provider's verbatim complaint and nothing about what was asked for — and Hetzner's complaint
-  names neither field. Both are `Option<String>`: a refusal raised before the request is assembled
-  (spot rejection, unresolved cluster name) and a status lookup on an existing instance have no
-  requested spec, and the clause is omitted entirely rather than printed blank or guessed; a
-  partially-known spec says so per field. The four cloud providers thread the pair from
-  `createFrom`; Docker deliberately does not (no instance-type catalogue exists to consult).
-  No valid-alternatives list is rendered: that would need either a network call on the failure path
-  or a catalogue baked into this repository, which is the rot this change removes.
-  [verified: `EnvironmentErrorTest$RequestedSpecRendering` (6 tests, calibrated both ways — a
-  sentinel value is proven to reach the message before the realistic `cx21`/`hel1` case is
-  asserted, and the absent case is pinned to the exact old string so the assertions cannot pass on
-  boilerplate); `HetznerComputeProviderTest#provision_unsupportedLocationForServerType_namesRequestedTypeAndLocation`
-  drives the real 422 through the provider]
-- **Every concrete instance type in live docs and example configs is marked as an example.** An
-  instance type in a doc is a snapshot of someone else's catalogue and rots the same way: 15 files,
-  69 occurrences, 51 caveats added (one per copy unit — config sample line, table row, or prose
-  record). `aether/docs/specs/cluster-management-spec.md` still shows `cx21`/`cx11`, which Hetzner
-  has retired; the values are left in place and the caveat says plainly that they are retired,
-  rather than substituting another snapshot. Historical records (`aether/docs/.internal/progress/`,
-  `CHANGELOG.md`, `aether/docs/specs/future/`) are untouched — correct live specs, annotate history.
-- **`aether/docs/specs/cluster-init-wizard-spec.md` was corrected, not just annotated**: its
-  transcript showed `Instance type [cx22]:` — a default that no longer exists — and its validation
-  table said only "Non-empty for cloud". Both now state that there is no default.
+**The unifying defect:** `cluster init` must emit a config that `cluster bootstrap` can actually
+use, and must never accept a flag or an answer it then discards. It did neither. Five faults, all
+of the same shape — a decision the tool made silently, or an input it dropped without saying so.
+
+- **The instance-type default named a server type Hetzner had DELETED.** The wizard offered
+  `Instance type [cx21]`, so pressing Enter produced a config that could not provision in ANY
+  region: three consecutive bootstrap runs on 2026-09-10, in two regions, died on
+  `422 (invalid_input): unsupported location for server type`. `ClusterConfigWizard.defaultInstanceFor`
+  is removed, along with the AWS (`t3.medium`), GCP (`e2-medium`) and Azure (`Standard_B2s`)
+  defaults in the same switch. Both the wizard and `--non-interactive` now raise
+  `ClusterInitError.InstanceTypeRequired`, naming `--instance-type` and the provider whose
+  catalogue governs the value.
+  [verified: `ClusterConfigWizardTest$InstanceTypeHasNoDefault`]
+
+- **The region default silently chose a jurisdiction.** `defaultRegionFor` is removed for a
+  different and stronger reason than catalogue rot: a defaulted region decides where the operator's
+  data physically lives — a residency, sovereignty, latency and egress question. Note which failure
+  mode is the dangerous one: a wrong instance type **fails loud** at the provider API, while a wrong
+  region **provisions perfectly** and is found by an auditor. "We put your cluster in Helsinki
+  because you did not say" is worse precisely because it succeeds.
+  [verified: `ClusterConfigWizardTest$RegionHasNoDefault`]
+
+- **The credential env var KEEPS its default**, and the distinction is the point. `HCLOUD_TOKEN` /
+  `AWS_ACCESS_KEY_ID` are provider-defined conventional names, not catalogue entries, and the
+  default names only *where a secret is read from* — it decides nothing about the deployed system.
+  A wrong or unset var fails loud: the placeholder is left unresolved with a WARN
+  (`PlaceholderConfigResolver.warnUnresolved`) and the provider then rejects the credential. The
+  reasoning is recorded at `defaultCredentialEnvVarFor` so it is not re-litigated.
+
+- **`--admin-cidr` was honoured for RESTRICTIVE only, so the DEFAULT preset emitted no admin rules
+  at all.** `FirewallPresets.addAdminScoped` opens port 22 (bootstrap SSH) and the management port,
+  and is reached from `standardRules` as well as `restrictiveRules` — the library was correct and
+  the plumbing dropped the value. With `--firewall=standard` neither rule was emitted, which is a
+  config whose bootstrap cannot reach the nodes it provisions: bootstrap deploys over SSH and its
+  Phase 7 gate polls the management API on each node's public address. **Both paths were affected** —
+  the wizard's STANDARD arm never prompted either. Now both collect it, and a cloud target refuses
+  without one (`ClusterInitError.AdminCidrRequired`). It is **not auto-detected**: the batch path
+  used to silently substitute `IpDetector.suggestAdminCidr()`, and a detected address is simply
+  wrong behind NAT, on a dynamic IP, or when the cluster is administered from elsewhere — the same
+  silent-decision failure as a defaulted region.
+  [verified: `ClusterConfigWizardTest$StandardPresetCollectsAdminCidr`, which asserts ports 22 and
+  8080 are present in the rules the chosen preset actually generates]
+
+- **`--ssh-key` was accepted and ignored for cloud targets, and cloud configs carried no SSH key at
+  all.** `init` wrote no SSH reference anywhere, while `SshKeyResolver.resolveOrFailIfCloud` refuses
+  any cloud cluster whose key it cannot resolve — so `init` printed "Next: run bootstrap" for a file
+  bootstrap then rejected. Each half was correct; their composition was not. A cloud target now
+  requires `--ssh-public-key` (wizard: a required prompt) and the generator emits
+  `[infrastructure.ssh] public_key_file`, the exact section and key `SshKeyResolver.collectSshKeyFiles`
+  reads. `--ssh-key` — the PRIVATE key, meaningful only for existing SSH hosts — is now **refused**
+  for a cloud target rather than silently swallowed (`ClusterInitError.FlagNotApplicable`).
+  [verified: `ClusterInitBootstrapPairTest` runs the real resolver against a freshly generated
+  config, with the `AETHER_SSH_KEY` env fallback stubbed out so the generated config is the only
+  possible source of the key; a companion test strips the emitted section and asserts the refusal
+  returns, proving the assertion bites]
+
+- **Regression introduced and fixed in this change: a truncated stdin crashed the wizard.** Making
+  every cloud prompt required means an empty answer re-asks — and at EOF each re-ask reads `""`
+  again, so `aether cluster init < truncated-file` recursed until `StackOverflowError`. `Prompt`
+  now distinguishes EOF from an empty line (`isInputExhausted`) and the wizard stops with
+  `ClusterInitError.InputExhausted`, which points at `--non-interactive` and the required flags.
+  Completing from defaults instead would have been the very failure this change removes.
+  [verified: `ClusterConfigWizardTest$ExhaustedInputAborts`]
+  Two smaller fixes came with it: a rejected region re-asks only the region (it used to re-enter the
+  whole cloud step, re-asking the provider), and `StepResult.Abort` now carries its cause so an
+  exhausted input is not reported as "aborted by operator".
+
+- **Examples in live docs and configs are marked as examples**, because a concrete value in a doc is
+  a snapshot of someone else's catalogue — or someone else's jurisdiction — and rots the same way.
+  Two independently greppable caveats: **51** for instance types (15 files) and **38** for regions
+  (14 files). `aether/docs/specs/cluster-management-spec.md` still shows `cx21`/`cx11`; the values
+  are left in place and the caveat states plainly that Hetzner has retired them, rather than
+  substituting a fresh snapshot that will rot in turn. History is untouched
+  (`aether/docs/.internal/`, `CHANGELOG.md`, `specs/future/`, `specs/archive/`).
+
+- **`aether/docs/specs/cluster-init-wizard-spec.md` was corrected, not merely annotated.** It showed
+  `Region [fsn1]:` and `Instance type [cx22]:` — defaults that no longer exist — and its CLI example
+  invoked `--firewall-cidr`, a flag the command does not declare. Both fixed, and the example now
+  passes `--ssh-public-key`, so it is runnable rather than merely illustrative.

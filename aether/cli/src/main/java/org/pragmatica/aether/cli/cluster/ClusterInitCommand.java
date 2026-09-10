@@ -24,8 +24,8 @@ import org.pragmatica.aether.cli.cluster.init.ClusterConfigGenerator;
 import org.pragmatica.aether.cli.cluster.init.ClusterConfigWizard;
 import org.pragmatica.aether.cli.cluster.init.ClusterInitError;
 import org.pragmatica.aether.cli.cluster.init.FirewallPreset;
+import org.pragmatica.aether.cli.cluster.init.FirewallPresets;
 import org.pragmatica.aether.cli.cluster.init.InputValidators;
-import org.pragmatica.aether.cli.cluster.init.IpDetector;
 import org.pragmatica.aether.cli.cluster.init.TopologyDeriver;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.SourceType;
@@ -84,6 +84,11 @@ class ClusterInitCommand implements Callable<Integer> {
     @Option(names = "--ssh-key", description = "SSH private key path (ssh target only)")
     private String sshKey;
 
+    @Option(names = "--ssh-public-key", description = "SSH public key path (cloud target only) — injected into provisioned VMs "
+                                                    + "and written to [infrastructure.ssh] public_key_file. Required for cloud; "
+                                                    + "bootstrap refuses a cloud cluster without one.")
+    private String sshPublicKey;
+
     @Option(names = "--ssh-port", description = "SSH port (ssh target only)", defaultValue = "22")
     private Integer sshPort;
 
@@ -108,7 +113,9 @@ class ClusterInitCommand implements Callable<Integer> {
     @Option(names = "--firewall", description = "Firewall preset: standard | restrictive | open | custom")
     private String firewall;
 
-    @Option(names = "--admin-cidr", description = "Admin source CIDR (RESTRICTIVE preset)")
+    @Option(names = "--admin-cidr", description = "Admin source CIDR — the network allowed to reach bootstrap SSH (22) and "
+                                                + "the management API. Required for a cloud target on the STANDARD or "
+                                                + "RESTRICTIVE preset; never auto-detected.")
     private String adminCidr;
 
     @Option(names = "--internal-cidr", description = "Internal cluster CIDR (RESTRICTIVE preset)")
@@ -170,11 +177,20 @@ class ClusterInitCommand implements Callable<Integer> {
     private Result<ClusterConfigAnswers> buildCloudAnswers(String clusterName) {
         if (provider == null) return new ClusterInitError.MissingField("--provider").result();
 
-        if (region == null) return new ClusterInitError.MissingField("--region").result();
+        if (!Verify.Is.present(region)) return new ClusterInitError.RegionRequired(provider).result();
 
         if (!Verify.Is.present(instanceType)) return new ClusterInitError.InstanceTypeRequired(provider).result();
 
         if (credentialEnv == null) return new ClusterInitError.MissingField("--credential-env").result();
+
+        if (!Verify.Is.present(sshPublicKey)) return new ClusterInitError.SshPublicKeyRequired().result();
+        // A flag that cannot affect a cloud target is refused, not silently swallowed: --ssh-key is
+        // the PRIVATE key for reaching existing hosts and was accepted-and-ignored here.
+        if (Verify.Is.present(sshKey)) {
+            return new ClusterInitError.FlagNotApplicable("--ssh-key",
+                                                          "cloud",
+                                                          "cloud VMs are provisioned with a PUBLIC key — use --ssh-public-key").result();
+        }
 
         if (nodes == null) return new ClusterInitError.MissingField("--nodes").result();
 
@@ -183,7 +199,8 @@ class ClusterInitCommand implements Callable<Integer> {
                                                                                                                                                                                            org.pragmatica.lang.Option.some(new CloudAnswers(p,
                                                                                                                                                                                                                                             region,
                                                                                                                                                                                                                                             instanceType,
-                                                                                                                                                                                                                                            envOk)),
+                                                                                                                                                                                                                                            envOk,
+                                                                                                                                                                                                                                            sshPublicKey.trim())),
                                                                                                                                                                                            org.pragmatica.lang.Option.none(),
                                                                                                                                                                                            split))));
     }
@@ -272,30 +289,50 @@ class ClusterInitCommand implements Callable<Integer> {
                                                      org.pragmatica.lang.Option.none()));
         }
 
-        var preset = parseFirewallPreset(firewall == null
-                                         ? "standard"
-                                         : firewall);
+        return parseFirewallPreset(firewall == null
+                                   ? "standard"
+                                   : firewall).flatMap(p -> firewallChoiceFor(p, t));
+    }
 
-        return preset.flatMap(p -> {
-            if (p == FirewallPreset.RESTRICTIVE) {
-                var admin = adminCidr != null
-                            ? adminCidr
-                            : IpDetector.suggestAdminCidr();
-                var internal = internalCidr != null
-                               ? internalCidr
-                               : "10.0.0.0/8";
+    /// STANDARD and RESTRICTIVE both route through `FirewallPresets.addAdminScoped`, so both need
+    /// the operator CIDR; OPEN and CUSTOM emit no admin-scoped rules and need none. Only
+    /// RESTRICTIVE used to receive it — see [ClusterInitError.AdminCidrRequired] for what that cost.
+    private Result<FirewallChoice> firewallChoiceFor(FirewallPreset preset, SourceType t) {
+        return switch (preset) {
+            case OPEN, CUSTOM -> Result.success(new FirewallChoice(preset,
+                                                                   org.pragmatica.lang.Option.none(),
+                                                                   org.pragmatica.lang.Option.none()));
+            case STANDARD, RESTRICTIVE -> adminScopedChoice(preset, t);
+        };
+    }
 
-                return InputValidators.validateCidr(admin)
-                                      .flatMap(_ -> InputValidators.validateCidr(internal))
-                                      .map(_ -> new FirewallChoice(p,
-                                                                   org.pragmatica.lang.Option.some(admin),
-                                                                   org.pragmatica.lang.Option.some(internal)));
-            }
+    private Result<FirewallChoice> adminScopedChoice(FirewallPreset preset, SourceType t) {
+        return Verify.Is.present(adminCidr)
+               ? validatedAdminScopedChoice(preset)
+               : missingAdminCidr(preset, t);
+    }
 
-            return Result.success(new FirewallChoice(p,
-                                                     org.pragmatica.lang.Option.none(),
-                                                     org.pragmatica.lang.Option.none()));
-        });
+    /// A CLOUD target refuses, because a provider firewall really is applied and bootstrap really
+    /// does fail against it. Other targets keep generating as before: there is no provider firewall
+    /// to misconfigure, so newly refusing them would break configs that work today.
+    private Result<FirewallChoice> missingAdminCidr(FirewallPreset preset, SourceType t) {
+        return t == SourceType.CLOUD
+               ? new ClusterInitError.AdminCidrRequired(preset.name()).result()
+               : Result.success(new FirewallChoice(preset,
+                                                   org.pragmatica.lang.Option.none(),
+                                                   org.pragmatica.lang.Option.none()));
+    }
+
+    /// The internal CIDR is only consulted by `restrictiveRules`; STANDARD carries it harmlessly so
+    /// both arms validate the same pair rather than branching twice.
+    private Result<FirewallChoice> validatedAdminScopedChoice(FirewallPreset preset) {
+        var internal = Verify.Is.present(internalCidr)
+                       ? internalCidr
+                       : FirewallPresets.DEFAULT_INTERNAL_CIDR;
+
+        return InputValidators.validateCidr(adminCidr).flatMap(admin -> InputValidators.validateCidr(internal).map(ok -> new FirewallChoice(preset,
+                                                                                                                                            org.pragmatica.lang.Option.some(admin),
+                                                                                                                                            org.pragmatica.lang.Option.some(ok))));
     }
 
     private Result<TlsAnswers> buildTls(SourceType t) {

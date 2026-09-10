@@ -38,6 +38,7 @@ max_unavailable = 1
 [source.hetzner-eu]
 type        = "cloud"
 provider    = "hetzner"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zones       = ["fsn1", "nbg1", "hel1"]
 region      = "fsn1"
 credentials = "${env:HCLOUD_TOKEN}"

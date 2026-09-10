@@ -28,6 +28,7 @@ provider = "hetzner"
 # longer aborts the whole cluster bootstrap. Different nodes may land in different zones
 # (cross-zone is desirable). A single `zone = "<loc>"` still works (treated as a 1-element
 # list); when neither `zone` nor `zones` is set the provider falls back to `region`.
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zones = ["fsn1", "nbg1", "hel1"]
 region = "nbg1"           # Default location used when no zone placement hint is set (single-attempt fallback).
 credentials = "${env:HCLOUD_TOKEN}"

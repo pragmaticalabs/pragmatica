@@ -37,6 +37,7 @@ api_token = "${env:HCLOUD_TOKEN}"
 # EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 server_type = "cx22"
 image = "ubuntu-24.04"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 ```
 
@@ -48,6 +49,7 @@ provider = "aws"
 [cloud.credentials]
 access_key_id = "${env:AWS_ACCESS_KEY_ID}"
 secret_access_key = "${env:AWS_SECRET_ACCESS_KEY}"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "us-east-1"
 
 [cloud.compute]
@@ -64,6 +66,7 @@ provider = "gcp"
 
 [cloud.credentials]
 project_id = "my-project"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone = "us-central1-a"
 service_account_email = "aether@my-project.iam.gserviceaccount.com"
 private_key_pem = "${env:GCP_PRIVATE_KEY}"
@@ -87,6 +90,7 @@ client_id = "${env:AZURE_CLIENT_ID}"
 client_secret = "${env:AZURE_CLIENT_SECRET}"
 subscription_id = "${env:AZURE_SUBSCRIPTION_ID}"
 resource_group = "aether-rg"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 location = "eastus"
 
 [cloud.compute]
@@ -223,6 +227,7 @@ api_token = "${env:HCLOUD_TOKEN}"
 # EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 server_type = "cx22"
 image = "ubuntu-24.04"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 user_data = "#!/bin/bash\ncurl -sSL https://example.com/install.sh | bash"
 ssh_key_ids = "12345,67890"
@@ -293,6 +298,7 @@ provider = "aws"
 [cloud.credentials]
 access_key_id = "${env:AWS_ACCESS_KEY_ID}"
 secret_access_key = "${env:AWS_SECRET_ACCESS_KEY}"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "us-east-1"
 
 [cloud.compute]
@@ -367,6 +373,7 @@ provider = "gcp"
 
 [cloud.credentials]
 project_id = "my-project"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone = "us-central1-a"
 service_account_email = "aether@my-project.iam.gserviceaccount.com"
 private_key_pem = "${env:GCP_PRIVATE_KEY}"
@@ -451,6 +458,7 @@ client_id = "${env:AZURE_CLIENT_ID}"
 client_secret = "${env:AZURE_CLIENT_SECRET}"
 subscription_id = "${env:AZURE_SUBSCRIPTION_ID}"
 resource_group = "aether-rg"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 location = "eastus"
 
 [cloud.compute]

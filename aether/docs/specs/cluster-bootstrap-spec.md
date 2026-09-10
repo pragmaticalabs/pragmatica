@@ -353,6 +353,7 @@ In the examples above:
 type = "cloud"
 provider = "hetzner"
 credentials = "${env:HCLOUD_TOKEN}"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 zone = "fsn1-dc14"
 load_balancer = "elected"
@@ -621,6 +622,7 @@ databases.default = "${env:DATABASE_URL}"
 
 [source.hetzner-eu-fsn1-dc14]
 inherit = "hetzner-base"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 zone = "fsn1-dc14"
 load_balancer = "elected"
@@ -628,6 +630,7 @@ load_balancer_ips = ["138.201.1.1"]
 
 [source.hetzner-eu-fsn1-dc15]
 inherit = "hetzner-base"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 zone = "fsn1-dc15"
 load_balancer = "elected"
@@ -1332,6 +1335,7 @@ max = 15
 type = "cloud"
 provider = "hetzner"
 credentials = "${env:HCLOUD_TOKEN}"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 zone = "fsn1-dc14"
 load_balancer = "elected"
@@ -1380,6 +1384,7 @@ min = 3
 type = "cloud"
 provider = "hetzner"
 credentials = "${env:HCLOUD_TOKEN}"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 databases.default = "${env:HETZNER_DB_URL}"
 
@@ -1387,11 +1392,13 @@ databases.default = "${env:HETZNER_DB_URL}"
 type = "cloud"
 provider = "aws"
 credentials = "${env:AWS_ACCESS_KEY}"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "us-east-1"
 databases.default = "${env:AWS_DB_URL}"
 
 [source.hetzner-eu-fsn1-dc14]
 inherit = "hetzner-base"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone = "fsn1-dc14"
 load_balancer = "elected"
 load_balancer_ips = ["138.201.1.1"]
@@ -1404,6 +1411,7 @@ runtime = "default"
 
 [source.hetzner-eu-fsn1-dc15]
 inherit = "hetzner-base"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone = "fsn1-dc15"
 load_balancer = "elected"
 load_balancer_ips = ["138.201.2.1"]
@@ -1416,6 +1424,7 @@ runtime = "default"
 
 [source.aws-us-east-1a]
 inherit = "aws-base"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone = "us-east-1a"
 load_balancer = "external"
 load_balancer_endpoint = "https://us-alb.example.com"
@@ -1541,6 +1550,7 @@ databases.default = "postgresql://user@us-rds.example.com:5432/app"
 
 [source.hetzner-eu-fsn1-dc14]
 inherit = "hetzner-base"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 zone = "fsn1-dc14"
 load_balancer = "elected"
@@ -1565,6 +1575,7 @@ allow_ingress = [
 
 [source.aws-us-east-1a]
 inherit = "aws-base"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "us-east-1"
 zone = "us-east-1a"
 load_balancer = "external"

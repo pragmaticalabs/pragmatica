@@ -181,6 +181,7 @@ TOML configuration for the AWS provider:
 
 ```toml
 [cloud.aws]
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "us-east-1"                          # Required. AWS region.
 # Authentication — prefer IAM role (no config needed on EC2).
 # Fallback: static credentials.

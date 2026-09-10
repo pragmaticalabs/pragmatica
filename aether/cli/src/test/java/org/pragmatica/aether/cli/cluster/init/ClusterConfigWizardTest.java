@@ -10,7 +10,9 @@ import org.pragmatica.aether.cli.Prompt;
 import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.SecretAnswers;
 import org.pragmatica.aether.cli.cluster.init.ClusterConfigAnswers.TlsAnswers;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
+import org.pragmatica.aether.config.cluster.FirewallRule;
 import org.pragmatica.aether.config.cluster.SourceType;
+import org.pragmatica.lang.Option;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -65,12 +67,14 @@ class ClusterConfigWizardTest {
             var input = "prod-eu\n" +       // cluster name
                         "1\n" +             // deployment target: CLOUD
                         "\n" +              // cloud provider: default HETZNER
-                        "\n" +              // region: default hel1
+                        "hel1\n" +          // region: no default — must be typed
                         "cpx32\n" +         // instance type: no default — must be typed
                         "\n" +              // credential env var: default HCLOUD_TOKEN
+                        "~/.ssh/id_ed25519.pub\n" + // SSH public key: required for cloud
                         "3\n" +             // total node count
                         "n\n" +             // configure database? no
                         "\n" +              // firewall preset: default STANDARD
+                        "203.0.113.0/24\n" + // admin CIDR: STANDARD needs one too
                         "\n" +              // TLS configuration: default auto-generate
                         "\n" +              // cluster secret: default auto-generate
                         "\n";               // generate config? default yes
@@ -87,7 +91,9 @@ class ClusterConfigWizardTest {
                           assertThat(cloud.region()).isEqualTo("hel1");
                           assertThat(cloud.instanceType()).isEqualTo("cpx32");
                           assertThat(cloud.credentialEnvVar()).isEqualTo("HCLOUD_TOKEN");
+                          assertThat(cloud.sshPublicKeyPath()).isEqualTo("~/.ssh/id_ed25519.pub");
                       });
+                      assertThat(answers.adminCidr()).isEqualTo(Option.some("203.0.113.0/24"));
                       assertThat(answers.topology().core()).isEqualTo(3);
                       assertThat(answers.firewallPreset()).isEqualTo(FirewallPreset.STANDARD);
                       assertThat(answers.tls()).isInstanceOf(TlsAnswers.AutoGenerate.class);
@@ -114,13 +120,15 @@ class ClusterConfigWizardTest {
             var input = "prod-eu\n" +       // cluster name
                         "1\n" +             // deployment target: CLOUD
                         "\n" +              // cloud provider: default HETZNER
-                        "\n" +              // region: default hel1
+                        "hel1\n" +          // region
                         "\n" +              // instance type: EMPTY -> rejected, re-prompts
                         "cpx32\n" +         // instance type: the actual answer
                         "\n" +              // credential env var: default HCLOUD_TOKEN
+                        "~/.ssh/id_ed25519.pub\n" + // SSH public key
                         "3\n" +             // total node count
                         "n\n" +             // configure database? no
                         "\n" +              // firewall preset: default STANDARD
+                        "203.0.113.0/24\n" + // admin CIDR
                         "\n" +              // TLS configuration: default auto-generate
                         "\n" +              // cluster secret: default auto-generate
                         "\n";               // generate config? default yes
@@ -138,7 +146,7 @@ class ClusterConfigWizardTest {
         /// written into `instance_type` and reach the provider verbatim.
         @Test
         void run_cloudBlankInstanceType_reprompts_andAcceptsTheNextAnswer() {
-            var input = "prod-eu\n1\n\n\n   \ncpx32\n\n3\nn\n\n\n\n\n";
+            var input = "prod-eu\n1\n\nhel1\n   \ncpx32\n\n~/.ssh/id_ed25519.pub\n3\nn\n\n203.0.113.0/24\n\n\n\n";
             var wizard = wizardFor(input);
 
             wizard.run()
@@ -156,6 +164,155 @@ class ClusterConfigWizardTest {
             assertThat(message).contains("--instance-type")
                                .contains("hetzner")
                                .contains("catalogue");
+        }
+    }
+
+    /// The region default was removed for a DIFFERENT reason than the instance type, and the
+    /// distinction is the point: instance types rot and fail loud at the provider API, whereas a
+    /// defaulted region SUCCEEDS and silently puts the cluster's data in a jurisdiction nobody
+    /// chose. `hel1` was the Hetzner default.
+    @Nested
+    class RegionHasNoDefault {
+
+        /// Positional proof, same shape as the instance-type pin: with the empty answer refused,
+        /// the next typed line becomes the region and the instance-type prompt still gets its own
+        /// answer. Restore the default and `hel1` is taken from the fallback while `nbg1` slides
+        /// into the instance-type slot — both assertions flip.
+        @Test
+        void run_cloudEmptyRegion_reprompts_andAcceptsTheNextAnswer() {
+            var input = "prod-eu\n1\n\n" +   // name, CLOUD, default provider
+                        "\n" +                 // region: EMPTY -> rejected, re-prompts
+                        "nbg1\n" +             // region: the actual answer
+                        "cpx32\n\n~/.ssh/id_ed25519.pub\n3\nn\n\n203.0.113.0/24\n\n\n\n";
+            var wizard = wizardFor(input);
+
+            wizard.run()
+                  .onFailure(c -> fail("Expected success but got " + c.message()))
+                  .onSuccess(answers -> answers.cloud().onPresent(cloud -> {
+                      assertThat(cloud.region()).isEqualTo("nbg1");
+                      assertThat(cloud.instanceType()).isEqualTo("cpx32");
+                  }));
+        }
+
+        /// The refusal argues from RESIDENCY, not from catalogue rot — the reasoning an operator
+        /// needs in order to know the answer matters.
+        @Test
+        void message_namesTheFlagAndTheResidencyReason() {
+            var message = new ClusterInitError.RegionRequired("hetzner").message();
+
+            assertThat(message).contains("--region")
+                               .contains("hetzner")
+                               .contains("jurisdiction");
+        }
+    }
+
+    /// `--admin-cidr` / the wizard's admin prompt were honoured for RESTRICTIVE only, so STANDARD —
+    /// the DEFAULT preset — emitted no port-22 and no management-port rule and produced a config
+    /// whose bootstrap cannot reach healthy nodes.
+    @Nested
+    class StandardPresetCollectsAdminCidr {
+
+        @Test
+        void run_cloudStandardPreset_collectsAdminCidr_andEmitsAdminScopedRules() {
+            var input = "prod-eu\n1\n\nhel1\ncpx32\n\n~/.ssh/id_ed25519.pub\n3\nn\n" +
+                        "\n" +                  // firewall preset: default STANDARD
+                        "203.0.113.0/24\n" +    // admin CIDR — STANDARD must ask
+                        "\n\n\n";
+            var wizard = wizardFor(input);
+
+            wizard.run()
+                  .onFailure(c -> fail("Expected success but got " + c.message()))
+                  .onSuccess(ClusterConfigWizardTest::assertStandardPresetCarriesAdminRules);
+        }
+
+        /// An empty answer re-prompts rather than falling through to "no admin rules".
+        @Test
+        void run_cloudStandardEmptyAdminCidr_reprompts() {
+            var input = "prod-eu\n1\n\nhel1\ncpx32\n\n~/.ssh/id_ed25519.pub\n3\nn\n\n" +
+                        "\n" +                  // admin CIDR: EMPTY -> rejected
+                        "198.51.100.0/24\n" +   // the actual answer
+                        "\n\n\n";
+            var wizard = wizardFor(input);
+
+            wizard.run()
+                  .onFailure(c -> fail("Expected success but got " + c.message()))
+                  .onSuccess(a -> assertThat(a.adminCidr()).isEqualTo(Option.some("198.51.100.0/24")));
+        }
+    }
+
+    /// The generated cloud config used to carry no SSH reference at all, while
+    /// `SshKeyResolver.resolveOrFailIfCloud` refuses any cloud cluster without one — `init` printed
+    /// "Next: run bootstrap" and bootstrap rejected the file it had just written.
+    @Nested
+    class CloudCollectsSshPublicKey {
+
+        @Test
+        void run_cloudEmptySshPublicKey_reprompts_andAcceptsTheNextAnswer() {
+            var input = "prod-eu\n1\n\nhel1\ncpx32\n\n" +
+                        "\n" +                          // SSH public key: EMPTY -> rejected
+                        "/tmp/example_key.pub\n" +      // the actual answer
+                        "3\nn\n\n203.0.113.0/24\n\n\n\n";
+            var wizard = wizardFor(input);
+
+            wizard.run()
+                  .onFailure(c -> fail("Expected success but got " + c.message()))
+                  .onSuccess(a -> a.cloud()
+                                   .onPresent(cloud -> assertThat(cloud.sshPublicKeyPath()).isEqualTo("/tmp/example_key.pub")));
+        }
+
+        @Test
+        void message_namesTheFlagAndWhyItIsNotInferred() {
+            var message = new ClusterInitError.SshPublicKeyRequired().message();
+
+            assertThat(message).contains("--ssh-public-key")
+                               .contains("bootstrap");
+        }
+    }
+
+    private static void assertStandardPresetCarriesAdminRules(ClusterConfigAnswers answers) {
+        assertThat(answers.firewallPreset()).isEqualTo(FirewallPreset.STANDARD);
+        assertThat(answers.adminCidr()).isEqualTo(Option.some("203.0.113.0/24"));
+
+        var rules = FirewallPresets.rulesFor(answers.firewallPreset(), answers.adminCidr(), "10.0.0.0/8");
+        var ports = rules.stream().map(FirewallRule::port).toList();
+
+        // 22 = bootstrap SSH, 8080 = management API polled by the Phase 7 readiness gate.
+        assertThat(ports).contains(22, 8080);
+    }
+
+    /// Removing the defaults made every cloud prompt REQUIRED, and a required prompt re-asks on an
+    /// empty answer. At EOF each re-ask reads "" again, so before `Prompt.isInputExhausted` these
+    /// recursed without bound: `aether cluster init < truncated-file` died with a
+    /// `StackOverflowError`. A regression introduced by this change, pinned here.
+    @Nested
+    class ExhaustedInputAborts {
+
+        @Test
+        void run_inputEndsAtRequiredRegion_failsCleanly_insteadOfRecursing() {
+            var wizard = wizardFor("prod-eu\n1\n\n");
+
+            wizard.run()
+                  .onSuccess(a -> fail("Expected failure but got " + a))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(ClusterInitError.InputExhausted.class));
+        }
+
+        @Test
+        void run_inputEndsAtRequiredInstanceType_failsCleanly_insteadOfRecursing() {
+            var wizard = wizardFor("prod-eu\n1\n\nhel1\n");
+
+            wizard.run()
+                  .onSuccess(a -> fail("Expected failure but got " + a))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(ClusterInitError.InputExhausted.class));
+        }
+
+        /// The message must send the operator somewhere useful, not just say "input ended".
+        @Test
+        void message_pointsAtTheNonInteractiveRoute() {
+            var message = ClusterInitError.InputExhausted.INSTANCE.message();
+
+            assertThat(message).contains("--non-interactive")
+                               .contains("--region")
+                               .contains("--ssh-public-key");
         }
     }
 
