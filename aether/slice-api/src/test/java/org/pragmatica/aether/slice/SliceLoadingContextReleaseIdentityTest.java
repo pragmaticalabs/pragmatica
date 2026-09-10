@@ -154,6 +154,24 @@ class SliceLoadingContextReleaseIdentityTest {
                     .isEqualTo(SliceLoadingContext.ReleaseIdAgreement.FOREIGN);
         }
 
+        /// The executable form of `FactoryClassGenerator.computeSliceArtifactCoordinate`'s warning
+        /// that widening the emitted literal to a versioned coordinate "would restore exactly the
+        /// two-independently-computed-strings shape that produced the defect" (v892 NOTE 6).
+        ///
+        /// That comment is prose, and a comment enforces nothing. This is what enforces it: a
+        /// widened coordinate that AGREES is `EXACT` and silent, but one that has DRIFTED — the
+        /// whole hazard of computing the string twice — is `FOREIGN`, so it is refused and reported
+        /// at WARNING rather than silently honoured. It cannot fire for today's generator output,
+        /// which does not parse as an `Artifact` at all.
+        @Test
+        void between_isForeign_whenAWidenedGeneratorCoordinateHasDriftedFromTheDeployedVersion() {
+            var driftedButWellFormed = "org.example:app-order-intake:9.9.9";
+
+            assertThat(SliceLoadingContext.ReleaseIdAgreement.between(driftedButWellFormed, DEPLOYED_ARTIFACT))
+                    .describedAs("same artifact, different version — the drift a versioned generator literal would reintroduce")
+                    .isEqualTo(SliceLoadingContext.ReleaseIdAgreement.FOREIGN);
+        }
+
         /// The discrimination that makes GENERATED_BASE narrow rather than a prefix free-for-all: a
         /// DIFFERENT slice whose coordinate merely starts with the same characters is FOREIGN, not
         /// a base. Without the segment separator, `…-release-probe` would swallow

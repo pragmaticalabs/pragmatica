@@ -169,11 +169,18 @@ class ReleaseIdentityTest {
         awaitUnit(store.loadSlice(artifact()).mapToUnit(), "load");
         awaitUnit(store.activateSlice(artifact()).mapToUnit(), "activate");
 
-        assertThat(factory.closed()).isEmpty();
+        // `closed()` is a FILTERED SUBSET of `provisioned()`, so the final assertion passes
+        // vacuously if nothing was ever provisioned. Both halves are guarded: non-empty before, and
+        // empty-closed before, so a pass below is attributable to the deactivation.
+        assertThat(factory.provisioned()).describedAs("premise: the deployed slice must have provisioned exactly its one resource")
+                                         .hasSize(1);
+        assertThat(factory.closed()).describedAs("control: nothing is closed before the deactivation")
+                                    .isEmpty();
 
         awaitUnit(store.deactivateSlice(artifact()).mapToUnit(), "deactivate");
 
-        assertThat(factory.closed()).containsExactlyElementsOf(factory.provisioned());
+        assertThat(factory.closed()).describedAs("the slice's own resource must be closed by its deactivation")
+                                    .containsExactlyElementsOf(factory.provisioned());
     }
 
     private static void awaitUnit(Promise<Unit> promise, String step) {

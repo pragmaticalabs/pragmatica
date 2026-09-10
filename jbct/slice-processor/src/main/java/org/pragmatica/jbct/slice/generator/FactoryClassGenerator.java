@@ -1765,6 +1765,12 @@ public class FactoryClassGenerator {
     /// only where that wrapper is absent — a context with no slice id, which provisions
     /// unattributed and releases nothing either way. Widening this to a versioned coordinate would
     /// restore exactly the two-independently-computed-strings shape that produced the defect.
+    ///
+    /// That warning is ENFORCED, not merely stated — a comment carries none of the verification of
+    /// the code it sits in. A widened literal that agrees with the deployed artifact classifies as
+    /// `EXACT` and is silent; one that has DRIFTED classifies as `FOREIGN` and is refused and logged
+    /// at WARNING. Pinned by `SliceLoadingContextReleaseIdentityTest$AgreementClassification
+    /// .between_isForeign_whenAWidenedGeneratorCoordinateHasDriftedFromTheDeployedVersion`.
     private String computeSliceArtifactCoordinate(String sliceName) {
         var options = processingEnv.getOptions();
         var groupId = options.getOrDefault("slice.groupId", "unknown");

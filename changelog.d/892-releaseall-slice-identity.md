@@ -8,19 +8,28 @@
   1. **The node's `ResourceProviderFacade` never overrode `releaseAll`.**
      `AetherNode.createResourceProviderFacade` built it as an anonymous class implementing the two
      `provide` overloads only, so the release fell through to the interface's
-     `Promise.unitPromise()` default and **no provider was ever reached**. Enumerated: 10
-     `ResourceProviderFacade` implementations in main sources; this was the only production one
-     affected (four in `SliceLoadingContext` override it, `SliceScopedResourceProvider` overrides it
-     and forwards *to this same facade*, two refuse provisioning outright and so have nothing to
-     release, one is the test kit's in-memory map).
+     `Promise.unitPromise()` default and **no provider was ever reached**. Enumerated at the pre-fix
+     commit: **10 `ResourceProviderFacade` implementations in main sources — 4 override
+     `releaseAll`, 6 did not.** Overriding: `SliceLoadingContext`'s `CodecAware`, `CompositeAware`
+     and `SliceAware` wrappers (all forwarding), plus `SliceScopedResourceProvider` (which forwards
+     to this same node facade). Not overriding: **four** that refuse provisioning outright and so
+     have nothing to release — `SliceLoadingContext.NoOpResourceProvider`, `SliceStore`'s and
+     `DependencyResolver`'s refusing providers, and `AetherNode.noOpResourceProviderFacade` — the
+     test kit's caller-owned `MapResourceProvider`, and `AetherNode`'s partial facade itself. So
+     `AetherNode:6104` was the only production implementation that both provisioned real resources
+     and silently no-opped their release.
   2. **The release identity could never match a provisioning scope even when it arrived.**
      Provisioning is scoped by `SliceLoadingContext.SliceAwareResourceProvider` to the deployed
      `Artifact` — `groupId:artifactId:version`, three segments, set by `DependencyResolver` from
      `artifact.asString()`. Release was driven by a slice's generated `stop()`, which passes a
      compile-time literal from `FactoryClassGenerator.computeSliceArtifactCoordinate`:
      `groupId:artifactId-kebab(SliceName)` — two segments, no version. `SpiResourceProvider`
-     compares scope strings for equality. **Measured on the tree at the time of the fix: 34
-     generated `stop()` bodies, every one two-segment, 0 able to match.**
+     compares scope strings for equality, so **no emitted literal can ever equal any scope — for
+     any slice, in any build.** That is structural, not a census: the generator returns
+     `groupId + ":" + artifactId + "-" + kebab` (exactly one colon, unconditionally) and
+     `Artifact.asString()` returns `groupId + ":" + artifactId + ":" + version` (exactly two), and
+     Maven coordinates cannot contain a colon. A count of emitted `stop()` bodies is a function of
+     which modules happen to be built when it is taken, so it is deliberately not quoted here.
 
 - **Both fixed by removing the second source of truth rather than by reconciling two strings.**
   - `SliceAwareResourceProvider.releaseAll` now releases under the id it *provisions* under,
@@ -38,7 +47,10 @@
     accident — each states why it has nothing to close. A build error replaces a silent runtime
     defect. Blast radius, fully enumerated: 16 files, all inside `aether/`, **zero generated
     sources and nothing outside the repo** — generated slice factories *consume* the facade as a
-    record component and never implement it.
+    record component and never implement it. The enumeration is exhaustive by construction: the
+    interface declares two abstract `provide` overloads, so it is not a functional interface and no
+    lambda implementation is possible; `implements`, `new …()` and `extends` therefore find every
+    one (the last returns zero).
   - New `ResourceProvider.facade()` returns a complete forwarding adapter; `AetherNode` uses it
     instead of a hand-rolled partial one.
   - **The caller's id is substituted but NOT discarded.** A parameter that looks meaningful and is
@@ -90,12 +102,19 @@
   verified by deleting an override and observing the compile error, which is the only probe a
   build-time guard admits]
 
+- **The `AetherNode` call site IS pinned** [verified:
+  `AetherNodeResourceFacadeSeamTest#nodeFacade_releaseAll_forwardsToTheProvider_andClosesTheProvisionedResource`
+  (`aether/node`)]. An earlier draft of this entry claimed it could not be, because
+  `createResourceProviderFacade` is private with "no seam". That was wrong: the method is a **pure
+  function of `AetherNodeConfig`** — it opens no port, forms no cluster and boots no node — so
+  reflection reaches it with no production change, exactly as `ScheduledTaskRoutesExecutionsByNodeTest`
+  already does elsewhere in the module. The test provisions through the node's own facade and asserts
+  the **resource closed**, with a control that it is not closed beforehand and an arming assertion
+  that the populated config branch was taken. It reddens when `AetherNode` is reverted to a
+  hand-rolled partial facade.
 - **What is NOT verified.** This is the node's slice-lifecycle path in-process — no cluster, no
-  ports, no consensus. The one-line `AetherNode` call site is **not independently pinned by a test**:
-  `createResourceProviderFacade` is a private static method with no seam, so its correctness rests
-  on `ResourceProvider.facade()` being complete (which is pinned) plus review of the call site. A
-  live-cluster measurement of a real resource's release — the Netty `EventLoopGroup` thread and FD
-  counts — is #895, which was deliberately held pending this fix.
+  ports, no consensus. A live-cluster measurement of a real resource's release — the Netty
+  `EventLoopGroup` thread and FD counts — is #895, which was deliberately held pending this fix.
 
   [mechanism: release identity is read from the deployed `Artifact` the loading context already
   provisions under, so the two sides cannot be computed independently — all production hunks
