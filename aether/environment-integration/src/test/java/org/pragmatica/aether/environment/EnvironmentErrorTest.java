@@ -15,8 +15,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The measured failure this exists for: three `aether cluster bootstrap` runs against Hetzner on
 /// 2026-09-10 surfaced nothing but the provider's own body, `422 (invalid_input): unsupported
 /// location for server type` — which names neither the requested server type nor the location, so
-/// the operator could not tell which of the two to change (and in fact the type had been retired,
-/// so no location would have worked).
+/// the operator could not tell which of the two to change. That incident is still undiagnosed, and
+/// this message is the reason it can be diagnosed next time: the CLI jar binds slf4j to NOP, so the
+/// log line that already assembles the sent `serverType` reaches nobody.
 class EnvironmentErrorTest {
 
     /// A value no provider catalogue contains, so a test asserting it can only pass if the field is
@@ -28,7 +29,7 @@ class EnvironmentErrorTest {
     class RequestedSpecRendering {
 
         /// Calibration, run BEFORE the realistic case below: prove the requested-spec fields reach
-        /// the message at all. If this fails, an assertion on `cx21`/`hel1` proves nothing.
+        /// the message at all. If this fails, an assertion on `cpx11`/`hel1` proves nothing.
         @Test
         void message_carriesSentinelSpec_whenRequestedSpecIsKnown() {
             var message = EnvironmentError.provisionFailed(SENTINEL_TYPE,
@@ -43,15 +44,18 @@ class EnvironmentErrorTest {
         /// The realistic shape, asserted only because the sentinel case above establishes the
         /// fields are rendered: the operator must see WHAT WAS ASKED FOR alongside the provider's
         /// verbatim refusal, plus a pointer at the provider's live catalogue.
+        ///
+        /// `cpx11`/`hel1` are the values the 2026-09-10 runs actually requested — the pair whose
+        /// absence from the output left that incident undiagnosed.
         @Test
         void message_carriesRequestedTypeAndLocation_forUnsupportedLocationForServerType() {
-            var message = EnvironmentError.provisionFailed("cx21",
+            var message = EnvironmentError.provisionFailed("cpx11",
                                                            "hel1",
                                                            new RuntimeException("422 (invalid_input): unsupported location for server type"))
                                           .message();
 
             assertThat(message).contains("422 (invalid_input): unsupported location for server type")
-                               .contains("cx21")
+                               .contains("cpx11")
                                .contains("hel1")
                                .contains("current catalogue");
         }

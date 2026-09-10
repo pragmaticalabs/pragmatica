@@ -19,9 +19,13 @@ public sealed interface EnvironmentError extends Cause {
     /// routinely does not. Measured against Hetzner on 2026-09-10: three bootstrap runs in two
     /// regions died with the verbatim body `422 (invalid_input): unsupported location for server
     /// type` — which names neither the server type nor the location, so an operator cannot tell
-    /// which of the two is wrong. In that incident BOTH readings were misleading anyway: the
-    /// requested type (`cx21`) had been RETIRED from the catalogue, so no location would have
-    /// accepted it.
+    /// which of the two is wrong. That incident is STILL UNDIAGNOSED for exactly this reason.
+    ///
+    /// This message is the ONLY channel that reaches the operator, which is why the data belongs
+    /// here rather than in a log line. The shipped CLI jar binds slf4j to `NOPServiceProvider`, so
+    /// every `log.*` call it makes is discarded — including `HetznerComputeProvider.logCreateRequest`,
+    /// which already assembles the exact `serverType` that was sent and throws it away. Do not
+    /// assume a log statement covers anything on this path.
     ///
     /// Both fields are [Option] because not every provisioning failure has a request behind it —
     /// a refusal raised before the request is assembled (spot rejection, unresolved cluster name)

@@ -306,7 +306,7 @@ public class ClusterConfigWizard {
     }
 
     /// There is NO instance-type default, on purpose — see
-    /// [ClusterInitError.InstanceTypeRequired] for the incident that removed it. An empty answer
+    /// [ClusterInitError.InstanceTypeRequired] for why it was removed. An empty answer
     /// re-prompts with a message naming `--instance-type` and the provider whose catalogue governs
     /// the value, so the interactive and `--non-interactive` paths refuse for the same stated reason.
     private static Result<String> requireInstanceType(CloudProviderName provider, String raw) {

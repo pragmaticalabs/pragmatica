@@ -20,7 +20,11 @@ source "${SCRIPT_DIR}/lib/cloud-driver.sh"
 
 CLUSTER_NAME="cloud-test"
 LABEL="aether-cluster=${CLUSTER_NAME}"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 LOCATION="fsn1"
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
+# This script provisions REAL, billable servers, so a stale value here costs money rather than
+# failing at parse time.
 SERVER_TYPE="cx22"
 IMAGE="ubuntu-24.04"
 NETWORK_NAME="${CLUSTER_NAME}-net"

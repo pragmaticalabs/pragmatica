@@ -102,11 +102,12 @@ class ClusterConfigWizardTest {
         }
     }
 
-    /// The wizard shipped `cx21` as Hetzner's instance-type default until 2026-09-10. Hetzner had
-    /// DELETED that server type, so every operator who pressed Enter through this prompt got a
-    /// config that could not provision in any region — three bootstrap runs died on
-    /// `422 (invalid_input): unsupported location for server type`. Providers retire instance types,
-    /// so the wizard now ships no default and requires an answer.
+    /// The wizard shipped `cx21` as Hetzner's instance-type default until 2026-09-10, and Hetzner
+    /// has DELETED that server type — so pressing Enter through this prompt produced a config that
+    /// could not provision in any region. The defect is latent rather than observed: the 422
+    /// failures of that day were a separate, still-undiagnosed incident whose config carried
+    /// `cpx11`, passed explicitly. Providers retire instance types, so the wizard ships no default
+    /// and requires an answer.
     @Nested
     class InstanceTypeHasNoDefault {
 
