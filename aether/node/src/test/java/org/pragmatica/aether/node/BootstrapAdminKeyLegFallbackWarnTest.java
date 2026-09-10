@@ -43,11 +43,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// a plausible value in place of a step that did not happen is a shape this project has shipped
 /// before, and it passed every internal test when it did.
 ///
-/// The fallback is unreachable through `Main` (a secretless node does not boot —
+/// The fallback is unreachable via the BOOT PATH — a secretless node does not boot, and
 /// `MainClusterSecretStampTest#resolveTls_noClusterSecretAnywhere_failsSoTheNodeCannotBoot` verifies
-/// that gate rather than asserting it) and `EmberCluster` always supplies its own secret. It stays
-/// reachable for anything constructing `AetherNodeConfig` directly, which is why it warns rather than
-/// being deleted.
+/// that gate rather than asserting it. It is NOT unreachable in general: `AetherNodeConfig.clusterSecret`
+/// is stamped separately, so a SKIPPED STAMP leaves the `Option` empty on a node holding a perfectly
+/// good secret — and that stamp's call site is the one hunk no in-JVM test can defend. This WARN is
+/// therefore the compensating control for that gap, which is what makes these assertions load-bearing
+/// rather than cosmetic.
 ///
 /// **This test is itself an instrument, so it carries a positive control.** The negative assertion
 /// (`no WARN when a secret IS present`) is satisfied by an empty capture list, so a renamed logger, a

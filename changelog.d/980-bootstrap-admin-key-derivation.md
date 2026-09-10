@@ -38,13 +38,18 @@
   cluster — *precisely the defect this ticket fixes*. It now logs at **WARN**, naming what did not
   happen, that the bootstrap poll will fail authentication with 401, and which setting to fix. It was
   previously INFO and worded as reassurance.
-  **Its production unreachability is verified, not asserted:** a node with no cluster secret does not
-  boot, because `Main.resolveTls` fails and `run()` `.expect`s it
+  **Reachability, stated precisely — two routes, only one closed.** Via the BOOT PATH it is
+  unreachable: a node with no cluster secret does not boot, because `Main.run` `.expect`s `resolveTls`,
+  which fails with `MISSING_CLUSTER_SECRET`
   [verified: `MainClusterSecretStampTest#resolveTls_noClusterSecretAnywhere_failsSoTheNodeCannotBoot`,
-  with `#resolveTls_clusterSecretConfigured_succeeds` as the positive control], and `EmberCluster`
-  always supplies its own — so an in-process node derives exactly as a production node does. The
-  branch survives for anything constructing `AetherNodeConfig` directly, which is why it warns rather
-  than being deleted.
+  with `#resolveTls_clusterSecretConfigured_succeeds` as the positive control]. But via a **SKIPPED
+  STAMP it remains reachable on a node holding a perfectly good secret** —
+  `AetherNodeConfig.clusterSecret` is stamped separately, and that stamp's call site in `Main.run` is
+  the one hunk no in-JVM test can defend (deleting it leaves the suite green). Mutating the equivalent
+  `AetherNode` and `EmberCluster` hunks degrades into exactly this branch: the node minted a random
+  key. **The WARN is therefore the compensating control for that gap** — where a test would otherwise
+  stand, the runtime diagnostic stands instead. `EmberCluster` always supplies its own secret, so an
+  in-process node derives exactly as a production node does.
   [verified: `BootstrapAdminKeyLegFallbackWarnTest` — 3 tests, with a sentinel positive control,
   because a `noneMatch` assertion over log capture is satisfied by an empty list and would otherwise
   examine nothing]

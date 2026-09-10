@@ -156,11 +156,24 @@ public sealed interface BootstrapAdminKeyLeg {
     /// A silent substitution that masks a refusal is a shape this project has shipped before, so the
     /// message names what did not happen, what will break because of it, and how to fix it.
     ///
-    /// It is unreachable through `Main`: a node with no cluster secret does not boot
-    /// (`Main.resolveTls` fails and `run()` `.expect`s it, pinned by
-    /// `MainClusterSecretStampTest#resolveTls_noClusterSecretAnywhere_failsSoTheNodeCannotBoot`), and
-    /// `EmberCluster` always supplies its own. It remains reachable for anything constructing
-    /// `AetherNodeConfig` directly without a secret, which is why it warns rather than being deleted.
+    /// **Reachability, stated precisely — "unreachable in production" is too strong.** There are two
+    /// routes to an empty secret and only the first is closed:
+    ///
+    ///   - **Via the boot path: unreachable.** A node with no cluster secret does not boot — `Main.run`
+    ///     `.expect`s `resolveTls`, which fails with `MISSING_CLUSTER_SECRET`. Verified rather than
+    ///     asserted by `MainClusterSecretStampTest#resolveTls_noClusterSecretAnywhere_failsSoTheNodeCannotBoot`,
+    ///     with `#resolveTls_clusterSecretConfigured_succeeds` as its control.
+    ///   - **Via a SKIPPED STAMP: reachable, on a node holding a perfectly good secret.**
+    ///     `AetherNodeConfig.clusterSecret` is stamped separately in `Main.run`
+    ///     ([`Main#withResolvedClusterSecret`]); if that stamp is skipped the `Option` arrives empty
+    ///     even though the secret was present and valid the whole time. That call site is the one hunk
+    ///     no in-JVM test can defend — deleting it leaves the suite green — and mutating the
+    ///     equivalent `AetherNode` and `EmberCluster` hunks degrades into exactly this branch, with
+    ///     the probe reporting that the node minted a random key.
+    ///
+    /// So this WARN is not cosmetic: it is the **compensating control** for the one gap no test
+    /// covers. Where a test would otherwise stand, this diagnostic stands instead — which is why it is
+    /// WARN and not INFO, and why the branch warns rather than being deleted.
     private static String randomKey() {
         LOG.warn("Bootstrap admin key: NO CLUSTER SECRET — the key was NOT derived and is RANDOM. "
                 + "`aether cluster bootstrap` derives its credential from the cluster secret, so it "
