@@ -40,27 +40,29 @@ final class DefaultContentStore implements ContentStore {
     }
 
     private Promise<String> putDirect(String name, byte[] content) {
-        return frameAndStore(content).flatMap(blockId -> createRefAndReturnHex(name, blockId));
+        return frameCompress(content).async()
+                            .flatMap(framed -> storage.putRef(name, framed))
+                            .map(BlockId::hexString);
     }
 
     private Promise<String> putChunked(String name, byte[] content) {
         var chunks = splitIntoChunks(content);
 
-        return storeAllChunks(chunks, 0, new ArrayList<>()).flatMap(chunkIds -> storeManifestAndCreateRef(name,
-                                                                                                          content.length,
-                                                                                                          chunkIds));
+        return storeAllChunks(chunks, 0, new ArrayList<>()).flatMap(chunkIds -> storeManifestUnderName(name,
+                                                                                                       content.length,
+                                                                                                       chunkIds));
     }
 
-    private Promise<String> createRefAndReturnHex(String name, BlockId blockId) {
-        return storage.createRef(name, blockId)
-                      .map(_ -> blockId.hexString());
-    }
-
-    private Promise<String> storeManifestAndCreateRef(String name, long totalSize, List<String> chunkIds) {
+    /// One write-and-ref call, never [StorageInstance#put] followed by [StorageInstance#createRef]:
+    /// the pair credits the block twice for one name, so it could never reach refCount 0 and the
+    /// garbage collector could never collect it (#812). Chunk blocks below keep using plain `put` --
+    /// they carry no name, and `put`'s own credit is the only thing holding them against GC.
+    private Promise<String> storeManifestUnderName(String name, long totalSize, List<String> chunkIds) {
         var manifest = ContentManifest.contentManifest(name, totalSize, chunkIds);
 
-        return storage.put(manifest.toBytes())
-                      .flatMap(manifestId -> createRefAndReturnHex(name, manifestId));
+        return storage.putRef(name,
+                              manifest.toBytes())
+                      .map(BlockId::hexString);
     }
 
     private Promise<BlockId> frameAndStore(byte[] content) {

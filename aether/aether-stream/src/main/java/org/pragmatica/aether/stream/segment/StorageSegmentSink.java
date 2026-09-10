@@ -51,6 +51,10 @@ public final class StorageSegmentSink implements SegmentSink {
         return new StorageSegmentSink(storage, index, compressionCodec, compressionOrdinal, encryptor);
     }
 
+    /// One write-and-ref call, never [StorageInstance#put] followed by
+    /// [StorageInstance#createRef]: the pair credits the sealed block twice for the one segment ref,
+    /// so it could never reach refCount 0 and the garbage collector could never collect a segment
+    /// whose ref had been dropped (#812).
     @Override
     public Promise<Unit> seal(SealedSegment segment) {
         var raw = segment.serializedEvents();
@@ -58,13 +62,13 @@ public final class StorageSegmentSink implements SegmentSink {
         var compressed = compressionCodec.compress(raw).or(raw);
         var processedData = applyEncryption(compressed);
 
-        return storage.put(processedData.data())
-                      .flatMap(blockId -> storage.createRef(refName(segment),
-                                                            blockId))
+        return storage.putRef(refName(segment),
+                              processedData.data())
                       .onSuccess(_ -> updateIndex(segment,
                                                   originalSize,
                                                   processedData.encrypted()))
-                      .onSuccess(_ -> logSealed(segment));
+                      .onSuccess(_ -> logSealed(segment))
+                      .mapToUnit();
     }
 
     private ProcessedData applyEncryption(byte[] data) {
