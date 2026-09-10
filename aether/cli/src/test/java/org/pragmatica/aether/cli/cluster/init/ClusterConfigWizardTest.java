@@ -306,6 +306,41 @@ class ClusterConfigWizardTest {
                   .onFailure(cause -> assertThat(cause).isInstanceOf(ClusterInitError.InputExhausted.class));
         }
 
+        /// A docker target reaches the review step without passing a single REQUIRED prompt, so
+        /// nothing before it can notice exhausted input and `confirm` answers its own default —
+        /// which SILENTLY GENERATED a full config and exited SUCCESS, contradicting the contract
+        /// this class exists to enforce. The gap the first EOF fix left.
+        @Test
+        void run_dockerInputEndsBeforeReview_failsCleanly_insteadOfGeneratingFromDefaults() {
+            var wizard = wizardFor("c\n4\n3\n");
+
+            wizard.run()
+                  .onSuccess(a -> fail("Expected failure but generated a config from defaults: " + a))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(ClusterInitError.InputExhausted.class));
+        }
+
+        /// The same shape for forge, the other target that skips every required prompt.
+        @Test
+        void run_forgeInputEndsBeforeReview_failsCleanly() {
+            var wizard = wizardFor("c\n4\n");
+
+            wizard.run()
+                  .onSuccess(a -> fail("Expected failure but generated a config from defaults: " + a))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(ClusterInitError.InputExhausted.class));
+        }
+
+        /// Calibration for the two above: a docker run whose input is COMPLETE must still succeed.
+        /// Without this, the EOF guard could be refusing every docker run and the tests above would
+        /// not notice.
+        @Test
+        void run_dockerCompleteInput_stillSucceeds() {
+            var wizard = wizardFor("my-cluster\n\n3\nn\n\n");
+
+            wizard.run()
+                  .onFailure(c -> fail("Expected success but got " + c.message()))
+                  .onSuccess(a -> assertThat(a.clusterName()).isEqualTo("my-cluster"));
+        }
+
         /// The message must send the operator somewhere useful, not just say "input ended".
         @Test
         void message_pointsAtTheNonInteractiveRoute() {

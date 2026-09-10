@@ -202,8 +202,12 @@ class ClusterInitCommandNonInteractiveTest {
         /// a complete cloud invocation writes a file carrying BOTH the admin-scoped firewall rules
         /// (ports 22 and 8080, absent before this change on the STANDARD default) and the SSH
         /// section `SshKeyResolver` reads.
+        ///
+        /// Named for what it asserts — TOML CONTENT. It does not run the resolver, so it cannot
+        /// claim the config is bootstrappable; `ClusterInitBootstrapPairTest` does that and is where
+        /// that claim belongs.
         @Test
-        void cloudInit_withEveryRequiredFlag_writesABootstrappableConfig(@TempDir Path tmp) throws Exception {
+        void cloudInit_withEveryRequiredFlag_writesTheAdminRulesAndSshSection(@TempDir Path tmp) throws Exception {
             var output = tmp.resolve("cluster-config.toml");
             var exit = new CommandLine(new ClusterCommand()).execute(cloudArgs(output));
 

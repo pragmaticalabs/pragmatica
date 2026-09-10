@@ -313,8 +313,16 @@ class ClusterInitCommand implements Callable<Integer> {
     }
 
     /// A CLOUD target refuses, because a provider firewall really is applied and bootstrap really
-    /// does fail against it. Other targets keep generating as before: there is no provider firewall
-    /// to misconfigure, so newly refusing them would break configs that work today.
+    /// does fail against it. Other targets are still PERMITTED to omit the CIDR — there is no
+    /// provider firewall to misconfigure — so they keep generating rather than newly failing.
+    ///
+    /// Their OUTPUT does change on one preset, and an earlier version of this comment wrongly denied
+    /// it: a non-cloud `--firewall restrictive` with no `--admin-cidr` used to fall back to
+    /// `IpDetector.suggestAdminCidr()` and emit admin-scoped rules from the detected address; it now
+    /// emits none. The direction is FAIL-CLOSED — `FirewallPresets.addAdminScoped` omits those rules
+    /// rather than widening them to `0.0.0.0/0` — and removing the auto-detection is precisely the
+    /// point of [ClusterInitError.AdminCidrRequired], so the change is intended. Only the denial was
+    /// wrong.
     private Result<FirewallChoice> missingAdminCidr(FirewallPreset preset, SourceType t) {
         return t == SourceType.CLOUD
                ? new ClusterInitError.AdminCidrRequired(preset.name()).result()

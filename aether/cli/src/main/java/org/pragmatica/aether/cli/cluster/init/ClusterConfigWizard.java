@@ -1010,6 +1010,14 @@ public class ClusterConfigWizard {
         printSummary(state);
         var generate = prompt.confirm("Generate config?", true);
 
+        // A docker or forge target passes no REQUIRED prompt, so nothing before this point can
+        // notice exhausted input — and `confirm` answers its own default at EOF. Without this check
+        // `aether cluster init < truncated-file` wrote a config assembled from defaults and exited
+        // SUCCESS, contradicting InputExhausted's own contract.
+        if (prompt.isInputExhausted()) {
+            return new StepResult.Abort(ClusterInitError.InputExhausted.INSTANCE);
+        }
+
         if (!generate) {
             return new StepResult.Abort(ClusterInitError.Aborted.INSTANCE);
         }

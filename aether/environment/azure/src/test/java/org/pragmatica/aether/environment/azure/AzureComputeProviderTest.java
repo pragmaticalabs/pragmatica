@@ -68,6 +68,31 @@ class AzureComputeProviderTest {
                     .onSuccess(AzureComputeProviderTest::assertProvisionedInstanceInfo);
         }
 
+        /// SHOULD-FIX from adversarial review: the requested-spec threading added by this change was
+        /// pinned for Hetzner and for NOBODY ELSE — reverting it here left 253 tests green. A
+        /// mutation that leaves everything green means unpinned, not independent.
+        ///
+        /// Sentinel values no catalogue contains, so this can only pass if the request's own fields
+        /// are threaded onto the failure rather than matched incidentally.
+        @Test
+        void createFrom_failure_messageNamesRequestedInstanceTypeAndZone() {
+            testClient.createVmResponse =
+                new AzureError.ApiError(400, "SkuNotAvailable", "Sku not available").promise();
+            var request = new ProvisionRequest(InstanceType.ON_DEMAND,
+                                               "zz-sentinel-size-99",
+                                               "Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest",
+                                               "zz-sentinel-zone-99",
+                                               Option.empty(),
+                                               MarketOptions.ON_DEMAND,
+                                               ProvisionContext.forBootstrap(clusterName("c").unwrap(), "core", sourceNameOrDefault("s"), "n0"));
+
+            provider.createFrom(request)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(cause -> assertThat(cause.message()).contains("zz-sentinel-size-99")
+                                                                   .contains("zz-sentinel-zone-99"));
+        }
+
         @Test
         void provision_failure_mapsToEnvironmentError() {
             testClient.createVmResponse = new AzureError.ApiError(500, "InternalError", "Internal error").promise();
