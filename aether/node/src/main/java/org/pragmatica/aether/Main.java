@@ -133,6 +133,7 @@ public record Main(String[] args) {
                                      .withStorageEncryption(resolveStorageEncryption(aetherConfig))
                                      .withAlerts(resolveAlertConfig(aetherConfig));
 
+        config = withResolvedClusterSecret(config, aetherConfig);
         enforceWalDurabilityBootable(config);
         // Review catch (#634 batch): assembly failures — the routed-type codec guard included — get
         // the same FATAL + exit shape as the other boot gates, not an uncaught-exception stack trace.
@@ -334,10 +335,27 @@ public record Main(String[] args) {
         System.exit(1);
     }
 
-    private Result<TlsBundle> resolveTls(NodeId nodeId, List<NodeInfo> peers, Option<AetherConfig> aetherConfig) {
+    /// Package-private (not private) so the boot gate can be VERIFIED rather than asserted: `run()`
+    /// calls this and `.expect`s the result, so a node with no cluster secret aborts here — which is
+    /// what makes `BootstrapAdminKeyLeg`'s random-key fallback unreachable in production. Pinned by
+    /// `MainClusterSecretStampTest#resolveTls_noClusterSecretAnywhere_failsSoTheNodeCannotBoot`.
+    Result<TlsBundle> resolveTls(NodeId nodeId, List<NodeInfo> peers, Option<AetherConfig> aetherConfig) {
+        return resolveTls(nodeId, peers, aetherConfig, environmentClusterSecret());
+    }
+
+    /// Same, with the `AETHER_CLUSTER_SECRET` source injected instead of read from the ambient
+    /// environment. Verification finding SF4: the boot-gate test carries the whole "the fallback is
+    /// unreachable via the boot path" argument, and while it read `System.getenv` directly it had to
+    /// be guarded by an `assumeTrue` — so on any machine with that variable exported it SKIPPED, and a
+    /// skip reads as green. Injecting the source removes the guard: the test now states the
+    /// environment it is testing instead of hoping for one.
+    Result<TlsBundle> resolveTls(NodeId nodeId,
+                                 List<NodeInfo> peers,
+                                 Option<AetherConfig> aetherConfig,
+                                 Option<String> environmentSecret) {
         var tlsCfg = resolveTlsConfig(aetherConfig);
 
-        return resolveClusterSecret(tlsCfg).flatMap(SelfSignedCertificateProvider::selfSignedCertificateProvider)
+        return resolveClusterSecret(tlsCfg, environmentSecret).flatMap(SelfSignedCertificateProvider::selfSignedCertificateProvider)
                                    .flatMap(provider -> {
                                                 var hostname = findHostnameFromPeers(nodeId, peers);
 
@@ -459,12 +477,54 @@ public record Main(String[] args) {
                      .or("localhost");
     }
 
-    private static Result<byte[]> resolveClusterSecret(TlsConfig tlsCfg) {
+    /// Package-private (not private) so `MainClusterSecretStampTest` can assert that the CA path and
+    /// the #980 admin-key path resolve the SAME secret — re-inlining a separate reader into either
+    /// would otherwise be silent.
+    static Result<byte[]> resolveClusterSecret(TlsConfig tlsCfg) {
+        return resolveClusterSecret(tlsCfg, environmentClusterSecret());
+    }
+
+    static Result<byte[]> resolveClusterSecret(TlsConfig tlsCfg, Option<String> environmentSecret) {
+        return resolveClusterSecretValue(tlsCfg, environmentSecret).map(s -> s.getBytes(StandardCharsets.UTF_8))
+                                        .toResult(MISSING_CLUSTER_SECRET);
+    }
+
+    /// #980 — stamp the cluster secret onto the node config, from which `BootstrapAdminKeyLeg`
+    /// derives the bootstrap admin API key at first leadership, so `aether cluster bootstrap` can
+    /// authenticate its own quorum poll. `resolveTls` has already aborted the boot if the secret were
+    /// missing, so this is present on any node that reaches here.
+    ///
+    /// Extracted from `run()` and package-private ONLY so it is reachable from a test. Inline in the
+    /// builder chain it was unpinnable: replacing the argument with `Option.empty()` left all 1,299
+    /// `aether/node` tests green, which made the whole feature rest on a line nothing defended.
+    /// `MainClusterSecretStampTest` now drives this. What remains unpinned is the CALL to it from
+    /// `run()` — deleting that line is still silent here, and is caught only by
+    /// `EmberBootstrapAdminKeyAuthTest`'s equivalent for the in-JVM path or by a cloud bootstrap.
+    static AetherNodeConfig withResolvedClusterSecret(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
+        return withResolvedClusterSecret(config, aetherConfig, environmentClusterSecret());
+    }
+
+    static AetherNodeConfig withResolvedClusterSecret(AetherNodeConfig config,
+                                                      Option<AetherConfig> aetherConfig,
+                                                      Option<String> environmentSecret) {
+        return config.withClusterSecret(resolveClusterSecretValue(resolveTlsConfig(aetherConfig), environmentSecret));
+    }
+
+    /// #980 — the single reader of the cluster secret's two sources (`[tls] cluster_secret`, then
+    /// `AETHER_CLUSTER_SECRET`). The CA/gossip derivation ([#resolveClusterSecret]) and the bootstrap
+    /// admin key derivation stamped onto [AetherNodeConfig] both read through here, so a node can
+    /// never derive its certificate from one secret and its admin key from another.
+    private static Option<String> resolveClusterSecretValue(TlsConfig tlsCfg, Option<String> environmentSecret) {
         return Option.option(tlsCfg.clusterSecret())
                      .filter(s -> !s.isBlank())
-                     .orElse(Option.option(System.getenv("AETHER_CLUSTER_SECRET")).filter(s -> !s.isBlank()))
-                     .map(s -> s.getBytes(StandardCharsets.UTF_8))
-                     .toResult(MISSING_CLUSTER_SECRET);
+                     .orElse(environmentSecret);
+    }
+
+    /// The ambient `AETHER_CLUSTER_SECRET`, blank-filtered — the ONLY place this process reads it.
+    /// Every resolver above takes it as a parameter so tests can state the environment rather than
+    /// inherit it (SF4).
+    private static Option<String> environmentClusterSecret() {
+        return Option.option(System.getenv("AETHER_CLUSTER_SECRET")).filter(s -> !s.isBlank());
     }
 
     private static final Cause MISSING_CLUSTER_SECRET = Causes.cause("No cluster secret configured. Set 'cluster_secret' in [tls] section "

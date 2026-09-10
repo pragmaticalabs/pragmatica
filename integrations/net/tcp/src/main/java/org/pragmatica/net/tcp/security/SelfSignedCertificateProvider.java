@@ -15,8 +15,6 @@
  */
 package org.pragmatica.net.tcp.security;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.io.StringWriter;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
@@ -62,7 +60,7 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
     private static final String SIGNATURE_ALGORITHM = "SHA256withECDSA";
     private static final String EC_CURVE = "P-256";
     private static final Duration NODE_CERT_VALIDITY = Duration.ofDays(7);
-    private static final byte[] HKDF_SALT = "aether-ca-seed".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] HKDF_SALT = ClusterSecretDerivation.hkdfSalt();
     private static final byte[] CA_KEY_INFO = "aether-ca-key-v1".getBytes(StandardCharsets.UTF_8);
     private static final String GOSSIP_KEY_PREFIX = "aether-gossip-key-v";
     private static final byte[] KEY_ID_LABEL = "key-id".getBytes(StandardCharsets.UTF_8);
@@ -216,35 +214,11 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
         builder.addExtension(Extension.subjectAlternativeName, false, san);
     }
 
-    // ===== HKDF Key Derivation =====
+    // ===== HKDF Key Derivation (implementation shared via ClusterSecretDerivation) =====
     private static KeyPair deriveKeyPair(byte[] clusterSecret) throws Exception {
-        var seed = hkdfDerive(clusterSecret, HKDF_SALT, CA_KEY_INFO, 32);
+        var seed = ClusterSecretDerivation.hkdfDerive(clusterSecret, HKDF_SALT, CA_KEY_INFO, 32);
 
         return keyPairFromSeed(seed);
-    }
-
-    private static byte[] hkdfDerive(byte[] ikm, byte[] salt, byte[] info, int length) throws Exception {
-        // HKDF-Extract
-        var prk = hmacSha256(salt, ikm);
-        // HKDF-Expand (single block, length <= 32)
-        var expandInput = new byte[info.length + 1];
-
-        System.arraycopy(info, 0, expandInput, 0, info.length);
-        expandInput[info.length] = 0x01;
-        var okm = hmacSha256(prk, expandInput);
-        var result = new byte[length];
-
-        System.arraycopy(okm, 0, result, 0, length);
-
-        return result;
-    }
-
-    private static byte[] hmacSha256(byte[] key, byte[] data) throws Exception {
-        var mac = Mac.getInstance("HmacSHA256");
-
-        mac.init(new SecretKeySpec(key, "HmacSHA256"));
-
-        return mac.doFinal(data);
     }
 
     private static KeyPair keyPairFromSeed(byte[] seed) throws Exception {
@@ -261,8 +235,8 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
     // ===== Gossip Key Derivation =====
     private static GossipKey deriveGossipKeyWithLabel(byte[] clusterSecret, String label) throws Exception {
         var info = label.getBytes(StandardCharsets.UTF_8);
-        var key = hkdfDerive(clusterSecret, HKDF_SALT, info, 32);
-        var keyIdBytes = hmacSha256(key, KEY_ID_LABEL);
+        var key = ClusterSecretDerivation.hkdfDerive(clusterSecret, HKDF_SALT, info, 32);
+        var keyIdBytes = ClusterSecretDerivation.hmacSha256(key, KEY_ID_LABEL);
         var keyId = ((keyIdBytes[0] & 0xFF) << 24) | ((keyIdBytes[1] & 0xFF) << 16) | ((keyIdBytes[2] & 0xFF) << 8) | (keyIdBytes[3] & 0xFF);
 
         return GossipKey.gossipKey(key, keyId, Instant.now());
