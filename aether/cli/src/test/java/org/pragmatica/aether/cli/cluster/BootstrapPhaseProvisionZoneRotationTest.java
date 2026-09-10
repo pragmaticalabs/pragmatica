@@ -127,6 +127,12 @@ class BootstrapPhaseProvisionZoneRotationTest {
 
             result.onSuccess(nodes -> assertThat(nodes).isNull())
                   .onFailure(cause -> assertThat(cause).isInstanceOf(EnvironmentError.ProvisionFailed.class));
+            // The cause propagates UNWRAPPED out of the phase (`return result;`), and
+            // ClusterBootstrapCommand.onFailure prints `"Error: " + cause.message()` to stderr — so
+            // this message IS the operator-visible text. That matters more than usual here: the
+            // shipped CLI jar binds slf4j to NOPServiceProvider, so no log line reaches anyone and
+            // this string is the only diagnostic channel that exists.
+            result.onFailure(cause -> assertThat(cause.message()).contains("Node provisioning failed"));
             assertThat(provisioner.callCount)
                     .as("non-capacity error must NOT rotate — provider called exactly once")
                     .isEqualTo(1);

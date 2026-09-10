@@ -787,10 +787,13 @@ provider = "hetzner"
 
 [cloud.compute]
 # REQ-CF-02: Default instance size for provisioning.
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
+# The same applies to every `instance_size` below.
 instance_size = "cx22"
 # REQ-CF-03: OS image or snapshot ID for new instances.
 image = "ubuntu-24.04"
 # REQ-CF-04: Cloud region for provisioning.
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 # REQ-CF-05: User data script executed on instance boot.
 user_data = """
@@ -883,6 +886,7 @@ namespace = ""
 
 [cloud.secrets.aws]
 # REQ-CF-23: AWS Secrets Manager-specific configuration.
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "us-west-2"
 # Uses default AWS credential chain (env, instance profile, etc.)
 
@@ -909,6 +913,7 @@ load_balancer_type = "nlb"  # "alb" or "nlb"
 [cloud.gcp]
 # REQ-CF-26: GCP-specific configuration.
 project = "my-project"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone = "us-central1-a"
 network = "default"
 subnetwork = "default"
@@ -918,6 +923,7 @@ service_account = "aether-node@my-project.iam.gserviceaccount.com"
 # REQ-CF-27: Azure-specific configuration.
 subscription_id = "..."
 resource_group = "aether-rg"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 location = "westus2"
 vnet_name = "aether-vnet"
 subnet_name = "aether-subnet"

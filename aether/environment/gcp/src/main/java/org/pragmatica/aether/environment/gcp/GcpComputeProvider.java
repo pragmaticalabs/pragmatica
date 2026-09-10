@@ -90,7 +90,9 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
                      .flatMap(info -> confirmRunning(info,
                                                      ReadinessPolicy.cloudDefault()))
                      .onFailure(GcpComputeProvider::logProvisionFailureRollbackGap)
-                     .mapError(GcpComputeProvider::toProvisionError);
+                     .mapError(cause -> toProvisionError(request.instanceSize(),
+                                                         zone.or(""),
+                                                         cause));
     }
 
     /// GCP's [InsertInstanceRequest] exposes no `provisioningModel=SPOT` field on this client, so a
@@ -294,8 +296,18 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return a + " AND " + b;
     }
 
+    /// No requested spec is available on this arity — it serves [#instanceStatus], a lookup on an
+    /// EXISTING instance. The `createFrom` path uses the three-argument form below.
     private static EnvironmentError toProvisionError(Cause cause) {
-        return EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
+        return toProvisionError("", "", cause);
+    }
+
+    /// GCP machine types are retired and their per-zone availability varies, exactly as on Hetzner
+    /// (where the incident that motivated this was measured), so a rejection has to name what was
+    /// asked for. A blank `zone` here means the insert requested the client-level default placement
+    /// — [EnvironmentError.ProvisionFailed] renders that as "not recorded", never as an empty field.
+    private static EnvironmentError toProvisionError(String instanceType, String zone, Cause cause) {
+        return EnvironmentError.provisionFailed(instanceType, zone, new RuntimeException(cause.message()));
     }
 
     private static EnvironmentError toTerminateError(InstanceId instanceId, Cause cause) {

@@ -32,10 +32,16 @@ public record ClusterConfigAnswers(String clusterName,
                               : List.copyOf(customFirewallRules);
     }
 
+    /// `sshPublicKeyPath` is the operator-local path to a PUBLIC key, written to the generated
+    /// config as `[infrastructure.ssh] public_key_file`. It is a cloud-target concern: provisioned
+    /// VMs get the key injected at create time, and `SshKeyResolver.resolveOrFailIfCloud` refuses
+    /// to bootstrap a cloud cluster without one. Distinct from [SshAnswers#keyPath], which is the
+    /// PRIVATE key used to reach already-existing SSH hosts.
     public record CloudAnswers(CloudProviderName provider,
                                String region,
                                String instanceType,
-                               String credentialEnvVar) {}
+                               String credentialEnvVar,
+                               String sshPublicKeyPath) {}
 
     public record SshAnswers(List<String> hosts, String user, Path keyPath, int port) {
         public SshAnswers {

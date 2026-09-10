@@ -5,20 +5,69 @@
 package org.pragmatica.aether.environment;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import static org.pragmatica.lang.Result.success;
 
 
 public sealed interface EnvironmentError extends Cause {
-    record ProvisionFailed(Throwable cause) implements EnvironmentError {
+    /// A provider refused (or failed) to create a node.
+    ///
+    /// `instanceType` and `zone` carry WHAT WAS ASKED FOR, because the provider's own complaint
+    /// routinely does not. Measured against Hetzner on 2026-09-10: three bootstrap runs in two
+    /// regions died with the verbatim body `422 (invalid_input): unsupported location for server
+    /// type` — which names neither the server type nor the location, so an operator cannot tell
+    /// which of the two is wrong. That incident is STILL UNDIAGNOSED for exactly this reason.
+    ///
+    /// This message is the ONLY channel that reaches the operator, which is why the data belongs
+    /// here rather than in a log line. The shipped CLI jar binds slf4j to `NOPServiceProvider`, so
+    /// every `log.*` call it makes is discarded — including `HetznerComputeProvider.logCreateRequest`,
+    /// which already assembles the exact `serverType` that was sent and throws it away. Do not
+    /// assume a log statement covers anything on this path.
+    ///
+    /// Both fields are [Option] because not every provisioning failure has a request behind it —
+    /// a refusal raised before the request is assembled (spot rejection, unresolved cluster name)
+    /// or a status lookup on an existing instance has no requested spec. Absent means absent: the
+    /// requested-spec clause is omitted entirely rather than rendered with a blank or a guess, and
+    /// a partially-known spec says so per field.
+    ///
+    /// The message deliberately does NOT list valid alternatives. Naming them would require either
+    /// a network call on the failure path (rejected) or a catalogue baked into this repository —
+    /// and a baked-in catalogue is the very rot that produced the incident, so it points at the
+    /// provider's live catalogue instead.
+    record ProvisionFailed(Option<String> instanceType, Option<String> zone, Throwable cause) implements EnvironmentError {
         public static Result<ProvisionFailed> provisionFailed(Throwable cause) {
-            return success(new ProvisionFailed(cause));
+            return provisionFailed(Option.empty(), Option.empty(), cause);
+        }
+
+        public static Result<ProvisionFailed> provisionFailed(Option<String> instanceType,
+                                                              Option<String> zone,
+                                                              Throwable cause) {
+            return success(new ProvisionFailed(instanceType, zone, cause));
         }
 
         @Override
         public String message() {
-            return "Node provisioning failed: " + cause.getMessage();
+            return "Node provisioning failed: " + cause.getMessage() + requestedSpec();
+        }
+
+        private String requestedSpec() {
+            return known(instanceType).isEmpty() && known(zone).isEmpty()
+                   ? ""
+                   : " [requested instance type: " + describe(instanceType)
+                    + ", location: " + describe(zone)
+                    + "; providers retire instance types and vary availability by location — "
+                    + "check both against the provider's current catalogue before retrying]";
+        }
+
+        private static Option<String> known(Option<String> value) {
+            return value.filter(Verify.Is::present);
+        }
+
+        private static String describe(Option<String> value) {
+            return known(value).or("not recorded at this failure point");
         }
     }
 
@@ -180,6 +229,16 @@ public sealed interface EnvironmentError extends Cause {
 
     static EnvironmentError provisionFailed(Throwable cause) {
         return ProvisionFailed.provisionFailed(cause).unwrap();
+    }
+
+    /// Provisioning failure raised where the requested spec IS known — the provider's `createFrom`
+    /// path. Prefer this over the single-argument form wherever a [ProvisionRequest] is in scope;
+    /// see [ProvisionFailed] for why the pair is worth carrying.
+    static EnvironmentError provisionFailed(String instanceType, String zone, Throwable cause) {
+        return ProvisionFailed.provisionFailed(Option.option(instanceType),
+                                               Option.option(zone),
+                                               cause)
+                              .unwrap();
     }
 
     static EnvironmentError capacityUnavailable(String zone, Throwable cause) {

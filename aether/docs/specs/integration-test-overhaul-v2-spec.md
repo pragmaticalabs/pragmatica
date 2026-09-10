@@ -174,6 +174,7 @@ max_unavailable = 1
 [source.hetzner-eu]
 type = "cloud"
 provider = "hetzner"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone = "fsn1-dc14"
 region = "eu-central"
 credentials = "${env:HCLOUD_TOKEN}"
@@ -181,6 +182,7 @@ load_balancer = "none"
 
 [source.hetzner-eu.core]
 count = 5
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx23"
 
 [operations.ports]
@@ -596,6 +598,7 @@ Dedicated PostgreSQL VM provisioned during bootstrap:
 ```toml
 [databases.forge]
 type = "dedicated-vm"
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance = "cx22"
 ```
 

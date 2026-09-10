@@ -152,7 +152,6 @@ aether/docs/specs/cluster-bootstrap-spec.md	option: --file on aether cluster exp
 
 # --- aether/docs/specs/cluster-init-wizard-spec.md ---
 aether/docs/specs/cluster-init-wizard-spec.md	option: --cores on aether cluster init
-aether/docs/specs/cluster-init-wizard-spec.md	option: --firewall-cidr on aether cluster init
 aether/docs/specs/cluster-init-wizard-spec.md	option: --lb on aether cluster init
 
 # --- aether/docs/specs/cluster-management-spec.md ---

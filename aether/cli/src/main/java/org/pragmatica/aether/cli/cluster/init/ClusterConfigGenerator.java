@@ -37,6 +37,7 @@ public sealed interface ClusterConfigGenerator {
         appendSource(sb, answers);
         appendRoles(sb, answers);
         answers.database().onPresent(db -> appendDatabase(sb, db));
+        answers.cloud().onPresent(cloud -> appendInfrastructureSsh(sb, cloud));
         appendFirewall(sb, answers);
         appendRuntime(sb, answers);
         appendTls(sb, answers);
@@ -151,6 +152,21 @@ public sealed interface ClusterConfigGenerator {
             case PasswordSource.FromEnv fromEnv -> "${env:" + fromEnv.envVar() + "}";
             case PasswordSource.Plaintext plaintext -> plaintext.value();
         };
+    }
+
+    /// The section `SshKeyResolver.collectSshKeyFiles` reads — `[infrastructure.ssh]`, key
+    /// `public_key_file`. Emitted for cloud targets only: `resolveOrFailIfCloud` refuses a cloud
+    /// cluster whose key it cannot resolve, and before this the generator wrote no SSH reference at
+    /// all, so `init` produced a file `bootstrap` then rejected.
+    ///
+    /// The key name is `public_key_file` (singular) rather than `public_key_files`: the parser
+    /// accepts both, but the list form WINS when non-empty, so writing the singular leaves an
+    /// operator free to add the plural later without this line silently overriding it.
+    private static void appendInfrastructureSsh(StringBuilder sb, CloudAnswers cloud) {
+        appendSection(sb, "infrastructure.ssh");
+        appendComment(sb, "Public key injected into provisioned VMs; bootstrap resolves it from here.");
+        appendKv(sb, "public_key_file", cloud.sshPublicKeyPath());
+        appendBlank(sb);
     }
 
     private static void appendFirewall(StringBuilder sb, ClusterConfigAnswers answers) {

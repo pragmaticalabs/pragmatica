@@ -82,6 +82,11 @@ Validate the Aether distributed runtime in a production-like cloud environment o
 ```
 
 **7 cx22 VMs** (2 vCPU / 4 GB RAM each) in `fsn1` (Falkenstein, Germany).
+
+> **The instance types and regions below are EXAMPLES.** Providers retire instance types and
+> vary availability by location, and the region decides where your data resides — check your
+> provider's current catalogue and choose the location deliberately.
+
 **1 Hetzner managed load balancer** -- public entry point.
 **1 private network** `10.0.1.0/24` -- all inter-node traffic.
 
@@ -131,6 +136,7 @@ startup_cooldown = "15s"
 type = "hetzner"
 
 [deployment.instances]
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 core = "cx22"
 
 [deployment.runtime]
@@ -138,6 +144,7 @@ type = "container"
 image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1"
 
 [deployment.zones]
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone-1 = "fsn1-dc14"
 
 [deployment.ports]
@@ -156,10 +163,10 @@ cert_ttl = "720h"
 | TOML Path | Java Type | Value | Notes |
 |-----------|-----------|-------|-------|
 | `deployment.type` | `DeploymentType` | `hetzner` | Triggers `BootstrapOrchestrator.bootstrapHetzner()` |
-| `deployment.instances.core` | `Map<String,String>` | `cx22` | Passed to `provisionSingleNode()`, also used by `UserDataTemplate.deriveHeap()` to set JVM heap to `2g` |
+| `deployment.instances.core` | `Map<String,String>` | `cx22` (an EXAMPLE — providers retire instance types, check the current catalogue) | Passed to `provisionSingleNode()`, also used by `UserDataTemplate.deriveHeap()` to set JVM heap to `2g` |
 | `deployment.runtime.type` | `RuntimeType` | `container` | Triggers Docker install in cloud-init |
 | `deployment.runtime.image` | `Option<String>` | `ghcr.io/...` | If absent, defaults to `ghcr.io/pragmaticalabs/aether-node:<version>` |
-| `deployment.zones.zone-1` | `Map<String,String>` | `fsn1-dc14` | `firstZoneLocation()` extracts `fsn1` as the location |
+| `deployment.zones.zone-1` | `Map<String,String>` | `fsn1-dc14` (an EXAMPLE — the region decides where your data resides) | `firstZoneLocation()` extracts `fsn1` as the location |
 | `deployment.ports.*` | `PortMapping` | See above | Default SWIM port = cluster + 100 if not specified |
 | `deployment.tls.auto_generate` | `boolean` | `true` | Self-signed certs sufficient for testing |
 | `deployment.tls.cluster_secret` | `Option<String>` | (auto-generated) | If absent, `resolveClusterSecret()` generates a random 32-byte Base64 secret |
@@ -271,7 +278,8 @@ Decision: **Option A** -- keep public IPs initially for bootstrap health checks.
 > bastion / Docker host — no Aether container), but skips REQ-D20/D21 entirely.
 
 ```
-REQ-D18: Create LB VM: hcloud server create --name cloud-test-lb --type cx22 --image ubuntu-24.04
+REQ-D18: Create LB VM (type and location are EXAMPLES — check Hetzner's current catalogue):
+         hcloud server create --name cloud-test-lb --type cx22 --image ubuntu-24.04
          --location fsn1 --ssh-key cloud-test-key --label aether-cluster=cloud-test --label aether-role=lb
 REQ-D19: Attach to network: hcloud server attach-to-network cloud-test-lb --network cloud-test-net --ip 10.0.1.20
 REQ-D20: SSH into LB VM, install Docker, build/pull Aether LB image.
@@ -288,7 +296,8 @@ REQ-D22: The LB VM's public IP serves as SSH bastion for all other nodes.
 #### Phase 7: Provision Postgres VM
 
 ```
-REQ-D23: Create postgres VM: hcloud server create --name cloud-test-postgres --type cx22 --image ubuntu-24.04
+REQ-D23: Create postgres VM (type and location are EXAMPLES — check Hetzner's current catalogue):
+         hcloud server create --name cloud-test-postgres --type cx22 --image ubuntu-24.04
          --location fsn1 --ssh-key cloud-test-key --label aether-cluster=cloud-test --label aether-role=db
 REQ-D24: Attach to network: hcloud server attach-to-network cloud-test-postgres --network cloud-test-net --ip 10.0.1.30
 REQ-D25: SSH into postgres VM (via bastion), install Docker, run:

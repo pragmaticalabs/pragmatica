@@ -585,8 +585,10 @@ provider = "hetzner"                          # Required: hetzner | aws | gcp | 
 api_token = "${env:HCLOUD_TOKEN}"         # Supports ${env:VAR} interpolation
 
 [cloud.compute]                                # Instance provisioning parameters
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 server_type = "cx22"
 image = "ubuntu-24.04"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 user_data = "#!/bin/bash\n..."
 ssh_key_ids = "12345,67890"                    # Comma-separated lists

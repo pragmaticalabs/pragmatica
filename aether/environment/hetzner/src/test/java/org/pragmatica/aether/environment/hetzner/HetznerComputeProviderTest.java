@@ -135,6 +135,31 @@ class HetznerComputeProviderTest {
                     .onFailure(HetznerComputeProviderTest::assertCapacityUnavailableInNbg1);
         }
 
+        /// The measured 2026-09-10 incident: Hetzner refuses a RETIRED server type with a body that
+        /// names neither the type nor the location. The provider must thread both onto the failure,
+        /// otherwise the operator sees only "unsupported location for server type" and has no way to
+        /// tell which of the two to change.
+        ///
+        /// `zz-sentinel-server-type-99` is a value no Hetzner catalogue contains, so this passes only
+        /// if the requested type is genuinely threaded through rather than matched incidentally.
+        @Test
+        void provision_unsupportedLocationForServerType_namesRequestedTypeAndLocation() {
+            testClient.createServerResponse =
+                new HetznerError.ApiError(422, "invalid_input", "unsupported location for server type").promise();
+            var context = ProvisionContext.provisionContext(maybeClusterName("cluster-x"),
+                                                             "core",
+                                                             sourceNameOrDefault("eu-1"),
+                                                             ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "zz-sentinel-server-type-99", "core", context)
+                                    .unwrap()
+                                    .withPlacement(PlacementHint.zoneHint("hel1"));
+
+            provider.provision(spec)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(HetznerComputeProviderTest::assertProvisionFailedNamesSentinelTypeInHel1);
+        }
+
         @Test
         void provision_nonCapacityApiError_mapsToProvisionFailed() {
             // A 412 with a DIFFERENT code (or any other status) is NOT a capacity signal —
@@ -847,6 +872,13 @@ class HetznerComputeProviderTest {
 
     private static void assertProvisionFailedError(Cause cause) {
         assertThat(cause).isInstanceOf(EnvironmentError.ProvisionFailed.class);
+    }
+
+    private static void assertProvisionFailedNamesSentinelTypeInHel1(Cause cause) {
+        assertThat(cause).isInstanceOf(EnvironmentError.ProvisionFailed.class);
+        assertThat(cause.message()).contains("unsupported location for server type")
+                                   .contains("zz-sentinel-server-type-99")
+                                   .contains("hel1");
     }
 
     private static void assertCapacityUnavailableInNbg1(Cause cause) {

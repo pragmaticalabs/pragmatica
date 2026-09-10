@@ -86,7 +86,8 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     private Promise<InstanceInfo> createLabelled(ProvisionRequest request, ClusterName clusterName) {
-        return createAndConfirm(request, labelsFor(request.context(), clusterName)).mapError(cause -> toProvisionError(request.zone(),
+        return createAndConfirm(request, labelsFor(request.context(), clusterName)).mapError(cause -> toProvisionError(request.instanceSize(),
+                                                                                                                       request.zone(),
                                                                                                                        cause));
     }
 
@@ -207,7 +208,7 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return serverId.async()
                        .flatMap(this::serverById)
                        .map(HetznerComputeProvider::toInstanceInfo)
-                       .mapError(cause -> toProvisionError("", cause));
+                       .mapError(cause -> toProvisionError("", "", cause));
     }
 
     private Promise<Unit> destroyServer(long serverId) {
@@ -907,11 +908,20 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
 
     private static final String CAPACITY_UNAVAILABLE_CODE = "resource_unavailable";
 
-    private static EnvironmentError toProvisionError(String attemptedLocation, Cause cause) {
+    /// `attemptedServerType` / `attemptedLocation` are the values actually sent to Hetzner, threaded
+    /// through so the failure names them: a `422 (invalid_input): unsupported location for server
+    /// type` names NEITHER, and the commonest cause is a server type Hetzner has retired. Both are
+    /// blank on the [#instanceStatus] path, which has no requested spec — [EnvironmentError.ProvisionFailed]
+    /// then omits the clause rather than printing empty fields.
+    private static EnvironmentError toProvisionError(String attemptedServerType,
+                                                     String attemptedLocation,
+                                                     Cause cause) {
         return switch (cause) {
             case HetznerError.ApiError apiError when CAPACITY_UNAVAILABLE_CODE.equals(apiError.code()) -> EnvironmentError.capacityUnavailable(attemptedLocation,
                                                                                                                                                new RuntimeException(cause.message()));
-            default -> EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
+            default -> EnvironmentError.provisionFailed(attemptedServerType,
+                                                        attemptedLocation,
+                                                        new RuntimeException(cause.message()));
         };
     }
 

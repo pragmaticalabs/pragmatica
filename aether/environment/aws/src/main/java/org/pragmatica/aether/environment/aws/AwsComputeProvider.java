@@ -87,7 +87,9 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
                                       .flatMap(response -> tagAndMapFirstInstance(response, tags))
                                       .flatMap(info -> confirmRunning(info,
                                                                       ReadinessPolicy.cloudDefault()))
-                                      .mapError(AwsComputeProvider::toProvisionError);
+                                      .mapError(cause -> toProvisionError(request.instanceSize(),
+                                                                          request.zone(),
+                                                                          cause));
     }
 
     @Override
@@ -625,12 +627,24 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     /// so the bootstrap/CTM zone rotation can advance (mirrors Hetzner's `resource_unavailable`
     /// handling); `SpotMaxPriceTooLow` is an operator config error → non-retryable
     /// [EnvironmentError.ProvisionFailed] with an actionable message.
+    /// No requested spec is available on this arity — it serves [#instanceStatus], a lookup on an
+    /// EXISTING instance. The `createFrom` path uses the three-argument form below so the failure
+    /// names the instance type and zone that were actually requested.
     private static EnvironmentError toProvisionError(Cause cause) {
+        return toProvisionError("", "", cause);
+    }
+
+    /// EC2 instance types are retired and their per-AZ availability varies, exactly as on Hetzner
+    /// (which is where the incident that motivated this was measured), so a rejection has to name
+    /// what was asked for — `InvalidParameterValue: Invalid instance type` does not.
+    private static EnvironmentError toProvisionError(String instanceType, String zone, Cause cause) {
         return switch (cause) {
-            case AwsError.ApiError api when INSUFFICIENT_CAPACITY_CODE.equals(api.code()) -> EnvironmentError.capacityUnavailable("",
+            case AwsError.ApiError api when INSUFFICIENT_CAPACITY_CODE.equals(api.code()) -> EnvironmentError.capacityUnavailable(zone,
                                                                                                                                   new RuntimeException(api.message()));
-            case AwsError.ApiError api when SPOT_MAX_PRICE_TOO_LOW_CODE.equals(api.code()) -> EnvironmentError.provisionFailed(new RuntimeException("Spot max price is below the current market rate; raise max_price or omit it to accept the on-demand-capped rate. " + api.message()));
-            default -> EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
+            case AwsError.ApiError api when SPOT_MAX_PRICE_TOO_LOW_CODE.equals(api.code()) -> EnvironmentError.provisionFailed(instanceType,
+                                                                                                                               zone,
+                                                                                                                               new RuntimeException("Spot max price is below the current market rate; raise max_price or omit it to accept the on-demand-capped rate. " + api.message()));
+            default -> EnvironmentError.provisionFailed(instanceType, zone, new RuntimeException(cause.message()));
         };
     }
 

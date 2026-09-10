@@ -208,6 +208,7 @@ Add generators and CloudManager implementations for other providers.
 provider = "aws"  # aws | gcp | azure | digitalocean
 
 [cloud.aws]
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "us-west-2"
 vpc_cidr = "10.0.0.0/16"
 instance_type = "m6i.large"
@@ -218,6 +219,7 @@ certificate_arn = "arn:aws:acm:..."  # For HTTPS
 
 [cloud.gcp]
 project = "my-project"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "us-central1"
 zone = "us-central1-a"
 machine_type = "e2-standard-4"
@@ -225,6 +227,7 @@ machine_type = "e2-standard-4"
 [cloud.azure]
 subscription_id = "..."
 resource_group = "aether-rg"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 location = "westus2"
 vm_size = "Standard_D4s_v3"
 ```

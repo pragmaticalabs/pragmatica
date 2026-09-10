@@ -38,6 +38,7 @@ max_unavailable = 1
 [source.hetzner-eu]
 type        = "cloud"
 provider    = "hetzner"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zones       = ["fsn1", "nbg1", "hel1"]
 region      = "fsn1"
 credentials = "${env:HCLOUD_TOKEN}"
@@ -45,6 +46,7 @@ load_balancer = "none"
 
 [source.hetzner-eu.core]
 count         = 5
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cpx32"
 image         = "ubuntu-22.04"
 
@@ -210,7 +212,7 @@ At least one role sub-table per source is expected in practice (`core` in the ex
 |---|---|---|---|---|
 | `count` | int | — | **count XOR hosts** | Number of nodes to provision (cloud/forge/docker sources). |
 | `hosts` | string list | — | **count XOR hosts** | Explicit host list (ssh sources). |
-| `instance_type` | string | — | no (cloud sources need it) | e.g. `cpx32`. |
+| `instance_type` | string | — | no (cloud sources need it) | An EXAMPLE, e.g. `cpx32`. Providers retire instance types — take the value from your provider's current catalogue. |
 | `image` | string | — | no | VM image, e.g. `ubuntu-22.04`. |
 | `runtime` | string | source-type default | no | References a `[runtime.<name>]` profile. Must satisfy the source/runtime compatibility matrix below. |
 

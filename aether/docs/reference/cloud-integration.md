@@ -34,8 +34,10 @@ provider = "hetzner"
 api_token = "${env:HCLOUD_TOKEN}"
 
 [cloud.compute]
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 server_type = "cx22"
 image = "ubuntu-24.04"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 ```
 
@@ -47,10 +49,12 @@ provider = "aws"
 [cloud.credentials]
 access_key_id = "${env:AWS_ACCESS_KEY_ID}"
 secret_access_key = "${env:AWS_SECRET_ACCESS_KEY}"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "us-east-1"
 
 [cloud.compute]
 ami_id = "ami-0abcdef1234567890"
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "t3.medium"
 subnet_id = "subnet-abc123"
 ```
@@ -62,11 +66,13 @@ provider = "gcp"
 
 [cloud.credentials]
 project_id = "my-project"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone = "us-central1-a"
 service_account_email = "aether@my-project.iam.gserviceaccount.com"
 private_key_pem = "${env:GCP_PRIVATE_KEY}"
 
 [cloud.compute]
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 machine_type = "e2-medium"
 source_image = "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64"
 network = "default"
@@ -84,9 +90,11 @@ client_id = "${env:AZURE_CLIENT_ID}"
 client_secret = "${env:AZURE_CLIENT_SECRET}"
 subscription_id = "${env:AZURE_SUBSCRIPTION_ID}"
 resource_group = "aether-rg"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 location = "eastus"
 
 [cloud.compute]
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 vm_size = "Standard_B2s"
 image = "Canonical:0001-com-ubuntu-server-jammy:24_04-lts:latest"
 admin_username = "aether"
@@ -178,7 +186,7 @@ Provider name: `hetzner`
 
 | Key | Required | Description |
 |-----|----------|-------------|
-| `server_type` | Yes | Server type (e.g., `cx22`, `cx32`) |
+| `server_type` | Yes | Server type. The values shown are EXAMPLES (e.g., `cx22`, `cx32`) — providers retire instance types, so take yours from Hetzner's current catalogue. |
 | `image` | Yes | OS image name or ID (e.g., `ubuntu-24.04`) |
 | `region` | Yes | Datacenter location (e.g., `fsn1`, `nbg1`) |
 | `user_data` | No | Cloud-init user data script |
@@ -216,8 +224,10 @@ provider = "hetzner"
 api_token = "${env:HCLOUD_TOKEN}"
 
 [cloud.compute]
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 server_type = "cx22"
 image = "ubuntu-24.04"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 user_data = "#!/bin/bash\ncurl -sSL https://example.com/install.sh | bash"
 ssh_key_ids = "12345,67890"
@@ -252,7 +262,7 @@ Authentication uses IAM access keys. All AWS API calls use SigV4 request signing
 | Key | Required | Description |
 |-----|----------|-------------|
 | `ami_id` | Yes | AMI ID for EC2 instances |
-| `instance_type` | Yes | EC2 instance type (e.g., `t3.medium`) |
+| `instance_type` | Yes | EC2 instance type. The value shown is an EXAMPLE (e.g., `t3.medium`) — providers retire instance types, so take yours from AWS's current catalogue. |
 | `key_name` | No | EC2 key pair name for SSH access |
 | `security_group_ids` | No | Comma-separated security group IDs |
 | `subnet_id` | Yes | VPC subnet ID |
@@ -288,10 +298,12 @@ provider = "aws"
 [cloud.credentials]
 access_key_id = "${env:AWS_ACCESS_KEY_ID}"
 secret_access_key = "${env:AWS_SECRET_ACCESS_KEY}"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "us-east-1"
 
 [cloud.compute]
 ami_id = "ami-0abcdef1234567890"
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "t3.medium"
 key_name = "aether-key"
 security_group_ids = "sg-abc123,sg-def456"
@@ -325,7 +337,7 @@ Authentication uses service account credentials with JWT-based OAuth2 token mana
 
 | Key | Required | Description |
 |-----|----------|-------------|
-| `machine_type` | Yes | VM machine type (e.g., `e2-medium`) |
+| `machine_type` | Yes | VM machine type. The value shown is an EXAMPLE (e.g., `e2-medium`) — providers retire machine types, so take yours from GCP's current catalogue. |
 | `source_image` | Yes | Source image URL or family reference |
 | `network` | Yes | VPC network name |
 | `subnetwork` | Yes | Subnetwork name |
@@ -361,11 +373,13 @@ provider = "gcp"
 
 [cloud.credentials]
 project_id = "my-project"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone = "us-central1-a"
 service_account_email = "aether@my-project.iam.gserviceaccount.com"
 private_key_pem = "${env:GCP_PRIVATE_KEY}"
 
 [cloud.compute]
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 machine_type = "e2-medium"
 source_image = "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64"
 network = "default"
@@ -402,7 +416,7 @@ Authentication uses service principal (OAuth2 client credentials). Azure require
 
 | Key | Required | Description |
 |-----|----------|-------------|
-| `vm_size` | Yes | VM size (e.g., `Standard_B2s`) |
+| `vm_size` | Yes | VM size. The value shown is an EXAMPLE (e.g., `Standard_B2s`) — providers retire VM sizes, so take yours from Azure's current catalogue. |
 | `image` | Yes | VM image reference (publisher:offer:sku:version) |
 | `admin_username` | Yes | VM admin username |
 | `ssh_public_key` | Yes | SSH public key for VM access |
@@ -444,9 +458,11 @@ client_id = "${env:AZURE_CLIENT_ID}"
 client_secret = "${env:AZURE_CLIENT_SECRET}"
 subscription_id = "${env:AZURE_SUBSCRIPTION_ID}"
 resource_group = "aether-rg"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 location = "eastus"
 
 [cloud.compute]
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 vm_size = "Standard_B2s"
 image = "Canonical:0001-com-ubuntu-server-jammy:24_04-lts:latest"
 admin_username = "aether"

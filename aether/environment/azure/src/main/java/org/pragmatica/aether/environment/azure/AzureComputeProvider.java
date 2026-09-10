@@ -95,7 +95,9 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
                      .flatMap(info -> confirmRunning(info,
                                                      ReadinessPolicy.cloudDefault()))
                      .onFailure(AzureComputeProvider::logProvisionFailureRollbackGap)
-                     .mapError(AzureComputeProvider::toProvisionError);
+                     .mapError(cause -> toProvisionError(request.instanceSize(),
+                                                         request.zone(),
+                                                         cause));
     }
 
     /// Azure has no spot arm on this client — [CreateVmRequest.VmRequestProperties] exposes no
@@ -340,8 +342,17 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         };
     }
 
+    /// No requested spec is available on this arity — it serves [#instanceStatus], a lookup on an
+    /// EXISTING VM. The `createFrom` path uses the three-argument form below.
     private static EnvironmentError toProvisionError(Cause cause) {
-        return EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
+        return toProvisionError("", "", cause);
+    }
+
+    /// Azure VM sizes are retired and their per-region availability varies, exactly as on Hetzner
+    /// (where the incident that motivated this was measured), so a rejection has to name what was
+    /// asked for — `SkuNotAvailable` names the sku but not the region it was refused in.
+    private static EnvironmentError toProvisionError(String instanceType, String zone, Cause cause) {
+        return EnvironmentError.provisionFailed(instanceType, zone, new RuntimeException(cause.message()));
     }
 
     private static EnvironmentError toTerminateError(InstanceId instanceId, Cause cause) {

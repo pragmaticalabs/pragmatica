@@ -27,6 +27,7 @@ type = "hetzner"
 network_id = "${env:CLOUD_NETWORK_ID}"
 
 [deployment.instances]
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 core = "cx22"
 
 [deployment.runtime]
