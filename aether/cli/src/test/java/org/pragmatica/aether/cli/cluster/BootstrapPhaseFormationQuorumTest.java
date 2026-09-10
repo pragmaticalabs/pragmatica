@@ -49,4 +49,32 @@ class BootstrapPhaseFormationQuorumTest {
         // 5-core cluster -> floor 3. Two nodes present is below the majority.
         assertThat(BootstrapPhaseFormation.healthMeetsFloor(health(2, true), 3)).isFalse();
     }
+
+    /// The failure message must never assert a count nobody measured.
+    ///
+    /// `QuorumNotEstablished` used to be constructed with a hardcoded `0`, so a cluster that had
+    /// formed correctly and merely could not be QUERIED reported "0/2 nodes healthy". Measured
+    /// 2026-09-10 against a live 3-node cluster whose own log read `Quorum established — consensus
+    /// available` while bootstrap raised exactly that message and tore it down. An unreadable view
+    /// and a genuinely empty cluster are different facts and must read differently.
+    @Test
+    void unobservedQuorum_saysUnknown_notZero() {
+        var message = new ClusterBootstrapOrchestrator.BootstrapError
+                              .QuorumNotEstablished(ClusterBootstrapOrchestrator.BootstrapError
+                                                            .QuorumNotEstablished.UNOBSERVED, 2).message();
+
+        assertThat(message)
+                .describedAs("an unreadable cluster view must not be reported as a measured zero")
+                .contains("UNKNOWN")
+                .doesNotContain("0/2");
+    }
+
+    /// Control: when the view IS readable, the observed count is reported verbatim. Without this,
+    /// "does not contain 0/2" would also be satisfied by a message that reports nothing at all.
+    @Test
+    void observedQuorum_reportsTheCountItRead() {
+        var message = new ClusterBootstrapOrchestrator.BootstrapError.QuorumNotEstablished(1, 2).message();
+
+        assertThat(message).contains("1/2 nodes healthy");
+    }
 }

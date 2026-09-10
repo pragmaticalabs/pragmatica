@@ -31,3 +31,9 @@
   hide it behind a listener that starts and then rejects every real client. Absent the section, the
   listener falls back to the cluster identity with client auth stripped: reachable service-to-service,
   not suitable for public traffic.
+- **A bootstrap failure no longer reports a count nobody measured.** `BootstrapError.QuorumNotEstablished`
+  was constructed with a hardcoded `0`, so a cluster that had formed correctly and merely could not be
+  QUERIED reported `0/2 nodes healthy`. Measured 2026-09-10 on a live 3-node cluster whose own log read
+  `Quorum established — consensus available` at the moment that message was printed and the cluster torn
+  down. `waitForQuorum` now records what the cluster view actually reported each poll; on timeout it
+  reports that number, or says the view was never readable and the count is **UNKNOWN — not zero**.
