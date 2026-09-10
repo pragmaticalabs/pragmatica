@@ -6,10 +6,16 @@
   decision or A/B write.
 - **The reset is acted on, not merely stored.** `ClusterDeploymentState.handleSliceTargetChange` feeds
   `value.effectivePlacement()` straight into `SliceAllocationEngine.issueAllocationCommandsWithPlacement`.
-  A workload deliberately placed on worker nodes was **relocated onto the core** on its first scale
+  A workload deliberately placed on worker nodes was **re-allocated under the core placement** on its first scale
   event — no command, event or log saying so. This is worse than its sibling defects (#698 owner,
   #936 `minInstances`), which corrupt data that is later consulted; this one changes where the slice
-  runs.
+  runs. Stated to the evidence: what is demonstrated is that the allocation **decision** changes —
+  the engine takes the core branch and writes no worker directive — not that a running instance was
+  observed migrating.
+- **Fixed for the autoscaler and the A/B writers — the two producers the ticket names.** A third
+  producer, `ClusterDeploymentState.handleAppBlueprintChange`, resets placement on **every blueprint
+  republish** and is **not** fixed here; see the limitation in #936's fragment. Placement is
+  therefore preserved across autoscale and A/B lifecycle writes, not across every write in the system.
 - **Fixed at the shared root.** See #936's entry: `ControlLoopContext` now derives the scaling Put
   from the observed value (`observed.withInstances(newInstances)`) rather than rebuilding it, so
   placement survives by construction along with every other component.

@@ -97,7 +97,8 @@ public sealed interface AetherValue {
         /// the slice is re-allocated under the default (#937). Rebuild through the `with*` methods
         /// instead — they thread every unchanged component through by construction, which is what
         /// makes this class of loss inexpressible rather than merely absent. #698 (owner), #936
-        /// (`minInstances`) and #937 (`placement`) were three instances of it at one expression.
+        /// (`minInstances`) and #937 (`placement`) were three instances of it at one such producer,
+        /// and `ClusterDeploymentState.handleAppBlueprintChange` is a second, still unfixed.
         public static SliceTargetValue sliceTargetValue(Version version, int instances, Option<BlueprintId> owner) {
             return new SliceTargetValue(version,
                                         instances,
