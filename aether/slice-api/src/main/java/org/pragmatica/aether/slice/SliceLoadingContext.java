@@ -499,16 +499,36 @@ public final class SliceLoadingContext implements SliceCreationContext {
         /// `stop()` emits today. Expected, logged at DEBUG so the 34 stale coordinates are visible
         /// on demand rather than invisible.
         GENERATED_BASE,
-        /// The caller named something that is not this slice at all. Worth a WARNING: before the
-        /// substitution this would have been honoured, letting one slice release another's
-        /// resources. Now it cannot, and it says so.
+        /// The caller named something that is not this slice at all. Worth a WARNING.
+        ///
+        /// Before the substitution this id was forwarded UNCHANGED down the chain — a real
+        /// isolation weakness — but it could not actually have released another slice's resources,
+        /// because the only route to the node-wide provider was the node facade, which at that
+        /// point dropped every release (#892's other cause). The hole was MASKED by that defect,
+        /// and fixing the facade alone would have ARMED it. Both shipped together, so the
+        /// capability was never live for a single release.
         FOREIGN;
         static ReleaseIdAgreement between(String callerId, String authoritativeId) {
             return authoritativeId.equals(callerId)
                    ? EXACT
-                   : authoritativeId.startsWith(callerId + ":")
+                   : isGeneratedBaseOf(callerId, authoritativeId)
                      ? GENERATED_BASE
                      : FOREIGN;
+        }
+
+        /// The generator emits `groupId:artifactId-kebab` — EXACTLY one colon — and a deployed
+        /// artifact is always `groupId:artifactId:version`. Requiring that one colon is what keeps
+        /// this classification narrow.
+        ///
+        /// Without it the test is "any proper colon-prefix", and since the deployed artifact has
+        /// exactly three segments the only OTHER such prefix is the bare `groupId` — a genuinely
+        /// foreign id, which would then be reported at DEBUG instead of the WARNING it deserves.
+        /// That is precisely the case this grading exists to catch, so it may not be the one it
+        /// silences (v892 SHOULD-FIX B).
+        private static boolean isGeneratedBaseOf(String callerId, String authoritativeId) {
+            return callerId.indexOf(':') >= 0
+                   && callerId.indexOf(':') == callerId.lastIndexOf(':')
+                   && authoritativeId.startsWith(callerId + ":");
         }
     }
 

@@ -5,6 +5,7 @@
 
 package org.pragmatica.aether.slice;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Nested;
@@ -152,6 +153,48 @@ class SliceLoadingContextReleaseIdentityTest {
             assertThat(SliceLoadingContext.ReleaseIdAgreement.between("org.other:some-other-slice:9.9.9", DEPLOYED_ARTIFACT))
                     .describedAs("before the substitution this would have released another slice's resources")
                     .isEqualTo(SliceLoadingContext.ReleaseIdAgreement.FOREIGN);
+        }
+
+        /// The bare `groupId` — the one input this classification used to get wrong (v892
+        /// SHOULD-FIX B).
+        ///
+        /// `GENERATED_BASE` used to accept ANY proper colon-prefix of the deployed artifact. A
+        /// deployed artifact has exactly three segments, so the only prefix other than the intended
+        /// base is the bare group — and it was therefore reported at DEBUG when it is exactly the
+        /// kind of foreign id the WARNING exists for.
+        @Test
+        void between_isForeign_whenTheCallerNamesTheBareGroupId() {
+            assertThat(SliceLoadingContext.ReleaseIdAgreement.between("org.example", DEPLOYED_ARTIFACT))
+                    .describedAs("a bare groupId is a colon-prefix of the deployed artifact, but it is not this slice")
+                    .isEqualTo(SliceLoadingContext.ReleaseIdAgreement.FOREIGN);
+        }
+
+        /// The whole partition in one place, so a future change to `between` is checked against
+        /// EVERY class of input rather than the one the author had in mind.
+        ///
+        /// These are the eight adversarial inputs the v892 re-verification ran. Keeping them as a
+        /// table rather than prose is the point: `GENERATED_BASE` is the only case that may be
+        /// quiet, so every row that is not it is a row that must stay loud.
+        @Test
+        void between_classifiesEveryAdversarialInput() {
+            var deployed = "org.pragmatica-lite.aether:slice-testkit-release-probe:1.0.0";
+
+            assertThat(SliceLoadingContext.ReleaseIdAgreement.between("org.pragmatica-lite.aether:slice-testkit-release-probe", deployed))
+                    .describedAs("own version-less base — the only case that may be quiet")
+                    .isEqualTo(SliceLoadingContext.ReleaseIdAgreement.GENERATED_BASE);
+            assertThat(SliceLoadingContext.ReleaseIdAgreement.between(deployed, deployed))
+                    .isEqualTo(SliceLoadingContext.ReleaseIdAgreement.EXACT);
+
+            for (var foreign : List.of("org.other:some-other-slice:9.9.9",
+                                       "org.pragmatica-lite.aether:slice-testkit-release-probe-extra",
+                                       "org.pragmatica-lite.aether:some-other-artifact",
+                                       "org.pragmatica-lite.aether",
+                                       "org.pragmatica-lite.aether:slice-testkit-release-probe:",
+                                       "")) {
+                assertThat(SliceLoadingContext.ReleaseIdAgreement.between(foreign, deployed))
+                        .describedAs("must stay loud: " + foreign)
+                        .isEqualTo(SliceLoadingContext.ReleaseIdAgreement.FOREIGN);
+            }
         }
 
         /// The executable form of `FactoryClassGenerator.computeSliceArtifactCoordinate`'s warning

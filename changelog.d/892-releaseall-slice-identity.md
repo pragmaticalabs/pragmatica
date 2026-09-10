@@ -61,8 +61,12 @@
     graded on purpose: a blanket warning would fire on every unload of every slice built by the
     current processor, and a warning for the universal expected state trains readers to ignore the
     one that matters — the same reasoning `ResourceFactory`'s close dispatch already records. The
-    `FOREIGN` case is the one that was previously invisible **and honoured**: before the fix a slice
-    passing another slice's id would have released that slice's resources.
+    `FOREIGN` case was previously invisible, and **latent rather than live**: the id was forwarded
+    unchanged down the slice-api chain — a real isolation weakness — but it could not actually have
+    released another slice's resources, because the only route to the node-wide provider was the
+    node facade, which at that point dropped every release. **The hole was masked by the facade
+    defect, and fixing the facade alone would have armed it.** Both fixes shipped in the same
+    commit, so the capability was never live for a single release.
   - **The parameter was not removed, and the reason is a mechanism rather than a preference.**
     Every already-compiled slice jar calls `releaseAll(String)` from its generated `stop()`, so
     deleting it turns each of them into a `NoSuchMethodError` at unload — breaking exactly the jars
