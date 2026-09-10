@@ -434,9 +434,30 @@ public final class SliceLoadingContext implements SliceCreationContext {
             return delegate.provide(resourceType, configSection, context.withExtension(String.class, sliceId));
         }
 
+        /// Release under the id this wrapper PROVISIONS under, discarding the caller's (#892).
+        ///
+        /// The two sides used to compute the identity independently and could never agree. This
+        /// wrapper scopes every provisioning to `sliceId`, which `DependencyResolver` sets from
+        /// `artifact.asString()` — `groupId:artifactId:version`, three segments. The caller is a
+        /// slice's generated `stop()`, which passes a compile-time literal from
+        /// `FactoryClassGenerator.computeSliceArtifactCoordinate`:
+        /// `groupId:artifactId-kebab(SliceName)` — two segments, no version, and a different
+        /// artifactId segment. Measured across the tree at the time of the fix: 34 generated
+        /// `stop()` bodies, all two-segment, 0 able to match a scope. `releaseAll` compares scope
+        /// strings for equality, so NO provisioned resource was ever closed on any slice unload.
+        ///
+        /// The processor cannot be fixed into agreement: it has no version option to emit
+        /// (`SliceProcessor`'s `@SupportedOptions` carries `slice.groupId` and `slice.artifactId`
+        /// only), and compile-time code cannot know the version a slice is deployed under. So the
+        /// identity is taken from the one place that holds the deployed `Artifact`, and the two
+        /// strings are no longer two — a design-out rather than a reconciliation.
+        ///
+        /// The parameter stays because it is still load-bearing on the branch where this wrapper
+        /// is ABSENT: [#resources] only interposes it when `delegate.sliceId()` is present, and a
+        /// context without one forwards the caller's argument unchanged.
         @Override
         public Promise<Unit> releaseAll(String releaseSliceId) {
-            return delegate.releaseAll(releaseSliceId);
+            return delegate.releaseAll(sliceId);
         }
     }
 

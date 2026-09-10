@@ -6100,21 +6100,13 @@ public interface AetherNode extends ManageableNode {
 
                                                                 ResourceProvider.setInstance(resourceProvider);
                                                                 log.info("ConfigService and ResourceProvider initialized with hierarchical composite (KV-overlay + node.toml)");
-
-                                                                return new ResourceProviderSetup(new ResourceProviderFacade() {
-            @Override
-            public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-                                                                                                     return resourceProvider.provide(resourceType,
-                                                                                                                                     configSection);
-                                                                                                 }
-
-            @Override
-            public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
-                                                                                                     return resourceProvider.provide(resourceType,
-                                                                                                                                     configSection,
-                                                                                                                                     context);
-                                                                                                 }
-        },
+                                                                // The provider's OWN complete facade, never a hand-rolled one.
+                                                                // This was an anonymous class implementing the two `provide`
+                                                                // overloads only, so `releaseAll` inherited the interface's
+                                                                // `Promise.unitPromise()` default and every slice unload
+                                                                // reported a successful release without one reaching
+                                                                // `SpiResourceProvider` (#892).
+                                                                return new ResourceProviderSetup(resourceProvider.facade(),
                                                                                                  Option.some(dynamicProvider),
                                                                                                  Option.some(nodeComposite),
                                                                                                  Option.some(resourceProvider),
