@@ -32,7 +32,9 @@
   `DefaultStorageInstanceReplaceRefOrderingTest`.
 - **Source-incompatible for out-of-tree implementors of `StorageInstance`**: `putRef` is abstract, so an
   external implementation must add it. That is the point — the alternative default is a silent unbounded
-  leak. In-tree, four test doubles were updated.
+  leak. In-tree, four test doubles were updated; a bytecode sweep of all 12,004 classes produced by the
+  full reactor build found exactly five implementors (the production one plus those four), and no
+  generated source in the repo references the type.
 - **What is pinned is the collection, not the arithmetic.** Each new test runs a real `collectGarbage`
   cycle and asserts the block is gone from the metadata store AND from the tier, and asserts that
   BEFORE the refcounts — a count assertion placed first aborts a mutation probe before the consequence
@@ -48,13 +50,28 @@
 - **[unverified: no cluster run.]** All evidence is in-JVM against `MemoryTier`. Nothing here was
   exercised on a multi-node cluster, and a DHT-backed instance is additionally governed by
   `deleteFromPrivateTiers` (#250) and by #802 — this change does not speak to either.
+- **Upgrade note — a snapshot written before this fix is NOT repaired by restoring it.** Pre-fix
+  snapshots carry the inflated refCount 2 verbatim, `MetadataStore.restoreLifecycles` reads it back
+  unchanged, and a node restored from one inherits blocks that still never reach zero and still never
+  become collectable. No migration is attempted and none runs on startup; the blocks are reclaimed
+  only by an explicit `ContentStore.delete` or stream retention, which delete by id rather than by
+  refcount. The new `AcrossSnapshotRestore` test proves the CORRECTED count survives a
+  snapshot/restore rebuild — it does not, and cannot, prove that a rebuild repairs an old one.
+- **This makes #801 materially more likely to fire, and that belongs in the merge decision.** #801 is
+  the GC filter-then-delete race: a deduplicating `put` can land on a block between the orphan scan
+  and the delete step, handing a caller an id whose bytes GC then removes. Its window is unchanged in
+  size — but the population that can enter it is not. Before this fix, the only production blocks that
+  could reach refCount 0 at all were superseded CURSOR blocks (8-byte offsets, via #737's
+  `replaceRef`); content-store and segment blocks were structurally incapable of being orphaned, which
+  is exactly the leak fixed here. They now join that population, so the number of trips through #801's
+  window scales with content deletion/overwrite and segment retention rather than with cursor-commit
+  volume alone. The per-trip probability is unchanged; the trip count is what rises. **The blast
+  radius per occurrence also worsens:** a lost cursor block costs a consumer group a resume point,
+  while a lost content or segment block is user data that is not re-derivable. #801 is milestoned
+  rc5 and unfixed.
 - **Not fixed here, and stated so it is not mistaken for covered:**
-  - **No migration.** A snapshot written before this fix carries refCount 2, and a node restored from it
-    inherits blocks that stay uncollectable. `ContentStoreReclamationTest$AcrossSnapshotRestore` proves
-    the corrected count SURVIVES a snapshot/restore rebuild, not that a rebuild repairs an old one.
   - **Overwriting chunked content still leaks the superseded chunks.** Storing new content under a name
     whose old value was chunked releases the old manifest, but the old chunks carry no name and are
     reachable only through that manifest, so nothing decrements them and `ContentStore.delete` is the
     only path that removes them. Separate from this double count and untouched by it.
-  - #801 (a deduplicating put can resurrect a block between GC's orphan scan and its delete) and #802
-    (a block demoted to the DHT alone leaves every node's local candidate set) are unchanged.
+  - #802 (a block demoted to the DHT alone leaves every node's local candidate set) is unchanged.
