@@ -35,6 +35,14 @@
   leak. In-tree, four test doubles were updated; a bytecode sweep of all 12,004 classes produced by the
   full reactor build found exactly five implementors (the production one plus those four), and no
   generated source in the repo references the type.
+- **One existing test was validating the defect, and is now observing the production path.**
+  `CursorStoreTest.RefObservingStorage`, the double that pins #264 (a committed cursor must never
+  pass through a state where its ref is absent), did not override `replaceRef` — so it inherited the
+  double-counting default and recorded at `createRef`, a call `DefaultStorageInstance` never makes on
+  that path. Its assertions were satisfiable *only* from that fallback: reduced to a bare delegation
+  they fail with `Expected size: 2 but was: 0`. The double now implements `putRef` and records there,
+  which is the call both it and production make. The #264 property is unchanged and still pinned; the
+  evidence for it is now collected from the implementation that actually runs.
 - **What is pinned is the collection, not the arithmetic.** Each new test runs a real `collectGarbage`
   cycle and asserts the block is gone from the metadata store AND from the tier, and asserts that
   BEFORE the refcounts — a count assertion placed first aborts a mutation probe before the consequence
