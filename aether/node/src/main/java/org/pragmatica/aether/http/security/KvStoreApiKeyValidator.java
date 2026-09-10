@@ -75,14 +75,17 @@ class KvStoreApiKeyValidator implements SecurityValidator {
     /// `SecurityContext.securityContext()`, whose `authorizationRole` is `VIEWER`. During the boot
     /// window between node start and the leader registering the bootstrap admin key in KV, a node
     /// running `security_mode = "api-key"` with no keys in its own config has neither source, so
-    /// every anonymous management-API GET reaching the port in that window was answered as an
-    /// authenticated VIEWER: `RoleEnforcer` allows VIEWER on every read route. The validator was
-    /// granting BECAUSE it could not check, which is #888's shape and #573's before it.
+    /// every anonymous management-API GET reaching the port in that window was SERVED. Precisely:
+    /// that context reports `isAuthenticated() == false`, but `RoleEnforcer` gates on
+    /// `authorizationRole` ALONE and never consults `isAuthenticated()`, so a VIEWER role on an
+    /// anonymous principal clears every management read route. The validator was granting BECAUSE
+    /// it could not check, which is #888's shape and #573's before it.
     ///
     /// The operator's "serve this plane without credentials" escape hatch is NOT here and is
-    /// untouched: it is `security_mode = "none"`, which `ManagementServerImpl#handleRequestInScope`
-    /// honors by never consulting a validator at all. A missing credential arriving HERE has
-    /// already passed a node that asked for one.
+    /// untouched: it is `security_mode = "none"`, which `ManagementServerImpl#handleRequest` honors
+    /// by never consulting a validator at all (`AppHttpServer` has the same gate in its own
+    /// `handleRequestInScope`; the two are different methods in different classes). A missing
+    /// credential arriving HERE has already passed a node that asked for one.
     private Result<SecurityContext> validateApiKey(HttpRequestContext request) {
         var configResult = configValidator.validate(request, SecurityPolicy.apiKeyRequired());
 
@@ -91,7 +94,7 @@ class KvStoreApiKeyValidator implements SecurityValidator {
         }
 
         return extractApiKey(request.headers()).toResult(SecurityError.MISSING_API_KEY)
-                                               .flatMap(this::checkKvStoreKey);
+                            .flatMap(this::checkKvStoreKey);
     }
 
     private Result<SecurityContext> checkKvStoreKey(String apiKey) {

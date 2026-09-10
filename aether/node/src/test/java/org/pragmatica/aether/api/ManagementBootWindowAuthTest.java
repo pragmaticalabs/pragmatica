@@ -46,7 +46,8 @@ import static org.assertj.core.api.Assertions.fail;
 /// WHAT THIS ASSERTS, AND WHERE IT SITS. The claim is about what an unauthenticated caller
 /// RECEIVES, so the assertions run the pipeline `ManagementServerImpl#validateManagementSecurity`
 /// runs -- `securityValidator.validate(ctx, apiKeyRequired())` then
-/// `RoleEnforcer.enforce(sc, resolvePermission(method, path))` -- and end on
+/// `RoleEnforcer.enforce(sc, resolvePermission(method, path))`, minus the audit side-effect the
+/// production path wraps around that enforce call -- and end on
 /// [ManagementServerImpl#resolveSecurityErrorStatus], the switch that decides the status handed to
 /// the response writer. Not covered below that line: the Netty write itself
 /// (`ProblemResponses.writeProblem`), which needs a live listener. `resolvePermission` and
@@ -54,8 +55,8 @@ import static org.assertj.core.api.Assertions.fail;
 /// either reaches this test.
 ///
 /// THE ESCAPE HATCH IS NOT HERE. `security_mode = "none"` is honored one level up, at
-/// `ManagementServerImpl#handleRequestInScope`'s `if (securityEnabled)`, which never consults a
-/// validator at all; this fix does not touch it. Every request reaching these assertions has
+/// `ManagementServerImpl#handleRequest`'s `if (securityEnabled)`, which never consults a validator
+/// at all; this fix does not touch it. Every request reaching these assertions has
 /// already passed a node that asked for a credential.
 ///
 /// A FAIL-OPEN DEFECT RETURNS THE SAME THING ON THE HAPPY PATH AS THE FIX DOES, so each denial
