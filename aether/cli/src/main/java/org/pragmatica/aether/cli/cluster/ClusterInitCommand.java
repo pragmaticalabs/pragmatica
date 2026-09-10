@@ -31,6 +31,7 @@ import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -171,7 +172,7 @@ class ClusterInitCommand implements Callable<Integer> {
 
         if (region == null) return new ClusterInitError.MissingField("--region").result();
 
-        if (instanceType == null || instanceType.isBlank()) return new ClusterInitError.InstanceTypeRequired(provider).result();
+        if (!Verify.Is.present(instanceType)) return new ClusterInitError.InstanceTypeRequired(provider).result();
 
         if (credentialEnv == null) return new ClusterInitError.MissingField("--credential-env").result();
 
