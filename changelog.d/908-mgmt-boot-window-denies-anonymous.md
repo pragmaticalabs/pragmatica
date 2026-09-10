@@ -39,8 +39,16 @@
   behavior was not observed against a live node. `ManagementServerImpl`'s `securityEnabled` gate —
   the `security_mode = "none"` opt-out — is asserted by source read, not by a test, because standing
   up the Netty listener is out of reach of this suite.]
-- **Not fixed here, and pre-existing:** with `security_mode = "none"` (the default when no
-  `[app-http]` security is configured) the management plane still dispatches every request,
-  including writes, with no security context at all. That is the documented opt-out this ticket's
-  acceptance criterion explicitly exempts, and narrowing it is a product decision about defaults
-  rather than a validator fix.
+- **Severity: this is the DEFAULT deployment path, not an edge case.** The shipped TOML loader
+  defaults `security_mode` to `API_KEY`, not `none` — `ConfigLoader` resolves it as
+  `explicitMode.or(SecurityMode.API_KEY)` (#290, secure-by-default). So a node started from stock
+  configuration has `securityEnabled() == true`, the management plane *does* consult the validator,
+  and if the operator declared no `[app-http.api-keys]` the boot window described above is exactly
+  what it runs. The `SecurityMode.NONE` literals in the tree belong to `AppHttpConfig`'s convenience
+  factories and the in-JVM harnesses (`EmberCluster`, and `ForgeServer` via it), not to the path a
+  deployed node loads.
+- **Not fixed here, and genuinely out of scope:** an operator who *explicitly* sets
+  `security_mode = "none"` still gets a management plane that dispatches every request, writes
+  included, with no security context — `ManagementServerImpl` skips the validator entirely. That is
+  the deliberate opt-out this ticket's acceptance criterion exempts by name, and narrowing an
+  explicitly-requested posture is a product decision rather than a validator fix.

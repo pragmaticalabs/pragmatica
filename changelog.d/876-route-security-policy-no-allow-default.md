@@ -26,6 +26,16 @@
 - [unverified: the compile-time property itself cannot be asserted by a runtime test. The reflection
   tripwire asserts the interface shape that *makes* it a compile error, which is what a
   "restore the convenient default" edit years from now would flip.]
+- **BREAKING CHANGE for external implementors of `RouteSecurityPolicy`.** This interface ships in a
+  released artifact (`org.pragmatica-lite:http-routing`), and the `v1.0.0-rc3` tag carries the
+  `default ... { return Access.ALLOW; }` verbatim. Removing a default method is source-incompatible:
+  **any implementor outside this repository that did not override `canAccess` will now fail to
+  compile.** That is the intended forcing function rather than an accident — the point of the fix is
+  that omitting the method can no longer pass silently — but it is a compile break and is announced
+  here rather than left to be discovered.
+  **Migration:** a route that is genuinely public replaces the inherited default with the explicit
+  `RouteSecurityPolicy.permitAll()`, or implements `canAccess` and decides. There is no behavioral
+  change for an implementor that already overrode it.
 - **Scope, stated because it is easy to over-read:** `canAccess` still has no caller in main code —
   aether's request path switches on the policy type in `SecurityValidator` instead — so this changes
   no request outcome today. The hazard fixed is that the method looked like a backstop while
