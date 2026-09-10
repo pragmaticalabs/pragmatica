@@ -25,7 +25,6 @@ import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /// #980 — pins `Main`'s cluster-secret stamp, the line that puts the secret where
 /// `BootstrapAdminKeyLeg` can derive the bootstrap admin key from it.
@@ -42,12 +41,14 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 /// end-to-end authentication; for `Main` itself the residual gap closes only under a real node boot.
 class MainClusterSecretStampTest {
     private static final String CONFIGURED_SECRET = "main-stamp-test-cluster-secret";
+    /// The environment arm, stated explicitly. No test in this class reads the ambient environment.
+    private static final Option<String> NO_ENV_SECRET = Option.none();
 
     /// THE regression. The stamped value must be the configured secret, not absent and not something
     /// else — the leg derives the cluster's ADMIN credential from exactly this.
     @Test
     void withResolvedClusterSecret_configuredSecret_isStampedOntoTheNodeConfig() {
-        var stamped = Main.withResolvedClusterSecret(minimalConfig(), configWith(CONFIGURED_SECRET));
+        var stamped = Main.withResolvedClusterSecret(minimalConfig(), configWith(CONFIGURED_SECRET), NO_ENV_SECRET);
 
         assertThat(stamped.clusterSecret().isPresent())
             .describedAs("without the stamp the leg falls back to a random key and `aether cluster "
@@ -61,9 +62,9 @@ class MainClusterSecretStampTest {
     /// separate reader into either path reddens this.
     @Test
     void withResolvedClusterSecret_agreesWithTheSecretTheCertificatePathUses() {
-        var aetherConfig = configWith(CONFIGURED_SECRET);
-        var stamped = Main.withResolvedClusterSecret(minimalConfig(), aetherConfig);
-        var certificatePathSecret = new String(Main.resolveClusterSecret(TlsConfig.tlsConfig(CONFIGURED_SECRET)).unwrap(),
+        var stamped = Main.withResolvedClusterSecret(minimalConfig(), configWith(CONFIGURED_SECRET), NO_ENV_SECRET);
+        var certificatePathSecret = new String(Main.resolveClusterSecret(TlsConfig.tlsConfig(CONFIGURED_SECRET),
+                                                                         NO_ENV_SECRET).unwrap(),
                                                StandardCharsets.UTF_8);
 
         assertThat(stamped.clusterSecret().unwrap())
@@ -76,11 +77,7 @@ class MainClusterSecretStampTest {
     /// would be derived from, handing every such cluster the same publicly-computable ADMIN key.
     @Test
     void withResolvedClusterSecret_noSecretConfiguredAnywhere_leavesItAbsent() {
-        assumeTrue(System.getenv("AETHER_CLUSTER_SECRET") == null,
-                   "AETHER_CLUSTER_SECRET is set in this environment, which is the other source this "
-                   + "resolver reads; the no-secret-anywhere case cannot be observed here");
-
-        var stamped = Main.withResolvedClusterSecret(minimalConfig(), configWith(""));
+        var stamped = Main.withResolvedClusterSecret(minimalConfig(), configWith(""), NO_ENV_SECRET);
 
         assertThat(stamped.clusterSecret().isEmpty())
             .describedAs("a blank secret must not be stamped as an empty string")
@@ -97,13 +94,10 @@ class MainClusterSecretStampTest {
     /// something reachable in-JVM.
     @Test
     void resolveTls_noClusterSecretAnywhere_failsSoTheNodeCannotBoot() {
-        assumeTrue(System.getenv("AETHER_CLUSTER_SECRET") == null,
-                   "AETHER_CLUSTER_SECRET is set in this environment, which would satisfy the very gate "
-                   + "this test exists to observe failing");
-
         var result = new Main(new String[0]).resolveTls(NodeId.nodeId("no-secret-boot-gate-test").unwrap(),
                                                         List.of(),
-                                                        configWith(""));
+                                                        configWith(""),
+                                                        NO_ENV_SECRET);
 
         assertThat(result.isFailure())
             .describedAs("a node with no cluster secret must not boot; if it could, it would reach "
@@ -118,11 +112,36 @@ class MainClusterSecretStampTest {
     void resolveTls_clusterSecretConfigured_succeeds() {
         var result = new Main(new String[0]).resolveTls(NodeId.nodeId("secret-present-boot-gate-test").unwrap(),
                                                         List.of(),
-                                                        configWith(CONFIGURED_SECRET));
+                                                        configWith(CONFIGURED_SECRET),
+                                                        NO_ENV_SECRET);
 
         assertThat(result.isSuccess())
             .describedAs("positive control: with a secret configured the gate must let the boot proceed")
             .isTrue();
+    }
+
+    /// The `AETHER_CLUSTER_SECRET` arm, now stated rather than inherited. Before SF4 this source was
+    /// read from the ambient environment, which forced the two tests above to be `assumeTrue`-guarded
+    /// — and a skip reads as green, on the very assertion carrying the "the boot path is closed"
+    /// argument. Injecting the source removes the guard AND lets the fallback arm be tested at all,
+    /// which it never was.
+    @Test
+    void resolveClusterSecretValue_noConfiguredSecret_fallsBackToTheEnvironmentSource() {
+        var stamped = Main.withResolvedClusterSecret(minimalConfig(),
+                                                     configWith(""),
+                                                     Option.some("secret-from-the-environment"));
+
+        assertThat(stamped.clusterSecret().unwrap()).isEqualTo("secret-from-the-environment");
+    }
+
+    /// Precedence: an explicitly configured `[tls] cluster_secret` wins over the environment.
+    @Test
+    void resolveClusterSecretValue_configuredSecret_winsOverTheEnvironmentSource() {
+        var stamped = Main.withResolvedClusterSecret(minimalConfig(),
+                                                     configWith(CONFIGURED_SECRET),
+                                                     Option.some("secret-from-the-environment"));
+
+        assertThat(stamped.clusterSecret().unwrap()).isEqualTo(CONFIGURED_SECRET);
     }
 
     private static Option<AetherConfig> configWith(String clusterSecret) {
