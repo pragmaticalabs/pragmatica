@@ -38,18 +38,20 @@
   cluster — *precisely the defect this ticket fixes*. It now logs at **WARN**, naming what did not
   happen, that the bootstrap poll will fail authentication with 401, and which setting to fix. It was
   previously INFO and worded as reassurance.
-  **Reachability, stated precisely — two routes, only one closed.** Via the BOOT PATH it is
-  unreachable: a node with no cluster secret does not boot, because `Main.run` `.expect`s `resolveTls`,
-  which fails with `MISSING_CLUSTER_SECRET`
+  **Reachability, stated precisely — it is an undefended invariant, not a live defect.** On this code
+  there is NO runtime route to it. A node with no cluster secret does not boot (`Main.run` `.expect`s
+  `resolveTls`, which fails with `MISSING_CLUSTER_SECRET`)
   [verified: `MainClusterSecretStampTest#resolveTls_noClusterSecretAnywhere_failsSoTheNodeCannotBoot`,
-  with `#resolveTls_clusterSecretConfigured_succeeds` as the positive control]. But via a **SKIPPED
-  STAMP it remains reachable on a node holding a perfectly good secret** —
-  `AetherNodeConfig.clusterSecret` is stamped separately, and that stamp's call site in `Main.run` is
-  the one hunk no in-JVM test can defend (deleting it leaves the suite green). Mutating the equivalent
-  `AetherNode` and `EmberCluster` hunks degrades into exactly this branch: the node minted a random
-  key. **The WARN is therefore the compensating control for that gap** — where a test would otherwise
-  stand, the runtime diagnostic stands instead. `EmberCluster` always supplies its own secret, so an
-  in-process node derives exactly as a production node does.
+  with `#resolveTls_clusterSecretConfigured_succeeds` as the positive control]; the stamp that carries
+  the secret onto the node config is unconditional and on no branch; and the boot gate and the stamp
+  read the same resolver over sources that cannot change mid-process. What could reach the branch is a
+  future EDIT that drops the stamp — which is why it is now pinned rather than merely warned about
+  [verified: `MainConfigStampReachabilityTest` (`aether/dead-surface-gate`) — an ASM check that
+  `Main.run()` still calls the stamp, plus the four sibling stamps, over the PRODUCTION corpus only;
+  deleting the call compiles cleanly and every other test stays green, so this is the only thing that
+  notices]. The WARN remains as defence in depth for anything that constructs `AetherNodeConfig`
+  directly, but the probe, not the log line, is what refuses the omission. `EmberCluster` always
+  supplies its own secret, so an in-process node derives exactly as a production node does.
   [verified: `BootstrapAdminKeyLegFallbackWarnTest` — 3 tests, with a sentinel positive control,
   because a `noneMatch` assertion over log capture is satisfied by an empty list and would otherwise
   examine nothing]
@@ -102,6 +104,32 @@
   `Main.withResolvedClusterSecret` from `run()` still leaves everything green. `run()` is the process
   entry point and is not drivable in-JVM; that line is covered only by a real node boot — a cloud
   bootstrap or a container run. Everything else on the path now reddens.
+- **LIMITATION — this fixes FRESH clusters. An UPGRADED cluster is not repaired by it.** The leg only
+  registers a key when the KV store holds no active ADMIN key at all (`hasActiveAdminKey` matches
+  ANY active ADMIN key, not specifically `bootstrap-admin` — pre-existing #290 behaviour, unchanged
+  here). So a cluster that already registered a **randomly generated** `bootstrap-admin` key before
+  this release keeps it, never receives the derived one, and `aether cluster bootstrap` will still
+  fail authentication against it with `401`. **Operator recovery:** authenticate with the random key
+  captured when that cluster was first formed, or replace it —
+  `aether cluster revoke-key bootstrap-admin --immediate`, then trigger a leadership change
+  (restarting the current leader is enough) so the new leader's registrar registers the derived key.
+  `--immediate` is not optional here: a plain revoke keeps the old key valid for its 300s grace
+  period, and the registrar's "does an admin key already exist" check counts a grace-period key as
+  valid, so it would decline to register during that window. The registrar also latches once per node
+  per leadership term, which is why a leadership change and not a bare revoke is what re-arms it. Replacing a live
+  admin credential during an upgrade is a migration-and-rotation decision, not a bootstrap fix, so it
+  is deliberately out of scope here rather than overlooked.
+- **`AetherNodeConfig.toString()` no longer renders the cluster secret.** The generated record
+  rendering printed it in plaintext; before this ticket that value bought transport compromise, and
+  after it the value IS the cluster's ADMIN credential — so any debug log, exception message or test
+  dump of the config leaked an admin credential. Presence is still shown
+  (`clusterSecret=Some(<redacted>)` / `None`) because an operator debugging a boot needs to know
+  whether a secret resolved; only the value is withheld.
+  [verified: `AetherNodeConfigRedactionTest` — 4 tests, calibrated in both directions: it first proves
+  the sentinel secret IS in the config and IS detectable by the same containment check, then asserts
+  the rendering omits it, so it cannot pass against the leak it prevents; plus a component-count
+  tripwire, because a hand-written override does not pick up new record components the way the
+  generated one did]
 - **What this does NOT establish** — [unverified] no cloud run was made, so the end-to-end claim (a
   bootstrap completing against a real cloud source) rests on the unit-level agreement of the three
   implementations plus the unpinned wiring above. Whether the KV commit lands

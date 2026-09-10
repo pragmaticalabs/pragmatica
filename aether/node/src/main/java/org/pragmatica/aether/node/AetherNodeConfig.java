@@ -364,6 +364,69 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     clusterSecret);
     }
 
+    /// #980 — the generated `toString()` rendered the cluster secret in PLAINTEXT, and after this
+    /// ticket that secret IS the cluster's ADMIN credential: `BootstrapAdminKeyLeg` derives the
+    /// bootstrap admin API key from it. So any line that dumps this config — a debug log, an
+    /// exception message, a test failure report, a transcript — leaks an admin credential.
+    ///
+    /// Before #980 the same value bought transport compromise but not the management API, which is
+    /// why the generated rendering was survivable then and is not now. This change raised the
+    /// severity of a pre-existing shape, so this change is where it is handled.
+    ///
+    /// Presence is still shown, because an operator debugging a boot needs to know whether a secret
+    /// was resolved at all — only the VALUE is withheld. Everything else renders exactly as the
+    /// generated form did.
+    ///
+    /// **Adding a record component means adding it here too.** The generated `toString` covered new
+    /// components automatically; this override does not. `AetherNodeConfigRedactionTest#
+    /// toString_componentCount_matchesThisOverride` is the tripwire for that drift — it fails with
+    /// instructions rather than letting a new field silently vanish from the rendering.
+    @Override
+    public String toString() {
+        return "AetherNodeConfig[topology=" + topology
+             + ", protocol=" + protocol
+             + ", sliceAction=" + sliceAction
+             + ", sliceConfig=" + sliceConfig
+             + ", managementPort=" + managementPort
+             + ", artifactRepo=" + artifactRepo
+             + ", cache=" + cache
+             + ", tls=" + tls
+             + ", quicTls=" + quicTls
+             + ", ttm=" + ttm
+             + ", rollback=" + rollback
+             + ", appHttp=" + appHttp
+             + ", controllerConfig=" + controllerConfig
+             + ", configProvider=" + configProvider
+             + ", environment=" + environment
+             + ", autoHeal=" + autoHeal
+             + ", observability=" + observability
+             + ", atomicity=" + atomicity
+             + ", activationGated=" + activationGated
+             + ", timeouts=" + timeouts
+             + ", certificateProvider=" + certificateProvider
+             + ", workerConfig=" + workerConfig
+             + ", deploymentDefaults=" + deploymentDefaults
+             + ", managementHttpProtocol=" + managementHttpProtocol
+             + ", storageConfig=" + storageConfig
+             + ", backupConfig=" + backupConfig
+             + ", membership=" + membership
+             + ", streaming=" + streaming
+             + ", clusterFormation=" + clusterFormation
+             + ", clusterName=" + clusterName
+             + ", storageEncryption=" + storageEncryption
+             + ", alerts=" + alerts
+             + ", clusterSecret=" + redactedSecret()
+             + "]";
+    }
+
+    /// Presence without value. `Some(<redacted>)` mirrors the shape the generated form would have
+    /// produced for an `Option`, so the rendering stays readable.
+    private String redactedSecret() {
+        return clusterSecret.isPresent()
+               ? "Some(<redacted>)"
+               : "None";
+    }
+
     public interface SelfStage {
         CoreNodesStage self(NodeId self);
     }
