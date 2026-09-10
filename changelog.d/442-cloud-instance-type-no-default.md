@@ -105,13 +105,39 @@ plus a sixth, reported and not fixed, that explains why the first one was so har
   whole cloud step, re-asking the provider), and `StepResult.Abort` now carries its cause so an
   exhausted input is not reported as "aborted by operator".
 
-- **Examples in live docs and configs are marked as examples**, because a concrete value in a doc is
-  a snapshot of someone else's catalogue — or someone else's jurisdiction — and rots the same way.
-  Two independently greppable caveats: **51** for instance types (15 files) and **38** for regions
-  (14 files). `aether/docs/specs/cluster-management-spec.md` still shows `cx21`/`cx11`; the values
-  are left in place and the caveat states plainly that Hetzner has retired them, rather than
-  substituting a fresh snapshot that will rot in turn. History is untouched
-  (`aether/docs/.internal/`, `CHANGELOG.md`, `specs/future/`, `specs/archive/`).
+- **Examples in live docs, configs and provisioning scripts are marked as examples**, because a
+  concrete value is a snapshot of someone else's catalogue — or someone else's jurisdiction — and
+  rots the same way. Two greppable markers, each counted over a stated space:
+
+  | marker | lines | files |
+  |---|---|---|
+  | `EXAMPLE instance type` | 48 | 19 |
+  | `EXAMPLE region` | 40 | 18 |
+
+  **Space:** all tracked files except `*.java` and `changelog.d/`. **Unit:** matching lines, verified
+  equal to occurrences (no line carries two markers). A further **13** caveats use prose wording —
+  table cells, blockquotes, inline notes — and cannot be reached by either marker; they are
+  enumerated in the branch report rather than folded silently into the totals.
+
+  The four shell scripts that provision **real, billable** servers (`deploy-cloud.sh`,
+  `driver-hetzner.sh`, `tools/build-aether-vm-snapshot.sh`, `tools/provision-test-pg.sh`) are
+  included: they are the only places in the tree where a stale literal costs money rather than time.
+  `driver-hetzner.sh` additionally carries a hardcoded **price** catalogue whose keys and rates are
+  both snapshots, and which has already rotted once.
+
+  `aether/docs/specs/cluster-management-spec.md` still shows `cx21`/`cx11`; the values are left in
+  place and the caveat states plainly that Hetzner has retired them, rather than substituting a fresh
+  snapshot that will rot in turn. History is untouched — `aether/docs/.internal/`, `CHANGELOG.md`,
+  `specs/future/`, `specs/archive/`, and the two RFCs under `docs/rfc/`, which are design records of
+  what was proposed at a point in time; correcting one would falsify the record. Neither RFC names a
+  retired type (`cax21`, `cx22`, `cx23`, `cpx22`, `cpx32` are all current), so nothing there is
+  copy-hazardous.
+
+- **`getting-started.md` is annotated once, in prose, and deliberately not per-occurrence.** All of
+  its instance-type mentions sit inside live-run confirmation records ("Live-run confirmed
+  (2026-07-24, 5×cpx32 across fsn1/nbg1/hel1)"). Those are measurements of what was actually run, not
+  examples to copy — annotating "check your catalogue" onto them would falsify a record. The
+  correct-live-specs / annotate-history rule applied *within* a document rather than to whole files.
 
 - **`aether/docs/specs/cluster-init-wizard-spec.md` was corrected, not merely annotated.** It showed
   `Region [fsn1]:` and `Instance type [cx22]:` — defaults that no longer exist — and its CLI example

@@ -114,7 +114,10 @@ readonly VM_NAME_PREFIX="aether-snapshot-build"
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
+# This script provisions a REAL, billable Hetzner server.
 VM_TYPE="cx23"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 VM_LOCATION="fsn1"
 VM_IMAGE="ubuntu-22.04"
 RUNTIME="container"

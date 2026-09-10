@@ -43,6 +43,12 @@ driver_require_cli() { command -v hcloud >/dev/null 2>&1; }
 #
 # UNKNOWN TYPES DELIBERATELY FALL BACK HIGH AND LOUD. The defect being fixed here is
 # under-reporting cost; a silent low default would reintroduce it in a new form.
+#
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
+# Every key in the table below is one, and so is every rate: this is a snapshot of someone
+# else's catalogue and prices, baked into this repository, and it has already rotted once —
+# see the CX22/CX23 note above. Re-check both against Hetzner's current pricing page rather
+# than trusting these numbers.
 driver_cost_estimate() {
     local instance_type="${1:-}"
     case "$instance_type" in
