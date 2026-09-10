@@ -349,7 +349,6 @@ public final class ConfigLoader {
                                         .or(ApiVersioningDetection.PATH);
         var apiVersionHeaderName = doc.getString("app-http", "api_version_header")
                                       .or(AppHttpConfig.DEFAULT_API_VERSION_HEADER);
-
         var appHttp = AppHttpConfig.appHttpConfig(enabled,
                                                   port,
                                                   apiKeys,

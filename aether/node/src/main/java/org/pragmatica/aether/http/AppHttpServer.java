@@ -566,15 +566,14 @@ class AppHttpServerAdapter implements AppHttpServer {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http",
                                                              config.port())
                                            .withMaxContentLength(config.maxRequestSize());
-
         // #967: never demand a client certificate from callers of a USER-facing listener. The node's
         // cluster TlsConfig is Mutual, so building this listener from it made every slice request
         // require a cluster-CA client cert — a certificate that, under `auto_generate`, is derived
         // from the cluster secret and never written to disk. See AppHttpConfig.tls() for the
         // operator-supplied identity that a public listener actually needs.
         return appTls().orElse(() -> tls.map(TlsConfig::serverAuthOnly))
-                       .map(serverConfig::withTls)
-                       .or(serverConfig);
+                     .map(serverConfig::withTls)
+                     .or(serverConfig);
     }
 
     private Unit registerStartedH1Server(HttpServer server) {
@@ -707,10 +706,9 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private static Option<TlsConfig> buildTlsFromBundle(CertificateBundle newBundle) {
         var identity = new TlsConfig.Identity.FromProvider(newBundle.certificatePem(), newBundle.privateKeyPem());
-
         // #967: server-auth only, matching buildServerConfig(). Carrying the CA as clientAuth here
         // would re-arm ClientAuth.REQUIRE at the first certificate rotation.
-        return Option.some(new TlsConfig.Server(identity, Option.<TlsConfig.Trust>none()));
+        return Option.some(new TlsConfig.Server(identity, Option.<TlsConfig.Trust> none()));
     }
 
     @Override
