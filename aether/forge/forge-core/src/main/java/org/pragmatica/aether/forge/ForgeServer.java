@@ -581,7 +581,8 @@ public final class ForgeServer {
     /// states only what the deploy actually observed, says outright that the cause was not
     /// determined, and lists the candidates without ranking them.
     static String startupDeployFailureMessage(String artifactCoords, String detail) {
-        return "Startup blueprint deploy failed for '" + artifactCoords + "': " + detail
+        return "Startup blueprint deploy failed for '" + artifactCoords
+             + "': " + detail
              + " — exiting so the cluster does not run empty while appearing healthy. "
              + "Forge checked exactly one thing: it POSTed these coordinates to "
              + "/api/v1/blueprints/deploy and recorded the response quoted above. It did NOT "
