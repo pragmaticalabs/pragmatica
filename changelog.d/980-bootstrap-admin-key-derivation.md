@@ -64,13 +64,25 @@
   shared implementation and kept no private copy), the leg reverting to a random key (3 red across 2
   classes), the audit entry dropped (1 red), the blank-secret guard removed (1 red), the CLI reverting
   to config-only key lookup (2 red), and the state file reverting to a bare write (2 red).
-- **THREE WIRING HUNKS ARE NOT PINNED BY ANY TEST, and their mutations stay green.** Stated as a
-  measured result, not an omission: replacing `config.clusterSecret()` with `Option.none()` in
-  `AetherNode`, replacing the `Main` stamp with `Option.empty()`, and replacing Ember's pass-through
-  with `Option.empty()` each leave the suite entirely green — 1299 `aether/node` tests for the first
-  two, 6 `aether/ember` tests for the third. These are boot-assembly lines whose only observable is a
-  live cluster registering a key, so nothing short of a cloud bootstrap or a new Ember config-accessor
-  test can redden them. A defect confined to those three lines would ship undetected by CI.
+- **The wiring is pinned end-to-end by a real cluster.** `EmberBootstrapAdminKeyAuthTest`
+  (`aether/ember`) boots a three-node in-JVM cluster from a known cluster secret **with management
+  security ON and no configured API key — the incident's exact posture**, which is every cluster
+  `aether cluster init` creates — waits for real leader election and the real consensus commit, then
+  authenticates `GET /api/v1/cluster/keys` and `GET /api/v1/health` (the endpoint that returned the
+  `401`) with a key derived OUTSIDE this codebase. Both must return 200 and the bootstrap key must be
+  listed; then, in the same run and at that moment, the same endpoint must REFUSE a request with no
+  key and one bearing a well-formed key derived from a different secret. Those two controls are what
+  make the 200 mean "authenticated" rather than "no gate was reached".
+  [verified: `EmberBootstrapAdminKeyAuthTest#derivedKey_isRegisteredByTheClusterAndAuthenticatesAgainstIt`]
+  Mutation-probed: removing `config.clusterSecret()` from `AetherNode`'s call to the leg, and removing
+  `EmberCluster`'s pass-through, each turn it RED with `Expecting "HTTP 403" to contain
+  "bootstrap-admin"` — the node minted a random key and refused the derived one. `Main`'s stamp is
+  pinned separately by `MainClusterSecretStampTest` (3 tests; replacing the stamped value with
+  `Option.empty()` reddens 2 of them).
+- **One residual gap, stated because it is real:** deleting the CALL to
+  `Main.withResolvedClusterSecret` from `run()` still leaves everything green. `run()` is the process
+  entry point and is not drivable in-JVM; that line is covered only by a real node boot — a cloud
+  bootstrap or a container run. Everything else on the path now reddens.
 - **What this does NOT establish** — [unverified] no cloud run was made, so the end-to-end claim (a
   bootstrap completing against a real cloud source) rests on the unit-level agreement of the three
   implementations plus the unpinned wiring above. Whether the KV commit lands

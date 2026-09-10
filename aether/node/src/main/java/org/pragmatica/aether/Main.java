@@ -131,13 +131,9 @@ public record Main(String[] args) {
                                      .withClusterName(resolveClusterName())
                                      .withAutoHeal(resolveAutoHeal(aetherConfig))
                                      .withStorageEncryption(resolveStorageEncryption(aetherConfig))
-                                     .withAlerts(resolveAlertConfig(aetherConfig))
-                                     // #980 — the bootstrap admin key is derived from this secret at
-                                     // first leadership, so `aether cluster bootstrap` can authenticate
-                                     // its own quorum poll. resolveTls above already aborted the boot
-                                     // if it were missing, so this is present on any booted node.
-                                     .withClusterSecret(resolveClusterSecretValue(resolveTlsConfig(aetherConfig)));
+                                     .withAlerts(resolveAlertConfig(aetherConfig));
 
+        config = withResolvedClusterSecret(config, aetherConfig);
         enforceWalDurabilityBootable(config);
         // Review catch (#634 batch): assembly failures — the routed-type codec guard included — get
         // the same FATAL + exit shape as the other boot gates, not an uncaught-exception stack trace.
@@ -464,9 +460,27 @@ public record Main(String[] args) {
                      .or("localhost");
     }
 
-    private static Result<byte[]> resolveClusterSecret(TlsConfig tlsCfg) {
+    /// Package-private (not private) so `MainClusterSecretStampTest` can assert that the CA path and
+    /// the #980 admin-key path resolve the SAME secret — re-inlining a separate reader into either
+    /// would otherwise be silent.
+    static Result<byte[]> resolveClusterSecret(TlsConfig tlsCfg) {
         return resolveClusterSecretValue(tlsCfg).map(s -> s.getBytes(StandardCharsets.UTF_8))
                                         .toResult(MISSING_CLUSTER_SECRET);
+    }
+
+    /// #980 — stamp the cluster secret onto the node config, from which `BootstrapAdminKeyLeg`
+    /// derives the bootstrap admin API key at first leadership, so `aether cluster bootstrap` can
+    /// authenticate its own quorum poll. `resolveTls` has already aborted the boot if the secret were
+    /// missing, so this is present on any node that reaches here.
+    ///
+    /// Extracted from `run()` and package-private ONLY so it is reachable from a test. Inline in the
+    /// builder chain it was unpinnable: replacing the argument with `Option.empty()` left all 1,299
+    /// `aether/node` tests green, which made the whole feature rest on a line nothing defended.
+    /// `MainClusterSecretStampTest` now drives this. What remains unpinned is the CALL to it from
+    /// `run()` — deleting that line is still silent here, and is caught only by
+    /// `EmberBootstrapAdminKeyAuthTest`'s equivalent for the in-JVM path or by a cloud bootstrap.
+    static AetherNodeConfig withResolvedClusterSecret(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
+        return config.withClusterSecret(resolveClusterSecretValue(resolveTlsConfig(aetherConfig)));
     }
 
     /// #980 — the single reader of the cluster secret's two sources (`[tls] cluster_secret`, then
