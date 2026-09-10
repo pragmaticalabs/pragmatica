@@ -29,12 +29,34 @@
     `slice.artifactId` only) and compile-time code cannot know a deployment's version — so the
     identity is taken from the one place holding the deployed `Artifact`. This also repairs
     **already-compiled slice jars**: no slice needs rebuilding to release correctly.
+  - **`ResourceProviderFacade.releaseAll` is now ABSTRACT — the silent default is gone.**
+    `Promise.unitPromise()` is indistinguishable from "released everything", which is what let the
+    node inherit it. The compiler now refuses an implementation that does not address release, so
+    the five remaining no-ops (`SliceLoadingContext.NoOpResourceProvider`, `SliceStore`'s and
+    `DependencyResolver`'s refusing providers, `AetherNode.noOpResourceProviderFacade`, the test
+    kit's `MapResourceProvider`) are **explicit, greppable and deliberate** instead of inherited by
+    accident — each states why it has nothing to close. A build error replaces a silent runtime
+    defect. Blast radius, fully enumerated: 16 files, all inside `aether/`, **zero generated
+    sources and nothing outside the repo** — generated slice factories *consume* the facade as a
+    record component and never implement it.
   - New `ResourceProvider.facade()` returns a complete forwarding adapter; `AetherNode` uses it
-    instead of a hand-rolled partial one. Naming the adapter does not make partial implementation
-    impossible — the interface default is still inheritable — but it removes the reason to write
-    one.
-  - The generator still emits its two-segment coordinate and the parameter is still forwarded where
-    the slice-aware wrapper is absent (a context with no slice id). That branch closes nothing
+    instead of a hand-rolled partial one.
+  - **The caller's id is substituted but NOT discarded.** A parameter that looks meaningful and is
+    silently dropped is the same shape as the defect being fixed, so disagreement is classified and
+    reported: `EXACT` (caller names the deployed artifact — silent), `GENERATED_BASE` (caller names
+    the version-less base of this artifact — **DEBUG**, so the 34 stale coordinates are visible on
+    demand), `FOREIGN` (caller names some other slice — **WARNING**, naming both ids). The level is
+    graded on purpose: a blanket warning would fire on every unload of every slice built by the
+    current processor, and a warning for the universal expected state trains readers to ignore the
+    one that matters — the same reasoning `ResourceFactory`'s close dispatch already records. The
+    `FOREIGN` case is the one that was previously invisible **and honoured**: before the fix a slice
+    passing another slice's id would have released that slice's resources.
+  - **The parameter was not removed, and the reason is a mechanism rather than a preference.**
+    Every already-compiled slice jar calls `releaseAll(String)` from its generated `stop()`, so
+    deleting it turns each of them into a `NoSuchMethodError` at unload — breaking exactly the jars
+    this fix exists to repair.
+  - The generator still emits its two-segment coordinate, and the parameter is still forwarded
+    where the slice-aware wrapper is absent (a context with no slice id). That branch closes nothing
     either way: such a context injects no provisioning scope, so its resources land in the
     provider's unattributed scope, which no release matches by design (#268 R2). It is preserved as
     the contract, not as a working fallback. `computeSliceArtifactCoordinate` carries a comment
@@ -61,6 +83,12 @@
   [verified: `SpiResourceProviderLifecycleTest$FacadeView` (`aether/resource/api`)] pins that the
   facade forwards the release to the provider, does not widen it to other scopes, and shares the
   provider's cache.
+  [verified: `SliceLoadingContextReleaseIdentityTest$AgreementClassification`] pins all three
+  disagreement classes plus the discrimination that keeps `GENERATED_BASE` narrow — a different
+  slice whose coordinate merely shares a character prefix is `FOREIGN`, not a base.
+  [mechanism: `releaseAll` is abstract, so an implementation that ignores release does not compile —
+  verified by deleting an override and observing the compile error, which is the only probe a
+  build-time guard admits]
 
 - **What is NOT verified.** This is the node's slice-lifecycle path in-process — no cluster, no
   ports, no consensus. The one-line `AetherNode` call site is **not independently pinned by a test**:

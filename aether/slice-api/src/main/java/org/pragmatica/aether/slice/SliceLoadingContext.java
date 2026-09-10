@@ -434,17 +434,17 @@ public final class SliceLoadingContext implements SliceCreationContext {
             return delegate.provide(resourceType, configSection, context.withExtension(String.class, sliceId));
         }
 
-        /// Release under the id this wrapper PROVISIONS under, discarding the caller's (#892).
+        /// Release under the id this wrapper PROVISIONS under, reporting the caller's (#892).
         ///
         /// The two sides used to compute the identity independently and could never agree. This
         /// wrapper scopes every provisioning to `sliceId`, which `DependencyResolver` sets from
         /// `artifact.asString()` — `groupId:artifactId:version`, three segments. The caller is a
         /// slice's generated `stop()`, which passes a compile-time literal from
         /// `FactoryClassGenerator.computeSliceArtifactCoordinate`:
-        /// `groupId:artifactId-kebab(SliceName)` — two segments, no version, and a different
-        /// artifactId segment. Measured across the tree at the time of the fix: 34 generated
-        /// `stop()` bodies, all two-segment, 0 able to match a scope. `releaseAll` compares scope
-        /// strings for equality, so NO provisioned resource was ever closed on any slice unload.
+        /// `groupId:artifactId-kebab(SliceName)` — two segments, no version. Measured across the
+        /// tree at the time of the fix: 34 generated `stop()` bodies, all two-segment, 0 able to
+        /// match a scope. `releaseAll` compares scope strings for equality, so NO provisioned
+        /// resource was ever closed on any slice unload.
         ///
         /// The processor cannot be fixed into agreement: it has no version option to emit
         /// (`SliceProcessor`'s `@SupportedOptions` carries `slice.groupId` and `slice.artifactId`
@@ -452,12 +452,63 @@ public final class SliceLoadingContext implements SliceCreationContext {
         /// identity is taken from the one place that holds the deployed `Artifact`, and the two
         /// strings are no longer two — a design-out rather than a reconciliation.
         ///
-        /// The parameter stays because it is still load-bearing on the branch where this wrapper
-        /// is ABSENT: [#resources] only interposes it when `delegate.sliceId()` is present, and a
-        /// context without one forwards the caller's argument unchanged.
+        /// WHY THE PARAMETER IS NOT REMOVED, and why it is not silently ignored either. Removing it
+        /// would be the cleaner signature, and it is ruled out by the property that makes this fix
+        /// the correct one: every ALREADY-COMPILED slice jar calls `releaseAll(String)` from its
+        /// generated `stop()`, so deleting the parameter turns each of them into a
+        /// `NoSuchMethodError` at unload. Substituting at runtime repairs those jars without a
+        /// rebuild; changing the signature would break exactly the jars it exists to repair.
+        ///
+        /// So the value is kept and REPORTED rather than discarded, because a parameter that looks
+        /// meaningful and is silently dropped is the same shape as the defect being fixed. What is
+        /// reported depends on what disagreement means — see [#ReleaseIdAgreement].
         @Override
         public Promise<Unit> releaseAll(String releaseSliceId) {
+            reportAgreement(releaseSliceId);
+
             return delegate.releaseAll(sliceId);
+        }
+
+        private void reportAgreement(String releaseSliceId) {
+            switch (ReleaseIdAgreement.between(releaseSliceId, sliceId)) {
+                case EXACT -> {}
+                case GENERATED_BASE -> logger().log(System.Logger.Level.DEBUG,
+                                                    "Slice " + sliceId + " released under its deployed artifact; its generated stop() passed the" + " version-less base coordinate " + releaseSliceId + " (expected — the annotation processor has no version to emit)");
+                case FOREIGN -> logger().log(System.Logger.Level.WARNING,
+                                             "Slice " + sliceId + " asked to release " + releaseSliceId + ", which is not its own deployed artifact; releasing " + sliceId + " instead. A slice can only release what it provisioned.");
+            }
+        }
+
+        private static System.Logger logger() {
+            return System.getLogger(SliceLoadingContext.class.getName());
+        }
+    }
+
+    /// How a caller-supplied release id relates to the authoritative one (#892).
+    ///
+    /// The three cases carry different news, which is why they are not one message. A blanket
+    /// warning would fire on EVERY unload of EVERY slice built by the current processor — the
+    /// universal expected state — and a warning for the normal case trains readers to ignore the
+    /// one that matters. `ResourceFactory`'s close dispatch records the same reasoning for its own
+    /// DEBUG choice.
+    enum ReleaseIdAgreement {
+        /// Caller and context name the same artifact. Nothing to report; this is what a processor
+        /// that could emit a version would produce.
+        EXACT,
+        /// The caller passed the version-less base of THIS artifact — the shape every generated
+        /// `stop()` emits today. Expected, logged at DEBUG so the 34 stale coordinates are visible
+        /// on demand rather than invisible.
+        GENERATED_BASE,
+        /// The caller named something that is not this slice at all. Worth a WARNING: before the
+        /// substitution this would have been honoured, letting one slice release another's
+        /// resources. Now it cannot, and it says so.
+        FOREIGN;
+        static ReleaseIdAgreement between(String callerId, String authoritativeId) {
+            return authoritativeId.equals(callerId)
+                   ? EXACT
+                   : authoritativeId.startsWith(callerId + ":")
+                     ? GENERATED_BASE
+                     : FOREIGN;
         }
     }
 
@@ -472,6 +523,13 @@ public final class SliceLoadingContext implements SliceCreationContext {
         @Override
         public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
             return NOT_CONFIGURED.promise();
+        }
+
+        /// Deliberate no-op, not an inherited one (#892): this provider refuses every provisioning,
+        /// so there is provably nothing for a release to close.
+        @Override
+        public Promise<Unit> releaseAll(String sliceId) {
+            return Promise.unitPromise();
         }
     }
 

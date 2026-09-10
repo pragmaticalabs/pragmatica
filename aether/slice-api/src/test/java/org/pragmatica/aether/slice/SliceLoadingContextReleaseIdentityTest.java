@@ -127,6 +127,44 @@ class SliceLoadingContextReleaseIdentityTest {
         }
     }
 
+    /// The caller's id is substituted, NOT discarded — a parameter that looks meaningful and is
+    /// silently dropped is the same shape as the defect this fixes. What disagreement MEANS is
+    /// classified here, and the classification decides how loudly it is reported.
+    @Nested
+    class AgreementClassification {
+
+        @Test
+        void between_isExact_whenTheCallerNamesTheDeployedArtifact() {
+            assertThat(SliceLoadingContext.ReleaseIdAgreement.between(DEPLOYED_ARTIFACT, DEPLOYED_ARTIFACT))
+                    .describedAs("what a processor that could emit a version would produce")
+                    .isEqualTo(SliceLoadingContext.ReleaseIdAgreement.EXACT);
+        }
+
+        @Test
+        void between_isGeneratedBase_whenTheCallerNamesTheVersionLessBaseOfIt() {
+            assertThat(SliceLoadingContext.ReleaseIdAgreement.between(GENERATED_COORDINATE, DEPLOYED_ARTIFACT))
+                    .describedAs("the shape every generated stop() emits today — expected, so not a warning")
+                    .isEqualTo(SliceLoadingContext.ReleaseIdAgreement.GENERATED_BASE);
+        }
+
+        @Test
+        void between_isForeign_whenTheCallerNamesAnotherSlice() {
+            assertThat(SliceLoadingContext.ReleaseIdAgreement.between("org.other:some-other-slice:9.9.9", DEPLOYED_ARTIFACT))
+                    .describedAs("before the substitution this would have released another slice's resources")
+                    .isEqualTo(SliceLoadingContext.ReleaseIdAgreement.FOREIGN);
+        }
+
+        /// The discrimination that makes GENERATED_BASE narrow rather than a prefix free-for-all: a
+        /// DIFFERENT slice whose coordinate merely starts with the same characters is FOREIGN, not
+        /// a base. Without the segment separator, `…-release-probe` would swallow
+        /// `…-release-probe-extra`.
+        @Test
+        void between_isForeign_whenAnotherSlicesIdMerelySharesAPrefix() {
+            assertThat(SliceLoadingContext.ReleaseIdAgreement.between(GENERATED_COORDINATE + "-extra", DEPLOYED_ARTIFACT))
+                    .isEqualTo(SliceLoadingContext.ReleaseIdAgreement.FOREIGN);
+        }
+    }
+
     /// Captures both halves of the identity: the scope injected into a provisioning context, and
     /// the id handed to `releaseAll`.
     private static final class Recorder {

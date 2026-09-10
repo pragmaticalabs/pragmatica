@@ -122,6 +122,13 @@ public interface SliceStore {
             public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
                 return NOT_CONFIGURED.promise();
             }
+
+            /// Deliberate no-op, not an inherited one (#892): this provider refuses every
+            /// provisioning, so there is provably nothing for a release to close.
+            @Override
+            public Promise<Unit> releaseAll(String sliceId) {
+                return Promise.unitPromise();
+            }
         };
     }
 

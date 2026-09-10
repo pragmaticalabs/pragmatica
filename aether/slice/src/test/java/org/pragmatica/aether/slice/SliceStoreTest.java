@@ -458,6 +458,12 @@ class SliceStoreTest {
         public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
             return Causes.cause("no resources in this test").promise();
         }
+
+        /// Explicit no-op (#892): this stub refuses every provisioning, so nothing can need closing.
+        @Override
+        public Promise<Unit> releaseAll(String sliceId) {
+            return Promise.unitPromise();
+        }
     };
 
     // === Slice-intrinsic secret resolution (#269) ===
