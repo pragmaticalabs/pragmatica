@@ -57,6 +57,21 @@
   failure branch reddens `generatedScript_failsNamingTheDatabaseWhenTheContainerIsDead`.
   `mvn jbct:check -pl aether/forge/forge-core` — 2 Java files, 0 format, 0 lint errors.
   Root `mvn clean install` — BUILD SUCCESS, 145 modules, 13,445 tests, 0 failures/errors]
+- **The honesty pin on that message defends the property, not a spelling.** It first asserted
+  `doesNotContain("mvn install")`; an adversarial pass put the misdirection back worded
+  `mvn clean install` and **every test in the class stayed green**, because that string does not
+  contain the substring. The assertion is now the pattern `(?i)\b(mvn|maven)\b[^.]*\binstall\b` -
+  `mvn` or `maven` followed by `install` in the same sentence. Verified by mutation against four
+  spellings (`mvn install`, `mvn clean install`, `Maven install`, `mvn -DskipTests install`): each
+  reddens the pin, each suite arm ran 4 tests. A pin that defends one wording is evaded by the next
+  author's paraphrase rather than by a copy of the old defect.
+- **NOT closed: the scaffold template still pins `postgres:17` while the four examples pin
+  `postgres:18-alpine`, and nothing pins the two together.** The identity test guards the four
+  examples against *each other* only, so the exact drift its own comment cites as having happened
+  once remains possible. Not a functional defect - the mount is derived from whichever image is
+  pinned, and derivation is correct for 17 - but `GeneratedStartPostgresScriptTest` stubs a pre-18
+  image only, so the template's postgres-18 derivation path is unexercised, whereas the example
+  tests carry the mutually exclusive 18/pre-18 pair that makes the derivation checkable.
 - **What is NOT covered:** the container DEATH the ticket reports (295 ms, exit 1 on a virgin Hetzner
   box) was **not reproduced on the verifying machine** — on aarch64 Docker Desktop 29.2.1 the same
   pre-18 mount starts and serves. What is established here is the mount defect by its persistence

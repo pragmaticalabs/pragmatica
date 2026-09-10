@@ -62,6 +62,11 @@
   13,445 tests, 0 failures/errors, 19 skipped = **10 surefire + 9 failsafe**; the 9 are
   `HetznerCloudIT`, gated on an unset `HETZNER_CLOUD_TESTS` and invisible to a surefire-only count.
   All 31 tests this branch adds ran; none skipped, and none carries `@Disabled` or an assumption]
+- **This gate is a LOCAL developer gate and is NOT enforced by CI.** `forge.sh` is invoked nowhere
+  under `.github/` — searched `.github/`, `*.sh` and `docs/`, with `grep -rln mvn .github/workflows/`
+  returning `ci.yml` and `release.yml` as the positive control; only `build.sh`'s advisory `echo`
+  mentions it. So nothing stops a stale-runtime forge run in CI, because CI never runs forge.sh at
+  all. Stated because "we added a freshness gate" reads as stronger than it is.
 - **What is NOT covered:** the freshness check is a MTIME comparison, so it cannot see a jar whose
   content differs from its source at the same timestamp, and a `git checkout` that rewrites source
   mtimes marks a tree stale even when the bytecode matches — deliberately fail-closed, since the
