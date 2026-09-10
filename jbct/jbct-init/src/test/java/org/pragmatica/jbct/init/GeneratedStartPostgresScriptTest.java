@@ -76,9 +76,11 @@ class GeneratedStartPostgresScriptTest {
         state = Files.createDirectories(tempDir.resolve("state"));
         stubDir = tempDir.resolve("stub");
 
-        SliceProjectInitializer.sliceProjectInitializer(projectDir, "org.example", "demo")
-                               .flatMap(SliceProjectInitializer::initialize)
-                               .onFailure(cause -> {throw new IllegalStateException(cause.message());});
+        var generated = SliceProjectInitializer.sliceProjectInitializer(projectDir, "org.example", "demo")
+                                              .flatMap(SliceProjectInitializer::initialize);
+
+        assertThat(generated.isSuccess()).as("the scaffold must generate before its script can be tested")
+                                         .isTrue();
 
         writeExecutable(stubDir.resolve("docker"), STUB_RUNTIME);
         Files.writeString(state.resolve("ready"), "yes");

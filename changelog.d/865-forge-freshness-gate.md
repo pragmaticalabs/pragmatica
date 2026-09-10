@@ -29,3 +29,26 @@
   module), which is the ticket's option (c) — a reader can see what was executed instead of inferring
   it. The opt-in `--rebuild` of option (b) was deliberately not added: the refusal already names the
   remedy, and a gate that silently rebuilds hides the same staleness it exists to reveal.
+- [verified: `script-gate` — `ForgeFreshnessGateTest` 8/8 (fresh; touched source; touched *resource*;
+  absent artifact named and never counted as fresh; no artifact at all → exit 2; missing local
+  repository → exit 2; absent forge module → exit 2; and a stale module OUTSIDE the closure that must
+  NOT refuse, which is what makes the closure claim checkable), `ForgeGateRefusalTest` 5/5, driving
+  the real `forge.sh` with `mvn` stubbed on PATH so a refusal is only credited when the stub's marker
+  file is ABSENT; `ScriptGateFixtureTest` 4/4 — 24/24 total.
+  Mutation matrix, each reverted and the revert confirmed by an empty `git diff HEAD`: removing the
+  staleness comparison reddens 3 named tests; making examined-zero return FRESH reddens
+  `noArtifactAtAll_isIndeterminateRatherThanGreen`; making `forge.sh` never invoke the checker reddens
+  3 tests in `ForgeGateRefusalTest` while all 8 `ForgeFreshnessGateTest` tests stay GREEN, which is
+  the independence of the two classes stated as what goes red.
+  Live: on this tree (jars 2026-09-08, sources checked out today) the checker reports
+  `examined 70 module(s): 51 fresh, 19 stale, 0 with no installed artifact` and `forge.sh smoke`
+  exits 1 with Maven never invoked.
+  `mvn jbct:check -pl aether/forge/forge-core` — 2 Java files, 0 format issues, 0 lint errors.
+  Root `mvn clean install` — BUILD SUCCESS, 145 modules, 13,445 tests, 0 failures/errors, 19 skipped]
+- **What is NOT covered:** the freshness check is a MTIME comparison, so it cannot see a jar whose
+  content differs from its source at the same timestamp, and a `git checkout` that rewrites source
+  mtimes marks a tree stale even when the bytecode matches — deliberately fail-closed, since the
+  alternative is the silent stale run. It compares against the artifact `-pl` would resolve, not
+  against what Maven ultimately puts on the classpath, so a dependency pulled from a remote
+  repository rather than the local one is outside its reach. The forge suite itself was not executed
+  as part of this change.
