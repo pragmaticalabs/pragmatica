@@ -153,9 +153,7 @@ public class FormatCommand implements Callable<Integer> {
         var coverage = AnalysisCoverage.analysisCoverage(collected, errors);
 
         System.out.println();
-        coverage.gapReport("format")
-                .onPresent(System.out::println);
-
+        coverage.gapReport("format").onPresent(System.out::println);
         if (checkOnly) {
             printCheckSummary(needsFormatting, coverage);
         } else if (dryRun) {
@@ -169,7 +167,8 @@ public class FormatCommand implements Callable<Integer> {
     /// line states the coverage the verdict was reached over.
     private void printCheckSummary(List<Path> needsFormatting, AnalysisCoverage coverage) {
         if (coverage.isPartial()) {
-            System.out.println("✗ Checked " + coverage.render() + ": " + needsFormatting.size()
+            System.out.println("✗ Checked " + coverage.render()
+                              + ": " + needsFormatting.size()
                               + " file(s) need formatting");
 
             return;
