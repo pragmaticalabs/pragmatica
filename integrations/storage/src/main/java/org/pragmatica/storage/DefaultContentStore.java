@@ -41,8 +41,8 @@ final class DefaultContentStore implements ContentStore {
 
     private Promise<String> putDirect(String name, byte[] content) {
         return frameCompress(content).async()
-                                     .flatMap(framed -> storage.putRef(name, framed))
-                                     .map(BlockId::hexString);
+                            .flatMap(framed -> storage.putRef(name, framed))
+                            .map(BlockId::hexString);
     }
 
     private Promise<String> putChunked(String name, byte[] content) {
@@ -60,7 +60,8 @@ final class DefaultContentStore implements ContentStore {
     private Promise<String> storeManifestUnderName(String name, long totalSize, List<String> chunkIds) {
         var manifest = ContentManifest.contentManifest(name, totalSize, chunkIds);
 
-        return storage.putRef(name, manifest.toBytes())
+        return storage.putRef(name,
+                              manifest.toBytes())
                       .map(BlockId::hexString);
     }
 

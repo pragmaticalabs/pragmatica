@@ -19,7 +19,10 @@
   deletes them — a use-after-free, worse than the leak. `createRef`'s credit is correct for its own job.
   It is the pairing that was wrong, not either half. [verified:
   `ContentStoreReclamationTest$ChunkedContent#put_chunkedContent_namesOnlyTheManifest_andChunksSurviveCollection`
-  is the counter-mutation guard — it goes red if `put` stops crediting]
+  is the counter-mutation guard — under exactly that alternative "fix" it reddens with
+  `collectGarbage` returning 4 instead of 0, four chunks taken out from under a readable document. An
+  independent pre-existing witness reddens with it:
+  `StorageInstanceWriteOnlyDemotionTest#writeThrough_duplicatePutWhileWriteInFlight_refCountSurvivesFinalization`]
 - **The `replaceRef` default fallback is now correct by construction on every implementor.** It composed
   `put` with `createRef` and so carried the same double count — plus a second defect, never decrementing
   the block it superseded — onto any `StorageInstance` that did not override it. It now delegates to
@@ -31,12 +34,20 @@
   external implementation must add it. That is the point — the alternative default is a silent unbounded
   leak. In-tree, four test doubles were updated.
 - **What is pinned is the collection, not the arithmetic.** Each new test runs a real `collectGarbage`
-  cycle and asserts the block is gone from the metadata store AND from the tier; the refCount assertions
-  are only locators for a failure the collection assertion reports. The lifecycle is driven through the
-  production APIs — `ContentStore.put` / `StorageSegmentSink.seal`, then `deleteRef` or an overwrite of
-  the same name — with elapsed time the only hand-fed input. [mechanism: `ContentStoreReclamationTest`
-  (`integrations/storage`, 4 tests), `StorageSegmentSinkTest$Reclamation` (`aether/aether-stream`,
-  2 tests); each production hunk was reverted individually and the named tests confirmed red]
+  cycle and asserts the block is gone from the metadata store AND from the tier, and asserts that
+  BEFORE the refcounts — a count assertion placed first aborts a mutation probe before the consequence
+  is ever reached, which would leave the probe proving that a counter moved rather than that a block
+  was reclaimed. The lifecycle is driven through the production APIs — `ContentStore.put` /
+  `StorageSegmentSink.seal`, then `deleteRef` or an overwrite of the same name — into the production
+  `DefaultStorageGarbageCollector`, with elapsed time the only hand-fed input. [verified:
+  `ContentStoreReclamationTest` (`integrations/storage`, 4 tests), `StorageSegmentSinkTest$Reclamation`
+  (`aether/aether-stream`, 2 tests) — each production hunk was reverted individually and the named
+  tests confirmed red on their collection assertions: reverting `DefaultContentStore` reddens 4 of
+  `integrations/storage`'s 270 tests, reverting `StorageSegmentSink.seal` reddens 2 of
+  `aether/aether-stream`'s 732]
+- **[unverified: no cluster run.]** All evidence is in-JVM against `MemoryTier`. Nothing here was
+  exercised on a multi-node cluster, and a DHT-backed instance is additionally governed by
+  `deleteFromPrivateTiers` (#250) and by #802 — this change does not speak to either.
 - **Not fixed here, and stated so it is not mistaken for covered:**
   - **No migration.** A snapshot written before this fix carries refCount 2, and a node restored from it
     inherits blocks that stay uncollectable. `ContentStoreReclamationTest$AcrossSnapshotRestore` proves

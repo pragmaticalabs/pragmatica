@@ -41,7 +41,6 @@ public interface StorageInstance {
     Option<BlockId> resolveRef(String name);
     /// Delete a named reference.
     Promise<Unit> deleteRef(String name);
-
     /// Writes (or deduplicates) `content` and points `name` at the resulting block -- the write-and-ref
     /// primitive, and the only correct way to store content under a name.
     ///
