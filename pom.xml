@@ -52,6 +52,13 @@
         <module>aether</module>
         <module>examples</module>
         <!--
+            Runs this repository's operator-facing shell scripts against constructed conditions and
+            asserts they cannot report success without having looked (#865, #952). Depends on no
+            module, so its position here is free; it sits before cli-docs-gate to keep that module
+            last.
+        -->
+        <module>script-gate</module>
+        <!--
             LAST, deliberately. cli-docs-gate reads the live picocli CommandSpec trees of aether/cli
             and jbct/jbct-cli and diffs them against every CLI invocation in this repository's
             Markdown. It test-depends on both CLI modules so no reactor order can run it against a

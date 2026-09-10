@@ -22,7 +22,10 @@
 #   ./forge.sh <ClassName>        a single class, e.g. ./forge.sh ClusterFormationTest
 #
 # Run ./build.sh first (or at least `mvn install -DskipTests`) — this script does not rebuild
-# the runtime, it only runs the gate.
+# the runtime, it only runs the gate. It does now REFUSE to run against a stale one (#865):
+# `-pl` without `-am` resolves every sibling from the local Maven repository, so the gate can
+# report either verdict against bytecode that is not this tree's. FORGE_SKIP_FRESHNESS=1
+# overrides, and says so in the output.
 set -uo pipefail
 
 MODE="${1:-smoke}"
@@ -63,6 +66,45 @@ esac
 echo "=============================================================="
 echo " Forge gate: $DESC"
 echo "=============================================================="
+
+# --- runtime freshness gate (#865) --------------------------------------------------------------
+# BASE_ARGS deliberately carries no `-am` (see the note above it), so every sibling module resolves
+# from the local Maven repository and this gate exercises whatever is INSTALLED there. #858 lost a
+# session to 15 of 16 classes "failing" against a node jar built the previous evening; the
+# symmetric stale GREEN is worse, because it certifies a fix that was never executed.
+#
+# Two different silences are distinguished on purpose, because both look like a pass. A checker that
+# is ABSENT has not checked anything, so a missing script refuses exactly as a stale tree does - and
+# the checker itself exits 2, never 0, when it examined nothing.
+FRESHNESS="$REPO_ROOT/tools/forge-freshness.py"
+
+echo "--- runtime freshness (#865) ---"
+if [ "${FORGE_SKIP_FRESHNESS:-0}" != "0" ]; then
+    echo "  SKIPPED - FORGE_SKIP_FRESHNESS is set."
+    echo "  This run is NOT evidence about this tree: it exercises whatever happens to be installed."
+elif [ ! -f "$FRESHNESS" ]; then
+    echo "  FRESHNESS CHECK DID NOT RUN - $FRESHNESS is missing."
+    echo "  A checker that did not run is not a checker that passed."
+    echo "  Restore it, or set FORGE_SKIP_FRESHNESS=1 to run the gate unverified."
+    exit 2
+else
+    python3 "$FRESHNESS" "$REPO_ROOT"
+    FRESHNESS_STATUS=$?
+    if [ $FRESHNESS_STATUS -eq 1 ]; then
+        echo
+        echo "FORGE GATE REFUSED TO RUN - the runtime is STALE (modules named above)."
+        echo "  Run ./build.sh (or mvn install -DskipTests) and start this gate again."
+        echo "  FORGE_SKIP_FRESHNESS=1 overrides; the run then proves nothing about those modules."
+        exit 1
+    elif [ $FRESHNESS_STATUS -ne 0 ]; then
+        echo
+        echo "FORGE GATE REFUSED TO RUN - freshness is UNDETERMINED (checker exit $FRESHNESS_STATUS)."
+        echo "  An undetermined result is not a pass."
+        echo "  FORGE_SKIP_FRESHNESS=1 overrides; the run then proves nothing about this tree."
+        exit $FRESHNESS_STATUS
+    fi
+fi
+echo
 
 REPORTS="$MODULE/target/failsafe-reports"
 

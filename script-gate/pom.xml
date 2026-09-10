@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.pragmatica-lite</groupId>
+        <artifactId>pragmatica</artifactId>
+        <version>1.0.0-rc4</version>
+    </parent>
+
+    <artifactId>script-gate</artifactId>
+    <packaging>jar</packaging>
+
+    <name>Shell Script Instrument Gate</name>
+    <description>
+        Test-only module. Owns no production code: it EXECUTES this repository's operator-facing shell
+        scripts against constructed conditions and asserts they cannot report success without having
+        looked.
+    </description>
+
+    <!--
+        WHY THIS MODULE EXISTS.
+
+        Two of this repository's scripts reported success while examining nothing. forge.sh ran the
+        acceptance suite with `-pl` and no `-am`, so it could pass or fail against installed bytecode
+        that was not the tree's (#865). start-postgres.sh printed "PostgreSQL ready" and exited 0 for
+        a container that had died 295ms earlier, because its readiness loop had no failure branch
+        (#952). Both are the same defect: an instrument whose success carries no information.
+
+        A test that reads a script's TEXT cannot catch this class, because the defect is behavioural -
+        the old readiness loop contains the string "PostgreSQL ready" in exactly the position the
+        fixed one does. So these tests RUN the real scripts, with the container runtime and Maven
+        stubbed on PATH, and assert on the specific diagnostic each one emits. Asserting a non-zero
+        exit alone would be worthless here: "it failed correctly" and "the fixture never worked" are
+        the same observation, which is why every refusal test is paired with a positive control that
+        drives the same fixture to success.
+
+        Running a script needs a process, not a classpath, so this module test-depends on nothing but
+        the harness. That is also why it carries no licence header: it links neither the Apache core
+        nor the BSL aether modules, unlike cli-docs-gate, which explains its own BSL header by its
+        test-scoped dependency on aether/cli. Its position in the root <modules> list is therefore
+        free, and it sits BEFORE cli-docs-gate so that module's "LAST, deliberately" stays true.
+
+        JBCT GATING OF THIS MODULE, measured rather than assumed. Test sources are unlinted
+        repo-wide (jbct.includeTests defaults to false), so every test-only module - including the
+        modules that exist to enforce gates - is unexamined. Setting jbct.skip=false and
+        jbct.includeTests=true here was tried and reverted: it produces 19 JBCT-EX-01 errors, one per
+        JUnit method, because a test method declares `throws Exception` and the rule requires
+        Result<T>. Rewriting a process-and-filesystem harness into Result to satisfy a rule the rest
+        of the repository's tests are exempt from would distort the tests without making them
+        stronger, so this module inherits the default. That is a real gap and it is written down
+        here rather than papered over - claiming a gate this module does not have would be the same
+        defect it exists to catch.
+    -->
+
+    <properties>
+        <!-- Gate-only module: it produces an empty jar and must never be published. -->
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <gpg.skip>true</gpg.skip>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+        </dependency>
+    </dependencies>
+</project>

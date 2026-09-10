@@ -566,11 +566,29 @@ public final class ForgeServer {
     private void failStartupDeploy(String artifactCoords, String detail) {
         log.error("Startup blueprint deploy failed for '{}': {}", artifactCoords, detail);
 
-        throw new IllegalStateException("Startup blueprint deploy failed for '" + artifactCoords
-                                       + "': " + detail
-                                       + " — exiting so the cluster does not run empty while appearing healthy. "
-                                       + "Check the coordinates (groupId:artifactId:version:blueprint) and that the "
-                                       + "artifacts are installed to the resolvable repository (mvn install).");
+        throw new IllegalStateException(startupDeployFailureMessage(artifactCoords, detail));
+    }
+
+    /// The message this failure carries (#952).
+    ///
+    /// It used to end by telling the reader to check that the artifacts were installed
+    /// (`mvn install`). Forge never checks that. On the clean-room run that found the bug every
+    /// Maven artifact was present and correct, and the real cause was a database container that had
+    /// been dead for ten seconds — so the error pointed AWAY from the defect and the next reader
+    /// spent the effort proving a healthy component healthy.
+    ///
+    /// Naming one unverified cause is worse than naming none, because it reads as a diagnosis. This
+    /// states only what the deploy actually observed, says outright that the cause was not
+    /// determined, and lists the candidates without ranking them.
+    static String startupDeployFailureMessage(String artifactCoords, String detail) {
+        return "Startup blueprint deploy failed for '" + artifactCoords + "': " + detail
+             + " — exiting so the cluster does not run empty while appearing healthy. "
+             + "Forge checked exactly one thing: it POSTed these coordinates to "
+             + "/api/v1/blueprints/deploy and recorded the response quoted above. It did NOT "
+             + "establish why that failed. Any of these is consistent with what was observed: the "
+             + "coordinates (groupId:artifactId:version:blueprint) are wrong; the artifact is not in "
+             + "the resolvable repository; or a resource the slice needs at startup — a database, "
+             + "for instance — is unavailable. Forge probes none of them.";
     }
 
     private void loadLoadConfig(Path loadConfigPath) {
