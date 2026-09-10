@@ -17,12 +17,15 @@
   UNNAMED block above zero: content-store chunks and artifact chunks carry no ref of their own (only the
   manifest is named), so dropping that credit orphans every chunk of a live document and the collector
   deletes them — a use-after-free, worse than the leak. `createRef`'s credit is correct for its own job.
-  It is the pairing that was wrong, not either half. [verified:
-  `ContentStoreReclamationTest$ChunkedContent#put_chunkedContent_namesOnlyTheManifest_andChunksSurviveCollection`
-  is the counter-mutation guard — under exactly that alternative "fix" it reddens with
-  `collectGarbage` returning 4 instead of 0, four chunks taken out from under a readable document. An
-  independent pre-existing witness reddens with it:
-  `StorageInstanceWriteOnlyDemotionTest#writeThrough_duplicatePutWhileWriteInFlight_refCountSurvivesFinalization`]
+  It is the pairing that was wrong, not either half. [verified: under exactly that alternative "fix",
+  `StorageGarbageCollectorTest#collectGarbage_referencedBlock_skips` fails with *expected: 0 but was: 1*
+  — **a block `put` had just returned an id for, collected** — alongside
+  `TierManagementIntegrationTest#gc_collectsOrphanedBlocks` (*expected: 1 but was: 2*, over-collection)
+  and `StorageInstanceWriteOnlyDemotionTest#writeThrough_duplicatePutWhileWriteInFlight_refCountSurvivesFinalization`.
+  Those three predate this change and know nothing about it, which is what makes them good witnesses.
+  The new `ContentStoreReclamationTest$ChunkedContent#put_chunkedContent_namesOnlyTheManifest_andChunksSurviveCollection`
+  witnesses the same hazard one step removed, at the chunk level: *expected: 0 but was: 4*, four chunks
+  taken out from under a readable document]
 - **The `replaceRef` default fallback is now correct by construction on every implementor.** It composed
   `put` with `createRef` and so carried the same double count — plus a second defect, never decrementing
   the block it superseded — onto any `StorageInstance` that did not override it. It now delegates to
