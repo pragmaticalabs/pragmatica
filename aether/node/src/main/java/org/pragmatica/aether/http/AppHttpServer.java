@@ -551,13 +551,29 @@ class AppHttpServerAdapter implements AppHttpServer {
         handleRequest(request, response);
     }
 
+    /// The operator-supplied identity for this listener, if `[app-http.tls]` is configured.
+    ///
+    /// Takes precedence over the cluster identity. Server-auth only by construction —
+    /// [TlsConfig#server(java.nio.file.Path, java.nio.file.Path)] carries no client-auth trust — so a
+    /// public client is never asked for a certificate it cannot have (#967).
+    private Option<TlsConfig> appTls() {
+        return config.tls()
+                     .map(appTls -> TlsConfig.server(java.nio.file.Path.of(appTls.certPath()),
+                                                     java.nio.file.Path.of(appTls.keyPath())));
+    }
+
     private HttpServerConfig buildServerConfig() {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http",
                                                              config.port())
                                            .withMaxContentLength(config.maxRequestSize());
-
-        return tls.map(serverConfig::withTls)
-                  .or(serverConfig);
+        // #967: never demand a client certificate from callers of a USER-facing listener. The node's
+        // cluster TlsConfig is Mutual, so building this listener from it made every slice request
+        // require a cluster-CA client cert — a certificate that, under `auto_generate`, is derived
+        // from the cluster secret and never written to disk. See AppHttpConfig.tls() for the
+        // operator-supplied identity that a public listener actually needs.
+        return appTls().orElse(() -> tls.map(TlsConfig::serverAuthOnly))
+                     .map(serverConfig::withTls)
+                     .or(serverConfig);
     }
 
     private Unit registerStartedH1Server(HttpServer server) {
@@ -690,9 +706,9 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private static Option<TlsConfig> buildTlsFromBundle(CertificateBundle newBundle) {
         var identity = new TlsConfig.Identity.FromProvider(newBundle.certificatePem(), newBundle.privateKeyPem());
-        var trust = new TlsConfig.Trust.FromCaBytes(newBundle.caCertificatePem());
-
-        return Option.some(new TlsConfig.Server(identity, Option.some(trust)));
+        // #967: server-auth only, matching buildServerConfig(). Carrying the CA as clientAuth here
+        // would re-arm ClientAuth.REQUIRE at the first certificate rotation.
+        return Option.some(new TlsConfig.Server(identity, Option.<TlsConfig.Trust> none()));
     }
 
     @Override

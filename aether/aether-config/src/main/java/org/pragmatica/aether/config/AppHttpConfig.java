@@ -23,7 +23,21 @@ public record AppHttpConfig(boolean enabled,
                             Option<JwtConfig> jwtConfig,
                             HttpProtocol httpProtocol,
                             ApiVersioningDetection apiVersioningDetection,
-                            String apiVersionHeaderName) {
+                            String apiVersionHeaderName,
+                            Option<AppTls> tls) {
+    /// Operator-supplied TLS identity for the USER-facing app-HTTP listener.
+    ///
+    /// The app port must not reuse the cluster identity. That certificate is issued by the
+    /// cluster's own auto-generated CA and its subject is the NODE ID (`CN=primary-core-0`), so an
+    /// ordinary HTTP client gets both an untrusted issuer and a name that is not the service it
+    /// dialled. Node identity and service identity are different things; only the operator can
+    /// supply the latter (#967).
+    ///
+    /// Absent — the default — the listener falls back to the cluster identity with client
+    /// authentication stripped. That is reachable by clients which trust the cluster CA
+    /// (service-to-service), and is NOT suitable for public traffic.
+    public record AppTls(String certPath, String keyPath) {}
+
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
     public static final int DEFAULT_MAX_REQUEST_SIZE = 10 * 1024 * 1024;
     public static final String DEFAULT_API_VERSION_HEADER = "API-Version";
@@ -51,7 +65,22 @@ public record AppHttpConfig(boolean enabled,
                                          jwtConfig,
                                          httpProtocol,
                                          apiVersioningDetection,
-                                         apiVersionHeaderName));
+                                         apiVersionHeaderName,
+                                         Option.empty()));
+    }
+
+    /// Attach an operator-supplied TLS identity to this listener. See [AppTls].
+    public AppHttpConfig withTls(AppTls appTls) {
+        return new AppHttpConfig(enabled,
+                                 port,
+                                 apiKeys,
+                                 maxRequestSize,
+                                 securityMode,
+                                 jwtConfig,
+                                 httpProtocol,
+                                 apiVersioningDetection,
+                                 apiVersionHeaderName,
+                                 Option.some(appTls));
     }
 
     public static Result<AppHttpConfig> appHttpConfig(boolean enabled,

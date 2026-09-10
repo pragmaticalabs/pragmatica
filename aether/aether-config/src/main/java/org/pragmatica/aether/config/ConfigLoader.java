@@ -349,16 +349,29 @@ public final class ConfigLoader {
                                         .or(ApiVersioningDetection.PATH);
         var apiVersionHeaderName = doc.getString("app-http", "api_version_header")
                                       .or(AppHttpConfig.DEFAULT_API_VERSION_HEADER);
+        var appHttp = AppHttpConfig.appHttpConfig(enabled,
+                                                  port,
+                                                  apiKeys,
+                                                  maxRequestSize,
+                                                  securityMode,
+                                                  jwtConfig,
+                                                  httpProtocol,
+                                                  apiVersioningDetection,
+                                                  apiVersionHeaderName).unwrap();
 
-        builder.appHttp(AppHttpConfig.appHttpConfig(enabled,
-                                                    port,
-                                                    apiKeys,
-                                                    maxRequestSize,
-                                                    securityMode,
-                                                    jwtConfig,
-                                                    httpProtocol,
-                                                    apiVersioningDetection,
-                                                    apiVersionHeaderName).unwrap());
+        builder.appHttp(parseAppTls(doc).map(appHttp::withTls).or(appHttp));
+    }
+
+    /// `[app-http.tls]` — an operator-supplied certificate for the USER-facing listener.
+    ///
+    /// Both keys are required together: a certificate without its key, or a key without its
+    /// certificate, is a configuration mistake rather than a request for a partial identity, and
+    /// silently falling back to the cluster certificate would hide it. See [AppHttpConfig.AppTls]
+    /// for why the cluster identity cannot serve public traffic (#967).
+    private static Option<AppHttpConfig.AppTls> parseAppTls(TomlDocument doc) {
+        return Option.all(doc.getString("app-http.tls", "cert_path"),
+                          doc.getString("app-http.tls", "key_path"))
+                     .map(AppHttpConfig.AppTls::new);
     }
 
     private static Option<JwtConfig> parseJwtConfig(TomlDocument doc) {

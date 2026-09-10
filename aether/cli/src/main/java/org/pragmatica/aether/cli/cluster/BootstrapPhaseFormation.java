@@ -178,8 +178,17 @@ sealed interface BootstrapPhaseFormation {
                           requiredCores,
                           timeoutMs / 1000);
         var deadline = System.currentTimeMillis() + timeoutMs;
+        // Remember what the cluster view last REPORTED, so a timeout can say what was seen rather
+        // than assert a count nobody measured. Absent means the view was never readable at all.
+        var lastObserved = Option.<Integer> none();
 
         while (System.currentTimeMillis() < deadline) {
+            var observed = observedNodeCount(endpoint, managementPort, scheme, apiKey);
+
+            if (observed.isPresent()) {
+                lastObserved = observed;
+            }
+
             if (quorumReached(endpoint, managementPort, scheme, requiredCores, quorumFloor, apiKey)) {
                 System.out.printf("  Quorum established (>= %d of %d core(s))%n", quorumFloor, requiredCores);
 
@@ -189,7 +198,8 @@ sealed interface BootstrapPhaseFormation {
             ClusterBootstrapOrchestrator.sleepQuietly(ClusterBootstrapOrchestrator.POLL_INTERVAL_MS);
         }
 
-        return new BootstrapError.QuorumNotEstablished(0, quorumFloor).result();
+        return new BootstrapError.QuorumNotEstablished(lastObserved.or(BootstrapError.QuorumNotEstablished.UNOBSERVED),
+                                                       quorumFloor).result();
     }
 
     /// Strict majority floor for a cluster of `requiredCores` (`n/2 + 1`), mirroring
@@ -225,6 +235,22 @@ sealed interface BootstrapPhaseFormation {
                                            .flatMap(JSON::readTree)
                                            .map(node -> healthMeetsFloor(node, quorumFloor))
                                            .or(false);
+    }
+
+    /// The member count the cluster's own health view reports, or empty when that view could not be
+    /// read (unreachable, 401, unparseable body). Empty is NOT zero, and the two must not be
+    /// conflated in an error message — see [BootstrapError.QuorumNotEstablished].
+    private static Option<Integer> observedNodeCount(String endpoint,
+                                                     int managementPort,
+                                                     String scheme,
+                                                     Option<String> apiKey) {
+        var healthUrl = scheme + "://" + endpoint + ":" + managementPort + "/api/v1/health";
+
+        return ClusterBootstrapOrchestrator.httpGet(healthUrl, apiKey)
+                                           .flatMap(JSON::readTree)
+                                           .map(node -> node.path("nodeCount")
+                                                            .asInt(0))
+                                           .option();
     }
 
     /// Decide whether the `/api/health` view has reached the quorum floor: the leader must report

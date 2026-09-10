@@ -680,4 +680,65 @@ class ConfigLoaderTest {
         assertThat(storage.walPath()).isEqualTo(expected);
         assertThat(storage.hasExplicitWalPath()).isEqualTo(explicit);
     }
+
+    /// #967. The app-HTTP listener must be able to carry an operator-supplied certificate. Reusing
+    /// the cluster identity there presents `CN=<node-id>` signed by an internal CA that no public
+    /// client trusts, so an operator has no way to serve real traffic over TLS.
+    @Test
+    void loadFromString_parsesAppHttpTlsSection() {
+        var toml = """
+                   [app-http]
+                   enabled = true
+
+                   [app-http.tls]
+                   cert_path = "/etc/aether/app.crt"
+                   key_path = "/etc/aether/app.key"
+                   """;
+
+        ConfigLoader.loadFromString(toml)
+                    .onFailure(cause -> Assertions.fail(cause.message()))
+                    .onSuccess(config -> {
+                        var tls = config.appHttp().tls();
+
+                        assertThat(tls.isPresent())
+                                .describedAs("[app-http.tls] with both keys must produce an identity")
+                                .isTrue();
+                        tls.onPresent(appTls -> {
+                            assertThat(appTls.certPath()).isEqualTo("/etc/aether/app.crt");
+                            assertThat(appTls.keyPath()).isEqualTo("/etc/aether/app.key");
+                        });
+                    });
+    }
+
+    /// Control for the test above, and the case that decides the failure mode: half an identity is a
+    /// configuration mistake. Falling back to the cluster certificate silently would hide it behind a
+    /// listener that starts and then rejects every real client.
+    @Test
+    void loadFromString_appHttpTlsWithOnlyOneKey_yieldsNoIdentity() {
+        var toml = """
+                   [app-http]
+                   enabled = true
+
+                   [app-http.tls]
+                   cert_path = "/etc/aether/app.crt"
+                   """;
+
+        ConfigLoader.loadFromString(toml)
+                    .onFailure(cause -> Assertions.fail(cause.message()))
+                    .onSuccess(config -> assertThat(config.appHttp().tls().isPresent())
+                            .describedAs("cert_path without key_path must not yield a partial identity")
+                            .isFalse());
+    }
+
+    @Test
+    void loadFromString_withoutAppHttpTlsSection_yieldsNoIdentity() {
+        var toml = """
+                   [app-http]
+                   enabled = true
+                   """;
+
+        ConfigLoader.loadFromString(toml)
+                    .onFailure(cause -> Assertions.fail(cause.message()))
+                    .onSuccess(config -> assertThat(config.appHttp().tls().isPresent()).isFalse());
+    }
 }

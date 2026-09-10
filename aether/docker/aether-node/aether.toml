@@ -1,9 +1,17 @@
 # Aether Node Configuration for Containerized Deployment
 #
-# TLS note: `tls = false` means the management API uses plain HTTP (needed for
-# curl-based health checks and integration tests). QUIC cluster transport still
-# uses TLS with ephemeral self-signed certs. Set `tls = true` for production
-# (enables mTLS management API + deterministic CA from cluster secret).
+# TLS note: `tls = false` means the management API uses plain HTTP, which keeps
+# integration tests simple. QUIC cluster transport still uses TLS with ephemeral
+# self-signed certs. Set `tls = true` for production (deterministic CA from the
+# cluster secret).
+#
+# The container health check no longer constrains this choice: it probes HTTPS and
+# falls back to HTTP. It used to require `tls = false`, and `tls = true` therefore
+# left the container permanently `unhealthy` (#967). The management API also no
+# longer inherits the cluster's mTLS client-auth requirement — callers authenticate
+# with an API key, and the auto-generated CA never lands on disk, so requiring a
+# client certificate made the API unreachable in exactly the production mode this
+# note recommends.
 
 [cluster]
 tls = false

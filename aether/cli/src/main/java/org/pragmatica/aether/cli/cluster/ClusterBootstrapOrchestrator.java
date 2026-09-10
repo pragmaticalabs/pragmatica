@@ -573,10 +573,26 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
             }
         }
 
-        record QuorumNotEstablished(int healthy, int required) implements BootstrapError {
+        /// `observed` is the member count last READ from the cluster's own `/api/v1/health` view, or
+        /// [#UNOBSERVED] when that view was never readable at all — a 401, an unreachable endpoint, or
+        /// an unparseable body.
+        ///
+        /// The distinction is the point. This error used to be constructed with a hardcoded `0`, so a
+        /// cluster that had formed perfectly and merely could not be QUERIED reported
+        /// "0/2 nodes healthy" — a count nobody had measured, indistinguishable from genuine total
+        /// failure. Measured 2026-09-10 on a live 3-node cluster whose own log read
+        /// `Quorum established — consensus available` at the moment this error was raised.
+        record QuorumNotEstablished(int observed, int required) implements BootstrapError {
+            /// The cluster view was never successfully read, so no count exists to report.
+            public static final int UNOBSERVED = -1;
+
             @Override
             public String message() {
-                return "Quorum not established: " + healthy + "/" + required + " nodes healthy";
+                return observed == UNOBSERVED
+                       ? "Quorum not established: the cluster health view at /api/v1/health was never"
+                        + " readable (unreachable, unauthorized, or unparseable), so the number of"
+                        + " healthy nodes is UNKNOWN — not zero. Required: " + required
+                       : "Quorum not established: " + observed + "/" + required + " nodes healthy";
             }
         }
 

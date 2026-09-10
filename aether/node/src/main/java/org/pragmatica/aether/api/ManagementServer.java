@@ -456,8 +456,13 @@ class ManagementServerImpl implements ManagementServer {
                                      .withWebSocket(wsEndpoint)
                                      .withWebSocket(statusWsEndpoint)
                                      .withWebSocket(eventWsEndpoint);
-
-        return tls.map(config::withTls)
+        // #967: the node's cluster TlsConfig is Mutual, which makes every listener built from it
+        // demand a cluster-CA client certificate. That is right for node-to-node transport and wrong
+        // here: management callers authenticate with an API key, and under `auto_generate` the CA is
+        // never written to disk, so no operator could present one. It also made the container
+        // liveness probe unsatisfiable under any scheme.
+        return tls.map(TlsConfig::serverAuthOnly)
+                  .map(config::withTls)
                   .or(config);
     }
 
@@ -563,9 +568,10 @@ class ManagementServerImpl implements ManagementServer {
 
     private static Option<TlsConfig> buildTlsFromBundle(org.pragmatica.net.tcp.security.CertificateBundle bundle) {
         var identity = new TlsConfig.Identity.FromProvider(bundle.certificatePem(), bundle.privateKeyPem());
-        var trust = new TlsConfig.Trust.FromCaBytes(bundle.caCertificatePem());
-
-        return Option.some(new TlsConfig.Server(identity, Option.some(trust)));
+        // #967: server-auth only, matching buildServerConfig(). Carrying the CA as clientAuth here
+        // would re-arm ClientAuth.REQUIRE on the first certificate rotation, so a cluster that
+        // bootstrapped fine would lose its management API hours later — the harder bug to find.
+        return Option.some(new TlsConfig.Server(identity, Option.<TlsConfig.Trust> none()));
     }
 
     private void onServerStarted(HttpServer server) {

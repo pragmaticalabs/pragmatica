@@ -54,9 +54,20 @@ ENV JAVA_OPTS="-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
 # 8080     - Management API (REST, WebSocket dashboard)
 EXPOSE 8090/udp 8190/udp 8080
 
-# Health check using liveness probe (bypasses auth — no audit log spam)
+# Health check using liveness probe (bypasses auth — no audit log spam).
+#
+# TLS-agnostic on purpose: the management listener serves HTTPS when `[cluster] tls = true` and
+# plain HTTP otherwise, so probe HTTPS first and fall back. A plaintext-only probe was rejected
+# with NotSslRecordException under TLS, the container never left `unhealthy`, and the bootstrap
+# readiness gate then destroyed clusters that had actually formed quorum (#967).
+#
+# --no-check-certificate is correct here and not a weakening: the certificate is issued by the
+# cluster's own auto-generated CA, which by design never lands on disk, and the probe targets
+# localhost inside the container — there is no name to verify and no network to intercept.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=45s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:${MANAGEMENT_PORT}/health/live || exit 1
+    CMD wget -q --tries=1 --spider --no-check-certificate https://localhost:${MANAGEMENT_PORT}/health/live \
+     || wget -q --tries=1 --spider http://localhost:${MANAGEMENT_PORT}/health/live \
+     || exit 1
 
 # Switch to non-root user
 USER aether
