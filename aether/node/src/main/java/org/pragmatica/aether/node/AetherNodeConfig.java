@@ -80,7 +80,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                ClusterFormationConfig clusterFormation,
                                Option<ClusterName> clusterName,
                                Option<StorageEncryptionConfig> storageEncryption,
-                               Option<AlertConfig> alerts) {
+                               Option<AlertConfig> alerts,
+                               Option<String> clusterSecret) {
     /// Cluster-wide deployment defaults. `canaryEvaluationInterval` / `defaultCanaryStages` drive
     /// progressive rollout; `communitySizing` is the leader's per-community target size and viability
     /// floor (worker-membership-spec §3.3 / §4.1) read by the cluster deployment FSM. A test/dev
@@ -144,6 +145,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                         clusterFormation,
                                         Option.empty(),
                                         Option.empty(),
+                                        Option.empty(),
                                         Option.empty());
         };
     }
@@ -196,7 +198,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     clusterFormation,
                                     clusterName,
                                     storageEncryption,
-                                    alerts);
+                                    alerts,
+                                    clusterSecret);
     }
 
     public AetherNodeConfig withClusterName(Option<ClusterName> clusterName) {
@@ -231,7 +234,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     clusterFormation,
                                     clusterName,
                                     storageEncryption,
-                                    alerts);
+                                    alerts,
+                                    clusterSecret);
     }
 
     /// #253 — the `[storage.encryption]` keyring, when configured. Same post-build shape as
@@ -270,7 +274,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     clusterFormation,
                                     clusterName,
                                     storageEncryption,
-                                    alerts);
+                                    alerts,
+                                    clusterSecret);
     }
 
     /// #957 — the `[alerts]` section: hysteresis margin (#969) and webhook delivery config. Same
@@ -309,7 +314,54 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     clusterFormation,
                                     clusterName,
                                     storageEncryption,
-                                    alerts);
+                                    alerts,
+                                    clusterSecret);
+    }
+
+    /// #980 — this node's cluster secret, from which `BootstrapAdminKeyLeg` derives the
+    /// cluster-formation bootstrap admin API key. Same post-build stamp as [#withAlerts] /
+    /// [#withStorageEncryption], and stamped from the same place in `Main`, which resolves the
+    /// secret through the same [org.pragmatica.aether.config.TlsConfig] path the TLS setup uses —
+    /// so the key and the CA can never be derived from different secrets.
+    ///
+    /// Absent means no secret exists at all; the bootstrap key then stays random, as before #980.
+    /// Held as the raw `String` the config carries rather than a wrapper: `AetherNodeConfig` is
+    /// never logged, and adding a redacting type here would not change what
+    /// `TlsConfig.clusterSecret()` already exposes one field away.
+    public AetherNodeConfig withClusterSecret(Option<String> clusterSecret) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    quicTls,
+                                    ttm,
+                                    rollback,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    atomicity,
+                                    activationGated,
+                                    timeouts,
+                                    certificateProvider,
+                                    workerConfig,
+                                    deploymentDefaults,
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig,
+                                    membership,
+                                    streaming,
+                                    clusterFormation,
+                                    clusterName,
+                                    storageEncryption,
+                                    alerts,
+                                    clusterSecret);
     }
 
     public interface SelfStage {

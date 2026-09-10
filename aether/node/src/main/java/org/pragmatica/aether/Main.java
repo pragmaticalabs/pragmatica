@@ -131,7 +131,12 @@ public record Main(String[] args) {
                                      .withClusterName(resolveClusterName())
                                      .withAutoHeal(resolveAutoHeal(aetherConfig))
                                      .withStorageEncryption(resolveStorageEncryption(aetherConfig))
-                                     .withAlerts(resolveAlertConfig(aetherConfig));
+                                     .withAlerts(resolveAlertConfig(aetherConfig))
+                                     // #980 — the bootstrap admin key is derived from this secret at
+                                     // first leadership, so `aether cluster bootstrap` can authenticate
+                                     // its own quorum poll. resolveTls above already aborted the boot
+                                     // if it were missing, so this is present on any booted node.
+                                     .withClusterSecret(resolveClusterSecretValue(resolveTlsConfig(aetherConfig)));
 
         enforceWalDurabilityBootable(config);
         // Review catch (#634 batch): assembly failures — the routed-type codec guard included — get
@@ -460,11 +465,18 @@ public record Main(String[] args) {
     }
 
     private static Result<byte[]> resolveClusterSecret(TlsConfig tlsCfg) {
+        return resolveClusterSecretValue(tlsCfg).map(s -> s.getBytes(StandardCharsets.UTF_8))
+                                        .toResult(MISSING_CLUSTER_SECRET);
+    }
+
+    /// #980 — the single reader of the cluster secret's two sources (`[tls] cluster_secret`, then
+    /// `AETHER_CLUSTER_SECRET`). The CA/gossip derivation ([#resolveClusterSecret]) and the bootstrap
+    /// admin key derivation stamped onto [AetherNodeConfig] both read through here, so a node can
+    /// never derive its certificate from one secret and its admin key from another.
+    private static Option<String> resolveClusterSecretValue(TlsConfig tlsCfg) {
         return Option.option(tlsCfg.clusterSecret())
                      .filter(s -> !s.isBlank())
-                     .orElse(Option.option(System.getenv("AETHER_CLUSTER_SECRET")).filter(s -> !s.isBlank()))
-                     .map(s -> s.getBytes(StandardCharsets.UTF_8))
-                     .toResult(MISSING_CLUSTER_SECRET);
+                     .orElse(Option.option(System.getenv("AETHER_CLUSTER_SECRET")).filter(s -> !s.isBlank()));
     }
 
     private static final Cause MISSING_CLUSTER_SECRET = Causes.cause("No cluster secret configured. Set 'cluster_secret' in [tls] section "

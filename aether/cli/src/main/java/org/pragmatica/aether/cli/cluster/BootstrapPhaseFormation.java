@@ -20,10 +20,12 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.net.tcp.security.ClusterSecretDerivation;
 
 import tools.jackson.databind.JsonNode;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION;
+import static org.pragmatica.lang.Option.option;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
@@ -51,7 +53,7 @@ sealed interface BootstrapPhaseFormation {
                                                                               .timeouts()
                                                                               .quorumFormation());
         var requiredCores = ctx.config().derivedCoreCount();
-        var configuredKey = extractConfiguredApiKey(ctx.config());
+        var managementKey = resolveManagementKey(ctx);
 
         return waitForHealth(ctx.addresses(),
                              managementPort,
@@ -61,7 +63,7 @@ sealed interface BootstrapPhaseFormation {
                                                                 quorumTimeoutMs,
                                                                 requiredCores,
                                                                 scheme,
-                                                                configuredKey))
+                                                                managementKey))
                             .flatMap(_ -> finalizeClusterFormation(ctx, apiKey));
     }
 
@@ -277,9 +279,9 @@ sealed interface BootstrapPhaseFormation {
                                                                         .map(SshPublicKey::value)
                                                                         .toList());
         var configJson = buildConfigJson(persistedToml);
-        var configuredKey = extractConfiguredApiKey(ctx.config());
+        var managementKey = resolveManagementKey(ctx);
 
-        return retryFormationPost(endpoint + "/api/v1/cluster/config", configJson, "cluster config", configuredKey).onSuccess(_ -> System.out.println("  Cluster config stored in KV-Store"));
+        return retryFormationPost(endpoint + "/api/v1/cluster/config", configJson, "cluster config", managementKey).onSuccess(_ -> System.out.println("  Cluster config stored in KV-Store"));
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -297,10 +299,36 @@ sealed interface BootstrapPhaseFormation {
         var keyJson = "{\"keyId\":\"" + keyId
                     + "\",\"keyHash\":\"" + keyHash
                     + "\",\"authorizationRole\":\"ADMIN\",\"gracePeriodMs\":300000,\"auditAction\":\"CREATED\",\"operatorHint\":\"bootstrap\"}";
-        var configuredKey = extractConfiguredApiKey(ctx.config());
+        var managementKey = resolveManagementKey(ctx);
 
-        return retryFormationPost(endpoint + "/api/v1/cluster/keys", keyJson, "API key", configuredKey).onSuccess(_ -> System.out.printf("  API key stored (keyId=%s)%n",
+        return retryFormationPost(endpoint + "/api/v1/cluster/keys", keyJson, "API key", managementKey).onSuccess(_ -> System.out.printf("  API key stored (keyId=%s)%n",
                                                                                                                                          keyId));
+    }
+
+    /// #980 — the credential this CLI presents to the cluster it is forming.
+    ///
+    /// An operator-configured ADMIN key still wins where one exists: it is accepted from node boot,
+    /// while the derived key becomes valid only once the leader has committed its hash. With no
+    /// configured key — the case for EVERY cluster created by `aether cluster init`, which never
+    /// writes one — the key is DERIVED from the cluster secret this run minted in phase VALIDATE and
+    /// the nodes booted with. That is bit-for-bit the value `BootstrapAdminKeyLeg` registers
+    /// cluster-side, so the quorum poll authenticates instead of taking a 401 from a healthy cluster.
+    ///
+    /// Empty only when there is neither a configured key nor a cluster secret; the poll then runs
+    /// unauthenticated exactly as before, leaving a non-secured cluster unaffected.
+    static Option<String> resolveManagementKey(BootstrapContext ctx) {
+        return extractConfiguredApiKey(ctx.config()).orElse(() -> derivedAdminKey(ctx.clusterSecret()));
+    }
+
+    private static Option<String> derivedAdminKey(String clusterSecret) {
+        return option(clusterSecret).filter(secret -> !secret.isBlank())
+                     .flatMap(BootstrapPhaseFormation::deriveOrWarn);
+    }
+
+    private static Option<String> deriveOrWarn(String clusterSecret) {
+        return ClusterSecretDerivation.bootstrapAdminKey(clusterSecret)
+                                      .onFailure(cause -> System.err.println("  Warning: could not derive the bootstrap admin key: " + cause.message()))
+                                      .option();
     }
 
     private static Option<String> extractConfiguredApiKey(ClusterBootstrapConfig config) {

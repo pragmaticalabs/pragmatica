@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.ArrayList;
@@ -1184,7 +1185,13 @@ public final class EmberCluster {
 
         // #957 — no [alerts] section in-process; AlertManager falls back to the shipped
         // defaults (damping at AlertConfig.DEFAULT_HYSTERESIS_MARGIN, webhooks disabled).
-        Option.empty());
+        Option.empty(),
+
+        // #980 — the SAME secret the certificate provider two statements up was built from, so an
+        // in-process node derives its bootstrap admin key exactly as a production node does rather
+        // than falling back to a random one. An Ember harness that diverged here would be a fixture
+        // encoding different behaviour from the code it exists to exercise.
+        Option.some(new String(clusterSecret.get(), StandardCharsets.UTF_8)));
 
         lastNodeConfig.set(Option.some(config));
         // Single-JVM hosting: when this node's SelfDrainCoordinator completes its drain

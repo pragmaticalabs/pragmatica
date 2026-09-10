@@ -24,8 +24,22 @@ sealed interface BootstrapStatePersistence {
     Path AETHER_DIR = Path.of(System.getProperty("user.home"), ".aether", "clusters");
     String STATE_FILE_NAME = "bootstrap-state.json";
 
+    /// #980 — this file CONTAINS THE CLUSTER SECRET (`BootstrapState.clusterSecret`), and under the
+    /// ruling that derives the bootstrap admin API key from that secret it is an admin-equivalent
+    /// credential file, not merely bootstrap bookkeeping. It is therefore written through
+    /// [`SecureFiles#writeSecure`] at owner-only `0600`, like the derived `api-key` file beside it
+    /// (`BootstrapPhaseFormation.persistApiKeyFile`) and the runtime TOML (`BootstrapPhaseDeploy`) —
+    /// the bare `Files.writeString` this replaces left the ROOT secret at default permissions while
+    /// everything derived from it was locked down. Re-saving an existing state file repairs its
+    /// permissions in place.
     static Result<Unit> save(BootstrapState state) {
-        return Result.lift(PersistenceError::new, () -> doSave(state));
+        return ensureClusterDir(state).flatMap(dir -> SecureFiles.writeSecure(dir.resolve(STATE_FILE_NAME),
+                                                                              state.toJson()));
+    }
+
+    private static Result<Path> ensureClusterDir(BootstrapState state) {
+        return Result.lift(PersistenceError::new,
+                           () -> Files.createDirectories(AETHER_DIR.resolve(state.clusterName().value())));
     }
 
     static Option<BootstrapState> load(ClusterName clusterName) {
@@ -48,15 +62,6 @@ sealed interface BootstrapStatePersistence {
 
     static Path statePath(ClusterName clusterName) {
         return stateFilePath(clusterName);
-    }
-
-    private static Unit doSave(BootstrapState state) throws Exception {
-        var dir = AETHER_DIR.resolve(state.clusterName().value());
-
-        Files.createDirectories(dir);
-        Files.writeString(dir.resolve(STATE_FILE_NAME), state.toJson());
-
-        return Unit.unit();
     }
 
     private static Unit doDelete(ClusterName clusterName) throws Exception {
