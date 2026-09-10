@@ -3,6 +3,8 @@ package org.pragmatica.jbct.parser;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.lang.Cause;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -107,9 +109,7 @@ class InterleavedModifierAnnotationTest {
     /// True when every `Annotation` node's span is contained in some `Type` node's span.
     private boolean annotationSitsInsideTheType(String source) {
         var root = parser.parse(source)
-                         .onFailure(cause -> {
-                             throw new AssertionError("fixture did not parse: " + cause.message());
-                         })
+                         .onFailure(InterleavedModifierAnnotationTest::failUnparseableFixture)
                          .unwrap();
         var all = new ArrayList<Cursor>();
 
@@ -129,6 +129,12 @@ class InterleavedModifierAnnotationTest {
                           .allMatch(annotation -> types.stream()
                                                        .anyMatch(type -> type.spanStart() <= annotation.spanStart()
                                                                         && annotation.spanEnd() <= type.spanEnd()));
+    }
+
+    /// A fixture that does not parse would make this test vacuous rather than failing it, so it is
+    /// turned into an explicit failure at the point of parsing.
+    private static void failUnparseableFixture(Cause cause) {
+        throw new AssertionError("fixture did not parse: " + cause.message());
     }
 
     /// `descendants()` is declared on `Cursor.Branch`, not on `Cursor`, so the walk is explicit.
