@@ -1,12 +1,14 @@
 package org.pragmatica.scriptgate;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
-import java.util.Comparator;
 import java.util.List;
+
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
 
 /// A minimal but REAL Maven tree: a root aggregator, an `aether/forge/forge-tests` module, and the
 /// jar modules it depends on, each with a source file and an installed artifact.
@@ -19,45 +21,65 @@ record SyntheticRepo(Path root) {
     static final Instant SOURCE_TIME = Instant.parse("2026-01-01T00:00:00Z");
     static final Instant INSTALL_TIME = SOURCE_TIME.plusSeconds(600);
     static final Instant EDIT_TIME = INSTALL_TIME.plusSeconds(600);
+    static final String GROUP_ID = "org.example";
+    static final String VERSION = "1.0.0";
+    static final Path FORGE_POM = Path.of("aether", "forge", "forge-tests", "pom.xml");
 
-    static SyntheticRepo create(Path root, List<String> modules) throws IOException {
+    static Result<SyntheticRepo> syntheticRepo(Path root, List<String> modules) {
         var repo = new SyntheticRepo(root);
 
-        Files.createDirectories(root.resolve(".mvn"));
-        // A decoy flag ahead of the property: the checker has to parse this file, not assume a layout.
-        Files.writeString(root.resolve(".mvn/maven.config"), "-T 1C\n-Dmaven.repo.local=.m2-local\n");
+        return repo.layout(modules)
+                   .map(ignored -> repo);
+    }
 
-        writePom(root.resolve("pom.xml"), "root", "pom", List.of());
-        writePom(root.resolve("aether/forge/forge-tests/pom.xml"), "forge-tests", "jar", modules);
+    private Result<Unit> layout(List<String> modules) {
+        return mavenConfig(".m2-local").flatMap(ignored -> writePom(root.resolve("pom.xml"),
+                                                                    "root",
+                                                                    "pom",
+                                                                    List.of()))
+                          .flatMap(ignored -> writePom(root.resolve(FORGE_POM),
+                                                       "forge-tests",
+                                                       "jar",
+                                                       modules))
+                          .flatMap(ignored -> installAll(modules));
+    }
 
-        for (var module : modules) {
-            repo.addModule(module);
-            repo.install(module);
-        }
+    /// A decoy flag ahead of the property: the checker has to parse this file, not assume a layout.
+    Result<Unit> mavenConfig(String localRepository) {
+        var config = root.resolve(".mvn/maven.config");
 
-        return repo;
+        return createDirectories(config.getParent()).flatMap(ignored -> write(config,
+                                                                              "-T 1C\n-Dmaven.repo.local=" + localRepository
+                                                                             + "\n"))
+                                .mapToUnit();
+    }
+
+    private Result<Unit> installAll(List<String> modules) {
+        return Result.allOf(modules.stream().map(this::addAndInstall).toList()).mapToUnit();
+    }
+
+    private Result<Unit> addAndInstall(String artifactId) {
+        return addModule(artifactId).flatMap(ignored -> install(artifactId));
     }
 
     /// Adds a module that nothing depends on - the control for the closure claim.
-    void addModule(String artifactId) throws IOException {
+    Result<Unit> addModule(String artifactId) {
         var pom = root.resolve(artifactId + "/pom.xml");
-
-        writePom(pom, artifactId, "jar", List.of());
-
         var source = sourceOf(artifactId);
 
-        Files.createDirectories(source.getParent());
-        Files.writeString(source, "class Runtime {}\n");
-        touch(source, SOURCE_TIME);
-        touch(pom, SOURCE_TIME);
+        return writePom(pom,
+                        artifactId,
+                        "jar",
+                        List.of()).flatMap(ignored -> writeSource(source))
+                       .flatMap(ignored -> touch(source, SOURCE_TIME))
+                       .flatMap(ignored -> touch(pom, SOURCE_TIME));
     }
 
-    void install(String artifactId) throws IOException {
+    Result<Unit> install(String artifactId) {
         var jar = jarOf(artifactId);
 
-        Files.createDirectories(jar.getParent());
-        Files.writeString(jar, "stand-in for an installed artifact\n");
-        touch(jar, INSTALL_TIME);
+        return createDirectories(jar.getParent()).flatMap(ignored -> write(jar, "stand-in for an installed artifact\n"))
+                                .flatMap(ignored -> touch(jar, INSTALL_TIME));
     }
 
     Path sourceOf(String artifactId) {
@@ -65,42 +87,72 @@ record SyntheticRepo(Path root) {
     }
 
     Path jarOf(String artifactId) {
-        return root.resolve(".m2-local/org/example/" + artifactId + "/1.0.0/" + artifactId + "-1.0.0.jar");
+        return root.resolve(".m2-local/" + GROUP_ID.replace('.', '/')
+                           + "/" + artifactId
+                           + "/" + VERSION
+                           + "/" + artifactId
+                           + "-" + VERSION
+                           + ".jar");
     }
 
-    static void touch(Path path, Instant when) throws IOException {
-        Files.setLastModifiedTime(path, FileTime.from(when));
+    Path forgePom() {
+        return root.resolve(FORGE_POM);
     }
 
-    static void deleteTree(Path path) throws IOException {
-        try (var entries = Files.walk(path)) {
-            for (var entry : entries.sorted(Comparator.reverseOrder()).toList()) {
-                Files.delete(entry);
-            }
-        }
+    static Result<Unit> touch(Path path, Instant when) {
+        return Result.lift(() -> Files.setLastModifiedTime(path, FileTime.from(when))).mapToUnit();
     }
 
-    private static void writePom(Path path, String artifactId, String packaging, List<String> dependencies) throws IOException {
+    static Result<Unit> delete(Path path) {
+        return Result.lift(() -> Files.deleteIfExists(path)).mapToUnit();
+    }
+
+    /// A resource that ships inside the jar counts as source for the freshness comparison.
+    Result<Unit> writeResource(Path resource) {
+        return createDirectories(resource.getParent()).flatMap(ignored -> write(resource, "key=value\n"))
+                                .mapToUnit();
+    }
+
+    private Result<Unit> writeSource(Path source) {
+        return createDirectories(source.getParent()).flatMap(ignored -> write(source, "class Runtime {}\n"))
+                                .mapToUnit();
+    }
+
+    private static Result<Unit> writePom(Path path, String artifactId, String packaging, List<String> dependencies) {
+        return createDirectories(path.getParent()).flatMap(ignored -> write(path,
+                                                                            pomText(artifactId, packaging, dependencies)))
+                                .mapToUnit();
+    }
+
+    private static Result<Path> createDirectories(Path directory) {
+        return Result.lift(() -> Files.createDirectories(directory));
+    }
+
+    private static Result<Path> write(Path path, String content) {
+        return Result.lift(() -> Files.writeString(path, content));
+    }
+
+    private static String pomText(String artifactId, String packaging, List<String> dependencies) {
         var builder = new StringBuilder();
 
         builder.append("<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\n");
         builder.append("  <modelVersion>4.0.0</modelVersion>\n");
-        builder.append("  <groupId>org.example</groupId>\n");
+        builder.append("  <groupId>").append(GROUP_ID).append("</groupId>\n");
         builder.append("  <artifactId>").append(artifactId).append("</artifactId>\n");
-        builder.append("  <version>1.0.0</version>\n");
+        builder.append("  <version>").append(VERSION).append("</version>\n");
         builder.append("  <packaging>").append(packaging).append("</packaging>\n");
         builder.append("  <dependencies>\n");
-
-        for (var dependency : dependencies) {
-            builder.append("    <dependency><groupId>org.example</groupId><artifactId>")
-                   .append(dependency)
-                   .append("</artifactId><version>1.0.0</version></dependency>\n");
-        }
-
+        dependencies.forEach(dependency -> builder.append(dependencyText(dependency)));
         builder.append("  </dependencies>\n");
         builder.append("</project>\n");
 
-        Files.createDirectories(path.getParent());
-        Files.writeString(path, builder.toString());
+        return builder.toString();
+    }
+
+    private static String dependencyText(String artifactId) {
+        return "    <dependency><groupId>" + GROUP_ID
+             + "</groupId><artifactId>" + artifactId
+             + "</artifactId><version>" + VERSION
+             + "</version></dependency>\n";
     }
 }

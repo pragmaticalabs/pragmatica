@@ -37,31 +37,45 @@
         the same observation, which is why every refusal test is paired with a positive control that
         drives the same fixture to success.
 
-        Running a script needs a process, not a classpath, so this module test-depends on nothing but
-        the harness. That is also why it carries no licence header: it links neither the Apache core
-        nor the BSL aether modules, unlike cli-docs-gate, which explains its own BSL header by its
-        test-scoped dependency on aether/cli. Its position in the root <modules> list is therefore
-        free, and it sits BEFORE cli-docs-gate so that module's "LAST, deliberately" stays true.
+        Running a script needs a process, not a classpath, so this module test-depends only on the
+        harness and on `core`, whose Result/Option carry the IO outcomes. It links no BSL aether
+        module, unlike cli-docs-gate, which explains its own BSL header by its test-scoped
+        dependency on aether/cli; that is why this module carries no licence header. Its position in
+        the root <modules> list is free, and it sits BEFORE cli-docs-gate so that module's "LAST,
+        deliberately" stays true.
 
-        JBCT GATING OF THIS MODULE, measured rather than assumed. Test sources are unlinted
-        repo-wide (jbct.includeTests defaults to false), so every test-only module - including the
-        modules that exist to enforce gates - is unexamined. Setting jbct.skip=false and
-        jbct.includeTests=true here was tried and reverted: it produces 19 JBCT-EX-01 errors, one per
-        JUnit method, because a test method declares `throws Exception` and the rule requires
-        Result<T>. Rewriting a process-and-filesystem harness into Result to satisfy a rule the rest
-        of the repository's tests are exempt from would distort the tests without making them
-        stronger, so this module inherits the default. That is a real gap and it is written down
-        here rather than papered over - claiming a gate this module does not have would be the same
-        defect it exists to catch.
+        THIS MODULE GATES ITSELF. Test sources are unlinted repo-wide - jbct.includeTests defaults to
+        false - so every test-only module, INCLUDING the modules that exist to enforce gates, is
+        examined by nothing. A gate module exempt from the gate is precisely the defect this module
+        was built to catch, reproduced in the cure, so jbct.includeTests is true here.
+
+        It is set on this module ALONE and deliberately not at the root: turning it on repo-wide is
+        #938, held behind #974 pending an owner ruling. Turning it on cost a real rewrite rather than
+        a flag - 43 lint errors and 6 format issues, almost all JBCT-EX-01 (`throws` on a JUnit
+        method) - so the harness returns Result<T> from every IO operation and no test method
+        declares a checked exception. That is why ScriptRunner and SyntheticRepo look like production
+        code: under this property they are held to production rules.
     -->
 
     <properties>
         <!-- Gate-only module: it produces an empty jar and must never be published. -->
         <maven.deploy.skip>true</maven.deploy.skip>
         <gpg.skip>true</gpg.skip>
+
+        <!-- Without BOTH of these the JBCT gate examines zero files here and exits green - the
+             #740 WARNING says so out loud, and a gate module that ignores it is not a gate. -->
+        <jbct.skip>false</jbct.skip>
+        <jbct.includeTests>true</jbct.includeTests>
     </properties>
 
     <dependencies>
+        <!-- Result/Option carry every IO outcome in the harness, so no helper declares `throws`. -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>core</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
