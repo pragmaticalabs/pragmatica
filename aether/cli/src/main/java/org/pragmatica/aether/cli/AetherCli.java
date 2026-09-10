@@ -78,6 +78,20 @@ public class AetherCli implements Runnable {
     @CommandLine.Option(names = {"--request-timeout"}, description = "Per-request timeout in seconds (default 130, must exceed server-side max of 120). 0 disables.")
     private int requestTimeoutSeconds = 130;
 
+    /// The `-v` verbosity ladder (see [Verbosity]).
+    ///
+    /// Declared on the TOP-LEVEL command only, and deliberately NOT with `scope = INHERIT`: four
+    /// subcommands already declare their own value-taking `-v`/`--version` option, and an inherited
+    /// top-level `-v` would collide with those at startup. The cost of that is positional and is
+    /// stated in the help text: `aether -vv cluster bootstrap ...` raises verbosity, whereas
+    /// `aether cluster bootstrap -vv` does not, because there `-v` belongs to the subcommand.
+    ///
+    /// picocli fills this array with one element per occurrence, so `-vvv` yields length 3.
+    @CommandLine.Option(names = "-v", description = "Increase diagnostic verbosity on stderr: -v INFO, -vv DEBUG, -vvv TRACE. "
+                                                  + "Must be given BEFORE the subcommand (e.g. 'aether -vv cluster bootstrap ...'): "
+                                                  + "after a subcommand, -v is that subcommand's own --version option.")
+    private boolean[] verbosity = new boolean[0];
+
     @CommandLine.Mixin
     private OutputOptions outputOptions = new OutputOptions();
 
@@ -92,6 +106,7 @@ public class AetherCli implements Runnable {
         var cli = new AetherCli();
         var cmd = new CommandLine(cli);
 
+        cmd.setExecutionStrategy(cli::runWithVerbosity);
         cli.lookupConnection(args);
         cli.tlsSkipVerify = containsTlsSkipVerify(args);
         cli.httpOps = cli.buildHttpOperations();
@@ -312,6 +327,22 @@ public class AetherCli implements Runnable {
     }
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01", "JBCT-UTIL-02"})
+    /// Apply the [Verbosity] rung, then run the command picocli selected.
+    ///
+    /// This seam exists because the level has to be applied at a specific moment: AFTER parsing
+    /// (only then is the `-v` repeat count known) and BEFORE the selected subcommand runs (that is
+    /// where the diagnostics worth reading are emitted). picocli's execution strategy is exactly
+    /// that point. Registering it on the shared `CommandLine` covers the REPL path too, which
+    /// re-executes against the same instance.
+    ///
+    /// [CommandLine.RunLast] is picocli's own default strategy, so an invocation with no `-v`
+    /// dispatches exactly as it did before this seam was introduced.
+    private int runWithVerbosity(CommandLine.ParseResult parseResult) {
+        return Verbosity.verbosity(verbosity.length)
+                        .apply()
+                        .map(() -> new CommandLine.RunLast().execute(parseResult));
+    }
+
     private void runRepl(CommandLine cmd) {
         System.out.println("Aether v" + BuildInfo.current().displayString() + " - Connected to " + nodeAddress);
         System.out.println("Type 'help' for available commands, 'exit' to quit.");
