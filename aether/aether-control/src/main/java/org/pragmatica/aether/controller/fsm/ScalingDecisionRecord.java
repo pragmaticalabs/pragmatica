@@ -32,11 +32,17 @@ public record ScalingDecisionRecord(Artifact artifact,
 
     /// The guard that shaped the outcome. `NONE` means no guard intervened (a clean scale or a
     /// neutral-band hold); the remaining values name the specific gate that fired.
+    ///
+    /// `MIN_INSTANCES` is the lower-bound counterpart of `MAX_INSTANCES` (#936). It is the only
+    /// guard recorded for an evaluation that emits no command at all: a scale-down the floor
+    /// reduced to a no-op used to be indistinguishable from an evaluation with nothing to do —
+    /// same `HELD` outcome, same absent command, same silence.
     public enum Guard {
         NONE,
         WINDOW_NOT_FULL,
         SLICE_IN_PROGRESS,
         COOLDOWN,
+        MIN_INSTANCES,
         MAX_INSTANCES,
         CLUSTER_CAP,
         ERROR_BLOCK

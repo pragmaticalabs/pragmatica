@@ -84,6 +84,9 @@ public interface AbTestManager {
                              Map<String, AbTestDeployment> tests,
                              AtomicBoolean active) implements AbTestManager {
             private static final Logger log = LoggerFactory.getLogger(AbTestManager.class);
+            /// Canary, promote and restore all write the slice at exactly one instance; named so the
+            /// two instance arguments below cannot be misread as a placeholder for the current count.
+            private static final int VARIANT_INSTANCES = 1;
 
             @Override
             public Promise<Unit> activate() {
@@ -263,35 +266,42 @@ public interface AbTestManager {
                 return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
             }
 
-            /// A/B lifecycle writes must not evaporate the operator's per-slice bounds (#424 review)
-            /// nor the slice's ownership (#698). Reads the current `SliceTargetValue` once and carries
-            /// **every** field it is not deliberately replacing onto the new version.
+            /// A/B lifecycle writes must not evaporate the operator's per-slice bounds (#424 review),
+            /// the slice's ownership (#698) or its placement (#937). Reads the current
+            /// `SliceTargetValue` once and derives the new one from it, so that every component this
+            /// method is not deliberately replacing survives by construction.
             ///
-            /// Replaced: `currentVersion` (the variant/promoted version being written) and
-            /// `targetInstances`/`minInstances` (canary/promote/restore stay at 1 instance).
-            /// Preserved from the current value: `owningBlueprint`, `maxInstances`,
-            /// `scaleUpThreshold`, `scaleDownThreshold`.
-            /// Not carried: `placement` and `updatedAt` — the factory re-derives both, matching the
-            /// pre-#698 behaviour of this method.
+            /// Replaced: `currentVersion` (the variant or promoted version being written) and both
+            /// instance counts — canary, promote and restore all pin the slice at one instance.
+            /// Everything else is carried, `placement` included: #937 recorded it being reset to
+            /// `CORE_ONLY` here, and the reset is not merely stored — `ClusterDeploymentState` feeds
+            /// `effectivePlacement()` into the allocation engine, so an operator's deliberately
+            /// placed workload was relocated on the first A/B write. `updatedAt` is re-derived,
+            /// which is the point of a write.
+            ///
+            /// The enumerate-the-preserved-fields shape this method used to have is what let
+            /// `placement` go missing while the list read as exhaustive. It is deliberately not
+            /// restored: a `with*` chain cannot omit a field it does not mention.
             ///
             /// `owningBlueprint` matters beyond bookkeeping: `ClusterDeploymentState` resolves a
             /// slice's `schemaRequired` from its owner, and an erased owner silently takes the
             /// historical default `true`, flipping a `schema_required = false` slice on the next A/B
-            /// write. The single `kvStore.get` below is the same read this method already performed
-            /// for the override fields — #698 widens its field set by one and changes no control
-            /// flow, so it introduces no read-then-Put beyond the one already present here.
+            /// write. The single `kvStore.get` below is the read this method already performed, so
+            /// no control flow and no read-then-Put exposure changes here.
             private SliceTargetValue targetPreservingOverrides(SliceTargetKey key, Version version) {
-                var current = kvStore.get(key)
-                                     .filter(SliceTargetValue.class::isInstance)
-                                     .map(SliceTargetValue.class::cast);
+                return kvStore.get(key)
+                              .filter(SliceTargetValue.class::isInstance)
+                              .map(SliceTargetValue.class::cast)
+                              .map(current -> variantTarget(current, version))
+                              .or(() -> SliceTargetValue.sliceTargetValue(version, VARIANT_INSTANCES, VARIANT_INSTANCES));
+            }
 
-                return SliceTargetValue.sliceTargetValue(version,
-                                                         1,
-                                                         1,
-                                                         current.flatMap(SliceTargetValue::owningBlueprint),
-                                                         current.flatMap(SliceTargetValue::maxInstances),
-                                                         current.flatMap(SliceTargetValue::scaleUpThreshold),
-                                                         current.flatMap(SliceTargetValue::scaleDownThreshold));
+            /// A slice that has never been written has no placement, owner or bounds to carry, so
+            /// the creation factory above is correct for it and this transformation is correct for
+            /// every other case.
+            private static SliceTargetValue variantTarget(SliceTargetValue current, Version version) {
+                return current.withVersion(version)
+                              .withInstances(VARIANT_INSTANCES, VARIANT_INSTANCES);
             }
 
             private Promise<AbTestDeployment> activateTest(AbTestDeployment test) {
