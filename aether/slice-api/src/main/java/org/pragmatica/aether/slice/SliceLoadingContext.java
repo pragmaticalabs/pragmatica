@@ -441,10 +441,14 @@ public final class SliceLoadingContext implements SliceCreationContext {
         /// `artifact.asString()` — `groupId:artifactId:version`, three segments. The caller is a
         /// slice's generated `stop()`, which passes a compile-time literal from
         /// `FactoryClassGenerator.computeSliceArtifactCoordinate`:
-        /// `groupId:artifactId-kebab(SliceName)` — two segments, no version. Measured across the
-        /// tree at the time of the fix: 34 generated `stop()` bodies, all two-segment, 0 able to
-        /// match a scope. `releaseAll` compares scope strings for equality, so NO provisioned
-        /// resource was ever closed on any slice unload.
+        /// `groupId:artifactId-kebab(SliceName)` — two segments, no version. `releaseAll` compares
+        /// scope strings for equality, so NO emitted literal can ever equal any scope, for any
+        /// slice, in any build, and no provisioned resource was ever closed on any slice unload.
+        ///
+        /// That is structural, not a census: this side emits exactly ONE colon unconditionally,
+        /// `Artifact.asString()` exactly two, and a Maven coordinate cannot contain a colon. A
+        /// count of emitted `stop()` bodies is a function of which modules happen to be built when
+        /// it is taken — it varies by tree and goes stale — so no number is quoted here.
         ///
         /// The processor cannot be fixed into agreement: it has no version option to emit
         /// (`SliceProcessor`'s `@SupportedOptions` carries `slice.groupId` and `slice.artifactId`
@@ -515,7 +519,6 @@ public final class SliceLoadingContext implements SliceCreationContext {
                      ? GENERATED_BASE
                      : FOREIGN;
         }
-
         /// The generator emits `groupId:artifactId-kebab` — EXACTLY one colon — and a deployed
         /// artifact is always `groupId:artifactId:version`. Requiring that one colon is what keeps
         /// this classification narrow.

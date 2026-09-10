@@ -1757,8 +1757,10 @@ public class FactoryClassGenerator {
     /// its `Artifact` — `groupId:artifactId:version`, three segments — and this processor has no
     /// version to emit: `SliceProcessor`'s `@SupportedOptions` carries `slice.groupId` and
     /// `slice.artifactId` only, and compile-time code cannot know the version a slice is deployed
-    /// under in any case. Every one of the 34 generated `stop()` bodies in the tree therefore
-    /// carried a coordinate no registered scope could match.
+    /// under in any case. EVERY generated `stop()` therefore carries a coordinate no registered
+    /// scope can match — structurally, since this method emits exactly one colon and
+    /// `Artifact.asString()` exactly two, and a Maven coordinate cannot contain a colon. No count
+    /// is quoted: it is a function of which modules are built when it is taken.
     ///
     /// `SliceLoadingContext.SliceAwareResourceProvider.releaseAll` now substitutes the deployed
     /// `Artifact` string it already provisions under, so the argument emitted here is consulted
