@@ -66,13 +66,11 @@ public final class ControlLoopContext {
     private final ControlLoopState.Stopped stopped;
     private final AtomicReference<ControllerConfig> configRef;
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
-
     /// The last `SliceTargetValue` observed for each registered slice, keyed by the slice's
     /// artifact at that value's version. This holds the whole durable record and not a projection of
     /// it, because the autoscaler has to write a whole record back: #698, #936 and #937 were all one
     /// consequence of keeping a subset here and rebuilding the rest from factory defaults.
     private final ConcurrentHashMap<Artifact, SliceTargetValue> sliceTargets = new ConcurrentHashMap<>();
-
     private final ConcurrentHashMap<SliceNodeKey, SliceState> sliceStates = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Artifact, Long> sliceActivationTimes = new ConcurrentHashMap<>();
 
@@ -201,7 +199,8 @@ public final class ControlLoopContext {
         return sliceTargets.entrySet()
                            .stream()
                            .collect(toUnmodifiableMap(Map.Entry::getKey,
-                                                      entry -> blueprintOf(entry.getKey(), entry.getValue())));
+                                                      entry -> blueprintOf(entry.getKey(),
+                                                                           entry.getValue())));
     }
 
     public Option<ClusterController.Blueprint> blueprint(Artifact artifact) {
@@ -247,8 +246,7 @@ public final class ControlLoopContext {
     public void removeBlueprintMatching(SliceTargetKey key) {
         var artifactBase = key.artifactBase();
 
-        Option.from(sliceTargets.keySet().stream().filter(artifactBase::matches).findFirst())
-              .onPresent(sliceTargets::remove);
+        Option.from(sliceTargets.keySet().stream().filter(artifactBase::matches).findFirst()).onPresent(sliceTargets::remove);
     }
 
     public boolean blueprintsEmpty() {
@@ -557,9 +555,7 @@ public final class ControlLoopContext {
     private static Option<Integer> flooredRequest(BlueprintChange change,
                                                   ClusterController.Blueprint currentBlueprint) {
         return switch (change) {
-            case BlueprintChange.ScaleDown(_, int reduceBy)
-                    when (currentBlueprint.instances() - reduceBy) < currentBlueprint.minInstances() ->
-                    Option.some(currentBlueprint.instances() - reduceBy);
+            case BlueprintChange.ScaleDown(_, int reduceBy) when(currentBlueprint.instances() - reduceBy) < currentBlueprint.minInstances() -> Option.some(currentBlueprint.instances() - reduceBy);
             case BlueprintChange.ScaleDown _ -> Option.none();
             case BlueprintChange.ScaleUp _ -> Option.none();
         };

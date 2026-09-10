@@ -27,15 +27,24 @@
   what was wanted. Only a genuinely floored request is reported: a change asking for the count the
   slice already runs was never going to move anything.
 - **Construction-site audit (#936 acceptance 4, #937 acceptance 4).** Six
-  `SliceTargetValue.sliceTargetValue(...)` overloads, five of which hardcode `placement`. Production
-  callers: the 7-arg overload had 3 (`ControlLoopContext`, `AbTestManager` — both fixed here — and
-  `ClusterDeploymentState`, which is a genuine first write from a blueprint slice spec that carries
-  no placement); the placement-taking 4-arg overload has 1 (`SliceRoutes`, correct); the 2-arg
-  overload has 2 (`RollbackManager`, `DeploymentManagerImpl`, both fallbacks for a slice with no
-  existing value, whose main paths already use `with*`). The `(Version, int, Option<BlueprintId>)`,
-  `(Version, int, int)` and `(Version, int, int, Option<BlueprintId>)` overloads have **0** production
-  callers. Javadoc on the creation factories now states that a producer rebuilding an observed value
-  must use the `with*` methods instead.
+  `SliceTargetValue.sliceTargetValue(...)` overloads, five of which hardcode `placement`. Search
+  space: every `*.java` under the repo root outside `target/`, restricted to `src/main`; the six
+  factory declarations themselves are the positive control that the pattern matches. **Production
+  callers after this fix — five in total:**
+
+  | overload | callers | where |
+  |---|---|---|
+  | `(Version, int)` | 2 | `RollbackManager`, `DeploymentManagerImpl` — fallbacks for a slice with no existing value; both main paths already use `with*` |
+  | `(Version, int, int)` | 1 | `AbTestManager`'s fallback, **introduced by this fix** for the same reason |
+  | `(Version, int, int, String)` | 1 | `SliceRoutes` — the only overload that can express a placement |
+  | 7-arg | 1 | `ClusterDeploymentState` — a genuine first write from a blueprint slice spec, which carries no placement of its own |
+  | `(Version, int, Option<BlueprintId>)` | 0 | — |
+  | `(Version, int, int, Option<BlueprintId>)` | 0 | — |
+
+  Before this fix the 7-arg overload had **3** callers: the two rebuilding producers
+  (`ControlLoopContext`, `AbTestManager`) are exactly the ones this change removes. Javadoc on the
+  creation factories now states that a producer rebuilding an observed value must use the `with*`
+  methods instead.
   - **Not changed, and stated because the audit found it:** `sliceTargetValue(version, instances)`
     and `SliceRoutes`' first write both set `minInstances = instances`, so a slice created through
     them has floor == target from birth. That is a creation-time policy decision ("what you deployed

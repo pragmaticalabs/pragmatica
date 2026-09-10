@@ -84,7 +84,6 @@ public interface ControlLoop {
     /// `artifact` is the slice's base coordinate at `target.currentVersion()`; the two must agree,
     /// because the registration is keyed by it and the value's version is written back out.
     void registerBlueprint(Artifact artifact, SliceTargetValue target);
-
     void unregisterBlueprint(Artifact artifact);
     ControllerConfig configuration();
     void updateConfiguration(ControllerConfig config);
@@ -205,7 +204,8 @@ public interface ControlLoop {
             var key = valuePut.cause().key();
             var value = valuePut.cause().value();
 
-            registerBlueprint(key.artifactBase().withVersion(value.currentVersion()), value);
+            registerBlueprint(key.artifactBase().withVersion(value.currentVersion()),
+                              value);
         }
 
         @Override

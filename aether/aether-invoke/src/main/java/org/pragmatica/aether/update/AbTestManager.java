@@ -84,7 +84,6 @@ public interface AbTestManager {
                              Map<String, AbTestDeployment> tests,
                              AtomicBoolean active) implements AbTestManager {
             private static final Logger log = LoggerFactory.getLogger(AbTestManager.class);
-
             /// Canary, promote and restore all write the slice at exactly one instance; named so the
             /// two instance arguments below cannot be misread as a placeholder for the current count.
             private static final int VARIANT_INSTANCES = 1;
@@ -294,9 +293,7 @@ public interface AbTestManager {
                               .filter(SliceTargetValue.class::isInstance)
                               .map(SliceTargetValue.class::cast)
                               .map(current -> variantTarget(current, version))
-                              .or(() -> SliceTargetValue.sliceTargetValue(version,
-                                                                          VARIANT_INSTANCES,
-                                                                          VARIANT_INSTANCES));
+                              .or(() -> SliceTargetValue.sliceTargetValue(version, VARIANT_INSTANCES, VARIANT_INSTANCES));
             }
 
             /// A slice that has never been written has no placement, owner or bounds to carry, so
