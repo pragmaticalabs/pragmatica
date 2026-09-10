@@ -838,13 +838,23 @@ public final class SliceProjectInitializer {
 
     private static final String START_POSTGRES_SH_TEMPLATE = """
         #!/bin/bash
-        # Start PostgreSQL for local development
+        # Start PostgreSQL for local development.
+        #
+        # #952: this script's readiness loop used to have no failure branch. It counted to 30 and fell
+        # through, so it reported success for a container that had already died, and the real failure
+        # surfaced later attributed to something healthy. It can now fail: it checks the container is
+        # RUNNING rather than that a counter elapsed, bounds itself in time, names the database, and exits
+        # non-zero. The data path is derived from the image for the same reason - a path that does not match
+        # the image starts a container that looks healthy and keeps nothing.
         set -e
 
         CONTAINER_NAME="{{artifactId}}-postgres"
         VOLUME_NAME="{{artifactId}}-pgdata"
         PG_PORT="${PG_PORT:-5432}"
         PG_PASSWORD="${PG_PASSWORD:-postgres}"
+        PG_IMAGE="postgres:17"
+        PG_DB="forge"
+        PG_READY_TIMEOUT="${PG_READY_TIMEOUT:-60}"
 
         # Auto-detect container runtime
         if command -v docker >/dev/null 2>&1; then
@@ -856,6 +866,91 @@ public final class SliceProjectInitializer {
             exit 1
         fi
 
+        # Postgres 18 moved PGDATA to /var/lib/postgresql/<major>/docker and declares /var/lib/postgresql as
+        # its volume; earlier images use /var/lib/postgresql/data for both. Reading the path from the image
+        # is what stops a future image bump from silently reintroducing the mismatch.
+        resolve_data_mount() {
+            local pgdata volumes candidate
+
+            pgdata=$($RUNTIME image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$PG_IMAGE" 2>/dev/null | sed -n 's/^PGDATA=//p' | head -1)
+            volumes=$($RUNTIME image inspect --format '{{range $path, $_ := .Config.Volumes}}{{println $path}}{{end}}' "$PG_IMAGE" 2>/dev/null)
+
+            if [ -n "$pgdata" ]; then
+                while IFS= read -r candidate; do
+                    [ -n "$candidate" ] || continue
+                    case "$pgdata" in
+                        "$candidate"|"$candidate"/*) echo "$candidate"; return 0 ;;
+                    esac
+                done <<< "$volumes"
+
+                echo "$pgdata"
+                return 0
+            fi
+
+            echo "$volumes" | head -1
+        }
+
+        # Three ways this can end and only one of them is success. The elapsed time and probe COUNT are
+        # reported either way: "ready" with no number attached is what the old loop printed for a container
+        # that had been dead for ten seconds.
+        wait_until_ready() {
+            local started=$SECONDS attempts=0 elapsed state exit_code
+
+            while true; do
+                state=$($RUNTIME inspect --format '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || echo "absent")
+
+                if [ "$state" != "true" ]; then
+                    exit_code=$($RUNTIME inspect --format '{{.State.ExitCode}}' "$CONTAINER_NAME" 2>/dev/null || echo "unknown")
+                    elapsed=$((SECONDS - started))
+                    echo ""
+                    echo "ERROR: PostgreSQL database '$PG_DB' is NOT available."
+                    echo "       Container '$CONTAINER_NAME' ($PG_IMAGE) is not running: state=$state, exit code $exit_code,"
+                    echo "       after ${elapsed}s and $attempts readiness probe(s)."
+                    echo "       Nothing that needs $PG_DB on port $PG_PORT will work."
+                    echo "       Last lines from the container:"
+                    $RUNTIME logs --tail 20 "$CONTAINER_NAME" 2>&1 | sed 's/^/         /' || true
+                    exit 1
+                fi
+
+                attempts=$((attempts + 1))
+
+                if $RUNTIME exec "$CONTAINER_NAME" pg_isready -U postgres -d "$PG_DB" >/dev/null 2>&1; then
+                    elapsed=$((SECONDS - started))
+                    echo "PostgreSQL ready after ${elapsed}s and $attempts probe(s)."
+                    return 0
+                fi
+
+                elapsed=$((SECONDS - started))
+
+                if [ "$elapsed" -ge "$PG_READY_TIMEOUT" ]; then
+                    echo ""
+                    echo "ERROR: PostgreSQL database '$PG_DB' did not become ready within ${PG_READY_TIMEOUT}s."
+                    echo "       Container '$CONTAINER_NAME' ($PG_IMAGE) is running, but pg_isready failed on"
+                    echo "       all $attempts probe(s)."
+                    echo "       Nothing that needs $PG_DB on port $PG_PORT will work."
+                    echo "       Last lines from the container:"
+                    $RUNTIME logs --tail 20 "$CONTAINER_NAME" 2>&1 | sed 's/^/         /' || true
+                    exit 1
+                fi
+
+                sleep 1
+            done
+        }
+
+        if ! $RUNTIME image inspect "$PG_IMAGE" >/dev/null 2>&1; then
+            echo "Pulling $PG_IMAGE..."
+            $RUNTIME pull "$PG_IMAGE"
+        fi
+
+        PG_DATA_MOUNT="$(resolve_data_mount)"
+
+        if [ -z "$PG_DATA_MOUNT" ]; then
+            echo "ERROR: could not read the data directory from $PG_IMAGE."
+            echo "       The image declares neither a VOLUME nor a PGDATA environment entry."
+            echo "       Refusing to guess: a wrong path starts a container that looks healthy and keeps nothing."
+            exit 1
+        fi
+
         # Check if already running
         if $RUNTIME ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
             echo "PostgreSQL is already running (container: $CONTAINER_NAME)"
@@ -863,42 +958,33 @@ public final class SliceProjectInitializer {
         elif $RUNTIME ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
             echo "Starting existing container..."
             $RUNTIME start "$CONTAINER_NAME"
-            echo "Waiting for PostgreSQL..."
-            for i in $(seq 1 30); do
-                if $RUNTIME exec "$CONTAINER_NAME" pg_isready -U postgres >/dev/null 2>&1; then
-                    break
-                fi
-                sleep 1
-            done
         else
-            echo "Creating PostgreSQL container..."
+            echo "Creating PostgreSQL container (volume $VOLUME_NAME at $PG_DATA_MOUNT)..."
             $RUNTIME run -d \\
                 --name "$CONTAINER_NAME" \\
-                -v "$VOLUME_NAME:/var/lib/postgresql/data" \\
+                -v "$VOLUME_NAME:$PG_DATA_MOUNT" \\
                 -e POSTGRES_PASSWORD="$PG_PASSWORD" \\
-                -e POSTGRES_DB=forge \\
+                -e POSTGRES_DB="$PG_DB" \\
                 -p "$PG_PORT:5432" \\
-                postgres:17
-
-            echo "Waiting for PostgreSQL..."
-            for i in $(seq 1 30); do
-                if $RUNTIME exec "$CONTAINER_NAME" pg_isready -U postgres >/dev/null 2>&1; then
-                    break
-                fi
-                sleep 1
-            done
+                "$PG_IMAGE"
         fi
 
-        # Always apply schema (idempotent — uses CREATE IF NOT EXISTS)
+        # Wait unconditionally, on every branch. A container that is up is not a database that answers, and
+        # skipping the check when one is already running is a second blind path to the same false "ready".
+        echo "Waiting for PostgreSQL (timeout ${PG_READY_TIMEOUT}s)..."
+        wait_until_ready
+
+        # Always apply schema (idempotent - uses CREATE IF NOT EXISTS)
         SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         if [ -f "$SCRIPT_DIR/schema/init.sql" ]; then
             echo "Applying schema/init.sql..."
-            $RUNTIME exec -i "$CONTAINER_NAME" psql -U postgres -d forge < "$SCRIPT_DIR/schema/init.sql"
+            $RUNTIME exec -i "$CONTAINER_NAME" psql -U postgres -d "$PG_DB" < "$SCRIPT_DIR/schema/init.sql"
         fi
 
         echo ""
-        echo "PostgreSQL running on port $PG_PORT"
-        echo "  Connection: postgresql://postgres:$PG_PASSWORD@localhost:$PG_PORT/forge"
+        echo "PostgreSQL running on port $PG_PORT - verified by pg_isready, not by a loop counter"
+        echo "  Connection: postgresql://postgres:$PG_PASSWORD@localhost:$PG_PORT/$PG_DB"
+        echo "  Data volume: $VOLUME_NAME mounted at $PG_DATA_MOUNT"
         """;
 
     private static final String STOP_POSTGRES_SH_TEMPLATE = """
