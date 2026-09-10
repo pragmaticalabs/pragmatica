@@ -138,7 +138,7 @@ class StorageSegmentSinkTest {
         }
 
         /// Red before the fix: the sealed block sits at refCount 2, `deleteRef` brings it to 1,
-        /// `isOrphaned` stays false and `collectGarbage` returns 0.
+        /// `isOrphaned` stays false, and `collectGarbage` returns 0 with the block still on the tier.
         @Test
         void seal_thenDropTheRef_reachesRefCountZero_andIsCollected() throws InterruptedException {
             var segment = sealedSegment(STREAM, PARTITION, 0, 9, 10, 1000L, 2000L, new byte[]{1, 2, 3});
@@ -150,29 +150,33 @@ class StorageSegmentSinkTest {
             var refName = StorageSegmentSink.refName(segment);
             var blockId = storage.resolveRef(refName)
                                  .unwrap();
-
-            assertThat(refCountOf(blockId))
-                    .as("one segment ref must credit exactly one reference -- put+createRef credited two (#812)")
-                    .isEqualTo(1);
-            assertThat(isOrphaned(blockId)).isFalse();
+            var refCountWhileNamed = refCountOf(blockId);
+            var orphanedWhileNamed = isOrphaned(blockId);
 
             storage.deleteRef(refName)
                    .await()
                    .onFailure(c -> fail("deleteRef failed: " + c.message()));
 
-            assertThat(refCountOf(blockId)).as("dropping the only ref must reach zero").isZero();
-            assertThat(isOrphaned(blockId)).isTrue();
+            var refCountAfterDrop = refCountOf(blockId);
+            var orphanedAfterDrop = isOrphaned(blockId);
 
             Thread.sleep(20);
 
             assertThat(gc.collectGarbage())
-                    .as("the orphaned segment block must actually be collected, not merely counted down")
+                    .as("the sealed block must actually be collected once its only ref is gone")
                     .isEqualTo(1);
             assertThat(metadataStore.containsBlock(blockId)).as("lifecycle metadata must be gone").isFalse();
             storage.get(blockId)
                    .await()
                    .onFailure(c -> fail("get failed: " + c.message()))
                    .onSuccess(opt -> assertThat(opt.isEmpty()).as("the block must be gone from the tier").isTrue());
+
+            assertThat(refCountWhileNamed)
+                    .as("locator: one segment ref must credit one reference -- put+createRef credited two (#812)")
+                    .isEqualTo(1);
+            assertThat(orphanedWhileNamed).as("locator: a referenced segment is not orphaned").isFalse();
+            assertThat(refCountAfterDrop).as("locator: dropping the only ref must reach zero").isZero();
+            assertThat(orphanedAfterDrop).as("locator: at zero the block must report orphaned").isTrue();
         }
 
         /// Re-sealing the same segment is a real path -- a node that crashed between sealing and
@@ -193,8 +197,7 @@ class StorageSegmentSinkTest {
             var refName = StorageSegmentSink.refName(segment);
             var blockId = storage.resolveRef(refName)
                                  .unwrap();
-
-            assertThat(refCountOf(blockId)).as("a re-seal of one segment is still one reference").isEqualTo(1);
+            var refCountAfterReseal = refCountOf(blockId);
 
             storage.deleteRef(refName)
                    .await()
@@ -203,7 +206,9 @@ class StorageSegmentSinkTest {
             Thread.sleep(20);
 
             assertThat(gc.collectGarbage()).as("a re-sealed segment must still be collectable").isEqualTo(1);
-            assertThat(metadataStore.containsBlock(blockId)).isFalse();
+            assertThat(metadataStore.containsBlock(blockId)).as("lifecycle metadata must be gone").isFalse();
+
+            assertThat(refCountAfterReseal).as("locator: a re-seal of one segment is still one reference").isEqualTo(1);
         }
     }
 }
