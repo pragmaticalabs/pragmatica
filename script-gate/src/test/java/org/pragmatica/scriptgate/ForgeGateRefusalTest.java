@@ -76,6 +76,23 @@ class ForgeGateRefusalTest {
         assertThat(marker).as("Maven must not have started: %s", execution.output()).doesNotExist();
     }
 
+    /// A checker that RAN and could not determine an answer is a third case, distinct from both a
+    /// stale tree and an absent checker, and it reaches forge.sh through a different branch. It was
+    /// unpinned until a mutation of that branch left the whole suite green: with the branch deleted,
+    /// forge.sh ran the suite against a runtime it knew nothing about.
+    @Test
+    void undeterminedFreshness_refusesBeforeMavenRuns() throws Exception {
+        Files.delete(repo.jarOf("runtime-a"));
+
+        var execution = runForge(Map.of());
+
+        assertThat(execution.exitCode()).as(execution.output()).isEqualTo(2);
+        assertThat(execution.output()).contains("FORGE GATE REFUSED TO RUN")
+                                      .contains("freshness is UNDETERMINED")
+                                      .contains("An undetermined result is not a pass");
+        assertThat(marker).as("Maven must not have started: %s", execution.output()).doesNotExist();
+    }
+
     /// Positive control for the two refusals above. Same fixture, same stub, opposite outcome: if
     /// this did not reach Maven, "it refused" and "it never worked" would be indistinguishable.
     @Test
