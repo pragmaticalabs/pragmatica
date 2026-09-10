@@ -1,4 +1,4 @@
-// peglib-generator: 0.7.3 (build:767ffbbe347d)
+// peglib-generator: 0.7.3 (build:60f0704043b2)
 package org.pragmatica.jbct.parser.v6;
 
 import java.util.ArrayList;
@@ -1113,8 +1113,66 @@ public final class Java25ParserV6 {
             int savedNodes_rep_1 = cst.currentNodeCount();
             boolean iterOk_rep_1 = false;
             do {
-                if (java.util.Arrays.binarySearch(ALIAS_MODIFIER, peek()) < 0) { fail("Modifier", RULE_TopLevelMember_KIND); break; }
-                advance();
+                // choice: alt_2
+                {
+                    int savedPos_alt_2 = pos;
+                    int savedNodes_alt_2 = cst.currentNodeCount();
+                    boolean matched_alt_2 = false;
+                    boolean cutHit_alt_2 = false;
+                    if (!matched_alt_2 && !cutHit_alt_2) {
+                        do {
+                            if (java.util.Arrays.binarySearch(ALIAS_MODIFIER, peek()) < 0) { fail("Modifier", RULE_TopLevelMember_KIND); break; }
+                            advance();
+                            matched_alt_2 = true;
+                        } while (false);
+                        if (!matched_alt_2) {
+                            pos = savedPos_alt_2;
+                            cst.truncate(savedNodes_alt_2);
+                        }
+                    }
+                    if (!matched_alt_2 && !cutHit_alt_2) {
+                        do {
+                            // and-predicate: and_3
+                            {
+                                int savedPos_and_3 = pos;
+                                int savedNodes_and_3 = cst.currentNodeCount();
+                                boolean andOk_and_3 = false;
+                                do {
+                                    if (!parseAnnotation(self)) { break; }
+                                    // zero-or-more: rep_4
+                                    while (true) {
+                                        int savedPos_rep_4 = pos;
+                                        int savedNodes_rep_4 = cst.currentNodeCount();
+                                        boolean iterOk_rep_4 = false;
+                                        do {
+                                            if (!parseAnnotation(self)) { break; }
+                                            iterOk_rep_4 = true;
+                                        } while (false);
+                                        if (!iterOk_rep_4) {
+                                            pos = savedPos_rep_4;
+                                            cst.truncate(savedNodes_rep_4);
+                                            break;
+                                        }
+                                        if (pos == savedPos_rep_4) break; // guard against infinite loops on zero-width matches
+                                    }
+                                    if (java.util.Arrays.binarySearch(ALIAS_MODIFIER, peek()) < 0) { fail("Modifier", RULE_TopLevelMember_KIND); break; }
+                                    advance();
+                                    andOk_and_3 = true;
+                                } while (false);
+                                pos = savedPos_and_3;
+                                cst.truncate(savedNodes_and_3);
+                                if (!andOk_and_3) { fail("&<predicate>", RULE_TopLevelMember_KIND); break; }
+                            }
+                            if (!parseAnnotation(self)) { break; }
+                            matched_alt_2 = true;
+                        } while (false);
+                        if (!matched_alt_2) {
+                            pos = savedPos_alt_2;
+                            cst.truncate(savedNodes_alt_2);
+                        }
+                    }
+                    if (!matched_alt_2) { fail("<choice>", RULE_TopLevelMember_KIND); break; }
+                }
                 iterOk_rep_1 = true;
             } while (false);
             if (!iterOk_rep_1) {
@@ -1124,47 +1182,47 @@ public final class Java25ParserV6 {
             }
             if (pos == savedPos_rep_1) break; // guard against infinite loops on zero-width matches
         }
-        // not-predicate: not_2
+        // not-predicate: not_5
         {
-            int savedPos_not_2 = pos;
-            int savedNodes_not_2 = cst.currentNodeCount();
-            boolean notMatched_not_2 = false;
+            int savedPos_not_5 = pos;
+            int savedNodes_not_5 = cst.currentNodeCount();
+            boolean notMatched_not_5 = false;
             do {
                 { int __k = peek(); if (__k != KIND_RECORDKW) { fail("RecordKW", RULE_TopLevelMember_KIND); break; } }
                 advance();
-                notMatched_not_2 = true;
+                notMatched_not_5 = true;
             } while (false);
-            pos = savedPos_not_2;
-            cst.truncate(savedNodes_not_2);
-            if (notMatched_not_2) { fail("!<predicate>", RULE_TopLevelMember_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+            pos = savedPos_not_5;
+            cst.truncate(savedNodes_not_5);
+            if (notMatched_not_5) { fail("!<predicate>", RULE_TopLevelMember_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         }
-        // choice: alt_3
+        // choice: alt_6
         {
-            int savedPos_alt_3 = pos;
-            int savedNodes_alt_3 = cst.currentNodeCount();
-            boolean matched_alt_3 = false;
-            boolean cutHit_alt_3 = false;
-            if (!matched_alt_3 && !cutHit_alt_3) {
+            int savedPos_alt_6 = pos;
+            int savedNodes_alt_6 = cst.currentNodeCount();
+            boolean matched_alt_6 = false;
+            boolean cutHit_alt_6 = false;
+            if (!matched_alt_6 && !cutHit_alt_6) {
                 do {
                     if (!parseMethodDecl(self)) { break; }
-                    matched_alt_3 = true;
+                    matched_alt_6 = true;
                 } while (false);
-                if (!matched_alt_3) {
-                    pos = savedPos_alt_3;
-                    cst.truncate(savedNodes_alt_3);
+                if (!matched_alt_6) {
+                    pos = savedPos_alt_6;
+                    cst.truncate(savedNodes_alt_6);
                 }
             }
-            if (!matched_alt_3 && !cutHit_alt_3) {
+            if (!matched_alt_6 && !cutHit_alt_6) {
                 do {
                     if (!parseFieldDecl(self)) { break; }
-                    matched_alt_3 = true;
+                    matched_alt_6 = true;
                 } while (false);
-                if (!matched_alt_3) {
-                    pos = savedPos_alt_3;
-                    cst.truncate(savedNodes_alt_3);
+                if (!matched_alt_6) {
+                    pos = savedPos_alt_6;
+                    cst.truncate(savedNodes_alt_6);
                 }
             }
-            if (!matched_alt_3) { fail("<choice>", RULE_TopLevelMember_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
+            if (!matched_alt_6) { fail("<choice>", RULE_TopLevelMember_KIND); pos = savedPos; cst.truncate(savedNodes); return false; }
         }
         int lastTok = pos > firstTok ? pos - 1 : firstTok;
         if (lastTok >= tokens.count()) lastTok = tokens.count() - 1;
@@ -1852,6 +1910,47 @@ public final class Java25ParserV6 {
                             cst.truncate(savedNodes_alt_2);
                         }
                     }
+                    if (!matched_alt_2 && !cutHit_alt_2) {
+                        do {
+                            // and-predicate: and_6
+                            {
+                                int savedPos_and_6 = pos;
+                                int savedNodes_and_6 = cst.currentNodeCount();
+                                boolean andOk_and_6 = false;
+                                do {
+                                    if (!parseAnnotation(self)) { break; }
+                                    // zero-or-more: rep_7
+                                    while (true) {
+                                        int savedPos_rep_7 = pos;
+                                        int savedNodes_rep_7 = cst.currentNodeCount();
+                                        boolean iterOk_rep_7 = false;
+                                        do {
+                                            if (!parseAnnotation(self)) { break; }
+                                            iterOk_rep_7 = true;
+                                        } while (false);
+                                        if (!iterOk_rep_7) {
+                                            pos = savedPos_rep_7;
+                                            cst.truncate(savedNodes_rep_7);
+                                            break;
+                                        }
+                                        if (pos == savedPos_rep_7) break; // guard against infinite loops on zero-width matches
+                                    }
+                                    if (java.util.Arrays.binarySearch(ALIAS_MODIFIER, peek()) < 0) { fail("Modifier", RULE_TypeDecl_KIND); break; }
+                                    advance();
+                                    andOk_and_6 = true;
+                                } while (false);
+                                pos = savedPos_and_6;
+                                cst.truncate(savedNodes_and_6);
+                                if (!andOk_and_6) { fail("&<predicate>", RULE_TypeDecl_KIND); break; }
+                            }
+                            if (!parseAnnotation(self)) { break; }
+                            matched_alt_2 = true;
+                        } while (false);
+                        if (!matched_alt_2) {
+                            pos = savedPos_alt_2;
+                            cst.truncate(savedNodes_alt_2);
+                        }
+                    }
                     if (!matched_alt_2) { fail("<choice>", RULE_TypeDecl_KIND); break; }
                 }
                 iterOk_rep_1 = true;
@@ -2327,6 +2426,47 @@ public final class Java25ParserV6 {
                                         cst.truncate(savedNodes_alt_3);
                                     }
                                 }
+                                if (!matched_alt_3 && !cutHit_alt_3) {
+                                    do {
+                                        // and-predicate: and_7
+                                        {
+                                            int savedPos_and_7 = pos;
+                                            int savedNodes_and_7 = cst.currentNodeCount();
+                                            boolean andOk_and_7 = false;
+                                            do {
+                                                if (!parseAnnotation(self)) { break; }
+                                                // zero-or-more: rep_8
+                                                while (true) {
+                                                    int savedPos_rep_8 = pos;
+                                                    int savedNodes_rep_8 = cst.currentNodeCount();
+                                                    boolean iterOk_rep_8 = false;
+                                                    do {
+                                                        if (!parseAnnotation(self)) { break; }
+                                                        iterOk_rep_8 = true;
+                                                    } while (false);
+                                                    if (!iterOk_rep_8) {
+                                                        pos = savedPos_rep_8;
+                                                        cst.truncate(savedNodes_rep_8);
+                                                        break;
+                                                    }
+                                                    if (pos == savedPos_rep_8) break; // guard against infinite loops on zero-width matches
+                                                }
+                                                if (java.util.Arrays.binarySearch(ALIAS_MODIFIER, peek()) < 0) { fail("Modifier", RULE_AnnotationMember_KIND); break; }
+                                                advance();
+                                                andOk_and_7 = true;
+                                            } while (false);
+                                            pos = savedPos_and_7;
+                                            cst.truncate(savedNodes_and_7);
+                                            if (!andOk_and_7) { fail("&<predicate>", RULE_AnnotationMember_KIND); break; }
+                                        }
+                                        if (!parseAnnotation(self)) { break; }
+                                        matched_alt_3 = true;
+                                    } while (false);
+                                    if (!matched_alt_3) {
+                                        pos = savedPos_alt_3;
+                                        cst.truncate(savedNodes_alt_3);
+                                    }
+                                }
                                 if (!matched_alt_3) { fail("<choice>", RULE_AnnotationMember_KIND); break; }
                             }
                             iterOk_rep_2 = true;
@@ -2338,43 +2478,43 @@ public final class Java25ParserV6 {
                         }
                         if (pos == savedPos_rep_2) break; // guard against infinite loops on zero-width matches
                     }
-                    // choice: alt_7
+                    // choice: alt_9
                     {
-                        int savedPos_alt_7 = pos;
-                        int savedNodes_alt_7 = cst.currentNodeCount();
-                        boolean matched_alt_7 = false;
-                        boolean cutHit_alt_7 = false;
-                        if (!matched_alt_7 && !cutHit_alt_7) {
+                        int savedPos_alt_9 = pos;
+                        int savedNodes_alt_9 = cst.currentNodeCount();
+                        boolean matched_alt_9 = false;
+                        boolean cutHit_alt_9 = false;
+                        if (!matched_alt_9 && !cutHit_alt_9) {
                             do {
                                 if (!parseAnnotationElemDecl(self)) { break; }
-                                matched_alt_7 = true;
+                                matched_alt_9 = true;
                             } while (false);
-                            if (!matched_alt_7) {
-                                pos = savedPos_alt_7;
-                                cst.truncate(savedNodes_alt_7);
+                            if (!matched_alt_9) {
+                                pos = savedPos_alt_9;
+                                cst.truncate(savedNodes_alt_9);
                             }
                         }
-                        if (!matched_alt_7 && !cutHit_alt_7) {
+                        if (!matched_alt_9 && !cutHit_alt_9) {
                             do {
                                 if (!parseFieldDecl(self)) { break; }
-                                matched_alt_7 = true;
+                                matched_alt_9 = true;
                             } while (false);
-                            if (!matched_alt_7) {
-                                pos = savedPos_alt_7;
-                                cst.truncate(savedNodes_alt_7);
+                            if (!matched_alt_9) {
+                                pos = savedPos_alt_9;
+                                cst.truncate(savedNodes_alt_9);
                             }
                         }
-                        if (!matched_alt_7 && !cutHit_alt_7) {
+                        if (!matched_alt_9 && !cutHit_alt_9) {
                             do {
                                 if (!parseTypeKind(self)) { break; }
-                                matched_alt_7 = true;
+                                matched_alt_9 = true;
                             } while (false);
-                            if (!matched_alt_7) {
-                                pos = savedPos_alt_7;
-                                cst.truncate(savedNodes_alt_7);
+                            if (!matched_alt_9) {
+                                pos = savedPos_alt_9;
+                                cst.truncate(savedNodes_alt_9);
                             }
                         }
-                        if (!matched_alt_7) { fail("<choice>", RULE_AnnotationMember_KIND); break; }
+                        if (!matched_alt_9) { fail("<choice>", RULE_AnnotationMember_KIND); break; }
                     }
                     matched_alt_0 = true;
                 } while (false);
@@ -3030,6 +3170,47 @@ public final class Java25ParserV6 {
                                         cst.truncate(savedNodes_alt_3);
                                     }
                                 }
+                                if (!matched_alt_3 && !cutHit_alt_3) {
+                                    do {
+                                        // and-predicate: and_7
+                                        {
+                                            int savedPos_and_7 = pos;
+                                            int savedNodes_and_7 = cst.currentNodeCount();
+                                            boolean andOk_and_7 = false;
+                                            do {
+                                                if (!parseAnnotation(self)) { break; }
+                                                // zero-or-more: rep_8
+                                                while (true) {
+                                                    int savedPos_rep_8 = pos;
+                                                    int savedNodes_rep_8 = cst.currentNodeCount();
+                                                    boolean iterOk_rep_8 = false;
+                                                    do {
+                                                        if (!parseAnnotation(self)) { break; }
+                                                        iterOk_rep_8 = true;
+                                                    } while (false);
+                                                    if (!iterOk_rep_8) {
+                                                        pos = savedPos_rep_8;
+                                                        cst.truncate(savedNodes_rep_8);
+                                                        break;
+                                                    }
+                                                    if (pos == savedPos_rep_8) break; // guard against infinite loops on zero-width matches
+                                                }
+                                                if (java.util.Arrays.binarySearch(ALIAS_MODIFIER, peek()) < 0) { fail("Modifier", RULE_InterfaceMember_KIND); break; }
+                                                advance();
+                                                andOk_and_7 = true;
+                                            } while (false);
+                                            pos = savedPos_and_7;
+                                            cst.truncate(savedNodes_and_7);
+                                            if (!andOk_and_7) { fail("&<predicate>", RULE_InterfaceMember_KIND); break; }
+                                        }
+                                        if (!parseAnnotation(self)) { break; }
+                                        matched_alt_3 = true;
+                                    } while (false);
+                                    if (!matched_alt_3) {
+                                        pos = savedPos_alt_3;
+                                        cst.truncate(savedNodes_alt_3);
+                                    }
+                                }
                                 if (!matched_alt_3) { fail("<choice>", RULE_InterfaceMember_KIND); break; }
                             }
                             iterOk_rep_2 = true;
@@ -3041,43 +3222,43 @@ public final class Java25ParserV6 {
                         }
                         if (pos == savedPos_rep_2) break; // guard against infinite loops on zero-width matches
                     }
-                    // choice: alt_7
+                    // choice: alt_9
                     {
-                        int savedPos_alt_7 = pos;
-                        int savedNodes_alt_7 = cst.currentNodeCount();
-                        boolean matched_alt_7 = false;
-                        boolean cutHit_alt_7 = false;
-                        if (!matched_alt_7 && !cutHit_alt_7) {
+                        int savedPos_alt_9 = pos;
+                        int savedNodes_alt_9 = cst.currentNodeCount();
+                        boolean matched_alt_9 = false;
+                        boolean cutHit_alt_9 = false;
+                        if (!matched_alt_9 && !cutHit_alt_9) {
                             do {
                                 if (!parseTypeKind(self)) { break; }
-                                matched_alt_7 = true;
+                                matched_alt_9 = true;
                             } while (false);
-                            if (!matched_alt_7) {
-                                pos = savedPos_alt_7;
-                                cst.truncate(savedNodes_alt_7);
+                            if (!matched_alt_9) {
+                                pos = savedPos_alt_9;
+                                cst.truncate(savedNodes_alt_9);
                             }
                         }
-                        if (!matched_alt_7 && !cutHit_alt_7) {
+                        if (!matched_alt_9 && !cutHit_alt_9) {
                             do {
                                 if (!parseMethodDecl(self)) { break; }
-                                matched_alt_7 = true;
+                                matched_alt_9 = true;
                             } while (false);
-                            if (!matched_alt_7) {
-                                pos = savedPos_alt_7;
-                                cst.truncate(savedNodes_alt_7);
+                            if (!matched_alt_9) {
+                                pos = savedPos_alt_9;
+                                cst.truncate(savedNodes_alt_9);
                             }
                         }
-                        if (!matched_alt_7 && !cutHit_alt_7) {
+                        if (!matched_alt_9 && !cutHit_alt_9) {
                             do {
                                 if (!parseInterfaceFieldDecl(self)) { break; }
-                                matched_alt_7 = true;
+                                matched_alt_9 = true;
                             } while (false);
-                            if (!matched_alt_7) {
-                                pos = savedPos_alt_7;
-                                cst.truncate(savedNodes_alt_7);
+                            if (!matched_alt_9) {
+                                pos = savedPos_alt_9;
+                                cst.truncate(savedNodes_alt_9);
                             }
                         }
-                        if (!matched_alt_7) { fail("<choice>", RULE_InterfaceMember_KIND); break; }
+                        if (!matched_alt_9) { fail("<choice>", RULE_InterfaceMember_KIND); break; }
                     }
                     matched_alt_0 = true;
                 } while (false);
@@ -3286,6 +3467,47 @@ public final class Java25ParserV6 {
                                             cst.truncate(savedNodes_and_4);
                                             if (!andOk_and_4) { fail("&<predicate>", RULE_ClassMember_KIND); break; }
                                         }
+                                        matched_alt_3 = true;
+                                    } while (false);
+                                    if (!matched_alt_3) {
+                                        pos = savedPos_alt_3;
+                                        cst.truncate(savedNodes_alt_3);
+                                    }
+                                }
+                                if (!matched_alt_3 && !cutHit_alt_3) {
+                                    do {
+                                        // and-predicate: and_7
+                                        {
+                                            int savedPos_and_7 = pos;
+                                            int savedNodes_and_7 = cst.currentNodeCount();
+                                            boolean andOk_and_7 = false;
+                                            do {
+                                                if (!parseAnnotation(self)) { break; }
+                                                // zero-or-more: rep_8
+                                                while (true) {
+                                                    int savedPos_rep_8 = pos;
+                                                    int savedNodes_rep_8 = cst.currentNodeCount();
+                                                    boolean iterOk_rep_8 = false;
+                                                    do {
+                                                        if (!parseAnnotation(self)) { break; }
+                                                        iterOk_rep_8 = true;
+                                                    } while (false);
+                                                    if (!iterOk_rep_8) {
+                                                        pos = savedPos_rep_8;
+                                                        cst.truncate(savedNodes_rep_8);
+                                                        break;
+                                                    }
+                                                    if (pos == savedPos_rep_8) break; // guard against infinite loops on zero-width matches
+                                                }
+                                                if (java.util.Arrays.binarySearch(ALIAS_MODIFIER, peek()) < 0) { fail("Modifier", RULE_ClassMember_KIND); break; }
+                                                advance();
+                                                andOk_and_7 = true;
+                                            } while (false);
+                                            pos = savedPos_and_7;
+                                            cst.truncate(savedNodes_and_7);
+                                            if (!andOk_and_7) { fail("&<predicate>", RULE_ClassMember_KIND); break; }
+                                        }
+                                        if (!parseAnnotation(self)) { break; }
                                         matched_alt_3 = true;
                                     } while (false);
                                     if (!matched_alt_3) {
@@ -3930,6 +4152,47 @@ public final class Java25ParserV6 {
                                         cst.truncate(savedNodes_alt_3);
                                     }
                                 }
+                                if (!matched_alt_3 && !cutHit_alt_3) {
+                                    do {
+                                        // and-predicate: and_7
+                                        {
+                                            int savedPos_and_7 = pos;
+                                            int savedNodes_and_7 = cst.currentNodeCount();
+                                            boolean andOk_and_7 = false;
+                                            do {
+                                                if (!parseAnnotation(self)) { break; }
+                                                // zero-or-more: rep_8
+                                                while (true) {
+                                                    int savedPos_rep_8 = pos;
+                                                    int savedNodes_rep_8 = cst.currentNodeCount();
+                                                    boolean iterOk_rep_8 = false;
+                                                    do {
+                                                        if (!parseAnnotation(self)) { break; }
+                                                        iterOk_rep_8 = true;
+                                                    } while (false);
+                                                    if (!iterOk_rep_8) {
+                                                        pos = savedPos_rep_8;
+                                                        cst.truncate(savedNodes_rep_8);
+                                                        break;
+                                                    }
+                                                    if (pos == savedPos_rep_8) break; // guard against infinite loops on zero-width matches
+                                                }
+                                                if (java.util.Arrays.binarySearch(ALIAS_MODIFIER, peek()) < 0) { fail("Modifier", RULE_RecordMember_KIND); break; }
+                                                advance();
+                                                andOk_and_7 = true;
+                                            } while (false);
+                                            pos = savedPos_and_7;
+                                            cst.truncate(savedNodes_and_7);
+                                            if (!andOk_and_7) { fail("&<predicate>", RULE_RecordMember_KIND); break; }
+                                        }
+                                        if (!parseAnnotation(self)) { break; }
+                                        matched_alt_3 = true;
+                                    } while (false);
+                                    if (!matched_alt_3) {
+                                        pos = savedPos_alt_3;
+                                        cst.truncate(savedNodes_alt_3);
+                                    }
+                                }
                                 if (!matched_alt_3) { fail("<choice>", RULE_RecordMember_KIND); break; }
                             }
                             iterOk_rep_2 = true;
@@ -3941,43 +4204,43 @@ public final class Java25ParserV6 {
                         }
                         if (pos == savedPos_rep_2) break; // guard against infinite loops on zero-width matches
                     }
-                    // choice: alt_7
+                    // choice: alt_9
                     {
-                        int savedPos_alt_7 = pos;
-                        int savedNodes_alt_7 = cst.currentNodeCount();
-                        boolean matched_alt_7 = false;
-                        boolean cutHit_alt_7 = false;
-                        if (!matched_alt_7 && !cutHit_alt_7) {
+                        int savedPos_alt_9 = pos;
+                        int savedNodes_alt_9 = cst.currentNodeCount();
+                        boolean matched_alt_9 = false;
+                        boolean cutHit_alt_9 = false;
+                        if (!matched_alt_9 && !cutHit_alt_9) {
                             do {
                                 if (!parseConstructorDecl(self)) { break; }
-                                matched_alt_7 = true;
+                                matched_alt_9 = true;
                             } while (false);
-                            if (!matched_alt_7) {
-                                pos = savedPos_alt_7;
-                                cst.truncate(savedNodes_alt_7);
+                            if (!matched_alt_9) {
+                                pos = savedPos_alt_9;
+                                cst.truncate(savedNodes_alt_9);
                             }
                         }
-                        if (!matched_alt_7 && !cutHit_alt_7) {
+                        if (!matched_alt_9 && !cutHit_alt_9) {
                             do {
                                 if (!parseTypeKind(self)) { break; }
-                                matched_alt_7 = true;
+                                matched_alt_9 = true;
                             } while (false);
-                            if (!matched_alt_7) {
-                                pos = savedPos_alt_7;
-                                cst.truncate(savedNodes_alt_7);
+                            if (!matched_alt_9) {
+                                pos = savedPos_alt_9;
+                                cst.truncate(savedNodes_alt_9);
                             }
                         }
-                        if (!matched_alt_7 && !cutHit_alt_7) {
+                        if (!matched_alt_9 && !cutHit_alt_9) {
                             do {
                                 if (!parseMethodDecl(self)) { break; }
-                                matched_alt_7 = true;
+                                matched_alt_9 = true;
                             } while (false);
-                            if (!matched_alt_7) {
-                                pos = savedPos_alt_7;
-                                cst.truncate(savedNodes_alt_7);
+                            if (!matched_alt_9) {
+                                pos = savedPos_alt_9;
+                                cst.truncate(savedNodes_alt_9);
                             }
                         }
-                        if (!matched_alt_7) { fail("<choice>", RULE_RecordMember_KIND); break; }
+                        if (!matched_alt_9) { fail("<choice>", RULE_RecordMember_KIND); break; }
                     }
                     matched_alt_0 = true;
                 } while (false);
@@ -3988,21 +4251,21 @@ public final class Java25ParserV6 {
             }
             if (!matched_alt_0 && !cutHit_alt_0) {
                 do {
-                    // zero-or-more: rep_8
+                    // zero-or-more: rep_10
                     while (true) {
-                        int savedPos_rep_8 = pos;
-                        int savedNodes_rep_8 = cst.currentNodeCount();
-                        boolean iterOk_rep_8 = false;
+                        int savedPos_rep_10 = pos;
+                        int savedNodes_rep_10 = cst.currentNodeCount();
+                        boolean iterOk_rep_10 = false;
                         do {
                             if (!parseAnnotation(self)) { break; }
-                            iterOk_rep_8 = true;
+                            iterOk_rep_10 = true;
                         } while (false);
-                        if (!iterOk_rep_8) {
-                            pos = savedPos_rep_8;
-                            cst.truncate(savedNodes_rep_8);
+                        if (!iterOk_rep_10) {
+                            pos = savedPos_rep_10;
+                            cst.truncate(savedNodes_rep_10);
                             break;
                         }
-                        if (pos == savedPos_rep_8) break; // guard against infinite loops on zero-width matches
+                        if (pos == savedPos_rep_10) break; // guard against infinite loops on zero-width matches
                     }
                     if (!parseRecordStaticField(self)) { break; }
                     matched_alt_0 = true;
@@ -4069,8 +4332,66 @@ public final class Java25ParserV6 {
                     cst.truncate(savedNodes_not_1);
                     if (notMatched_not_1) { fail("!<predicate>", RULE_RecordStaticField_KIND); break; }
                 }
-                if (java.util.Arrays.binarySearch(ALIAS_MODIFIER, peek()) < 0) { fail("Modifier", RULE_RecordStaticField_KIND); break; }
-                advance();
+                // choice: alt_2
+                {
+                    int savedPos_alt_2 = pos;
+                    int savedNodes_alt_2 = cst.currentNodeCount();
+                    boolean matched_alt_2 = false;
+                    boolean cutHit_alt_2 = false;
+                    if (!matched_alt_2 && !cutHit_alt_2) {
+                        do {
+                            if (java.util.Arrays.binarySearch(ALIAS_MODIFIER, peek()) < 0) { fail("Modifier", RULE_RecordStaticField_KIND); break; }
+                            advance();
+                            matched_alt_2 = true;
+                        } while (false);
+                        if (!matched_alt_2) {
+                            pos = savedPos_alt_2;
+                            cst.truncate(savedNodes_alt_2);
+                        }
+                    }
+                    if (!matched_alt_2 && !cutHit_alt_2) {
+                        do {
+                            // and-predicate: and_3
+                            {
+                                int savedPos_and_3 = pos;
+                                int savedNodes_and_3 = cst.currentNodeCount();
+                                boolean andOk_and_3 = false;
+                                do {
+                                    if (!parseAnnotation(self)) { break; }
+                                    // zero-or-more: rep_4
+                                    while (true) {
+                                        int savedPos_rep_4 = pos;
+                                        int savedNodes_rep_4 = cst.currentNodeCount();
+                                        boolean iterOk_rep_4 = false;
+                                        do {
+                                            if (!parseAnnotation(self)) { break; }
+                                            iterOk_rep_4 = true;
+                                        } while (false);
+                                        if (!iterOk_rep_4) {
+                                            pos = savedPos_rep_4;
+                                            cst.truncate(savedNodes_rep_4);
+                                            break;
+                                        }
+                                        if (pos == savedPos_rep_4) break; // guard against infinite loops on zero-width matches
+                                    }
+                                    if (java.util.Arrays.binarySearch(ALIAS_MODIFIER, peek()) < 0) { fail("Modifier", RULE_RecordStaticField_KIND); break; }
+                                    advance();
+                                    andOk_and_3 = true;
+                                } while (false);
+                                pos = savedPos_and_3;
+                                cst.truncate(savedNodes_and_3);
+                                if (!andOk_and_3) { fail("&<predicate>", RULE_RecordStaticField_KIND); break; }
+                            }
+                            if (!parseAnnotation(self)) { break; }
+                            matched_alt_2 = true;
+                        } while (false);
+                        if (!matched_alt_2) {
+                            pos = savedPos_alt_2;
+                            cst.truncate(savedNodes_alt_2);
+                        }
+                    }
+                    if (!matched_alt_2) { fail("<choice>", RULE_RecordStaticField_KIND); break; }
+                }
                 iterOk_rep_0 = true;
             } while (false);
             if (!iterOk_rep_0) {
@@ -4082,22 +4403,80 @@ public final class Java25ParserV6 {
         }
         { int __k = peek(); if (__k != KIND_STATICKW) { fail("StaticKW", RULE_RecordStaticField_KIND); pos = savedPos; cst.truncate(savedNodes); return false; } }
         advance();
-        // zero-or-more: rep_2
+        // zero-or-more: rep_5
         while (true) {
-            int savedPos_rep_2 = pos;
-            int savedNodes_rep_2 = cst.currentNodeCount();
-            boolean iterOk_rep_2 = false;
+            int savedPos_rep_5 = pos;
+            int savedNodes_rep_5 = cst.currentNodeCount();
+            boolean iterOk_rep_5 = false;
             do {
-                if (java.util.Arrays.binarySearch(ALIAS_MODIFIER, peek()) < 0) { fail("Modifier", RULE_RecordStaticField_KIND); break; }
-                advance();
-                iterOk_rep_2 = true;
+                // choice: alt_6
+                {
+                    int savedPos_alt_6 = pos;
+                    int savedNodes_alt_6 = cst.currentNodeCount();
+                    boolean matched_alt_6 = false;
+                    boolean cutHit_alt_6 = false;
+                    if (!matched_alt_6 && !cutHit_alt_6) {
+                        do {
+                            if (java.util.Arrays.binarySearch(ALIAS_MODIFIER, peek()) < 0) { fail("Modifier", RULE_RecordStaticField_KIND); break; }
+                            advance();
+                            matched_alt_6 = true;
+                        } while (false);
+                        if (!matched_alt_6) {
+                            pos = savedPos_alt_6;
+                            cst.truncate(savedNodes_alt_6);
+                        }
+                    }
+                    if (!matched_alt_6 && !cutHit_alt_6) {
+                        do {
+                            // and-predicate: and_7
+                            {
+                                int savedPos_and_7 = pos;
+                                int savedNodes_and_7 = cst.currentNodeCount();
+                                boolean andOk_and_7 = false;
+                                do {
+                                    if (!parseAnnotation(self)) { break; }
+                                    // zero-or-more: rep_8
+                                    while (true) {
+                                        int savedPos_rep_8 = pos;
+                                        int savedNodes_rep_8 = cst.currentNodeCount();
+                                        boolean iterOk_rep_8 = false;
+                                        do {
+                                            if (!parseAnnotation(self)) { break; }
+                                            iterOk_rep_8 = true;
+                                        } while (false);
+                                        if (!iterOk_rep_8) {
+                                            pos = savedPos_rep_8;
+                                            cst.truncate(savedNodes_rep_8);
+                                            break;
+                                        }
+                                        if (pos == savedPos_rep_8) break; // guard against infinite loops on zero-width matches
+                                    }
+                                    if (java.util.Arrays.binarySearch(ALIAS_MODIFIER, peek()) < 0) { fail("Modifier", RULE_RecordStaticField_KIND); break; }
+                                    advance();
+                                    andOk_and_7 = true;
+                                } while (false);
+                                pos = savedPos_and_7;
+                                cst.truncate(savedNodes_and_7);
+                                if (!andOk_and_7) { fail("&<predicate>", RULE_RecordStaticField_KIND); break; }
+                            }
+                            if (!parseAnnotation(self)) { break; }
+                            matched_alt_6 = true;
+                        } while (false);
+                        if (!matched_alt_6) {
+                            pos = savedPos_alt_6;
+                            cst.truncate(savedNodes_alt_6);
+                        }
+                    }
+                    if (!matched_alt_6) { fail("<choice>", RULE_RecordStaticField_KIND); break; }
+                }
+                iterOk_rep_5 = true;
             } while (false);
-            if (!iterOk_rep_2) {
-                pos = savedPos_rep_2;
-                cst.truncate(savedNodes_rep_2);
+            if (!iterOk_rep_5) {
+                pos = savedPos_rep_5;
+                cst.truncate(savedNodes_rep_5);
                 break;
             }
-            if (pos == savedPos_rep_2) break; // guard against infinite loops on zero-width matches
+            if (pos == savedPos_rep_5) break; // guard against infinite loops on zero-width matches
         }
         if (!parseType(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
         if (!parseVarDecls(self)) { pos = savedPos; cst.truncate(savedNodes); return false; }
@@ -5216,6 +5595,61 @@ public final class Java25ParserV6 {
                                 cst.truncate(savedNodes_and_4);
                                 if (!andOk_and_4) { fail("&<predicate>", RULE_LocalTypeDecl_KIND); break; }
                             }
+                            matched_alt_2 = true;
+                        } while (false);
+                        if (!matched_alt_2) {
+                            pos = savedPos_alt_2;
+                            cst.truncate(savedNodes_alt_2);
+                        }
+                    }
+                    if (!matched_alt_2 && !cutHit_alt_2) {
+                        do {
+                            // and-predicate: and_7
+                            {
+                                int savedPos_and_7 = pos;
+                                int savedNodes_and_7 = cst.currentNodeCount();
+                                boolean andOk_and_7 = false;
+                                do {
+                                    if (!parseAnnotation(self)) { break; }
+                                    // zero-or-more: rep_8
+                                    while (true) {
+                                        int savedPos_rep_8 = pos;
+                                        int savedNodes_rep_8 = cst.currentNodeCount();
+                                        boolean iterOk_rep_8 = false;
+                                        do {
+                                            if (!parseAnnotation(self)) { break; }
+                                            iterOk_rep_8 = true;
+                                        } while (false);
+                                        if (!iterOk_rep_8) {
+                                            pos = savedPos_rep_8;
+                                            cst.truncate(savedNodes_rep_8);
+                                            break;
+                                        }
+                                        if (pos == savedPos_rep_8) break; // guard against infinite loops on zero-width matches
+                                    }
+                                    // not-predicate: not_9
+                                    {
+                                        int savedPos_not_9 = pos;
+                                        int savedNodes_not_9 = cst.currentNodeCount();
+                                        boolean notMatched_not_9 = false;
+                                        do {
+                                            { int __k = peek(); if (__k != KIND_STATICKW && __k != KIND_INLINE_SEALED && __k != KIND_INLINE_NON_MINUSSEALED) { fail("IllegalLocalClassMod", RULE_LocalTypeDecl_KIND); break; } }
+                                            advance();
+                                            notMatched_not_9 = true;
+                                        } while (false);
+                                        pos = savedPos_not_9;
+                                        cst.truncate(savedNodes_not_9);
+                                        if (notMatched_not_9) { fail("!<predicate>", RULE_LocalTypeDecl_KIND); break; }
+                                    }
+                                    if (java.util.Arrays.binarySearch(ALIAS_MODIFIER, peek()) < 0) { fail("Modifier", RULE_LocalTypeDecl_KIND); break; }
+                                    advance();
+                                    andOk_and_7 = true;
+                                } while (false);
+                                pos = savedPos_and_7;
+                                cst.truncate(savedNodes_and_7);
+                                if (!andOk_and_7) { fail("&<predicate>", RULE_LocalTypeDecl_KIND); break; }
+                            }
+                            if (!parseAnnotation(self)) { break; }
                             matched_alt_2 = true;
                         } while (false);
                         if (!matched_alt_2) {

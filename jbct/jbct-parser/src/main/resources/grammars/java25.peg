@@ -17,12 +17,24 @@ ModularUnit <- ImportDecl* ModuleDecl
 # A compact source file has top-level methods/fields with no enclosing class; the
 # compiler wraps them in an implicitly declared class.
 #
+# JLS 8.1.1 / 8.3.1 / 8.4.3: modifiers and annotations may INTERLEAVE in any order,
+# so `private @Stable static X y;` is legal and the JDK itself uses it. A plain
+# 'Annotation* Modifier*' prefix rejects it: after an annotation the grammar can only
+# continue into Type, and a modifier keyword is not a type (#977 verification).
+#
+# The added alternative is `&(Annotation+ Modifier) Annotation` — an annotation is taken
+# into the MODIFIER LIST only when a modifier keyword actually follows it. That guard is
+# what keeps every previously-parsing input's CST byte-identical: `private @Ann int x`
+# has no modifier after the annotation, so the annotation still belongs to Type exactly
+# as before, and only inputs that used to FAIL now parse. The lookahead uses Annotation+
+# so a run of annotations before a modifier is admitted too.
+#
 # TypeDecl MUST stay the first alternative. It and TopLevelMember share the
-# 'Annotation* Modifier*' prefix, so reversing them would let TopLevelMember
+# annotation/modifier prefix, so reversing them would let TopLevelMember
 # win on ordinary files and change their CST shape — which the corpus gates and
 # the CST-shape assertion would both flag.
 OrdinaryUnit <- PackageDecl ImportDecl* (TypeDecl / ';')* / ImportDecl* (TypeDecl / TopLevelMember / ';')*
-TopLevelMember <- Annotation* Modifier* !RecordKW (MethodDecl / FieldDecl)
+TopLevelMember <- Annotation* (Modifier / &(Annotation+ Modifier) Annotation)* !RecordKW (MethodDecl / FieldDecl)
 PackageDecl <- Annotation* 'package' ^ QualifiedName ';'
 ImportDecl  <- 'import' ^ ('module' QualifiedName ';' / 'static'? QualifiedName '.' '*' ';' / 'static'? QualifiedImportName ';')
 # At least one dot: importing from the unnamed package is not expressible.
@@ -37,7 +49,7 @@ OpensDirective <- 'opens' ^ QualifiedName ('to' QualifiedName (',' QualifiedName
 UsesDirective <- 'uses' ^ QualifiedName ';'
 ProvidesDirective <- 'provides' ^ QualifiedName 'with' QualifiedName (',' QualifiedName)* ';'
 
-TypeDecl <- Annotation* (Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)))* TypeKind
+TypeDecl <- Annotation* (Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)) / &(Annotation+ Modifier) Annotation)* TypeKind
 TypeKind <- ClassDecl / InterfaceDecl / EnumDecl / RecordDecl / AnnotationDecl
 ClassDecl <- ClassKW ^ !RestrictedTypeName Identifier TypeParams? ('extends' Type)? ImplementsClause? PermitsClause? ClassBody
 InterfaceDecl <- InterfaceKW ^ !RestrictedTypeName Identifier TypeParams? ('extends' TypeList)? PermitsClause? InterfaceBody
@@ -46,7 +58,7 @@ AnnotationDecl <- '@' InterfaceKW ^ !RestrictedTypeName Identifier TypeParams? (
 ClassKW <- < 'class' ![a-zA-Z0-9_$] >
 InterfaceKW <- < 'interface' ![a-zA-Z0-9_$] >
 AnnotationBody <- '{' AnnotationMember* '}'
-AnnotationMember <- Annotation* (Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)))* (AnnotationElemDecl / FieldDecl / TypeKind) / ';'
+AnnotationMember <- Annotation* (Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)) / &(Annotation+ Modifier) Annotation)* (AnnotationElemDecl / FieldDecl / TypeKind) / ';'
 AnnotationElemDecl <- TypeParams? Type Identifier '(' Params? ')' Dims? Throws? ('default' AnnotationElem)? (Block / ';')
 EnumDecl <- EnumKW ^ !RestrictedTypeName Identifier ImplementsClause? EnumBody
 # Lookahead ensures this is a record declaration (record Name(...)) not:
@@ -68,10 +80,10 @@ ClassBody <- '{' ClassMember* '}'
 # (instance or static) and no constructors, so neither InitializerBlock nor
 # ConstructorDecl appears here.
 InterfaceBody <- '{' InterfaceMember* '}'
-InterfaceMember <- Annotation* (Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)))* (TypeKind / MethodDecl / InterfaceFieldDecl) / ';'
+InterfaceMember <- Annotation* (Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)) / &(Annotation+ Modifier) Annotation)* (TypeKind / MethodDecl / InterfaceFieldDecl) / ';'
 InterfaceFieldDecl <- Type InterfaceVarDecl (',' InterfaceVarDecl)* ';'
 InterfaceVarDecl <- Identifier Dims? '=' VarInit
-ClassMember <- Annotation* (Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)))* Member / InitializerBlock / ';'
+ClassMember <- Annotation* (Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)) / &(Annotation+ Modifier) Annotation)* Member / InitializerBlock / ';'
 Member <- ConstructorDecl / TypeKind / !RecordKW (MethodDecl / FieldDecl)
 InitializerBlock <- 'static'? Block
 EnumBody <- '{' EnumConsts? (';' ClassMember*)? '}'
@@ -86,11 +98,11 @@ RecordBody <- '{' RecordMember* '}'
 # repetition is POSSESSIVE: a plain 'Modifier* StaticKW' can never match, since
 # Modifier* would consume the 'static' and never give it back.
 RecordMember <- CompactConstructor
-              / Annotation* (Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)))* (ConstructorDecl / TypeKind / MethodDecl)
+              / Annotation* (Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)) / &(Annotation+ Modifier) Annotation)* (ConstructorDecl / TypeKind / MethodDecl)
               / Annotation* RecordStaticField
               / StaticKW Block
               / ';'
-RecordStaticField <- (!StaticKW Modifier)* StaticKW Modifier* Type VarDecls ';'
+RecordStaticField <- (!StaticKW (Modifier / &(Annotation+ Modifier) Annotation))* StaticKW (Modifier / &(Annotation+ Modifier) Annotation)* Type VarDecls ';'
 StaticKW <- < 'static' ![a-zA-Z0-9_$] >
 CompactConstructor <- Annotation* Modifier* Identifier Block
 
@@ -129,7 +141,7 @@ ConstructorDecl <- Annotation* TypeParams? Identifier '(' ^ Params? ')' Throws? 
 # === Blocks and Statements (JLS 14) ===
 Block <- '{' BlockStmt* '}'
 BlockStmt <- LocalVar / LocalTypeDecl / Stmt
-LocalTypeDecl <- Annotation* (!IllegalLocalClassMod Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)))* TypeKind
+LocalTypeDecl <- Annotation* (!IllegalLocalClassMod Modifier / ValueKW &(Modifier* (ClassKW / RecordKW)) / &(Annotation+ !IllegalLocalClassMod Modifier) Annotation)* TypeKind
 # JLS 14.3: a local class takes none of these — it is neither a member nor a top-level type.
 IllegalLocalClassMod <- < ('sealed' / 'non-sealed' / 'static') ![a-zA-Z0-9_$] >
 LocalVar <- Annotation* Modifier* (< 'var' ![a-zA-Z0-9_$] > LocalVarDecl / Type LocalVarDecls) ';'
