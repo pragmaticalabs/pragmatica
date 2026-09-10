@@ -149,10 +149,24 @@ public sealed interface BootstrapAdminKeyLeg {
         return ClusterSecretDerivation.bootstrapAdminKey(clusterSecret);
     }
 
+    /// WARN, not INFO, and deliberately blunt about the consequence. This branch is a FAIL-OPEN: it
+    /// substitutes a plausible-looking credential for the derivation that did not happen, and the
+    /// operator-visible result is `aether cluster bootstrap` taking a 401 from a healthy cluster —
+    /// **precisely the defect #980 exists to fix**, with nothing saying the derived path was skipped.
+    /// A silent substitution that masks a refusal is a shape this project has shipped before, so the
+    /// message names what did not happen, what will break because of it, and how to fix it.
+    ///
+    /// It is unreachable through `Main`: a node with no cluster secret does not boot
+    /// (`Main.resolveTls` fails and `run()` `.expect`s it, pinned by
+    /// `MainClusterSecretStampTest#resolveTls_noClusterSecretAnywhere_failsSoTheNodeCannotBoot`), and
+    /// `EmberCluster` always supplies its own. It remains reachable for anything constructing
+    /// `AetherNodeConfig` directly without a secret, which is why it warns rather than being deleted.
     private static String randomKey() {
-        LOG.info("Bootstrap admin key: no cluster secret available — generating a random key. "
-                + "It stays enumerable and revocable via /api/v1/cluster/keys, but `aether cluster "
-                + "bootstrap` cannot re-derive it.");
+        LOG.warn("Bootstrap admin key: NO CLUSTER SECRET — the key was NOT derived and is RANDOM. "
+                + "`aether cluster bootstrap` derives its credential from the cluster secret, so it "
+                + "CANNOT match this key and its quorum poll will fail authentication with 401. The "
+                + "key is still enumerable and revocable via /api/v1/cluster/keys and is printed once "
+                + "below. Set `[tls] cluster_secret` or AETHER_CLUSTER_SECRET so the key is derived.");
         var bytes = new byte[KEY_BYTES];
 
         RANDOM.nextBytes(bytes);

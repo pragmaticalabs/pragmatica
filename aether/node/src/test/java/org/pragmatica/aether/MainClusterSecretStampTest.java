@@ -87,6 +87,44 @@ class MainClusterSecretStampTest {
             .isTrue();
     }
 
+    /// Verifies — rather than asserts — the claim that `BootstrapAdminKeyLeg`'s random-key fallback is
+    /// unreachable in production. `run()` calls exactly this method and `.expect`s the result, so a
+    /// failure here aborts the boot before any `AetherNodeConfig` is stamped and before the leg can
+    /// ever be built. Weakening that gate reddens this test.
+    ///
+    /// What this does NOT cover: that `run()` still `.expect`s it. That is a source-ordering fact
+    /// (`Main.run`, the `resolveTls(...).expect(...)` line, ahead of the config assembly), not
+    /// something reachable in-JVM.
+    @Test
+    void resolveTls_noClusterSecretAnywhere_failsSoTheNodeCannotBoot() {
+        assumeTrue(System.getenv("AETHER_CLUSTER_SECRET") == null,
+                   "AETHER_CLUSTER_SECRET is set in this environment, which would satisfy the very gate "
+                   + "this test exists to observe failing");
+
+        var result = new Main(new String[0]).resolveTls(NodeId.nodeId("no-secret-boot-gate-test").unwrap(),
+                                                        List.of(),
+                                                        configWith(""));
+
+        assertThat(result.isFailure())
+            .describedAs("a node with no cluster secret must not boot; if it could, it would reach "
+                         + "BootstrapAdminKeyLeg with an absent secret and mint a random ADMIN key the "
+                         + "bootstrap CLI can never derive")
+            .isTrue();
+    }
+
+    /// The same gate must PASS when a secret is configured — otherwise the test above would be
+    /// satisfied by a `resolveTls` that fails for any reason at all, which is not what it claims.
+    @Test
+    void resolveTls_clusterSecretConfigured_succeeds() {
+        var result = new Main(new String[0]).resolveTls(NodeId.nodeId("secret-present-boot-gate-test").unwrap(),
+                                                        List.of(),
+                                                        configWith(CONFIGURED_SECRET));
+
+        assertThat(result.isSuccess())
+            .describedAs("positive control: with a secret configured the gate must let the boot proceed")
+            .isTrue();
+    }
+
     private static Option<AetherConfig> configWith(String clusterSecret) {
         return Option.some(AetherConfig.aetherConfig(ClusterConfig.clusterConfig(Environment.DOCKER),
                                                      NodeConfig.nodeConfig(Environment.DOCKER),

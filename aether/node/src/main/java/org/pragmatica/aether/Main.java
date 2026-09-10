@@ -335,7 +335,11 @@ public record Main(String[] args) {
         System.exit(1);
     }
 
-    private Result<TlsBundle> resolveTls(NodeId nodeId, List<NodeInfo> peers, Option<AetherConfig> aetherConfig) {
+    /// Package-private (not private) so the boot gate can be VERIFIED rather than asserted: `run()`
+    /// calls this and `.expect`s the result, so a node with no cluster secret aborts here — which is
+    /// what makes `BootstrapAdminKeyLeg`'s random-key fallback unreachable in production. Pinned by
+    /// `MainClusterSecretStampTest#resolveTls_noClusterSecretAnywhere_failsSoTheNodeCannotBoot`.
+    Result<TlsBundle> resolveTls(NodeId nodeId, List<NodeInfo> peers, Option<AetherConfig> aetherConfig) {
         var tlsCfg = resolveTlsConfig(aetherConfig);
 
         return resolveClusterSecret(tlsCfg).flatMap(SelfSignedCertificateProvider::selfSignedCertificateProvider)

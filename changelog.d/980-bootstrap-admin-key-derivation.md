@@ -32,10 +32,22 @@
   error and no runtime signal beyond a 401.
 - **No new wire type.** The key reuses `ApiKeyValue`/`ApiKeyAuditValue`; no `AetherKey`/`AetherValue`
   variant was added, so `SystemCodecPinningTest`'s tag pin is untouched.
-- **Nodes with no cluster secret keep a random key** — the in-JVM Ember/Forge harness case. The
-  fallback is strictly stronger, never weaker: the key is unguessable, merely not re-derivable. Which
-  path ran is logged. Ember itself now passes its own secret through, so an in-process node derives
-  exactly as a production node does.
+- **A node with no cluster secret still mints a RANDOM key — and that branch is a FAIL-OPEN, now
+  loud.** It substitutes a plausible-looking credential for a derivation that did not happen: the CLI
+  cannot derive that key, so the operator sees `aether cluster bootstrap` take a 401 from a healthy
+  cluster — *precisely the defect this ticket fixes*. It now logs at **WARN**, naming what did not
+  happen, that the bootstrap poll will fail authentication with 401, and which setting to fix. It was
+  previously INFO and worded as reassurance.
+  **Its production unreachability is verified, not asserted:** a node with no cluster secret does not
+  boot, because `Main.resolveTls` fails and `run()` `.expect`s it
+  [verified: `MainClusterSecretStampTest#resolveTls_noClusterSecretAnywhere_failsSoTheNodeCannotBoot`,
+  with `#resolveTls_clusterSecretConfigured_succeeds` as the positive control], and `EmberCluster`
+  always supplies its own — so an in-process node derives exactly as a production node does. The
+  branch survives for anything constructing `AetherNodeConfig` directly, which is why it warns rather
+  than being deleted.
+  [verified: `BootstrapAdminKeyLegFallbackWarnTest` — 3 tests, with a sentinel positive control,
+  because a `noneMatch` assertion over log capture is satisfied by an empty list and would otherwise
+  examine nothing]
 - **`~/.aether/clusters/<name>/bootstrap-state.json` is now written owner-only (`0600`).** That file
   contains the cluster secret, and under this change it is an admin-equivalent credential file. It
   was written with a bare `Files.writeString` at default permissions while everything *derived* from
@@ -77,8 +89,10 @@
   Mutation-probed: removing `config.clusterSecret()` from `AetherNode`'s call to the leg, and removing
   `EmberCluster`'s pass-through, each turn it RED with `Expecting "HTTP 403" to contain
   "bootstrap-admin"` — the node minted a random key and refused the derived one. `Main`'s stamp is
-  pinned separately by `MainClusterSecretStampTest` (3 tests; replacing the stamped value with
-  `Option.empty()` reddens 2 of them).
+  pinned separately by `MainClusterSecretStampTest` (5 tests; replacing the stamped value with
+  `Option.empty()` reddens 2 of them, and weakening the boot gate to accept an empty secret reddens a
+  third). The fail-open WARN is mutation-probed too: dropping it to DEBUG reddens 2 tests, removing
+  the consequence clause reddens 1, and making it fire on the healthy derived path reddens 1.
 - **One residual gap, stated because it is real:** deleting the CALL to
   `Main.withResolvedClusterSecret` from `run()` still leaves everything green. `run()` is the process
   entry point and is not drivable in-JVM; that line is covered only by a real node boot — a cloud
