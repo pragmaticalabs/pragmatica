@@ -9,6 +9,7 @@ import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.parser.Java25Parser;
+import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.jbct.shared.SourceFile;
 
 import org.apache.maven.plugin.MojoExecutionException;
@@ -78,6 +79,9 @@ public class ProcessMojo extends AbstractJbctMojo {
         var unchanged = new AtomicInteger(0);
         var formatErrors = new AtomicInteger(0);
         var parseErrors = new AtomicInteger(0);
+        // Counted apart from formatErrors: an unreadable file was neither formatted NOR linted, so it
+        // belongs to the coverage gap, not to the format tally it used to inflate (#977).
+        var unreadable = new AtomicInteger(0);
         var allDiagnostics = new ArrayList<Diagnostic>();
         var lintErrors = new AtomicInteger(0);
         var lintWarnings = new AtomicInteger(0);
@@ -92,11 +96,15 @@ public class ProcessMojo extends AbstractJbctMojo {
                         unchanged,
                         formatErrors,
                         parseErrors,
+                        unreadable,
                         allDiagnostics,
                         lintErrors,
                         lintWarnings,
                         lintInfos);
         }
+
+        var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(),
+                                                         parseErrors.get() + unreadable.get());
 
         for (var d : allDiagnostics) {
             switch (d.severity()) {
@@ -106,25 +114,44 @@ public class ProcessMojo extends AbstractJbctMojo {
             }
         }
 
-        getLog().info("Format: " + formatted.get()
+        // `Processing N Java file(s)` above announces what was COLLECTED. Both summary lines carry
+        // what was ANALYSED, separately, because a reader quotes ONE line as evidence and each has to
+        // be honest on its own about the denominator its counts were taken over (#977).
+        coverage.gapReport("process")
+                .onPresent(getLog()::error);
+        getLog().info("Format (checked " + coverage.render()
+                     + "): " + formatted.get()
                      + " formatted, " + unchanged.get()
                      + " unchanged, " + formatErrors.get()
                      + " errors");
-        getLog().info("Lint: " + lintErrors.get()
+        getLog().info("Lint (checked " + coverage.render()
+                     + "): " + lintErrors.get()
                      + " error(s), " + lintWarnings.get()
                      + " warning(s), " + lintInfos.get()
                      + " info(s)");
         if (formatErrors.get() > 0) {
             throw new MojoFailureException("Formatting failed for " + formatErrors.get() + " file(s)");
         }
+        // Every reason is named: the old message reported the LINT ERROR count for a failure caused by
+        // a parse error, so a build stopped by files it could not read said `JBCT lint found 0
+        // error(s)` — true, and the opposite of an explanation.
+        var failures = new ArrayList<String>();
 
-        if (parseErrors.get() > 0 || lintErrors.get() > 0) {
-            throw new MojoFailureException("JBCT lint found " + lintErrors.get() + " error(s)");
+        if (coverage.isPartial()) {
+            failures.add(coverage.unparseable()
+                        + " file(s) could not be read or parsed and were NOT analysed");
+        }
+
+        if (lintErrors.get() > 0) {
+            failures.add(lintErrors.get() + " lint error(s)");
         }
 
         if (jbctConfig.lint().failOnWarning() && lintWarnings.get() > 0) {
-            throw new MojoFailureException("JBCT lint found " + lintWarnings.get()
-                                          + " warning(s) (failOnWarning is enabled)");
+            failures.add(lintWarnings.get() + " warning(s) (failOnWarning is enabled)");
+        }
+
+        if (!failures.isEmpty()) {
+            throw new MojoFailureException("JBCT process failed: " + String.join(", ", failures));
         }
     }
 
@@ -136,6 +163,7 @@ public class ProcessMojo extends AbstractJbctMojo {
                              AtomicInteger unchanged,
                              AtomicInteger formatErrors,
                              AtomicInteger parseErrors,
+                             AtomicInteger unreadable,
                              List<Diagnostic> allDiagnostics,
                              AtomicInteger lintErrors,
                              AtomicInteger lintWarnings,
@@ -155,7 +183,7 @@ public class ProcessMojo extends AbstractJbctMojo {
                                                         lintWarnings,
                                                         lintInfos))
                   .onFailure(cause -> {
-                                 formatErrors.incrementAndGet();
+                                 unreadable.incrementAndGet();
                                  getLog().error("Error reading " + file + ": " + cause.message());
                              });
     }

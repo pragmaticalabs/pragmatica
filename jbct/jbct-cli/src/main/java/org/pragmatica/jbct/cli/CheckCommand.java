@@ -14,6 +14,7 @@ import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.layer.LayerCoverage;
+import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.jbct.shared.FileCollector;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
@@ -72,6 +73,8 @@ public class CheckCommand implements Callable<Integer> {
         LayerCoverage.coverage(filesToProcess, context)
                      .map(LayerCoverage::render)
                      .onPresent(System.err::println);
+
+        var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), parseErrors.get());
         // Report format issues
         if (!needsFormatting.isEmpty()) {
             System.out.println();
@@ -87,14 +90,19 @@ public class CheckCommand implements Callable<Integer> {
                 System.out.print(d.toHumanReadable());
             }
         }
-        // Summary
+        // Summary. The counts are meaningless without the denominator they were taken over: a file
+        // that could not be read or parsed contributes zero of everything, so an unqualified
+        // `0 lint error(s)` reads as clean when it means unexamined (#977).
         System.out.println();
-        System.out.println("Check results: " + needsFormatting.size()
+        coverage.gapReport("check")
+                .onPresent(System.out::println);
+        System.out.println("Check results (checked " + coverage.render()
+                          + "): " + needsFormatting.size()
                           + " format issue(s), " + lintErrors.get()
                           + " lint error(s), " + warnings.get()
                           + " warning(s)");
         // Determine exit code
-        if (formatErrors.get() > 0 || parseErrors.get() > 0) {
+        if (formatErrors.get() > 0 || coverage.isPartial()) {
             return 2;
         }
 
