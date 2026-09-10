@@ -95,6 +95,35 @@ public sealed interface TlsConfig {
     /// @param trust    CA certificate for verifying peer certificates
     record Mutual(Identity identity, Trust trust) implements TlsConfig {}
 
+    /// Server-auth-only view of this configuration: keeps this node's identity, drops any
+    /// client-certificate requirement.
+    ///
+    /// mTLS is correct for node-to-node cluster transport, where both peers hold cluster-CA
+    /// certificates. It is wrong for an operator- or user-facing HTTP listener, and the node
+    /// previously handed the same [Mutual] config to every server it started. Two consequences,
+    /// both observed on a real 3-node Hetzner cluster (#967):
+    ///
+    ///   - The management API became unreachable whenever `[cluster] tls = true`. Callers
+    ///     authenticate with an API key ([org.pragmatica.aether.api.ManagementServer] sets
+    ///     `SecurityPolicy.apiKeyRequired()`), and under `auto_generate` the CA is derived from the
+    ///     cluster secret and never written to disk — so no operator could present a client
+    ///     certificate even in principle.
+    ///   - The container liveness probe could not pass under ANY scheme: plaintext was rejected
+    ///     with `NotSslRecordException`, and TLS without a client certificate was refused. The
+    ///     bootstrap readiness gate reads container health, so it reported
+    ///     `Quorum not established` and destroyed clusters whose own logs said
+    ///     `Quorum established — consensus available`.
+    ///
+    /// [Client] is returned unchanged: it is not a server configuration, and
+    /// [TlsContextFactory#createServer] already rejects it with a named error.
+    default TlsConfig serverAuthOnly() {
+        return switch (this) {
+            case Server(var identity, var ignored) -> new Server(identity, Option.none());
+            case Mutual(var identity, var ignored) -> new Server(identity, Option.none());
+            case Client _ -> this;
+        };
+    }
+
     // ===== Server Factory Methods =====
     /// Create self-signed server TLS configuration.
     /// Generates certificate at startup. For development only.

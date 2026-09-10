@@ -249,4 +249,60 @@ class TlsConfigTest {
             }
         };
     }
+
+    /// #967. These pin the CONSEQUENCE, not the record shape: a server context built from the
+    /// node's `Mutual` cluster config demands a client certificate, and the `serverAuthOnly()` view
+    /// of the same identity does not. The Mutual arm is the positive control — without it, a green
+    /// "does not require client auth" proves only that the assertion cannot see the difference.
+    @Test
+    void mutualConfig_requiresClientCertificate_andServerAuthOnlyViewDoesNot() {
+        var mutual = TlsConfig.fromProvider(realProvider(), "node-1", "localhost").unwrap();
+
+        assertThat(mutual).isInstanceOf(TlsConfig.Mutual.class);
+
+        var mutualEngine = TlsContextFactory.createServer(mutual)
+                                            .unwrap()
+                                            .newEngine(io.netty.buffer.ByteBufAllocator.DEFAULT);
+        var serverOnlyEngine = TlsContextFactory.createServer(mutual.serverAuthOnly())
+                                                 .unwrap()
+                                                 .newEngine(io.netty.buffer.ByteBufAllocator.DEFAULT);
+
+        assertThat(mutualEngine.getNeedClientAuth())
+                .describedAs("control: the cluster's Mutual config MUST require a client certificate, "
+                             + "otherwise this test cannot detect the difference it exists to detect")
+                .isTrue();
+        assertThat(serverOnlyEngine.getNeedClientAuth())
+                .describedAs("serverAuthOnly() must not require a client certificate — the management "
+                             + "API authenticates with an API key and the auto-generated CA never "
+                             + "reaches disk, so requiring one makes the API unreachable (#967)")
+                .isFalse();
+        assertThat(serverOnlyEngine.getWantClientAuth())
+                .describedAs("nor may it merely REQUEST one: a requested certificate still fails the "
+                             + "container liveness probe, which presents none")
+                .isFalse();
+    }
+
+    @Test
+    void serverAuthOnly_dropsClientAuth_fromAServerConfigThatHadIt() {
+        var withClientAuth = new TlsConfig.Server(new TlsConfig.Identity.SelfSigned(),
+                                                  Option.some(new TlsConfig.Trust.InsecureTrustAll()));
+
+        assertThat(((TlsConfig.Server) withClientAuth.serverAuthOnly()).clientAuth().isEmpty()).isTrue();
+    }
+
+    @Test
+    void serverAuthOnly_leavesAClientConfigUnchanged() {
+        var client = TlsConfig.client();
+
+        assertThat(client.serverAuthOnly()).isSameAs(client);
+    }
+
+    /// A real provider, not the stub used elsewhere in this class: the stub's PEM bytes are
+    /// placeholders, and [TlsContextFactory#createServer] must actually parse a certificate for the
+    /// client-auth assertions below to mean anything.
+    private static CertificateProvider realProvider() {
+        return org.pragmatica.net.tcp.security.SelfSignedCertificateProvider
+                       .selfSignedCertificateProvider("test-cluster-secret-967".getBytes())
+                       .unwrap();
+    }
 }
