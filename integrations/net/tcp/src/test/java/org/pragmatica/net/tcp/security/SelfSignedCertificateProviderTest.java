@@ -188,13 +188,17 @@ class SelfSignedCertificateProviderTest {
     /// pins the admin-key label against an externally computed vector for exactly this reason; the CA
     /// and gossip labels, whose blast radius is far larger, had none.
     ///
-    /// **Provenance of these values.** Captured from this implementation, which the #980 adversarial
-    /// verification established is byte-identical to `8f02cd3cf` (pre-consolidation) by running ONE
-    /// probe against BOTH builds — CA public key, CA subject DN, gossip key id and gossip key bytes
-    /// all identical, with a discrimination control proving the probe could tell secrets apart. So
-    /// current output IS historical output, and these constants are a genuine regression gate rather
-    /// than a snapshot of whatever the code happens to do. Confirmed stable across separate JVM runs
-    /// before being written down.
+    /// **Provenance of these values, which is what makes them a gate rather than a snapshot.** They
+    /// are the PRE-CONSOLIDATION output, established by cross-version execution rather than taken on
+    /// trust: `integrations/net/tcp` was built at `8f02cd3cf` (private `hkdfDerive` present,
+    /// `ClusterSecretDerivation.class` absent from the compiled output — checked, not assumed) and at
+    /// the consolidated head, and ONE probe was run against BOTH, using only API present in each. CA
+    /// public key and gossip key id/bytes came out **identical** for both secrets. The #980 adversarial
+    /// verification reached the same result independently; this was re-run here because the claim is
+    /// load-bearing for these constants and a report is not evidence.
+    ///
+    /// Discrimination control: the two secrets yield different values throughout, so the probe was not
+    /// reading a constant. Confirmed stable across separate JVM runs before being written down.
     ///
     /// The pinned quantity is the CA **public key**, not the certificate: the certificate embeds
     /// `notBefore`/`notAfter` and differs run to run. The verifier hit that as a false positive; it is
