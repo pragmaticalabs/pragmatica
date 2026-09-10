@@ -80,7 +80,8 @@ public sealed interface ScoreCalculator permits ScoreCalculator.unused {
         return ScoreResult.scoreResult(totalDensity(breakdown, scan.linesOfCode()),
                                        breakdown,
                                        scan.filesAnalyzed(),
-                                       scan.linesOfCode());
+                                       scan.linesOfCode(),
+                                       scan.filesUnanalyzed());
     }
 
     /// Warn once per distinct unknown rule ID. Unknown diagnostics are excluded from the

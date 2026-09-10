@@ -189,6 +189,37 @@ class UnparseableCoverageReportingTest {
                           .hasMessageNotContaining("found 0 error(s)");
     }
 
+    // ---- jbct:score --------------------------------------------------------------------------
+
+    /// Added after adversarial verification: `jbct:score` was a SIXTH entry point with the same
+    /// defect and a worse consequence — it announced `Measuring 2 Java file(s)`, reported a density
+    /// over one of them, and returned **BUILD SUCCESS**. A ratio measured over a fragment is not the
+    /// project's ratio, and the goal exists to gate on that number.
+    @Test
+    void scoreMojo_failsAndStatesTheCoverage_whenAFileCannotBeParsed(@TempDir Path base) throws Exception {
+        var mojo = configure(new ScoreMojo(), base, sourcesWith(base, "Pure.java", CLEAN, "Ell.java", UNPARSEABLE));
+
+        var thrown = execute(mojo);
+        var log = logOf(mojo);
+
+        assertThat(log.errors).anyMatch(line -> line.contains("Parse failed:"));
+        assertThat(log.everything()).anyMatch(line -> line.contains("1 of 2 files, 1 UNPARSEABLE"));
+        assertThat(thrown).hasMessageContaining("could not be read or parsed and were NOT analysed");
+    }
+
+    /// Positive control: the density report and BUILD SUCCESS are reachable, and the clean-run header
+    /// still renders the bare file count.
+    @Test
+    void scoreMojo_reportsTheBareFileCountAndPasses_whenEveryFileParses(@TempDir Path base) throws Exception {
+        var mojo = configure(new ScoreMojo(), base, sourcesWith(base, "Pure.java", CLEAN));
+
+        var thrown = execute(mojo);
+
+        assertThat(logOf(mojo).everything()).anyMatch(line -> line.contains("1 files"));
+        assertThat(logOf(mojo).everything()).noneMatch(line -> line.contains("UNPARSEABLE"));
+        assertThat(thrown).isNull();
+    }
+
     @Test
     void processMojo_reportsTheBareCount_whenEveryFileParses(@TempDir Path base) throws Exception {
         var mojo = configure(new ProcessMojo(), base, sourcesWith(base, "Pure.java", CLEAN));

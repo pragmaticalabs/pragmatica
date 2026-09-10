@@ -16,8 +16,10 @@ import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.lint.cst.filetype.FileTypeClassifier;
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.Java25Parser;
+import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.jbct.shared.FileCollector;
 import org.pragmatica.jbct.shared.SourceFile;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
 import org.w3c.dom.Element;
@@ -100,20 +102,36 @@ public class ObligationsCommand implements Callable<Integer> {
         var parser = new Java25Parser();
         var obligations = new ArrayList<Obligation>();
 
+        var unanalysed = new int[1];
+
         for (var file : files) {
             SourceFile.sourceFile(file)
                       .flatMap(source -> parser.parse(source.content()))
                       .onSuccess(root -> collect(root, file.getFileName().toString(), coverage, obligations))
-                      .onFailure(cause -> System.err.println("  ✗ " + file + ": " + cause.message()));
+                      .onFailure(cause -> reportUnanalysed(file, cause, unanalysed));
         }
+
+        var coverageOfRun = AnalysisCoverage.analysisCoverage(files.size(), unanalysed[0]);
 
         if ("json".equalsIgnoreCase(format)) {
             printJson(obligations);
         } else {
             printText(obligations);
         }
+        // A list of obligations is a REPORT, not a verdict, so a coverage gap does not fail the run —
+        // the same call `shape-census` makes, which discloses its parse errors and says its counts are
+        // a floor. What it must not do is stay silent: an obligation in a file the parser could not
+        // read is simply absent from the list, and absence is indistinguishable from "no obligation"
+        // unless the report says which it is (#977).
+        coverageOfRun.gapReport("obligations")
+                     .onPresent(System.err::println);
 
         return 0;
+    }
+
+    private static void reportUnanalysed(Path file, Cause cause, int[] unanalysed) {
+        unanalysed[0]++;
+        System.err.println("  ✗ " + file + ": " + cause.message());
     }
 
     private void collect(Cursor root, String fileName, Map<String, Boolean> coverage, List<Obligation> into) {

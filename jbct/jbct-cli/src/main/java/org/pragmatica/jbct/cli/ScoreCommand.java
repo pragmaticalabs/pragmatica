@@ -28,6 +28,12 @@ public class ScoreCommand implements Callable<Integer> {
     /// Exit code for a usage error, matching picocli's own.
     static final int USAGE_ERROR = 2;
 
+    /// Exit code when some collected file could not be read or parsed, so the density cannot speak
+    /// for the file set. Shares the value with [#USAGE_ERROR] deliberately: both mean "this run
+    /// produced no usable measurement", as distinct from `1`, which means the measurement is sound
+    /// and breached.
+    static final int COVERAGE_GAP = 2;
+
     /// Output formats the command knows. Anything else is rejected rather than quietly rendered
     /// as a terminal box — `--format badge` used to be real, so silently substituting a different
     /// format for it would hand a CI job the wrong bytes with a zero exit code.
@@ -95,7 +101,24 @@ public class ScoreCommand implements Callable<Integer> {
                           .withLayers(jbctConfig.layers());
     }
 
+    /// Exit codes match `jbct lint`: `2` when the tool could not read what it was pointed at, `1`
+    /// for a real breach, `0` clean.
+    ///
+    /// A coverage gap outranks the density check and fails even with no `--max-density`, because the
+    /// number this command exists to report is a ratio over the files it managed to read. Measured
+    /// over 1 of 2 files it is not the project's density, and the command used to return **exit 0**
+    /// beside a header saying `1 files` under an announcement of two — a gate reporting clean over a
+    /// file it never opened (#977).
     private int gateExitCode(ScoreResult score) {
+        var coverage = score.coverage();
+
+        if (coverage.isPartial()) {
+            coverage.gapReport("score")
+                    .onPresent(System.err::println);
+
+            return COVERAGE_GAP;
+        }
+
         if (maxDensity != null && DensityGate.exceeds(score.totalDensityPerKloc(), maxDensity)) {
             System.err.println("\n" + DensityGate.breachMessage(score.totalDensityPerKloc(), maxDensity));
 

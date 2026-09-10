@@ -218,6 +218,11 @@ class ScoreReportTest {
 
     @Nested
     class Json {
+        /// `filesUnanalyzed` joined the document in #977. A machine consumer reading `filesAnalyzed`
+        /// alone cannot tell a density over 38 files from a density over 38 of 40, so the count of
+        /// what the scan could NOT read travels with the measurement. Emitted unconditionally rather
+        /// than only when non-zero: an absent field would make the clean case indistinguishable from
+        /// an older producer that never reported it.
         @Test
         void jsonLines_document_isWellFormed() {
             var lines = ScoreReport.jsonLines(uniformResult());
@@ -228,6 +233,7 @@ class ScoreReportTest {
             assertThat(lines).startsWith("{",
                                          "  \"linesOfCode\": 4821,",
                                          "  \"filesAnalyzed\": 38,",
+                                         "  \"filesUnanalyzed\": 0,",
                                          "  \"breakdown\": {");
             assertThat(lines).endsWith("  },",
                                        "  \"totalDensityPerKloc\": 13.7,",

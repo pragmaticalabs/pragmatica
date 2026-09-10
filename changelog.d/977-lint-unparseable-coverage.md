@@ -46,6 +46,37 @@
   **collected** — they are printed before any file is read and cannot know better. The summary lines
   beneath them carry what was **analysed**. A partial run always fails, so a green build's count
   line is unaffected.
+- **SEVEN entry points, not five — corrected after adversarial verification.** The first pass claimed
+  five and missed two surfaces that still reported success over files they never read, so the ticket's
+  stated consequence survived while reading as closed:
+  - **`jbct score` / `jbct:score`** returned **exit 0 / BUILD SUCCESS** with a header reading
+    `1 files` beneath an announcement of `Measuring 2 Java file(s)`, nothing reconciling the two. A
+    density is a ratio; over 1 of 2 files it is not the project's density. The header now reads
+    `JBCT DENSITY — 5 LOC, 1 of 2 files, 1 UNPARSEABLE`, the JSON document carries a new
+    `filesUnanalyzed` field, and a coverage gap fails (**exit 2** / `MojoFailureException`) **even
+    with no `--max-density` set**, because the ratio is the product.
+  - **`jbct format --check`** printed `All files are properly formatted.` whenever nothing NEEDED
+    formatting — computed before the exit-code logic and blind to the unreadable tally. Exit code
+    honest (2), summary line not, on the consumption path this ticket exists to protect.
+  - **`jbct obligations`** dropped unparseable files from its list and returned 0 in silence. It is a
+    report, not a verdict, so it still returns 0 — but it now discloses the gap, matching what
+    `shape-census` already did ("the counts above are a floor").
+  Enumerated mechanically rather than by inspection: 20 CLI command classes, 13 `@Mojo` classes, and
+  the 12 main-source consumers of a collected file set. Eight now carry `AnalysisCoverage`;
+  `shape-census` already disclosed its parse errors; `FormatMojo` and `FormatCheckMojo` throw on
+  their error tally before any clean-sweep message.
+- **THE PARSER REJECTED VALID JAVA, and this fix would have turned that into broken builds.**
+  `Java25Parser` refused a keyword modifier following an annotation — `private @Stable static X y;` —
+  which the JLS permits in any order and which the JDK itself uses. Pre-existing, and **harmless only
+  while unparseable files passed silently**; making them fail the build converts a silent wrong-pass
+  into a build-breaking wrong-fail on correct input, and `jbct.jar` ships. The grammar now admits an
+  annotation into the modifier list when a modifier keyword follows it
+  (`&(Annotation+ Modifier) Annotation`). The lookahead is what keeps every previously-parsing input's
+  CST byte-identical — an annotation with no modifier after it still belongs to `Type`.
+  [mechanism: measured over JDK 25 `java.base`, 3,369 files — **before: 2 parse failures**
+  (`Charset.java:622`, `StringConcatFactory.java:898`), **after: 0**, and formatting the whole corpus
+  with both parsers produced **byte-identical output for 3,367 of 3,369 files**, the two exceptions
+  being exactly the two that previously failed to parse; `InterleavedModifierAnnotationTest`]
 - **Known limit, unchanged by this fix:** `jbct lint --format json` / `--format sarif` do not
   represent parse failures in their structured output, and the text summary is still written to the
   same stdout stream as the JSON. A machine consumer must read the exit code (`2`), not the payload.

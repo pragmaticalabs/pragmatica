@@ -28,8 +28,8 @@ jbct upgrade                       # Self-update to latest version
 
 `jbct --help` lists the full command set, including the slice scaffolding and reporting commands.
 
-**Exit codes** are the same for `lint` and `check`, and they separate the two things a gate needs to
-tell apart:
+**Exit codes** are the same for `lint`, `check`, `score` and `format --check`, and they separate the
+two things a gate needs to tell apart:
 
 | Code | Meaning |
 |------|---------|
@@ -40,8 +40,12 @@ tell apart:
 **Coverage is stated, never assumed.** A run that could not read every file it collected reports
 `checked 1 of 2 file(s), 1 UNPARSEABLE` in its summary line and never renders as a pass, however
 clean the files it did read were. The same clause appears on the Maven goals' `Lint results (...)` /
-`Check results (...)` lines. Zero findings over a file the tool never analysed is silence, not
-compliance (#977).
+`Check results (...)` lines, and `score` renders it in its box header
+(`JBCT DENSITY — 5 LOC, 1 of 2 files, 1 UNPARSEABLE`) alongside a `filesUnanalyzed` field in
+`--format json`. Zero findings over a file the tool never analysed is silence, not compliance (#977).
+
+`shape-census` and `obligations` are reports rather than gates: they still exit 0 over a partial run,
+but each states the gap rather than omitting it silently.
 
 ### Maven Plugin
 
