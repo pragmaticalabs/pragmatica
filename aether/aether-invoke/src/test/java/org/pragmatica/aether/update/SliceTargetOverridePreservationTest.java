@@ -60,6 +60,9 @@ class SliceTargetOverridePreservationTest {
     static final Version V1 = Version.version("1.0.0").unwrap();
     static final Version V2 = Version.version("2.0.0").unwrap();
     static final BlueprintId OWNER = BlueprintId.blueprintId("org.test:owning-app:1.0.0").unwrap();
+    /// A real `PlacementPolicy` constant that is not the default, so a reset to `CORE_ONLY` is
+    /// observable rather than indistinguishable from a correct carry (#937).
+    static final String PLACEMENT = "WORKERS_ONLY";
 
     @Nested
     class DeploymentUpdatePreservesOverrides {
@@ -173,10 +176,65 @@ class SliceTargetOverridePreservationTest {
                                                     .isEqualTo(Option.some(OWNER));
             });
         }
+
+        /// #937: placement is not an autoscaler override in #424's sense — it decides **where** the
+        /// slice runs. `ClusterDeploymentState` feeds `effectivePlacement()` into the allocation
+        /// engine, so a reset here relocates an operator's workload onto the core on the first A/B
+        /// write. `targetPreservingOverrides` enumerated the fields it carried and placement was not
+        /// among them, which is why its own javadoc could read as exhaustive while it was not.
+        @Test
+        void concludeTest_preservesOperatorPlacement_onPromotedVersion() {
+            var testId = manager.createTest(BASE,
+                                            Map.of("canary", V2),
+                                            SplitRule.HeaderHashSplit.headerHashSplit("X-Request-Id", 2))
+                                .await()
+                                .onFailure(cause -> Assertions.fail(cause.message()))
+                                .unwrap()
+                                .testId();
+
+            rabiaNode.appliedCommands.clear();
+
+            manager.concludeTest(testId, "canary")
+                   .await()
+                   .onFailure(cause -> Assertions.fail(cause.message()));
+
+            var promoted = capturedSliceTargets(rabiaNode.appliedCommands).stream()
+                                                                          .filter(target -> target.currentVersion()
+                                                                                                  .equals(V2))
+                                                                          .toList();
+
+            assertThat(promoted).isNotEmpty();
+            assertThat(promoted).allSatisfy(target -> assertThat(target.effectivePlacement())
+                    .as("#937: the A/B writer must not reset the operator's placement")
+                    .isEqualTo(PLACEMENT));
+        }
+
+        /// The canary deploy is the earlier of the two A/B writes and carries the same defect, so
+        /// pinning only the promotion would leave the first write that touches a live slice unpinned.
+        @Test
+        void createTest_preservesOperatorPlacement_onTheVariantVersion() {
+            manager.createTest(BASE,
+                               Map.of("canary", V2),
+                               SplitRule.HeaderHashSplit.headerHashSplit("X-Request-Id", 2))
+                   .await()
+                   .onFailure(cause -> Assertions.fail(cause.message()));
+
+            var variants = capturedSliceTargets(rabiaNode.appliedCommands).stream()
+                                                                          .filter(target -> target.currentVersion()
+                                                                                                  .equals(V2))
+                                                                          .toList();
+
+            assertThat(variants).isNotEmpty();
+            assertThat(variants).allSatisfy(target -> assertThat(target.effectivePlacement())
+                    .as("#937: the A/B canary write must not reset the operator's placement")
+                    .isEqualTo(PLACEMENT));
+        }
     }
 
     /// Owner-bearing since #698: a blueprint-owned slice is what both writers actually receive in
-    /// production, and an unowned fixture cannot observe an owner being dropped.
+    /// production, and an unowned fixture cannot observe an owner being dropped. Operator-placed
+    /// since #937, for the same reason — the creation factory below cannot express a placement, so
+    /// it is applied through `withPlacement` exactly as `SliceRoutes.applyScaleToExisting` does.
     static SliceTargetValue targetWithOverrides(Version version) {
         return SliceTargetValue.sliceTargetValue(version,
                                                  3,
@@ -184,7 +242,8 @@ class SliceTargetOverridePreservationTest {
                                                  Option.some(OWNER),
                                                  Option.some(5),
                                                  Option.some(0.8),
-                                                 Option.some(0.2));
+                                                 Option.some(0.2))
+                               .withPlacement(PLACEMENT);
     }
 
     static void seed(KVStore<AetherKey, AetherValue> kvStore, AetherKey key, AetherValue value) {

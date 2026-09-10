@@ -2549,15 +2549,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                              cause.message()));
         }
 
-        @SuppressWarnings("unused")
-        private String lookupPlacement(Artifact artifact) {
-            return ctx.kvStore()
-                      .get(SliceTargetKey.sliceTargetKey(artifact.base()))
-                      .filter(v -> v instanceof SliceTargetValue)
-                      .map(v -> ((SliceTargetValue) v).effectivePlacement())
-                      .or("CORE_ONLY");
-        }
-
         @Contract
         public void reconcile() {
             if (deactivated.get()) {

@@ -74,8 +74,8 @@ class ControlLoopContextAttributionTest {
     void setUp() {
         cluster = new CapturingClusterNode();
         ctx = buildContext();
-        ctx.putBlueprint(HOT, 2, 1);
-        ctx.putBlueprint(IDLE, 2, 1);
+        ctx.putBlueprint(HOT, target(HOT, 2, 1));
+        ctx.putBlueprint(IDLE, target(IDLE, 2, 1));
         ctx.setTopology(List.of(SELF, WORKER, NodeId.nodeId("n3").unwrap(),
                                 NodeId.nodeId("n4").unwrap(), NodeId.nodeId("n5").unwrap()));
     }
@@ -108,7 +108,7 @@ class ControlLoopContextAttributionTest {
     /// (without eviction the stale active=100 would persist and no scale-down could ever occur).
     @Test
     void onNodeDeparted_evictsDepartedNodeMetrics_enablesScaleDown() {
-        ctx.putBlueprint(HOT, 3, 1);
+        ctx.putBlueprint(HOT, target(HOT, 3, 1));
 
         for (int i = 0; i < WINDOW; i++) {
             ingest(100, 0);
@@ -141,7 +141,7 @@ class ControlLoopContextAttributionTest {
             cluster = new CapturingClusterNode();
             var capCtx = buildContext(scaleUpBy(2));
 
-            capCtx.putBlueprint(HOT, 2, 1, Option.none(), Option.some(3), Option.none(), Option.none());
+            capCtx.putBlueprint(HOT, boundedTarget(HOT, 2, 1, 3));
             capCtx.setTopology(FIVE_NODES);
 
             capCtx.runEvaluationCycle();
@@ -155,7 +155,7 @@ class ControlLoopContextAttributionTest {
             cluster = new CapturingClusterNode();
             var capCtx = buildContext(scaleUpBy(2));
 
-            capCtx.putBlueprint(HOT, 2, 1);
+            capCtx.putBlueprint(HOT, target(HOT, 2, 1));
             capCtx.setTopology(FIVE_NODES);
 
             capCtx.runEvaluationCycle();
@@ -188,7 +188,7 @@ class ControlLoopContextAttributionTest {
             cluster = new CapturingClusterNode();
             var capCtx = buildContext(scaleUpBy(3), events::add);
 
-            capCtx.putBlueprint(HOT, 2, 1, Option.none(), Option.some(3), Option.none(), Option.none());
+            capCtx.putBlueprint(HOT, boundedTarget(HOT, 2, 1, 3));
             capCtx.setTopology(FIVE_NODES);
 
             capCtx.runEvaluationCycle();
@@ -217,7 +217,7 @@ class ControlLoopContextAttributionTest {
             cluster = new CapturingClusterNode();
             var capCtx = buildContext(scaleUpBy(2), events::add);
 
-            capCtx.putBlueprint(HOT, 2, 1);
+            capCtx.putBlueprint(HOT, target(HOT, 2, 1));
             capCtx.setTopology(FIVE_NODES);
 
             capCtx.runEvaluationCycle();
@@ -235,6 +235,26 @@ class ControlLoopContextAttributionTest {
         private ClusterController scaleUpBy(int additional) {
             return _ -> Promise.success(ControlDecisions.controlDecisions(new BlueprintChange.ScaleUp(HOT, additional)));
         }
+    }
+
+    /// Registrations go in as whole `SliceTargetValue`s, the way the production feeder supplies
+    /// them — the autoscaler's registration map holds the observed durable record, not a projection
+    /// of it (#698, #936, #937).
+    private static AetherValue.SliceTargetValue target(Artifact artifact, int instances, int minInstances) {
+        return AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(), instances, minInstances);
+    }
+
+    private static AetherValue.SliceTargetValue boundedTarget(Artifact artifact,
+                                                              int instances,
+                                                              int minInstances,
+                                                              int maxInstances) {
+        return AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(),
+                                                             instances,
+                                                             minInstances,
+                                                             Option.none(),
+                                                             Option.some(maxInstances),
+                                                             Option.none(),
+                                                             Option.none());
     }
 
     private void fillWindows() {

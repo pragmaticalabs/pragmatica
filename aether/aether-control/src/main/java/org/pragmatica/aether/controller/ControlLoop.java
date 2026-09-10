@@ -17,7 +17,6 @@ import org.pragmatica.aether.controller.fsm.ControlLoopState;
 import org.pragmatica.aether.controller.fsm.ScalingDecisionRecord;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
-import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
@@ -72,16 +71,19 @@ public interface ControlLoop {
     @MessageReceiver
     void onQuorumStateChange(ClusterStateNotification notification);
 
-    /// `owner` is the `SliceTargetValue`'s `owningBlueprint` (#698). It is a required parameter
-    /// rather than an optional tail so that a caller which has no owner must say so explicitly;
-    /// the autoscaler writes this value back out on every scaling Put.
-    void registerBlueprint(Artifact artifact,
-                           int instances,
-                           int minInstances,
-                           Option<BlueprintId> owner,
-                           Option<Integer> maxInstances,
-                           Option<Double> scaleUpThreshold,
-                           Option<Double> scaleDownThreshold);
+    /// Registers the slice from the whole `SliceTargetValue` that was observed for it, rather than
+    /// from a hand-picked selection of its components.
+    ///
+    /// This parameter used to be seven exploded fields, and that shape was the root of #698, #936
+    /// and #937: the autoscaler had to rebuild a nine-component durable value out of the subset it
+    /// had been handed, so every component outside the subset was replaced by a factory default on
+    /// every scaling Put — the owner erased, the placement reset, and the floor ratcheted. Passing
+    /// the value keeps the autoscaler's decision to a single number and leaves every other
+    /// component untouched by construction.
+    ///
+    /// `artifact` is the slice's base coordinate at `target.currentVersion()`; the two must agree,
+    /// because the registration is keyed by it and the value's version is written back out.
+    void registerBlueprint(Artifact artifact, SliceTargetValue target);
 
     void unregisterBlueprint(Artifact artifact);
     ControllerConfig configuration();
@@ -203,13 +205,7 @@ public interface ControlLoop {
             var key = valuePut.cause().key();
             var value = valuePut.cause().value();
 
-            registerBlueprint(key.artifactBase().withVersion(value.currentVersion()),
-                              value.targetInstances(),
-                              value.effectiveMinInstances(),
-                              value.owningBlueprint(),
-                              value.maxInstances(),
-                              value.scaleUpThreshold(),
-                              value.scaleDownThreshold());
+            registerBlueprint(key.artifactBase().withVersion(value.currentVersion()), value);
         }
 
         @Override
@@ -234,25 +230,14 @@ public interface ControlLoop {
         }
 
         @Override
-        public void registerBlueprint(Artifact artifact,
-                                      int instances,
-                                      int minInstances,
-                                      Option<BlueprintId> owner,
-                                      Option<Integer> maxInstances,
-                                      Option<Double> scaleUpThreshold,
-                                      Option<Double> scaleDownThreshold) {
-            ctx.putBlueprint(artifact,
-                             instances,
-                             minInstances,
-                             owner,
-                             maxInstances,
-                             scaleUpThreshold,
-                             scaleDownThreshold);
-            log.info("Registered blueprint: {} with {} instances (min: {}, max: {})",
+        public void registerBlueprint(Artifact artifact, SliceTargetValue target) {
+            ctx.putBlueprint(artifact, target);
+            log.info("Registered blueprint: {} with {} instances (min: {}, max: {}, placement: {})",
                      artifact,
-                     instances,
-                     minInstances,
-                     maxInstances);
+                     target.targetInstances(),
+                     target.effectiveMinInstances(),
+                     target.maxInstances(),
+                     target.effectivePlacement());
         }
 
         @Override

@@ -88,6 +88,16 @@ public sealed interface AetherValue {
                  none());
         }
 
+        /// Creation factories. Every overload below that takes no explicit `placement` fixes it to
+        /// [#DEFAULT_PLACEMENT], so they are usable only where there is no existing placement to
+        /// carry — the first write for a slice nothing has placed yet.
+        ///
+        /// A producer rebuilding a value it has already observed must not use them. Resetting an
+        /// operator's placement is not merely a bookkeeping loss: the reset value is acted on, and
+        /// the slice is re-allocated under the default (#937). Rebuild through the `with*` methods
+        /// instead — they thread every unchanged component through by construction, which is what
+        /// makes this class of loss inexpressible rather than merely absent. #698 (owner), #936
+        /// (`minInstances`) and #937 (`placement`) were three instances of it at one expression.
         public static SliceTargetValue sliceTargetValue(Version version, int instances, Option<BlueprintId> owner) {
             return new SliceTargetValue(version,
                                         instances,
@@ -186,6 +196,20 @@ public sealed interface AetherValue {
             return new SliceTargetValue(currentVersion,
                                         newCount,
                                         minInstances,
+                                        owningBlueprint,
+                                        placement,
+                                        System.currentTimeMillis(),
+                                        maxInstances,
+                                        scaleUpThreshold,
+                                        scaleDownThreshold);
+        }
+
+        /// Both instance counts at once, for a producer that pins a slice to a fixed size — an A/B
+        /// variant, a canary or a promotion — without disturbing anything else the value carries.
+        public SliceTargetValue withInstances(int newCount, int newMinInstances) {
+            return new SliceTargetValue(currentVersion,
+                                        newCount,
+                                        newMinInstances,
                                         owningBlueprint,
                                         placement,
                                         System.currentTimeMillis(),
