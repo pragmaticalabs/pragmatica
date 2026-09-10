@@ -319,9 +319,13 @@ class ClusterConfigWizardTest {
                   .onFailure(cause -> assertThat(cause).isInstanceOf(ClusterInitError.InputExhausted.class));
         }
 
-        /// The same shape for forge, the other target that skips every required prompt.
+        /// Forge with input ending EARLIER — and deliberately labelled for what it pins, which is
+        /// NOT the review-step guard. Measured: removing that guard reddens the docker test above
+        /// and leaves this one green, because this input runs out at a `guardedPrompt` and is caught
+        /// by the pre-existing check. It is kept as coverage that forge also refuses, not as a
+        /// second pin on the same line.
         @Test
-        void run_forgeInputEndsBeforeReview_failsCleanly() {
+        void run_forgeInputEndsAtAnEarlierPrompt_failsCleanly() {
             var wizard = wizardFor("c\n4\n");
 
             wizard.run()

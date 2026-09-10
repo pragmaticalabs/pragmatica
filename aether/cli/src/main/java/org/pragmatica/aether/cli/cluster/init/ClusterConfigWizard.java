@@ -1009,7 +1009,6 @@ public class ClusterConfigWizard {
     private static StepResult stepReview(ClusterConfigAnswers state, Prompt prompt) {
         printSummary(state);
         var generate = prompt.confirm("Generate config?", true);
-
         // A docker or forge target passes no REQUIRED prompt, so nothing before this point can
         // notice exhausted input — and `confirm` answers its own default at EOF. Without this check
         // `aether cluster init < truncated-file` wrote a config assembled from defaults and exited
