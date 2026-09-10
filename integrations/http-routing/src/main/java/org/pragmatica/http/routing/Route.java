@@ -552,8 +552,8 @@ public interface Route<T> extends RouteSource {
         }
 
         <Q1, Q2, Q3> PathQueryBuilder5_3<R, P1, P2, P3, P4, P5, Q1, Q2, Q3> withQuery(QueryParameter<Q1> q1,
-                                                                                      QueryParameter<Q2> q2,
-                                                                                      QueryParameter<Q3> q3);
+                                                                                       QueryParameter<Q2> q2,
+                                                                                       QueryParameter<Q3> q3);
     }
 
     // ===================================================================================
@@ -1375,8 +1375,8 @@ public interface Route<T> extends RouteSource {
 
         @Override
         public <Q1, Q2, Q3> PathQueryBuilder4_3<R, P1, P2, P3, P4, Q1, Q2, Q3> withQuery(QueryParameter<Q1> q1,
-                                                                                         QueryParameter<Q2> q2,
-                                                                                         QueryParameter<Q3> q3) {
+                                                                                          QueryParameter<Q2> q2,
+                                                                                          QueryParameter<Q3> q3) {
             return new PathQueryBuilder4_3Impl<>(parent, p1, p2, p3, p4, q1, q2, q3);
         }
     }
@@ -1397,8 +1397,8 @@ public interface Route<T> extends RouteSource {
 
         @Override
         public <Q1, Q2, Q3> PathQueryBuilder5_3<R, P1, P2, P3, P4, P5, Q1, Q2, Q3> withQuery(QueryParameter<Q1> q1,
-                                                                                             QueryParameter<Q2> q2,
-                                                                                             QueryParameter<Q3> q3) {
+                                                                                              QueryParameter<Q2> q2,
+                                                                                              QueryParameter<Q3> q3) {
             return new PathQueryBuilder5_3Impl<>(parent, p1, p2, p3, p4, p5, q1, q2, q3);
         }
     }
