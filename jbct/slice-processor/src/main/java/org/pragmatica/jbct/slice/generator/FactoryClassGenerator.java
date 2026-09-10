@@ -1750,6 +1750,29 @@ public class FactoryClassGenerator {
 
     /// Compute the slice artifact coordinate string for resource cleanup.
     /// Format: "groupId:artifactId-kebab-case-slice-name"
+    /// The slice's BASE coordinate — `groupId:artifactId-kebab(SliceName)`, two segments.
+    ///
+    /// NOT the runtime release identity, and deliberately not made into one (#892). The generated
+    /// `stop()` passes this to `resources.releaseAll(...)`, but a deployed slice is identified by
+    /// its `Artifact` — `groupId:artifactId:version`, three segments — and this processor has no
+    /// version to emit: `SliceProcessor`'s `@SupportedOptions` carries `slice.groupId` and
+    /// `slice.artifactId` only, and compile-time code cannot know the version a slice is deployed
+    /// under in any case. EVERY generated `stop()` therefore carries a coordinate no registered
+    /// scope can match — structurally, since this method emits exactly one colon and
+    /// `Artifact.asString()` exactly two, and a Maven coordinate cannot contain a colon. No count
+    /// is quoted: it is a function of which modules are built when it is taken.
+    ///
+    /// `SliceLoadingContext.SliceAwareResourceProvider.releaseAll` now substitutes the deployed
+    /// `Artifact` string it already provisions under, so the argument emitted here is consulted
+    /// only where that wrapper is absent — a context with no slice id, which provisions
+    /// unattributed and releases nothing either way. Widening this to a versioned coordinate would
+    /// restore exactly the two-independently-computed-strings shape that produced the defect.
+    ///
+    /// That warning is ENFORCED, not merely stated — a comment carries none of the verification of
+    /// the code it sits in. A widened literal that agrees with the deployed artifact classifies as
+    /// `EXACT` and is silent; one that has DRIFTED classifies as `FOREIGN` and is refused and logged
+    /// at WARNING. Pinned by `SliceLoadingContextReleaseIdentityTest$AgreementClassification
+    /// .between_isForeign_whenAWidenedGeneratorCoordinateHasDriftedFromTheDeployedVersion`.
     private String computeSliceArtifactCoordinate(String sliceName) {
         var options = processingEnv.getOptions();
         var groupId = options.getOrDefault("slice.groupId", "unknown");

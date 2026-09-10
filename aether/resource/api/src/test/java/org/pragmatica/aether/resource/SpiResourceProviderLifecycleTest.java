@@ -675,4 +675,66 @@ class SpiResourceProviderLifecycleTest {
             assertThat(released.isSuccess()).isTrue();
         }
     }
+
+    /// The provider's own facade view (#892), which is what the node hands to the slice-loading
+    /// chain and therefore the only route by which a slice unload can reach `releaseAll`.
+    ///
+    /// The node used to build this inline as an anonymous `ResourceProviderFacade` implementing the
+    /// two `provide` overloads only, so `releaseAll` fell through to the interface's
+    /// `Promise.unitPromise()` default. The assertions below are on whether the RESOURCE was
+    /// closed, never on whether the release promise succeeded — it succeeded before the fix too,
+    /// which is exactly what made this invisible.
+    @Nested
+    class FacadeView {
+
+        @Test
+        void facadeReleaseAll_closesTheProvisionedResource() {
+            var factory = new AsyncFactory();
+            var facade = providerOf(factory).facade();
+
+            facade.provide(AsyncResource.class, SECTION, contextFor("slice-a"))
+                  .await(TIMEOUT);
+
+            assertThat(factory.provisioned.getFirst().isClosed()).describedAs("control: not closed before the release")
+                                                                 .isFalse();
+
+            facade.releaseAll("slice-a")
+                  .await(TIMEOUT);
+
+            assertThat(factory.provisioned.getFirst().isClosed()).describedAs("the facade must forward the release to the provider, not answer for it")
+                                                                 .isTrue();
+        }
+
+        /// The facade must not widen the release either: forwarding is what is being pinned, and a
+        /// forward that released every scope would satisfy the assertion above just as well.
+        @Test
+        void facadeReleaseAll_closesOnlyTheReleasingSlicesResource() {
+            var factory = new AsyncFactory();
+            var facade = providerOf(factory).facade();
+
+            facade.provide(AsyncResource.class, SECTION, contextFor("slice-a")).await(TIMEOUT);
+            facade.provide(AsyncResource.class, SECTION, contextFor("slice-b")).await(TIMEOUT);
+
+            facade.releaseAll("slice-a").await(TIMEOUT);
+
+            assertThat(factory.provisioned.get(0).isClosed()).isTrue();
+            assertThat(factory.provisioned.get(1).isClosed()).isFalse();
+        }
+
+        /// Provisioning through the facade reaches the SAME memoized entry as provisioning through
+        /// the provider, so the release above is closing the resource a slice actually holds rather
+        /// than a second instance the facade made for itself.
+        @Test
+        void facadeProvide_reachesTheProvidersOwnCache() {
+            var factory = new AsyncFactory();
+            var provider = providerOf(factory);
+            var facade = provider.facade();
+
+            var viaFacade = facade.provide(AsyncResource.class, SECTION, contextFor("slice-a")).await(TIMEOUT);
+            var viaProvider = provider.provide(AsyncResource.class, SECTION, contextFor("slice-a")).await(TIMEOUT);
+
+            assertThat(factory.provisionCount()).isEqualTo(1);
+            assertThat(viaProvider.unwrap()).isSameAs(viaFacade.unwrap());
+        }
+    }
 }

@@ -249,6 +249,13 @@ class DeployedConfigFacadeTest {
                                                               ProvisioningContext context) {
                 return org.pragmatica.lang.Promise.success(null);
             }
+
+            /// Explicit no-op (#892): this fixture provisions nothing worth closing, and
+            /// `releaseAll` is abstract precisely so that has to be said rather than inherited.
+            @Override
+            public org.pragmatica.lang.Promise<org.pragmatica.lang.Unit> releaseAll(String sliceId) {
+                return org.pragmatica.lang.Promise.unitPromise();
+            }
         };
     }
 }

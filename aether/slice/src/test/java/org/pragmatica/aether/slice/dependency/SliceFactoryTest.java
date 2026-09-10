@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
@@ -49,6 +50,12 @@ class SliceFactoryTest {
         @Override
         public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
             return Causes.cause("Stub resource provider").promise();
+        }
+
+        /// Explicit no-op (#892): this stub refuses every provisioning, so nothing can need closing.
+        @Override
+        public Promise<Unit> releaseAll(String sliceId) {
+            return Promise.unitPromise();
         }
     };
 

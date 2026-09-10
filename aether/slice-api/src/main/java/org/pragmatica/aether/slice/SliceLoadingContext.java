@@ -434,9 +434,104 @@ public final class SliceLoadingContext implements SliceCreationContext {
             return delegate.provide(resourceType, configSection, context.withExtension(String.class, sliceId));
         }
 
+        /// Release under the id this wrapper PROVISIONS under, reporting the caller's (#892).
+        ///
+        /// The two sides used to compute the identity independently and could never agree. This
+        /// wrapper scopes every provisioning to `sliceId`, which `DependencyResolver` sets from
+        /// `artifact.asString()` — `groupId:artifactId:version`, three segments. The caller is a
+        /// slice's generated `stop()`, which passes a compile-time literal from
+        /// `FactoryClassGenerator.computeSliceArtifactCoordinate`:
+        /// `groupId:artifactId-kebab(SliceName)` — two segments, no version. `releaseAll` compares
+        /// scope strings for equality, so NO emitted literal can ever equal any scope, for any
+        /// slice, in any build, and no provisioned resource was ever closed on any slice unload.
+        ///
+        /// That is structural, not a census: this side emits exactly ONE colon unconditionally,
+        /// `Artifact.asString()` exactly two, and a Maven coordinate cannot contain a colon. A
+        /// count of emitted `stop()` bodies is a function of which modules happen to be built when
+        /// it is taken — it varies by tree and goes stale — so no number is quoted here.
+        ///
+        /// The processor cannot be fixed into agreement: it has no version option to emit
+        /// (`SliceProcessor`'s `@SupportedOptions` carries `slice.groupId` and `slice.artifactId`
+        /// only), and compile-time code cannot know the version a slice is deployed under. So the
+        /// identity is taken from the one place that holds the deployed `Artifact`, and the two
+        /// strings are no longer two — a design-out rather than a reconciliation.
+        ///
+        /// WHY THE PARAMETER IS NOT REMOVED, and why it is not silently ignored either. Removing it
+        /// would be the cleaner signature, and it is ruled out by the property that makes this fix
+        /// the correct one: every ALREADY-COMPILED slice jar calls `releaseAll(String)` from its
+        /// generated `stop()`, so deleting the parameter turns each of them into a
+        /// `NoSuchMethodError` at unload. Substituting at runtime repairs those jars without a
+        /// rebuild; changing the signature would break exactly the jars it exists to repair.
+        ///
+        /// So the value is kept and REPORTED rather than discarded, because a parameter that looks
+        /// meaningful and is silently dropped is the same shape as the defect being fixed. What is
+        /// reported depends on what disagreement means — see [#ReleaseIdAgreement].
         @Override
         public Promise<Unit> releaseAll(String releaseSliceId) {
-            return delegate.releaseAll(releaseSliceId);
+            reportAgreement(releaseSliceId);
+
+            return delegate.releaseAll(sliceId);
+        }
+
+        private void reportAgreement(String releaseSliceId) {
+            switch (ReleaseIdAgreement.between(releaseSliceId, sliceId)) {
+                case EXACT -> {}
+                case GENERATED_BASE -> logger().log(System.Logger.Level.DEBUG,
+                                                    "Slice " + sliceId + " released under its deployed artifact; its generated stop() passed the" + " version-less base coordinate " + releaseSliceId + " (expected — the annotation processor has no version to emit)");
+                case FOREIGN -> logger().log(System.Logger.Level.WARNING,
+                                             "Slice " + sliceId + " asked to release " + releaseSliceId + ", which is not its own deployed artifact; releasing " + sliceId + " instead. A slice can only release what it provisioned.");
+            }
+        }
+
+        private static System.Logger logger() {
+            return System.getLogger(SliceLoadingContext.class.getName());
+        }
+    }
+
+    /// How a caller-supplied release id relates to the authoritative one (#892).
+    ///
+    /// The three cases carry different news, which is why they are not one message. A blanket
+    /// warning would fire on EVERY unload of EVERY slice built by the current processor — the
+    /// universal expected state — and a warning for the normal case trains readers to ignore the
+    /// one that matters. `ResourceFactory`'s close dispatch records the same reasoning for its own
+    /// DEBUG choice.
+    enum ReleaseIdAgreement {
+        /// Caller and context name the same artifact. Nothing to report; this is what a processor
+        /// that could emit a version would produce.
+        EXACT,
+        /// The caller passed the version-less base of THIS artifact — the shape every generated
+        /// `stop()` emits today. Expected, logged at DEBUG so the 34 stale coordinates are visible
+        /// on demand rather than invisible.
+        GENERATED_BASE,
+        /// The caller named something that is not this slice at all. Worth a WARNING.
+        ///
+        /// Before the substitution this id was forwarded UNCHANGED down the chain — a real
+        /// isolation weakness — but it could not actually have released another slice's resources,
+        /// because the only route to the node-wide provider was the node facade, which at that
+        /// point dropped every release (#892's other cause). The hole was MASKED by that defect,
+        /// and fixing the facade alone would have ARMED it. Both shipped together, so the
+        /// capability was never live for a single release.
+        FOREIGN;
+        static ReleaseIdAgreement between(String callerId, String authoritativeId) {
+            return authoritativeId.equals(callerId)
+                   ? EXACT
+                   : isGeneratedBaseOf(callerId, authoritativeId)
+                     ? GENERATED_BASE
+                     : FOREIGN;
+        }
+        /// The generator emits `groupId:artifactId-kebab` — EXACTLY one colon — and a deployed
+        /// artifact is always `groupId:artifactId:version`. Requiring that one colon is what keeps
+        /// this classification narrow.
+        ///
+        /// Without it the test is "any proper colon-prefix", and since the deployed artifact has
+        /// exactly three segments the only OTHER such prefix is the bare `groupId` — a genuinely
+        /// foreign id, which would then be reported at DEBUG instead of the WARNING it deserves.
+        /// That is precisely the case this grading exists to catch, so it may not be the one it
+        /// silences (v892 SHOULD-FIX B).
+        private static boolean isGeneratedBaseOf(String callerId, String authoritativeId) {
+            return callerId.indexOf(':') >= 0
+                   && callerId.indexOf(':') == callerId.lastIndexOf(':')
+                   && authoritativeId.startsWith(callerId + ":");
         }
     }
 
@@ -451,6 +546,13 @@ public final class SliceLoadingContext implements SliceCreationContext {
         @Override
         public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
             return NOT_CONFIGURED.promise();
+        }
+
+        /// Deliberate no-op, not an inherited one (#892): this provider refuses every provisioning,
+        /// so there is provably nothing for a release to close.
+        @Override
+        public Promise<Unit> releaseAll(String sliceId) {
+            return Promise.unitPromise();
         }
     }
 
