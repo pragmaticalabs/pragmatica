@@ -25,7 +25,7 @@ class SliceVersionRegistryTest {
                            CommonContentType.APPLICATION_JSON,
                            List.of(),
                            "get",
-                           new RouteSecurityPolicy() {},
+                           RouteSecurityPolicy.permitAll(),
                            version);
     }
 

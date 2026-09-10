@@ -111,7 +111,7 @@ public interface Route<T> extends RouteSource {
     /// Returns the security policy for this route.
     /// Default is public (allow all).
     default RouteSecurityPolicy security() {
-        return new RouteSecurityPolicy() {};
+        return RouteSecurityPolicy.permitAll();
     }
 
     @Override
@@ -123,7 +123,7 @@ public interface Route<T> extends RouteSource {
     RouteSource withPrefix(String prefix);
 
     static <T> Route<T> route(HttpMethod method, String path, Handler<T> handler, ContentType contentType) {
-        return route(method, path, handler, contentType, List.of(), "", new RouteSecurityPolicy() {});
+        return route(method, path, handler, contentType, List.of(), "", RouteSecurityPolicy.permitAll());
     }
 
     static <T> Route<T> route(HttpMethod method,
@@ -131,7 +131,7 @@ public interface Route<T> extends RouteSource {
                               Handler<T> handler,
                               ContentType contentType,
                               List<String> spacers) {
-        return route(method, path, handler, contentType, spacers, "", new RouteSecurityPolicy() {});
+        return route(method, path, handler, contentType, spacers, "", RouteSecurityPolicy.permitAll());
     }
 
     static <T> Route<T> route(HttpMethod method,
@@ -140,7 +140,7 @@ public interface Route<T> extends RouteSource {
                               ContentType contentType,
                               List<String> spacers,
                               String name) {
-        return route(method, path, handler, contentType, spacers, name, new RouteSecurityPolicy() {});
+        return route(method, path, handler, contentType, spacers, name, RouteSecurityPolicy.permitAll());
     }
 
     static <T> Route<T> route(HttpMethod method,
@@ -1096,7 +1096,7 @@ public interface Route<T> extends RouteSource {
                                                 handler,
                                                 spacers,
                                                 defaultName,
-                                                new RouteSecurityPolicy() {},
+                                                RouteSecurityPolicy.permitAll(),
                                                 pathArity);
         }
 
