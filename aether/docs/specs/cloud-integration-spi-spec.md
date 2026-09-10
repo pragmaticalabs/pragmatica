@@ -787,6 +787,8 @@ provider = "hetzner"
 
 [cloud.compute]
 # REQ-CF-02: Default instance size for provisioning.
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
+# The same applies to every `instance_size` below.
 instance_size = "cx22"
 # REQ-CF-03: OS image or snapshot ID for new instances.
 image = "ubuntu-24.04"

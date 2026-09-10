@@ -181,6 +181,7 @@ load_balancer = "none"
 
 [source.hetzner-eu.core]
 count = 5
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx23"
 
 [operations.ports]
@@ -596,6 +597,7 @@ Dedicated PostgreSQL VM provisioned during bootstrap:
 ```toml
 [databases.forge]
 type = "dedicated-vm"
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance = "cx22"
 ```
 

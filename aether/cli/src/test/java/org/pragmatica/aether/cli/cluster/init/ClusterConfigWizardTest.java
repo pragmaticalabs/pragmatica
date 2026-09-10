@@ -59,14 +59,14 @@ class ClusterConfigWizardTest {
         void run_cloudFullHetzner_collectsAllAnswers() {
             // Steps: cluster name -> deployment target (CLOUD=1) ->
             //        cloud provider (default HETZNER) -> region (default hel1) ->
-            //        instance type (default cx21) -> credential env (default HCLOUD_TOKEN) ->
+            //        instance type (REQUIRED, no default) -> credential env (default HCLOUD_TOKEN) ->
             //        topology (3) -> database (no) -> firewall preset (default STANDARD) ->
             //        TLS (default auto-gen) -> secret (default auto-gen) -> review (yes)
             var input = "prod-eu\n" +       // cluster name
                         "1\n" +             // deployment target: CLOUD
                         "\n" +              // cloud provider: default HETZNER
                         "\n" +              // region: default hel1
-                        "\n" +              // instance type: default cx21
+                        "cpx32\n" +         // instance type: no default — must be typed
                         "\n" +              // credential env var: default HCLOUD_TOKEN
                         "3\n" +             // total node count
                         "n\n" +             // configure database? no
@@ -85,7 +85,7 @@ class ClusterConfigWizardTest {
                       answers.cloud().onPresent(cloud -> {
                           assertThat(cloud.provider()).isEqualTo(CloudProviderName.HETZNER);
                           assertThat(cloud.region()).isEqualTo("hel1");
-                          assertThat(cloud.instanceType()).isEqualTo("cx21");
+                          assertThat(cloud.instanceType()).isEqualTo("cpx32");
                           assertThat(cloud.credentialEnvVar()).isEqualTo("HCLOUD_TOKEN");
                       });
                       assertThat(answers.topology().core()).isEqualTo(3);
@@ -93,6 +93,69 @@ class ClusterConfigWizardTest {
                       assertThat(answers.tls()).isInstanceOf(TlsAnswers.AutoGenerate.class);
                       assertThat(answers.secret()).isInstanceOf(SecretAnswers.AutoGenerate.class);
                   });
+        }
+    }
+
+    /// The wizard shipped `cx21` as Hetzner's instance-type default until 2026-09-10. Hetzner had
+    /// DELETED that server type, so every operator who pressed Enter through this prompt got a
+    /// config that could not provision in any region — three bootstrap runs died on
+    /// `422 (invalid_input): unsupported location for server type`. Providers retire instance types,
+    /// so the wizard now ships no default and requires an answer.
+    @Nested
+    class InstanceTypeHasNoDefault {
+
+        /// Pressing Enter must NOT be accepted. The proof is positional: with the prompt refusing
+        /// the empty answer, the NEXT line typed is consumed as the instance type and the credential
+        /// prompt still gets its own default. Were a default restored, the empty line would be
+        /// accepted as that default and `cpx32` would slide into the credential-env prompt — so both
+        /// assertions below flip.
+        @Test
+        void run_cloudEmptyInstanceType_reprompts_andAcceptsTheNextAnswer() {
+            var input = "prod-eu\n" +       // cluster name
+                        "1\n" +             // deployment target: CLOUD
+                        "\n" +              // cloud provider: default HETZNER
+                        "\n" +              // region: default hel1
+                        "\n" +              // instance type: EMPTY -> rejected, re-prompts
+                        "cpx32\n" +         // instance type: the actual answer
+                        "\n" +              // credential env var: default HCLOUD_TOKEN
+                        "3\n" +             // total node count
+                        "n\n" +             // configure database? no
+                        "\n" +              // firewall preset: default STANDARD
+                        "\n" +              // TLS configuration: default auto-generate
+                        "\n" +              // cluster secret: default auto-generate
+                        "\n";               // generate config? default yes
+            var wizard = wizardFor(input);
+
+            wizard.run()
+                  .onFailure(c -> fail("Expected success but got " + c.message()))
+                  .onSuccess(answers -> answers.cloud().onPresent(cloud -> {
+                      assertThat(cloud.instanceType()).isEqualTo("cpx32");
+                      assertThat(cloud.credentialEnvVar()).isEqualTo("HCLOUD_TOKEN");
+                  }));
+        }
+
+        /// A blank-but-not-empty answer is refused for the same reason — `"   "` would otherwise be
+        /// written into `instance_type` and reach the provider verbatim.
+        @Test
+        void run_cloudBlankInstanceType_reprompts_andAcceptsTheNextAnswer() {
+            var input = "prod-eu\n1\n\n\n   \ncpx32\n\n3\nn\n\n\n\n\n";
+            var wizard = wizardFor(input);
+
+            wizard.run()
+                  .onFailure(c -> fail("Expected success but got " + c.message()))
+                  .onSuccess(answers -> answers.cloud()
+                                               .onPresent(cloud -> assertThat(cloud.instanceType()).isEqualTo("cpx32")));
+        }
+
+        /// The refusal names the flag an operator would reach for and the provider whose catalogue
+        /// governs the value. Both the wizard and `--non-interactive` raise this same cause.
+        @Test
+        void message_namesTheFlagAndTheProviderCatalogue() {
+            var message = new ClusterInitError.InstanceTypeRequired("hetzner").message();
+
+            assertThat(message).contains("--instance-type")
+                               .contains("hetzner")
+                               .contains("catalogue");
         }
     }
 

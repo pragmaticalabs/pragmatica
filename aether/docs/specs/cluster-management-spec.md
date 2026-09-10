@@ -78,6 +78,8 @@ Same logical cluster can deploy to any supported environment without changing th
 type = "hetzner"                              # REQ-CFG-01: required, one of: hetzner | aws | gcp | azure | kubernetes | on-premises | embedded
 
 [deployment.instances]
+# EXAMPLE instance types. `cx21` and `cx11` have since been RETIRED by Hetzner and will NOT
+# provision — take the values from Hetzner's current catalogue.
 core = "cx21"                                 # REQ-CFG-02: provider-specific instance size for core nodes
 worker = "cx11"                               # REQ-CFG-03: provider-specific instance size for workers (future)
 
@@ -175,6 +177,8 @@ strategy = "rolling"                          # REQ-CFG-22: rolling | blue-green
 type = "hetzner"
 
 [deployment.instances]
+# EXAMPLE instance types. `cx21` and `cx11` have since been RETIRED by Hetzner and will NOT
+# provision — take the values from Hetzner's current catalogue.
 core = "cx21"           # 2 vCPU, 4 GB RAM
 worker = "cx11"         # 1 vCPU, 2 GB RAM
 
@@ -221,6 +225,7 @@ Cloud credentials: `HCLOUD_TOKEN` environment variable. Maps to existing `Hetzne
 type = "aws"
 
 [deployment.instances]
+# EXAMPLE instance types — providers retire types; check your provider's current catalogue.
 core = "t3.medium"      # 2 vCPU, 4 GiB RAM
 worker = "t3.small"     # 2 vCPU, 2 GiB RAM
 
@@ -270,6 +275,7 @@ Cloud credentials: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`.
 type = "gcp"
 
 [deployment.instances]
+# EXAMPLE instance types — providers retire types; check your provider's current catalogue.
 core = "e2-medium"
 worker = "e2-small"
 
@@ -303,6 +309,7 @@ Cloud credentials: `GOOGLE_APPLICATION_CREDENTIALS` (path to service account JSO
 type = "azure"
 
 [deployment.instances]
+# EXAMPLE instance types — providers retire types; check your provider's current catalogue.
 core = "Standard_B2s"
 worker = "Standard_B1s"
 

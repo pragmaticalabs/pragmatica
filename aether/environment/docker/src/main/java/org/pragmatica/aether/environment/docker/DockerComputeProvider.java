@@ -579,6 +579,10 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         };
     }
 
+    /// Deliberately does NOT carry a requested instance type / zone, unlike the four cloud
+    /// providers. Docker has no instance-type catalogue to be retired from and no location to vary
+    /// availability by — `instanceSize` here selects a local container shape, so naming it would
+    /// point the operator at a catalogue that does not exist.
     private static EnvironmentError toProvisionError(Cause cause) {
         return EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
     }

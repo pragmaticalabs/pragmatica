@@ -61,7 +61,7 @@ Step 4/8: Topology
   Core nodes [3]: 5
   → Adjusted: 5 core + 2 worker
   Accept? [Y/n]: ↵
-  Instance type [cx22]: cx32
+  Instance type (required — use a type from hetzner's current catalogue): cpx32
 
 Step 5/8: Database
   Configure database connection? [Y/n]: ↵
@@ -104,7 +104,7 @@ Step 8/8: Review
   ┌─────────────────────────────────────────────┐
   │ Cluster: production v1.0.0                  │
   │ Target:  Hetzner Cloud (fsn1)               │
-  │ Nodes:   5 core + 2 worker (cx32)           │
+  │ Nodes:   5 core + 2 worker (cpx32)          │
   │ Database: db.internal:5432/production       │
   │ Firewall: Restrictive (203.0.113.0/24)      │
   │ LB:      Elected                            │
@@ -134,7 +134,7 @@ aether cluster init --name staging \
 # Cloud cluster
 aether cluster init --name production \
   --target cloud --provider hetzner --region fsn1 \
-  --nodes 7 --cores 5 --instance-type cx32 \
+  --nodes 7 --cores 5 --instance-type cpx32 \
   --firewall restrictive --firewall-cidr 203.0.113.0/24 \
   --lb elected --tls auto \
   --db-host db.internal --db-name production
@@ -213,7 +213,8 @@ Collected:
 - Provider (Hetzner/AWS/GCP/Azure)
 - Region, zone (optional)
 - Credentials env var (provider-specific default: `HCLOUD_TOKEN`, `AWS_ACCESS_KEY_ID`, etc.)
-- Instance type
+- Instance type — **no default is offered**; the operator must supply one. Providers retire
+  instance types, so a baked-in suggestion becomes unprovisionable without any signal here.
 - Node count (total, then core/worker split)
 
 Provider-specific credential defaults:
@@ -419,10 +420,12 @@ load_balancer = "elected"
 
 [source.primary.core]
 count = 5
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx33"
 
 [source.primary.worker]
 count = 2
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx33"
 
 [source.primary.databases]
@@ -543,7 +546,7 @@ Each step validates input before proceeding:
 | Credentials env var | Non-empty, valid env var name |
 | Node count | ≥ 1 (warn if 1), ≥ 3 for production |
 | Core count | Odd, ≥ 3, ≤ total |
-| Instance type | Non-empty for cloud |
+| Instance type | Non-empty for cloud; **no default** — must be answered (any value shown in this spec is an EXAMPLE) |
 | DB host/port | Non-empty, port 1-65535 |
 | Firewall CIDR | Valid CIDR notation |
 | SSH hosts | Non-empty, valid hostname/IP format |

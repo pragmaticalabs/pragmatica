@@ -301,6 +301,10 @@ wall clock end-to-end, ~€0.10 total): all seven phases green, quorum 3/5, all
 nodes READY, an API key auto-minted and persisted to
 `~/.aether/clusters/<name>/api-key`.
 
+> **The instance types named in these run records are EXAMPLES**, not a recommendation. Providers
+> retire instance types and vary availability by location — check your provider's current catalogue
+> before copying them.
+
 ### The config file
 
 A bootstrap TOML has four kinds of section: `[cluster]` and `[cluster.core]`

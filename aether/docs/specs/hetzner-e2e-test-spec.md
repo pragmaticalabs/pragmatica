@@ -328,6 +328,7 @@ Idempotency: If firewall exists, skip creation. Always verify rules are present.
 ### REQ-SETUP-05: PostgreSQL VM Provisioning
 
 ```bash
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 hcloud server create \
   --name pg-e2e \
   --type cx22 \
@@ -369,6 +370,7 @@ Create 5 Aether nodes sequentially (to get predictable private IPs) or in parall
 For each node `i` (1-5):
 
 ```bash
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 hcloud server create \
   --name aether-e2e-$i \
   --type cx22 \
@@ -396,6 +398,7 @@ After cloud-init completes:
 ### REQ-SETUP-07: k6 VM Provisioning
 
 ```bash
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 hcloud server create \
   --name k6-e2e \
   --type cx22 \
@@ -1069,6 +1072,7 @@ provider = "hetzner"
 [environment.hetzner]
 api_token = "${HETZNER_TOKEN}"
 cluster_name = "e2e-test"
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 server_type = "cx32"
 image = "ubuntu-24.04"
 region = "nbg1"

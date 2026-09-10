@@ -27,6 +27,7 @@ import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 
 public class ClusterConfigWizard {
@@ -249,13 +250,13 @@ public class ClusterConfigWizard {
                                                   Prompt prompt) {
         var defaultInstance = existing.filter(cloud -> cloud.provider() == provider)
                                       .map(CloudAnswers::instanceType)
-                                      .or(defaultInstanceFor(provider));
+                                      .or("");
 
         return guardedPrompt(prompt,
-                             "Instance type",
+                             instanceTypeQuestion(provider),
                              defaultInstance,
                              instanceRaw -> validatedContinue(instanceRaw,
-                                                              ClusterConfigWizard::nonEmpty,
+                                                              raw -> requireInstanceType(provider, raw),
                                                               _ -> cloudInstancePrompt(state,
                                                                                        provider,
                                                                                        region,
@@ -267,6 +268,24 @@ public class ClusterConfigWizard {
                                                                                                 instance,
                                                                                                 existing,
                                                                                                 prompt)));
+    }
+
+    /// The provider is named in the question because no suggestion is offered: the operator has to
+    /// know WHOSE catalogue to consult before answering. Coming back to an already-answered wizard
+    /// still re-offers the previous answer — that value came from the operator, not from us.
+    private static String instanceTypeQuestion(CloudProviderName provider) {
+        return "Instance type (required — use a type from " + provider.value() + "'s current catalogue)";
+    }
+
+    /// There is NO instance-type default, on purpose — see
+    /// [ClusterInitError.InstanceTypeRequired] for the incident that removed it. An empty answer
+    /// re-prompts with a message naming `--instance-type` and the provider whose catalogue governs
+    /// the value, so the interactive and `--non-interactive` paths refuse for the same stated reason.
+    private static Result<String> requireInstanceType(CloudProviderName provider, String raw) {
+        return Verify.ensure(raw,
+                             Verify.Is::present,
+                             new ClusterInitError.InstanceTypeRequired(provider.value()))
+                     .map(String::trim);
     }
 
     private static StepResult cloudCredentialPrompt(ClusterConfigAnswers state,
@@ -313,21 +332,16 @@ public class ClusterConfigWizard {
                                         state.secret());
     }
 
+    /// Regions are NOT instance types: a provider's location set is small, stable and effectively
+    /// never retired, so a suggestion here does not carry the rot that removed
+    /// `defaultInstanceFor` (see [ClusterInitError.InstanceTypeRequired]). The asymmetry is
+    /// deliberate — if a location ever IS retired, this default has to go the same way.
     private static String defaultRegionFor(CloudProviderName provider) {
         return switch (provider) {
             case HETZNER -> "hel1";
             case AWS -> "us-east-1";
             case GCP -> "us-central1";
             case AZURE -> "eastus";
-        };
-    }
-
-    private static String defaultInstanceFor(CloudProviderName provider) {
-        return switch (provider) {
-            case HETZNER -> "cx21";
-            case AWS -> "t3.medium";
-            case GCP -> "e2-medium";
-            case AZURE -> "Standard_B2s";
         };
     }
 

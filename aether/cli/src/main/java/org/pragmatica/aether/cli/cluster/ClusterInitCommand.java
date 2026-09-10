@@ -171,7 +171,7 @@ class ClusterInitCommand implements Callable<Integer> {
 
         if (region == null) return new ClusterInitError.MissingField("--region").result();
 
-        if (instanceType == null) return new ClusterInitError.MissingField("--instance-type").result();
+        if (instanceType == null || instanceType.isBlank()) return new ClusterInitError.InstanceTypeRequired(provider).result();
 
         if (credentialEnv == null) return new ClusterInitError.MissingField("--credential-env").result();
 

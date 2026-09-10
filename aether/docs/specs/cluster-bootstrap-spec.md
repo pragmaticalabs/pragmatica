@@ -361,6 +361,7 @@ databases.default = "postgresql://user@rds.example.com:5432/app"
 
 [source.hetzner-eu-fsn1-dc14.core]
 count = 3
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx23"
 runtime = "default"
 ```
@@ -462,16 +463,19 @@ Every source declares one or more **role sub-tables**. The allowed role names ar
 ```toml
 [source.hetzner-eu-fsn1-dc14.core]
 count = 3
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx23"
 runtime = "default"
 
 [source.hetzner-eu-fsn1-dc14.worker]
 count = 5
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx33"
 runtime = "default"
 
 [source.hetzner-eu-fsn1-dc14.spot]
 count = 10
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx33"
 runtime = "default"
 ```
@@ -999,6 +1003,9 @@ Desired: 7 cores, 5 workers, 4 spot (3 sources)
 Apply these changes? [y/N]
 ```
 
+> **The instance types in this sample output are EXAMPLES.** Providers retire instance types and
+> vary their availability by location — check your provider's current catalogue before copying them.
+
 ---
 
 ## 10. CLI Commands
@@ -1333,6 +1340,7 @@ databases.default = "${env:DATABASE_URL}"
 
 [source.hetzner-eu-fsn1-dc14.core]
 count = 5
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx23"
 runtime = "default"
 
@@ -1390,6 +1398,7 @@ load_balancer_ips = ["138.201.1.1"]
 
 [source.hetzner-eu-fsn1-dc14.core]
 count = 1
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx23"
 runtime = "default"
 
@@ -1401,6 +1410,7 @@ load_balancer_ips = ["138.201.2.1"]
 
 [source.hetzner-eu-fsn1-dc15.core]
 count = 1
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx23"
 runtime = "default"
 
@@ -1412,16 +1422,19 @@ load_balancer_endpoint = "https://us-alb.example.com"
 
 [source.aws-us-east-1a.core]
 count = 1
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "t3.medium"
 runtime = "default"
 
 [source.aws-us-east-1a.worker]
 count = 3
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "t3.medium"
 runtime = "default"
 
 [source.aws-us-east-1a.spot]
 count = 4
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "t3.medium"
 runtime = "default"
 
@@ -1535,11 +1548,13 @@ load_balancer_ips = ["138.201.1.1", "138.201.1.2"]
 
 [source.hetzner-eu-fsn1-dc14.core]
 count = 3
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx23"
 runtime = "default"
 
 [source.hetzner-eu-fsn1-dc14.worker]
 count = 5
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx33"
 runtime = "large"
 
@@ -1557,11 +1572,13 @@ load_balancer_endpoint = "https://us-alb.example.com"
 
 [source.aws-us-east-1a.core]
 count = 2
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "t3.medium"
 runtime = "default"
 
 [source.aws-us-east-1a.spot]
 count = 8
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "t3.large"
 runtime = "default"
 

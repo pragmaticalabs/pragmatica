@@ -36,6 +36,7 @@ databases.forge = "${env:PG_URL}"
 
 [source.hetzner-eu.core]
 count = 5
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cpx32"
 image = "ubuntu-22.04"
 

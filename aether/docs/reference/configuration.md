@@ -585,6 +585,7 @@ provider = "hetzner"                          # Required: hetzner | aws | gcp | 
 api_token = "${env:HCLOUD_TOKEN}"         # Supports ${env:VAR} interpolation
 
 [cloud.compute]                                # Instance provisioning parameters
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 server_type = "cx22"
 image = "ubuntu-24.04"
 region = "fsn1"
