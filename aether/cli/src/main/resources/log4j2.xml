@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logging configuration for the `aether` CLI fat jar.
+
+  It deliberately diverges from aether/node/src/main/resources/log4j2.xml on two points; both
+  divergences follow from the CLI being an operator tool rather than a long-running server.
+-->
+<Configuration status="OFF">
+    <Appenders>
+        <!--
+          DIVERGENCE 1 from the node: target is SYSTEM_ERR, not SYSTEM_OUT.
+
+          The node's stdout IS its log, so a stdout console appender is correct there. The CLI's
+          stdout is DATA: OutputOptions lets every command emit table/json/yaml that operators pipe
+          into jq and friends. A diagnostic line on stdout would corrupt those pipelines silently,
+          which is a worse failure than the missing diagnostics this file exists to restore.
+          Diagnostics therefore go to stderr, where redirecting them costs one `2>/dev/null`.
+        -->
+        <Console name="Console" target="SYSTEM_ERR">
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} %-5level %c{1.} - %msg%n"/>
+        </Console>
+    </Appenders>
+    <Loggers>
+        <!--
+          DIVERGENCE 2 from the node: root is OFF, not INFO.
+
+          The node needed seven explicit noise-suppression entries to stay readable. Root-level
+          logging in the CLI would inherit every shaded library's output (netty, the cloud SDKs,
+          the http client) into every single invocation, so the suppression list would have to be
+          maintained against the whole shaded dependency set forever. OFF inverts the default: a
+          logger is silent unless something opts it in, and only org.pragmatica does.
+
+          Consequence to know: the -v ladder raises org.pragmatica only. Third-party logging stays
+          OFF at every rung, including -vvv.
+        -->
+        <Root level="OFF">
+            <AppenderRef ref="Console"/>
+        </Root>
+
+        <!--
+          The one logger the -v ladder moves (see Verbosity). WARN by default, so a normal
+          invocation prints nothing unless something is actually wrong; -v/-vv/-vvv take it to
+          INFO/DEBUG/TRACE.
+
+          No AppenderRef here on purpose: additivity forwards events to Root's Console appender.
+          log4j2 checks the level at THIS logger and does not re-check it at the parent, so a WARN
+          from org.pragmatica still reaches the appender even though Root itself is OFF.
+        -->
+        <Logger name="org.pragmatica" level="WARN"/>
+    </Loggers>
+</Configuration>

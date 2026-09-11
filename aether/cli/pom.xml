@@ -86,12 +86,22 @@
             <version>${project.version}</version>
         </dependency>
 
-        <!-- Suppress SLF4J "no provider" warnings at runtime -->
+        <!-- One logging story across both shipped artifacts: the CLI binds the SAME log4j2 stack
+             as aether-node. It previously bound slf4j-nop, whose NOPServiceProvider was the only
+             provider in the fat jar, so every log statement the CLI made was discarded, including
+             HetznerComputeProvider's create-request line, the one record of what was actually sent
+             to Hetzner when a provision returns 422.
+
+             log4j-core is a COMPILE dependency (not runtime) because Verbosity calls Configurator
+             to move the org.pragmatica logger at parse time; the node declares it the same way. -->
         <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-nop</artifactId>
-            <version>${slf4j.version}</version>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-slf4j2-impl</artifactId>
             <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
         </dependency>
 
         <!-- Testing -->
@@ -133,6 +143,15 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
                 <version>3.6.1</version>
+                <dependencies>
+                    <!-- Supplies Log4j2PluginCacheFileTransformer below. Same declaration as
+                         aether/node/pom.xml. -->
+                    <dependency>
+                        <groupId>org.apache.logging.log4j</groupId>
+                        <artifactId>log4j-transform-maven-shade-plugin-extensions</artifactId>
+                        <version>0.2.0</version>
+                    </dependency>
+                </dependencies>
                 <executions>
                     <execution>
                         <phase>package</phase>
@@ -153,6 +172,10 @@
                                      all register at runtime. Without this, only the last-shaded jar's service
                                      file survives and the others are silently dropped. -->
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                                <!-- Merge Log4j2Plugins.dat across shaded jars. Without it log4j2's
+                                     plugin cache is broken in the fat jar and the Console appender /
+                                     PatternLayout in log4j2.xml cannot be resolved. -->
+                                <transformer implementation="org.apache.logging.log4j.maven.plugins.shade.transformer.Log4j2PluginCacheFileTransformer"/>
                             </transformers>
                             <filters>
                                 <filter>
