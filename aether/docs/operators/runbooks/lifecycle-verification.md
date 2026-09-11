@@ -20,19 +20,27 @@ not reach the router at all. It falls through to the static file handler, which 
    ls aether/cli/target/aether.jar
    ```
 
-3. Start from clean simulator state. Forge keeps per-node data under `$AETHER_HOME/forge-data`,
-   falling back to `~/.aether/forge-data`. A run that inherits stale or partially-written snapshots
-   logs `Snapshot restore failed` per node on boot and may never reach quorum, which presents as
-   step 2 hanging rather than as a storage error. Point Forge at a fresh directory instead of
-   deleting the default one:
+3. **Confirm no other Forge is running on this machine first.** Only one Forge instance can run
+   per host. Its management, app and dashboard ports come from `ForgeConfig`, but the cluster's
+   QUIC base port does not: `ForgeServer` passes the `EmberCluster.DEFAULT_BASE_PORT` constant
+   (`6000`, so nodes occupy `6000`–`6000+nodes-1`), and no configuration overrides it. There is
+   therefore no port-offset arrangement that lets two instances coexist — a second instance's nodes
+   cannot form a cluster, and the symptom is step 2 never returning rather than a bind error.
+
+   ```bash
+   lsof -nP -iTCP:5150 -sTCP:LISTEN    # expect no output before you start
+   ```
+
+4. Start from clean simulator state. Forge keeps per-node data under `$AETHER_HOME/forge-data`,
+   falling back to `~/.aether/forge-data`. Pointing Forge at a fresh directory removes inherited
+   state as a variable, and is preferable to deleting the default directory:
 
    ```bash
    export AETHER_HOME="$(mktemp -d)"
    ```
 
-   Leader election took **8s** from clean state. On inherited state it took 62s on one run, and on
-   another no leader was elected within 125s (`activePeerCount=1, clusterSize=5, quorumSize=3`).
-   This is why step 1 polls for readiness rather than sleeping for a fixed interval.
+   Leader election is not instantaneous, and how long it takes depends on the host, so step 1 polls
+   for readiness rather than sleeping for a fixed interval.
 
 ---
 
@@ -46,12 +54,15 @@ shell, then wait for leader election: every route below is leader-bound and answ
 
 ```bash
 java -jar aether/forge/forge-core/target/aether-forge.jar > /tmp/forge.log 2>&1 &
+FORGE_PID=$!
 
 for i in $(seq 1 120); do
   curl -sf http://localhost:5150/api/v1/nodes/status | grep -q '"isLeader":true' && break
   sleep 1
 done
 ```
+
+Keep `$FORGE_PID` — step 7 uses it to stop *this* instance without matching on process name.
 
 Expected output in `/tmp/forge.log`:
 ```
@@ -178,15 +189,27 @@ response is therefore not evidence that a deploy never happened; see
 
 ### 7. Cleanup
 
-Stop Forge with Ctrl+C or:
+Stop Forge with Ctrl+C, or by the PID captured in step 1:
 ```bash
-pkill -f "aether-forge.jar"
+kill "$FORGE_PID"
 ```
 
-`pkill` returns before the JVM has exited. Confirm termination rather than assuming it:
+If you no longer have the PID, resolve it from the port rather than from the process name:
 ```bash
-for i in $(seq 1 30); do pgrep -f "aether-forge.jar" >/dev/null || break; sleep 1; done
-pgrep -f "aether-forge.jar" || echo "stopped"
+FORGE_PID=$(lsof -t -nP -iTCP:5150 -sTCP:LISTEN)
+kill "$FORGE_PID"
+```
+
+> **Do not stop Forge with `pkill -f aether-forge.jar` or any other name-matching kill.** The
+> pattern matches every Forge on the host, in every working tree, including instances belonging to
+> other people's runs. On a shared machine that silently kills unrelated work, and the victim sees
+> an unexplained `SIGTERM` (surfacing as surefire `Process Exit Code: 143`) that reads as a product
+> failure rather than as someone else's cleanup step. Kill the PID you started.
+
+`kill` returns before the JVM has exited. Confirm termination by PID rather than assuming it:
+```bash
+for i in $(seq 1 30); do ps -p "$FORGE_PID" >/dev/null 2>&1 || break; sleep 1; done
+ps -p "$FORGE_PID" >/dev/null 2>&1 && echo "still running" || echo "stopped"
 ```
 
 ---
@@ -204,6 +227,7 @@ defaults to `localhost:8080`, while Forge's node-1 management API listens on 515
 
 ```bash
 java -jar aether/forge/forge-core/target/aether-forge.jar > /tmp/forge.log 2>&1 &
+FORGE_PID=$!
 
 for i in $(seq 1 120); do
   curl -sf http://localhost:5150/api/v1/nodes/status | grep -q '"isLeader":true' && break
@@ -337,9 +361,13 @@ reconciliation instead.
 
 ### Step 2 never returns / `503 No leader elected`
 - The management routes are leader-bound; wait for election rather than retrying immediately
-- Check for inherited simulator state: `Snapshot restore failed` on boot, or
-  `activePeerCount=1, clusterSize=5, quorumSize=3` in the log, means the cluster is not reaching
-  quorum. Restart with a fresh `AETHER_HOME` (see Prerequisites step 3)
+- A log line like `activePeerCount=1, clusterSize=5, quorumSize=3` means the embedded nodes are not
+  seeing each other, so quorum is never reached. Two causes produce it, and they are not
+  distinguishable from that line alone:
+  - **Another Forge on the host** holding the fixed QUIC base ports `6000+` (Prerequisites step 3).
+    Check first — it is the one you can rule out definitively, with `lsof`
+  - **Inherited simulator state**: `Snapshot restore failed` per node on boot. Restart with a fresh
+    `AETHER_HOME` (Prerequisites step 4)
 
 ### Slice stuck in LOAD state
 - Check if artifact exists in repository
