@@ -20,6 +20,13 @@ import org.pragmatica.lang.Result;
 /// collide invisibly: relocating the three configurable ports removed the loud TCP guard while
 /// leaving the QUIC range fixed. Configurability alone does not make that collision visible (the
 /// duplicate UDP bind SUCCEEDS under `SO_REUSEADDR`); `ForgePortPreflight` is the guard.
+///
+/// #718 shape 4 — `startTimeoutSeconds` is how long Forge waits for the cluster to finish forming
+/// before giving up and exiting. It was a hard-coded 60-second literal at the single `await` site,
+/// so a host on which formation is merely slow had no way to buy more time. Deliberately NOT derived
+/// from, and not coupled to, the 60-second higher-id grace in `QuicClusterNetwork` (#491): the two
+/// are numerically equal and serve unrelated purposes, and no evidence of a real relationship was
+/// found.
 public record EmberConfig(int nodes,
                           int basePort,
                           int managementPort,
@@ -29,7 +36,8 @@ public record EmberConfig(int nodes,
                           ObservabilityConfig observability,
                           boolean lbEnabled,
                           int lbPort,
-                          int coreMax) {
+                          int coreMax,
+                          int startTimeoutSeconds) {
     public static final int DEFAULT_NODES = 5;
     /// Single source of truth stays [EmberCluster#DEFAULT_BASE_PORT]; mirrored here so config
     /// callers need not reach into the cluster class for a default.
@@ -40,6 +48,7 @@ public record EmberConfig(int nodes,
     public static final boolean DEFAULT_LB_ENABLED = true;
     public static final int DEFAULT_LB_PORT = 8080;
     public static final int DEFAULT_CORE_MAX = 0;
+    public static final int DEFAULT_START_TIMEOUT_SECONDS = 60;
 
     public static final EmberConfig DEFAULT = new EmberConfig(DEFAULT_NODES,
                                                               DEFAULT_BASE_PORT,
@@ -50,7 +59,8 @@ public record EmberConfig(int nodes,
                                                               ObservabilityConfig.DEFAULT,
                                                               DEFAULT_LB_ENABLED,
                                                               DEFAULT_LB_PORT,
-                                                              DEFAULT_CORE_MAX);
+                                                              DEFAULT_CORE_MAX,
+                                                              DEFAULT_START_TIMEOUT_SECONDS);
 
     public static Result<EmberConfig> emberConfig(int nodes, int managementPort, int dashboardPort) {
         return emberConfig(nodes,
@@ -146,11 +156,13 @@ public record EmberConfig(int nodes,
                            observability,
                            lbEnabled,
                            lbPort,
-                           coreMax);
+                           coreMax,
+                           DEFAULT_START_TIMEOUT_SECONDS);
     }
 
-    /// #1008 — the only overload that takes the QUIC/consensus base port. Every shorter overload
-    /// defaults it to [#DEFAULT_BASE_PORT], so existing callers keep their present behaviour.
+    /// #1008 / #718 shape 4 — the only overload that takes the QUIC/consensus base port and the
+    /// cluster start budget. Every shorter overload defaults both, so existing callers keep their
+    /// present behaviour.
     public static Result<EmberConfig> emberConfig(int nodes,
                                                   int basePort,
                                                   int managementPort,
@@ -160,7 +172,8 @@ public record EmberConfig(int nodes,
                                                   ObservabilityConfig observability,
                                                   boolean lbEnabled,
                                                   int lbPort,
-                                                  int coreMax) {
+                                                  int coreMax,
+                                                  int startTimeoutSeconds) {
         if (nodes < 1) {
             return EmberConfigError.invalidValue("nodes", nodes, "must be at least 1").result();
         }
@@ -199,6 +212,14 @@ public record EmberConfig(int nodes,
             return EmberConfigError.invalidValue("lb_port", lbPort, "must be valid port").result();
         }
 
+        // A non-positive budget would make the await expire before the cluster could possibly form,
+        // turning every start into the timeout this value exists to govern.
+        if (startTimeoutSeconds < 1) {
+            return EmberConfigError.invalidValue("start_timeout_seconds",
+                                                 startTimeoutSeconds,
+                                                 "must be at least 1").result();
+        }
+
         return Result.success(new EmberConfig(nodes,
                                               basePort,
                                               managementPort,
@@ -208,7 +229,8 @@ public record EmberConfig(int nodes,
                                               observability,
                                               lbEnabled,
                                               lbPort,
-                                              coreMax));
+                                              coreMax,
+                                              startTimeoutSeconds));
     }
 
     public static Result<EmberConfig> load(Path path) {
@@ -240,6 +262,7 @@ public record EmberConfig(int nodes,
         boolean lbEnabled = doc.getBoolean("lb", "enabled").or(DEFAULT_LB_ENABLED);
         int lbPort = doc.getInt("lb", "port").or(DEFAULT_LB_PORT);
         int coreMax = doc.getInt("cluster", "core_max").or(DEFAULT_CORE_MAX);
+        int startTimeoutSeconds = doc.getInt("cluster", "start_timeout_seconds").or(DEFAULT_START_TIMEOUT_SECONDS);
 
         return emberConfig(nodes,
                            basePort,
@@ -250,7 +273,8 @@ public record EmberConfig(int nodes,
                            observability,
                            lbEnabled,
                            lbPort,
-                           coreMax);
+                           coreMax,
+                           startTimeoutSeconds);
     }
 
     private static ObservabilityConfig parseObservabilityConfig(org.pragmatica.config.toml.TomlDocument doc) {

@@ -37,7 +37,7 @@ public final class EmberInstance {
 
         instance.startH2();
         instance.cluster.start()
-                        .await(TimeSpan.timeSpan(60).seconds())
+                        .await(TimeSpan.timeSpan(config.startTimeoutSeconds()).seconds())
                         .onFailure(cause -> log.error("Failed to start cluster: {}",
                                                       cause.message()));
 
