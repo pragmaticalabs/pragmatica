@@ -152,4 +152,18 @@ class SliceProjectInitializerTest {
         assertThat(content)
                   .contains("basePackage = \"org.example.configtest\"");
     }
+
+    /// #718 — Forge now writes this project's durable cluster state to `<project>/.aether/forge-data`,
+    /// so a scaffold that does not ignore it puts node state and stream WAL segments into the user's
+    /// first commit. The scaffold is the only place that can get this right before the user runs
+    /// `./run-forge.sh` for the first time.
+    @Test
+    void initialize_validParams_ignoresForgeDataDir() throws Exception {
+        var projectDir = tempDir.resolve("ignore-test");
+        SliceProjectInitializer.sliceProjectInitializer(projectDir, "org.example", "ignore-test")
+                                .flatMap(SliceProjectInitializer::initialize);
+        var content = Files.readString(projectDir.resolve(".gitignore"));
+        assertThat(content)
+                  .contains(".aether/");
+    }
 }

@@ -244,6 +244,49 @@ curl http://localhost:8070/api/hello/World
 # {"greeting":"Hello, World!"}
 ```
 
+### Where Forge keeps its data
+
+Forge writes durable cluster state — the artifact disk tier and each node's
+stream write-ahead log — to a directory on disk. It prints the absolute path
+as it starts, and you should read that line rather than assume a location:
+
+```
+Forge data dir: /path/to/hello/.aether/forge-data (empty; chosen by this project ...)
+```
+
+By default that directory is **inside your project**, next to the `forge.toml`
+you passed to `--config`. Two projects on one machine therefore keep separate
+state, and running Forge in one cannot affect the other. Add `.aether/` to
+your `.gitignore` — the generated scaffold already does.
+
+Stopping and restarting Forge in the same project **reuses** that state; that
+is deliberate, and it is what makes the stream WAL crash-durable across a
+restart. Forge says so when it happens, naming how many entries it inherited:
+
+```
+Forge data dir: /path/to/hello/.aether/forge-data (REUSING 42 existing entries
+owned by this project ...). Nodes resume from this state; it is not cleared.
+```
+
+If you want a clean slate, delete the directory yourself before starting.
+Forge never deletes it for you.
+
+Two cases make Forge **refuse to start** rather than run:
+
+- the directory holds state belonging to a *different* project, or
+- it holds state with no record of which project owns it.
+
+Both refusals exit non-zero, name both projects, and tell you that nothing has
+been written or deleted yet. This is a guard, not a nuisance: an unrelated
+run that silently adopts another project's durable state is how that state
+gets destroyed.
+
+To put the directory somewhere else, set `AETHER_FORGE_DATA` to an absolute
+path. (`AETHER_HOME` also still selects it, but only for a Forge started
+*without* `--config` — it is the installer's variable, meaning the install
+directory, and scoping run data on it would re-share state across every
+project on the machine.)
+
 ### Look at the cluster
 
 Point the `aether` CLI at Forge's management port:

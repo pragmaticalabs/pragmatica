@@ -50,7 +50,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.http.HttpResult;
 
@@ -147,6 +146,20 @@ public final class ForgeServer {
 
         quicPortCheck.onFailure(cause -> log.error("{}", cause.message()));
         if (quicPortCheck.isFailure()) {
+            System.exit(1);
+
+            return;
+        }
+        // #718 - resolved and checked BEFORE anything is created, so a refusal cannot have written or
+        // deleted anything. A run that cannot prove it owns populated durable state stops here rather
+        // than silently sharing an unrelated project's cluster state.
+        var dataDirCheck = ForgeDataDir.inspect(ForgeDataDir.location(startupConfig.forgeConfig()));
+
+        dataDirCheck.onFailure(cause -> log.error("{}",
+                                                  cause.message()))
+                    .onSuccess(verdict -> log.info("{}",
+                                                   verdict.description()));
+        if (dataDirCheck.isFailure()) {
             System.exit(1);
 
             return;
@@ -376,32 +389,27 @@ public final class ForgeServer {
 
     /// #515 — a local-dev Forge simulator must not inherit the production `/data/aether` storage
     /// default (read-only on a laptop → a per-node "Stream WAL disabled" WARN wall + non-crash-durable
-    /// streaming). Point every embedded node at a writable, restart-stable base dir under
-    /// `$AETHER_HOME` (or the user-home `.aether/forge-data` fallback), which turns the artifact disk
-    /// tier and the per-partition stream WAL writable so Forge streaming is crash-durable by default.
-    /// Production nodes never take this path — they keep the `/data/aether` default from `StorageConfig`
-    /// / `ConfigLoader`. The single loud line (info on success, error on failure) replaces the silent
-    /// per-node WARN wall for the operator.
+    /// streaming). Point every embedded node at a writable, restart-stable base dir, which turns the
+    /// artifact disk tier and the per-partition stream WAL writable so Forge streaming is crash-durable
+    /// by default. Production nodes never take this path — they keep the `/data/aether` default from
+    /// `StorageConfig` / `ConfigLoader`. The single loud line (info on success, error on failure)
+    /// replaces the silent per-node WARN wall for the operator.
+    ///
+    /// #718 — the dir is no longer machine-wide. [ForgeDataDir] scopes it to the project owning the
+    /// `--config` file, and `claim` records this project as its owner so a later run can tell whether
+    /// state it finds is its own. [ForgeServer#main] has already refused the run if it could not.
     private void applyForgeDataDir(EmberCluster clusterInstance) {
-        var baseDir = forgeDataBaseDir();
+        var location = ForgeDataDir.location(startupConfig.forgeConfig());
+        var baseDir = location.dataDir();
 
-        FileOps.createDirectories(baseDir)
-               .onSuccess(_ -> log.info("Forge data dir: {} (stream WAL crash-durable)",
-                                        baseDir))
-               .onFailure(cause -> log.error("Forge data dir {} not writable: {} — streaming will run "
-                                            + "non-crash-durable (in-memory tail only)",
-                                             baseDir,
-                                             cause.message()));
+        ForgeDataDir.claim(location)
+                    .onSuccess(_ -> log.info("Forge data dir: {} (stream WAL crash-durable)",
+                                             baseDir))
+                    .onFailure(cause -> log.error("Forge data dir {} not writable: {} — streaming will run "
+                                                 + "non-crash-durable (in-memory tail only)",
+                                                  baseDir,
+                                                  cause.message()));
         clusterInstance.withDataBaseDir(baseDir);
-    }
-
-    private static Path forgeDataBaseDir() {
-        return Option.option(System.getenv("AETHER_HOME"))
-                     .filter(home -> !home.isBlank())
-                     .map(home -> Path.of(home, "forge-data"))
-                     .or(Path.of(System.getProperty("user.home"),
-                                 ".aether",
-                                 "forge-data"));
     }
 
     private static String serializeStatus(EmberCluster cluster,
@@ -470,7 +478,8 @@ public final class ForgeServer {
              + "-" + (config.basePort() + config.nodes() - 1)
              + " was free immediately before this start, so a QUIC port collision at that moment is "
              + "ruled out. Forge did NOT check, and any of these is consistent with what is reported "
-             + "above: stale per-node state under AETHER_HOME/forge-data (a retry/backpressure storm "
+             + "above: stale per-node state in this run's forge-data dir, whose path is logged at "
+             + "startup (a retry/backpressure storm "
              + "during formation can consume this whole budget); host load; or a genuine consensus "
              + "fault. If formation on this host is merely slow, raise cluster.start_timeout_seconds.";
     }

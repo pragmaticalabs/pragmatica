@@ -84,6 +84,39 @@ Environment variables override CLI arguments:
 | FORGE_PORT | Dashboard port (default: 8888) |
 | CLUSTER_SIZE | Number of nodes (default: 5) |
 | LOAD_RATE | Initial load rate (legacy support) |
+| AETHER_FORGE_DATA | Absolute path of the durable data directory (overrides the per-project default) |
+| AETHER_HOME | Data directory parent, **for config-less runs only** — see below |
+
+### Data Directory
+
+Forge writes durable cluster state (artifact disk tier, per-node stream WAL) under a directory it
+resolves at startup and logs as an absolute path. Precedence, first match wins:
+
+1. `AETHER_FORGE_DATA` — used as given.
+2. `<directory of the --config file>/.aether/forge-data` — the default for every `run-forge.sh`.
+3. `$AETHER_HOME/forge-data` — only when no `--config` was given (the container entrypoint).
+4. `~/.aether/forge-data` — final fallback.
+
+Rule 2 is what keeps two projects on one host from sharing one cluster's state. `AETHER_HOME` sits
+*below* it deliberately: `install.sh` reads that variable as the **install directory**, so scoping
+run data on it would silently re-share state across every project of anyone who exports it to put
+`$AETHER_HOME/bin` on `PATH`.
+
+Reuse is announced, never silent. Forge records the owning project in a `.forge-owner` file inside
+the data directory and, at startup:
+
+- empty or absent directory → starts fresh;
+- populated and owned by this project → **reuses** it, logging the entry count (this is what makes
+  the stream WAL survive a restart);
+- populated and owned by a different project, or populated with no owner recorded → **refuses to
+  start**, exits non-zero, and names both projects.
+
+Forge never clears the directory. Delete it yourself for a clean slate.
+
+The refusal is a check, not a lock: it inspects the directory before creating anything, so a process
+claiming the directory inside that window is not caught, and two runs of the *same* project share one
+directory by design and are not distinguished by the owner marker. Same time-of-check/time-of-use
+limitation as the QUIC port preflight, and stated for the same reason.
 
 ### Ports
 
@@ -159,8 +192,9 @@ start_timeout_seconds = 60   # How long to wait for the cluster to finish formin
 If the cluster does not finish forming inside `start_timeout_seconds`, Forge exits non-zero and
 reports what it had reached at the deadline — how many nodes were consensus-active, the leader (or
 `none`), each node with its state and QUIC port, and any per-node start failure. Raise the value if
-formation on your host is merely slow; a stale `AETHER_HOME/forge-data` directory is a common reason
-for formation to consume the whole budget.
+formation on your host is merely slow; a stale `forge-data` directory (whose path Forge logs at
+startup — see [Data Directory](#data-directory)) is a common reason for formation to consume the
+whole budget.
 
 ### Running two Forge instances on one host
 
@@ -173,6 +207,11 @@ never reaches quorum — surfacing only as `activePeerCount=1`, which is also wh
 
 Forge therefore checks the whole range at startup and refuses to start when any of it is held,
 naming the ports. If you see that message it is a collision, not stale state — no node was started.
+
+Move the **data directory** as well. Two instances launched from *different* projects already get
+separate directories by default, but two launched from the *same* project resolve to one directory
+and are not distinguished by the owner marker, so the second must be given its own with
+`AETHER_FORGE_DATA=<dir>`. See [Data Directory](#data-directory).
 
 ### Auto-Healing
 
