@@ -13,7 +13,22 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 
+/// #1008 — `basePort` is the cluster's QUIC/consensus UDP base port: node `i` binds `basePort + i`,
+/// so a cluster of `nodes` occupies `basePort .. basePort + nodes - 1`. It was the one port Forge
+/// could not move — management, dashboard and app HTTP were configurable while this stayed pinned
+/// at [EmberCluster#DEFAULT_BASE_PORT] — which is precisely what made a second Forge instance
+/// collide invisibly: relocating the three configurable ports removed the loud TCP guard while
+/// leaving the QUIC range fixed. Configurability alone does not make that collision visible (the
+/// duplicate UDP bind SUCCEEDS under `SO_REUSEADDR`); `ForgePortPreflight` is the guard.
+///
+/// #718 shape 4 — `startTimeoutSeconds` is how long Forge waits for the cluster to finish forming
+/// before giving up and exiting. It was a hard-coded 60-second literal at the single `await` site,
+/// so a host on which formation is merely slow had no way to buy more time. Deliberately NOT derived
+/// from, and not coupled to, the 60-second higher-id grace in `QuicClusterNetwork` (#491): the two
+/// are numerically equal and serve unrelated purposes, and no evidence of a real relationship was
+/// found.
 public record EmberConfig(int nodes,
+                          int basePort,
                           int managementPort,
                           int dashboardPort,
                           int appHttpPort,
@@ -21,16 +36,22 @@ public record EmberConfig(int nodes,
                           ObservabilityConfig observability,
                           boolean lbEnabled,
                           int lbPort,
-                          int coreMax) {
+                          int coreMax,
+                          int startTimeoutSeconds) {
     public static final int DEFAULT_NODES = 5;
+    /// Single source of truth stays [EmberCluster#DEFAULT_BASE_PORT]; mirrored here so config
+    /// callers need not reach into the cluster class for a default.
+    public static final int DEFAULT_BASE_PORT = EmberCluster.DEFAULT_BASE_PORT;
     public static final int DEFAULT_MANAGEMENT_PORT = 5150;
     public static final int DEFAULT_DASHBOARD_PORT = 8888;
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
     public static final boolean DEFAULT_LB_ENABLED = true;
     public static final int DEFAULT_LB_PORT = 8080;
     public static final int DEFAULT_CORE_MAX = 0;
+    public static final int DEFAULT_START_TIMEOUT_SECONDS = 60;
 
     public static final EmberConfig DEFAULT = new EmberConfig(DEFAULT_NODES,
+                                                              DEFAULT_BASE_PORT,
                                                               DEFAULT_MANAGEMENT_PORT,
                                                               DEFAULT_DASHBOARD_PORT,
                                                               DEFAULT_APP_HTTP_PORT,
@@ -38,7 +59,8 @@ public record EmberConfig(int nodes,
                                                               ObservabilityConfig.DEFAULT,
                                                               DEFAULT_LB_ENABLED,
                                                               DEFAULT_LB_PORT,
-                                                              DEFAULT_CORE_MAX);
+                                                              DEFAULT_CORE_MAX,
+                                                              DEFAULT_START_TIMEOUT_SECONDS);
 
     public static Result<EmberConfig> emberConfig(int nodes, int managementPort, int dashboardPort) {
         return emberConfig(nodes,
@@ -125,12 +147,49 @@ public record EmberConfig(int nodes,
                                                   boolean lbEnabled,
                                                   int lbPort,
                                                   int coreMax) {
+        return emberConfig(nodes,
+                           DEFAULT_BASE_PORT,
+                           managementPort,
+                           dashboardPort,
+                           appHttpPort,
+                           h2Config,
+                           observability,
+                           lbEnabled,
+                           lbPort,
+                           coreMax,
+                           DEFAULT_START_TIMEOUT_SECONDS);
+    }
+
+    /// #1008 / #718 shape 4 — the only overload that takes the QUIC/consensus base port and the
+    /// cluster start budget. Every shorter overload defaults both, so existing callers keep their
+    /// present behaviour.
+    public static Result<EmberConfig> emberConfig(int nodes,
+                                                  int basePort,
+                                                  int managementPort,
+                                                  int dashboardPort,
+                                                  int appHttpPort,
+                                                  EmberH2Config h2Config,
+                                                  ObservabilityConfig observability,
+                                                  boolean lbEnabled,
+                                                  int lbPort,
+                                                  int coreMax,
+                                                  int startTimeoutSeconds) {
         if (nodes < 1) {
             return EmberConfigError.invalidValue("nodes", nodes, "must be at least 1").result();
         }
 
         if (nodes > 100) {
             return EmberConfigError.invalidValue("nodes", nodes, "must be at most 100").result();
+        }
+
+        if (basePort < 1 || basePort > 65535) {
+            return EmberConfigError.invalidValue("base_port", basePort, "must be valid port").result();
+        }
+        // The cluster binds basePort + i for each of `nodes` nodes, so the whole range must be
+        // addressable — a base port that is individually valid can still run the cluster off the
+        // end of the port space.
+        if (basePort + nodes - 1 > 65535) {
+            return EmberConfigError.invalidValue("base_port", basePort, "range for " + nodes + " nodes exceeds 65535").result();
         }
 
         if (managementPort < 1 || managementPort > 65535) {
@@ -152,8 +211,14 @@ public record EmberConfig(int nodes,
         if (lbEnabled && (lbPort < 1 || lbPort > 65535)) {
             return EmberConfigError.invalidValue("lb_port", lbPort, "must be valid port").result();
         }
+        // A non-positive budget would make the await expire before the cluster could possibly form,
+        // turning every start into the timeout this value exists to govern.
+        if (startTimeoutSeconds < 1) {
+            return EmberConfigError.invalidValue("start_timeout_seconds", startTimeoutSeconds, "must be at least 1").result();
+        }
 
         return Result.success(new EmberConfig(nodes,
+                                              basePort,
                                               managementPort,
                                               dashboardPort,
                                               appHttpPort,
@@ -161,7 +226,8 @@ public record EmberConfig(int nodes,
                                               observability,
                                               lbEnabled,
                                               lbPort,
-                                              coreMax));
+                                              coreMax,
+                                              startTimeoutSeconds));
     }
 
     public static Result<EmberConfig> load(Path path) {
@@ -184,6 +250,7 @@ public record EmberConfig(int nodes,
 
     private static Result<EmberConfig> fromDocument(org.pragmatica.config.toml.TomlDocument doc, Option<Path> baseDir) {
         int nodes = doc.getInt("cluster", "nodes").or(DEFAULT_NODES);
+        int basePort = doc.getInt("cluster", "base_port").or(DEFAULT_BASE_PORT);
         int managementPort = doc.getInt("cluster", "management_port").or(DEFAULT_MANAGEMENT_PORT);
         int dashboardPort = doc.getInt("cluster", "dashboard_port").or(DEFAULT_DASHBOARD_PORT);
         int appHttpPort = doc.getInt("cluster", "app_http_port").or(DEFAULT_APP_HTTP_PORT);
@@ -192,8 +259,10 @@ public record EmberConfig(int nodes,
         boolean lbEnabled = doc.getBoolean("lb", "enabled").or(DEFAULT_LB_ENABLED);
         int lbPort = doc.getInt("lb", "port").or(DEFAULT_LB_PORT);
         int coreMax = doc.getInt("cluster", "core_max").or(DEFAULT_CORE_MAX);
+        int startTimeoutSeconds = doc.getInt("cluster", "start_timeout_seconds").or(DEFAULT_START_TIMEOUT_SECONDS);
 
         return emberConfig(nodes,
+                           basePort,
                            managementPort,
                            dashboardPort,
                            appHttpPort,
@@ -201,7 +270,8 @@ public record EmberConfig(int nodes,
                            observability,
                            lbEnabled,
                            lbPort,
-                           coreMax);
+                           coreMax,
+                           startTimeoutSeconds);
     }
 
     private static ObservabilityConfig parseObservabilityConfig(org.pragmatica.config.toml.TomlDocument doc) {

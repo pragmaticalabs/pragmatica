@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -21,6 +22,9 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
 import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.ember.EmberCluster.ClusterStatus;
+import org.pragmatica.aether.ember.EmberCluster.NodeStatus;
+import org.pragmatica.aether.ember.EmberCluster.StartFailure;
 import org.pragmatica.aether.ember.EmberConfig;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
@@ -42,6 +46,7 @@ import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.websocket.WebSocketEndpoint;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -135,6 +140,18 @@ public final class ForgeServer {
         var forgeConfig = loadForgeConfig(startupConfig);
 
         printBanner(forgeConfig, startupConfig);
+        // #1008 — checked before anything is created. A second Forge BINDS these UDP ports happily
+        // (both sockets carry SO_REUSEADDR) and then never reaches quorum, with nothing naming a
+        // port, so there is no bind failure downstream for this to be inherited from.
+        var quicPortCheck = ForgePortPreflight.ensureQuicPortsFree(forgeConfig.basePort(), forgeConfig.nodes());
+
+        quicPortCheck.onFailure(cause -> log.error("{}", cause.message()));
+        if (quicPortCheck.isFailure()) {
+            System.exit(1);
+
+            return;
+        }
+
         var server = new ForgeServer(startupConfig, forgeConfig);
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -207,6 +224,9 @@ public final class ForgeServer {
         log.info("=".repeat(60));
         log.info("  Dashboard: http://localhost:{}", forgeConfig.dashboardPort());
         log.info("  Cluster size: {} nodes", forgeConfig.nodes());
+        log.info("  Cluster QUIC ports: {}-{} (UDP, consensus)",
+                 forgeConfig.basePort(),
+                 forgeConfig.basePort() + forgeConfig.nodes() - 1);
         log.info("  App HTTP port: {} (load target)", forgeConfig.appHttpPort());
         if (forgeConfig.lbEnabled()) {
             log.info("  Load balancer: http://localhost:{}", forgeConfig.lbPort());
@@ -240,7 +260,7 @@ public final class ForgeServer {
     private void initializeComponents(Option<ConfigurationProvider> configProvider) {
         var metricsInstance = ForgeMetrics.forgeMetrics();
         var clusterInstance = EmberCluster.emberCluster(forgeConfig.nodes(),
-                                                        EmberCluster.DEFAULT_BASE_PORT,
+                                                        forgeConfig.basePort(),
                                                         forgeConfig.managementPort(),
                                                         forgeConfig.appHttpPort(),
                                                         "node",
@@ -396,13 +416,96 @@ public final class ForgeServer {
     }
 
     private void startCluster() {
-        log.info("Starting {} node cluster...", forgeConfig.nodes());
-        cluster.onPresent(c -> c.start()
-                                .await(TimeSpan.timeSpan(60).seconds())
-                                .onFailure(cause -> {
-                                               throw new IllegalStateException("Failed to start cluster: " + cause.message());
-                                           }));
+        log.info("Starting {} node cluster (start budget {}s)...",
+                 forgeConfig.nodes(),
+                 forgeConfig.startTimeoutSeconds());
+        cluster.onPresent(this::awaitClusterStart);
         TimeSpan.timeSpan(2).seconds().sleep();
+    }
+
+    private void awaitClusterStart(EmberCluster emberCluster) {
+        emberCluster.start()
+                    .await(TimeSpan.timeSpan(forgeConfig.startTimeoutSeconds()).seconds())
+                    .onFailure(cause -> failClusterStart(emberCluster, cause));
+    }
+
+    private void failClusterStart(EmberCluster emberCluster, Cause cause) {
+        throw new IllegalStateException(clusterStartFailureMessage(forgeConfig,
+                                                                   emberCluster.status(),
+                                                                   nodeFailuresOf(emberCluster),
+                                                                   cause.message()));
+    }
+
+    private static Map<String, String> nodeFailuresOf(EmberCluster emberCluster) {
+        return emberCluster.lastStartFailure()
+                           .map(StartFailure::nodeFailures)
+                           .or(Map.of());
+    }
+
+    /// The message this failure carries (#718 shape 4).
+    ///
+    /// It used to be `"Failed to start cluster: " + cause.message()`, which on the timeout path
+    /// surfaces as `Promise is not resolved within specified timeout` — a sentence naming no phase,
+    /// no peer and no port, and IDENTICAL whether nothing formed at all or four of five nodes were
+    /// consensus-active. The reader of a formation stall learned only that something did not finish.
+    ///
+    /// Every value below is read from the cluster at the deadline; none is inferred. `state` comes
+    /// from [EmberCluster#observedState], which is deliberately named for what it measures — a
+    /// diagnostic that fabricates a field is worse than one that omits it (#727). The message states
+    /// the one thing Forge DID verify (the QUIC range was free at startup, via the #1008 preflight)
+    /// and then lists the candidates it did not probe, without ranking them.
+    static String clusterStartFailureMessage(EmberConfig config,
+                                             ClusterStatus status,
+                                             Map<String, String> nodeFailures,
+                                             String detail) {
+        return "Cluster did not finish forming within the " + config.startTimeoutSeconds()
+             + "s start budget (cluster.start_timeout_seconds): " + detail
+             + " — exiting rather than leaving a cluster that never formed looking healthy. "
+             + "Reached at the deadline: " + activeCount(status)
+             + " of " + config.nodes()
+             + " node(s) consensus-active, leader=" + status.leaderId()
+             + ". " + describeNodes(status) + describeNodeFailures(nodeFailures)
+             + "'consensus-active' is AetherNode.isReady(), NOT a general health verdict. "
+             + "Forge's startup preflight verified UDP " + config.basePort()
+             + "-" + (config.basePort() + config.nodes() - 1)
+             + " was free immediately before this start, so a QUIC port collision at that moment is "
+             + "ruled out. Forge did NOT check, and any of these is consistent with what is reported "
+             + "above: stale per-node state under AETHER_HOME/forge-data (a retry/backpressure storm "
+             + "during formation can consume this whole budget); host load; or a genuine consensus "
+             + "fault. If formation on this host is merely slow, raise cluster.start_timeout_seconds.";
+    }
+
+    private static long activeCount(ClusterStatus status) {
+        return status.nodes()
+                     .stream()
+                     .filter(node -> EmberCluster.STATE_ACTIVE.equals(node.state()))
+                     .count();
+    }
+
+    private static String describeNodes(ClusterStatus status) {
+        return status.nodes()
+                     .isEmpty()
+               ? "No node reached the point of being registered. "
+               : "Per node: " + status.nodes()
+                                      .stream()
+                                      .map(ForgeServer::describeNode)
+                                      .collect(Collectors.joining(", "))
+                + ". ";
+    }
+
+    private static String describeNode(NodeStatus node) {
+        return node.id() + "=" + node.state() + "(quic " + node.port() + ")";
+    }
+
+    private static String describeNodeFailures(Map<String, String> nodeFailures) {
+        return nodeFailures.isEmpty()
+               ? "No node reported a start failure, so the budget expired with the start still in "
+                + "progress rather than with a node erroring out. "
+               : "Node start failures: " + nodeFailures.entrySet()
+                                                       .stream()
+                                                       .map(entry -> entry.getKey() + ": " + entry.getValue())
+                                                       .collect(Collectors.joining("; "))
+                + ". ";
     }
 
     private void startMetricsCollection() {
