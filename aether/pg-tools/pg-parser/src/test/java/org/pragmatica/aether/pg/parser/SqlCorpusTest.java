@@ -76,7 +76,17 @@ class SqlCorpusTest {
 
     /// The walk owns the source space and must stay loud about it. Pruning build output is not a
     /// licence to swallow an unreadable corpus directory: that would shrink the corpus silently,
-    /// which is the failure [CorpusParseTest] exists to catch.
+    /// which is the failure [CorpusParseTest] exists to catch. The mutation this pins is a
+    /// `visitFileFailed` override returning CONTINUE, which reddens this test and leaves the other
+    /// two green.
+    ///
+    /// It ALSO pins the exception type, and that is worth stating because it is a deliberate change
+    /// rather than a preserved property: the old `Files.walk` surfaced a walk failure as
+    /// [java.io.UncheckedIOException], which is a `RuntimeException` and therefore NOT an
+    /// [IOException]. `walkFileTree` throws the [IOException] itself. Both fail the build, so this
+    /// test's red against the pre-#980 code is attributable to the type and not to blindness - hence
+    /// the separate mutation named above, which is what actually validates it as an anti-blindness
+    /// pin. `sqlFiles` already declared `throws Exception`, so no caller changes.
     @Test
     void sqlFiles_propagatesFailure_whenTheSourceTreeCannotBeRead(@TempDir Path root) throws Exception {
         var schema = Files.createDirectories(root.resolve("module/src/main/resources/schema"));
@@ -89,7 +99,10 @@ class SqlCorpusTest {
 
         assertThatThrownBy(() -> SqlCorpus.sqlFiles(root))
                 .as("an unreadable directory in the SOURCE space must still fail the build")
-                .isInstanceOf(IOException.class);
+                .isInstanceOf(IOException.class)
+                // Named, not merely thrown: "it failed" and "it failed for this reason" are
+                // different observations, and only the second one is evidence.
+                .hasMessageContaining("schema");
     }
 
     private static Path write(Path file) throws Exception {
