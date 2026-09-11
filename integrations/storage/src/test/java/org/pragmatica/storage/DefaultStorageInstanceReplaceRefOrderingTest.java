@@ -178,5 +178,11 @@ class DefaultStorageInstanceReplaceRefOrderingTest {
         public void restoreRefs(Map<String, BlockId> refs) {
             delegate.restoreRefs(refs);
         }
+
+        @Override
+        @Contract
+        public void restoreEpoch(long epoch) {
+            delegate.restoreEpoch(epoch);
+        }
     }
 }

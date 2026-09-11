@@ -167,6 +167,29 @@ class SnapshotManagerTest {
             assertThat(allRefs).containsEntry("ref-beta", idB);
         }
 
+        /// #1012: a restored snapshot carries the epoch its file name was derived from. Dropping it
+        /// restarts the sequence near zero on every boot, so the next snapshot is written under
+        /// every retained predecessor and becomes the prune's first victim.
+        @Test
+        void restoreEpoch_raisesEpochToSnapshotValue() {
+            store.restoreEpoch(4_200L);
+
+            assertThat(store.currentEpoch()).isEqualTo(4_200L);
+        }
+
+        /// The epoch is a monotonic mutation counter and the snapshot file-name sequence at once, so
+        /// restoring an older snapshot over a store that has already moved on must not rewind it --
+        /// that would hand out file names the store has already retired.
+        @Test
+        void restoreEpoch_neverLowersEpoch() {
+            var id = blockIdOf(CONTENT_A);
+
+            store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.MEMORY));
+            store.restoreEpoch(0L);
+
+            assertThat(store.currentEpoch()).isEqualTo(1L);
+        }
+
         @Test
         void restoreRefs_replacesExistingMappings() {
             var idA = blockIdOf(CONTENT_A);
@@ -354,6 +377,69 @@ class SnapshotManagerTest {
             freshStore.restoreLifecycles(snap.lifecycles());
 
             assertThat(freshStore.getLifecycle(idA).unwrap().orphanedAt()).isEqualTo(expectedOrphanedAt);
+        }
+
+        /// #1012 reproducer. A restart resets the in-memory metadata epoch to zero, so the first
+        /// snapshot written after the restart carries a LOWER sequence number than every retained
+        /// predecessor. Pruning picks the oldest files by that sequence number -- which is now the
+        /// file `LATEST` was pointed at moments earlier -- and deletes it. The pointer is left
+        /// dangling, so every later boot restores nothing and keeps writing low-sequence snapshots:
+        /// the corruption sustains itself rather than costing one file.
+        @Test
+        void forceSnapshot_afterEpochReset_keepsLatestTargetOnDisk() throws IOException {
+            var config = snapshotConfig(tempDir, 1, 600_000, 2, NODE_ID);
+            var beforeRestart = snapshotManager(store, config);
+
+            for (var i = 0; i < 3; i++) {
+                var content = ("pre-restart-" + i).getBytes(StandardCharsets.UTF_8);
+
+                store.createLifecycle(BlockLifecycle.blockLifecycle(blockIdOf(content), TierLevel.MEMORY));
+                beforeRestart.forceSnapshot();
+            }
+
+            var restartedStore = inMemoryMetadataStore("after-restart");
+            var afterRestart = snapshotManager(restartedStore, config);
+
+            restartedStore.createLifecycle(BlockLifecycle.blockLifecycle(blockIdOf(CONTENT_A), TierLevel.MEMORY));
+            afterRestart.forceSnapshot();
+
+            assertThat(latestTarget(tempDir)).exists();
+            assertThat(afterRestart.restoreFromLatest().isPresent()).isTrue();
+        }
+
+        /// #1012: prune order must come from the epoch the file name ENCODES, not from the name
+        /// itself. `snapshot-%06d.dat` zero-pads to six digits, so lexicographic order agrees with
+        /// numeric order only below epoch 1_000_000; above it `snapshot-1000000.dat` sorts ahead of
+        /// `snapshot-999999.dat` and the NEWEST retained snapshot becomes the first prune victim.
+        /// The LATEST-target guard cannot catch this one -- the mis-ordered file is not the file the
+        /// pointer names -- so this pins the ordering independently of that guard.
+        @Test
+        void forceSnapshot_prunesByEpochOrder_notByFileName() throws IOException {
+            var config = snapshotConfig(tempDir, 1, 600_000, 1, NODE_ID);
+            var older = tempDir.resolve("snapshot-999999.dat");
+            var newer = tempDir.resolve("snapshot-1000000.dat");
+
+            Files.writeString(older, "stale snapshot body");
+            Files.writeString(newer, "stale snapshot body");
+
+            var manager = snapshotManager(store, config);
+
+            store.createLifecycle(BlockLifecycle.blockLifecycle(blockIdOf(CONTENT_A), TierLevel.MEMORY));
+            manager.forceSnapshot();
+
+            // Deliberately says nothing about the LATEST target: that is
+            // forceSnapshot_afterEpochReset_keepsLatestTargetOnDisk's claim, and asserting it here
+            // too would make this test redden for the guard as well as for the ordering, so neither
+            // test could pin its own hunk.
+            assertThat(newer).exists();
+            assertThat(older).doesNotExist();
+        }
+
+        /// Resolves whatever `LATEST` currently names against the snapshot directory, WITHOUT
+        /// asserting the target exists -- a dangling pointer is exactly what the tests above are
+        /// looking for, so the resolution must survive it and let the assertion do the judging.
+        private static Path latestTarget(Path dir) throws IOException {
+            return dir.resolve(Files.readString(dir.resolve("LATEST")).trim());
         }
 
         private long snapshotFileCount(Path dir) throws IOException {
