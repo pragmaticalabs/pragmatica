@@ -211,13 +211,10 @@ public record EmberConfig(int nodes,
         if (lbEnabled && (lbPort < 1 || lbPort > 65535)) {
             return EmberConfigError.invalidValue("lb_port", lbPort, "must be valid port").result();
         }
-
         // A non-positive budget would make the await expire before the cluster could possibly form,
         // turning every start into the timeout this value exists to govern.
         if (startTimeoutSeconds < 1) {
-            return EmberConfigError.invalidValue("start_timeout_seconds",
-                                                 startTimeoutSeconds,
-                                                 "must be at least 1").result();
+            return EmberConfigError.invalidValue("start_timeout_seconds", startTimeoutSeconds, "must be at least 1").result();
         }
 
         return Result.success(new EmberConfig(nodes,

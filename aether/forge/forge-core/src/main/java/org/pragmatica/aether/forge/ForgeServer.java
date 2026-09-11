@@ -461,13 +461,13 @@ public final class ForgeServer {
         return "Cluster did not finish forming within the " + config.startTimeoutSeconds()
              + "s start budget (cluster.start_timeout_seconds): " + detail
              + " — exiting rather than leaving a cluster that never formed looking healthy. "
-             + "Reached at the deadline: " + activeCount(status) + " of " + config.nodes()
-             + " node(s) consensus-active, leader=" + status.leaderId() + ". "
-             + describeNodes(status)
-             + describeNodeFailures(nodeFailures)
+             + "Reached at the deadline: " + activeCount(status)
+             + " of " + config.nodes()
+             + " node(s) consensus-active, leader=" + status.leaderId()
+             + ". " + describeNodes(status) + describeNodeFailures(nodeFailures)
              + "'consensus-active' is AetherNode.isReady(), NOT a general health verdict. "
-             + "Forge's startup preflight verified UDP " + config.basePort() + "-"
-             + (config.basePort() + config.nodes() - 1)
+             + "Forge's startup preflight verified UDP " + config.basePort()
+             + "-" + (config.basePort() + config.nodes() - 1)
              + " was free immediately before this start, so a QUIC port collision at that moment is "
              + "ruled out. Forge did NOT check, and any of these is consistent with what is reported "
              + "above: stale per-node state under AETHER_HOME/forge-data (a retry/backpressure storm "
@@ -483,12 +483,14 @@ public final class ForgeServer {
     }
 
     private static String describeNodes(ClusterStatus status) {
-        return status.nodes().isEmpty()
+        return status.nodes()
+                     .isEmpty()
                ? "No node reached the point of being registered. "
                : "Per node: " + status.nodes()
                                       .stream()
                                       .map(ForgeServer::describeNode)
-                                      .collect(Collectors.joining(", ")) + ". ";
+                                      .collect(Collectors.joining(", "))
+                + ". ";
     }
 
     private static String describeNode(NodeStatus node) {
@@ -498,11 +500,12 @@ public final class ForgeServer {
     private static String describeNodeFailures(Map<String, String> nodeFailures) {
         return nodeFailures.isEmpty()
                ? "No node reported a start failure, so the budget expired with the start still in "
-                 + "progress rather than with a node erroring out. "
+                + "progress rather than with a node erroring out. "
                : "Node start failures: " + nodeFailures.entrySet()
                                                        .stream()
                                                        .map(entry -> entry.getKey() + ": " + entry.getValue())
-                                                       .collect(Collectors.joining("; ")) + ". ";
+                                                       .collect(Collectors.joining("; "))
+                + ". ";
     }
 
     private void startMetricsCollection() {
