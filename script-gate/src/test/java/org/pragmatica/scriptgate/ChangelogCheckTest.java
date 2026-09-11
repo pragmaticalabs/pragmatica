@@ -38,6 +38,7 @@ class ChangelogCheckTest {
     private static final Path SOURCE_FILE = Path.of("core", "src", "main", "java", "Thing.java");
     private static final Path FRAGMENT_FILE = Path.of("changelog.d", "1000-gate-says-what-it-examined.md");
     private static final String SOURCE_TEXT = "class Thing {}\n";
+
     private static final String FRAGMENT_TEXT = """
                                                 ### Fixed (2026-09-11 — #1000: the gate says what it examined)
                                                 - A bullet, because a well-formed fragment requires one.
@@ -56,8 +57,8 @@ class ChangelogCheckTest {
     void setUp(@TempDir Path tempDir) {
         root = tempDir;
         repo = gitFixture(tempDir, SyntheticGitRepo.syntheticGitRepo(tempDir));
-
-        given(ScriptRunner.copyExecutable(ScriptRunner.repoRoot().resolve(SCRIPT), root.resolve(SCRIPT)).mapToUnit());
+        given(ScriptRunner.copyExecutable(ScriptRunner.repoRoot().resolve(SCRIPT),
+                                          root.resolve(SCRIPT)).mapToUnit());
         given(repo.commitAll("add the checker under test"));
     }
 
@@ -67,7 +68,6 @@ class ChangelogCheckTest {
     void changelogCheck_refusesAndSaysItExaminedNothing_whenTheBaseRefDoesNotResolve() {
         given(changeSource());
         given(repo.commitAll("change a source file"));
-
         var execution = executed(runCheck(ABSENT_BASE));
 
         assertThat(execution.exitCode()).as(execution.output()).isEqualTo(COULD_NOT_LOOK);
@@ -95,7 +95,6 @@ class ChangelogCheckTest {
         given(changeSource());
         given(repo.writeFile(FRAGMENT_FILE, FRAGMENT_TEXT));
         given(repo.commitAll("change a source file with its fragment"));
-
         var execution = executed(runCheck("HEAD~1"));
 
         assertThat(execution.exitCode()).as(execution.output()).isZero();
@@ -115,13 +114,10 @@ class ChangelogCheckTest {
     void changelogCheck_refusesWithADistinctCode_whenSourcesChangeWithoutAFragment() {
         given(changeSource());
         given(repo.commitAll("change a source file with no fragment"));
-
         var execution = executed(runCheck("HEAD~1"));
 
         assertThat(execution.exitCode()).as(execution.output()).isEqualTo(LOOKED_AND_REFUSED);
-        assertThat(execution.output()).contains("no well-formed changelog.d/")
-                  // Not the "could not look" refusal: the two must stay distinguishable.
-                  .doesNotContain("EXAMINED NOTHING");
+        assertThat(execution.output()).contains("no well-formed changelog.d/").doesNotContain("EXAMINED NOTHING");
     }
 
     /// Guards the over-correction. An empty diff against a base that DID resolve is a legitimate
@@ -144,6 +140,8 @@ class ChangelogCheckTest {
     private Result<ScriptRunner.Execution> runCheck(String base) {
         return ScriptRunner.run(root,
                                 Map.of("PR_LABELS", ""),
-                                List.of("bash", root.resolve(SCRIPT).toString(), base));
+                                List.of("bash",
+                                        root.resolve(SCRIPT).toString(),
+                                        base));
     }
 }

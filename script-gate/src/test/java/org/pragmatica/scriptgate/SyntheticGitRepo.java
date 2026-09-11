@@ -8,7 +8,8 @@ import java.util.stream.Stream;
 
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
+
+import static org.pragmatica.lang.utils.Causes.cause;
 
 
 /// A minimal but REAL git repository, because `scripts/changelog-check.sh` calls `git rev-parse` and
@@ -26,10 +27,14 @@ record SyntheticGitRepo(Path root) {
     /// Identity and signing are pinned per-invocation rather than written into the fixture's config,
     /// so the host's own git configuration cannot decide whether a commit succeeds.
     private static final List<String> GIT = List.of("git",
-                                                    "-c", "user.name=script-gate",
-                                                    "-c", "user.email=script-gate@example.invalid",
-                                                    "-c", "commit.gpgsign=false",
-                                                    "-c", "init.defaultBranch=main");
+                                                    "-c",
+                                                    "user.name=script-gate",
+                                                    "-c",
+                                                    "user.email=script-gate@example.invalid",
+                                                    "-c",
+                                                    "commit.gpgsign=false",
+                                                    "-c",
+                                                    "init.defaultBranch=main");
 
     static Result<SyntheticGitRepo> syntheticGitRepo(Path root) {
         var repo = new SyntheticGitRepo(root);
@@ -39,16 +44,16 @@ record SyntheticGitRepo(Path root) {
     }
 
     private Result<Unit> initialise() {
-        return git(List.of("init", "--quiet"))
-                .flatMap(ignored -> writeFile(Path.of("README.md"), "# changelog-check fixture\n"))
-                .flatMap(ignored -> commitAll("baseline"));
+        return git(List.of("init", "--quiet")).flatMap(ignored -> writeFile(Path.of("README.md"),
+                                                                            "# changelog-check fixture\n"))
+                  .flatMap(ignored -> commitAll("baseline"));
     }
 
     Result<Unit> writeFile(Path relative, String content) {
         var target = root.resolve(relative);
 
         return createParent(target).flatMap(ignored -> write(target, content))
-                                   .mapToUnit();
+                           .mapToUnit();
     }
 
     Result<Unit> commitAll(String message) {
@@ -56,12 +61,16 @@ record SyntheticGitRepo(Path root) {
     }
 
     private Result<Unit> git(List<String> arguments) {
-        return ScriptRunner.run(root, Map.of(), command(arguments))
+        return ScriptRunner.run(root,
+                                Map.of(),
+                                command(arguments))
                            .flatMap(SyntheticGitRepo::requireSuccess);
     }
 
     private static List<String> command(List<String> arguments) {
-        return Stream.concat(GIT.stream(), arguments.stream()).toList();
+        return Stream.concat(GIT.stream(),
+                             arguments.stream())
+                     .toList();
     }
 
     /// A git step that did not work must fail the TEST, never be mistaken for the script behaving
@@ -69,7 +78,7 @@ record SyntheticGitRepo(Path root) {
     private static Result<Unit> requireSuccess(ScriptRunner.Execution execution) {
         return execution.exitCode() == 0
                ? Result.unitResult()
-               : Causes.cause("git exited " + execution.exitCode() + ": " + execution.output()).result();
+               : cause("git exited " + execution.exitCode() + ": " + execution.output()).result();
     }
 
     private static Result<Path> createParent(Path target) {
