@@ -1315,6 +1315,61 @@ class ClusterDestroyCommandTest {
                         () -> "nothing was skipped, so the note must be absent; got:\n" + stdout());
         }
 
+        /// **Wiring, not behaviour** — and it is a separate test for a reason. Every assertion above drives
+        /// `siblingEndpoints` / `fetchNodeIds` directly, so deleting the CALL to them from
+        /// [ClusterDestroyCommand#performDestruction] would restore the whole defect with all of them still
+        /// green. This one enters through `performDestruction` and asserts on the hosts the requests
+        /// carried: the siblings must be derived from the ledger and threaded into the enumeration.
+        @Test
+        void performDestruction_derivesSiblingsFromTheLedgerAndUsesThem_whenTheRecordedEndpointIsDead() {
+            var attempted = new ArrayList<String>();
+            var originalRemover = ClusterDestroyCommand.registryRemover;
+
+            ClusterHttpClient.HTTP_OPS_REF.set(new HostSelectiveHttpOperations("10.0.0.3", "[]", attempted));
+            ClusterDestroyCommand.stateLoader = name -> Result.success(some(stateWithAddresses("10.255.255.1",
+                                                                                               "10.0.0.3")));
+            ClusterDestroyCommand.vmSweeper = (state, name) -> Result.unitResult();
+            ClusterDestroyCommand.registryRemover = (registry, name) -> Result.success(registry);
+            try {
+                var exitCode = new ClusterDestroyCommand().performDestruction(registryWithNoEntries(),
+                                                                             CLUSTER_NAME,
+                                                                             TARGET_ENDPOINT);
+
+                assertEquals(List.of("10.255.255.1", "10.0.0.3"), attempted,
+                             "the dead recorded endpoint is tried first, then the sibling the LEDGER supplied — "
+                             + "if this reads as one host, performDestruction is not passing the siblings on");
+                exitCode.onFailure(cause -> fail("the destroy must produce a summary: " + cause.message()))
+                        .onSuccess(code -> assertEquals(ExitCode.SUCCESS, (int) code,
+                                                        "a cluster reachable through a sibling is NOT an "
+                                                        + "unreachable cluster, so #998 must not refuse it"));
+                assertFalse(stderr().contains("REFUSING to destroy"),
+                            () -> "the refusal is for a cluster that cannot be reached at all; got:\n" + stderr());
+            } finally {
+                ClusterDestroyCommand.registryRemover = originalRemover;
+            }
+        }
+
+        /// The same wiring check for the trust half, and it needs no network: the NO-SECRET branch leaves the
+        /// stubbed client in place, so the note reaching stderr proves `performDestruction` called
+        /// `prepareClusterTrust` before enumerating. Without this, deleting that call would leave every
+        /// trust test above green.
+        @Test
+        void performDestruction_prepareTheTrustAnchor_beforeEnumerating() {
+            var attempted = new ArrayList<String>();
+
+            ClusterHttpClient.HTTP_OPS_REF.set(new HostSelectiveHttpOperations("no-host-answers", "[]", attempted));
+            ClusterDestroyCommand.stateLoader = name -> Result.success(some(stateWithVms(1)));
+
+            new ClusterDestroyCommand().performDestruction(registryWithNoEntries(), CLUSTER_NAME, TARGET_ENDPOINT);
+
+            assertTrue(stderr().contains("no cluster_secret is recorded"),
+                       () -> "performDestruction must take the trust decision for its https target; got:\n"
+                             + stderr());
+            assertTrue(stderr().indexOf("no cluster_secret is recorded") < stderr().indexOf("could not list cluster nodes"),
+                       () -> "and it must take it BEFORE the request it governs — an anchor installed after the "
+                             + "handshake governs nothing; got:\n" + stderr());
+        }
+
         private static ClusterRegistry registryWithNoEntries() {
             return ClusterRegistry.clusterRegistry(Path.of("unused-registry.toml"), none(), List.of());
         }
