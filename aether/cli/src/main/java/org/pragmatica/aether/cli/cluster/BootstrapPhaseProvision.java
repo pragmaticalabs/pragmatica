@@ -124,18 +124,49 @@ sealed interface BootstrapPhaseProvision {
     /// Takes the cluster name rather than the whole context so the persist is exercisable on its own:
     /// the context carries nothing else this needs, and a seam that demands a full `BootstrapContext`
     /// is a seam no test drives.
+    ///
+    /// #994 verification finding SF-1 — reads through [BootstrapStatePersistence#read] and CONSUMES the
+    /// save, because every step here used to fail silently. The real incident artifact recorded
+    /// `sources: []`, which is precisely this handle missing, and teardown without it cannot re-derive the
+    /// provisioning token at all. A silent no-op costs the operator that credential mapping with nothing
+    /// in the transcript to say so.
     @Contract
     static void persistCleanupHandle(ClusterName clusterName,
                                      String rawToml,
                                      SourceName sourceName,
                                      SourceProfile source) {
-        BootstrapStatePersistence.load(clusterName)
-                                 .map(state -> withSourceHandle(state,
-                                                                rawToml,
-                                                                sourceName,
-                                                                source,
-                                                                resolveProviderName(source)))
-                                 .onPresent(BootstrapStatePersistence::save);
+        var _ = BootstrapStatePersistence.read(clusterName)
+                                         .onFailure(cause -> warnHandleNotPersisted(clusterName,
+                                                                                    sourceName,
+                                                                                    "the persisted ledger is unreadable: " + cause.message()))
+                                         .or(Option.empty())
+                                         .onEmpty(() -> warnHandleNotPersisted(clusterName,
+                                                                               sourceName,
+                                                                               "no bootstrap state is persisted yet"))
+                                         .map(state -> withSourceHandle(state,
+                                                                        rawToml,
+                                                                        sourceName,
+                                                                        source,
+                                                                        resolveProviderName(source)))
+                                         .onPresent(state -> saveOrWarnHandle(state, clusterName, sourceName));
+    }
+
+    @Contract
+    private static void saveOrWarnHandle(BootstrapState state, ClusterName clusterName, SourceName sourceName) {
+        var _ = BootstrapStatePersistence.save(state)
+                                         .onFailure(cause -> warnHandleNotPersisted(clusterName,
+                                                                                    sourceName,
+                                                                                    "the ledger write failed: " + cause.message()));
+    }
+
+    @Contract
+    private static void warnHandleNotPersisted(ClusterName clusterName, SourceName sourceName, String reason) {
+        System.err.printf("  WARN: the cleanup handle for source '%s' was NOT persisted — %s.%n", sourceName, reason);
+        System.err.printf("  Teardown of cluster '%s' will have no credential mapping for this source and may fall"
+                         + " back to a raw provider env var naming a different account. Reap with"
+                         + " 'tools/cloud-reaper.sh --cluster %s --destroy' if bootstrap fails.%n",
+                          clusterName,
+                          clusterName);
     }
 
     /// #994 — appends the VM to the persisted cleanup ledger as soon as the provider reports it created,
@@ -146,18 +177,56 @@ sealed interface BootstrapPhaseProvision {
     /// Duplicate-free on the success path: [#buildUpdatedState] rebuilds the resource list from the
     /// pre-phase in-memory state and [ClusterBootstrapOrchestrator] saves THAT, replacing these
     /// incremental records with an equal set rather than appending to them.
+    ///
+    /// #994 verification finding SF-1 — **every way this can fail to record is now printed WITH the server
+    /// id.** It was a silent no-op when the ledger was absent (which is what an unchecked pre-phase save
+    /// leaves behind), a silent no-op when the file was torn, and it discarded the save's `Result`. Each
+    /// of those drops a server that is already billing, and the recovery an operator needs is exactly the
+    /// id — so the id goes to stderr even though the ledger cannot hold it. It does NOT fail the
+    /// provisioning: the VM exists either way, aborting does not un-bill it, and a hard failure here would
+    /// turn a full disk into a dead bootstrap.
     @Contract
     static void recordProvisionedVm(ClusterName clusterName,
                                     String providerName,
                                     SourceName sourceName,
                                     NodeRole role,
                                     ProvisionedNode node) {
-        BootstrapStatePersistence.load(clusterName)
-                                 .map(state -> state.withResource(CreatedResource.ProvisionedVm.provisionedVm(providerName,
-                                                                                                              node.serverId(),
-                                                                                                              sourceName.value(),
-                                                                                                              role.value())))
-                                 .onPresent(BootstrapStatePersistence::save);
+        var _ = BootstrapStatePersistence.read(clusterName)
+                                         .onFailure(cause -> warnVmNotRecorded(node,
+                                                                               clusterName,
+                                                                               "the persisted ledger is unreadable: " + cause.message()))
+                                         .or(Option.empty())
+                                         .onEmpty(() -> warnVmNotRecorded(node,
+                                                                          clusterName,
+                                                                          "no bootstrap state is persisted for this cluster"))
+                                         .map(state -> state.withResource(CreatedResource.ProvisionedVm.provisionedVm(providerName,
+                                                                                                                     node.serverId(),
+                                                                                                                     sourceName.value(),
+                                                                                                                     role.value())))
+                                         .onPresent(state -> saveOrWarnVm(state, node, clusterName));
+    }
+
+    @Contract
+    private static void saveOrWarnVm(BootstrapState state, ProvisionedNode node, ClusterName clusterName) {
+        var _ = BootstrapStatePersistence.save(state)
+                                         .onFailure(cause -> warnVmNotRecorded(node,
+                                                                               clusterName,
+                                                                               "the ledger write failed: " + cause.message()));
+    }
+
+    /// The id is the whole point of this message. With the ledger broken it is the only place the server
+    /// is named at all, so it has to be printed rather than logged at a level nobody reads — #994's cost
+    /// was two `ccx23` servers whose ids had to be reconstructed by hand from `hcloud server list`.
+    @Contract
+    private static void warnVmNotRecorded(ProvisionedNode node, ClusterName clusterName, String reason) {
+        System.err.printf("  WARN: VM %s (node %s) was NOT recorded in the cleanup ledger — %s.%n",
+                          node.serverId(),
+                          node.nodeId(),
+                          reason);
+        System.err.printf("  This server IS PAID and 'aether cluster destroy' will not find it. Remove it with"
+                         + " 'tools/cloud-reaper.sh --cluster %s --destroy', or directly by id %s.%n",
+                          clusterName,
+                          node.serverId());
     }
 
     /// #994 — Aspects: wraps a per-node provisioner so every node it creates is recorded BEFORE the
@@ -433,8 +502,16 @@ sealed interface BootstrapPhaseProvision {
         return CloudProviderSupport.provisionVia(compute, group).await();
     }
 
+    /// #994 verification finding SF-2 — package-visible so a test can drive **the real call site**, not
+    /// merely the composition it calls. The restructure into [#provisionAndRecordRoleGroup] closed the
+    /// original gap one level down and opened it again here: with only that function pinned, replacing the
+    /// call below with a direct [#rotateZonesForRoleGroup] — i.e. deleting the entire recording behaviour —
+    /// left all 724 `aether/cli` tests green (measured, probe V1). #994 **was** an unwired mechanism:
+    /// `buildUpdatedState` existed and worked and simply never ran on the failure path. A regression that
+    /// re-unwires recording is the same defect class, so the wiring itself needs a pin rather than an
+    /// argument that the delegation "carries no logic".
     @SuppressWarnings("JBCT-EX-01")
-    private static Result<List<ProvisionedNode>> provisionCloudRoleGroup(ComputeProvider compute,
+    static Result<List<ProvisionedNode>> provisionCloudRoleGroup(ComputeProvider compute,
                                                                          BootstrapContext ctx,
                                                                          SourceName sourceName,
                                                                          NodeRole role,

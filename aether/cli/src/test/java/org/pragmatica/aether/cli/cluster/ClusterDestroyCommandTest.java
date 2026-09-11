@@ -56,7 +56,7 @@ class ClusterDestroyCommandTest {
 
     private static final ClusterName CLUSTER_NAME = clusterName("test-cluster").unwrap();
 
-    private Function<ClusterName, Option<BootstrapState>> originalLoader;
+    private Function<ClusterName, Result<Option<BootstrapState>>> originalLoader;
 
     private Function<BootstrapState, Result<Unit>> originalCleaner;
 
@@ -105,7 +105,7 @@ class ClusterDestroyCommandTest {
         @Test
         void destroy_invokesBootstrapCleanup_whenStateFileExists() {
             var captured = new AtomicReference<BootstrapState>();
-            ClusterDestroyCommand.stateLoader = name -> some(stateWithVms(2));
+            ClusterDestroyCommand.stateLoader = name -> Result.success(some(stateWithVms(2)));
             ClusterDestroyCommand.resourceCleaner = state -> {
                 captured.set(state);
                 return Result.unitResult();
@@ -121,7 +121,7 @@ class ClusterDestroyCommandTest {
         @Test
         void destroy_skipsCleanup_whenStateFileMissing() {
             var calls = new AtomicInteger(0);
-            ClusterDestroyCommand.stateLoader = name -> none();
+            ClusterDestroyCommand.stateLoader = name -> Result.success(none());
             ClusterDestroyCommand.resourceCleaner = state -> {
                 calls.incrementAndGet();
                 return Result.unitResult();
@@ -137,7 +137,7 @@ class ClusterDestroyCommandTest {
         @Test
         void destroy_skipsCleanup_whenBootstrapStateHasNoResources() {
             var calls = new AtomicInteger(0);
-            ClusterDestroyCommand.stateLoader = name -> some(emptyState());
+            ClusterDestroyCommand.stateLoader = name -> Result.success(some(emptyState()));
             ClusterDestroyCommand.resourceCleaner = state -> {
                 calls.incrementAndGet();
                 return Result.unitResult();
@@ -156,7 +156,7 @@ class ClusterDestroyCommandTest {
             var cleanerCalls = new AtomicInteger(0);
             ClusterDestroyCommand.stateLoader = name -> {
                 loaderCalls.incrementAndGet();
-                return some(stateWithVms(3));
+                return Result.success(some(stateWithVms(3)));
             };
             ClusterDestroyCommand.resourceCleaner = state -> {
                 cleanerCalls.incrementAndGet();
@@ -174,7 +174,7 @@ class ClusterDestroyCommandTest {
 
         @Test
         void destroy_partialCleanupFailure_returnsFalseButDoesNotThrow() {
-            ClusterDestroyCommand.stateLoader = name -> some(stateWithVms(1));
+            ClusterDestroyCommand.stateLoader = name -> Result.success(some(stateWithVms(1)));
             ClusterDestroyCommand.resourceCleaner = state -> new TestCause("api error").result();
             var command = new ClusterDestroyCommand();
 
@@ -188,7 +188,7 @@ class ClusterDestroyCommandTest {
             var capturedName = new AtomicReference<ClusterName>();
             ClusterDestroyCommand.stateLoader = name -> {
                 capturedName.set(name);
-                return none();
+                return Result.success(none());
             };
             ClusterDestroyCommand.resourceCleaner = state -> Result.unitResult();
             var command = new ClusterDestroyCommand();
@@ -202,7 +202,7 @@ class ClusterDestroyCommandTest {
         @Test
         void destroy_invokesSshKeySweeper_afterStateCleanup() {
             var sweepClusterName = new AtomicReference<ClusterName>();
-            ClusterDestroyCommand.stateLoader = name -> some(stateWithVms(2));
+            ClusterDestroyCommand.stateLoader = name -> Result.success(some(stateWithVms(2)));
             ClusterDestroyCommand.resourceCleaner = state -> Result.unitResult();
             ClusterDestroyCommand.sshKeySweeper = (state, clusterName) -> {
                 sweepClusterName.set(clusterName);
@@ -219,7 +219,7 @@ class ClusterDestroyCommandTest {
 
         @Test
         void destroy_sweeperFailure_returnsFalseButDoesNotThrow() {
-            ClusterDestroyCommand.stateLoader = name -> some(stateWithVms(1));
+            ClusterDestroyCommand.stateLoader = name -> Result.success(some(stateWithVms(1)));
             ClusterDestroyCommand.resourceCleaner = state -> Result.unitResult();
             ClusterDestroyCommand.sshKeySweeper = (state, clusterName) -> new TestCause("sweep api error").result();
             var command = new ClusterDestroyCommand();
@@ -232,7 +232,7 @@ class ClusterDestroyCommandTest {
         @Test
         void destroy_keepResourcesFlag_skipsSweep() {
             var sweepCalls = new AtomicInteger(0);
-            ClusterDestroyCommand.stateLoader = name -> some(stateWithVms(3));
+            ClusterDestroyCommand.stateLoader = name -> Result.success(some(stateWithVms(3)));
             ClusterDestroyCommand.resourceCleaner = state -> Result.unitResult();
             ClusterDestroyCommand.sshKeySweeper = (state, clusterName) -> {
                 sweepCalls.incrementAndGet();
@@ -313,7 +313,7 @@ class ClusterDestroyCommandTest {
             var loaderCalls = new AtomicInteger(0);
             ClusterDestroyCommand.stateLoader = name -> {
                 loaderCalls.incrementAndGet();
-                return some(stateWithVms(2));
+                return Result.success(some(stateWithVms(2)));
             };
             ClusterDestroyCommand.resourceCleaner = state -> Result.unitResult();
 
@@ -331,7 +331,7 @@ class ClusterDestroyCommandTest {
             var capturedName = new AtomicReference<ClusterName>();
             ClusterDestroyCommand.stateLoader = name -> {
                 capturedName.set(name);
-                return none();
+                return Result.success(none());
             };
             ClusterDestroyCommand.resourceCleaner = state -> Result.unitResult();
 
@@ -599,10 +599,14 @@ class ClusterDestroyCommandTest {
                               + "signal rather than an always-on line; got:\n" + stderr());
         }
 
-        /// #995 expectation 3 — "if it can take minutes, say so before the wait begins", and say it with the
-        /// figures that actually bound the waits rather than a hand-written guess.
+        /// #994 verification finding SF-3 — **renamed.** This was called
+        /// `drainAllNodes_announcesTheDrainPhaseAndItsCeiling` and asserted the phase line and
+        /// "Nothing to drain"; it passed an EMPTY node list, so it never entered the branch that prints a
+        /// ceiling at all. The name claimed coverage the body did not have, which is worse than no test,
+        /// because a reader auditing #995's deliverables would tick the ceiling off and move on. The ceiling
+        /// is pinned by the sibling below, against a non-empty list.
         @Test
-        void drainAllNodes_announcesTheDrainPhaseAndItsCeiling() {
+        void drainAllNodes_announcesThePhase_whenThereIsNothingToDrain() {
             new ClusterDestroyCommand().drainAllNodes(List.of());
 
             assertTrue(stdout().contains("[Phase 2/5: DRAIN_NODES]"),
@@ -610,6 +614,34 @@ class ClusterDestroyCommandTest {
                              + "ambiguous; got:\n" + stdout());
             assertTrue(stdout().contains("Nothing to drain"),
                        () -> "an empty node list is a statement, not silence; got:\n" + stdout());
+        }
+
+        /// #995 expectation 2, actually exercised: "if it can take minutes, say so before the wait begins",
+        /// with the figures that bound the wait. Only the NON-EMPTY branch prints a ceiling, and no test
+        /// entered it — so stripping the per-node ceiling line left all 724 tests green (measured, probe V9).
+        ///
+        /// The stubbed drain request fails immediately, so the announcement is asserted without waiting out
+        /// the real 120 seconds; the ceiling is read from the enforcing constants rather than restated, so the
+        /// announcement cannot drift from the code.
+        @Test
+        void drainAllNodes_announcesThePerNodeCeilingAndPollInterval_whenThereAreNodesToDrain() {
+            var results = new ClusterDestroyCommand().drainAllNodes(List.of("core-0"));
+
+            assertEquals(1, results.size(), "precondition: one node was processed");
+            assertFalse(results.getFirst().success(),
+                        "precondition: the stubbed drain POST fails, so the 120s poll loop is never entered");
+            assertTrue(stdout().contains("Draining 1 node(s), up to " + ClusterDestroyCommand.DRAIN_TIMEOUT_SECONDS + "s each"),
+                       () -> "the phase line must name the per-node budget and the worst-case total; got:\n" + stdout());
+            assertTrue(stdout().contains("Draining node core-0 (waiting up to "
+                                         + ClusterDestroyCommand.DRAIN_TIMEOUT_SECONDS
+                                         + "s for DECOMMISSIONED, polling every "
+                                         + ClusterDestroyCommand.DRAIN_POLL_INTERVAL_MS
+                                         + "ms)"),
+                       () -> "and each node must name its own ceiling BEFORE its wait begins — this is the line "
+                             + "that turns a two-minute silence into a stated wait; got:\n" + stdout());
+            assertFalse(stdout().contains("Nothing to drain"),
+                        () -> "the empty-list wording must not appear for a non-empty list, or the two branches "
+                              + "are indistinguishable; got:\n" + stdout());
         }
 
         @Test
@@ -624,7 +656,7 @@ class ClusterDestroyCommandTest {
         /// budget. It must say so before it starts, and name the retry budget from the constants that bound it.
         @Test
         void cleanupCloudResources_announcesThePhaseAndTheFirewallRetryBudget() {
-            ClusterDestroyCommand.stateLoader = name -> none();
+            ClusterDestroyCommand.stateLoader = name -> Result.success(none());
 
             new ClusterDestroyCommand().cleanupCloudResources(CLUSTER_NAME);
 
@@ -646,6 +678,104 @@ class ClusterDestroyCommandTest {
             assertTrue(stdout().contains("Keeping the registry entry"),
                        () -> "the reason the entry survives is the operator's handle on billing resources — "
                              + "saying it beside the decision is the point; got:\n" + stdout());
+        }
+
+        /// #994 verification finding SF-3 — **no test reached `performDestruction` at all.** The three phase
+        /// methods were each driven individually and every test entering via `call()` returned early, so
+        /// deleting `announceDestroyPlan(clusterName)` — #995's entire "say so before the wait begins"
+        /// deliverable — left all 724 tests green (measured, probe V3), and the PHASE ORDER was unpinned for
+        /// the same reason.
+        ///
+        /// Driven end to end with the failing HTTP stub (so enumeration returns nothing and the drain and
+        /// shutdown loops have nothing to wait for), no bootstrap state (so cleanup is a no-op) and a
+        /// no-op registry remover. What is left is exactly the observable sequence an operator reads.
+        @Test
+        void performDestruction_announcesThePlanFirst_thenRunsAllFivePhasesInOrder() {
+            ClusterDestroyCommand.stateLoader = name -> Result.success(none());
+            var originalRemover = ClusterDestroyCommand.registryRemover;
+
+            ClusterDestroyCommand.registryRemover = (registry, name) -> Result.success(registry);
+            try {
+                var exitCode = new ClusterDestroyCommand().performDestruction(registryWithNoEntries(), CLUSTER_NAME);
+
+                exitCode.onFailure(cause -> fail("destroy must produce a summary: " + cause.message()))
+                        .onSuccess(code -> assertEquals(ExitCode.SUCCESS, (int) code,
+                                                        "nothing failed, so the command must exit 0"));
+                assertEquals(0,
+                             stdout().indexOf("Destroying cluster '" + CLUSTER_NAME + "' in 5 phases"),
+                             () -> "the plan must be the FIRST thing printed — announced after the first wait it "
+                                   + "cannot be read during it; got:\n" + stdout());
+                assertTrue(stdout().contains("This can take minutes"),
+                           () -> "#995 expectation 3: say up front that it can take minutes; got:\n" + stdout());
+                assertTrue(stdout().contains("node enumeration waits up to "
+                                             + ClusterHttpClient.REQUEST_TIMEOUT.get().toSeconds() + "s"),
+                           () -> "with the enumeration ceiling read from the timeout in force; got:\n" + stdout());
+                assertTrue(stdout().contains("each node's drain up to " + ClusterDestroyCommand.DRAIN_TIMEOUT_SECONDS + "s"),
+                           () -> "and the drain ceiling read from the constant that enforces it; got:\n" + stdout());
+                assertPhasesInOrder();
+            } finally {
+                ClusterDestroyCommand.registryRemover = originalRemover;
+            }
+        }
+
+        /// Order, not merely presence: the announced plan describes a sequence, and a destroy that deleted
+        /// cloud resources before draining would print the same five lines.
+        private void assertPhasesInOrder() {
+            var transcript = stdout();
+            var phases = List.of("[Phase 1/5: ENUMERATE_NODES]",
+                                 "[Phase 2/5: DRAIN_NODES]",
+                                 "[Phase 3/5: SHUTDOWN_NODES]",
+                                 "[Phase 4/5: CLOUD_CLEANUP]",
+                                 "[Phase 5/5: REGISTRY]");
+            var previous = -1;
+
+            for (var phase : phases) {
+                var at = transcript.indexOf(phase);
+
+                assertTrue(at > previous,
+                           () -> "expected " + phase + " after the previous phase, in:\n" + transcript);
+                previous = at;
+            }
+        }
+
+        private static ClusterRegistry registryWithNoEntries() {
+            return ClusterRegistry.clusterRegistry(Path.of("unused-registry.toml"), none(), List.of());
+        }
+
+        /// #994 verification finding SF-1 — **an unreadable ledger is not an empty cluster.** Under the old
+        /// `Option`-valued seam a torn `bootstrap-state.json` arrived as empty, which this method read as "no
+        /// bootstrap state — skipping resource cleanup", returned `true` for, and which then removed the
+        /// registry entry and exited 0 while every server the ledger named kept billing. The torn file is
+        /// reachable by exactly the failure both incidents ended in: the operator killing bootstrap mid-write.
+        @Test
+        void cleanupCloudResources_refusesToReportDone_whenTheLedgerIsPresentButUnreadable() {
+            ClusterDestroyCommand.stateLoader = name -> new TestCause("state file is not valid JSON").result();
+
+            var ok = new ClusterDestroyCommand().cleanupCloudResources(CLUSTER_NAME);
+
+            assertFalse(ok,
+                        "a ledger that cannot be read names no resources, so cleanup CANNOT have succeeded — "
+                        + "reporting true removes the registry entry, the operator's last handle on billing VMs");
+            assertTrue(stderr().contains("REFUSING"),
+                       () -> "and the refusal must be stated; got:\n" + stderr());
+            assertTrue(stderr().contains("cloud-reaper.sh"),
+                       () -> "with the recovery action; got:\n" + stderr());
+        }
+
+        /// Positive control, and it is the load-bearing arm: an ABSENT ledger must still be the cheerful path
+        /// — nothing was created, so there is nothing to reap and `destroy` should finish. Without this,
+        /// "returns false" would also be satisfied by a method that refuses whenever there is no state.
+        @Test
+        void cleanupCloudResources_reportsDone_whenThereIsNoLedgerAtAll() {
+            ClusterDestroyCommand.stateLoader = name -> Result.success(none());
+
+            var ok = new ClusterDestroyCommand().cleanupCloudResources(CLUSTER_NAME);
+
+            assertTrue(ok, "no state file means nothing was created — destroy has nothing to reap and must finish");
+            assertTrue(stdout().contains("No bootstrap state"),
+                       () -> "and it says which of the two cases this is; got:\n" + stdout());
+            assertFalse(stderr().contains("REFUSING"),
+                        () -> "absent is not unreadable — conflating them is the defect; got:\n" + stderr());
         }
     }
 

@@ -37,6 +37,12 @@ sealed interface BootstrapCleanup {
     /// Provider identity for Hetzner cloud (matches `SourceCleanupHandle.provider()` and `CreatedResource.provider()`).
     String HETZNER_PROVIDER = "hetzner";
 
+    /// #994 verification finding SF-4 — the `role` component of a label-swept VM's synthesized
+    /// [CreatedResource.ProvisionedVm]. A swept VM is by definition one the ledger never recorded, so its
+    /// role is genuinely unknown; this marks the absence instead of guessing a plausible value that an
+    /// operator would read as recorded fact.
+    String SWEPT_ROLE = "label-swept";
+
     /// RFC-0016 W4 (#439) — the injectable seams cleanup uses to resolve teardown credentials, so a
     /// timeout-triggered cleanup reaps VMs *and* ssh keys with the SAME credential the operator used to
     /// provision (re-derived from the persisted `SourceCleanupHandle`), never a hard-coded `HCLOUD_TOKEN`.
@@ -213,17 +219,20 @@ sealed interface BootstrapCleanup {
                           + "' (prefix '" + prefix
                           + "')...");
 
-        return hetznerClientFromHandle(handle, resolvers).flatMap(client -> sweepWithClient(client, prefix));
+        return hetznerClientFromHandle(handle, resolvers).flatMap(client -> sweepWithClient(client, prefix, clusterName));
     }
 
     @SuppressWarnings("JBCT-EX-01")
-    private static Result<Unit> sweepWithClient(HetznerClient client, String prefix) {
+    private static Result<Unit> sweepWithClient(HetznerClient client, String prefix, ClusterName clusterName) {
         return client.listSshKeys()
                      .await()
-                     .flatMap(keys -> deleteMatchingKeys(client, keys, prefix));
+                     .flatMap(keys -> deleteMatchingKeys(client, keys, prefix, clusterName));
     }
 
-    private static Result<Unit> deleteMatchingKeys(HetznerClient client, List<SshKey> keys, String prefix) {
+    private static Result<Unit> deleteMatchingKeys(HetznerClient client,
+                                                   List<SshKey> keys,
+                                                   String prefix,
+                                                   ClusterName clusterName) {
         var matches = keys.stream().filter(key -> keyNameMatches(key, prefix)).toList();
 
         if (matches.isEmpty()) {
@@ -234,7 +243,7 @@ sealed interface BootstrapCleanup {
 
         var failures = collectSweepFailures(client, matches);
 
-        return finishSweep(matches.size(), failures);
+        return finishSweep(clusterName, matches.size(), failures);
     }
 
     private static boolean keyNameMatches(SshKey key, String prefix) {
@@ -242,15 +251,23 @@ sealed interface BootstrapCleanup {
                                         .startsWith(prefix);
     }
 
-    private static List<String> collectSweepFailures(HetznerClient client, List<SshKey> matches) {
-        var failures = new ArrayList<String>();
+    /// #994 verification finding SF-4 — failures are [ReapFailure]s over a real [CreatedResource], not
+    /// joined strings, so the key sweep enumerates what it left behind exactly as the ledger-driven cleanup
+    /// does. [CreatedResource.SshKeyResource] is an exact fit for a swept key: provider, id and name are all
+    /// known, so nothing here is synthesized or approximated.
+    private static List<ReapFailure> collectSweepFailures(HetznerClient client, List<SshKey> matches) {
+        var failures = new ArrayList<ReapFailure>();
 
         for (var key : matches) {
             var result = deleteSweptKey(client, key);
-            var _ = result.onFailure(cause -> failures.add(key.name() + " (id=" + key.id() + "): " + cause.message()));
+            var _ = result.onFailure(cause -> failures.add(new ReapFailure(sweptKeyResource(key), cause)));
         }
 
         return List.copyOf(failures);
+    }
+
+    private static CreatedResource sweptKeyResource(SshKey key) {
+        return CreatedResource.SshKeyResource.sshKeyResource(HETZNER_PROVIDER, key.id(), key.name());
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -355,17 +372,21 @@ sealed interface BootstrapCleanup {
 
         System.out.println("Sweeping cluster-labelled VMs (selector '" + selector + "')...");
 
-        return hetznerClientFromHandle(handle, resolvers).flatMap(client -> sweepVmsWithClient(client, selector));
+        return hetznerClientFromHandle(handle, resolvers).flatMap(client -> sweepVmsWithClient(client, selector, clusterName));
     }
 
     @SuppressWarnings("JBCT-EX-01")
-    private static Result<Unit> sweepVmsWithClient(HetznerClient client, String selector) {
+    private static Result<Unit> sweepVmsWithClient(HetznerClient client, String selector, ClusterName clusterName) {
         return client.listServers(selector)
                      .await()
-                     .flatMap(servers -> deleteSweptServers(client, servers));
+                     .flatMap(servers -> deleteSweptServers(client, servers, clusterName));
     }
 
-    private static Result<Unit> deleteSweptServers(HetznerClient client, List<Server> servers) {
+    /// #994 verification finding SF-4 — failures are [ReapFailure]s, so the VM sweep's leftovers are
+    /// enumerated by type and id like the ledger-driven cleanup's. This is the sharper half of that finding:
+    /// the sweep exists precisely to catch **billable VMs the ledger never recorded**, which is #994's whole
+    /// theme, and its failure message used to be a joined string with no type and no id.
+    private static Result<Unit> deleteSweptServers(HetznerClient client, List<Server> servers, ClusterName clusterName) {
         if (servers.isEmpty()) {
             System.out.println("  No cluster-labelled VMs found to sweep.");
 
@@ -373,17 +394,29 @@ sealed interface BootstrapCleanup {
         }
 
         printVmInventory(servers);
-        var failures = new ArrayList<String>();
+        var failures = new ArrayList<ReapFailure>();
 
         for (var server : servers) {
             var result = deleteSweptServer(client, server);
-            var _ = result.onFailure(cause -> failures.add(server.name()
-                                                          + " (id=" + server.id()
-                                                          + "): " + cause.message()));
+            var _ = result.onFailure(cause -> failures.add(new ReapFailure(sweptVmResource(server, clusterName), cause)));
         }
 
-        return finishVmSweep(servers.size(), List.copyOf(failures));
+        return finishVmSweep(clusterName, servers.size(), List.copyOf(failures));
     }
+
+    /// A label-swept VM is a [CreatedResource.ProvisionedVm] the ledger never held, so two of the record's
+    /// four components have no recorded value: the role is literally unknown here (that absence is WHY this
+    /// sweep exists) and is marked [#SWEPT_ROLE] rather than guessed, and the source slot carries the cluster
+    /// the selector scoped to. The id is the component that matters — it is what `hcloud server delete` and
+    /// `tools/cloud-reaper.sh` act on — and the server's NAME is already on the adjacent per-server WARN line
+    /// plus the sweep inventory, so nothing an operator needs is only in one place.
+    private static CreatedResource sweptVmResource(Server server, ClusterName clusterName) {
+        return CreatedResource.ProvisionedVm.provisionedVm(HETZNER_PROVIDER,
+                                                           String.valueOf(server.id()),
+                                                           clusterName.value(),
+                                                           SWEPT_ROLE);
+    }
+
 
     /// The inventory print is part of the contract, not decoration: an operator reading the destroy
     /// transcript must be able to see EXACTLY what the sweep deleted — #572's lesson is that a
@@ -422,11 +455,12 @@ sealed interface BootstrapCleanup {
         return cause.result();
     }
 
-    private static Result<Unit> finishVmSweep(int matchCount, List<String> failures) {
+    private static Result<Unit> finishVmSweep(ClusterName clusterName, int matchCount, List<ReapFailure> failures) {
         if (!failures.isEmpty()) {
             System.err.printf("  VM sweep: %d of %d deletion(s) failed.%n", failures.size(), matchCount);
+            printLeftBehind(clusterName, "VM sweep", failures);
 
-            return Causes.cause("VM sweep failed for: " + String.join("; ", failures)).result();
+            return new VmSweepFailed(joinDescriptions(failures), joinEnumeration(failures)).result();
         }
 
         System.out.printf("  VM sweep complete (%d swept).%n", matchCount);
@@ -434,11 +468,12 @@ sealed interface BootstrapCleanup {
         return Result.unitResult();
     }
 
-    private static Result<Unit> finishSweep(int matchCount, List<String> failures) {
+    private static Result<Unit> finishSweep(ClusterName clusterName, int matchCount, List<ReapFailure> failures) {
         if (!failures.isEmpty()) {
             System.err.printf("  SSH-key sweep: %d of %d deletion(s) failed.%n", failures.size(), matchCount);
+            printLeftBehind(clusterName, "SSH-key sweep", failures);
 
-            return new SshKeySweepFailed(String.join("; ", failures)).result();
+            return new SshKeySweepFailed(joinDescriptions(failures), joinEnumeration(failures)).result();
         }
 
         System.out.printf("  SSH-key sweep: %d cluster-scoped key(s) removed.%n", matchCount);
@@ -525,7 +560,7 @@ sealed interface BootstrapCleanup {
 
     private static Result<Unit> finishCleanup(BootstrapState state, CleanupOutcome outcome) {
         if (!outcome.failures().isEmpty()) {
-            printLeftBehind(state, outcome.failures());
+            printLeftBehind(state.clusterName(), "cleanup", outcome.failures());
 
             return new CleanupError(joinDescriptions(outcome.failures()), joinEnumeration(outcome.failures())).result();
         }
@@ -538,16 +573,24 @@ sealed interface BootstrapCleanup {
     /// that something may be billing without telling them what to delete; on 2026-09-11 the something was
     /// two running `ccx23` servers and a firewall, and the list had to be reconstructed by hand from
     /// `hcloud server list`.
+    ///
+    /// #994 verification finding SF-4 — `actor` exists because this block is shared by all THREE teardown
+    /// paths now. The enumeration was scoped to the ledger-driven `cleanupWith` only, which made the
+    /// unqualified claim "every unreaped resource is enumerated" false of the command as a whole — and the
+    /// paths it missed (the label-scoped VM sweep, the ssh-key sweep) are exactly where **unrecorded
+    /// billable VMs** live, which is #994's own theme.
     @Contract
-    private static void printLeftBehind(BootstrapState state, List<ReapFailure> failures) {
-        System.err.printf("  NOT REAPED — %d resource(s) this cleanup could not delete, which may still be billing:%n",
-                          failures.size());
+    private static void printLeftBehind(ClusterName clusterName, String actor, List<ReapFailure> failures) {
+        System.err.printf("  NOT REAPED — %d resource(s) this %s could not delete, which may still be billing:%n",
+                          failures.size(),
+                          actor);
         for (var failure : failures) {
             System.err.println("    - " + failure.enumerate());
         }
 
-        System.err.printf("  Finish teardown with: tools/cloud-reaper.sh --cluster %s --destroy%n", state.clusterName());
+        System.err.printf("  Finish teardown with: tools/cloud-reaper.sh --cluster %s --destroy%n", clusterName);
     }
+
 
     private static String joinDescriptions(List<ReapFailure> failures) {
         return String.join("; ",
@@ -933,10 +976,28 @@ sealed interface BootstrapCleanup {
         }
     }
 
-    record SshKeySweepFailed(String detail) implements Cause {
+    /// #994 verification finding SF-4 — two fields for the same reason [CleanupError] has two: `detail` is
+    /// the transcript, `notReaped` is the machine-shaped enumeration (type + id per resource) that survives
+    /// into `ClusterDestroyCommand`'s exit message after the transcript has scrolled away. A swept key that
+    /// could not be deleted is an orphaned credential on the account, not merely a failed call.
+    record SshKeySweepFailed(String detail, String notReaped) implements Cause {
         @Override
         public String message() {
-            return "SSH-key sweep completed with failures: " + detail;
+            return notReaped.isEmpty()
+                   ? "SSH-key sweep completed with failures: " + detail
+                   : "SSH-key sweep completed with failures: " + detail + " | NOT REAPED: " + notReaped;
+        }
+    }
+
+    /// #994 verification finding SF-4 — the VM sweep's failure used to be a bare `Causes.cause` holding a
+    /// joined string with no type and no id, on the one teardown path whose whole purpose is **billable VMs
+    /// the ledger never recorded.** Named, and carrying the enumeration, like every other reap failure.
+    record VmSweepFailed(String detail, String notReaped) implements Cause {
+        @Override
+        public String message() {
+            return notReaped.isEmpty()
+                   ? "VM sweep completed with failures: " + detail
+                   : "VM sweep completed with failures: " + detail + " | NOT REAPED: " + notReaped;
         }
     }
 

@@ -34,11 +34,25 @@ import static org.pragmatica.lang.Option.option;
 @Command(name = "destroy", description = "Destroy the active cluster (drain + shutdown all nodes)")
 @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
 class ClusterDestroyCommand implements Callable<Integer> {
-    private static final int DRAIN_POLL_INTERVAL_MS = 2000;
-    private static final int DRAIN_TIMEOUT_SECONDS = 120;
+    /// Package-visible so a test asserts the announced ceiling against **the constant that enforces it**
+    /// rather than against a restated literal — the same arrangement as
+    /// [BootstrapCleanup#FIREWALL_DELETE_ATTEMPTS], and the reason #994's "servers are still detaching" is
+    /// the cautionary case: an announcement that can drift from the code is a false diagnostic waiting to
+    /// happen.
+    static final int DRAIN_POLL_INTERVAL_MS = 2000;
+    static final int DRAIN_TIMEOUT_SECONDS = 120;
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
-    static Function<ClusterName, org.pragmatica.lang.Option<BootstrapState>> stateLoader = BootstrapStatePersistence::load;
+    /// #994 verification finding SF-1 — carries `Result<Option<…>>` rather than `Option<…>`, so
+    /// **an UNREADABLE ledger is distinguishable from an ABSENT one.** Under the old `Option` seam a torn
+    /// `bootstrap-state.json` arrived as empty, which `cleanupCloudResources` read as "no bootstrap state
+    /// — skipping resource cleanup", returned `true` for, and then removed the registry entry and exited 0
+    /// over servers that were still billing. That is reachable by exactly the failure the incidents ended
+    /// in: the operator killing bootstrap mid-write.
+    ///
+    /// `org.pragmatica.lang.Option` is spelled out because the simple name `Option` in this file is
+    /// picocli's `@Option` annotation — the same reason the previous declaration was fully qualified.
+    static Function<ClusterName, Result<org.pragmatica.lang.Option<BootstrapState>>> stateLoader = BootstrapStatePersistence::read;
 
     static Function<BootstrapState, Result<Unit>> resourceCleaner = BootstrapCleanup::cleanup;
 
@@ -167,7 +181,15 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// Every phase now announces itself BEFORE it blocks, names the ceiling it may wait for, and reports
     /// its own failure. Silence is what invited the intervention that produced a half-destroyed cluster;
     /// an operator must be able to tell "working" from "wedged" without reading this file.
-    private Result<Integer> performDestruction(ClusterRegistry registry, ClusterName clusterName) {
+    ///
+    /// #994 verification finding SF-3 — package-visible because **no test reached this method at all.**
+    /// The three phase methods were each driven individually and every test entering through `call()`
+    /// returned early (invalid `--cluster`, or an aborted confirmation), so deleting
+    /// `announceDestroyPlan(clusterName)` from here — #995's entire "say so before the wait begins"
+    /// deliverable — left all 724 tests green (measured, probe V3). The PHASE SEQUENCE was unpinned for the
+    /// same reason: the order these five run in is the property the announcement describes, and nothing
+    /// checked it.
+    Result<Integer> performDestruction(ClusterRegistry registry, ClusterName clusterName) {
         announceDestroyPlan(clusterName);
         var nodeIds = fetchNodeIds();
         var drainResults = drainAllNodes(nodeIds);
@@ -257,8 +279,25 @@ class ClusterDestroyCommand implements Callable<Integer> {
         }
 
         return stateLoader.apply(clusterName)
-                          .fold(() -> warnNoState(clusterName),
-                                this::runCleanup);
+                          .map(state -> state.fold(() -> warnNoState(clusterName), this::runCleanup))
+                          .onFailure(cause -> warnUnreadableState(clusterName, cause))
+                          .or(false);
+    }
+
+    /// #994 verification finding SF-1 — an unreadable ledger is a cleanup FAILURE, not an empty cluster.
+    /// Returning `false` is what keeps the registry entry (#521's property: the entry is the operator's
+    /// remaining handle on resources that may still be billing) and exits non-zero, so `destroy` can be
+    /// re-run once the file is repaired or the reaper has finished the job. The alternative — the previous
+    /// behaviour — was "destroyed successfully", exit 0, entry gone, servers running.
+    @Contract
+    private static void warnUnreadableState(ClusterName clusterName, Cause cause) {
+        System.err.printf("  WARN: the bootstrap state file for cluster '%s' exists but cannot be read: %s%n",
+                          clusterName,
+                          cause.message());
+        System.err.printf("  REFUSING to report cleanup as done: an unreadable ledger is NOT an empty one, and every"
+                         + " resource it recorded may still be billing. The registry entry is kept so this can be"
+                         + " retried. Finish teardown with: tools/cloud-reaper.sh --cluster %s --destroy%n",
+                          clusterName);
     }
 
     private static boolean warnNoState(ClusterName clusterName) {

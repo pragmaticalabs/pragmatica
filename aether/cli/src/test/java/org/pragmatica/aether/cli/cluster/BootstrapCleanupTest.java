@@ -658,7 +658,7 @@ class BootstrapCleanupTest {
                            new SshKey(99L, "aether-bootstrap-production-op", "fp-99", "pk-99"),
                            new SshKey(43L, "aether-bootstrap-other-op", "fp-43", "pk-43"),
                            new SshKey(44L, "someones-laptop", "fp-44", "pk-44"));
-        var client = new SweepingHetznerClient(keys, deleteCalls, Set.of());
+        var client = new SweepingHetznerClient(keys, deleteCalls, Set.of(), Set.of());
         var state = stateWithHetznerHandle();
         var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
 
@@ -682,7 +682,7 @@ class BootstrapCleanupTest {
     void destroy_sshKeyAlreadyGone_toleratedNoFailure() {
         var deleteCalls = new ArrayList<Long>();
         var keys = List.of(new SshKey(42L, "aether-bootstrap-prod-op", "fp-42", "pk-42"));
-        var client = new SweepingHetznerClient(keys, deleteCalls, Set.of(42L));
+        var client = new SweepingHetznerClient(keys, deleteCalls, Set.of(42L), Set.of());
         var state = stateWithHetznerHandle();
         var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
 
@@ -712,7 +712,7 @@ class BootstrapCleanupTest {
         var envReads = new ArrayList<String>();
         var factoryTokens = new ArrayList<String>();
         var servers = List.of(vmServer(101L, "prod-worker-r123-0"), vmServer(102L, "prod-worker-r123-1"));
-        var client = new VmSweepingHetznerClient(servers, deleteCalls, Set.of(), selectors);
+        var client = new VmSweepingHetznerClient(servers, deleteCalls, Set.of(), selectors, Set.of());
         var state = stateWithHetznerHandle();
         var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
 
@@ -737,7 +737,7 @@ class BootstrapCleanupTest {
     @Test
     void destroy_vmSweep_protectedCluster_refusedBeforeAnyProviderCall() {
         var factoryTokens = new ArrayList<String>();
-        var client = new VmSweepingHetznerClient(List.of(), new ArrayList<>(), Set.of(), new ArrayList<>());
+        var client = new VmSweepingHetznerClient(List.of(), new ArrayList<>(), Set.of(), new ArrayList<>(), Set.of());
         var state = stateWithHetznerHandle();
         var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
 
@@ -759,7 +759,7 @@ class BootstrapCleanupTest {
     void destroy_vmSweep_alreadyGoneVm_tolerated() {
         var deleteCalls = new ArrayList<Long>();
         var servers = List.of(vmServer(101L, "prod-core-0"), vmServer(102L, "prod-worker-r1-0"));
-        var client = new VmSweepingHetznerClient(servers, deleteCalls, Set.of(101L), new ArrayList<>());
+        var client = new VmSweepingHetznerClient(servers, deleteCalls, Set.of(101L), new ArrayList<>(), Set.of());
         var state = stateWithHetznerHandle();
         var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
 
@@ -892,7 +892,7 @@ class BootstrapCleanupTest {
         var keys = List.of(new SshKey(42L, "aether-bootstrap-prod-op", "fp-42", "pk-42"));
         var unmappedHandle = SourceCleanupHandle.sourceCleanupHandle("hetzner", Option.some("fsn1"), Map.of());
         var state = stateWithSshKeyAndHandle(unmappedHandle);
-        var sweepingClient = new SweepingHetznerClient(keys, deleteCalls, Set.of());
+        var sweepingClient = new SweepingHetznerClient(keys, deleteCalls, Set.of(), Set.of());
 
         var result = BootstrapCleanup.sweepClusterSshKeys(state,
                                                           clusterName("prod").unwrap(),
@@ -918,10 +918,14 @@ class BootstrapCleanupTest {
     /// surface as a Hetzner 404 `not_found` `ApiError` (already-gone). All other operations throw.
     /// VM-sweep stub: only the label-scoped listing and server deletion are legal; everything else
     /// is a stub failure so the sweep cannot silently widen its surface.
+    /// `failIds` surface as a Hetzner 422 `resource_in_use` — NOT a 404, so `tolerateServerAlreadyGone`
+    /// does not absorb it and the sweep genuinely fails. That is the arm #994 verification finding SF-4
+    /// needs: a swept, billable VM the sweep could not delete.
     record VmSweepingHetznerClient(List<Server> servers,
                                    List<Long> deleteCalls,
                                    Set<Long> goneIds,
-                                   List<String> selectors) implements HetznerClient {
+                                   List<String> selectors,
+                                   Set<Long> failIds) implements HetznerClient {
         @Override public Promise<List<Server>> listServers(String labelSelector) {
             selectors.add(labelSelector);
             return Promise.success(servers);
@@ -931,6 +935,9 @@ class BootstrapCleanupTest {
             deleteCalls.add(serverId);
             if (goneIds.contains(serverId)) {
                 return new HetznerError.ApiError(404, "not_found", "server not found").promise();
+            }
+            if (failIds.contains(serverId)) {
+                return new HetznerError.ApiError(422, "resource_in_use", "server is still in use").promise();
             }
             return Promise.success(Unit.unit());
         }
@@ -969,7 +976,12 @@ class BootstrapCleanupTest {
         }
     }
 
-    record SweepingHetznerClient(List<SshKey> keys, List<Long> deleteCalls, Set<Long> goneIds) implements HetznerClient {
+    /// `failIds` surface as a Hetzner 403 — not a 404 — so `tolerateAlreadyGone` does not absorb it and the
+    /// key sweep genuinely fails (#994 verification finding SF-4: an orphaned credential left on the account).
+    record SweepingHetznerClient(List<SshKey> keys,
+                                 List<Long> deleteCalls,
+                                 Set<Long> goneIds,
+                                 Set<Long> failIds) implements HetznerClient {
         @Override public Promise<List<SshKey>> listSshKeys() {
             return Promise.success(keys);
         }
@@ -978,6 +990,9 @@ class BootstrapCleanupTest {
             deleteCalls.add(sshKeyId);
             if (goneIds.contains(sshKeyId)) {
                 return new HetznerError.ApiError(404, "not_found", "ssh key not found").promise();
+            }
+            if (failIds.contains(sshKeyId)) {
+                return new HetznerError.ApiError(403, "forbidden", "ssh key is protected").promise();
             }
             return Promise.success(Unit.unit());
         }
@@ -1265,6 +1280,128 @@ class BootstrapCleanupTest {
             assertTrue(result.isSuccess(), () -> "precondition: everything reaped: " + result);
             assertFalse(stderr().contains("NOT REAPED"),
                         () -> "nothing was left behind, so nothing must be enumerated; got:\n" + stderr());
+        }
+    }
+
+    /// #994 verification finding SF-4 — `destroy` has THREE teardown paths and the `NOT REAPED` enumeration
+    /// covered one. The claim "a partial cleanup enumerates every resource it left behind, by type and id"
+    /// was therefore true of `cleanupWith` and **false of the command**, and the paths it missed are the
+    /// label-scoped VM sweep and the ssh-key sweep — where the UNRECORDED billable VMs that are #994's whole
+    /// theme actually live. Both now route their failures through `ReapFailure`.
+    @Nested
+    class SweepEnumeration {
+
+        private final ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+        private final ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        private PrintStream originalOut;
+
+        private PrintStream originalErr;
+
+        @BeforeEach
+        void captureStreams() {
+            originalOut = System.out;
+            originalErr = System.err;
+            System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
+            System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
+        }
+
+        @AfterEach
+        void restoreStreams() {
+            System.setOut(originalOut);
+            System.setErr(originalErr);
+        }
+
+        private String stderr() {
+            return err.toString(StandardCharsets.UTF_8);
+        }
+
+        private Result<Unit> sweepVms(Set<Long> failIds) {
+            var servers = List.of(vmServer(101L, "prod-worker-r123-0"), vmServer(102L, "prod-worker-r123-1"));
+            var client = new VmSweepingHetznerClient(servers, new ArrayList<>(), Set.of(), new ArrayList<>(), failIds);
+
+            return BootstrapCleanup.sweepClusterVms(stateWithHetznerHandle(),
+                                                    clusterName("prod").unwrap(),
+                                                    recordingGetenv(Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE),
+                                                                    new ArrayList<>()),
+                                                    sweepingClientFactory(client, new ArrayList<>()));
+        }
+
+        private Result<Unit> sweepKeys(Set<Long> failIds) {
+            var keys = List.of(new SshKey(42L, "aether-bootstrap-prod-op", "fp-42", "pk-42"));
+            var client = new SweepingHetznerClient(keys, new ArrayList<>(), Set.of(), failIds);
+
+            return BootstrapCleanup.sweepClusterSshKeys(stateWithHetznerHandle(),
+                                                        clusterName("prod").unwrap(),
+                                                        recordingGetenv(Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE),
+                                                                        new ArrayList<>()),
+                                                        sweepingClientFactory(client, new ArrayList<>()));
+        }
+
+        /// The sweep reaps VMs the LEDGER NEVER RECORDED, so when it cannot delete one there is no other
+        /// record of that server anywhere — which makes the id the only thing standing between the operator
+        /// and a server that bills indefinitely. `"VM sweep failed: <message>"` carried neither type nor id.
+        ///
+        /// Both failing ids are asserted, because "every" is the word the claim uses and a block printing
+        /// only the first satisfies a single-resource test exactly as well.
+        @Test
+        void vmSweep_enumeratesEverySweptVmItCouldNotDelete_withTypeAndId() {
+            var result = sweepVms(Set.of(101L, 102L));
+
+            assertTrue(result.isFailure(), "precondition: the 422 refusals are not tolerated");
+            assertTrue(stderr().contains("NOT REAPED"),
+                       () -> "the sweep must print the leftover block, not just a joined string; got:\n" + stderr());
+            assertTrue(stderr().contains("[ProvisionedVm] id=101"),
+                       () -> "by type and id; got:\n" + stderr());
+            assertTrue(stderr().contains("[ProvisionedVm] id=102"),
+                       () -> "EVERY one of them, not only the first; got:\n" + stderr());
+            assertTrue(stderr().contains("cloud-reaper.sh"),
+                       () -> "and what finishes the job; got:\n" + stderr());
+        }
+
+        /// The enumeration has to survive into the CAUSE as well: `ClusterDestroyCommand.runVmSweep` prints
+        /// `cause.message()`, and that line is what an operator still has after the transcript scrolls.
+        @Test
+        void vmSweep_failureCause_carriesTheEnumeration_notJustTheTranscript() {
+            sweepVms(Set.of(101L)).onSuccess(_ -> fail("precondition: the sweep must fail"))
+                                  .onFailure(cause -> assertTrue(cause.message().contains("NOT REAPED: [ProvisionedVm] id=101"),
+                                                                 () -> "the cause must enumerate: " + cause.message()));
+        }
+
+        /// Positive control for both assertions above. Without it, "stderr contains NOT REAPED" proves only
+        /// that some failure path printed something, and the block could be an always-on line.
+        @Test
+        void vmSweep_printsNoLeftBehindBlock_whenEverySweptVmWasDeleted() {
+            var result = sweepVms(Set.of());
+
+            assertTrue(result.isSuccess(), () -> "precondition: both deletes succeed: " + result);
+            assertFalse(stderr().contains("NOT REAPED"),
+                        () -> "a complete sweep leaves nothing behind, so it must enumerate nothing; got:\n" + stderr());
+        }
+
+        /// An undeleted cluster-scoped key is an orphaned credential on the account, and `SshKeyResource`
+        /// carries its name as well as its id — so this is the one synthesized-free case: every component of
+        /// the enumerated resource is a value the sweep actually observed.
+        @Test
+        void sshKeySweep_enumeratesEveryKeyItCouldNotDelete_withTypeAndId() {
+            var result = sweepKeys(Set.of(42L));
+
+            assertTrue(result.isFailure(), "precondition: a 403 is not an already-gone 404");
+            assertTrue(stderr().contains("NOT REAPED"), () -> "got:\n" + stderr());
+            assertTrue(stderr().contains("[SshKeyResource] id=42"),
+                       () -> "by type and id; got:\n" + stderr());
+            assertTrue(stderr().contains("aether-bootstrap-prod-op"),
+                       () -> "and by the name the operator sees in 'hcloud ssh-key list'; got:\n" + stderr());
+        }
+
+        @Test
+        void sshKeySweep_printsNoLeftBehindBlock_whenEveryKeyWasDeleted() {
+            var result = sweepKeys(Set.of());
+
+            assertTrue(result.isSuccess(), () -> "precondition: the delete succeeds: " + result);
+            assertFalse(stderr().contains("NOT REAPED"),
+                        () -> "positive control for the case above; got:\n" + stderr());
         }
     }
 }

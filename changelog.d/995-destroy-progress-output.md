@@ -32,3 +32,22 @@
   firewall's `--admin-cidr` /32 for the endpoint to be reachable at all, which would produce exactly this
   shape if it had changed, but that is a hypothesis and is not claimed here. What is fixed is that the
   silence can no longer hide any of it.
+
+### Fixed (2026-09-11 — #995 adversarial-verification round: the announcements are pinned)
+
+- **`performDestruction` is reached by a test.** [verification finding SF-3] It was reached by none:
+  the three phase methods were each driven individually and every test entering through `call()`
+  returned early (invalid `--cluster`, or an aborted confirmation prompt). So deleting
+  `announceDestroyPlan(clusterName)` — the whole of expectation 3, *"if it can take minutes, say so
+  before the wait begins"* — left all 724 tests green, and the **phase ORDER** was unpinned for the
+  same reason. `ClusterDestroyCommandTest.DestroyProgressOutput` now drives the command end to end
+  against the stubbed HTTP seam and asserts the banner is at character zero of stdout, its figures
+  against the constants that enforce them, and the five phase lines in ascending position.
+- **The drain ceiling is exercised.** The test named
+  `drainAllNodes_announcesTheDrainPhaseAndItsCeiling` passed an **empty** node list, so it never
+  entered the only branch that prints a ceiling — stripping the per-node ceiling line left the suite
+  green. The name claimed coverage the body did not have, which is worse than no test: an auditor
+  walking #995's deliverables would tick it off. Renamed to
+  `drainAllNodes_announcesThePhase_whenThereIsNothingToDrain`, with a new sibling driving a non-empty
+  list and asserting the per-node budget and poll interval against `DRAIN_TIMEOUT_SECONDS` /
+  `DRAIN_POLL_INTERVAL_MS`.
