@@ -1801,35 +1801,86 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                               Message.Wired message,
                                               StreamType lane,
                                               QuicPeerConnection connection) {
+        return encodeLoudly(message, peerId).fold(_ -> encodeFailedOutcome(peerId, message),
+                                                  bytes -> admitLaneOpen(peerId, lane, connection, bytes));
+    }
+
+    /// #718 — ONE in-flight lazy open per (peer, lane). The heal was firing per outbound message, and
+    /// each firing created a stream: the failed opens equalled the `STREAM_LIMIT_ERROR`s exactly
+    /// (857==857, 639==639 across two measured runs), so a transiently missing lane was exhausting the
+    /// connection's 64-stream credit. Messages arriving inside the open window now ride the open
+    /// already in flight instead of starting their own.
+    ///
+    /// Note what did NOT change: the BACKSTOP stays reachable. A coalesced message is a distinct
+    /// admission outcome from a FAILED open, so deduplication never reports "unhealable" and never
+    /// suppresses the eviction that a genuinely dead lane still needs.
+    private WriteOutcome admitLaneOpen(NodeId peerId, StreamType lane, QuicPeerConnection connection, byte[] bytes) {
+        return switch (connection.beginLaneOpen(lane, bytes)) {
+            case QuicPeerConnection.LaneOpenAdmission.Started _ -> startLaneOpen(peerId, lane, connection);
+            case QuicPeerConnection.LaneOpenAdmission.Coalesced(boolean oldestDropped) -> coalesceOntoInFlightOpen(peerId,
+                                                                                                                   lane,
+                                                                                                                   oldestDropped);
+        };
+    }
+
+    /// This caller owns the open: announce the heal once, then drive it. The WARN sits HERE rather
+    /// than at the write site so its volume is one line per open cycle, not one per message.
+    private WriteOutcome startLaneOpen(NodeId peerId, StreamType lane, QuicPeerConnection connection) {
         quicMetrics.onStreamZombieLazyOpen();
         log.warn("No {} stream for CONNECTED peer {} — lazily (re)opening the lane (stream-zombie heal)", lane, peerId);
 
-        return encodeLoudly(message, peerId).fold(_ -> encodeFailedOutcome(peerId, message),
-                                                  bytes -> openLaneAndDeliver(peerId, lane, connection, bytes));
+        return openLaneAndDeliver(peerId, lane, connection);
     }
 
-    private WriteOutcome openLaneAndDeliver(NodeId peerId,
-                                            StreamType lane,
-                                            QuicPeerConnection connection,
-                                            byte[] bytes) {
-        connection.openLane(lane, opened -> onLaneOpened(peerId, lane, connection, bytes, opened));
+    /// The message joined an open already in flight. Reported as optimistically `Sent`, consistent
+    /// with the owning open's own return: the bytes are queued on the connection and are written when
+    /// that open completes.
+    private WriteOutcome coalesceOntoInFlightOpen(NodeId peerId, StreamType lane, boolean oldestDropped) {
+        quicMetrics.onStreamZombieLazyOpenCoalesced();
+
+        return oldestDropped
+               ? droppedOldestPendingLaneWrite(peerId, lane)
+               : new WriteOutcome.Sent(peerId);
+    }
+
+    /// Pending-queue overflow inside one open window. Counted always, logged at DEBUG — the same
+    /// split `dispatchToPeer` uses for the offline buffer's drop-oldest, and deliberately not a WARN:
+    /// this path exists because an unbounded WARN on a hot send path is what #718 is about.
+    private WriteOutcome droppedOldestPendingLaneWrite(NodeId peerId, StreamType lane) {
+        quicMetrics.onStreamZombieLazyOpenDrop();
+        log.debug("Pending {} writes for peer {} at capacity while the lane open is in flight — dropped the oldest",
+                  lane,
+                  peerId);
 
         return new WriteOutcome.Sent(peerId);
     }
 
-    /// Lazy-open callback: write the captured bytes to the freshly-opened stream, or engage the
-    /// BACKSTOP when the open could not heal the lane.
+    private WriteOutcome openLaneAndDeliver(NodeId peerId, StreamType lane, QuicPeerConnection connection) {
+        connection.openLane(lane, opened -> onLaneOpened(peerId, lane, connection, opened));
+
+        return new WriteOutcome.Sent(peerId);
+    }
+
+    /// Lazy-open callback: write every message that waited on this open to the freshly-opened stream,
+    /// or engage the BACKSTOP when the open could not heal the lane. The marker is released on BOTH
+    /// outcomes — a leak here would make the lane unhealable for the rest of the connection's life.
     private void onLaneOpened(NodeId peerId,
                               StreamType lane,
                               QuicPeerConnection connection,
-                              byte[] bytes,
                               Option<QuicStreamChannel> opened) {
-        opened.onPresent(stream -> writeLaneOpened(stream, bytes, peerId, lane))
+        var pending = connection.completeLaneOpen(lane);
+
+        opened.onPresent(stream -> writeLaneOpened(stream, pending, peerId, lane))
               .onEmpty(() -> backstopUnhealableStream(peerId, connection));
     }
 
     @Contract
-    private void writeLaneOpened(QuicStreamChannel stream, byte[] bytes, NodeId peerId, StreamType lane) {
+    private void writeLaneOpened(QuicStreamChannel stream, List<byte[]> pending, NodeId peerId, StreamType lane) {
+        pending.forEach(bytes -> writePendingLaneMessage(stream, bytes, peerId, lane));
+    }
+
+    @Contract
+    private void writePendingLaneMessage(QuicStreamChannel stream, byte[] bytes, NodeId peerId, StreamType lane) {
         var _ = writeIfWritable(stream, bytes, peerId, lane);
     }
 

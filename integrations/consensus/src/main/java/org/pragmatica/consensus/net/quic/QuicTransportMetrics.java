@@ -45,6 +45,17 @@ public final class QuicTransportMetrics {
     /// Count of stream-zombie BACKSTOP evictions: a write found a CONNECTED peer with no usable
     /// stream AND the lazy open could not heal it, so the connection was evicted for a clean re-dial.
     private final LongAdder streamZombieEvictions = new LongAdder();
+    /// #718: count of writes that joined a lazy lane open ALREADY in flight instead of starting their
+    /// own. This is the deduplication's yield, and reading it against [#streamZombieLazyOpens] is how
+    /// the fix is observed in a live cluster: before #718 every one of these was its own stream, and
+    /// past the 64-stream credit every one became a `STREAM_LIMIT_ERROR`.
+    private final LongAdder streamZombieLazyOpenCoalesced = new LongAdder();
+    /// #718: count of pending messages DROPPED because the per-(peer, lane) queue was already at
+    /// `QuicPeerConnection.PENDING_LANE_WRITES_MAX` when another message arrived during the open
+    /// window. Counted rather than warned — the log line is DEBUG, because an unbounded WARN on a hot
+    /// send path is the defect #718 exists to remove. A persistently non-zero value here means the
+    /// bound is too small for the offered load, not that the dedup is misbehaving.
+    private final LongAdder streamZombieLazyOpenDrops = new LongAdder();
     /// #487: count of sends DROPPED to a peer with no PeerState (dead or never-connected). Counts EVERY
     /// drop, not just the rate-limited WARNs, so ops see true drop volume (the invisibility of this class
     /// hid the #467/#457 self-send drops for months).
@@ -145,6 +156,20 @@ public final class QuicTransportMetrics {
         streamZombieEvictions.increment();
     }
 
+    /// #718: records a write that joined a lazy lane open already in flight rather than opening a
+    /// second stream for the same lane.
+    @Contract
+    public void onStreamZombieLazyOpenCoalesced() {
+        streamZombieLazyOpenCoalesced.increment();
+    }
+
+    /// #718: records a pending message dropped because the per-(peer, lane) queue was full while the
+    /// lane open was in flight. Drop-oldest, mirroring the offline buffer.
+    @Contract
+    public void onStreamZombieLazyOpenDrop() {
+        streamZombieLazyOpenDrops.increment();
+    }
+
     /// #487: records a send DROPPED to a peer with no PeerState. Every drop is counted, whether or not
     /// the accompanying WARN was rate-limited.
     @Contract
@@ -192,6 +217,10 @@ public final class QuicTransportMetrics {
         metrics.put("quic_backpressure_queue_depth", backpressureQueueDepth.get());
         metrics.put("quic_stream_zombie_lazy_opens_total", streamZombieLazyOpens.sum());
         metrics.put("quic_stream_zombie_evictions_total", streamZombieEvictions.sum());
+        // #718: the dedup's yield and its overflow. Coalesced writes would each have been a separate
+        // stream before the fix; drops mean the pending bound was reached inside one open window.
+        metrics.put("quic_stream_zombie_lazy_open_coalesced_total", streamZombieLazyOpenCoalesced.sum());
+        metrics.put("quic_stream_zombie_lazy_open_drops_total", streamZombieLazyOpenDrops.sum());
         metrics.put("quic_drop_to_unknown_peer_total", dropToUnknownPeer.sum());
         // #726: payload bytes at the lane boundary (no QUIC framing/TLS overhead/retransmits) —
         // not a wire-byte or bandwidth figure.
@@ -249,6 +278,16 @@ public final class QuicTransportMetrics {
 
     public long streamZombieEvictionCount() {
         return streamZombieEvictions.sum();
+    }
+
+    /// #718: writes that joined a lazy lane open already in flight, cumulative.
+    public long streamZombieLazyOpenCoalescedCount() {
+        return streamZombieLazyOpenCoalesced.sum();
+    }
+
+    /// #718: pending messages dropped on per-(peer, lane) queue overflow during an open, cumulative.
+    public long streamZombieLazyOpenDropCount() {
+        return streamZombieLazyOpenDrops.sum();
     }
 
     public long dropToUnknownPeerCount() {
