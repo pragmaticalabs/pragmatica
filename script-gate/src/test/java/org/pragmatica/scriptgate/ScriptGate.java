@@ -29,6 +29,14 @@ sealed interface ScriptGate {
                      .or(new SyntheticRepo(root));
     }
 
+    /// The built git fixture. Same contract as [#fixture], for the repository shape
+    /// [ChangelogCheckTest] needs: `scripts/changelog-check.sh` calls real `git` commands, so its
+    /// subject cannot be the Maven-shaped [SyntheticRepo].
+    static SyntheticGitRepo gitFixture(Path root, Result<SyntheticGitRepo> result) {
+        return result.onFailure(cause -> fail("could not build the git fixture: " + cause.message()))
+                     .or(new SyntheticGitRepo(root));
+    }
+
     /// The outcome of running a script; a harness failure fails the test rather than being asserted on.
     static ScriptRunner.Execution executed(Result<ScriptRunner.Execution> result) {
         return result.onFailure(cause -> fail("could not run the script: " + cause.message()))

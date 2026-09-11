@@ -1,4 +1,8 @@
-### Fixed (2026-09-10 — #980: `aether cluster bootstrap` could not authenticate against the cluster it had just formed)
+### Fixed (2026-09-10 — `know: 8f02cd3cf`: `aether cluster bootstrap` could not authenticate against the cluster it had just formed)
+
+<!-- Heading cites the owner ruling, not an issue: this work landed as the direct push `f25f14327`
+     with no issue and no PR. The filename's "980" is a collision from a speculatively-named branch —
+     issue #980 is the pg-parser walk race. Left as-is; do not substitute a guessed number. -->
 
 - **Phase 7 tore down healthy clusters.** `CLUSTER_FORMATION` cleared its all-nodes `/health/live`
   gate, then polled `/api/v1/health` for the quorum check and received
