@@ -267,19 +267,20 @@ public interface AbTestManager {
                 return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
             }
 
+            /// The one read both A/B lifecycle writers derive from, and the reason they can.
+            ///
             /// A/B lifecycle writes must not evaporate the operator's per-slice bounds (#424 review),
             /// the slice's ownership (#698), its placement (#937) or its availability floor (#982).
-            /// Reads the current `SliceTargetValue` once and derives the new one from it, so that
-            /// every component the caller is not deliberately replacing survives by construction.
+            /// [#variantTarget] and [#concludedTarget] therefore TRANSFORM this observed value rather
+            /// than rebuilding one from parts, so every component neither of them deliberately
+            /// replaces survives by construction. Between them they replace `currentVersion` and
+            /// `targetInstances` only; `minInstances` is replaced by neither.
             ///
-            /// Replaced: `currentVersion` (the variant or promoted version being written) and
-            /// `targetInstances`. `minInstances` is NOT replaced — see [#variantTarget] and
-            /// [#concludedTarget] for the two counts the A/B lifecycle actually wants.
-            /// Everything else is carried, `placement` included: #937 recorded it being reset to
-            /// `CORE_ONLY` here, and the reset is not merely stored — `ClusterDeploymentState` feeds
+            /// What that carries, `placement` included: #937 recorded it being reset to `CORE_ONLY`
+            /// here, and the reset is not merely stored — `ClusterDeploymentState` feeds
             /// `effectivePlacement()` into the allocation engine, so an operator's deliberately
-            /// placed workload was relocated on the first A/B write. `updatedAt` is re-derived,
-            /// which is the point of a write.
+            /// placed workload was relocated on the first A/B write. `updatedAt` is re-derived by the
+            /// `with*` chain, which is the point of a write.
             ///
             /// The enumerate-the-preserved-fields shape this method used to have is what let
             /// `placement` go missing while the list read as exhaustive. It is deliberately not
