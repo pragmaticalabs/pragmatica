@@ -77,7 +77,7 @@ public sealed interface ForgeDataDir {
     /// surprising path learns WHY it was chosen, not merely what it is.
     enum Source {
         EXPLICIT("the " + DATA_DIR_ENV + " environment variable"),
-        PROJECT("this project (the directory holding the --config file)"),
+        PROJECT("this project's --config location"),
         AETHER_HOME("the " + AETHER_HOME_ENV + " environment variable (no --config given)"),
         USER_HOME("the user-home fallback (no --config and no " + AETHER_HOME_ENV + ")");
 
@@ -233,6 +233,11 @@ public sealed interface ForgeDataDir {
                             .count();
     }
 
+    /// The read failure is absorbed into `none()` deliberately — design-out rather than recovery. An
+    /// absent marker is the ordinary case, not an error, and the absorption is fail-SAFE in the one
+    /// case that is: a marker that exists but cannot be read also yields `none()`, which lands on
+    /// [ForgeDataError.UnownedState] and REFUSES the run. No path turns an unreadable marker into
+    /// permission to reuse, so nothing the absorption hides can cost data.
     private static Option<Path> recordedOwner(Path dataDir) {
         return FileOps.readString(dataDir.resolve(MARKER_FILE))
                       .option()
