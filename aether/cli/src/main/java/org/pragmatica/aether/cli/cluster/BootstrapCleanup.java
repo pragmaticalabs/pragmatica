@@ -36,7 +36,6 @@ sealed interface BootstrapCleanup {
     String API_TOKEN_KEY = "api_token";
     /// Provider identity for Hetzner cloud (matches `SourceCleanupHandle.provider()` and `CreatedResource.provider()`).
     String HETZNER_PROVIDER = "hetzner";
-
     /// #994 verification finding SF-4 — the `role` component of a label-swept VM's synthesized
     /// [CreatedResource.ProvisionedVm]. A swept VM is by definition one the ledger never recorded, so its
     /// role is genuinely unknown; this marks the absence instead of guessing a plausible value that an
@@ -372,7 +371,9 @@ sealed interface BootstrapCleanup {
 
         System.out.println("Sweeping cluster-labelled VMs (selector '" + selector + "')...");
 
-        return hetznerClientFromHandle(handle, resolvers).flatMap(client -> sweepVmsWithClient(client, selector, clusterName));
+        return hetznerClientFromHandle(handle, resolvers).flatMap(client -> sweepVmsWithClient(client,
+                                                                                               selector,
+                                                                                               clusterName));
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -386,7 +387,9 @@ sealed interface BootstrapCleanup {
     /// enumerated by type and id like the ledger-driven cleanup's. This is the sharper half of that finding:
     /// the sweep exists precisely to catch **billable VMs the ledger never recorded**, which is #994's whole
     /// theme, and its failure message used to be a joined string with no type and no id.
-    private static Result<Unit> deleteSweptServers(HetznerClient client, List<Server> servers, ClusterName clusterName) {
+    private static Result<Unit> deleteSweptServers(HetznerClient client,
+                                                   List<Server> servers,
+                                                   ClusterName clusterName) {
         if (servers.isEmpty()) {
             System.out.println("  No cluster-labelled VMs found to sweep.");
 
@@ -416,7 +419,6 @@ sealed interface BootstrapCleanup {
                                                            clusterName.value(),
                                                            SWEPT_ROLE);
     }
-
 
     /// The inventory print is part of the contract, not decoration: an operator reading the destroy
     /// transcript must be able to see EXACTLY what the sweep deleted — #572's lesson is that a
@@ -590,7 +592,6 @@ sealed interface BootstrapCleanup {
 
         System.err.printf("  Finish teardown with: tools/cloud-reaper.sh --cluster %s --destroy%n", clusterName);
     }
-
 
     private static String joinDescriptions(List<ReapFailure> failures) {
         return String.join("; ",

@@ -228,8 +228,9 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
     /// could not record — so the ids reach the transcript even when the ledger cannot hold them.
     @Contract
     private static void saveState(BootstrapState state, BootstrapPhase phase) {
-        var _ = BootstrapStatePersistence.save(state)
-                                         .onFailure(cause -> warnStateNotPersisted(state.clusterName(), phase, cause));
+        var _ = BootstrapStatePersistence.save(state).onFailure(cause -> warnStateNotPersisted(state.clusterName(),
+                                                                                               phase,
+                                                                                               cause));
     }
 
     @Contract
@@ -270,8 +271,9 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                                                                                phase,
                                                                                                cause))
                                          .onSuccess(persisted -> saveState(persisted.or(preSnapshot)
-                                                                                    .withPhaseStatus(phase, PhaseStatus.FAILED),
-                                                                            phase));
+                                                                                    .withPhaseStatus(phase,
+                                                                                                     PhaseStatus.FAILED),
+                                                                           phase));
     }
 
     @Contract
@@ -315,7 +317,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
 
     private static Result<Unit> cleanupRecordedResources(Option<BootstrapState> state) {
         return state.filter(persisted -> !persisted.createdResources()
-                                                  .isEmpty())
+                                                   .isEmpty())
                     .map(persisted -> cleanupHook().apply(persisted))
                     .or(Result.unitResult());
     }
@@ -326,8 +328,8 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
     /// absent-vs-unreadable conflation).
     @Contract
     private static void warnKeepOnFailure(ClusterName clusterName, Cause cause) {
-        var read = BootstrapStatePersistence.read(clusterName)
-                                            .onFailure(parseCause -> warnLedgerUnreadableOnKeep(clusterName, parseCause));
+        var read = BootstrapStatePersistence.read(clusterName).onFailure(parseCause -> warnLedgerUnreadableOnKeep(clusterName,
+                                                                                                                  parseCause));
         var state = read.or(none());
         var resources = state.map(BootstrapState::createdResources).or(List.of());
         var vmCount = resources.stream().filter(r -> r instanceof CreatedResource.ProvisionedVm).count();

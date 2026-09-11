@@ -41,6 +41,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// happen.
     static final int DRAIN_POLL_INTERVAL_MS = 2000;
     static final int DRAIN_TIMEOUT_SECONDS = 120;
+
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
     /// #994 verification finding SF-1 — carries `Result<Option<…>>` rather than `Option<…>`, so
@@ -279,7 +280,8 @@ class ClusterDestroyCommand implements Callable<Integer> {
         }
 
         return stateLoader.apply(clusterName)
-                          .map(state -> state.fold(() -> warnNoState(clusterName), this::runCleanup))
+                          .map(state -> state.fold(() -> warnNoState(clusterName),
+                                                   this::runCleanup))
                           .onFailure(cause -> warnUnreadableState(clusterName, cause))
                           .or(false);
     }

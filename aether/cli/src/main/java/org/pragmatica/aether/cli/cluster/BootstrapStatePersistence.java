@@ -43,9 +43,8 @@ sealed interface BootstrapStatePersistence {
     }
 
     static Option<BootstrapState> load(ClusterName clusterName) {
-        return read(clusterName).onFailure(cause -> System.err.println("Warning: failed to load bootstrap state: "
-                                                                     + cause.message()))
-                                .or(none());
+        return read(clusterName).onFailure(cause -> System.err.println("Warning: failed to load bootstrap state: " + cause.message()))
+                   .or(none());
     }
 
     /// #994 verification finding SF-1 — **ABSENT and UNREADABLE are different facts, and [#load] cannot

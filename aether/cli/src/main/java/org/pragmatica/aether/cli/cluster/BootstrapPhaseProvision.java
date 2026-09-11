@@ -153,10 +153,9 @@ sealed interface BootstrapPhaseProvision {
 
     @Contract
     private static void saveOrWarnHandle(BootstrapState state, ClusterName clusterName, SourceName sourceName) {
-        var _ = BootstrapStatePersistence.save(state)
-                                         .onFailure(cause -> warnHandleNotPersisted(clusterName,
-                                                                                    sourceName,
-                                                                                    "the ledger write failed: " + cause.message()));
+        var _ = BootstrapStatePersistence.save(state).onFailure(cause -> warnHandleNotPersisted(clusterName,
+                                                                                                sourceName,
+                                                                                                "the ledger write failed: " + cause.message()));
     }
 
     @Contract
@@ -200,18 +199,17 @@ sealed interface BootstrapPhaseProvision {
                                                                           clusterName,
                                                                           "no bootstrap state is persisted for this cluster"))
                                          .map(state -> state.withResource(CreatedResource.ProvisionedVm.provisionedVm(providerName,
-                                                                                                                     node.serverId(),
-                                                                                                                     sourceName.value(),
-                                                                                                                     role.value())))
+                                                                                                                      node.serverId(),
+                                                                                                                      sourceName.value(),
+                                                                                                                      role.value())))
                                          .onPresent(state -> saveOrWarnVm(state, node, clusterName));
     }
 
     @Contract
     private static void saveOrWarnVm(BootstrapState state, ProvisionedNode node, ClusterName clusterName) {
-        var _ = BootstrapStatePersistence.save(state)
-                                         .onFailure(cause -> warnVmNotRecorded(node,
-                                                                               clusterName,
-                                                                               "the ledger write failed: " + cause.message()));
+        var _ = BootstrapStatePersistence.save(state).onFailure(cause -> warnVmNotRecorded(node,
+                                                                                           clusterName,
+                                                                                           "the ledger write failed: " + cause.message()));
     }
 
     /// The id is the whole point of this message. With the ledger broken it is the only place the server
@@ -512,13 +510,13 @@ sealed interface BootstrapPhaseProvision {
     /// argument that the delegation "carries no logic".
     @SuppressWarnings("JBCT-EX-01")
     static Result<List<ProvisionedNode>> provisionCloudRoleGroup(ComputeProvider compute,
-                                                                         BootstrapContext ctx,
-                                                                         SourceName sourceName,
-                                                                         NodeRole role,
-                                                                         int count,
-                                                                         SourceProfile source,
-                                                                         ClusterName clusterName,
-                                                                         int nodeIndexBase) {
+                                                                 BootstrapContext ctx,
+                                                                 SourceName sourceName,
+                                                                 NodeRole role,
+                                                                 int count,
+                                                                 SourceProfile source,
+                                                                 ClusterName clusterName,
+                                                                 int nodeIndexBase) {
         logProvisionRole(sourceName, source.type(), role, Option.some(count));
         ZoneProvisioner provisionOne = (nodeId, globalIndex, zone) -> provisionOneInZone(compute,
                                                                                          ctx,
