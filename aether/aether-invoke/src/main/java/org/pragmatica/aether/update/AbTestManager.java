@@ -315,7 +315,7 @@ public interface AbTestManager {
             private SliceTargetValue variantTarget(SliceTargetKey key, Version version) {
                 return observedTarget(key).map(current -> current.withVersion(version)
                                                                  .withInstances(VARIANT_INSTANCES))
-                                          .or(() -> newSliceTarget(version));
+                                     .or(() -> newSliceTarget(version));
             }
 
             /// The conclusion writes — promote a winner, or restore the baseline on rollback.
@@ -335,7 +335,7 @@ public interface AbTestManager {
             private SliceTargetValue concludedTarget(SliceTargetKey key, Version version) {
                 return observedTarget(key).map(current -> current.withVersion(version)
                                                                  .withInstances(current.effectiveMinInstances()))
-                                          .or(() -> newSliceTarget(version));
+                                     .or(() -> newSliceTarget(version));
             }
 
             /// A slice that has never been written has no placement, owner or bounds to carry, so
