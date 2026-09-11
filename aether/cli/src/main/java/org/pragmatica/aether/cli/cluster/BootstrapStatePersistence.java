@@ -43,17 +43,38 @@ sealed interface BootstrapStatePersistence {
     }
 
     static Option<BootstrapState> load(ClusterName clusterName) {
+        return read(clusterName).onFailure(cause -> System.err.println("Warning: failed to load bootstrap state: " + cause.message()))
+                   .or(none());
+    }
+
+    /// #994 verification finding SF-1 — **ABSENT and UNREADABLE are different facts, and [#load] cannot
+    /// tell a caller which it got.** Both arrive as `none()`, which is correct for a caller that only
+    /// wants a state if there is one, and dangerous for the two callers whose decisions are
+    /// money-bearing:
+    ///
+    ///   - `ClusterBootstrapOrchestrator.markPhaseFailed` falls back to the PRE-phase snapshot and saves
+    ///     it. Over an absent file that is right — there is nothing to lose. Over a torn file it
+    ///     **overwrites the only record of paid VMs with a VM-less one, and the result is valid JSON, so
+    ///     nothing downstream can tell.** That is #994's exact outcome reached by a different route, and
+    ///     it was measured rather than argued (verification report §4b).
+    ///   - `ClusterDestroyCommand.cleanupCloudResources` reads an unreadable ledger as "no bootstrap
+    ///     state", reports cleanup OK, removes the registry entry and exits 0 — while every server the
+    ///     ledger named keeps billing and the operator's last handle on them is gone.
+    ///
+    /// So: absent is `success(none())`, present-and-parsed is `success(some(state))`, and present-but-
+    /// unparseable is a FAILURE carrying the parse cause. A caller that must not act on a guess can now
+    /// refuse instead.
+    static Result<Option<BootstrapState>> read(ClusterName clusterName) {
         var path = stateFilePath(clusterName);
 
         if (!Files.exists(path)) {
-            return none();
+            return Result.success(none());
         }
 
         return Result.lift(PersistenceError::new,
                            () -> Files.readString(path))
                      .flatMap(BootstrapState::fromJson)
-                     .onFailure(cause -> System.err.println("Warning: failed to load bootstrap state: " + cause.message()))
-                     .option();
+                     .map(Option::some);
     }
 
     static Result<Unit> delete(ClusterName clusterName) {

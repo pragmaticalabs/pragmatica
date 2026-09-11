@@ -121,9 +121,9 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                                            String rawTomlContent) {
         var clusterName = config.cluster().name();
 
-        return BootstrapStatePersistence.load(clusterName)
-                                        .toResult(new BootstrapError.ProvisionFailed(clusterName.value(),
-                                                                                     "No bootstrap state found for resume"))
+        return BootstrapStatePersistence.read(clusterName)
+                                        .flatMap(state -> state.toResult(new BootstrapError.ProvisionFailed(clusterName.value(),
+                                                                                                            "No bootstrap state found for resume")))
                                         .flatMap(state -> validateResumeState(state, config))
                                         .flatMap(state -> resumeFromState(config, state, sshPublicKeys, rawTomlContent))
                                         .fold(cause -> Result.<BootstrapResult> failure(decorateAfterCleanup(clusterName,
@@ -199,26 +199,96 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                                                 Function<BootstrapContext, Result<BootstrapContext>> phaseFunc) {
         var inProgress = ctx.withState(ctx.state().withPhaseStatus(phase, PhaseStatus.IN_PROGRESS));
 
-        BootstrapStatePersistence.save(inProgress.state());
+        saveState(inProgress.state(), phase);
 
         return phaseFunc.apply(inProgress)
                         .map(result -> markPhaseCompleted(result, phase))
-                        .onFailure(cause -> markPhaseFailed(inProgress, phase));
+                        .onFailure(cause -> markPhaseFailed(inProgress.state(),
+                                                            phase));
     }
 
     private static BootstrapContext markPhaseCompleted(BootstrapContext result, BootstrapPhase phase) {
         var completed = result.withState(result.state().withPhaseStatus(phase, PhaseStatus.COMPLETED));
 
-        BootstrapStatePersistence.save(completed.state());
+        saveState(completed.state(), phase);
 
         return completed;
     }
 
+    /// #994 verification finding SF-1 — **the whole ledger mechanism rests on this write, and its `Result`
+    /// used to be discarded.** `BootstrapPhaseProvision.recordProvisionedVm` loads the state FILE, appends
+    /// the VM and saves; when the file is absent the load is empty and the append is a silent no-op. What
+    /// guarantees it is not absent is exactly this pre-phase save. If it fails and nobody says so, every
+    /// paid VM of the PROVISION phase is dropped from the ledger and #994 recurs with no diagnostic at all.
+    ///
+    /// It WARNS rather than aborting, deliberately. Aborting would fail closed at the wrong moment: a
+    /// bootstrap that could have succeeded is turned into a hard failure by a full disk in `~/.aether`,
+    /// and the phase has created nothing yet, so there is no money at stake to protect. What the operator
+    /// needs instead is to learn now, and `recordProvisionedVm` additionally prints every server id it
+    /// could not record — so the ids reach the transcript even when the ledger cannot hold them.
     @Contract
-    private static void markPhaseFailed(BootstrapContext ctx, BootstrapPhase phase) {
-        var failed = ctx.withState(ctx.state().withPhaseStatus(phase, PhaseStatus.FAILED));
+    private static void saveState(BootstrapState state, BootstrapPhase phase) {
+        var _ = BootstrapStatePersistence.save(state).onFailure(cause -> warnStateNotPersisted(state.clusterName(),
+                                                                                               phase,
+                                                                                               cause));
+    }
 
-        BootstrapStatePersistence.save(failed.state());
+    @Contract
+    private static void warnStateNotPersisted(ClusterName clusterName, BootstrapPhase phase, Cause cause) {
+        System.err.printf("  WARN: could not persist bootstrap state for cluster '%s' at phase %s: %s%n",
+                          clusterName,
+                          phase,
+                          cause.message());
+        System.err.printf("  The state file (%s) is teardown's ONLY record of created cloud resources. While it"
+                         + " cannot be written, resources this run creates will not be reapable by"
+                         + " 'aether cluster destroy' — every server id is printed as it is created so it can be"
+                         + " removed with tools/cloud-reaper.sh.%n",
+                          BootstrapStatePersistence.statePath(clusterName));
+    }
+
+    /// #994 — the FAILED marker must not ERASE what the failing phase already recorded. `preSnapshot` is
+    /// the state as it was BEFORE the phase ran, and PROVISION now appends each paid VM to the persisted
+    /// ledger as the provider reports it created (see `BootstrapPhaseProvision.recordProvisionedVm`), so
+    /// saving the snapshot would discard exactly the records teardown needs — which is how a
+    /// mid-PROVISION quota refusal stranded two running `ccx23` servers on 2026-09-11.
+    ///
+    /// The state FILE is the authority for created resources, so re-load it and mark the phase FAILED on
+    /// THAT, falling back to the snapshot only when nothing is persisted. Takes a `BootstrapState` rather
+    /// than a `BootstrapContext` so the preservation property is testable without a full config fixture.
+    ///
+    /// #994 verification finding SF-1 — **the fallback reads through
+    /// [BootstrapStatePersistence#read], not `load`, because "nothing persisted" and "unreadable" are
+    /// different facts and only one of them is safe to overwrite.** `load` collapses both to empty, and
+    /// over a TORN file the snapshot save then replaces the only record of paid VMs with a VM-less one
+    /// that is valid JSON — undetectable afterwards, and #994's outcome by another route. On an unreadable
+    /// ledger this now refuses to write at all: the bytes stay on disk for recovery and the operator is
+    /// told. There is no trade to weigh on this path — it runs only after the bootstrap has ALREADY
+    /// failed, so failing closed here cannot cost a run that would otherwise have succeeded.
+    @Contract
+    static void markPhaseFailed(BootstrapState preSnapshot, BootstrapPhase phase) {
+        var _ = BootstrapStatePersistence.read(preSnapshot.clusterName())
+                                         .onFailure(cause -> refuseToOverwriteUnreadableLedger(preSnapshot.clusterName(),
+                                                                                               phase,
+                                                                                               cause))
+                                         .onSuccess(persisted -> saveState(persisted.or(preSnapshot)
+                                                                                    .withPhaseStatus(phase,
+                                                                                                     PhaseStatus.FAILED),
+                                                                           phase));
+    }
+
+    @Contract
+    private static void refuseToOverwriteUnreadableLedger(ClusterName clusterName, BootstrapPhase phase, Cause cause) {
+        System.err.printf("  WARN: the bootstrap state file for cluster '%s' exists but cannot be read: %s%n",
+                          clusterName,
+                          cause.message());
+        System.err.printf("  REFUSING to mark %s as FAILED, because writing would replace the only record of this"
+                         + " run's created resources with a pre-phase snapshot that has none — and the result would"
+                         + " be valid JSON, so nothing afterwards could tell. The unreadable file is left at %s for"
+                         + " recovery.%n",
+                          phase,
+                          BootstrapStatePersistence.statePath(clusterName));
+        System.err.printf("  Reap whatever this run created with: tools/cloud-reaper.sh --cluster %s --destroy%n",
+                          clusterName);
     }
 
     static Cause decorateAfterCleanup(ClusterName clusterName, Cause cause, boolean keepOnFailure) {
@@ -235,17 +305,32 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         return new BootstrapError.BootstrapFailedWithOrphans(originalCause, cleanupCause.message());
     }
 
+    /// #994 verification finding SF-1 — reads through [BootstrapStatePersistence#read] so an UNPARSEABLE
+    /// ledger fails the cleanup instead of reading as "no resources were created". Under `load` the two
+    /// were the same empty `Option`, and a torn file therefore produced a silent, successful, zero-delete
+    /// teardown over resources that are still billing.
     private static Result<Unit> cleanupOnFailure(ClusterName clusterName) {
-        return BootstrapStatePersistence.load(clusterName)
-                                        .filter(state -> !state.createdResources()
-                                                               .isEmpty())
-                                        .map(state -> cleanupHook().apply(state))
-                                        .or(Result.unitResult());
+        return BootstrapStatePersistence.read(clusterName)
+                                        .mapError(cause -> new BootstrapError.LedgerUnreadable(clusterName, cause))
+                                        .flatMap(ClusterBootstrapOrchestrator::cleanupRecordedResources);
     }
 
+    private static Result<Unit> cleanupRecordedResources(Option<BootstrapState> state) {
+        return state.filter(persisted -> !persisted.createdResources()
+                                                   .isEmpty())
+                    .map(persisted -> cleanupHook().apply(persisted))
+                    .or(Result.unitResult());
+    }
+
+    /// `--keep-on-failure` reports from the ledger, so an unreadable ledger must be reported AS unreadable:
+    /// the counts it would otherwise print are zeros nobody measured, and this text is the operator's whole
+    /// basis for deciding what is still running (#994 verification finding SF-1, the same
+    /// absent-vs-unreadable conflation).
     @Contract
     private static void warnKeepOnFailure(ClusterName clusterName, Cause cause) {
-        var state = BootstrapStatePersistence.load(clusterName);
+        var read = BootstrapStatePersistence.read(clusterName).onFailure(parseCause -> warnLedgerUnreadableOnKeep(clusterName,
+                                                                                                                  parseCause));
+        var state = read.or(none());
         var resources = state.map(BootstrapState::createdResources).or(List.of());
         var vmCount = resources.stream().filter(r -> r instanceof CreatedResource.ProvisionedVm).count();
         var keyCount = resources.stream().filter(r -> r instanceof CreatedResource.SshKeyResource).count();
@@ -262,6 +347,16 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         System.err.println("[--keep-on-failure] To inspect: ssh aether@<vm-ip> (or root@). "
                           + "To clean up later: aether cluster destroy --cluster " + clusterName
                           + " --yes.");
+    }
+
+    @Contract
+    private static void warnLedgerUnreadableOnKeep(ClusterName clusterName, Cause cause) {
+        System.err.printf("[--keep-on-failure] WARNING: the state file is present but unreadable (%s), so the"
+                         + " counts below are NOT measured — they are what an empty ledger reports. Resources may"
+                         + " exist that nothing here can name; finish teardown with 'tools/cloud-reaper.sh"
+                         + " --cluster %s --destroy'.%n",
+                          cause.message(),
+                          clusterName);
     }
 
     private static String resolveFailedPhase(BootstrapState state) {
@@ -606,10 +701,29 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
             }
         }
 
+        /// #994 — `cleanupDetail` now carries `BootstrapCleanup.CleanupError`'s enumeration (type + id per
+        /// resource), so this message names what was left behind rather than saying "orphan resources may
+        /// remain" and leaving the operator to reconstruct the list from `hcloud server list`.
         record BootstrapFailedWithOrphans(Cause originalCause, String cleanupDetail) implements BootstrapError {
             @Override
             public String message() {
-                return originalCause.message() + " — cleanup failed, orphan resources may remain: " + cleanupDetail;
+                return originalCause.message() + " — cleanup failed, resources were left behind: " + cleanupDetail;
+            }
+        }
+
+        /// #994 verification finding SF-1 — the failure-path cleanup could not run because the state file
+        /// is present but unparseable. Distinct from "no state file", which is a success: there, nothing
+        /// was created that needs reaping. Here, resources may exist and their ids are in bytes nothing can
+        /// read, so this must surface as a cleanup FAILURE and reach the operator through
+        /// [BootstrapFailedWithOrphans] rather than letting a torn file read as a clean teardown.
+        record LedgerUnreadable(ClusterName clusterName, Cause origin) implements BootstrapError, Cause.Wrapped {
+            @Override
+            public String message() {
+                return "the bootstrap state file for cluster '" + clusterName
+                     + "' could not be read (" + origin.message()
+                     + "), so cleanup could not name a single resource to reap — run"
+                     + " 'tools/cloud-reaper.sh --cluster " + clusterName
+                     + " --destroy' to finish teardown";
             }
         }
     }
