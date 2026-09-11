@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.net.URI;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -19,6 +20,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -55,7 +57,11 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// picocli's `@Option` annotation — the same reason the previous declaration was fully qualified.
     static Function<ClusterName, Result<org.pragmatica.lang.Option<BootstrapState>>> stateLoader = BootstrapStatePersistence::read;
 
-    static Function<BootstrapState, Result<Unit>> resourceCleaner = BootstrapCleanup::cleanup;
+    /// #997 — points at [#cleanupLedgerAroundVmSweep], not `BootstrapCleanup::cleanup`, so the
+    /// cluster-labelled VM sweep runs INSIDE the ledger walk (between the last VM delete and the firewall
+    /// delete) instead of after it. The seam's TYPE is unchanged, so every test that injects a
+    /// `state -> Result` cleaner still does.
+    static Function<BootstrapState, Result<Unit>> resourceCleaner = ClusterDestroyCommand::cleanupLedgerAroundVmSweep;
 
     /// #481 — cluster-scoped ssh-key sweep seam, called AFTER the state-based cleanup so recorded keys
     /// already deleted are tolerated. Deletes account keys named `aether-bootstrap-<cluster>-*` (the
@@ -85,9 +91,20 @@ class ClusterDestroyCommand implements Callable<Integer> {
     @Option(names = "--cluster", description = "Override active cluster — destroy named cluster instead (CLI > active-context)")
     private String clusterNameOverride;
 
+    /// #998 — the opt-in for a destroy that CANNOT reach its own cluster. Enumeration failure used to be
+    /// absorbed into an empty node list, which silently skipped DRAIN_NODES and SHUTDOWN_NODES and deleted
+    /// the VMs anyway; an undrained destroy is now a refusal the operator has to override by name.
+    @Option(names = "--force-undrained", description = "Destroy even if the cluster's nodes cannot be enumerated — VMs are deleted WITHOUT a graceful drain")
+    private boolean forceUndrained;
+
     @Contract
     void setKeepResources(boolean value) {
         this.keepResources = value;
+    }
+
+    @Contract
+    void setForceUndrained(boolean value) {
+        this.forceUndrained = value;
     }
 
     @Contract
@@ -159,17 +176,52 @@ class ClusterDestroyCommand implements Callable<Integer> {
             return Result.success(ExitCode.ERROR);
         }
 
-        applyEndpointOverride(entry);
+        var endpoint = installTargetOverrides(entry, clusterName);
 
-        return performDestruction(registry, clusterName);
+        return performDestruction(registry, clusterName, endpoint);
     }
 
-    private static void applyEndpointOverride(ClusterRegistry.ClusterEntry entry) {
-        if (entry.endpoint() == null || entry.endpoint().isBlank()) {
-            return;
-        }
+    /// #998 — points EVERY management call this destroy makes at the cluster being destroyed, and returns
+    /// that target endpoint (or the refusal) so node enumeration can be skipped rather than misdirected.
+    ///
+    /// Both halves were cross-cluster leaks through [ClusterHttpClient]'s registry fallbacks, and the
+    /// endpoint half is why fixing the missing port alone would NOT have made the observed command work:
+    ///
+    /// - **Endpoint.** A `--cluster X` whose registry entry is absent or blank got no override installed at
+    ///   all, so `resolveEndpoint()` fell through to `registry.current()` — the ACTIVE cluster. Destroy
+    ///   would then enumerate, DRAIN and SHUT DOWN a different, healthy cluster's nodes while reaping X's
+    ///   cloud resources. `findOrSynthesizeEntry` exists so a cluster whose entry is already gone can still
+    ///   have its resources reaped; it must not also borrow somebody else's nodes.
+    /// - **API key.** `resolveApiKey()` reads `registry.current()`'s `api_key_env` too, so a
+    ///   `--cluster X` destroy presented the ACTIVE cluster's credential to X and earned a 401. The target's
+    ///   own key is installed here, file first (the same `~/.aether/clusters/<name>/api-key` path
+    ///   [ClusterTargetMixin] installs) then its recorded `api_key_env`.
+    ///
+    /// Residual, stated rather than hidden: when the target has neither a key file nor an `api_key_env`,
+    /// no override is installed and `resolveApiKey()` still falls back to the active cluster's key. That
+    /// now surfaces as an enumeration failure and a refusal instead of a silently undrained destroy.
+    private Result<String> installTargetOverrides(ClusterRegistry.ClusterEntry entry, ClusterName clusterName) {
+        installTargetApiKey(entry, clusterName);
 
-        ClusterHttpClient.setEndpointOverride(entry.endpoint());
+        return targetEndpoint(entry).onSuccess(ClusterHttpClient::setEndpointOverride);
+    }
+
+    private static Result<String> targetEndpoint(ClusterRegistry.ClusterEntry entry) {
+        return option(entry.endpoint()).filter(endpoint -> !endpoint.isBlank())
+                     .toResult(DestroyError.General.NO_TARGET_ENDPOINT);
+    }
+
+    @Contract
+    private static void installTargetApiKey(ClusterRegistry.ClusterEntry entry, ClusterName clusterName) {
+        ClusterTargetMixin.readApiKeyFile(clusterName.value())
+                          .option()
+                          .orElse(() -> recordedApiKey(entry))
+                          .onPresent(ClusterHttpClient::setApiKeyOverride);
+    }
+
+    private static org.pragmatica.lang.Option<String> recordedApiKey(ClusterRegistry.ClusterEntry entry) {
+        return entry.apiKeyEnv()
+                    .flatMap(envName -> option(System.getenv(envName)));
     }
 
     /// #995 — against a healthy 3-node cloud cluster this emitted NOTHING for ~2.5 minutes and deleted
@@ -190,14 +242,54 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// deliverable — left all 724 tests green (measured, probe V3). The PHASE SEQUENCE was unpinned for the
     /// same reason: the order these five run in is the property the announcement describes, and nothing
     /// checked it.
-    Result<Integer> performDestruction(ClusterRegistry registry, ClusterName clusterName) {
+    ///
+    /// #998 — enumeration is now a GATE, not a best-effort first step. A failure routes to
+    /// [#onEnumerationFailed] instead of being flattened into an empty node list, because the two states it
+    /// used to merge have opposite consequences: a cluster that genuinely has no nodes needs no drain, and a
+    /// cluster that cannot be reached needs one it cannot get.
+    Result<Integer> performDestruction(ClusterRegistry registry, ClusterName clusterName, Result<String> endpoint) {
         announceDestroyPlan(clusterName);
-        var nodeIds = fetchNodeIds();
+
+        return fetchNodeIds(endpoint).fold(_ -> onEnumerationFailed(registry, clusterName, endpoint),
+                                           nodeIds -> destroyEnumerated(registry, clusterName, nodeIds));
+    }
+
+    private Result<Integer> destroyEnumerated(ClusterRegistry registry, ClusterName clusterName, List<String> nodeIds) {
         var drainResults = drainAllNodes(nodeIds);
         var shutdownResults = shutdownAllNodes(nodeIds);
         var cleanupOk = cleanupCloudResources(clusterName);
 
         return finalizeDestruction(registry, clusterName, cleanupOk, nodeIds, drainResults, shutdownResults);
+    }
+
+    /// #998 expectation 2 — an enumeration failure stops the destroy BEFORE anything is deleted, so the
+    /// cluster, its VMs and its registry entry all survive for a retry. `--force-undrained` is the operator
+    /// saying the undrained teardown is what they want; it is not the default, because the default used to
+    /// delete three paid VMs without draining any of them and report `Drains succeeded: 0/0`.
+    private Result<Integer> onEnumerationFailed(ClusterRegistry registry,
+                                                ClusterName clusterName,
+                                                Result<String> endpoint) {
+        if (forceUndrained) {
+            System.out.println("  --force-undrained: continuing with an EMPTY node list. Drain and shutdown are"
+                              + " skipped and the VMs are deleted without a graceful drain, as requested.");
+
+            return destroyEnumerated(registry, clusterName, List.of());
+        }
+
+        return Result.success(refuseUndrainedDestroy(clusterName, endpoint));
+    }
+
+    private static int refuseUndrainedDestroy(ClusterName clusterName, Result<String> endpoint) {
+        System.err.printf("  REFUSING to destroy '%s': its nodes could not be enumerated, so nothing can be"
+                         + " drained or shut down. NOTHING has been deleted and the registry entry is kept —"
+                         + " no VM, firewall, key or ledger was touched.%n",
+                          clusterName);
+        endpointDiagnostic(endpoint).onPresent(hint -> System.err.println("  " + hint));
+        System.err.printf("  Repair the endpoint and re-run, or accept an undrained teardown explicitly:"
+                         + " aether cluster destroy --cluster %s --yes --force-undrained%n",
+                          clusterName);
+
+        return ExitCode.ERROR;
     }
 
     /// #995 expectation 3 — "if it can take minutes, say so before the wait begins". The figures are read
@@ -308,33 +400,45 @@ class ClusterDestroyCommand implements Callable<Integer> {
         return true;
     }
 
+    /// #997 — the VM sweep is no longer a step that follows the ledger cleanup; it runs INSIDE it, between
+    /// the last VM-rank delete and the firewall delete (see [#cleanupLedgerAroundVmSweep]). It therefore no
+    /// longer contributes its own boolean here: a sweep failure fails the cleanup it is part of.
     private boolean runCleanup(BootstrapState state) {
         var cleanupOk = runResourceCleanup(state);
-        // RFC-0017 stage 6 / C3 — VM sweep AFTER the state-based cleanup (cores die first, killing
-        // the worker reconciler that would otherwise re-provision what the sweep reaps) and BEFORE
-        // the key sweep. Catches cluster-provisioned workers and auto-heal replacements the
-        // bootstrap state never recorded.
-        var vmSweepOk = runVmSweep(state);
         var sweepOk = runSshKeySweep(state);
 
-        return cleanupOk
-               && vmSweepOk
-               && sweepOk;
+        return cleanupOk && sweepOk;
     }
 
-    private boolean runVmSweep(BootstrapState state) {
+    /// #997 — the ledger walk with the cluster-labelled VM sweep wired into it, which is the whole fix:
+    /// `resourceCleaner` deleted the firewall and the sweep ran afterwards, so a VM the ledger never
+    /// recorded held the firewall through all 6 delete attempts, failed them, and was then swept away —
+    /// stranding the firewall, the one resource the ordering existed to protect.
+    ///
+    /// RFC-0017 stage 6 / C3's constraint is preserved and is the reason the hook fires where it does
+    /// rather than first: the ledger's VMs (the CORES among them) are deleted before it, so the leader's
+    /// worker reconciler is already dead and cannot re-provision what the sweep reaps. Order is now
+    /// cores -> label-swept VMs -> firewall -> keys, satisfying both constraints at once.
+    private static Result<Unit> cleanupLedgerAroundVmSweep(BootstrapState state) {
+        return BootstrapCleanup.cleanupWithVmSweep(state, () -> sweepClusterLabelledVms(state));
+    }
+
+    private static Result<Unit> sweepClusterLabelledVms(BootstrapState state) {
         return vmSweeper.apply(state,
                                state.clusterName())
                         .onFailure(c -> System.err.println("VM sweep failed: " + c.message()))
-                        .onSuccess(_ -> System.out.println("VM sweep complete."))
-                        .isSuccess();
+                        .onSuccess(_ -> System.out.println("VM sweep complete."));
     }
 
     private boolean runResourceCleanup(BootstrapState state) {
         if (state.createdResources().isEmpty()) {
-            System.out.println("Bootstrap state has no created resources — nothing to clean up.");
+            // #997 — the sweep still runs. An empty ledger is EXACTLY the state in which unrecorded VMs are
+            // billing (#994's observed failure), so skipping the label sweep here would skip it in the one
+            // case it was built for. There is no firewall in an empty ledger to order it against.
+            System.out.println("Bootstrap state has no created resources — nothing to clean up from the"
+                              + " ledger; the cluster-labelled VM sweep still runs.");
 
-            return true;
+            return sweepClusterLabelledVms(state).isSuccess();
         }
 
         System.out.printf("Cleaning up %d created resources from bootstrap state...%n",
@@ -366,18 +470,26 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// [#requestTimeoutSeconds] before it gives up, and its failure was swallowed by `.or(List.of())`
     /// with no message at all. It now says what it is about to wait for and for how long, and reports a
     /// failure instead of continuing as if the cluster had no nodes.
-    List<String> fetchNodeIds() {
+    /// #998 — takes the destroy TARGET's endpoint rather than re-reading
+    /// [ClusterHttpClient#resolveEndpoint], so the endpoint announced is the one the request will use and a
+    /// target with no recorded endpoint short-circuits here instead of silently querying the active
+    /// cluster. The `Result` is returned rather than flattened by `.or(List.of())`: that flattening is what
+    /// made an unreachable cluster indistinguishable from an empty one.
+    Result<List<String>> fetchNodeIds(Result<String> endpoint) {
         logPhase(DestroyPhase.ENUMERATE_NODES,
                  String.format("Listing cluster nodes from %s (one request, timeout %ds)",
-                               ClusterHttpClient.resolveEndpoint().or("<no endpoint resolved>"),
+                               endpoint.or("<no endpoint resolved>"),
                                requestTimeoutSeconds()));
 
+        return endpoint.flatMap(_ -> listNodes())
+                       .onFailure(cause -> warnNodeEnumerationFailed(cause, endpoint))
+                       .onSuccess(ClusterDestroyCommand::reportNodesFound);
+    }
+
+    private static Result<List<String>> listNodes() {
         return ClusterHttpClient.fetch(NODE_LIFECYCLE_LIST)
                                 .flatMap(MAPPER::readTree)
-                                .map(ClusterDestroyCommand::extractNodeIds)
-                                .onFailure(ClusterDestroyCommand::warnNodeEnumerationFailed)
-                                .onSuccess(ClusterDestroyCommand::reportNodesFound)
-                                .or(List.of());
+                                .map(ClusterDestroyCommand::extractNodeIds);
     }
 
     @Contract
@@ -386,15 +498,41 @@ class ClusterDestroyCommand implements Callable<Integer> {
     }
 
     /// Names the consequence, not just the error: with no node list the drain and shutdown phases have
-    /// nothing to act on, so the nodes are destroyed WITHOUT a graceful drain. That is a different
-    /// outcome from a successful destroy and the operator has to be told, because cloud cleanup still
-    /// proceeds from the bootstrap ledger and the command can still exit 0.
+    /// nothing to act on, so continuing would destroy the nodes WITHOUT a graceful drain.
+    ///
+    /// #998 — it no longer says "Proceeding to cloud resource cleanup", because that is no longer what
+    /// happens: the caller refuses unless `--force-undrained` was given. A diagnostic that narrates the
+    /// wrong next step is the class #994 ended.
     @Contract
-    private static void warnNodeEnumerationFailed(Cause cause) {
+    private static void warnNodeEnumerationFailed(Cause cause, Result<String> endpoint) {
         System.err.println("  WARN: could not list cluster nodes: " + cause.message());
-        System.err.println("  Proceeding to cloud resource cleanup with an EMPTY node list — drain and"
-                          + " shutdown are skipped, so nodes are deleted without a graceful drain."
-                          + " Resources recorded at bootstrap are still reaped.");
+        System.err.println("  Without a node list there is nothing to drain and nothing to shut down, so"
+                          + " continuing would delete this cluster's VMs without a graceful drain.");
+        endpointDiagnostic(endpoint).onPresent(hint -> System.err.println("  " + hint));
+    }
+
+    /// #998 — the OBSERVED shape of the endpoint, offered only when it is genuinely port-less. An endpoint
+    /// with no explicit port sends the request to the scheme default — 443 under `https`, 80 under `http` —
+    /// and an Aether management API listens on `operations.ports.management`, 8080 by default. Every entry
+    /// written before the [BootstrapPhasePost#managementEndpoint] fix is port-less, so this is the line that
+    /// turns a bare `ConnectException` into something an operator can act on. It reports what the endpoint
+    /// IS and does not assert that the port is the cause.
+    private static org.pragmatica.lang.Option<String> endpointDiagnostic(Result<String> endpoint) {
+        return endpoint.option()
+                       .flatMap(ClusterDestroyCommand::portlessEndpointNote);
+    }
+
+    private static org.pragmatica.lang.Option<String> portlessEndpointNote(String endpoint) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> URI.create(endpoint).getPort())
+                     .option()
+                     .filter(port -> port < 0)
+                     .map(_ -> "NOTE: the endpoint '" + endpoint
+                              + "' carries NO explicit port, so the request"
+                              + " went to this scheme's default (443 for https, 80 for http). An Aether"
+                              + " management API listens on operations.ports.management, 8080 by default."
+                              + " Clusters registered before the #998 fix have a port-less entry: add the port"
+                              + " to ~/.aether/clusters.toml and re-run.");
     }
 
     private static List<String> extractNodeIds(JsonNode root) {
@@ -584,4 +722,23 @@ class ClusterDestroyCommand implements Callable<Integer> {
     }
 
     record NodeResult(String nodeId, boolean success) {}
+
+    /// #998 — destroy's own refusals, as causes rather than as printed text, so the enumeration gate can
+    /// FAIL for a reason instead of producing an empty list that looks like a healthy empty cluster.
+    sealed interface DestroyError extends Cause {
+        enum General implements DestroyError {
+            NO_TARGET_ENDPOINT("no endpoint is recorded for this cluster, so its nodes cannot be enumerated."
+                              + " The active cluster's endpoint is deliberately NOT used as a fallback:"
+                              + " draining and shutting down a different cluster's nodes is worse than not"
+                              + " draining this one's");
+            private final String message;
+            General(String message) {
+                this.message = message;
+            }
+            @Override
+            public String message() {
+                return message;
+            }
+        }
+    }
 }

@@ -29,6 +29,7 @@ import org.pragmatica.cloud.hetzner.api.Server;
 import org.pragmatica.cloud.hetzner.api.Server.CreateServerRequest;
 import org.pragmatica.cloud.hetzner.api.SshKey;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -1198,6 +1199,162 @@ class BootstrapCleanupTest {
                                                     .withSleeper(_ -> {}));
     }
 
+    /// #997 — the same entry with the pre-firewall VM sweep wired in, which is what `cluster destroy` uses.
+    /// The two-argument form above is the BOOTSTRAP path and deliberately sweeps nothing.
+    private static Result<Unit> cleanupWithProviderAndSweep(BootstrapState state,
+                                                           ComputeProvider compute,
+                                                           Fn0<Result<Unit>> sweep) {
+        return BootstrapCleanup.cleanupWith(state,
+                                            BootstrapCleanup.CleanupResolvers.cleanupResolvers()
+                                                    .withCloudComputeFallback(_ -> Result.success(compute))
+                                                    .withSleeper(_ -> {}),
+                                            Option.some(sweep));
+    }
+
+    /// Records the sweep into the SAME ordered list the provider records its calls into, so the assertion is
+    /// about one interleaved sequence rather than about two independently-observed facts.
+    private static Result<Unit> recordSweep(List<String> calls) {
+        calls.add("sweep");
+
+        return Result.unitResult();
+    }
+
+    private static Result<Unit> failingSweep(List<String> calls) {
+        calls.add("sweep");
+
+        return new TestCause("a swept VM could not be deleted").result();
+    }
+
+    private static CreatedResource.CloudFirewall firewallResource() {
+        return CreatedResource.CloudFirewall.cloudFirewall("hetzner",
+                                                           FirewallId.firewallId("77").unwrap(),
+                                                           sourceNameOrDefault("hetzner-eu"),
+                                                           firewallName("aether-test-hetzner-eu").unwrap());
+    }
+
+    /// A ledger holding VMs and NO firewall — the case in which the rank walk never reaches
+    /// `SWEEP_BEFORE_RANK`, so the sweep can only run from the post-loop call.
+    private static BootstrapState stateWithVmOnly() {
+        return stateWith(List.of(new ProvisionedVm("hetzner", "vm-1", "hetzner-eu", "core")));
+    }
+
+    private static BootstrapState stateWithNoResources() {
+        return stateWith(List.of());
+    }
+
+    private static BootstrapState stateWith(List<CreatedResource> resources) {
+        var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
+        for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.COMPLETED);}
+
+        return BootstrapState.bootstrapState(CLUSTER_NAME,
+                                             "hash-1",
+                                             "2026-05-01T00:00:00Z",
+                                             phases,
+                                             resources,
+                                             List.of(),
+                                             List.of());
+    }
+
+    /// #997 — where the cluster-labelled VM sweep runs.
+    ///
+    /// The defect: `runCleanup` ran the ledger cleanup (which deletes the firewall) and only THEN the label
+    /// sweep. The sweep exists to reap VMs the ledger never recorded — stage-5 workers, auto-heal
+    /// replacements — so if one of those held the firewall, the firewall delete burned all 6 attempts,
+    /// FAILED, and the sweep then removed the VMs: leaving the firewall stranded, which is the one resource
+    /// the ordering existed to protect.
+    @Nested
+    class PreFirewallVmSweep {
+
+        /// #997 expectation 1, asserted on ONE interleaved call sequence. Both constraints hold at once:
+        /// the recorded VM (a core) dies first, so the leader's worker reconciler cannot re-provision what
+        /// the sweep reaps (RFC-0017 stage 6 / C3), and the sweep completes before the firewall delete is
+        /// attempted, so no unrecorded VM can hold it.
+        @Test
+        void cleanup_sweepsLabelledVms_afterTheRecordedVms_andBeforeTheFirewall() {
+            var calls = new ArrayList<String>();
+
+            var result = cleanupWithProviderAndSweep(stateWithVmThenFirewall(),
+                                                     new OrderRecordingComputeProvider(calls, 0),
+                                                     () -> recordSweep(calls));
+
+            assertTrue(result.isSuccess(), () -> "every step must succeed: " + result);
+            assertEquals(List.of("terminate:vm-1", "sweep", "disposeIngress:77"),
+                         calls,
+                         "cores -> label-swept VMs -> firewall. Move the sweep after the firewall and the "
+                         + "firewall delete 422s against a VM the ledger never recorded, then the sweep "
+                         + "deletes that VM and the firewall is stranded (#997).");
+        }
+
+        /// The insertion point is derived from the firewall's OWN rank, not restated as a literal. Pinned as
+        /// the strict invariant — VM rank is below it, firewall rank is at it — so re-ranking either resource
+        /// reddens this instead of silently sliding the sweep to the wrong side of the firewall.
+        @Test
+        void sweepBeforeRank_sitsStrictlyBetweenTheVmRankAndTheFirewallRank() {
+            var vmRank = BootstrapCleanup.destructionRank(new ProvisionedVm("hetzner", "vm-1", "hetzner-eu", "core"));
+            var firewallRank = BootstrapCleanup.destructionRank(firewallResource());
+
+            assertTrue(vmRank < BootstrapCleanup.SWEEP_BEFORE_RANK,
+                       () -> "the sweep must run after every VM-rank delete; vm=" + vmRank
+                             + " sweepBefore=" + BootstrapCleanup.SWEEP_BEFORE_RANK);
+            assertEquals(firewallRank,
+                         BootstrapCleanup.SWEEP_BEFORE_RANK,
+                         "and immediately before the firewall's own rank, read from destructionRank rather "
+                         + "than restated");
+        }
+
+        /// A ledger with VMs and no firewall never reaches `SWEEP_BEFORE_RANK` in the walk, so only the
+        /// post-loop call can run the sweep. Without it the sweep would be skipped for any cluster whose
+        /// firewall was recorded by something other than bootstrap.
+        @Test
+        void cleanup_runsTheSweepExactlyOnce_whenTheLedgerHasNoFirewall() {
+            var calls = new ArrayList<String>();
+
+            var result = cleanupWithProviderAndSweep(stateWithVmOnly(),
+                                                     new OrderRecordingComputeProvider(calls, 0),
+                                                     () -> recordSweep(calls));
+
+            assertTrue(result.isSuccess(), () -> "the VM delete and the sweep both succeed: " + result);
+            assertEquals(List.of("terminate:vm-1", "sweep"),
+                         calls,
+                         "exactly one sweep, after the VMs — not zero (walk never reaches the rank) and not "
+                         + "two (both the in-walk and the post-loop call firing)");
+        }
+
+        /// And with nothing in the ledger at all, which is precisely #994's observed state: every VM that
+        /// was created is unrecorded and billing, so the label sweep is the only thing that can find them.
+        @Test
+        void cleanup_runsTheSweepExactlyOnce_whenTheLedgerIsEmpty() {
+            var calls = new ArrayList<String>();
+
+            var result = cleanupWithProviderAndSweep(stateWithNoResources(),
+                                                     new OrderRecordingComputeProvider(calls, 0),
+                                                     () -> recordSweep(calls));
+
+            assertTrue(result.isSuccess(), () -> "an empty ledger plus a clean sweep is a success: " + result);
+            assertEquals(List.of("sweep"), calls, "the sweep is the only thing an empty ledger can do");
+        }
+
+        /// #997 expectation 2 — a failed sweep FAILS the cleanup, which is what keeps the bootstrap ledger on
+        /// disk. It used to be reported beside the cleanup: the ledger was deleted, and a second `destroy`
+        /// then found no state, printed "No bootstrap state — skipping resource cleanup", removed the
+        /// registry entry and exited 0 over VMs that were still billing.
+        @Test
+        void cleanup_fails_whenTheVmSweepFails() {
+            var calls = new ArrayList<String>();
+
+            var result = cleanupWithProviderAndSweep(stateWithVmThenFirewall(),
+                                                     new OrderRecordingComputeProvider(calls, 0),
+                                                     () -> failingSweep(calls));
+
+            assertTrue(result.isFailure(),
+                       () -> "a sweep that left a VM behind cannot report a successful cleanup: " + result);
+            assertEquals(List.of("terminate:vm-1", "sweep", "disposeIngress:77"),
+                         calls,
+                         "the walk still completes — the firewall delete is attempted and reports the "
+                         + "provider's own verdict rather than being skipped on a guess");
+        }
+    }
+
     @Nested
     class DestructionOrder {
 
@@ -1270,6 +1427,59 @@ class BootstrapCleanupTest {
                              + "explains the refusal; got:\n" + stdout());
             assertTrue(stdout().contains("resource_in_use"),
                        () -> "the provider's own refusal must be quoted verbatim, not paraphrased; got:\n" + stdout());
+        }
+
+        /// #997 — the reorder made the old wording FALSE, so the diagnostic had to learn about the sweep.
+        /// With an empty ledger it said "this cleanup has issued no server delete for it", which a sweep that
+        /// had just deleted three unrecorded VMs flatly contradicts — and then advised the operator to "check
+        /// for unrecorded VMs", which is the thing the sweep had already done. That is the #994 class exactly:
+        /// a diagnostic asserting an action instead of reporting an observation.
+        @Test
+        void cleanup_firewallRefusal_reportsThatTheVmSweepRan_whenItDid() {
+            var result = cleanupWithProviderAndSweep(stateWithFirewall(77L),
+                                                     new OrderRecordingComputeProvider(new ArrayList<>(), 99),
+                                                     () -> Result.unitResult());
+
+            assertTrue(result.isFailure(), "an undeletable firewall must still fail loudly");
+            assertTrue(stdout().contains("the cluster-labelled VM sweep ran before this delete and reported"
+                                         + " success"),
+                       () -> "the sweep is now part of the observed state preceding the refusal; got:\n" + stdout());
+            assertFalse(stdout().contains("this cleanup has issued no server delete"),
+                        () -> "and the unqualified claim is gone — the sweep DID issue deletes; got:\n" + stdout());
+        }
+
+        /// The FAILED verdict, which is the one that changes what an operator should look at: a VM the sweep
+        /// could not remove is a live candidate for what still holds the firewall.
+        @Test
+        void cleanup_firewallRefusal_reportsASweepFailure_asAPossibleHolder() {
+            var result = cleanupWithProviderAndSweep(stateWithFirewall(77L),
+                                                     new OrderRecordingComputeProvider(new ArrayList<>(), 99),
+                                                     () -> new TestCause("swept VM 42 would not delete").result());
+
+            assertTrue(result.isFailure(), "both the sweep and the firewall failed");
+            assertTrue(stdout().contains("the cluster-labelled VM sweep ran before this delete and FAILED"),
+                       () -> "a failed sweep is the most likely holder of a firewall that will not release; "
+                             + "got:\n" + stdout());
+        }
+
+        /// The NOT_RUN control, and the PROTECTED_CLUSTERS guarantee in one: the two-argument `cleanupWith` is
+        /// the BOOTSTRAP rollback path, and it sweeps nothing. That is why `sweepClusterVms`'s refusal of a
+        /// protected cluster — a `Result` FAILURE — cannot become a new bootstrap failure mode: the hook
+        /// defaults to a no-op rather than to the real sweep.
+        ///
+        /// Without this control the two tests above prove only that some clause is printed; they could not
+        /// distinguish a verdict that is read from one that is always the same string.
+        @Test
+        void cleanup_firewallRefusal_saysNoSweepRan_onTheBootstrapPath() {
+            var result = cleanupWithProvider(stateWithFirewall(77L),
+                                             new OrderRecordingComputeProvider(new ArrayList<>(), 99));
+
+            assertTrue(result.isFailure(), "an undeletable firewall must still fail loudly");
+            assertTrue(stdout().contains("no cluster-labelled VM sweep ran before this delete"),
+                       () -> "the bootstrap path must report the absence, not borrow the destroy path's "
+                             + "wording; got:\n" + stdout());
+            assertFalse(stdout().contains("VM sweep ran before this delete and reported success"),
+                        () -> "and must not claim a sweep it never performed; got:\n" + stdout());
         }
 
         /// Positive control for the assertion above: the SAME diagnostic, with VMs in the ledger that this
