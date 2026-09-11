@@ -71,4 +71,11 @@ public interface MetadataStore {
     /// Restore named references from a snapshot (bulk load).
     @Contract
     void restoreRefs(Map<String, BlockId> refs);
+
+    /// Restore the mutation epoch from a snapshot (bulk load), so a restarted store continues the
+    /// pre-restart sequence instead of counting up from zero (#1012). Raises the epoch to the
+    /// snapshot's value and NEVER lowers it: the epoch also names snapshot files, and a store that
+    /// has already moved past the snapshot must not be rewound into reusing names it has retired.
+    @Contract
+    void restoreEpoch(long epoch);
 }

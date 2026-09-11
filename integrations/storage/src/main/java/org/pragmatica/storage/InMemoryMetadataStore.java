@@ -157,4 +157,10 @@ final class InMemoryMetadataStore implements MetadataStore {
         refs.putAll(newRefs);
         epoch.incrementAndGet();
     }
+
+    @Override
+    @Contract
+    public void restoreEpoch(long snapshotEpoch) {
+        epoch.updateAndGet(current -> Math.max(current, snapshotEpoch));
+    }
 }

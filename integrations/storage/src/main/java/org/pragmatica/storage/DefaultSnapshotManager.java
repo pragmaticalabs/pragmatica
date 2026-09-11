@@ -17,6 +17,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.parse.Number;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -175,10 +176,34 @@ final class DefaultSnapshotManager implements SnapshotManager {
             return Result.unitResult();
         }
 
-        return Result.allOf(snapshots.subList(0,
-                                              snapshots.size() - config.retentionCount())
-                                     .stream()
-                                     .map(DefaultSnapshotManager::deleteSnapshotFile)).mapToUnit();
+        return Result.allOf(prunableVictims(snapshots).stream().map(DefaultSnapshotManager::deleteSnapshotFile)).mapToUnit();
+    }
+
+    /// #1012: the oldest files beyond the retention count, MINUS whatever `LATEST` currently names.
+    /// The live pointer's target is off limits wherever its epoch sorts. A restart resets the
+    /// metadata epoch, so a freshly written snapshot can carry a LOWER epoch than every retained
+    /// predecessor and land in this very prefix; deleting it leaves `LATEST` dangling, which no
+    /// later boot can restore from -- self-perpetuating durable-state corruption rather than the
+    /// loss of one file. Retention is unaffected in the ordinary case, where `LATEST` names the
+    /// newest file and is therefore never inside the prefix. An unreadable `LATEST` yields the
+    /// unfiltered prefix: with no live pointer there is nothing to protect, and refusing to prune
+    /// would let the directory grow without bound. [#readLatestSnapshotPath] logs that absence.
+    private List<Path> prunableVictims(List<Path> snapshots) {
+        var victims = snapshots.subList(0,
+                                        snapshots.size() - config.retentionCount());
+
+        return readLatestSnapshotPath().map(latest -> excludingLatest(victims, latest))
+                                     .or(victims);
+    }
+
+    /// Compared by file name rather than by whole path: both sides are resolved against
+    /// [SnapshotConfig#snapshotPath], so the names identify the same file exactly, without depending
+    /// on how the directory listing spelled its entries.
+    private static List<Path> excludingLatest(List<Path> victims, Path latest) {
+        return victims.stream()
+                      .filter(path -> !path.getFileName()
+                                           .equals(latest.getFileName()))
+                      .toList();
     }
 
     private static Result<Boolean> deleteSnapshotFile(Path file) {
@@ -190,12 +215,27 @@ final class DefaultSnapshotManager implements SnapshotManager {
                    .map(DefaultSnapshotManager::sortedSnapshotFiles);
     }
 
+    /// #1012: order by the epoch the name ENCODES, never by the name itself. [#snapshotFileName]
+    /// zero-pads to six digits, so lexicographic order agrees with numeric order only while the
+    /// epoch stays below 1_000_000; past that boundary `snapshot-1000000.dat` sorts BEFORE
+    /// `snapshot-999999.dat` and pruning starts deleting the newest snapshots first.
     private static List<Path> sortedSnapshotFiles(List<Path> entries) {
         return entries.stream()
                       .filter(DefaultSnapshotManager::isSnapshotFile)
-                      .sorted(Comparator.comparing(p -> p.getFileName()
-                                                         .toString()))
+                      .sorted(Comparator.comparingLong(DefaultSnapshotManager::snapshotEpochOf))
                       .toList();
+    }
+
+    /// The epoch encoded between [#SNAPSHOT_PREFIX] and [#SNAPSHOT_SUFFIX]. A name carrying no
+    /// parsable epoch sorts oldest, so foreign files in the snapshot directory are pruned ahead of
+    /// any real snapshot -- and are still never deleted while `LATEST` names one, because
+    /// [#prunableVictims] excludes the live target regardless of where it sorts.
+    private static long snapshotEpochOf(Path path) {
+        var name = path.getFileName().toString();
+        var digits = name.substring(SNAPSHOT_PREFIX.length(),
+                                    name.length() - SNAPSHOT_SUFFIX.length());
+
+        return Number.parseLong(digits).or(Long.MIN_VALUE);
     }
 
     private static boolean isSnapshotFile(Path path) {

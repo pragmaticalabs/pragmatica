@@ -768,6 +768,12 @@ public final class StorageFactory {
     private static void applySnapshot(String name, MetadataSnapshot snapshot, MetadataStore metadataStore) {
         metadataStore.restoreLifecycles(snapshot.lifecycles());
         metadataStore.restoreRefs(snapshot.refs());
+        // #1012: the restored epoch has to reach the store, not just the log line below. The two
+        // calls above only INCREMENT a store that starts at zero, so without this the epoch
+        // restarted near zero on every boot and `DefaultSnapshotManager` wrote the next snapshot
+        // under a file name lower than every retained predecessor. Applied last, because both
+        // restore calls bump the epoch themselves.
+        metadataStore.restoreEpoch(snapshot.epoch());
         log.info("Restored snapshot for '{}': epoch={}, lifecycles={}, refs={}",
                  name,
                  snapshot.epoch(),
