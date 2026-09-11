@@ -153,7 +153,14 @@ base_port = 6000             # Base QUIC/consensus UDP port (node i binds base_p
 management_port = 5150       # Base management port
 dashboard_port = 8888        # Dashboard port
 app_http_port = 8070         # Base app HTTP port (load target)
+start_timeout_seconds = 60   # How long to wait for the cluster to finish forming before exiting
 ```
+
+If the cluster does not finish forming inside `start_timeout_seconds`, Forge exits non-zero and
+reports what it had reached at the deadline — how many nodes were consensus-active, the leader (or
+`none`), each node with its state and QUIC port, and any per-node start failure. Raise the value if
+formation on your host is merely slow; a stale `AETHER_HOME/forge-data` directory is a common reason
+for formation to consume the whole budget.
 
 ### Running two Forge instances on one host
 
