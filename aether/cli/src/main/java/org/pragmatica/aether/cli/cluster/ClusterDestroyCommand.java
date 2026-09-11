@@ -257,9 +257,12 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
         prepareClusterTrust(endpoint, state);
 
-        return fetchNodeIds(endpoint, siblingEndpoints(endpoint, state))
-                   .fold(_ -> onEnumerationFailed(registry, clusterName, endpoint),
-                         nodeIds -> destroyEnumerated(registry, clusterName, nodeIds));
+        return fetchNodeIds(endpoint, siblingEndpoints(endpoint, state)).fold(_ -> onEnumerationFailed(registry,
+                                                                                                       clusterName,
+                                                                                                       endpoint),
+                                                                              nodeIds -> destroyEnumerated(registry,
+                                                                                                           clusterName,
+                                                                                                           nodeIds));
     }
 
     /// An unreadable ledger arrives here as ABSENT, which is deliberate and is NOT a softening of #994's
@@ -516,7 +519,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
     @Contract
     private static void installTrustForHttps(org.pragmatica.lang.Option<BootstrapState> state) {
         recordedClusterSecret(state).onPresent(ClusterDestroyCommand::installDerivedTrust)
-                                    .onEmpty(ClusterDestroyCommand::warnNoRecordedClusterSecret);
+                             .onEmpty(ClusterDestroyCommand::warnNoRecordedClusterSecret);
     }
 
     private static org.pragmatica.lang.Option<String> recordedClusterSecret(org.pragmatica.lang.Option<BootstrapState> state) {
@@ -562,10 +565,10 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// `ManagementServer.tryForwardIfNotLeader` FORWARDS the request when the receiving node is not the
     /// leader. `NODE_DRAIN` and `NODE_SHUTDOWN` forward the same way, which is why the endpoint that
     /// answers is kept as the override for the rest of the destroy.
-    static List<String> siblingEndpoints(Result<String> endpoint,
-                                         org.pragmatica.lang.Option<BootstrapState> state) {
+    static List<String> siblingEndpoints(Result<String> endpoint, org.pragmatica.lang.Option<BootstrapState> state) {
         return endpoint.option()
-                       .map(primary -> hostSubstitutedEndpoints(primary, collectedAddresses(state)))
+                       .map(primary -> hostSubstitutedEndpoints(primary,
+                                                                collectedAddresses(state)))
                        .or(List.of());
     }
 
@@ -576,8 +579,8 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
     private static List<String> hostSubstitutedEndpoints(String primary, List<String> addresses) {
         return parseEndpoint(primary).filter(ClusterDestroyCommand::hasHttpScheme)
-                                     .map(uri -> substituteHosts(uri, primary, addresses))
-                                     .or(List.of());
+                            .map(uri -> substituteHosts(uri, primary, addresses))
+                            .or(List.of());
     }
 
     private static org.pragmatica.lang.Option<URI> parseEndpoint(String endpoint) {
@@ -622,8 +625,9 @@ class ClusterDestroyCommand implements Callable<Integer> {
     Result<List<String>> fetchNodeIds(Result<String> endpoint, List<String> siblings) {
         logPhase(DestroyPhase.ENUMERATE_NODES, enumerationAnnouncement(endpoint, siblings));
 
-        return firstSuccessfulEnumeration(endpoint, siblings).onFailure(cause -> warnNodeEnumerationFailed(cause, endpoint))
-                                                             .onSuccess(ClusterDestroyCommand::reportNodesFound);
+        return firstSuccessfulEnumeration(endpoint, siblings).onFailure(cause -> warnNodeEnumerationFailed(cause,
+                                                                                                           endpoint))
+                                         .onSuccess(ClusterDestroyCommand::reportNodesFound);
     }
 
     /// The first candidate that answers KEEPS the endpoint override, so DRAIN and SHUTDOWN follow the node
@@ -646,7 +650,6 @@ class ClusterDestroyCommand implements Callable<Integer> {
                                                               Result<String> endpoint,
                                                               List<String> siblings) {
         announceSiblingFallback(primary, siblings);
-
         for (var candidate : siblings) {
             var attempt = enumerateFrom(candidate);
 
@@ -665,7 +668,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
         ClusterHttpClient.setEndpointOverride(candidate);
 
         return listNodes().onSuccess(_ -> reportSiblingSucceeded(candidate))
-                          .onFailure(cause -> reportSiblingFailed(candidate, cause));
+                        .onFailure(cause -> reportSiblingFailed(candidate, cause));
     }
 
     @Contract
