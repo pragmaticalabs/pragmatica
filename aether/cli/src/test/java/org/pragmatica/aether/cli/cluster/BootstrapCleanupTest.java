@@ -5,6 +5,9 @@
 
 package org.pragmatica.aether.cli.cluster;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
@@ -31,6 +34,9 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
@@ -1050,6 +1056,215 @@ class BootstrapCleanupTest {
 
         private static AssertionError fail(String name) {
             return new AssertionError("Test stub: '" + name + "' must not be called by SSH-key cleanup");
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // #994 — delete ORDER, the honest refusal diagnostic, and the enumeration of what was left behind.
+    // ---------------------------------------------------------------------------------------------
+
+    /// Records VM terminations and firewall disposals into ONE ordered list, so a test can assert the
+    /// ORDER of provider calls rather than merely that both happened. `firewallRefusals` scripts a firewall
+    /// the provider will not release, which is the only way to reach the retry diagnostic and the
+    /// left-behind enumeration.
+    static final class OrderRecordingComputeProvider implements ComputeProvider {
+        private final List<String> calls;
+        private int firewallRefusals;
+
+        OrderRecordingComputeProvider(List<String> calls, int firewallRefusals) {
+            this.calls = calls;
+            this.firewallRefusals = firewallRefusals;
+        }
+
+        @Override public Promise<Unit> terminate(InstanceId instanceId) {
+            calls.add("terminate:" + instanceId.value());
+
+            return Promise.success(Unit.unit());
+        }
+
+        @Override public Promise<Unit> disposeIngress(FirewallId ingressId) {
+            calls.add("disposeIngress:" + ingressId.value());
+
+            if (firewallRefusals > 0) {
+                firewallRefusals--;
+
+                return new HetznerError.ApiError(422,
+                                                 "resource_in_use",
+                                                 "firewall with ID " + ingressId.value() + " is still in use").promise();
+            }
+
+            return Promise.success(Unit.unit());
+        }
+
+        @Override public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+            return new TestCause("provision not used").promise();
+        }
+
+        @Override public Promise<List<InstanceInfo>> listInstances() {
+            return Promise.success(List.of());
+        }
+
+        @Override public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
+            return new TestCause("instanceStatus not used").promise();
+        }
+    }
+
+    /// A ledger that records the VM FIRST and the firewall SECOND. This ordering is what makes the rank
+    /// sort load-bearing: `cleanupWith` reverses creation order, so reverse-of-creation ALONE would issue
+    /// the firewall delete first — exactly the 422 sequence #994 reports. Only `destructionRank` puts the
+    /// VM back in front, so removing or inverting that sort reddens the test below.
+    private static BootstrapState stateWithVmThenFirewall() {
+        var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
+        for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.COMPLETED);}
+        var resources = List.<CreatedResource>of(new ProvisionedVm("hetzner", "vm-1", "hetzner-eu", "core"),
+                                                 CreatedResource.CloudFirewall.cloudFirewall("hetzner",
+                                                                                             FirewallId.firewallId("77").unwrap(),
+                                                                                             sourceNameOrDefault("hetzner-eu"),
+                                                                                             firewallName("aether-test-hetzner-eu").unwrap()));
+        return BootstrapState.bootstrapState(CLUSTER_NAME,
+                                             "hash-1",
+                                             "2026-05-01T00:00:00Z",
+                                             phases,
+                                             resources,
+                                             List.of(),
+                                             List.of());
+    }
+
+    private static Result<Unit> cleanupWithProvider(BootstrapState state, ComputeProvider compute) {
+        return BootstrapCleanup.cleanupWith(state,
+                                            BootstrapCleanup.CleanupResolvers.cleanupResolvers()
+                                                    .withCloudComputeFallback(_ -> Result.success(compute))
+                                                    .withSleeper(_ -> {}));
+    }
+
+    @Nested
+    class DestructionOrder {
+
+        /// #994 expectation 1. Hetzner refuses to delete a firewall still applied to a live server, so every
+        /// server must be deleted BEFORE the thing it references. Asserted on the ORDER of provider calls,
+        /// against a ledger whose record order is the opposite — so the guarantee comes from the rank sort
+        /// and not from an accident of which phase recorded first.
+        @Test
+        void cleanup_deletesVmBeforeFirewall_whenLedgerRecordsVmFirst() {
+            var calls = new ArrayList<String>();
+
+            var result = cleanupWithProvider(stateWithVmThenFirewall(), new OrderRecordingComputeProvider(calls, 0));
+
+            assertTrue(result.isSuccess(), () -> "both deletes must succeed: " + result);
+            assertEquals(List.of("terminate:vm-1", "disposeIngress:77"),
+                         calls,
+                         "VMs must be deleted BEFORE the firewall they hold; the reverse order is the 422 "
+                         + "resource_in_use sequence that stranded two paid servers on 2026-09-11");
+        }
+    }
+
+    @Nested
+    class FirewallRefusalDiagnostic {
+
+        private final ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+        private final ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        private PrintStream originalOut;
+
+        private PrintStream originalErr;
+
+        @BeforeEach
+        void captureStreams() {
+            originalOut = System.out;
+            originalErr = System.err;
+            System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
+            System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
+        }
+
+        @AfterEach
+        void restoreStreams() {
+            System.setOut(originalOut);
+            System.setErr(originalErr);
+        }
+
+        private String stdout() {
+            return out.toString(StandardCharsets.UTF_8);
+        }
+
+        private String stderr() {
+            return err.toString(StandardCharsets.UTF_8);
+        }
+
+        /// #994 expectation 2 — the retry line used to read "servers are still detaching; retrying...", which
+        /// asserted a mechanism that was NOT running: the ledger held no VMs, so no server delete had been
+        /// issued and nothing was detaching. That sent an operator to look at server shutdown while the real
+        /// problem was the ledger. The replacement states only what was observed.
+        @Test
+        void cleanup_firewallRefusal_statesObservedState_neverADetachingProcess() {
+            var result = cleanupWithProvider(stateWithFirewall(77L),
+                                             new OrderRecordingComputeProvider(new ArrayList<>(), 99));
+
+            assertTrue(result.isFailure(), "an undeletable firewall must still fail loudly");
+            assertFalse(stdout().contains("detaching"),
+                        () -> "the diagnostic must not claim servers are detaching when no server delete was "
+                              + "issued; got:\n" + stdout());
+            assertTrue(stdout().contains("the bootstrap ledger records NO VMs for source 'hetzner-eu'"),
+                       () -> "it must state the OBSERVED ledger state — zero VM records is the fact that "
+                             + "explains the refusal; got:\n" + stdout());
+            assertTrue(stdout().contains("resource_in_use"),
+                       () -> "the provider's own refusal must be quoted verbatim, not paraphrased; got:\n" + stdout());
+        }
+
+        /// Positive control for the assertion above: the SAME diagnostic, with VMs in the ledger that this
+        /// cleanup deleted. Without this case, "does not contain 'detaching'" is also satisfied by a
+        /// diagnostic that says nothing at all, and "records NO VMs" could be a hard-coded string.
+        @Test
+        void cleanup_firewallRefusal_reportsVmsItDeleted_whenLedgerRecordsThem() {
+            var result = cleanupWithProvider(stateWithVmThenFirewall(),
+                                             new OrderRecordingComputeProvider(new ArrayList<>(), 99));
+
+            assertTrue(result.isFailure(), "an undeletable firewall must still fail loudly");
+            assertTrue(stdout().contains("this cleanup deleted all 1 VM(s)"),
+                       () -> "with the ledger's VMs deleted, the observed state is exactly that — and only "
+                             + "then is a provider-side release pending a legitimate reading; got:\n" + stdout());
+            assertFalse(stdout().contains("records NO VMs"),
+                        () -> "the zero-VM wording must not appear when the ledger DID record one — that "
+                              + "would make the message a constant rather than a reading; got:\n" + stdout());
+        }
+
+        /// #994 expectation 3. "orphan resources may remain" tells an operator that something may be billing
+        /// without telling them what to delete; the list had to be rebuilt by hand from `hcloud server list`.
+        @Test
+        void cleanup_enumeratesEveryResourceLeftBehind_withTypeAndId() {
+            var result = cleanupWithProvider(stateWithFirewall(77L),
+                                             new OrderRecordingComputeProvider(new ArrayList<>(), 99));
+
+            assertTrue(result.isFailure(), "precondition: the firewall could not be reaped");
+            assertTrue(stderr().contains("NOT REAPED"), () -> "the leftover block must be printed; got:\n" + stderr());
+            assertTrue(stderr().contains("[CloudFirewall] id=77"),
+                       () -> "every unreaped resource must be named by TYPE and ID; got:\n" + stderr());
+            assertTrue(stderr().contains("cloud-reaper.sh"),
+                       () -> "and the operator must be told what finishes the job; got:\n" + stderr());
+        }
+
+        /// The enumeration has to survive into the CAUSE, not only stdout: the bootstrap failure path wraps
+        /// this message into `BootstrapFailedWithOrphans`, which is what an operator sees on a non-zero exit
+        /// after the transcript has scrolled away.
+        @Test
+        void cleanup_failureCause_carriesTheEnumeration_notJustTheTranscript() {
+            var result = cleanupWithProvider(stateWithFirewall(77L),
+                                             new OrderRecordingComputeProvider(new ArrayList<>(), 99));
+
+            result.onSuccess(_ -> fail("precondition: cleanup must fail"))
+                  .onFailure(cause -> assertTrue(cause.message().contains("NOT REAPED: [CloudFirewall] id=77"),
+                                                 () -> "the cause must enumerate what was left behind: " + cause.message()));
+        }
+
+        /// A fully successful cleanup must print no leftover block at all — otherwise the block becomes noise
+        /// an operator learns to skip, which is how #994's honest-but-useless message got ignored.
+        @Test
+        void cleanup_printsNoLeftBehindBlock_whenEverythingWasReaped() {
+            var result = cleanupWithProvider(stateWithVmThenFirewall(), new OrderRecordingComputeProvider(new ArrayList<>(), 0));
+
+            assertTrue(result.isSuccess(), () -> "precondition: everything reaped: " + result);
+            assertFalse(stderr().contains("NOT REAPED"),
+                        () -> "nothing was left behind, so nothing must be enumerated; got:\n" + stderr());
         }
     }
 }

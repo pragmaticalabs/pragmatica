@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
@@ -55,6 +56,8 @@ sealed interface BootstrapPhaseProvision {
         for (var entry : ctx.config().sources().entrySet()) {
             var sourceName = sourceNameOrDefault(entry.getKey());
             var source = entry.getValue();
+
+            persistCleanupHandle(ctx, sourceName, source);
             var result = provisionSource(ctx, sourceName, source, mgmtPort, clusterName);
 
             if (result.isFailure()) {
@@ -94,6 +97,79 @@ sealed interface BootstrapPhaseProvision {
         return state;
     }
 
+    /// #994 — the cleanup ledger must be able to NAME a paid VM the moment that VM exists, and the
+    /// credential that reaps it must already be resolvable when the first server is created. Both used
+    /// to be written only by [#buildUpdatedState], which runs ONLY after every source provisioned
+    /// successfully — so a failure part-way through PROVISION (observed 2026-09-11: a dedicated-core
+    /// quota refusal on the third of three servers) left the ledger holding the firewall and NO VMs.
+    /// Cleanup then had nothing to delete but the firewall, which the two surviving servers still held;
+    /// it retried `422 resource_in_use` six times, gave up, and never issued a single server delete.
+    ///
+    /// Records go to the PERSISTED state, not to the in-memory context: a failed phase returns a
+    /// `Result` failure, which carries no context, and
+    /// [ClusterBootstrapOrchestrator#cleanupOnFailure] re-loads the state FILE. The file is therefore
+    /// the only channel that survives the failure, which makes it the authority for created resources.
+    @Contract
+    private static void persistCleanupHandle(BootstrapContext ctx, SourceName sourceName, SourceProfile source) {
+        if (source.type() != SourceType.CLOUD) {
+            return;
+        }
+
+        persistCleanupHandle(ctx.state().clusterName(),
+                             ctx.rawTomlContent(),
+                             sourceName,
+                             source);
+    }
+
+    /// Takes the cluster name rather than the whole context so the persist is exercisable on its own:
+    /// the context carries nothing else this needs, and a seam that demands a full `BootstrapContext`
+    /// is a seam no test drives.
+    @Contract
+    static void persistCleanupHandle(ClusterName clusterName,
+                                     String rawToml,
+                                     SourceName sourceName,
+                                     SourceProfile source) {
+        BootstrapStatePersistence.load(clusterName)
+                                 .map(state -> withSourceHandle(state,
+                                                                rawToml,
+                                                                sourceName,
+                                                                source,
+                                                                resolveProviderName(source)))
+                                 .onPresent(BootstrapStatePersistence::save);
+    }
+
+    /// #994 — appends the VM to the persisted cleanup ledger as soon as the provider reports it created,
+    /// so a refusal on a LATER node of the same role group still leaves every already-paid server
+    /// nameable by teardown. The role is passed in rather than parsed back out of the node id by
+    /// [#extractRole], because here it is known exactly.
+    ///
+    /// Duplicate-free on the success path: [#buildUpdatedState] rebuilds the resource list from the
+    /// pre-phase in-memory state and [ClusterBootstrapOrchestrator] saves THAT, replacing these
+    /// incremental records with an equal set rather than appending to them.
+    @Contract
+    static void recordProvisionedVm(ClusterName clusterName,
+                                    String providerName,
+                                    SourceName sourceName,
+                                    NodeRole role,
+                                    ProvisionedNode node) {
+        BootstrapStatePersistence.load(clusterName)
+                                 .map(state -> state.withResource(CreatedResource.ProvisionedVm.provisionedVm(providerName,
+                                                                                                              node.serverId(),
+                                                                                                              sourceName.value(),
+                                                                                                              role.value())))
+                                 .onPresent(BootstrapStatePersistence::save);
+    }
+
+    /// #994 — Aspects: wraps a per-node provisioner so every node it creates is recorded BEFORE the
+    /// group's overall outcome is known, and records nothing for an attempt that failed. Composed in
+    /// [#provisionAndRecordRoleGroup], which is what production calls and what
+    /// `BootstrapPhaseProvisionLedgerTest` drives — so the line wiring this aspect to the recorder is
+    /// itself covered, not merely each half of it.
+    static ZoneProvisioner recordingProvisioner(ZoneProvisioner seam, Consumer<ProvisionedNode> recorder) {
+        return (nodeId, globalIndex, zone) -> seam.provisionInZone(nodeId, globalIndex, zone)
+                                                  .onSuccess(recorder);
+    }
+
     static BootstrapState stampSourceHandle(BootstrapState state,
                                             String rawToml,
                                             SourceName sourceName,
@@ -103,9 +179,24 @@ sealed interface BootstrapPhaseProvision {
             return state;
         }
 
-        var envVars = extractEnvVarNames(rawToml, sourceName.value());
+        warnOnUnmappedCredentials(sourceName, providerName, extractEnvVarNames(rawToml, sourceName.value()));
 
-        warnOnUnmappedCredentials(sourceName, providerName, envVars);
+        return withSourceHandle(state, rawToml, sourceName, source, providerName);
+    }
+
+    /// The handle stamp WITHOUT the unmapped-credential warning, so #994's pre-provision persist and the
+    /// success-path stamp can both write the handle while the operator still reads the warning exactly
+    /// once — from [#stampSourceHandle], which is the only caller that warns.
+    static BootstrapState withSourceHandle(BootstrapState state,
+                                           String rawToml,
+                                           SourceName sourceName,
+                                           SourceProfile source,
+                                           String providerName) {
+        if (source.type() != SourceType.CLOUD) {
+            return state;
+        }
+
+        var envVars = extractEnvVarNames(rawToml, sourceName.value());
         var handle = SourceCleanupHandle.sourceCleanupHandle(providerName, source.region(), envVars);
 
         return state.withSource(sourceName.value(), handle);
@@ -352,17 +443,47 @@ sealed interface BootstrapPhaseProvision {
                                                                          ClusterName clusterName,
                                                                          int nodeIndexBase) {
         logProvisionRole(sourceName, source.type(), role, Option.some(count));
-        ZoneProvisioner seam = (nodeId, globalIndex, zone) -> provisionOneInZone(compute,
-                                                                                 ctx,
-                                                                                 sourceName,
-                                                                                 source,
-                                                                                 role,
-                                                                                 clusterName,
-                                                                                 nodeId,
-                                                                                 globalIndex,
-                                                                                 zone);
+        ZoneProvisioner provisionOne = (nodeId, globalIndex, zone) -> provisionOneInZone(compute,
+                                                                                         ctx,
+                                                                                         sourceName,
+                                                                                         source,
+                                                                                         role,
+                                                                                         clusterName,
+                                                                                         nodeId,
+                                                                                         globalIndex,
+                                                                                         zone);
 
-        return rotateZonesForRoleGroup(sourceName, role, count, nodeIndexBase, source.effectiveZones(), seam);
+        return provisionAndRecordRoleGroup(ctx.state().clusterName(),
+                                           resolveProviderName(source),
+                                           sourceName,
+                                           role,
+                                           count,
+                                           nodeIndexBase,
+                                           source.effectiveZones(),
+                                           provisionOne);
+    }
+
+    /// #994 — the whole composition that must hold for a mid-group refusal to be survivable: zone rotation
+    /// over `count` nodes, each attempt wrapped by [#recordingProvisioner] so a created VM reaches the
+    /// persisted ledger before the group's outcome is known.
+    ///
+    /// It is one package-visible function rather than three lines inside [#provisionCloudRoleGroup] because
+    /// of what that cost: with the composition assembled inline, a test could exercise the aspect and the
+    /// recorder separately while the LINE THAT WIRES THEM TOGETHER stayed uncovered — measured, not assumed,
+    /// by deleting the wrapper at the old call site and watching all 724 `aether/cli` tests pass. Driving
+    /// this function instead leaves only an argument-passing delegation untested.
+    static Result<List<ProvisionedNode>> provisionAndRecordRoleGroup(ClusterName clusterName,
+                                                                     String providerName,
+                                                                     SourceName sourceName,
+                                                                     NodeRole role,
+                                                                     int count,
+                                                                     int nodeIndexBase,
+                                                                     List<String> zones,
+                                                                     ZoneProvisioner provisionOne) {
+        var seam = recordingProvisioner(provisionOne,
+                                        node -> recordProvisionedVm(clusterName, providerName, sourceName, role, node));
+
+        return rotateZonesForRoleGroup(sourceName, role, count, nodeIndexBase, zones, seam);
     }
 
     /// Provisions one node into a SPECIFIC zone: builds the spec without placement, applies

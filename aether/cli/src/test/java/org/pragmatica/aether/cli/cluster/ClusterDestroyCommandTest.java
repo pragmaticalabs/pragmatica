@@ -13,18 +13,27 @@ import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
 import org.pragmatica.aether.cli.cluster.CreatedResource.ProvisionedVm;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
+import java.net.http.HttpHeaders;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse.BodyHandler;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -467,6 +476,186 @@ class ClusterDestroyCommandTest {
             public Integer call() {
                 return ExitCode.CLEANUP_FAILED;
             }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // #995 — progress output. A teardown command that emits nothing is the one case where an operator
+    // cannot tell "working" from "wedged", and the cost of guessing wrong is a half-destroyed cluster.
+    // ---------------------------------------------------------------------------------------------
+
+    /// Fails every request immediately, so the node-enumeration path is exercised without waiting out the
+    /// real 130s ceiling. This pins the OBSERVABILITY properties that made #995 invisible — that the
+    /// request is announced before it blocks and that its failure is reported — not the latency itself.
+    private record FailingHttpOperations(String message) implements HttpOperations {
+        @Override
+        public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
+            return Causes.cause(message).promise();
+        }
+    }
+
+    @Nested
+    class DestroyProgressOutput {
+
+        private final ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+        private final ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        private PrintStream originalOut;
+
+        private PrintStream originalErr;
+
+        private HttpOperations originalHttpOps;
+
+        private String originalEndpoint;
+
+        @BeforeEach
+        void captureStreamsAndStubHttp() {
+            originalOut = System.out;
+            originalErr = System.err;
+            originalHttpOps = ClusterHttpClient.HTTP_OPS_REF.get();
+            originalEndpoint = ClusterHttpClient.ENDPOINT_OVERRIDE.get();
+            System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
+            System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
+            ClusterHttpClient.setEndpointOverride("https://10.255.255.1:8080");
+            ClusterHttpClient.HTTP_OPS_REF.set(new FailingHttpOperations("connection timed out"));
+        }
+
+        @AfterEach
+        void restoreStreamsAndHttp() {
+            System.setOut(originalOut);
+            System.setErr(originalErr);
+            ClusterHttpClient.HTTP_OPS_REF.set(originalHttpOps);
+            ClusterHttpClient.ENDPOINT_OVERRIDE.set(originalEndpoint);
+        }
+
+        private String stdout() {
+            return out.toString(StandardCharsets.UTF_8);
+        }
+
+        private String stderr() {
+            return err.toString(StandardCharsets.UTF_8);
+        }
+
+        /// #995 expectation 1+2. The node list is the FIRST thing destroy does and the last thing it used to
+        /// talk about: one management request with a 130s ceiling, printed nothing before it and nothing
+        /// after it failed. The announcement has to precede the request, or it cannot be read during it.
+        @Test
+        void fetchNodeIds_announcesTheRequestAndItsTimeout_beforeBlocking() {
+            var nodeIds = new ClusterDestroyCommand().fetchNodeIds();
+
+            assertTrue(nodeIds.isEmpty(), "precondition: the stubbed request fails, so no nodes are returned");
+            assertTrue(stdout().contains("[Phase 1/5: ENUMERATE_NODES]"),
+                       () -> "the phase must be announced in bootstrap's own shape; got:\n" + stdout());
+            assertTrue(stdout().contains("https://10.255.255.1:8080"),
+                       () -> "and name the endpoint it is waiting on; got:\n" + stdout());
+            assertTrue(stdout().contains("timeout " + ClusterHttpClient.REQUEST_TIMEOUT.get().toSeconds() + "s"),
+                       () -> "the announced timeout must be read from the timeout actually in force, so it "
+                             + "cannot drift from the code; got:\n" + stdout());
+        }
+
+        /// The announcement is worthless if it is printed after the wait. Asserted positionally: the phase
+        /// line must appear at character zero of stdout, before anything the request produced.
+        @Test
+        void fetchNodeIds_printsThePhaseLineFirst_notAfterTheRequestReturns() {
+            new ClusterDestroyCommand().fetchNodeIds();
+
+            assertEquals(0,
+                         stdout().indexOf("[Phase 1/5: ENUMERATE_NODES]"),
+                         () -> "the announcement must be the FIRST output, not a retrospective note; got:\n" + stdout());
+        }
+
+        /// `.or(List.of())` discarded this failure entirely, so a cluster whose management endpoint was
+        /// unreachable looked exactly like a cluster with no nodes — and destroy went on to report success.
+        @Test
+        void fetchNodeIds_reportsTheFailure_insteadOfSilentlyTreatingItAsNoNodes() {
+            new ClusterDestroyCommand().fetchNodeIds();
+
+            assertTrue(stderr().contains("could not list cluster nodes"),
+                       () -> "the failure must be reported, not swallowed; got:\n" + stderr());
+            assertTrue(stderr().contains("connection timed out"),
+                       () -> "including the underlying cause; got:\n" + stderr());
+            assertTrue(stderr().contains("without a graceful drain"),
+                       () -> "and its CONSEQUENCE: an empty node list means drain and shutdown are skipped; "
+                             + "got:\n" + stderr());
+        }
+
+        /// Positive control for the two assertions above: the same seam, a SUCCEEDING request. Without it,
+        /// "stderr contains the warning" proves only that some failure path ran, and the count of nodes
+        /// reported could be a constant.
+        @Test
+        void fetchNodeIds_reportsTheNodeCount_andWarnsNothing_whenTheRequestSucceeds() {
+            ClusterHttpClient.HTTP_OPS_REF.set(new FixedBodyHttpOperations("""
+                [{"nodeId":"core-0"},{"nodeId":"core-1"}]
+                """));
+
+            var nodeIds = new ClusterDestroyCommand().fetchNodeIds();
+
+            assertEquals(List.of("core-0", "core-1"), nodeIds, "the stubbed body must parse");
+            assertTrue(stdout().contains("2 node(s) reported by the cluster"),
+                       () -> "a successful enumeration reports its own count; got:\n" + stdout());
+            assertFalse(stderr().contains("could not list cluster nodes"),
+                        () -> "and warns about nothing — which is what makes the failure case above a real "
+                              + "signal rather than an always-on line; got:\n" + stderr());
+        }
+
+        /// #995 expectation 3 — "if it can take minutes, say so before the wait begins", and say it with the
+        /// figures that actually bound the waits rather than a hand-written guess.
+        @Test
+        void drainAllNodes_announcesTheDrainPhaseAndItsCeiling() {
+            new ClusterDestroyCommand().drainAllNodes(List.of());
+
+            assertTrue(stdout().contains("[Phase 2/5: DRAIN_NODES]"),
+                       () -> "drain must announce itself even with nothing to do, so a silent stretch is never "
+                             + "ambiguous; got:\n" + stdout());
+            assertTrue(stdout().contains("Nothing to drain"),
+                       () -> "an empty node list is a statement, not silence; got:\n" + stdout());
+        }
+
+        @Test
+        void shutdownAllNodes_announcesTheShutdownPhase() {
+            new ClusterDestroyCommand().shutdownAllNodes(List.of());
+
+            assertTrue(stdout().contains("[Phase 3/5: SHUTDOWN_NODES]"),
+                       () -> "got:\n" + stdout());
+        }
+
+        /// The cleanup phase is where the minutes actually go — per-resource deletes plus a firewall retry
+        /// budget. It must say so before it starts, and name the retry budget from the constants that bound it.
+        @Test
+        void cleanupCloudResources_announcesThePhaseAndTheFirewallRetryBudget() {
+            ClusterDestroyCommand.stateLoader = name -> none();
+
+            new ClusterDestroyCommand().cleanupCloudResources(CLUSTER_NAME);
+
+            assertTrue(stdout().contains("[Phase 4/5: CLOUD_CLEANUP]"), () -> "got:\n" + stdout());
+            assertTrue(stdout().contains("retried up to " + BootstrapCleanup.FIREWALL_DELETE_ATTEMPTS + " times"),
+                       () -> "the retry budget must come from the constant that enforces it; got:\n" + stdout());
+        }
+
+        @Test
+        void finalizeDestruction_announcesTheRegistryPhase_andWhyTheEntryIsKept_whenCleanupFailed() {
+            ClusterDestroyCommand.finalizeDestruction(ClusterRegistry.clusterRegistry(Path.of("unused-registry.toml"), none(), List.of()),
+                                                      CLUSTER_NAME,
+                                                      false,
+                                                      List.of(),
+                                                      List.of(),
+                                                      List.of());
+
+            assertTrue(stdout().contains("[Phase 5/5: REGISTRY]"), () -> "got:\n" + stdout());
+            assertTrue(stdout().contains("Keeping the registry entry"),
+                       () -> "the reason the entry survives is the operator's handle on billing resources — "
+                             + "saying it beside the decision is the point; got:\n" + stdout());
+        }
+    }
+
+    /// Returns one fixed body for every request, so the SUCCESS arm of the node-enumeration control has a
+    /// real parse to do rather than an empty list asserted against itself.
+    private record FixedBodyHttpOperations(String body) implements HttpOperations {
+        @Override
+        @SuppressWarnings("unchecked")
+        public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
+            return Promise.success(new HttpResult<>(200, HttpHeaders.of(Map.of(), (a, b) -> true), (T) body));
         }
     }
 }

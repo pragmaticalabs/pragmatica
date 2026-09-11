@@ -203,7 +203,8 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
 
         return phaseFunc.apply(inProgress)
                         .map(result -> markPhaseCompleted(result, phase))
-                        .onFailure(cause -> markPhaseFailed(inProgress, phase));
+                        .onFailure(cause -> markPhaseFailed(inProgress.state(),
+                                                            phase));
     }
 
     private static BootstrapContext markPhaseCompleted(BootstrapContext result, BootstrapPhase phase) {
@@ -214,11 +215,20 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         return completed;
     }
 
+    /// #994 — the FAILED marker must not ERASE what the failing phase already recorded. `preSnapshot` is
+    /// the state as it was BEFORE the phase ran, and PROVISION now appends each paid VM to the persisted
+    /// ledger as the provider reports it created (see `BootstrapPhaseProvision.recordProvisionedVm`), so
+    /// saving the snapshot would discard exactly the records teardown needs — which is how a
+    /// mid-PROVISION quota refusal stranded two running `ccx23` servers on 2026-09-11.
+    ///
+    /// The state FILE is the authority for created resources, so re-load it and mark the phase FAILED on
+    /// THAT, falling back to the snapshot only when nothing is persisted. Takes a `BootstrapState` rather
+    /// than a `BootstrapContext` so the preservation property is testable without a full config fixture.
     @Contract
-    private static void markPhaseFailed(BootstrapContext ctx, BootstrapPhase phase) {
-        var failed = ctx.withState(ctx.state().withPhaseStatus(phase, PhaseStatus.FAILED));
+    static void markPhaseFailed(BootstrapState preSnapshot, BootstrapPhase phase) {
+        var persisted = BootstrapStatePersistence.load(preSnapshot.clusterName()).or(preSnapshot);
 
-        BootstrapStatePersistence.save(failed.state());
+        BootstrapStatePersistence.save(persisted.withPhaseStatus(phase, PhaseStatus.FAILED));
     }
 
     static Cause decorateAfterCleanup(ClusterName clusterName, Cause cause, boolean keepOnFailure) {
@@ -606,10 +616,13 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
             }
         }
 
+        /// #994 — `cleanupDetail` now carries `BootstrapCleanup.CleanupError`'s enumeration (type + id per
+        /// resource), so this message names what was left behind rather than saying "orphan resources may
+        /// remain" and leaving the operator to reconstruct the list from `hcloud server list`.
         record BootstrapFailedWithOrphans(Cause originalCause, String cleanupDetail) implements BootstrapError {
             @Override
             public String message() {
-                return originalCause.message() + " — cleanup failed, orphan resources may remain: " + cleanupDetail;
+                return originalCause.message() + " — cleanup failed, resources were left behind: " + cleanupDetail;
             }
         }
     }

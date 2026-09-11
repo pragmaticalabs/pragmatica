@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -27,6 +28,7 @@ import static org.pragmatica.aether.management.route.ManagementRoute.NODE_DRAIN;
 import static org.pragmatica.aether.management.route.ManagementRoute.NODE_LIFECYCLE_GET;
 import static org.pragmatica.aether.management.route.ManagementRoute.NODE_LIFECYCLE_LIST;
 import static org.pragmatica.aether.management.route.ManagementRoute.NODE_SHUTDOWN;
+import static org.pragmatica.lang.Option.option;
 
 
 @Command(name = "destroy", description = "Destroy the active cluster (drain + shutdown all nodes)")
@@ -155,13 +157,65 @@ class ClusterDestroyCommand implements Callable<Integer> {
         ClusterHttpClient.setEndpointOverride(entry.endpoint());
     }
 
+    /// #995 — against a healthy 3-node cloud cluster this emitted NOTHING for ~2.5 minutes and deleted
+    /// nothing, and the operator killed it with three paid servers still running. Nothing here was
+    /// announced: the first statement is a node-list HTTP request that can block for the whole
+    /// [ClusterHttpClient#REQUEST_TIMEOUT] (130s by default) and whose failure was discarded by
+    /// `.or(List.of())`; with an empty node list the drain and shutdown loops then print nothing either.
+    /// So the command's entire observable output could begin more than two minutes in.
+    ///
+    /// Every phase now announces itself BEFORE it blocks, names the ceiling it may wait for, and reports
+    /// its own failure. Silence is what invited the intervention that produced a half-destroyed cluster;
+    /// an operator must be able to tell "working" from "wedged" without reading this file.
     private Result<Integer> performDestruction(ClusterRegistry registry, ClusterName clusterName) {
+        announceDestroyPlan(clusterName);
         var nodeIds = fetchNodeIds();
         var drainResults = drainAllNodes(nodeIds);
         var shutdownResults = shutdownAllNodes(nodeIds);
         var cleanupOk = cleanupCloudResources(clusterName);
 
         return finalizeDestruction(registry, clusterName, cleanupOk, nodeIds, drainResults, shutdownResults);
+    }
+
+    /// #995 expectation 3 — "if it can take minutes, say so before the wait begins". The figures are read
+    /// from the constants that actually bound the waits, so the estimate cannot drift away from the code.
+    @Contract
+    private void announceDestroyPlan(ClusterName clusterName) {
+        System.out.printf("Destroying cluster '%s' in %d phases. This can take minutes: node enumeration"
+                         + " waits up to %ds, each node's drain up to %ds, and cloud resource deletion is"
+                         + " paced by the provider.%n",
+                          clusterName,
+                          DestroyPhase.values().length,
+                          requestTimeoutSeconds(),
+                          DRAIN_TIMEOUT_SECONDS);
+    }
+
+    /// #995 — the destroy pipeline's phases, printed in the same `[Phase n/m: NAME]` shape
+    /// [ClusterBootstrapOrchestrator#logPhase] uses for bootstrap, so an operator reading a bootstrap
+    /// transcript and a destroy transcript reads one format rather than two.
+    enum DestroyPhase {
+        ENUMERATE_NODES,
+        DRAIN_NODES,
+        SHUTDOWN_NODES,
+        CLOUD_CLEANUP,
+        REGISTRY
+    }
+
+    @Contract
+    static void logPhase(DestroyPhase phase, String message) {
+        System.out.printf("[Phase %d/%d: %s] %s%n",
+                          phase.ordinal() + 1,
+                          DestroyPhase.values().length,
+                          phase.name(),
+                          message);
+    }
+
+    /// The real ceiling on a single management request, read from [ClusterHttpClient#REQUEST_TIMEOUT]
+    /// rather than restated: an announced timeout that does not match the one in force is the same class
+    /// of false diagnostic as #994's "servers are still detaching".
+    private static long requestTimeoutSeconds() {
+        return option(ClusterHttpClient.REQUEST_TIMEOUT.get()).map(Duration::toSeconds)
+                     .or(0L);
     }
 
     /// #521 — registry honesty. The registry entry is the operator's only handle on a cluster whose VMs may
@@ -176,14 +230,26 @@ class ClusterDestroyCommand implements Callable<Integer> {
                                                List<NodeResult> drainResults,
                                                List<NodeResult> shutdownResults) {
         if (!cleanupOk) {
+            logPhase(DestroyPhase.REGISTRY,
+                     "Keeping the registry entry — cloud cleanup failed, and the entry is the operator's"
+                    + " remaining handle on resources that may still be billing");
+
             return Result.success(printSummary(clusterName, nodeIds, drainResults, shutdownResults, false, false));
         }
+
+        logPhase(DestroyPhase.REGISTRY, "Removing the registry entry for '" + clusterName + "'");
 
         return registryRemover.apply(registry, clusterName)
                               .map(_ -> printSummary(clusterName, nodeIds, drainResults, shutdownResults, true, true));
     }
 
     boolean cleanupCloudResources(ClusterName clusterName) {
+        logPhase(DestroyPhase.CLOUD_CLEANUP,
+                 "Deleting cloud resources recorded at bootstrap, then sweeping cluster-labelled VMs and"
+                + " SSH keys. Each delete is reported as it is issued; a firewall still in use is retried"
+                + " up to " + BootstrapCleanup.FIREWALL_DELETE_ATTEMPTS
+                + " times, " + (BootstrapCleanup.FIREWALL_DELETE_RETRY_MILLIS / 1000)
+                + "s apart");
         if (keepResources) {
             System.out.println("--keep-resources: skipping cloud resource termination.");
 
@@ -255,11 +321,39 @@ class ClusterDestroyCommand implements Callable<Integer> {
                           .equals(input);
     }
 
-    private List<String> fetchNodeIds() {
+    /// #995 — this is the call that produced the observed silence: one management request, up to
+    /// [#requestTimeoutSeconds] before it gives up, and its failure was swallowed by `.or(List.of())`
+    /// with no message at all. It now says what it is about to wait for and for how long, and reports a
+    /// failure instead of continuing as if the cluster had no nodes.
+    List<String> fetchNodeIds() {
+        logPhase(DestroyPhase.ENUMERATE_NODES,
+                 String.format("Listing cluster nodes from %s (one request, timeout %ds)",
+                               ClusterHttpClient.resolveEndpoint().or("<no endpoint resolved>"),
+                               requestTimeoutSeconds()));
+
         return ClusterHttpClient.fetch(NODE_LIFECYCLE_LIST)
                                 .flatMap(MAPPER::readTree)
                                 .map(ClusterDestroyCommand::extractNodeIds)
+                                .onFailure(ClusterDestroyCommand::warnNodeEnumerationFailed)
+                                .onSuccess(ClusterDestroyCommand::reportNodesFound)
                                 .or(List.of());
+    }
+
+    @Contract
+    private static void reportNodesFound(List<String> nodeIds) {
+        System.out.printf("  %d node(s) reported by the cluster.%n", nodeIds.size());
+    }
+
+    /// Names the consequence, not just the error: with no node list the drain and shutdown phases have
+    /// nothing to act on, so the nodes are destroyed WITHOUT a graceful drain. That is a different
+    /// outcome from a successful destroy and the operator has to be told, because cloud cleanup still
+    /// proceeds from the bootstrap ledger and the command can still exit 0.
+    @Contract
+    private static void warnNodeEnumerationFailed(Cause cause) {
+        System.err.println("  WARN: could not list cluster nodes: " + cause.message());
+        System.err.println("  Proceeding to cloud resource cleanup with an EMPTY node list — drain and"
+                          + " shutdown are skipped, so nodes are deleted without a graceful drain."
+                          + " Resources recorded at bootstrap are still reaped.");
     }
 
     private static List<String> extractNodeIds(JsonNode root) {
@@ -280,17 +374,30 @@ class ClusterDestroyCommand implements Callable<Integer> {
         return List.copyOf(result);
     }
 
-    private List<NodeResult> drainAllNodes(List<String> nodeIds) {
+    List<NodeResult> drainAllNodes(List<String> nodeIds) {
+        logPhase(DestroyPhase.DRAIN_NODES, drainAnnouncement(nodeIds.size()));
         var results = new ArrayList<NodeResult>();
 
         for (var nodeId : nodeIds) {
-            System.out.printf("Draining node %s...%n", nodeId);
+            System.out.printf("Draining node %s (waiting up to %ds for DECOMMISSIONED, polling every %dms)...%n",
+                              nodeId,
+                              DRAIN_TIMEOUT_SECONDS,
+                              DRAIN_POLL_INTERVAL_MS);
             var result = drainSingleNode(nodeId);
 
             results.add(result);
         }
 
         return List.copyOf(results);
+    }
+
+    private static String drainAnnouncement(int nodeCount) {
+        return nodeCount == 0
+               ? "Nothing to drain — the node list is empty"
+               : String.format("Draining %d node(s), up to %ds each (worst case %ds total)",
+                               nodeCount,
+                               DRAIN_TIMEOUT_SECONDS,
+                               (long) nodeCount * DRAIN_TIMEOUT_SECONDS);
     }
 
     private NodeResult drainSingleNode(String nodeId) {
@@ -334,7 +441,11 @@ class ClusterDestroyCommand implements Callable<Integer> {
         return false;
     }
 
-    private List<NodeResult> shutdownAllNodes(List<String> nodeIds) {
+    List<NodeResult> shutdownAllNodes(List<String> nodeIds) {
+        logPhase(DestroyPhase.SHUTDOWN_NODES,
+                 nodeIds.isEmpty()
+                 ? "Nothing to shut down — the node list is empty"
+                 : String.format("Shutting down %d node(s)", nodeIds.size()));
         var results = new ArrayList<NodeResult>();
 
         for (var nodeId : nodeIds) {
