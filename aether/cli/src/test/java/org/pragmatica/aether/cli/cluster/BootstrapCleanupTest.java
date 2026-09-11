@@ -31,10 +31,12 @@ import org.pragmatica.cloud.hetzner.api.SshKey;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
@@ -637,6 +639,13 @@ class BootstrapCleanupTest {
                                              Map.of("core-source", handle));
     }
 
+    /// #1022 — the sweep's ledger seam, stubbed. These tests sweep under the borrowed cluster name
+    /// `prod`; the production recorder writes the real `~/.aether/clusters/prod/bootstrap-state.json`,
+    /// so a no-op here is what keeps a green test from appending to an operator's genuine ledger.
+    /// Tests that assert WHAT is recorded use a capturing recorder instead.
+    private static final Fn2<Result<Unit>, ClusterName, CreatedResource> NOOP_LEDGER_RECORDER =
+        (_, _) -> Result.unitResult();
+
     private static Fn1<HetznerClient, String> sweepingClientFactory(HetznerClient client, List<String> tokens) {
         return token -> recordSweepFactory(token, client, tokens);
     }
@@ -721,7 +730,8 @@ class BootstrapCleanupTest {
         var result = BootstrapCleanup.sweepClusterVms(state,
                                                       clusterName("prod").unwrap(),
                                                       recordingGetenv(env, envReads),
-                                                      sweepingClientFactory(client, factoryTokens));
+                                                      sweepingClientFactory(client, factoryTokens),
+                                                      NOOP_LEDGER_RECORDER);
 
         assertTrue(result.isSuccess(), () -> "VM sweep must succeed: " + result);
         assertEquals(List.of("aether-cluster=prod"), selectors,
@@ -746,7 +756,8 @@ class BootstrapCleanupTest {
         var result = BootstrapCleanup.sweepClusterVms(state,
                                                       clusterName("test-pg").unwrap(),
                                                       recordingGetenv(env, new ArrayList<>()),
-                                                      sweepingClientFactory(client, factoryTokens));
+                                                      sweepingClientFactory(client, factoryTokens),
+                                                      NOOP_LEDGER_RECORDER);
 
         assertTrue(result.isFailure(), "sweeping a protected cluster must fail, not skip silently");
         result.onFailure(cause -> assertTrue(cause.message().contains("protected")
@@ -768,10 +779,141 @@ class BootstrapCleanupTest {
         var result = BootstrapCleanup.sweepClusterVms(state,
                                                       clusterName("prod").unwrap(),
                                                       recordingGetenv(env, new ArrayList<>()),
-                                                      sweepingClientFactory(client, new ArrayList<>()));
+                                                      sweepingClientFactory(client, new ArrayList<>()),
+                                                      NOOP_LEDGER_RECORDER);
 
         assertTrue(result.isSuccess(), () -> "an already-gone VM must be tolerated: " + result);
         assertEquals(List.of(101L, 102L), deleteCalls, "both deletes must still be attempted");
+    }
+
+    // --- #1022: the label sweep records what the ledger never held ---
+
+    /// A ledger state carrying an already-recorded `ProvisionedVm` for `recordedId`, so a test can tell
+    /// a bootstrap-minted VM (recorded at creation by `BootstrapPhaseProvision.recordProvisionedVm`)
+    /// from a CTM auto-heal replacement, which no operator-side code ever saw created.
+    private static BootstrapState stateWithRecordedVm(String recordedId) {
+        return stateWithHetznerHandle().withResource(CreatedResource.ProvisionedVm.provisionedVm("hetzner",
+                                                                                                 recordedId,
+                                                                                                 "core-source",
+                                                                                                 "core"));
+    }
+
+    /// Records BOTH the ledger appends and the deletes into ONE list, because the ordering is the
+    /// property under test and two separate lists could not express it. A record written after its
+    /// server is gone buys nothing: the whole point is that a teardown which then fails part-way leaves
+    /// the ledger naming what is still billing.
+    private static Fn2<Result<Unit>, ClusterName, CreatedResource> capturingRecorder(List<String> events) {
+        return (name, resource) -> captureRecord(events, name, resource);
+    }
+
+    private static Result<Unit> captureRecord(List<String> events, ClusterName name, CreatedResource resource) {
+        events.add("record:" + name + ":" + ((CreatedResource.ProvisionedVm) resource).resourceId());
+
+        return Result.unitResult();
+    }
+
+    private static VmSweepingHetznerClient recordingDeleteClient(List<Server> servers, List<String> events) {
+        return new VmSweepingHetznerClient(servers, new EventRecordingList(events), Set.of(), new ArrayList<>(), Set.of());
+    }
+
+    /// The `deleteCalls` sink the sweep already writes to, teed into the shared ordering list. Extending
+    /// `ArrayList` rather than adding a parameter keeps `VmSweepingHetznerClient` untouched, so every
+    /// existing sweep test keeps exercising the same stub.
+    static final class EventRecordingList extends ArrayList<Long> {
+        private final transient List<String> events;
+
+        EventRecordingList(List<String> events) {
+            this.events = events;
+        }
+
+        @Override
+        public boolean add(Long serverId) {
+            events.add("delete:" + serverId);
+
+            return super.add(serverId);
+        }
+    }
+
+    /// #1022 — the sweep is the ONLY operator-side code that ever sees a CTM auto-heal replacement, so
+    /// it is the first and last chance to put that VM in the ledger. Both swept VMs are unknown to this
+    /// ledger, and every record must precede every delete.
+    @Test
+    void vmSweep_recordsUnrecordedVmsInTheLedger_beforeDeletingThem() {
+        var events = new ArrayList<String>();
+        var servers = List.of(vmServer(101L, "prod-core-r9-0"), vmServer(102L, "prod-core-r9-1"));
+
+        var result = BootstrapCleanup.sweepClusterVms(stateWithHetznerHandle(),
+                                                      clusterName("prod").unwrap(),
+                                                      recordingGetenv(Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE),
+                                                                      new ArrayList<>()),
+                                                      sweepingClientFactory(recordingDeleteClient(servers, events),
+                                                                            new ArrayList<>()),
+                                                      capturingRecorder(events));
+
+        assertTrue(result.isSuccess(), () -> "VM sweep must succeed: " + result);
+        assertEquals(List.of("record:prod:101", "record:prod:102", "delete:101", "delete:102"),
+                     events,
+                     "every unrecorded VM must be written to the ledger BEFORE any of them is deleted — a"
+                     + " record made after the delete cannot help a teardown that fails part-way");
+    }
+
+    /// The ledger must not grow a SECOND entry for a VM it already names. The sweep selector matches
+    /// every cluster-labelled VM, bootstrap-minted ones included, so an unfiltered append would
+    /// duplicate each of them under the synthesized `label-swept` role — turning the ledger an operator
+    /// reads into a double count of what is billing.
+    @Test
+    void vmSweep_skipsVmsTheLedgerAlreadyNames_recordingOnlyTheRest() {
+        var events = new ArrayList<String>();
+        var servers = List.of(vmServer(101L, "prod-core-0"), vmServer(102L, "prod-core-autoheal-1"));
+
+        var result = BootstrapCleanup.sweepClusterVms(stateWithRecordedVm("101"),
+                                                      clusterName("prod").unwrap(),
+                                                      recordingGetenv(Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE),
+                                                                      new ArrayList<>()),
+                                                      sweepingClientFactory(recordingDeleteClient(servers, events),
+                                                                            new ArrayList<>()),
+                                                      capturingRecorder(events));
+
+        assertTrue(result.isSuccess(), () -> "VM sweep must succeed: " + result);
+        assertEquals(List.of("record:prod:102", "delete:101", "delete:102"),
+                     events,
+                     "only the VM the ledger never held may be appended; both must still be deleted");
+    }
+
+    /// A ledger that cannot be written must not stop the reaping. The server is billing either way, and
+    /// refusing to delete it because a note about it could not be saved turns a full disk into an
+    /// un-reapable cluster. The id still has to reach the operator, so it goes to stderr.
+    @Test
+    void vmSweep_ledgerWriteFailure_stillDeletes_andNamesTheIdOnStderr() {
+        var err = new ByteArrayOutputStream();
+        var originalErr = System.err;
+        var deleteCalls = new ArrayList<Long>();
+        var servers = List.of(vmServer(101L, "prod-core-autoheal-0"));
+        var client = new VmSweepingHetznerClient(servers, deleteCalls, Set.of(), new ArrayList<>(), Set.of());
+
+        System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
+
+        var result = sweepWithFailingRecorder(client);
+
+        System.setErr(originalErr);
+
+        assertTrue(result.isSuccess(),
+                   () -> "a ledger write failure must never fail the sweep — the VM is billing either way: " + result);
+        assertEquals(List.of(101L), deleteCalls, "the delete must still be attempted");
+
+        var captured = err.toString(StandardCharsets.UTF_8);
+
+        assertTrue(captured.contains("101") && captured.contains("NOT recorded"),
+                   () -> "the unrecordable server's id must reach stderr; got:\n" + captured);
+    }
+
+    private static Result<Unit> sweepWithFailingRecorder(HetznerClient client) {
+        return BootstrapCleanup.sweepClusterVms(stateWithHetznerHandle(),
+                                                clusterName("prod").unwrap(),
+                                                recordingGetenv(Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE),
+                                                                new ArrayList<>()),
+                                                sweepingClientFactory(client, new ArrayList<>()),
+                                                (_, _) -> Causes.cause("the ledger write failed: disk full").result());
     }
 
     /// Supersedes `destroy_vmSweep_blankClusterName_skipsWithoutProviderCalls`. A blank cluster name
@@ -1622,7 +1764,8 @@ class BootstrapCleanupTest {
                                                     clusterName("prod").unwrap(),
                                                     recordingGetenv(Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE),
                                                                     new ArrayList<>()),
-                                                    sweepingClientFactory(client, new ArrayList<>()));
+                                                    sweepingClientFactory(client, new ArrayList<>()),
+                                                    NOOP_LEDGER_RECORDER);
         }
 
         private Result<Unit> sweepKeys(Set<Long> failIds) {

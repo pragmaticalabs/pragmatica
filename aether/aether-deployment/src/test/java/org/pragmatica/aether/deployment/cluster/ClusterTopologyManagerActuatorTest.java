@@ -36,6 +36,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 
+import java.io.Serializable;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -46,7 +47,20 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.Filter;
+import org.apache.logging.log4j.core.Layout;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Configuration;
+import org.apache.logging.log4j.core.config.LoggerConfig;
+import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.layout.PatternLayout;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -461,6 +475,128 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(ctm.isAutoHealEnabled()).isFalse();
         assertThat(ctm.setAutoHealEnabled(true, "test-enable").await().unwrap()).isFalse();
         assertThat(ctm.isAutoHealEnabled()).isTrue();
+    }
+
+    /// #1022 — auto-heal creates a BILLABLE server that the operator's cleanup ledger structurally
+    /// cannot hold: the ledger is `~/.aether/clusters/<name>/bootstrap-state.json` on the operator's
+    /// machine, written by `aether/cli`, while this code runs in `aether-deployment` on a cloud VM in a
+    /// module `cli` depends ON. The leader's own journal is the only record it can make, so the
+    /// provider's instance id has to appear there — until this fix `asDispatched` took the
+    /// `InstanceInfo` and ignored it, and the id of every replacement was dropped on the floor.
+    ///
+    /// This drives the REAL `provisionReplacement` and captures what the production logger emits. It
+    /// deliberately does NOT hand the logger the expected line itself: a fixture that feeds in the
+    /// string it then asserts states the intended behaviour rather than probing the actual one, and
+    /// would stay green with the production call deleted.
+    @Nested
+    class ProvisionedInstanceRecording {
+        private static final String LOGGER_NAME = "org.pragmatica.aether.deployment.cluster.ClusterTopologyManager";
+
+        private CapturingAppender appender;
+        private LoggerConfig loggerConfig;
+        private Level originalLevel;
+
+        @BeforeEach
+        void attachAppender() {
+            appender = CapturingAppender.create("CtmProvisionRecordCapture");
+            appender.start();
+            var ctx = (LoggerContext) LogManager.getContext(false);
+            loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
+            originalLevel = loggerConfig.getLevel();
+            loggerConfig.addAppender(appender, Level.WARN, null);
+            loggerConfig.setLevel(Level.WARN);
+            ctx.updateLoggers();
+        }
+
+        @AfterEach
+        void detachAppender() {
+            var ctx = (LoggerContext) LogManager.getContext(false);
+
+            loggerConfig.removeAppender(appender.getName());
+            loggerConfig.setLevel(originalLevel);
+            ctx.updateLoggers();
+            appender.stop();
+        }
+
+        private LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
+            var existing = configuration.getLoggerConfig(LOGGER_NAME);
+
+            if (LOGGER_NAME.equals(existing.getName())) {
+                return existing;
+            }
+
+            var created = new LoggerConfig(LOGGER_NAME, Level.WARN, false);
+
+            configuration.addLogger(LOGGER_NAME, created);
+
+            return created;
+        }
+
+        /// The stub provisioner mints `stub-1` as the provider instance id; that id, the new node id and
+        /// the role must all reach the journal, because an operator reconciling a bill against a cluster
+        /// has only the id to act on.
+        @Test
+        void provisionReplacement_success_recordsTheProviderInstanceId_withNodeIdAndRole() {
+            ctm.activate();
+            var newNodeId = NodeId.randomNodeId();
+
+            var result = ctm.provisionReplacement(newNodeId,
+                                                  Option.some(PEER_C),
+                                                  Set.of(SELF, PEER_A, PEER_B),
+                                                  NodeRole.CORE)
+                            .await();
+
+            assertThat(result.isSuccess()).as("the stub provisioner succeeds: %s", result).isTrue();
+            assertThat(appender.capturedWarns())
+                    .as("the provider instance id of a billable auto-heal VM must reach the leader's journal")
+                    .anyMatch(msg -> msg.contains("instanceId=stub-1")
+                                     && msg.contains("nodeId=" + newNodeId.id())
+                                     && msg.contains("role=core"));
+        }
+
+        /// A provisioning attempt that FAILED created nothing, so recording an instance for it would put
+        /// a phantom server in front of an operator. Nothing was billed and nothing may be claimed.
+        @Test
+        void provisionReplacement_failure_recordsNoInstance() {
+            ctm.activate();
+            lifecycleManager.failProvisions();
+
+            var result = ctm.provisionReplacement(NodeId.randomNodeId(),
+                                                  Option.some(PEER_C),
+                                                  Set.of(SELF, PEER_A, PEER_B),
+                                                  NodeRole.CORE)
+                            .await();
+
+            assertThat(result.isFailure()).as("the stub was told to fail: %s", result).isTrue();
+            assertThat(appender.capturedWarns())
+                    .as("a failed provision created no server, so it must claim no instance id")
+                    .noneMatch(msg -> msg.contains("instanceId="));
+        }
+    }
+
+    /// Collects WARN messages so a test can assert on what production actually emitted. Mirrors the
+    /// appender in `ClusterTopologyManagerCasLossLoggingTest`.
+    static final class CapturingAppender extends AbstractAppender {
+        private final List<String> messages = new CopyOnWriteArrayList<>();
+
+        private CapturingAppender(String name, Filter filter, Layout<? extends Serializable> layout) {
+            super(name, filter, layout, true, Property.EMPTY_ARRAY);
+        }
+
+        static CapturingAppender create(String name) {
+            return new CapturingAppender(name, null, PatternLayout.createDefaultLayout());
+        }
+
+        @Override
+        public void append(LogEvent event) {
+            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
+                messages.add(event.getMessage().getFormattedMessage());
+            }
+        }
+
+        List<String> capturedWarns() {
+            return List.copyOf(messages);
+        }
     }
 
     private static MessageRouter.MutableRouter quietRouter() {

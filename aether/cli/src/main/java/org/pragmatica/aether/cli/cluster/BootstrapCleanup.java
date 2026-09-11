@@ -10,6 +10,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 import java.util.function.LongConsumer;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
@@ -28,6 +29,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
@@ -59,14 +61,16 @@ sealed interface BootstrapCleanup {
                             Fn1<Result<HetznerClient>, String> hetznerClientFallback,
                             Fn1<String, String> getenv,
                             Fn1<HetznerClient, String> hetznerClientFactory,
-                            LongConsumer sleeper) {
+                            LongConsumer sleeper,
+                            Fn2<Result<Unit>, ClusterName, CreatedResource> ledgerRecorder) {
         static CleanupResolvers cleanupResolvers() {
             return new CleanupResolvers(ProviderResolver::resolveCloudComputeForCleanup,
                                         ProviderResolver::resolveCloudComputeFromHandle,
                                         BootstrapCleanup::defaultHetznerClient,
                                         System::getenv,
                                         BootstrapCleanup::hetznerClientFromToken,
-                                        BootstrapCleanup::sleepQuietly);
+                                        BootstrapCleanup::sleepQuietly,
+                                        BootstrapStatePersistence::appendResource);
         }
 
         /// Test seam: a no-op sleeper makes the retry loop instant.
@@ -76,7 +80,8 @@ sealed interface BootstrapCleanup {
                                         hetznerClientFallback,
                                         getenv,
                                         hetznerClientFactory,
-                                        newSleeper);
+                                        newSleeper,
+                                        ledgerRecorder);
         }
 
         CleanupResolvers withCloudComputeFallback(Fn1<Result<ComputeProvider>, String> resolver) {
@@ -85,7 +90,8 @@ sealed interface BootstrapCleanup {
                                         hetznerClientFallback,
                                         getenv,
                                         hetznerClientFactory,
-                                        sleeper);
+                                        sleeper,
+                                        ledgerRecorder);
         }
 
         CleanupResolvers withHandleComputeResolver(Fn1<Result<ComputeProvider>, SourceCleanupHandle> resolver) {
@@ -94,7 +100,8 @@ sealed interface BootstrapCleanup {
                                         hetznerClientFallback,
                                         getenv,
                                         hetznerClientFactory,
-                                        sleeper);
+                                        sleeper,
+                                        ledgerRecorder);
         }
 
         CleanupResolvers withHetznerClientFallback(Fn1<Result<HetznerClient>, String> resolver) {
@@ -103,7 +110,8 @@ sealed interface BootstrapCleanup {
                                         resolver,
                                         getenv,
                                         hetznerClientFactory,
-                                        sleeper);
+                                        sleeper,
+                                        ledgerRecorder);
         }
 
         CleanupResolvers withGetenv(Fn1<String, String> lookup) {
@@ -112,7 +120,8 @@ sealed interface BootstrapCleanup {
                                         hetznerClientFallback,
                                         lookup,
                                         hetznerClientFactory,
-                                        sleeper);
+                                        sleeper,
+                                        ledgerRecorder);
         }
 
         CleanupResolvers withHetznerClientFactory(Fn1<HetznerClient, String> factory) {
@@ -121,7 +130,22 @@ sealed interface BootstrapCleanup {
                                         hetznerClientFallback,
                                         getenv,
                                         factory,
-                                        sleeper);
+                                        sleeper,
+                                        ledgerRecorder);
+        }
+
+        /// #1022 test seam. The default writes the REAL `~/.aether/clusters/<name>/bootstrap-state.json`,
+        /// resolved from `user.home` at class load, so a sweep test running under a borrowed cluster name
+        /// would append records to an operator's genuine ledger. Injecting the recorder keeps the
+        /// assertion on WHAT the sweep offers the ledger without any test touching the owner's home.
+        CleanupResolvers withLedgerRecorder(Fn2<Result<Unit>, ClusterName, CreatedResource> recorder) {
+            return new CleanupResolvers(cloudComputeFallback,
+                                        handleComputeResolver,
+                                        hetznerClientFallback,
+                                        getenv,
+                                        hetznerClientFactory,
+                                        sleeper,
+                                        recorder);
         }
     }
 
@@ -359,18 +383,27 @@ sealed interface BootstrapCleanup {
         return sweepClusterVms(state, clusterName, CleanupResolvers.cleanupResolvers());
     }
 
-    /// Full-control entry for tests: injects the env lookup and the token → HetznerClient factory,
-    /// mirroring the #481 SSH-key sweep seams. Handle-first credential resolution — never raw
-    /// `HCLOUD_TOKEN`.
+    /// Full-control entry for tests: injects the env lookup, the token → HetznerClient factory and the
+    /// ledger recorder, mirroring the #481 SSH-key sweep seams. Handle-first credential resolution —
+    /// never raw `HCLOUD_TOKEN`.
+    ///
+    /// #1022 — `ledgerRecorder` is a REQUIRED parameter here rather than defaulting, because the default
+    /// writes the real `~/.aether/clusters/<name>/bootstrap-state.json` (`AETHER_DIR` is resolved from
+    /// `user.home` at class load and cannot be redirected). These tests sweep under borrowed cluster
+    /// names like `prod`; a default would let a green test append records to an operator's genuine
+    /// ledger on any machine that happens to have one. Making it explicit removes that by construction
+    /// instead of by nobody having such a ledger today.
     static Result<Unit> sweepClusterVms(BootstrapState state,
                                         ClusterName clusterName,
                                         Fn1<String, String> getenv,
-                                        Fn1<HetznerClient, String> hetznerClientFactory) {
+                                        Fn1<HetznerClient, String> hetznerClientFactory,
+                                        Fn2<Result<Unit>, ClusterName, CreatedResource> ledgerRecorder) {
         return sweepClusterVms(state,
                                clusterName,
                                CleanupResolvers.cleanupResolvers()
                                                .withGetenv(getenv)
-                                               .withHetznerClientFactory(hetznerClientFactory));
+                                               .withHetznerClientFactory(hetznerClientFactory)
+                                               .withLedgerRecorder(ledgerRecorder));
     }
 
     // The blank-name skip that used to open this method is gone: `clusterName` is a `ClusterName`,
@@ -405,14 +438,33 @@ sealed interface BootstrapCleanup {
 
         return hetznerClientFromHandle(handle, resolvers).flatMap(client -> sweepVmsWithClient(client,
                                                                                                selector,
-                                                                                               clusterName));
+                                                                                               clusterName,
+                                                                                               recordedVmIds(state),
+                                                                                               resolvers));
     }
 
     @SuppressWarnings("JBCT-EX-01")
-    private static Result<Unit> sweepVmsWithClient(HetznerClient client, String selector, ClusterName clusterName) {
+    private static Result<Unit> sweepVmsWithClient(HetznerClient client,
+                                                   String selector,
+                                                   ClusterName clusterName,
+                                                   Set<String> recordedVmIds,
+                                                   CleanupResolvers resolvers) {
         return client.listServers(selector)
                      .await()
-                     .flatMap(servers -> deleteSweptServers(client, servers, clusterName));
+                     .flatMap(servers -> deleteSweptServers(client, servers, clusterName, recordedVmIds, resolvers));
+    }
+
+    /// The provider-assigned ids the ledger ALREADY names, so the sweep can tell a bootstrap-minted VM
+    /// (recorded at creation by `BootstrapPhaseProvision.recordProvisionedVm`) from one that reached the
+    /// cloud account by a route the ledger never saw. Read from the in-memory teardown snapshot, which is
+    /// the state `ClusterDestroyCommand` loaded from the file and is not mutated by the cleanup walk.
+    private static Set<String> recordedVmIds(BootstrapState state) {
+        return state.createdResources()
+                    .stream()
+                    .filter(CreatedResource.ProvisionedVm.class::isInstance)
+                    .map(CreatedResource.ProvisionedVm.class::cast)
+                    .map(CreatedResource.ProvisionedVm::resourceId)
+                    .collect(Collectors.toUnmodifiableSet());
     }
 
     /// #994 verification finding SF-4 — failures are [ReapFailure]s, so the VM sweep's leftovers are
@@ -421,7 +473,9 @@ sealed interface BootstrapCleanup {
     /// theme, and its failure message used to be a joined string with no type and no id.
     private static Result<Unit> deleteSweptServers(HetznerClient client,
                                                    List<Server> servers,
-                                                   ClusterName clusterName) {
+                                                   ClusterName clusterName,
+                                                   Set<String> recordedVmIds,
+                                                   CleanupResolvers resolvers) {
         if (servers.isEmpty()) {
             System.out.println("  No cluster-labelled VMs found to sweep.");
 
@@ -429,6 +483,7 @@ sealed interface BootstrapCleanup {
         }
 
         printVmInventory(servers);
+        recordSweptVms(servers, clusterName, recordedVmIds, resolvers);
         var failures = new ArrayList<ReapFailure>();
 
         for (var server : servers) {
@@ -450,6 +505,74 @@ sealed interface BootstrapCleanup {
                                                            String.valueOf(server.id()),
                                                            clusterName.value(),
                                                            SWEPT_ROLE);
+    }
+
+    /// #1022 — write the VMs the ledger does NOT already name into it, BEFORE any of them is deleted.
+    ///
+    /// **The gap this closes is structural, not a missed call site.** A CTM auto-heal replacement is
+    /// created by the cluster LEADER, in `aether-deployment`, running on a VM in the cloud; the ledger is
+    /// `~/.aether/clusters/<name>/bootstrap-state.json` on the OPERATOR'S machine, written by `aether/cli`
+    /// — a different process on a different host, in a module `cli` depends on but which cannot depend on
+    /// `cli` back. Auto-heal therefore cannot append to the ledger at creation time by ANY wiring, so no
+    /// missing call is the defect: the ledger is structurally incapable of naming a replacement. Observed
+    /// 2026-09-11 — five replacements the ledger never held, four more VMs than teardown knew about.
+    ///
+    /// So the record is made at the first moment an operator-side process can make it, and that is LATE.
+    /// Saying so is part of the fix: this does not give the operator a live inventory while the cluster
+    /// runs, and a cluster reaped by any route that does not run this sweep still leaves the ledger
+    /// silent. What it does buy is #994's property extended to auto-healed VMs — **if this teardown then
+    /// fails part-way, the ledger NAMES the servers that are still billing**, which is exactly the state
+    /// in which the ledger is the only handle an operator has left. [#finishCleanup] deletes the state
+    /// file on a fully clean teardown, so on the success path these records live only as long as they
+    /// could be useful.
+    ///
+    /// Per-VM rather than one batched write, so a crash mid-loop still leaves every earlier id on disk.
+    /// A failure to record never fails the sweep: the server is billing either way, and refusing to
+    /// delete it because we could not write a note about it would turn a full disk into an un-reapable
+    /// cluster.
+    @Contract
+    private static void recordSweptVms(List<Server> servers,
+                                       ClusterName clusterName,
+                                       Set<String> recordedVmIds,
+                                       CleanupResolvers resolvers) {
+        var unrecorded = servers.stream()
+                                .filter(server -> !recordedVmIds.contains(String.valueOf(server.id())))
+                                .toList();
+
+        if (unrecorded.isEmpty()) {
+            System.out.println("  Every swept VM is already named in the cleanup ledger.");
+
+            return;
+        }
+
+        System.out.printf("  Recording %d swept VM(s) the ledger never held:%n", unrecorded.size());
+
+        for (var server : unrecorded) {
+            recordSweptVm(server, clusterName, resolvers);
+        }
+    }
+
+    @Contract
+    private static void recordSweptVm(Server server, ClusterName clusterName, CleanupResolvers resolvers) {
+        var _ = resolvers.ledgerRecorder()
+                         .apply(clusterName, sweptVmResource(server, clusterName))
+                         .onSuccess(_ -> System.out.printf("    + %s (id=%d)%n", server.name(), server.id()))
+                         .onFailure(cause -> warnSweptVmNotRecorded(server, clusterName, cause.message()));
+    }
+
+    /// Mirrors [BootstrapPhaseProvision#warnVmNotRecorded]: with the ledger unwritable, this line is the
+    /// only place the server is named at all, so it goes to stderr rather than a log level nobody reads.
+    @Contract
+    private static void warnSweptVmNotRecorded(Server server, ClusterName clusterName, String reason) {
+        System.err.printf("  WARN: swept VM %d (%s) was NOT recorded in the cleanup ledger — %s.%n",
+                          server.id(),
+                          server.name(),
+                          reason);
+        System.err.printf("  The delete below is about to be its only disposal; if that delete fails, this id"
+                         + " is in no file. Remove it with 'tools/cloud-reaper.sh --cluster %s --destroy', or"
+                         + " directly by id %d.%n",
+                          clusterName,
+                          server.id());
     }
 
     /// The inventory print is part of the contract, not decoration: an operator reading the destroy
