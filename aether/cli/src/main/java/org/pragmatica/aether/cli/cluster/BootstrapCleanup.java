@@ -665,6 +665,12 @@ sealed interface BootstrapCleanup {
     /// delete had been issued and nothing was detaching; the message sent an operator to look at server
     /// shutdown while the actual problem was an incomplete ledger. A diagnostic may report what it has
     /// observed. It may not narrate a mechanism it never started.
+    /// #994 verification NOTE-5 — `deleted` counts what entered `reapedSoFar`, and `tolerateAlreadyGone`
+    /// puts an ALREADY-ABSENT VM there too, so the full-count branch below says **"accounted for"** rather
+    /// than "deleted": this cleanup may have issued a delete that returned `InstanceNotFound` for a server
+    /// somebody else had already removed. Saying "deleted all N" of a server it never deleted is small, but
+    /// it is the same class as #994's "servers are still detaching" — a diagnostic asserting an action
+    /// instead of reporting an observation — and this record exists to end that class.
     record VmAccounting(String sourceName, int recorded, int deleted) {
         String describe() {
             if (recorded == 0) {
@@ -682,9 +688,10 @@ sealed interface BootstrapCleanup {
                      + " recorded VM(s) were NOT deleted (their own failures are reported above)";
             }
 
-            return "this cleanup deleted all " + recorded
+            return "this cleanup accounted for all " + recorded
                  + " VM(s) the bootstrap ledger records for source '" + sourceName
-                 + "', and the provider still reports the firewall in use";
+                 + "' (deleted, or already gone and reported as such above), and the provider still reports"
+                 + " the firewall in use";
         }
     }
 

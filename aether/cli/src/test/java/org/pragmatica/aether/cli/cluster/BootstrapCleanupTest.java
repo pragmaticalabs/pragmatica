@@ -14,6 +14,7 @@ import org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
 import org.pragmatica.aether.cli.cluster.CreatedResource.ProvisionedVm;
 import org.pragmatica.aether.cli.cluster.CreatedResource.SshKeyResource;
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.FirewallId;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
@@ -1084,15 +1085,39 @@ class BootstrapCleanupTest {
     /// left-behind enumeration.
     static final class OrderRecordingComputeProvider implements ComputeProvider {
         private final List<String> calls;
+        private final Set<String> refusedTerminations;
+        private final Set<String> alreadyGoneInstances;
         private int firewallRefusals;
 
         OrderRecordingComputeProvider(List<String> calls, int firewallRefusals) {
+            this(calls, firewallRefusals, Set.of(), Set.of());
+        }
+
+        /// #994 verification NOTE-5 — `refusedTerminations` fail for a reason that is NOT
+        /// `InstanceNotFound`, so `tolerateAlreadyGone` does not absorb them and the VM stays unreaped:
+        /// the only way to reach `VmAccounting`'s middle branch, which had no test at all.
+        /// `alreadyGoneInstances` fail WITH `InstanceNotFound`, which IS absorbed — the case where the
+        /// count says "accounted for" about a server this cleanup never deleted.
+        OrderRecordingComputeProvider(List<String> calls,
+                                      int firewallRefusals,
+                                      Set<String> refusedTerminations,
+                                      Set<String> alreadyGoneInstances) {
             this.calls = calls;
             this.firewallRefusals = firewallRefusals;
+            this.refusedTerminations = refusedTerminations;
+            this.alreadyGoneInstances = alreadyGoneInstances;
         }
 
         @Override public Promise<Unit> terminate(InstanceId instanceId) {
             calls.add("terminate:" + instanceId.value());
+
+            if (alreadyGoneInstances.contains(instanceId.value())) {
+                return EnvironmentError.InstanceNotFound.instanceNotFound(instanceId).unwrap().promise();
+            }
+
+            if (refusedTerminations.contains(instanceId.value())) {
+                return new TestCause("provider refused to terminate " + instanceId.value()).promise();
+            }
 
             return Promise.success(Unit.unit());
         }
@@ -1132,6 +1157,27 @@ class BootstrapCleanupTest {
         var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
         for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.COMPLETED);}
         var resources = List.<CreatedResource>of(new ProvisionedVm("hetzner", "vm-1", "hetzner-eu", "core"),
+                                                 CreatedResource.CloudFirewall.cloudFirewall("hetzner",
+                                                                                             FirewallId.firewallId("77").unwrap(),
+                                                                                             sourceNameOrDefault("hetzner-eu"),
+                                                                                             firewallName("aether-test-hetzner-eu").unwrap()));
+        return BootstrapState.bootstrapState(CLUSTER_NAME,
+                                             "hash-1",
+                                             "2026-05-01T00:00:00Z",
+                                             phases,
+                                             resources,
+                                             List.of(),
+                                             List.of());
+    }
+
+    /// #994 verification NOTE-5 — TWO recorded VMs, so `deleted < recorded` is reachable. With one VM this
+    /// branch cannot be entered at all, which is why the two existing diagnostic fixtures only ever produced
+    /// 0/0 and 1/1.
+    private static BootstrapState stateWithTwoVmsThenFirewall() {
+        var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
+        for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.COMPLETED);}
+        var resources = List.<CreatedResource>of(new ProvisionedVm("hetzner", "vm-1", "hetzner-eu", "core"),
+                                                 new ProvisionedVm("hetzner", "vm-2", "hetzner-eu", "core"),
                                                  CreatedResource.CloudFirewall.cloudFirewall("hetzner",
                                                                                              FirewallId.firewallId("77").unwrap(),
                                                                                              sourceNameOrDefault("hetzner-eu"),
@@ -1235,9 +1281,12 @@ class BootstrapCleanupTest {
                                              new OrderRecordingComputeProvider(new ArrayList<>(), 99));
 
             assertTrue(result.isFailure(), "an undeletable firewall must still fail loudly");
-            assertTrue(stdout().contains("this cleanup deleted all 1 VM(s)"),
-                       () -> "with the ledger's VMs deleted, the observed state is exactly that — and only "
+            assertTrue(stdout().contains("this cleanup accounted for all 1 VM(s)"),
+                       () -> "with the ledger's VMs reaped, the observed state is exactly that — and only "
                              + "then is a provider-side release pending a legitimate reading; got:\n" + stdout());
+            assertFalse(stdout().contains("deleted all 1 VM(s)"),
+                        () -> "NOTE-5: 'deleted' overstates it — an already-gone VM also enters the reaped "
+                              + "set, so the honest word is 'accounted for'; got:\n" + stdout());
             assertFalse(stdout().contains("records NO VMs"),
                         () -> "the zero-VM wording must not appear when the ledger DID record one — that "
                               + "would make the message a constant rather than a reading; got:\n" + stdout());
@@ -1269,6 +1318,44 @@ class BootstrapCleanupTest {
             result.onSuccess(_ -> fail("precondition: cleanup must fail"))
                   .onFailure(cause -> assertTrue(cause.message().contains("NOT REAPED: [CloudFirewall] id=77"),
                                                  () -> "the cause must enumerate what was left behind: " + cause.message()));
+        }
+
+        /// #994 verification NOTE-5 — **the middle branch had NO test.** The two existing diagnostic
+        /// fixtures produce only 0/0 and 1/1, so `deleted < recorded` — the reading that tells an operator
+        /// exactly how many recorded VMs are still alive — was never executed, and a mutation that stops
+        /// `deleted` being an observation was undetectable (verifier probe V5, GREEN).
+        @Test
+        void cleanup_firewallRefusal_reportsThePartialCount_whenARecordedVmCouldNotBeDeleted() {
+            var result = cleanupWithProvider(stateWithTwoVmsThenFirewall(),
+                                             new OrderRecordingComputeProvider(new ArrayList<>(), 99, Set.of("vm-2"), Set.of()));
+
+            assertTrue(result.isFailure(), "precondition: one VM and the firewall could not be reaped");
+            assertTrue(stdout().contains("records 2 VM(s) for source 'hetzner-eu' and this cleanup deleted 1 of them"),
+                       () -> "the count must be READ from what cleanup observed, not asserted; got:\n" + stdout());
+            assertTrue(stdout().contains("1 recorded VM(s) were NOT deleted"),
+                       () -> "and the operator needs the remainder stated, because those are the ones still "
+                             + "billing; got:\n" + stdout());
+            assertFalse(stdout().contains("accounted for all"),
+                        () -> "the all-reaped wording must not appear when one VM survived; got:\n" + stdout());
+        }
+
+        /// #994 verification NOTE-5, the other half: an already-gone VM enters the reaped set through
+        /// `tolerateAlreadyGone`, so the full-count branch fires for a server this cleanup did NOT delete.
+        /// That is why the wording is "accounted for" — the adjacent line says which of the two it was.
+        @Test
+        void cleanup_firewallRefusal_doesNotClaimToHaveDeleted_aVmThatWasAlreadyGone() {
+            var result = cleanupWithProvider(stateWithVmThenFirewall(),
+                                             new OrderRecordingComputeProvider(new ArrayList<>(), 99, Set.of(), Set.of("vm-1")));
+
+            assertTrue(result.isFailure(), "precondition: the firewall could not be reaped");
+            assertTrue(stdout().contains("already gone — treating as destroyed"),
+                       () -> "precondition: the VM was absent, not deleted by this run; got:\n" + stdout());
+            assertTrue(stdout().contains("accounted for all 1 VM(s)"),
+                       () -> "it is still accounted for — the ledger's VM is not holding the firewall; "
+                             + "got:\n" + stdout());
+            assertFalse(stdout().contains("cleanup deleted all"),
+                        () -> "but this cleanup deleted nothing, and saying otherwise is the same class as "
+                              + "'servers are still detaching'; got:\n" + stdout());
         }
 
         /// A fully successful cleanup must print no leftover block at all — otherwise the block becomes noise
