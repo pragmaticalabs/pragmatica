@@ -89,7 +89,6 @@ import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
-import org.pragmatica.aether.dht.AetherMaps;
 import org.pragmatica.aether.dht.CommittedPartitionOwnerSource;
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.dht.HighWaterOwnerEpochGate;
@@ -277,7 +276,6 @@ import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTAntiEntropy;
-import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.DHTNetwork;
@@ -1449,7 +1447,6 @@ public interface AetherNode extends ManageableNode {
                                                                   config.artifactRepo(),
                                                                   KvOwnerEpochSource.kvOwnerEpochSource(kvStore,
                                                                                                         BootstrapModule.CORE_PARTITION_ID));
-        var aetherMaps = AetherMaps.aetherMaps(dhtClient.scoped(DHTConfig.FULL));
         var cacheDhtClient = dhtClient.scoped(config.cache());
         var dhtClientOption = Option.<DHTClient> some(dhtClient);
         // #253 BLOCKING #1 (2026-09-04 ruling): a configured storage instance that fails to create
@@ -2805,16 +2802,12 @@ public interface AetherNode extends ManageableNode {
                                                                                                                     response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.PutRequest.class,
                                                     request -> dhtNode.handlePutRequest(request,
-                                                                                        response -> handleRemotePutResponse(dhtNetwork,
-                                                                                                                            aetherMaps,
-                                                                                                                            request,
-                                                                                                                            response))));
+                                                                                        response -> dhtNetwork.send(request.sender(),
+                                                                                                                    response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.RemoveRequest.class,
                                                     request -> dhtNode.handleRemoveRequest(request,
-                                                                                           response -> handleRemoteRemoveResponse(dhtNetwork,
-                                                                                                                                  aetherMaps,
-                                                                                                                                  request,
-                                                                                                                                  response))));
+                                                                                           response -> dhtNetwork.send(request.sender(),
+                                                                                                                       response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.ExistsRequest.class,
                                                     request -> dhtNode.handleExistsRequest(request,
                                                                                            response -> dhtNetwork.send(request.sender(),
@@ -5555,28 +5548,6 @@ public interface AetherNode extends ManageableNode {
                      .map(n -> n.address()
                                 .host())
                      .orElse("localhost");
-    }
-
-    @SuppressWarnings("JBCT-RET-01")
-    private static void handleRemotePutResponse(DHTNetwork dhtNetwork,
-                                                AetherMaps aetherMaps,
-                                                DHTMessage.PutRequest request,
-                                                DHTMessage.PutResponse response) {
-        dhtNetwork.send(request.sender(), response);
-        if (response.success() && !response.superseded()) {
-            aetherMaps.dispatchRemotePut(request.key(), request.value());
-        }
-    }
-
-    @SuppressWarnings("JBCT-RET-01")
-    private static void handleRemoteRemoveResponse(DHTNetwork dhtNetwork,
-                                                   AetherMaps aetherMaps,
-                                                   DHTMessage.RemoveRequest request,
-                                                   DHTMessage.RemoveResponse response) {
-        dhtNetwork.send(request.sender(), response);
-        if (response.found()) {
-            aetherMaps.dispatchRemoteRemove(request.key());
-        }
     }
 
     private static List<MessageRouter.Entry<?>> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,

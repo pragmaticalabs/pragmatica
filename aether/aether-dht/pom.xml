@@ -11,7 +11,7 @@
 
     <artifactId>aether-dht</artifactId>
     <name>Aether DHT</name>
-    <description>Typed ReplicatedMap abstraction over DHT</description>
+    <description>Partition-ownership epoch fencing and replication cooldown over DHT</description>
 
     <dependencies>
         <!-- Internal -->
