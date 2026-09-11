@@ -37,13 +37,24 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// the floor genuinely at 1. The A/B writer's behaviour was never changed by #936 — only the
 /// consequence became reachable.
 ///
-/// **THE FEEDBACK STEP IN THESE TESTS IS LOAD-BEARING, NOT CEREMONY.** The conclusion writes derive
-/// the new value by reading the slice's *current* record, and the canary write is what clobbered it.
-/// A test that seeds a floor-bearing value, calls `createTest`, then concludes WITHOUT returning the
-/// canary write to the store reads the pristine seed at conclusion, sees the floor it asked for, and
-/// **passes against the defect**. Every sequence below therefore puts the A/B writer's own output
-/// back through the store exactly as consensus does. This is the same trap
-/// `ControlLoopScaleDownFloorTest` records for #936, reached by a different route.
+/// **THE FEEDBACK STEP IS LOAD-BEARING, AND MEASURED TO BE — against a PARTIAL fix, not against the
+/// original defect.** `observe(...)` returns the A/B writer's own output to the store as consensus
+/// does, so the next lifecycle write reads a clobbered record rather than the pristine seed. All four
+/// arms were run:
+///
+/// | production code | feedback | conclusion tests |
+/// |---|---|---|
+/// | pre-fix (pins both counts unconditionally) | present | RED |
+/// | pre-fix | absent | RED |
+/// | partial fix (canary clobbers, conclusion carries the observed value) | present | RED |
+/// | partial fix | absent | **GREEN — defect missed** |
+///
+/// So the feedback is NOT what makes these tests see the original defect: that pin is unconditional,
+/// and reddens with or without it. What the feedback defends against is the partial fix #982's own
+/// "suggested direction" invites — preserve the *observed* floor on the conclusion write and leave
+/// the canary clobbering it. Without the feedback, the conclusion write reads the pristine seed, sees
+/// the floor it asked for, and every test in [TheConclusionWrites] passes against a live defect.
+/// Same trap `ControlLoopScaleDownFloorTest` records for #936, reached by a different route.
 ///
 /// Fixture helpers are shared with [SliceTargetOverridePreservationTest] and referenced through it,
 /// matching how `ControlLoopScaleDownFloorTest` borrows `ControlLoopOwnerPreservationTest`'s node.
