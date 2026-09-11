@@ -71,6 +71,7 @@ public sealed interface ForgePortPreflight {
 
     /// Adapter leaf — the kernel is the only authority on whether a port is free. Deliberately does
     /// NOT set `SO_REUSEADDR`: that omission is the entire mechanism (see the type documentation).
+    @SuppressWarnings("JBCT-EX-01")
     private static InetSocketAddress bindAndClose(int port) throws Exception {
         try (var channel = DatagramChannel.open(StandardProtocolFamily.INET)) {
             channel.bind(new InetSocketAddress(port));
@@ -86,13 +87,15 @@ public sealed interface ForgePortPreflight {
         record QuicPortsInUse(int basePort, int lastPort, List<Integer> occupied) implements ForgePortError {
             @Override
             public String message() {
-                return "Aether Forge needs UDP ports " + basePort + "-" + lastPort
-                       + " for cluster consensus (QUIC), but " + describeOccupied()
-                       + " already in use - most likely another Forge instance on this host. "
-                       + "This is a PORT COLLISION caught before startup: no node was started, so it is "
-                       + "NOT stale cluster state in forge-data/ and NOT a consensus fault. "
-                       + "Set base_port under [cluster] in forge.toml to a free range, or stop the "
-                       + "process holding these ports (lsof -nP -iUDP:" + basePort + ").";
+                return "Aether Forge needs UDP ports " + basePort
+                     + "-" + lastPort
+                     + " for cluster consensus (QUIC), but " + describeOccupied()
+                     + " already in use - most likely another Forge instance on this host. "
+                     + "This is a PORT COLLISION caught before startup: no node was started, so it is "
+                     + "NOT stale cluster state in forge-data/ and NOT a consensus fault. "
+                     + "Set base_port under [cluster] in forge.toml to a free range, or stop the "
+                     + "process holding these ports (lsof -nP -iUDP:" + basePort
+                     + ").";
             }
 
             private String describeOccupied() {

@@ -172,14 +172,11 @@ public record EmberConfig(int nodes,
         if (basePort < 1 || basePort > 65535) {
             return EmberConfigError.invalidValue("base_port", basePort, "must be valid port").result();
         }
-
         // The cluster binds basePort + i for each of `nodes` nodes, so the whole range must be
         // addressable — a base port that is individually valid can still run the cluster off the
         // end of the port space.
         if (basePort + nodes - 1 > 65535) {
-            return EmberConfigError.invalidValue("base_port",
-                                                 basePort,
-                                                 "range for " + nodes + " nodes exceeds 65535").result();
+            return EmberConfigError.invalidValue("base_port", basePort, "range for " + nodes + " nodes exceeds 65535").result();
         }
 
         if (managementPort < 1 || managementPort > 65535) {

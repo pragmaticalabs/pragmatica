@@ -20,15 +20,20 @@ not reach the router at all. It falls through to the static file handler, which 
    ls aether/cli/target/aether.jar
    ```
 
-3. **Confirm no other Forge is running on this machine first.** Only one Forge instance can run
-   per host. Its management, app and dashboard ports come from `ForgeConfig`, but the cluster's
-   QUIC base port does not: `ForgeServer` passes the `EmberCluster.DEFAULT_BASE_PORT` constant
-   (`6000`, so nodes occupy `6000`–`6000+nodes-1`), and no configuration overrides it. There is
-   therefore no port-offset arrangement that lets two instances coexist — a second instance's nodes
-   cannot form a cluster, and the symptom is step 2 never returning rather than a bind error.
+3. **Confirm no other Forge is running on this machine first.** All four of Forge's port settings
+   are configurable in `forge.toml` — `base_port` (the cluster's QUIC/consensus UDP range,
+   `base_port`–`base_port+nodes-1`, default `6000`), `management_port`, `app_http_port` and
+   `dashboard_port`. Moving all four lets a second instance coexist; moving only the other three
+   does not, because the QUIC range is the one whose collision the kernel does not report (the
+   sockets carry `SO_REUSEADDR`, so a duplicate bind succeeds and the datagrams are split silently).
+
+   Since #1008 Forge checks its whole QUIC range at startup and exits non-zero naming the occupied
+   ports, so that collision is loud rather than appearing as step 2 never returning. A start that
+   fails this way is a port collision and not stale `forge-data` state — no node was started.
 
    ```bash
    lsof -nP -iTCP:5150 -sTCP:LISTEN    # expect no output before you start
+   lsof -nP -iUDP:6000                 # QUIC base port; expect no output before you start
    ```
 
 4. Start from clean simulator state. Forge keeps per-node data under `$AETHER_HOME/forge-data`,

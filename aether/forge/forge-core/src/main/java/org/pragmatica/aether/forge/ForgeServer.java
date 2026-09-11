@@ -135,16 +135,15 @@ public final class ForgeServer {
         var forgeConfig = loadForgeConfig(startupConfig);
 
         printBanner(forgeConfig, startupConfig);
-
         // #1008 — checked before anything is created. A second Forge BINDS these UDP ports happily
         // (both sockets carry SO_REUSEADDR) and then never reaches quorum, with nothing naming a
         // port, so there is no bind failure downstream for this to be inherited from.
-        var quicPortCheck = ForgePortPreflight.ensureQuicPortsFree(forgeConfig.basePort(),
-                                                                   forgeConfig.nodes());
+        var quicPortCheck = ForgePortPreflight.ensureQuicPortsFree(forgeConfig.basePort(), forgeConfig.nodes());
 
         quicPortCheck.onFailure(cause -> log.error("{}", cause.message()));
         if (quicPortCheck.isFailure()) {
             System.exit(1);
+
             return;
         }
 

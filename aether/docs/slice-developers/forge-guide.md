@@ -149,10 +149,23 @@ Three things worth knowing:
 
 [cluster]
 nodes = 5                    # Number of nodes to simulate
+base_port = 6000             # Base QUIC/consensus UDP port (node i binds base_port + i)
 management_port = 5150       # Base management port
 dashboard_port = 8888        # Dashboard port
 app_http_port = 8070         # Base app HTTP port (load target)
 ```
+
+### Running two Forge instances on one host
+
+All four port settings must be moved, `base_port` included. It is the cluster's QUIC/consensus range
+(`base_port` through `base_port + nodes - 1`), and it is the one that does **not** announce a
+collision by itself: the QUIC sockets are bound with `SO_REUSEADDR`, so a second instance left on the
+default 6000 binds successfully, silently splits the range's datagrams with the first instance, and
+never reaches quorum — surfacing only as `activePeerCount=1`, which is also what genuinely stale
+`forge-data/` state looks like.
+
+Forge therefore checks the whole range at startup and refuses to start when any of it is held,
+naming the ports. If you see that message it is a collision, not stale state — no node was started.
 
 ### Auto-Healing
 
