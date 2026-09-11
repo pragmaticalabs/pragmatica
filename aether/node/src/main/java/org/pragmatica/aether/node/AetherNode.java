@@ -276,7 +276,6 @@ import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTAntiEntropy;
-import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.DHTNetwork;
