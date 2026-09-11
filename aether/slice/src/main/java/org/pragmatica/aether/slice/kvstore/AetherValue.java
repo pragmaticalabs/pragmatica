@@ -205,20 +205,6 @@ public sealed interface AetherValue {
                                         scaleDownThreshold);
         }
 
-        /// Both instance counts at once, for a producer that pins a slice to a fixed size — an A/B
-        /// variant, a canary or a promotion — without disturbing anything else the value carries.
-        public SliceTargetValue withInstances(int newCount, int newMinInstances) {
-            return new SliceTargetValue(currentVersion,
-                                        newCount,
-                                        newMinInstances,
-                                        owningBlueprint,
-                                        placement,
-                                        System.currentTimeMillis(),
-                                        maxInstances,
-                                        scaleUpThreshold,
-                                        scaleDownThreshold);
-        }
-
         public SliceTargetValue withPlacement(String newPlacement) {
             return new SliceTargetValue(currentVersion,
                                         targetInstances,
