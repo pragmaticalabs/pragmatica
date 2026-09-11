@@ -740,7 +740,10 @@ Scale a blueprint-deployed slice to a new instance count. The slice must be part
 
 ### POST /api/v1/blueprints
 
-Publish (apply) a blueprint definition. The request body is the raw blueprint YAML/JSON string.
+Publish (apply) a blueprint definition. The request body is the raw blueprint **TOML** document
+(`BlueprintParser.parse` hands it to `TomlParser`); a JSON body is rejected with
+`500 TOML parse error`. The blueprint `id` must be a full artifact coordinate
+(`group:artifact:version`) — a bare name is rejected with `500 Invalid blueprint ID format`.
 
 **Request:** Raw blueprint content as request body (string).
 
