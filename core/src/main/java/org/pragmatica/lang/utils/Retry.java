@@ -40,6 +40,30 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///```
 /// The implementation is stateless and thread-safe, so single instance could be used to run several
 /// requests at once.
+///
+/// ## Logging contract (#718) — at most ONE WARN per [#execute] call
+///
+/// Volume here is multiplied by the attempt count, so the level is part of the contract rather than a
+/// detail. A per-attempt WARN on a hot retry path is an unbounded synchronous log: measured at
+/// `200 attempts x 25ms` on the QUIC consensus send wrapper it produced ~4.2 MILLION lines in 72
+/// seconds through a single synchronous Console appender, starving the very event loops whose
+/// progress the retries were waiting on, and the Forge cluster then missed its 60s formation budget
+/// 3/3. Silencing only this logger converted that to 4/4 healthy formations in 8.4s.
+///
+/// Therefore:
+///
+///   - **Per-attempt progress is DEBUG.** Off by default; raise
+///     `org.pragmatica.lang.utils.Retry` to DEBUG to get every attempt back. This is also the level
+///     the busiest caller already documents for its own per-retry lines
+///     (`QuicClusterNetwork#retryBackpressuredWrite`), so WARN here was overriding a level the call
+///     site had already chosen.
+///   - **Giving up is WARN, and carries the attempt count.** Both terminal paths — an unretryable
+///     `Cause` and a spent attempt budget — emit exactly one line. This is what keeps a retry burst
+///     discoverable after the demotion: the count IS the aggregate. Before #718 the spent-budget
+///     path logged nothing at all.
+///
+/// The resulting bound is structural, not a measurement: WARN lines <= calls to [#execute],
+/// independent of `maxAttempts`. Do not reintroduce a WARN inside the retry loop.
 public interface Retry {
     /// Executes an asynchronous operation with retry logic.
     ///
@@ -76,15 +100,21 @@ public interface Retry {
                                  failure.cause().message());
                         yield output.fail(failure.cause());
                     }
-                    case Result.Failure<T> failure when(attempt >= maxAttempts) -> output.fail(failure.cause());
+                    case Result.Failure<T> failure when(attempt >= maxAttempts) -> {
+                        log.warn("Operation failed after {} of {} attempts, giving up: {}",
+                                 attempt,
+                                 maxAttempts,
+                                 failure.cause().message());
+                        yield output.fail(failure.cause());
+                    }
                     case Result.Failure<T> failure -> {
                         var delay = backoffStrategy.nextTimeout(attempt);
 
-                        log.warn("Operation failed (attempt {}/{}), retrying after {}: {}",
-                                 attempt,
-                                 maxAttempts,
-                                 delay,
-                                 failure.cause().message());
+                        log.debug("Operation failed (attempt {}/{}), retrying after {}: {}",
+                                  attempt,
+                                  maxAttempts,
+                                  delay,
+                                  failure.cause().message());
                         SharedScheduler.schedule(() -> executeWithLoop(operation, attempt + 1, output), delay);
                         yield output;
                     }
