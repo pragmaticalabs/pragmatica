@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.pragmatica.scriptgate.ScriptGate.executed;
-import static org.pragmatica.scriptgate.ScriptGate.fixture;
+import static org.pragmatica.scriptgate.ScriptGate.gitFixture;
 import static org.pragmatica.scriptgate.ScriptGate.given;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -55,7 +55,7 @@ class ChangelogCheckTest {
     @BeforeEach
     void setUp(@TempDir Path tempDir) {
         root = tempDir;
-        repo = fixture(tempDir, SyntheticGitRepo.syntheticGitRepo(tempDir));
+        repo = gitFixture(tempDir, SyntheticGitRepo.syntheticGitRepo(tempDir));
 
         given(ScriptRunner.copyExecutable(ScriptRunner.repoRoot().resolve(SCRIPT), root.resolve(SCRIPT)).mapToUnit());
         given(repo.commitAll("add the checker under test"));
@@ -106,6 +106,11 @@ class ChangelogCheckTest {
 
     /// The gate must still refuse for its ORIGINAL reason, and with a different code than "could not
     /// look". This is what makes the pair above a discrimination rather than a smoke test.
+    ///
+    /// No changed-path count is asserted here, and that is the script's contract rather than an
+    /// omission: #1000 asks for the count on the PASS line, where a zero would otherwise be implied.
+    /// A refusal already names the specific thing it objected to, which is the property that matters
+    /// on that path.
     @Test
     void changelogCheck_refusesWithADistinctCode_whenSourcesChangeWithoutAFragment() {
         given(changeSource());
@@ -114,8 +119,9 @@ class ChangelogCheckTest {
         var execution = executed(runCheck("HEAD~1"));
 
         assertThat(execution.exitCode()).as(execution.output()).isEqualTo(LOOKED_AND_REFUSED);
-        assertThat(execution.output()).contains("1 changed path(s)")
-                  .contains("no well-formed changelog.d/");
+        assertThat(execution.output()).contains("no well-formed changelog.d/")
+                  // Not the "could not look" refusal: the two must stay distinguishable.
+                  .doesNotContain("EXAMINED NOTHING");
     }
 
     /// Guards the over-correction. An empty diff against a base that DID resolve is a legitimate
