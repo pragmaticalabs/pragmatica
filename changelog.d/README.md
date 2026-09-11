@@ -36,7 +36,14 @@ It fails when:
 
 - the pull request edits `CHANGELOG.md` and does not carry the `release-prep` label;
 - the pull request touches something other than documentation, workflows or this directory, and adds
-  no well-formed fragment, and does not carry the `no-changelog` label.
+  no well-formed fragment, and does not carry the `no-changelog` label;
+- **the base ref does not resolve**, so no diff could be computed (#1000). Previously this exited 0
+  reporting "no changes", which is indistinguishable from a genuinely empty diff — the gate could pass
+  having examined nothing.
+
+**Exit codes distinguish the two refusals:** `1` means the check looked and refused, `2` means it could
+not look and is reporting no verdict. On a pass it prints the changed-path count alongside
+`needs_fragment`, so a zero is measured rather than implied.
 
 Documentation-only pull requests (`*.md`, `docs/`, `.github/`) need no fragment.
 
