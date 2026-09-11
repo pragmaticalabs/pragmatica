@@ -14,10 +14,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Java 25
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '25'
           distribution: 'zulu'
@@ -49,7 +49,7 @@ jobs:
             > SHA256SUMS
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           name: Pragmatica ${{ steps.version.outputs.VERSION }}
           draft: false
@@ -73,10 +73,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Java 25
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '25'
           distribution: 'zulu'
@@ -98,7 +98,7 @@ jobs:
           aether/dist/build-dist.sh --version ${{ steps.version.outputs.VERSION }}
 
       - name: Upload macOS archives to release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             aether/dist/output/*.tar.gz
@@ -113,10 +113,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Java 25
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '25'
           distribution: 'zulu'
@@ -138,7 +138,7 @@ jobs:
           aether/dist/build-dist.sh --version ${{ steps.version.outputs.VERSION }}
 
       - name: Upload arm64 archives to release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             aether/dist/output/*.tar.gz
@@ -155,27 +155,27 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Extract version from tag
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Java 25
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '25'
           distribution: 'zulu'
@@ -187,7 +187,7 @@ jobs:
           mvn package -B -DskipTests
 
       - name: Build and push aether-node
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: aether
           file: aether/docker/aether-node/Dockerfile
@@ -199,7 +199,7 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/aether-node:latest
 
       - name: Build and push aether-forge
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: aether
           file: aether/docker/aether-forge/Dockerfile
@@ -217,10 +217,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Java 25
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '25'
           distribution: 'zulu'
@@ -238,7 +238,7 @@ jobs:
         timeout-minutes: 15
 
       - name: Upload E2E test results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: e2e-test-results
