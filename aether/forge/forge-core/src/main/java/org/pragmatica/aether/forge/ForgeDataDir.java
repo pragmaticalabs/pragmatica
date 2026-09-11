@@ -62,14 +62,11 @@ import static org.pragmatica.lang.Option.option;
 public sealed interface ForgeDataDir {
     /// Single-meaning override for the data dir. Unlike `AETHER_HOME` this names one thing only.
     String DATA_DIR_ENV = "AETHER_FORGE_DATA";
-
     /// Install-directory variable, honoured for config-less runs only. See the type documentation.
     String AETHER_HOME_ENV = "AETHER_HOME";
-
     /// Records which project owns a populated data dir. Not state itself, so its presence alone never
     /// makes a directory count as populated.
     String MARKER_FILE = ".forge-owner";
-
     String PROJECT_SUBDIR = ".aether";
     String DATA_SUBDIR = "forge-data";
 
@@ -80,13 +77,10 @@ public sealed interface ForgeDataDir {
         PROJECT("this project's --config location"),
         AETHER_HOME("the " + AETHER_HOME_ENV + " environment variable (no --config given)"),
         USER_HOME("the user-home fallback (no --config and no " + AETHER_HOME_ENV + ")");
-
         private final String description;
-
         Source(String description) {
             this.description = description;
         }
-
         public String description() {
             return description;
         }
@@ -103,7 +97,6 @@ public sealed interface ForgeDataDir {
     /// [#inspect] stop a run.
     sealed interface Verdict {
         Path dataDir();
-
         /// The line an operator sees at startup, before any node exists.
         String description();
 
@@ -111,8 +104,7 @@ public sealed interface ForgeDataDir {
         record Fresh(Path dataDir, Source source) implements Verdict {
             @Override
             public String description() {
-                return "Forge data dir: " + dataDir
-                     + " (empty; chosen by " + source.description() + ")";
+                return "Forge data dir: " + dataDir + " (empty; chosen by " + source.description() + ")";
             }
         }
 
@@ -124,7 +116,9 @@ public sealed interface ForgeDataDir {
             public String description() {
                 return "Forge data dir: " + dataDir
                      + " (REUSING " + entries
-                     + " existing entr" + (entries == 1 ? "y" : "ies")
+                     + " existing entr" + (entries == 1
+                                           ? "y"
+                                           : "ies")
                      + " owned by this project; chosen by " + source.description()
                      + "). Nodes resume from this state; it is not cleared.";
             }
@@ -142,7 +136,7 @@ public sealed interface ForgeDataDir {
     /// precedence can be pinned without mutating the JVM's environment.
     static Location location(Option<Path> forgeConfig, Option<String> explicitDir, Option<String> aetherHome) {
         return explicitLocation(explicitDir, forgeConfig).orElse(() -> projectLocation(forgeConfig))
-                                                         .or(() -> homeLocation(forgeConfig, aetherHome));
+                               .or(() -> homeLocation(forgeConfig, aetherHome));
     }
 
     /// Inspect the resolved dir before anything is created.
@@ -150,15 +144,13 @@ public sealed interface ForgeDataDir {
     /// @return the verdict to announce, or a failure naming why this run must not reuse the directory
     static Result<Verdict> inspect(Location location) {
         return FileOps.isDirectory(location.dataDir())
-               ? FileOps.list(location.dataDir())
-                        .flatMap(entries -> classify(location, stateEntryCount(entries)))
+               ? FileOps.list(location.dataDir()).flatMap(entries -> classify(location, stateEntryCount(entries)))
                : Result.success(new Verdict.Fresh(location.dataDir(), location.source()));
     }
 
     /// Create the directory and record this project as its owner. Run after [#inspect] has approved.
     static Result<Path> claim(Location location) {
-        return FileOps.createDirectories(location.dataDir())
-                      .flatMap(dir -> writeMarker(dir, location.owner()));
+        return FileOps.createDirectories(location.dataDir()).flatMap(dir -> writeMarker(dir, location.owner()));
     }
 
     private static Option<Location> explicitLocation(Option<String> explicitDir, Option<Path> forgeConfig) {
@@ -170,8 +162,7 @@ public sealed interface ForgeDataDir {
 
     private static Option<Location> projectLocation(Option<Path> forgeConfig) {
         return forgeConfig.map(ForgeDataDir::configDir)
-                          .map(projectDir -> new Location(projectDir.resolve(PROJECT_SUBDIR)
-                                                                    .resolve(DATA_SUBDIR),
+                          .map(projectDir -> new Location(projectDir.resolve(PROJECT_SUBDIR).resolve(DATA_SUBDIR),
                                                           projectDir,
                                                           Source.PROJECT));
     }
@@ -228,8 +219,7 @@ public sealed interface ForgeDataDir {
     /// fresh. Without this, claiming a directory would make the very next run see it as populated.
     private static int stateEntryCount(List<Path> entries) {
         return (int) entries.stream()
-                            .filter(entry -> !MARKER_FILE.equals(entry.getFileName()
-                                                                      .toString()))
+                            .filter(entry -> !MARKER_FILE.equals(entry.getFileName().toString()))
                             .count();
     }
 
@@ -247,7 +237,8 @@ public sealed interface ForgeDataDir {
     }
 
     private static Result<Path> writeMarker(Path dataDir, Path owner) {
-        return FileOps.writeString(dataDir.resolve(MARKER_FILE), owner + System.lineSeparator())
+        return FileOps.writeString(dataDir.resolve(MARKER_FILE),
+                                   owner + System.lineSeparator())
                       .map(_ -> dataDir);
     }
 
@@ -261,7 +252,9 @@ public sealed interface ForgeDataDir {
             public String message() {
                 return "Refusing to start: the Forge data dir " + dataDir
                      + " already holds " + entries
-                     + " entr" + (entries == 1 ? "y" : "ies")
+                     + " entr" + (entries == 1
+                                  ? "y"
+                                  : "ies")
                      + " of durable state belonging to a DIFFERENT project (" + recordedOwner
                      + "), but this run belongs to " + owner
                      + ". Starting would make two projects share one cluster's durable state. "
@@ -281,13 +274,14 @@ public sealed interface ForgeDataDir {
             public String message() {
                 return "Refusing to start: the Forge data dir " + dataDir
                      + " already holds " + entries
-                     + " entr" + (entries == 1 ? "y" : "ies")
+                     + " entr" + (entries == 1
+                                  ? "y"
+                                  : "ies")
                      + " of durable state, and no " + MARKER_FILE
                      + " records which project owns it — so this run cannot tell whether the state is "
                      + "its own or something else's. This run belongs to " + owner
                      + ". Nothing has been written or deleted — no node was started. "
-                     + "If the state is yours, adopt it by writing the owning project's path into "
-                     + dataDir.resolve(MARKER_FILE)
+                     + "If the state is yours, adopt it by writing the owning project's path into " + dataDir.resolve(MARKER_FILE)
                      + "; otherwise point this run elsewhere with " + DATA_DIR_ENV
                      + "=<dir>, or move " + dataDir
                      + " aside.";

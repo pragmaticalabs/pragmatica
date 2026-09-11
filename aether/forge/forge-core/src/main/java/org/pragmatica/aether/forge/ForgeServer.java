@@ -150,14 +150,15 @@ public final class ForgeServer {
 
             return;
         }
-
         // #718 - resolved and checked BEFORE anything is created, so a refusal cannot have written or
         // deleted anything. A run that cannot prove it owns populated durable state stops here rather
         // than silently sharing an unrelated project's cluster state.
         var dataDirCheck = ForgeDataDir.inspect(ForgeDataDir.location(startupConfig.forgeConfig()));
 
-        dataDirCheck.onFailure(cause -> log.error("{}", cause.message()))
-                    .onSuccess(verdict -> log.info("{}", verdict.description()));
+        dataDirCheck.onFailure(cause -> log.error("{}",
+                                                  cause.message()))
+                    .onSuccess(verdict -> log.info("{}",
+                                                   verdict.description()));
         if (dataDirCheck.isFailure()) {
             System.exit(1);
 
