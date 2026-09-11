@@ -567,6 +567,8 @@ public final class SliceProjectInitializer {
         .idea/
         *.iml
         .DS_Store
+        # Forge writes this project's durable cluster state here (#718).
+        .aether/
         """;
 
     private static final String SLICE_INTERFACE_TEMPLATE = """

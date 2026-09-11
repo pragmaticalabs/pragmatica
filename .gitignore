@@ -22,6 +22,9 @@ settings.json
 *.log
 *.log.gz
 logs/
+
+### Forge per-project durable state (#718) ###
+.aether/
 dependency-reduced-pom.xml
 pom.xml.versionsBackup
 
