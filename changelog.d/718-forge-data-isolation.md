@@ -27,15 +27,25 @@
 - **Reuse the guard permits is announced rather than silent**, with the inherited entry count, before
   the cluster starts. `[verified: ForgeDataDirTest.OwnershipGuard.inspect_announcesReuse_whenStateIsOwnedByThisProject]`
 - **`AETHER_HOME` is honoured but demoted to config-less runs**, and `AETHER_FORGE_DATA` is added as the
-  single-meaning override. `[mechanism: install.sh:21 and upgrade.sh:11 read AETHER_HOME as the INSTALL
-  directory (`INSTALL_DIR="${AETHER_HOME:-$HOME/.aether}"`), so scoping run data on it would silently
-  re-share state across every project of anyone who exports it to put `$AETHER_HOME/bin` on PATH.]`
+  single-meaning override. `[mechanism: `aether/install.sh` and `aether/upgrade.sh` both read AETHER_HOME as the
+  INSTALL directory — `INSTALL_DIR="${AETHER_HOME:-$HOME/.aether}"` — so scoping run data on it would
+  silently re-share state across every project of anyone who exports it to put `$AETHER_HOME/bin` on
+  PATH.]`
   The container entrypoint runs without `--config` and so keeps its present location unchanged.
 - **`jbct init` scaffolds `.aether/` into `.gitignore`**, and the repository ignores it for
   `examples/*/`. `[verified: SliceProjectInitializerTest.initialize_validParams_ignoresForgeDataDir]`
 - `getting-started.md` gains a "Where Forge keeps its data" section stating the path, that it is
   per-project, that restart reuses it, that Forge never clears it, and what the two refusals mean;
   `forge-guide.md` gains the full precedence table.
+- **The two mechanisms are independently pinned, stated as what goes RED.** Reverting only the scoping
+  hunk (project default → the previous machine-wide resolution) reddens exactly
+  `Scoping.location_differsBetweenTwoProjects`, `Scoping.location_isUnderTheProjectDirectory` and
+  `Precedence.location_prefersProjectOverAetherHome` — 3 of 21. Reverting only the ownership guard
+  reddens exactly the 5 `OwnershipGuard` refusal/reuse cases plus
+  `Claiming.claim_makesTheNextInspectAnnounceReuse` and
+  `Claiming.claim_refusesASecondProjectAtTheSameDirectory` — 7 of 21. The two sets are disjoint;
+  neither is a superset of the other. The first probe is also the demonstration that the pre-change
+  behaviour fails the collision test.
 - **Limits, stated rather than implied.** `[unverified: no live two-project Forge run was executed —
   the properties are pinned at the resolver and guard, not end-to-end through a started cluster.]`
   `[unverified: the ownership check is time-of-check/time-of-use — it inspects before anything is
