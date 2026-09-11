@@ -56,17 +56,28 @@ class ClusterDestroyCommandTest {
 
     private static final ClusterName CLUSTER_NAME = clusterName("test-cluster").unwrap();
 
+    /// #998 — `fetchNodeIds` now takes the destroy TARGET's endpoint rather than re-reading
+    /// [ClusterHttpClient#resolveEndpoint], so a target with no recorded endpoint cannot silently query the
+    /// ACTIVE cluster. This is the value the stubbed override also carries, so the announced endpoint and
+    /// the requested one are the same by construction.
+    private static final Result<String> TARGET_ENDPOINT = Result.success("https://10.255.255.1:8080");
+
     private Function<ClusterName, Result<Option<BootstrapState>>> originalLoader;
 
     private Function<BootstrapState, Result<Unit>> originalCleaner;
 
     private BiFunction<BootstrapState, ClusterName, Result<Unit>> originalSweeper;
 
+    /// #997 — `vmSweeper` had NO save/restore and NO test assignment anywhere, which is precisely why the
+    /// sweep's position in the teardown order was unpinned and the defect was reachable only by inspection.
+    private BiFunction<BootstrapState, ClusterName, Result<Unit>> originalVmSweeper;
+
     @BeforeEach
     void saveStaticSeams() {
         originalLoader = ClusterDestroyCommand.stateLoader;
         originalCleaner = ClusterDestroyCommand.resourceCleaner;
         originalSweeper = ClusterDestroyCommand.sshKeySweeper;
+        originalVmSweeper = ClusterDestroyCommand.vmSweeper;
         ClusterDestroyCommand.sshKeySweeper = (state, name) -> Result.unitResult();
     }
 
@@ -75,6 +86,7 @@ class ClusterDestroyCommandTest {
         ClusterDestroyCommand.stateLoader = originalLoader;
         ClusterDestroyCommand.resourceCleaner = originalCleaner;
         ClusterDestroyCommand.sshKeySweeper = originalSweeper;
+        ClusterDestroyCommand.vmSweeper = originalVmSweeper;
     }
 
     private static BootstrapState stateWithVms(int vmCount) {
@@ -148,6 +160,42 @@ class ClusterDestroyCommandTest {
 
             assertTrue(ok);
             assertEquals(0, calls.get());
+        }
+
+        /// #997 — the label sweep must STILL run when the ledger records nothing. That is not an edge case:
+        /// an empty ledger is exactly #994's observed state, where every VM that was created is unrecorded
+        /// and billing, so the label selector is the only thing that can find them. The reorder moved the
+        /// sweep inside the ledger walk, and the walk is skipped entirely for an empty ledger — so without
+        /// this branch the fix would have deleted the sweep for the one case it exists to serve.
+        @Test
+        void destroy_stillSweepsLabelledVms_whenBootstrapStateHasNoResources() {
+            var sweeps = new AtomicInteger(0);
+            ClusterDestroyCommand.stateLoader = name -> Result.success(some(emptyState()));
+            ClusterDestroyCommand.vmSweeper = (state, name) -> sweepCounted(sweeps);
+            var command = new ClusterDestroyCommand();
+
+            var ok = command.cleanupCloudResources(CLUSTER_NAME);
+
+            assertTrue(ok, "a clean sweep over an empty ledger is a successful cleanup");
+            assertEquals(1, sweeps.get(), "exactly one label sweep, even with nothing in the ledger");
+        }
+
+        /// And a sweep that fails there must fail the cleanup, so the registry entry is KEPT — the entry is
+        /// the operator's only remaining handle on VMs the ledger never recorded (#521).
+        @Test
+        void destroy_reportsCleanupFailure_whenTheSweepFailsOverAnEmptyLedger() {
+            ClusterDestroyCommand.stateLoader = name -> Result.success(some(emptyState()));
+            ClusterDestroyCommand.vmSweeper = (state, name) -> new TestCause("swept VM 42 would not delete").result();
+            var command = new ClusterDestroyCommand();
+
+            assertFalse(command.cleanupCloudResources(CLUSTER_NAME),
+                        "unreaped labelled VMs cannot be reported as a successful cleanup");
+        }
+
+        private static Result<Unit> sweepCounted(AtomicInteger sweeps) {
+            sweeps.incrementAndGet();
+
+            return Result.unitResult();
         }
 
         @Test
@@ -542,9 +590,11 @@ class ClusterDestroyCommandTest {
         /// after it failed. The announcement has to precede the request, or it cannot be read during it.
         @Test
         void fetchNodeIds_announcesTheRequestAndItsTimeout_beforeBlocking() {
-            var nodeIds = new ClusterDestroyCommand().fetchNodeIds();
+            var nodeIds = new ClusterDestroyCommand().fetchNodeIds(TARGET_ENDPOINT);
 
-            assertTrue(nodeIds.isEmpty(), "precondition: the stubbed request fails, so no nodes are returned");
+            assertTrue(nodeIds.isFailure(),
+                       () -> "precondition: the stubbed request fails, and #998 requires that failure to be "
+                             + "RETURNED rather than flattened into an empty list; got: " + nodeIds);
             assertTrue(stdout().contains("[Phase 1/5: ENUMERATE_NODES]"),
                        () -> "the phase must be announced in bootstrap's own shape; got:\n" + stdout());
             assertTrue(stdout().contains("https://10.255.255.1:8080"),
@@ -558,7 +608,7 @@ class ClusterDestroyCommandTest {
         /// line must appear at character zero of stdout, before anything the request produced.
         @Test
         void fetchNodeIds_printsThePhaseLineFirst_notAfterTheRequestReturns() {
-            new ClusterDestroyCommand().fetchNodeIds();
+            new ClusterDestroyCommand().fetchNodeIds(TARGET_ENDPOINT);
 
             assertEquals(0,
                          stdout().indexOf("[Phase 1/5: ENUMERATE_NODES]"),
@@ -569,7 +619,7 @@ class ClusterDestroyCommandTest {
         /// unreachable looked exactly like a cluster with no nodes — and destroy went on to report success.
         @Test
         void fetchNodeIds_reportsTheFailure_insteadOfSilentlyTreatingItAsNoNodes() {
-            new ClusterDestroyCommand().fetchNodeIds();
+            new ClusterDestroyCommand().fetchNodeIds(TARGET_ENDPOINT);
 
             assertTrue(stderr().contains("could not list cluster nodes"),
                        () -> "the failure must be reported, not swallowed; got:\n" + stderr());
@@ -589,9 +639,9 @@ class ClusterDestroyCommandTest {
                 [{"nodeId":"core-0"},{"nodeId":"core-1"}]
                 """));
 
-            var nodeIds = new ClusterDestroyCommand().fetchNodeIds();
+            var nodeIds = new ClusterDestroyCommand().fetchNodeIds(TARGET_ENDPOINT);
 
-            assertEquals(List.of("core-0", "core-1"), nodeIds, "the stubbed body must parse");
+            assertEquals(Result.success(List.of("core-0", "core-1")), nodeIds, "the stubbed body must parse");
             assertTrue(stdout().contains("2 node(s) reported by the cluster"),
                        () -> "a successful enumeration reports its own count; got:\n" + stdout());
             assertFalse(stderr().contains("could not list cluster nodes"),
@@ -686,17 +736,27 @@ class ClusterDestroyCommandTest {
         /// deliverable — left all 724 tests green (measured, probe V3), and the PHASE ORDER was unpinned for
         /// the same reason.
         ///
-        /// Driven end to end with the failing HTTP stub (so enumeration returns nothing and the drain and
-        /// shutdown loops have nothing to wait for), no bootstrap state (so cleanup is a no-op) and a
-        /// no-op registry remover. What is left is exactly the observable sequence an operator reads.
+        /// Driven end to end with a SUCCEEDING enumeration of an empty cluster, no bootstrap state (so
+        /// cleanup is a no-op) and a no-op registry remover. What is left is exactly the observable sequence
+        /// an operator reads.
+        ///
+        /// #998 — this test used to reach phases 2-5 through the FAILING HTTP stub, because a failed
+        /// enumeration was flattened into an empty node list. That fixture is no longer valid: a failed
+        /// enumeration now refuses. The property being pinned (all five phases, in order) is a property of
+        /// the SUCCESS path, so the fixture now returns `[]` — a cluster that genuinely has no nodes. The two
+        /// states the old fixture conflated are exactly the two #998 requires to be distinguishable, which is
+        /// why the fixture was wrong and not the assertion.
         @Test
         void performDestruction_announcesThePlanFirst_thenRunsAllFivePhasesInOrder() {
+            ClusterHttpClient.HTTP_OPS_REF.set(new FixedBodyHttpOperations("[]"));
             ClusterDestroyCommand.stateLoader = name -> Result.success(none());
             var originalRemover = ClusterDestroyCommand.registryRemover;
 
             ClusterDestroyCommand.registryRemover = (registry, name) -> Result.success(registry);
             try {
-                var exitCode = new ClusterDestroyCommand().performDestruction(registryWithNoEntries(), CLUSTER_NAME);
+                var exitCode = new ClusterDestroyCommand().performDestruction(registryWithNoEntries(),
+                                                                             CLUSTER_NAME,
+                                                                             TARGET_ENDPOINT);
 
                 exitCode.onFailure(cause -> fail("destroy must produce a summary: " + cause.message()))
                         .onSuccess(code -> assertEquals(ExitCode.SUCCESS, (int) code,
@@ -781,6 +841,203 @@ class ClusterDestroyCommandTest {
 
     /// Returns one fixed body for every request, so the SUCCESS arm of the node-enumeration control has a
     /// real parse to do rather than an empty list asserted against itself.
+    /// Counts requests so an absence claim has a number behind it: "no request was issued" is only evidence
+    /// if the same stub is shown counting one when a request IS issued.
+    private record CountingHttpOperations(AtomicInteger calls) implements HttpOperations {
+        @Override
+        public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
+            calls.incrementAndGet();
+
+            return Causes.cause("enumeration stub").promise();
+        }
+    }
+
+    /// #998 — node enumeration as a GATE.
+    ///
+    /// Observed live on 2026-09-11: the registry endpoint carried no port, enumeration got a
+    /// `ConnectException`, the failure was flattened into an empty node list by `.or(List.of())`, and
+    /// DRAIN_NODES and SHUTDOWN_NODES were skipped while the VMs were deleted anyway. The summary read
+    /// `Nodes processed: 0 / Drains succeeded: 0/0` — honest, and describing a teardown that drained nothing.
+    @Nested
+    class EnumerationGate {
+
+        private final ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+        private final ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        private PrintStream originalOut;
+
+        private PrintStream originalErr;
+
+        private HttpOperations originalHttpOps;
+
+        private String originalEndpoint;
+
+        @BeforeEach
+        void captureStreamsAndStubHttp() {
+            originalOut = System.out;
+            originalErr = System.err;
+            originalHttpOps = ClusterHttpClient.HTTP_OPS_REF.get();
+            originalEndpoint = ClusterHttpClient.ENDPOINT_OVERRIDE.get();
+            System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
+            System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
+            ClusterHttpClient.setEndpointOverride("https://10.255.255.1:8080");
+            ClusterHttpClient.HTTP_OPS_REF.set(new FailingHttpOperations("connection timed out"));
+        }
+
+        @AfterEach
+        void restoreStreamsAndHttp() {
+            System.setOut(originalOut);
+            System.setErr(originalErr);
+            ClusterHttpClient.HTTP_OPS_REF.set(originalHttpOps);
+            ClusterHttpClient.ENDPOINT_OVERRIDE.set(originalEndpoint);
+        }
+
+        private String stdout() {
+            return out.toString(StandardCharsets.UTF_8);
+        }
+
+        private String stderr() {
+            return err.toString(StandardCharsets.UTF_8);
+        }
+
+        /// #998 expectation 2, and the load-bearing half is the COUNT: a refusal that still ran cloud cleanup
+        /// would print the same refusal text. Nothing may be deleted, because an undrained destroy is not
+        /// recoverable and a refused one is — the cluster, its VMs and its registry entry all survive.
+        @Test
+        void performDestruction_deletesNothingAndExitsNonZero_whenEnumerationFails() {
+            var cleanups = new AtomicInteger(0);
+            var removals = new AtomicInteger(0);
+            var originalRemover = ClusterDestroyCommand.registryRemover;
+
+            ClusterDestroyCommand.stateLoader = name -> Result.success(some(stateWithVms(3)));
+            ClusterDestroyCommand.resourceCleaner = state -> countedCleanup(cleanups);
+            ClusterDestroyCommand.registryRemover = (registry, name) -> countedRemoval(removals, registry);
+            try {
+                var exitCode = new ClusterDestroyCommand().performDestruction(registryWithNoEntries(),
+                                                                             CLUSTER_NAME,
+                                                                             TARGET_ENDPOINT);
+
+                exitCode.onFailure(cause -> fail("the refusal is a summary, not a thrown failure: " + cause.message()))
+                        .onSuccess(code -> assertEquals(ExitCode.ERROR, (int) code,
+                                                        "a destroy that could not drain must not exit 0"));
+                assertEquals(0, cleanups.get(),
+                             "NOTHING may be deleted: cloud cleanup must not run when the nodes were never drained");
+                assertEquals(0, removals.get(),
+                             "and the registry entry must survive, because it is the handle for the retry");
+                assertTrue(stderr().contains("REFUSING to destroy '" + CLUSTER_NAME + "'"),
+                           () -> "the refusal must be explicit; got:\n" + stderr());
+                assertTrue(stderr().contains("--force-undrained"),
+                           () -> "and must name the flag that overrides it; got:\n" + stderr());
+            } finally {
+                ClusterDestroyCommand.registryRemover = originalRemover;
+            }
+        }
+
+        /// The positive control for the test above, and the test of the flag itself. Same fixture, same failing
+        /// enumeration, `--force-undrained` set: cleanup now RUNS and the command exits 0. Without this, "zero
+        /// cleanups" proves only that the fixture never reached cleanup for some other reason.
+        @Test
+        void performDestruction_proceedsUndrained_whenForceUndrainedIsGiven() {
+            var cleanups = new AtomicInteger(0);
+            var originalRemover = ClusterDestroyCommand.registryRemover;
+
+            ClusterDestroyCommand.stateLoader = name -> Result.success(some(stateWithVms(3)));
+            ClusterDestroyCommand.resourceCleaner = state -> countedCleanup(cleanups);
+            ClusterDestroyCommand.registryRemover = (registry, name) -> Result.success(registry);
+            var command = new ClusterDestroyCommand();
+
+            command.setForceUndrained(true);
+            try {
+                var exitCode = command.performDestruction(registryWithNoEntries(), CLUSTER_NAME, TARGET_ENDPOINT);
+
+                exitCode.onFailure(cause -> fail("the forced path must produce a summary: " + cause.message()))
+                        .onSuccess(code -> assertEquals(ExitCode.SUCCESS, (int) code,
+                                                        "the operator asked for the undrained teardown, so it succeeds"));
+                assertEquals(1, cleanups.get(), "the forced path DOES reap cloud resources");
+                assertTrue(stdout().contains("--force-undrained: continuing with an EMPTY node list"),
+                           () -> "and says so, so the transcript records that no drain happened; got:\n" + stdout());
+            } finally {
+                ClusterDestroyCommand.registryRemover = originalRemover;
+            }
+        }
+
+        /// #998 — a `--cluster X` whose registry entry is absent or blank used to install NO endpoint override,
+        /// so `resolveEndpoint()` fell through to `registry.current()` and destroy enumerated, DRAINED and SHUT
+        /// DOWN the ACTIVE cluster's nodes while reaping X's cloud resources. The request must not be issued at
+        /// all.
+        @Test
+        void fetchNodeIds_issuesNoRequest_whenTheTargetHasNoRecordedEndpoint() {
+            var calls = new AtomicInteger(0);
+            ClusterHttpClient.HTTP_OPS_REF.set(new CountingHttpOperations(calls));
+
+            var nodeIds = new ClusterDestroyCommand().fetchNodeIds(noRecordedEndpoint());
+
+            assertTrue(nodeIds.isFailure(), () -> "an unknown endpoint is a failed enumeration: " + nodeIds);
+            assertEquals(0, calls.get(),
+                         "no HTTP request may be issued: the only endpoint available would be a DIFFERENT "
+                         + "cluster's, and draining that one is worse than not draining this one");
+            assertTrue(stderr().contains("draining and shutting down a different cluster's nodes"),
+                       () -> "the hazard must be named, not just the absence; got:\n" + stderr());
+        }
+
+        /// Positive control for the count above: the SAME stub, a target that does have an endpoint. Without
+        /// it, "zero requests" is equally consistent with a stub that is never wired in.
+        @Test
+        void fetchNodeIds_issuesExactlyOneRequest_whenTheTargetHasAnEndpoint() {
+            var calls = new AtomicInteger(0);
+            ClusterHttpClient.HTTP_OPS_REF.set(new CountingHttpOperations(calls));
+
+            new ClusterDestroyCommand().fetchNodeIds(TARGET_ENDPOINT);
+
+            assertEquals(1, calls.get(), "one enumeration request, as announced");
+        }
+
+        /// #998 — the diagnostic that turns a bare `ConnectException` into something actionable. Every registry
+        /// entry written before this fix is port-less, so this is the line an operator reads on a stale entry.
+        @Test
+        void fetchNodeIds_namesAPortlessEndpoint_asAnObservation() {
+            new ClusterDestroyCommand().fetchNodeIds(Result.success("https://138.199.236.244"));
+
+            assertTrue(stderr().contains("carries NO explicit port"),
+                       () -> "the observed shape of the endpoint must be reported; got:\n" + stderr());
+            assertTrue(stderr().contains("8080"),
+                       () -> "with the port an Aether management API actually listens on; got:\n" + stderr());
+        }
+
+        /// Negative control: an endpoint that DOES carry a port must not attract the note. Otherwise the note
+        /// is an always-on line and says nothing about this endpoint.
+        @Test
+        void fetchNodeIds_saysNothingAboutPorts_whenTheEndpointCarriesOne() {
+            new ClusterDestroyCommand().fetchNodeIds(TARGET_ENDPOINT);
+
+            assertTrue(stderr().contains("could not list cluster nodes"),
+                       () -> "precondition: the enumeration still failed; got:\n" + stderr());
+            assertFalse(stderr().contains("carries NO explicit port"),
+                        () -> "a fully-specified endpoint must not be blamed for the port; got:\n" + stderr());
+        }
+
+        private static Result<String> noRecordedEndpoint() {
+            return ClusterDestroyCommand.DestroyError.General.NO_TARGET_ENDPOINT.result();
+        }
+
+        private static Result<Unit> countedCleanup(AtomicInteger cleanups) {
+            cleanups.incrementAndGet();
+
+            return Result.unitResult();
+        }
+
+        private static Result<ClusterRegistry> countedRemoval(AtomicInteger removals, ClusterRegistry registry) {
+            removals.incrementAndGet();
+
+            return Result.success(registry);
+        }
+
+        private static ClusterRegistry registryWithNoEntries() {
+            return ClusterRegistry.clusterRegistry(Path.of("unused-registry.toml"), none(), List.of());
+        }
+    }
+
     private record FixedBodyHttpOperations(String body) implements HttpOperations {
         @Override
         @SuppressWarnings("unchecked")

@@ -22,9 +22,11 @@ import org.pragmatica.cloud.hetzner.api.Server;
 import org.pragmatica.cloud.hetzner.api.SshKey;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Functions.Fn1;
 
 
@@ -127,6 +129,12 @@ sealed interface BootstrapCleanup {
         return cleanupWith(state, CleanupResolvers.cleanupResolvers());
     }
 
+    /// #997 — teardown entry for `aether cluster destroy`, which must reap the cluster-labelled VMs the
+    /// ledger never recorded BEFORE the firewall delete is attempted. See [#SWEEP_BEFORE_RANK].
+    static Result<Unit> cleanupWithVmSweep(BootstrapState state, Fn0<Result<Unit>> preFirewallSweep) {
+        return cleanupWith(state, CleanupResolvers.cleanupResolvers(), Option.some(preFirewallSweep));
+    }
+
     static Result<Unit> cleanup(BootstrapState state, Fn1<Result<ComputeProvider>, String> cloudComputeResolver) {
         return cleanupWith(state,
                            CleanupResolvers.cleanupResolvers().withCloudComputeFallback(cloudComputeResolver));
@@ -160,13 +168,37 @@ sealed interface BootstrapCleanup {
     /// fallback (#521) — which the positional overloads above cannot inject alongside the handle seams —
     /// without any real cloud call.
     static Result<Unit> cleanupWith(BootstrapState state, CleanupResolvers resolvers) {
+        return cleanupWith(state, resolvers, Option.none());
+    }
+
+    /// #997 — `preFirewallSweep` runs INSIDE the rank walk, exactly once, at [#SWEEP_BEFORE_RANK].
+    ///
+    /// It is a parameter rather than a [CleanupResolvers] field because that record is the credential
+    /// seams, and it is ABSENT rather than a no-op on the bootstrap path for two separate reasons:
+    ///
+    /// - [#sweepClusterVms] REFUSES a cluster in [#PROTECTED_CLUSTERS], and a refusal is a `Result` failure.
+    ///   Wiring the sweep in unconditionally would have made every BOOTSTRAP rollback of a protected cluster
+    ///   fail on a sweep it never asked for — a new failure mode on the money path, to fix a destroy-path
+    ///   ordering bug. Absence keeps that off the bootstrap path by construction, not by a guard.
+    /// - An `Option` rather than a no-op `Fn0` because [VmAccounting] REPORTS whether a sweep ran. A no-op
+    ///   that returns success is indistinguishable from a real sweep that succeeded, and the firewall
+    ///   diagnostic then claims "the VM sweep ran and reported success" on a path where no sweep exists —
+    ///   the #994 false-diagnostic class again. The absent case is [SweepVerdict#NOT_RUN].
+    static Result<Unit> cleanupWith(BootstrapState state,
+                                    CleanupResolvers resolvers,
+                                    Option<Fn0<Result<Unit>>> preFirewallSweep) {
         System.out.println("Cleaning up resources for cluster '" + state.clusterName() + "'...");
         var resources = new ArrayList<>(state.createdResources());
 
         Collections.reverse(resources);
-        var outcome = collectCleanupFailures(state, resources, resolvers);
+        var outcome = collectCleanupFailures(state, resources, resolvers, preFirewallSweep);
 
         return finishCleanup(state, outcome);
+    }
+
+    private static Result<Unit> runSweep(Option<Fn0<Result<Unit>>> preFirewallSweep) {
+        return preFirewallSweep.map(Fn0::apply)
+                               .or(Result.unitResult());
     }
 
     /// #481 — defensive cluster-scoped ssh-key sweep. `cleanup` above deletes only keys the state recorded
@@ -504,23 +536,69 @@ sealed interface BootstrapCleanup {
     /// The cleanup run's observed result: what failed (with the resource, for enumeration) and what was
     /// actually reaped. `reaped` is load-bearing rather than decorative — the firewall arm reads it to
     /// state how many of the ledger's VMs this run really deleted, instead of asserting a cause.
-    record CleanupOutcome(List<ReapFailure> failures, List<CreatedResource> reaped) {}
+    /// `sweep` is the outcome of the #997 pre-firewall VM sweep — [Result#unitResult] on the bootstrap path,
+    /// where no sweep is wired. It is kept separate from `failures` because the sweep already enumerates its
+    /// own leftovers through [#printLeftBehind], so folding it in would print them twice.
+    record CleanupOutcome(List<ReapFailure> failures, List<CreatedResource> reaped, Result<Unit> sweep) {}
 
+    /// #997 — the sweep fires before the first resource at [#SWEEP_BEFORE_RANK] or above, and after the loop
+    /// if the walk never reached that rank. The trailing call is not belt-and-braces: a ledger holding only
+    /// VMs has no rank-3 resource at all, and dropping the sweep there would skip it for exactly the cluster
+    /// whose firewall was recorded by something else.
     private static CleanupOutcome collectCleanupFailures(BootstrapState state,
                                                          List<CreatedResource> resources,
-                                                         CleanupResolvers resolvers) {
+                                                         CleanupResolvers resolvers,
+                                                         Option<Fn0<Result<Unit>>> preFirewallSweep) {
         var failures = new ArrayList<ReapFailure>();
         var reaped = new ArrayList<CreatedResource>();
+        var sweep = Result.unitResult();
+        var reachedSweepRank = false;
 
         for (var resource : inDestructionOrder(resources)) {
-            var result = destroyResource(state, resource, resolvers, List.copyOf(reaped));
+            if (!reachedSweepRank && destructionRank(resource) >= SWEEP_BEFORE_RANK) {
+                reachedSweepRank = true;
+                sweep = runSweep(preFirewallSweep);
+            }
+
+            var result = destroyResource(state,
+                                         resource,
+                                         resolvers,
+                                         List.copyOf(reaped),
+                                         sweepVerdict(preFirewallSweep, reachedSweepRank, sweep));
 
             logResourceResult(result, resource);
             var _ = result.onSuccess(_ -> reaped.add(resource))
                           .onFailure(cause -> failures.add(new ReapFailure(resource, cause)));
         }
 
-        return new CleanupOutcome(List.copyOf(failures), List.copyOf(reaped));
+        return new CleanupOutcome(List.copyOf(failures),
+                                  List.copyOf(reaped),
+                                  reachedSweepRank
+                                  ? sweep
+                                  : runSweep(preFirewallSweep));
+    }
+
+    /// #997 — whether the cluster-labelled VM sweep ran before the firewall delete now being attempted, and
+    /// how it ended. [VmAccounting] reports it because the reorder made its old wording false: with an empty
+    /// ledger it said "this cleanup has issued no server delete", which a sweep that had just deleted three
+    /// unrecorded VMs contradicts. That is the #994 class — a diagnostic asserting an action instead of
+    /// reporting an observation — so the observation had to reach it.
+    enum SweepVerdict {
+        NOT_RUN,
+        SUCCEEDED,
+        FAILED
+    }
+
+    private static SweepVerdict sweepVerdict(Option<Fn0<Result<Unit>>> preFirewallSweep,
+                                             boolean reachedSweepRank,
+                                             Result<Unit> sweep) {
+        if (preFirewallSweep.isEmpty() || !reachedSweepRank) {
+            return SweepVerdict.NOT_RUN;
+        }
+
+        return sweep.isSuccess()
+               ? SweepVerdict.SUCCEEDED
+               : SweepVerdict.FAILED;
     }
 
     /// Hetzner refuses to delete a firewall still applied to a live server, so VMs must go first.
@@ -541,8 +619,18 @@ sealed interface BootstrapCleanup {
                         .toList();
     }
 
+    /// #997 — the rank the VM sweep is inserted at. Everything a firewall can still be attached to ranks
+    /// BELOW it and the firewall itself ranks AT it, so a sweep here lands after the last VM-rank delete
+    /// (cores first, so the reconciler that would re-provision the swept workers is already dead) and before
+    /// the first firewall delete (nothing the provider can call `resource_in_use` survives it).
+    ///
+    /// Package-visible, and asserted by a test against `destructionRank(CloudFirewall)` rather than against a
+    /// restated literal — the same arrangement as [#FIREWALL_DELETE_ATTEMPTS]. Re-rank the firewall and the
+    /// pin reddens instead of the sweep silently drifting to the wrong side of it.
+    static final int SWEEP_BEFORE_RANK = 3;
+
     @SuppressWarnings("JBCT-PAT-01")
-    private static int destructionRank(CreatedResource resource) {
+    static int destructionRank(CreatedResource resource) {
         return switch (resource) {
             case CreatedResource.SshDeployedConfig ignored -> 0;
             case CreatedResource.ProvisionedVm ignored -> 1;
@@ -560,11 +648,20 @@ sealed interface BootstrapCleanup {
                                                             + ": " + cause.message()));
     }
 
+    /// #997 — a failed VM sweep is a failed cleanup, so the ledger file is KEPT. That is the point of
+    /// folding it in rather than reporting it beside: the ledger used to be deleted while the sweep failure
+    /// merely kept the registry entry, and a second `destroy` then found no state, printed "No bootstrap
+    /// state — skipping resource cleanup", removed the entry and exited 0 over VMs that were still billing.
+    /// Keeping it makes the retry the idempotent operation it is already advertised as.
     private static Result<Unit> finishCleanup(BootstrapState state, CleanupOutcome outcome) {
         if (!outcome.failures().isEmpty()) {
             printLeftBehind(state.clusterName(), "cleanup", outcome.failures());
 
             return new CleanupError(joinDescriptions(outcome.failures()), joinEnumeration(outcome.failures())).result();
+        }
+
+        if (outcome.sweep().isFailure()) {
+            return outcome.sweep();
         }
 
         return BootstrapStatePersistence.delete(state.clusterName());
@@ -607,10 +704,15 @@ sealed interface BootstrapCleanup {
     private static Result<Unit> destroyResource(BootstrapState state,
                                                 CreatedResource resource,
                                                 CleanupResolvers resolvers,
-                                                List<CreatedResource> reapedSoFar) {
+                                                List<CreatedResource> reapedSoFar,
+                                                SweepVerdict sweep) {
         return switch (resource) {
             case CreatedResource.ProvisionedVm vm -> destroyVm(state, vm, resolvers);
-            case CreatedResource.CloudFirewall firewall -> deleteCloudFirewall(state, firewall, resolvers, reapedSoFar);
+            case CreatedResource.CloudFirewall firewall -> deleteCloudFirewall(state,
+                                                                               firewall,
+                                                                               resolvers,
+                                                                               reapedSoFar,
+                                                                               sweep);
             case CreatedResource.FloatingIpAssignment ip -> detachFloatingIp(ip);
             case CreatedResource.DockerContainer container -> removeContainer(container);
             case CreatedResource.SshDeployedConfig config -> removeRemoteConfig(config);
@@ -644,7 +746,8 @@ sealed interface BootstrapCleanup {
     private static Result<Unit> deleteCloudFirewall(BootstrapState state,
                                                     CreatedResource.CloudFirewall firewall,
                                                     CleanupResolvers resolvers,
-                                                    List<CreatedResource> reapedSoFar) {
+                                                    List<CreatedResource> reapedSoFar,
+                                                    SweepVerdict sweep) {
         System.out.printf("  Deleting firewall %s (id=%s)...%n", firewall.name(), firewall.firewallId());
 
         return resolveComputeFor(state, firewall, resolvers).flatMap(compute -> disposeWithRetry(compute,
@@ -652,7 +755,8 @@ sealed interface BootstrapCleanup {
                                                                                                  resolvers,
                                                                                                  vmAccounting(state,
                                                                                                               firewall,
-                                                                                                              reapedSoFar)));
+                                                                                                              reapedSoFar,
+                                                                                                              sweep)));
     }
 
     /// #994 — the OBSERVED state behind a firewall that will not delete, assembled only from facts this
@@ -672,13 +776,16 @@ sealed interface BootstrapCleanup {
     /// somebody else had already removed. Saying "deleted all N" of a server it never deleted is small, but
     /// it is the same class as #994's "servers are still detaching" — a diagnostic asserting an action
     /// instead of reporting an observation — and this record exists to end that class.
-    record VmAccounting(String sourceName, int recorded, int deleted) {
+    /// #997 — `sweep` is the fourth component because the reorder changed what this record can truthfully
+    /// say. The label sweep now runs BEFORE this delete, so "this cleanup has issued no server delete" is
+    /// false whenever the sweep deleted something, and "check for unrecorded VMs" is advice the cleanup has
+    /// already acted on. Both now read off the verdict.
+    record VmAccounting(String sourceName, int recorded, int deleted, SweepVerdict sweep) {
         String describe() {
             if (recorded == 0) {
                 return "the bootstrap ledger records NO VMs for source '" + sourceName
-                     + "', so this cleanup has issued no server delete for it — whatever still holds the"
-                     + " firewall is a server this cleanup cannot name. Check for unrecorded VMs with"
-                     + " 'hcloud server list -l aether-cluster=<cluster>'";
+                     + "', so this cleanup has issued no LEDGER-DRIVEN server delete for it" + sweepClause()
+                     + ". Check for unrecorded VMs with 'hcloud server list -l aether-cluster=<cluster>'";
             }
 
             if (deleted < recorded) {
@@ -686,24 +793,35 @@ sealed interface BootstrapCleanup {
                      + " VM(s) for source '" + sourceName
                      + "' and this cleanup deleted " + deleted
                      + " of them, so " + (recorded - deleted)
-                     + " recorded VM(s) were NOT deleted (their own failures are reported above)";
+                     + " recorded VM(s) were NOT deleted (their own failures are reported above)" + sweepClause();
             }
 
             return "this cleanup accounted for all " + recorded
                  + " VM(s) the bootstrap ledger records for source '" + sourceName
-                 + "' (deleted, or already gone and reported as such above), and the provider still reports"
-                 + " the firewall in use";
+                 + "' (deleted, or already gone and reported as such above)" + sweepClause()
+                 + ", and the provider still reports the firewall in use";
+        }
+
+        /// Reports the sweep as an observation, never as an explanation of the refusal.
+        private String sweepClause() {
+            return switch (sweep) {
+                case NOT_RUN -> ", and no cluster-labelled VM sweep ran before this delete";
+                case SUCCEEDED -> ", and the cluster-labelled VM sweep ran before this delete and reported" + " success (its own inventory is above)";
+                case FAILED -> ", and the cluster-labelled VM sweep ran before this delete and FAILED, so a" + " VM it could not remove may still hold the firewall (its leftovers are" + " enumerated above)";
+            };
         }
     }
 
     private static VmAccounting vmAccounting(BootstrapState state,
                                              CreatedResource.CloudFirewall firewall,
-                                             List<CreatedResource> reapedSoFar) {
+                                             List<CreatedResource> reapedSoFar,
+                                             SweepVerdict sweep) {
         var sourceName = firewall.sourceName().value();
 
         return new VmAccounting(sourceName,
                                 countVmsFor(state.createdResources(), sourceName),
-                                countVmsFor(reapedSoFar, sourceName));
+                                countVmsFor(reapedSoFar, sourceName),
+                                sweep);
     }
 
     @SuppressWarnings("JBCT-PAT-01")

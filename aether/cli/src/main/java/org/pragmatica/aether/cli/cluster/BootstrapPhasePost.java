@@ -84,10 +84,8 @@ sealed interface BootstrapPhasePost {
         // #209: register the endpoint with the scheme the cluster actually serves. When TLS is
         // auto-generated the management plane is HTTPS, so the persisted endpoint (the single source of
         // truth operational commands read) must be `https://`, not a hardcoded `http://`.
-        var scheme = managementScheme(ctx);
-        var endpoint = ctx.addresses().isEmpty()
-                       ? scheme + "://localhost:9090"
-                       : scheme + "://" + ctx.addresses().getFirst().publicIp();
+        // #998: and with the PORT the management plane actually listens on — see [#managementEndpoint].
+        var endpoint = managementEndpoint(ctx);
 
         ClusterRegistry.load()
                        .map(registry -> registry.add(clusterName.value(),
@@ -106,6 +104,36 @@ sealed interface BootstrapPhasePost {
                : "http";
     }
 
+    /// #998 — ONE construction of the management endpoint, read by BOTH the persisted registry entry and
+    /// the returned [BootstrapResult]. They used to be built separately and they disagreed:
+    /// `buildResult` appended `operations.ports.management`, `registerClusterLocally` appended nothing.
+    /// So every bootstrapped cluster was REGISTERED as `<scheme>://<ip>` with no port, and every later
+    /// registry-based management call resolved that entry and targeted the scheme default — 443 under
+    /// auto-generated TLS — while the management API listened on 8080. Observed on a live Hetzner cluster
+    /// on 2026-09-11: `cluster destroy` could not enumerate nodes, so DRAIN_NODES and SHUTDOWN_NODES were
+    /// skipped and the VMs were deleted without a graceful drain. `resolveEndpoint` is shared by
+    /// `getPath`/`postPath`/`putPath`, so the same entry broke every other registry-based command too.
+    ///
+    /// The fix belongs HERE rather than in [ClusterHttpClient#resolveEndpoint]: the reader is shared by
+    /// commands that never load a cluster config, so it cannot know this cluster's management port — and
+    /// appending a default there would silently rewrite a deliberately port-less endpoint (a management
+    /// plane behind a reverse proxy on 443 is a legitimate entry).
+    ///
+    /// The localhost branch carried a hardcoded `9090`, which is not the management port under any
+    /// configuration — `PortMapping.defaultPortMapping()` is 8080 — and is now read from config like the
+    /// other branch. Two constructions of one value is what let them drift; there is now one.
+    static String managementEndpoint(BootstrapContext ctx) {
+        var scheme = managementScheme(ctx);
+        var port = ctx.config().operations().ports().management();
+
+        return ctx.addresses()
+                  .isEmpty()
+               ? scheme + "://localhost:" + port
+               : scheme + "://" + ctx.addresses()
+                                     .getFirst()
+                                     .publicIp() + ":" + port;
+    }
+
     @Contract
     private static void printConnectionInfo(BootstrapContext ctx) {
         var clusterName = ctx.config().cluster().name();
@@ -119,14 +147,11 @@ sealed interface BootstrapPhasePost {
                                                ClusterBootstrapOrchestrator.deriveApiKeyEnvName(clusterName)));
     }
 
-    private static BootstrapResult buildResult(BootstrapContext ctx) {
+    /// Package-visible so a test asserts the returned endpoint against [#managementEndpoint] — the
+    /// symmetry #998 was the absence of. Nothing else calls it.
+    static BootstrapResult buildResult(BootstrapContext ctx) {
         var clusterName = ctx.config().cluster().name();
-        var mgmtPort = ctx.config().operations().ports().management();
-        // #209: surface the actual scheme (HTTPS under auto-generated TLS) in the result endpoint too.
-        var scheme = managementScheme(ctx);
-        var endpoint = ctx.addresses().isEmpty()
-                       ? scheme + "://localhost:" + mgmtPort
-                       : scheme + "://" + ctx.addresses().getFirst().publicIp() + ":" + mgmtPort;
+        var endpoint = managementEndpoint(ctx);
         var apiKey = ctx.apiKey().or("");
         var apiKeyEnvName = ClusterBootstrapOrchestrator.deriveApiKeyEnvName(clusterName);
 
