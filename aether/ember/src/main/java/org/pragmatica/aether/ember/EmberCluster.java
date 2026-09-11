@@ -380,7 +380,8 @@ public final class EmberCluster {
     /// the same dir and the stream WAL/segments survive. Production node paths never call this (the
     /// default empty `storageConfig` keeps the read-only `/data` fallback → WAL off); Forge — a local
     /// dev simulator, not a production path — calls it at startup (`ForgeServer.applyForgeDataDir`) to
-    /// home node data under `$AETHER_HOME/forge-data`. See [#perNodeStorageConfig].
+    /// home node data under the dir `ForgeDataDir` resolves for the run, which since #718 is scoped to
+    /// the project owning the `--config` file rather than being machine-wide. See [#perNodeStorageConfig].
     ///
     /// @param baseDir writable base dir (e.g. a JUnit `@TempDir`) under which each node gets `<baseDir>/<nodeId>`
     @Contract

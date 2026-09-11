@@ -36,13 +36,18 @@ not reach the router at all. It falls through to the static file handler, which 
    lsof -nP -iUDP:6000                 # QUIC base port; expect no output before you start
    ```
 
-4. Start from clean simulator state. Forge keeps per-node data under `$AETHER_HOME/forge-data`,
-   falling back to `~/.aether/forge-data`. Pointing Forge at a fresh directory removes inherited
-   state as a variable, and is preferable to deleting the default directory:
+4. Start from clean simulator state. Forge resolves its per-node data directory at startup and logs
+   the absolute path; with a `--config` it defaults to `<that file's directory>/.aether/forge-data`
+   (see [Data Directory](../../slice-developers/forge-guide.md#data-directory)). Pointing Forge at a
+   fresh directory removes inherited state as a variable, and is preferable to deleting the default
+   directory:
 
    ```bash
-   export AETHER_HOME="$(mktemp -d)"
+   export AETHER_FORGE_DATA="$(mktemp -d)"
    ```
+
+   Use `AETHER_FORGE_DATA`, not `AETHER_HOME`: the latter is the installer's variable (the install
+   directory) and only selects the data directory for a Forge started without `--config`.
 
    Leader election is not instantaneous, and how long it takes depends on the host, so step 1 polls
    for readiness rather than sleeping for a fixed interval.
@@ -372,7 +377,7 @@ reconciliation instead.
   - **Another Forge on the host** holding the fixed QUIC base ports `6000+` (Prerequisites step 3).
     Check first — it is the one you can rule out definitively, with `lsof`
   - **Inherited simulator state**: `Snapshot restore failed` per node on boot. Restart with a fresh
-    `AETHER_HOME` (Prerequisites step 4)
+    `AETHER_FORGE_DATA` (Prerequisites step 4)
 
 ### Slice stuck in LOAD state
 - Check if artifact exists in repository
