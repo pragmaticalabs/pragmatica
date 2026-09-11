@@ -3483,6 +3483,14 @@ List all API keys with status.
 (`ACTIVE`, `REVOKED`, or `EXPIRED`) — clients must read the per-record field rather than matching
 a status token against the whole document.
 
+The listing covers **every credential the node accepts**, from both sources, and `source` says
+which:
+
+| `source` | Where the key lives | Revocable via this API |
+|---|---|---|
+| `cluster` | The replicated cluster key store, created by `POST /api/v1/cluster/keys` or minted at formation as the bootstrap admin key | **Yes** |
+| `config` | The node's `[app-http.api-keys.<key>]` table or the `AETHER_API_KEYS` environment variable | **No** — see below |
+
 ```json
 [
   {
@@ -3492,16 +3500,45 @@ a status token against the whole document.
     "expiresAt": -1,
     "revokedAt": -1,
     "gracePeriodMs": 300000,
-    "authorizationRole": "ADMIN"
+    "authorizationRole": "ADMIN",
+    "source": "cluster"
+  },
+  {
+    "keyId": "config:ops-preprovisioned",
+    "status": "ACTIVE",
+    "createdAt": -1,
+    "expiresAt": -1,
+    "revokedAt": -1,
+    "gracePeriodMs": 0,
+    "authorizationRole": "ADMIN",
+    "source": "config"
   }
 ]
 ```
+
+A `config` record's `keyId` is synthetic (`config:<declared name>`) and never the key value; its
+timestamps are `-1` because a file declaration has no creation, expiry or revocation event. It is
+reported `ACTIVE` because the node does accept it.
+
+**Clients that act on this listing must filter on `source`.** `aether cluster rotate-key` does:
+it considers only `cluster` records, because a `config` record cannot be retired here. A record
+with no `source` field comes from an older node and is treated as `cluster`.
 
 ### POST /api/v1/cluster/keys/revoke/{id}
 
 Revoke an API key. The key remains valid during its grace period.
 
 **RBAC:** ADMIN
+
+**Only `source: "cluster"` keys can be revoked here.** Revocation commits a `REVOKED` record
+through consensus, which works because the cluster key store is that key's authority. A key
+declared in a node's configuration file is refused, with a message naming the file: the file is its
+authority, the node cannot rewrite an operator's file, and the config validator is consulted before
+the cluster key store — so a tombstone would sit in the store while the key kept authenticating.
+Reporting success there would tell an operator a live credential was dead.
+
+To retire a `config` key, remove its `[app-http.api-keys.<key>]` table (or its `AETHER_API_KEYS`
+entry) and restart the node.
 
 **Request:**
 ```json

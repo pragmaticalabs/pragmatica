@@ -4438,6 +4438,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                            config.tls(),
                                                                                                            mgmtSecurityValidator,
                                                                                                            mgmtSecurityEnabled,
+                                                                                                           () -> config.appHttp()
+                                                                                                                       .apiKeys(),
                                                                                                            serverBossGroup,
                                                                                                            serverWorkerGroup,
                                                                                                            config.managementHttpProtocol(),

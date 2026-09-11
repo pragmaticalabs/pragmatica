@@ -77,6 +77,7 @@ import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.http.security.SecurityError;
 import org.pragmatica.aether.api.OperationalEvent;
+import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
@@ -154,6 +155,7 @@ public interface ManagementServer {
                                              Option<TlsConfig> tls,
                                              SecurityValidator securityValidator,
                                              boolean securityEnabled,
+                                             Supplier<Map<String, ApiKeyEntry>> configuredApiKeys,
                                              Option<EventLoopGroup> bossGroup,
                                              Option<EventLoopGroup> workerGroup,
                                              HttpProtocol httpProtocol,
@@ -178,6 +180,7 @@ public interface ManagementServer {
                                         tls,
                                         securityValidator,
                                         securityEnabled,
+                                        configuredApiKeys,
                                         bossGroup,
                                         workerGroup,
                                         httpProtocol,
@@ -209,6 +212,10 @@ class ManagementServerImpl implements ManagementServer {
     private final HttpRequestObserver requestObserver;
     private final Option<TlsConfig> tls;
     private final SecurityValidator securityValidator;
+    /// The node's config-declared keys, so `GET /api/v1/cluster/keys` can report every credential
+    /// this node accepts rather than only the cluster-held ones. A supplier, not a snapshot, so a
+    /// future reloadable config is reflected without re-wiring the server.
+    private final Supplier<Map<String, ApiKeyEntry>> configuredApiKeys;
     private final boolean securityEnabled;
     private final Option<EventLoopGroup> bossGroup;
     private final Option<EventLoopGroup> workerGroup;
@@ -255,6 +262,7 @@ class ManagementServerImpl implements ManagementServer {
                          Option<TlsConfig> tls,
                          SecurityValidator securityValidator,
                          boolean securityEnabled,
+                         Supplier<Map<String, ApiKeyEntry>> configuredApiKeys,
                          Option<EventLoopGroup> bossGroup,
                          Option<EventLoopGroup> workerGroup,
                          HttpProtocol httpProtocol,
@@ -272,6 +280,9 @@ class ManagementServerImpl implements ManagementServer {
         this.logLevelRegistry = logLevelRegistry;
         this.securityValidator = securityValidator;
         this.securityEnabled = securityEnabled;
+        this.configuredApiKeys = configuredApiKeys == null
+                                 ? Map::of
+                                 : configuredApiKeys;
         this.bossGroup = bossGroup;
         this.workerGroup = workerGroup;
         this.httpProtocol = httpProtocol;
@@ -351,7 +362,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                                                                     .streamNamespacesService()));
         routeSources.add(StorageRoutes.storageRoutes(nodeSupplier));
         routeSources.add(RetentionRoutes.retentionRoutes(nodeSupplier));
-        var apiKeyRoutes = ApiKeyRoutes.apiKeyRoutes(nodeSupplier);
+        var apiKeyRoutes = ApiKeyRoutes.apiKeyRoutes(nodeSupplier, configuredApiKeys);
 
         apiKeyRoutesRef.set(apiKeyRoutes);
         routeSources.add(apiKeyRoutes);
