@@ -135,6 +135,19 @@ public final class ForgeServer {
         var forgeConfig = loadForgeConfig(startupConfig);
 
         printBanner(forgeConfig, startupConfig);
+
+        // #1008 — checked before anything is created. A second Forge BINDS these UDP ports happily
+        // (both sockets carry SO_REUSEADDR) and then never reaches quorum, with nothing naming a
+        // port, so there is no bind failure downstream for this to be inherited from.
+        var quicPortCheck = ForgePortPreflight.ensureQuicPortsFree(forgeConfig.basePort(),
+                                                                   forgeConfig.nodes());
+
+        quicPortCheck.onFailure(cause -> log.error("{}", cause.message()));
+        if (quicPortCheck.isFailure()) {
+            System.exit(1);
+            return;
+        }
+
         var server = new ForgeServer(startupConfig, forgeConfig);
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -207,6 +220,9 @@ public final class ForgeServer {
         log.info("=".repeat(60));
         log.info("  Dashboard: http://localhost:{}", forgeConfig.dashboardPort());
         log.info("  Cluster size: {} nodes", forgeConfig.nodes());
+        log.info("  Cluster QUIC ports: {}-{} (UDP, consensus)",
+                 forgeConfig.basePort(),
+                 forgeConfig.basePort() + forgeConfig.nodes() - 1);
         log.info("  App HTTP port: {} (load target)", forgeConfig.appHttpPort());
         if (forgeConfig.lbEnabled()) {
             log.info("  Load balancer: http://localhost:{}", forgeConfig.lbPort());
@@ -240,7 +256,7 @@ public final class ForgeServer {
     private void initializeComponents(Option<ConfigurationProvider> configProvider) {
         var metricsInstance = ForgeMetrics.forgeMetrics();
         var clusterInstance = EmberCluster.emberCluster(forgeConfig.nodes(),
-                                                        EmberCluster.DEFAULT_BASE_PORT,
+                                                        forgeConfig.basePort(),
                                                         forgeConfig.managementPort(),
                                                         forgeConfig.appHttpPort(),
                                                         "node",

@@ -23,7 +23,7 @@ public final class EmberInstance {
     private EmberInstance(EmberConfig config) {
         this.config = config;
         this.cluster = EmberCluster.emberCluster(config.nodes(),
-                                                 EmberCluster.DEFAULT_BASE_PORT,
+                                                 config.basePort(),
                                                  config.managementPort(),
                                                  config.appHttpPort(),
                                                  "node",
