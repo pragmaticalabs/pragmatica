@@ -12,8 +12,10 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongConsumer;
 import java.util.function.LongPredicate;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.slice.RetentionMode;
@@ -23,11 +25,21 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
 
 
 public final class OffHeapRingBuffer implements AutoCloseable {
+    private static final Logger log = LoggerFactory.getLogger(OffHeapRingBuffer.class);
+    /// Empty-ring encoding reported when a native read is refused (#999): allocation seeds
+    /// `headOffset = -1`, and a DECLARED-but-not-materialized partition already reports `(-1, -1, 0)` via
+    /// `StreamPartitionManager.partitionInfoFor`. Refusing with these exact values is what lets every
+    /// existing caller treat a released ring as the absent partition it has become.
+    private static final long NO_OFFSET = -1L;
+    private static final long NO_EVENTS = 0L;
     private static final long HEADER_HEAD_OFFSET = 0;
     private static final long HEADER_TAIL_OFFSET = 8;
     private static final long HEADER_EVENT_COUNT = 16;
@@ -91,6 +103,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private long accountedBytes;
     private final List<LongConsumer> appendListeners = new CopyOnWriteArrayList<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
+    /// Reads refused because the arena was closed UNDER an in-flight reader (#999) — the genuine race, not
+    /// the benign late arrival the `closed` fast path absorbs.
+    private final AtomicLong closedUnderReader = new AtomicLong(0);
     private volatile long lastSealedOffset = -1;
 
     private OffHeapRingBuffer(Arena arena,
@@ -313,7 +328,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.STREAM_MEMORY_EXCEEDED.result();
         }
 
-        return success(headOffset());
+        return success(rawHeadOffset());
     }
 
     /// Runs AFTER growth so the REJECT_WHEN_FULL fullness check is evaluated against the grown
@@ -328,7 +343,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
 
         evictForSpace(payload.length);
-        var currentHead = headOffset();
+        var currentHead = rawHeadOffset();
         var newOffset = currentHead + 1;
         var slotIndex = Math.floorMod(newOffset, capacity);
         var dataPos = Math.floorMod(dataWritePos(), dataRing());
@@ -347,7 +362,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
 
         if (payloads.isEmpty()) {
-            return success(headOffset());
+            return success(rawHeadOffset());
         }
 
         var totalSize = totalPayloadSize(payloads);
@@ -374,7 +389,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.STREAM_MEMORY_EXCEEDED.result();
         }
 
-        return success(headOffset());
+        return success(rawHeadOffset());
     }
 
     private Result<Long> appendBatchWritten(List<byte[]> payloads, long[] timestamps) {
@@ -411,7 +426,14 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.BUFFER_CLOSED.result();
         }
 
-        var currentHead = headOffset();
+        return guardedAccess(() -> seedHeadChecked(base));
+    }
+
+    /// Native half of [#seedHead], behind the [#guardedAccess] boundary: the `closed` check above is a
+    /// TOCTOU test that a concurrent release can win, so the header reads and writes here must still fail
+    /// closed as `BUFFER_CLOSED` rather than throw out of the `Result` chain (#999).
+    private Result<Unit> seedHeadChecked(long base) {
+        var currentHead = rawHeadOffset();
 
         if (base < 0 || currentHead != -1) {
             return new StreamError.SeedRejected(base, currentHead).result();
@@ -527,8 +549,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     private Result<MemorySegment> readSliceChecked(long offset) {
-        var head = headOffset();
-        var tail = tailOffset();
+        var head = rawHeadOffset();
+        var tail = rawTailOffset();
 
         if (head < 0) {
             return StreamError.General.BUFFER_EMPTY.result();
@@ -564,8 +586,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     private Result<List<RawEvent>> readChecked(long fromOffset, int maxEvents) {
-        var tail = tailOffset();
-        var head = headOffset();
+        var tail = rawTailOffset();
+        var head = rawHeadOffset();
 
         if (head < 0) {
             return success(List.of());
@@ -594,16 +616,104 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return success(List.copyOf(events));
     }
 
+    /// Guarded header reads (#999). See [#guardedRead] for why a `long`-returning accessor needs a
+    /// native-access boundary of its own and why a refusal reports the EMPTY-ring encoding.
     public long headOffset() {
-        return controlSegment.get(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET);
+        return guardedRead(NO_OFFSET, this::rawHeadOffset);
     }
 
     public long tailOffset() {
-        return controlSegment.get(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET);
+        return guardedRead(NO_OFFSET, this::rawTailOffset);
     }
 
     public long eventCount() {
+        return guardedRead(NO_EVENTS, this::rawEventCount);
+    }
+
+    /// Raw header reads — the form every INTERNAL caller uses. Internal callers already run inside
+    /// [#guardedAccess] and must ABORT on a concurrent close, never continue with a refusal sentinel: a
+    /// sentinel here would be actively harmful, because [#updateHeaderAfterAppend] persists
+    /// `rawEventCount() + 1` and [#evictOldest] persists `rawEventCount() - 1`, so a swallowed `0` would
+    /// write a NEGATIVE event count into the header. Letting the native exception propagate to the
+    /// enclosing [#guardedAccess] is what makes those paths fail closed as `BUFFER_CLOSED`.
+    private long rawHeadOffset() {
+        return controlSegment.get(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET);
+    }
+
+    private long rawTailOffset() {
+        return controlSegment.get(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET);
+    }
+
+    private long rawEventCount() {
         return controlSegment.get(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT);
+    }
+
+    /// Native-access boundary for the primitive header accessors (#999) — the `long`-returning sibling of
+    /// [#guardedAccess], which only ever covered the `Result`-returning paths.
+    ///
+    /// These accessors are read by LIVE paths: the replication receive handler's `nextExpectedOffset` (on a
+    /// Netty event loop), the backfill thread's `partitionInfo`, and the status/metrics surfaces. The
+    /// closing side is NOT shutdown-specific — `StreamPartitionManager.reconcileReshuffle`, scheduled every
+    /// `STREAM_RESHUFFLE_RECONCILE_INTERVAL` (5s) by `AetherNode`, releases a materialized ring on confirmed
+    /// role loss, and `destroyStream` closes one straight from the Management API. `Arena.ofShared()` keeps
+    /// the freed memory safe by throwing `IllegalStateException` AT THE READER, so without this boundary the
+    /// throw escaped an accessor that has no failure channel: it killed the `stream-partition-backfill`
+    /// thread outright, and on the event loop it was swallowed by `RabiaNode.dispatchLoudly`, DROPPING a
+    /// replication message.
+    ///
+    /// A refused read reports the EMPTY-ring encoding, which every caller already treats as "this node does
+    /// not hold the partition" — true by construction once the ring is released. That makes the racy path
+    /// converge on the behaviour the non-racy path has always had (the ring is removed from the entry's
+    /// `materialized` map BEFORE it is closed, so a later resolution returns [Option#none] and yields the
+    /// same values), rather than inventing a third outcome.
+    @SuppressWarnings("JBCT-EX-01")
+    private long guardedRead(long refused, LongSupplier read) {
+        if (closed.get()) {
+            return refused;
+        }
+
+        try {
+            return read.getAsLong();
+        } catch (IllegalStateException | IndexOutOfBoundsException _) {
+            reportClosedUnderReader();
+
+            return refused;
+        }
+    }
+
+    /// Void-shaped sibling of [#guardedRead] for the public retention sweeps, which read and then rewrite
+    /// the control region and have no value to report.
+    private void guardedSweep(Runnable sweep) {
+        guardedRead(NO_EVENTS, () -> sweepAsRead(sweep));
+    }
+
+    private long sweepAsRead(Runnable sweep) {
+        sweep.run();
+
+        return NO_EVENTS;
+    }
+
+    /// Report the GENUINE race — the arena was closed while this read was already in flight — distinctly
+    /// from the benign late arrival that the `closed` fast path above absorbs silently (#999 expectation 3).
+    /// Until now this event surfaced only as an anonymous `dispatchLoudly` "message dropped by this handler"
+    /// line, or as nothing at all on the thread it killed: no stream, no partition, and no way to tell a
+    /// shutdown drop from a live one. The counter is read by [#closedUnderReaderCount] so a run can be
+    /// scored without grepping logs.
+    private void reportClosedUnderReader() {
+        var occurrence = closedUnderReader.incrementAndGet();
+
+        log.warn("OffHeapRingBuffer {}[{}]: arena was closed by a concurrent release WHILE a read was in "
+                + "flight — read refused as empty (occurrence {} for this ring). The partition was released "
+                + "or destroyed under an in-flight reader; this is NOT shutdown-specific.",
+                 streamName,
+                 partition,
+                 occurrence);
+    }
+
+    /// Count of reads refused because the arena was closed UNDER an in-flight reader (#999). Zero on every
+    /// quiescent ring; non-zero means the release path overlapped a live reader on this partition.
+    public long closedUnderReaderCount() {
+        return closedUnderReader.get();
     }
 
     public long allocatedBytes() {
@@ -617,8 +727,16 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return controlSegment.byteSize();
     }
 
+    /// Retention is a READ-MODIFY-WRITE over the control region, so it needs the same native-access
+    /// boundary as every other public path (#999): a concurrent release closing the arena mid-sweep would
+    /// otherwise throw out of a `void` method onto whichever thread drives retention.
     @Contract
     public void applyRetention(RetentionPolicy policy) {
+        guardedSweep(() -> applyRetentionChecked(policy));
+    }
+
+    @SuppressWarnings("JBCT-ZONE-02")
+    private void applyRetentionChecked(RetentionPolicy policy) {
         policy.tierAwareRetention().filter(_ -> lastSealedOffset >= 0).onPresent(this::applyTierAwareRetention);
         applyNormalRetention(policy);
     }
@@ -632,8 +750,14 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return lastSealedOffset;
     }
 
+    /// Guarded for the same reason as [#applyRetention] (#999) — a public `void` path that reads and then
+    /// rewrites the control region.
     @Contract
     public void evictByAge(long maxAgeMs) {
+        guardedSweep(() -> evictByAgeChecked(maxAgeMs));
+    }
+
+    private void evictByAgeChecked(long maxAgeMs) {
         var cutoff = System.currentTimeMillis() - maxAgeMs;
         var countToEvict = countEvictionsByAge(cutoff);
 
@@ -685,7 +809,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var sizeConfigured = policy.maxBytes() != Long.MAX_VALUE;
         var ageConfigured = policy.maxAgeMs() != Long.MAX_VALUE;
         var countExcess = countConfigured
-                          ? Math.max(0, eventCount() - policy.maxCount())
+                          ? Math.max(0, rawEventCount() - policy.maxCount())
                           : Long.MAX_VALUE;
         var sizeExcess = sizeConfigured
                          ? countEvictionsBySize(policy.maxBytes())
@@ -733,7 +857,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     private long countSealedEvents() {
-        var tail = tailOffset();
+        var tail = rawTailOffset();
         var sealed = lastSealedOffset;
 
         if (sealed < tail) {
@@ -746,7 +870,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     @SuppressWarnings("JBCT-PAT-01")
     private void evictSealedByAge(long postSealBufferMs) {
         var cutoff = System.currentTimeMillis() - postSealBufferMs;
-        var tail = tailOffset();
+        var tail = rawTailOffset();
         var sealed = lastSealedOffset;
         var count = 0L;
 
@@ -779,7 +903,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     private long appendPayloads(List<byte[]> payloads, long[] timestamps) {
-        var currentHead = headOffset();
+        var currentHead = rawHeadOffset();
         var lastOffset = currentHead;
 
         for (int i = 0; i < payloads.size(); i++) {
@@ -901,7 +1025,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private void updateHeaderAfterAppend(long newHeadOffset, int payloadLength) {
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, newHeadOffset);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS, dataWritePos() + payloadLength);
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, eventCount() + 1);
+        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, rawEventCount() + 1);
     }
 
     private RawEvent readSingleEvent(long offset) {
@@ -929,8 +1053,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     private long countEvictionsForSpace(int payloadLength) {
         var count = 0L;
-        var simulatedTail = tailOffset();
-        var simulatedCount = eventCount();
+        var simulatedTail = rawTailOffset();
+        var simulatedCount = rawEventCount();
 
         while (simulatedCount >= capacity) {
             simulatedTail++;
@@ -952,7 +1076,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// While the region can still grow (allocated < cap) growth covers the write, so eviction is a
     /// no-op here. See spec §4.2.
     private boolean wouldNeedDataEviction(int payloadLength, long simulatedTail) {
-        var head = headOffset();
+        var head = rawHeadOffset();
 
         if (simulatedTail > head) {
             return false;
@@ -975,18 +1099,18 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     private void evictOldest() {
-        var tail = tailOffset();
+        var tail = rawTailOffset();
 
-        if (tail > headOffset()) {
+        if (tail > rawHeadOffset()) {
             return;
         }
 
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, tail + 1);
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, eventCount() - 1);
+        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, rawEventCount() - 1);
     }
 
     private void evictByCount(long maxCount) {
-        var excess = eventCount() - maxCount;
+        var excess = rawEventCount() - maxCount;
 
         if (excess > 0) {
             notifyAndEvict(excess);
@@ -1029,7 +1153,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     private List<OffHeapRingBuffer.RawEvent> collectEvictedEvents(long count) {
-        var tail = tailOffset();
+        var tail = rawTailOffset();
         var events = new ArrayList<RawEvent>((int) count);
 
         for (long i = 0; i < count; i++) {
@@ -1041,9 +1165,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     private long countEvictionsByAge(long cutoff) {
         var count = 0L;
-        var tail = tailOffset();
+        var tail = rawTailOffset();
 
-        while (count < eventCount()) {
+        while (count < rawEventCount()) {
             var slotIndex = Math.floorMod(tail + count, capacity);
             var timestamp = readTimestamp(slotIndex);
 
@@ -1059,8 +1183,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     private long countEvictionsBySize(long maxBytes) {
         var count = 0L;
-        var simulatedTail = tailOffset();
-        var head = headOffset();
+        var simulatedTail = rawTailOffset();
+        var head = rawHeadOffset();
 
         while (simulatedTail + count <= head) {
             var tailSlot = Math.floorMod(simulatedTail + count, capacity);
