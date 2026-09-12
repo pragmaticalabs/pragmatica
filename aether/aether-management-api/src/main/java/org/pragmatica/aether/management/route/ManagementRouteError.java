@@ -60,6 +60,14 @@ public sealed interface ManagementRouteError extends Cause {
         return new TargetDisconnected(nodeId);
     }
 
+    static PartitionOwnerUnresolved partitionOwnerUnresolved(String routeName, String path) {
+        return new PartitionOwnerUnresolved(routeName, path);
+    }
+
+    static OwnerForwardLoop ownerForwardLoop(String routeName, String previousHop) {
+        return new OwnerForwardLoop(routeName, previousHop);
+    }
+
     record NoMatch(HttpMethod method, String path) implements ManagementRouteError {
         @Override
         public String message() {
@@ -143,6 +151,39 @@ public sealed interface ManagementRouteError extends Cause {
         @Override
         public String message() {
             return "Per-node forward target " + nodeId + " is not connected";
+        }
+    }
+
+    /// No HRW owner could be computed for a [RouteTarget.PartitionOwner] route (#1039).
+    ///
+    /// `ReplicaSetController.ownerFor` returns empty only when no placement can be computed at all —
+    /// an empty member view, or the bootstrap window before the first reconcile reports members. It
+    /// is NOT the "unknown stream" case: HRW placement hashes a name over the member set, so a stream
+    /// nobody ever created still has a deterministic owner.
+    ///
+    /// Answering locally instead would produce `servedByOwner=false` with an empty replica ring —
+    /// indistinguishable from a genuinely empty partition, which is the exact confusion #1039 exists
+    /// to remove. A clear failure is the honest outcome: the question has no authoritative answer yet.
+    record PartitionOwnerUnresolved(String routeName, String path) implements ManagementRouteError {
+        @Override
+        public String message() {
+            return "No partition owner resolvable for " + routeName
+                 + " " + path
+                 + " (empty member view or pre-reconcile bootstrap window)";
+        }
+    }
+
+    /// A request already forwarded once by owner resolution arrived at a node that would forward it
+    /// again (#1039) — the membership-skew cycle, where A resolves B as owner while B resolves A.
+    ///
+    /// Terminates the cycle with a named cause instead of letting it decay into the budget-exhaustion
+    /// deadline the forwarder would otherwise report, which is indistinguishable from a slow peer.
+    record OwnerForwardLoop(String routeName, String previousHop) implements ManagementRouteError {
+        @Override
+        public String message() {
+            return "Owner-forward loop on " + routeName
+                 + ": already forwarded by " + previousHop
+                 + " — membership views disagree on the partition owner";
         }
     }
 }

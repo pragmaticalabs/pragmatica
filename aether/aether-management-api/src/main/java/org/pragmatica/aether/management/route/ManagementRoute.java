@@ -18,6 +18,7 @@ import static org.pragmatica.aether.management.route.PathToken.spacer;
 import static org.pragmatica.aether.management.route.RouteTarget.ANY;
 import static org.pragmatica.aether.management.route.RouteTarget.LEADER;
 import static org.pragmatica.aether.management.route.RouteTarget.LOCAL;
+import static org.pragmatica.aether.management.route.RouteTarget.partitionOwner;
 import static org.pragmatica.aether.management.route.RouteTarget.taskGroup;
 import static org.pragmatica.aether.slice.delegation.TaskGroup.DEPLOYMENT;
 import static org.pragmatica.aether.slice.delegation.TaskGroup.SCALING;
@@ -192,12 +193,19 @@ public enum ManagementRoute {
                         spacer("read"),
                         param("partition")),
                 taskGroup(STREAMING)),
-    // #260/#261/#333 replica-state observability. taskGroup(STREAMING) lands the request on a
-    // STREAMING-capable node; the handler then resolves the partition's deterministic HRW owner and
-    // assembles the replica-set view from the local `ReplicaRegistry` (authoritative only ON the
-    // owner — see `servedByOwner` in the response). Per-partition-owner management forwarding is not
-    // a `RouteTarget` variant (the owner is computed from name+partition, not a path param), so the
-    // response is owner-aware rather than owner-forwarded.
+    // #260/#261/#333 replica-state observability, owner-forwarded since #1039. The previous
+    // taskGroup(STREAMING) target landed the request on an ARBITRARY STREAMING-capable node and
+    // discarded whether that node was the partition's owner — and the `ReplicaRegistry` is
+    // authoritative only ON the owner (only the owner receives every replica's ack), so a non-owner
+    // answered `servedByOwner=false` with an empty ring indistinguishable from a genuinely empty
+    // partition. Measured on a live 5-node cluster: `servedByOwner=false` from 5 of 5 ports,
+    // including the owner's own, while `replicas-local` on that same port reported the real offsets
+    // at the same instant.
+    //
+    // partitionOwner(3) names the `partition` param; the engine key comes from params 0-2 through
+    // the SAME reduction the handler uses (`ManagementServerImpl.resolveEngineKey` ->
+    // `StreamManager.engineKey`), injected into the two dispatch points rather than re-derived in
+    // either — a second derivation of stream identity is the defect tracked by #1040.
     STREAM_REPLICAS(GET,
                     List.of(spacer("streams"),
                             param("namespace"),
@@ -205,7 +213,7 @@ public enum ManagementRoute {
                             param("version"),
                             spacer("replicas"),
                             param("partition")),
-                    taskGroup(STREAMING)),
+                    partitionOwner(3)),
     // #490 per-node LOCAL variant of STREAM_REPLICAS (the membership-endpoint pattern): the RECEIVING
     // node answers from its OWN ReplicaRegistry/owner resolver — never delegate-routed — so querying a
     // specific node's management port observes THAT node's view, and `servedByOwner=true` is actually

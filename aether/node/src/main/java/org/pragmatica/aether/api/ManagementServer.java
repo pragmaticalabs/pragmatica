@@ -93,6 +93,7 @@ import org.pragmatica.aether.http.AetherVersioningMetricsSink;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
@@ -900,6 +901,12 @@ class ManagementServerImpl implements ManagementServer {
                                                                                       startTime,
                                                                                       matchedRoute,
                                                                                       paramIndex);
+            case RouteTarget.PartitionOwner(var partitionParamIndex) -> tryForwardIfNotPartitionOwner(ctx,
+                                                                                                      response,
+                                                                                                      methodName,
+                                                                                                      startTime,
+                                                                                                      matchedRoute,
+                                                                                                      partitionParamIndex);
         };
     }
 
@@ -989,6 +996,83 @@ class ManagementServerImpl implements ManagementServer {
         return true;
     }
 
+    /// Forward unless THIS node is the partition's HRW owner (#1039). Short-circuits only the one case
+    /// that is definitively local, exactly as [#tryForwardIfNotTargetNode] does; every other case —
+    /// a different owner, an owner that cannot be resolved at all — goes to the forwarder, which
+    /// re-resolves through the SAME resolver and turns an unresolvable owner into
+    /// `ManagementRouteError.PartitionOwnerUnresolved`, surfaced as a 503 by `sendForwardError`.
+    ///
+    /// Deliberately NOT answered locally when the owner is unresolvable: a local answer would carry
+    /// `servedByOwner=false` and an empty replica ring, which reads exactly like a genuinely empty
+    /// partition. That indistinguishability IS #1039.
+    private boolean tryForwardIfNotPartitionOwner(HttpRequest ctx,
+                                                  InstrumentedResponseWriter response,
+                                                  String methodName,
+                                                  long startTime,
+                                                  MatchedRoute matched,
+                                                  int partitionParamIndex) {
+        var node = nodeSupplier.get();
+
+        if (answersPartitionLocally(resolvePartitionOwner(matched, partitionParamIndex), node.self())) {
+            return false;
+        }
+
+        forwardManagementRequest(ctx, response, methodName, startTime);
+
+        return true;
+    }
+
+    /// Package-visible pure decision behind [#tryForwardIfNotPartitionOwner] — the same convention
+    /// [#isSystemStreamWriteOverHttp] and [#resolvePermission] follow, because the dispatch decision
+    /// around it cannot be driven without a live listener.
+    ///
+    /// The `or(false)` is the load-bearing half. An UNRESOLVED owner must FORWARD, so the forwarder
+    /// re-resolves and answers `PartitionOwnerUnresolved`. Defaulting the other way would answer
+    /// locally with `servedByOwner=false` and an empty replica ring — #1039 restored, and silent,
+    /// because that response is indistinguishable from a genuinely empty partition.
+    static boolean answersPartitionLocally(Option<NodeId> owner, NodeId self) {
+        return owner.map(self::equals)
+                    .or(false);
+    }
+
+    /// The HRW owner of the partition a [RouteTarget.PartitionOwner] route addresses.
+    ///
+    /// One derivation, not two: the engine key comes from [#resolveEngineKey] (the same reduction the
+    /// pre-auth write gate uses, which is `StreamManager.engineKey` off route params), and the owner
+    /// comes from `StreamReadRouter.resolveOwner` — the very resolver `replicaSnapshot` reads to
+    /// compute `servedByOwner`. Forwarder and handler therefore agree by construction; a separately
+    /// wired resolution could send the request to a node that then answers `servedByOwner=false`,
+    /// which is the defect again, one hop further away.
+    private Option<NodeId> resolvePartitionOwner(MatchedRoute matched, int partitionParamIndex) {
+        return partitionOwner(matched,
+                              partitionParamIndex,
+                              nodeSupplier.get().streamReadRouter());
+    }
+
+    /// Package-visible and static so the WHOLE derivation is pinnable — engine key, partition param and
+    /// owner lookup composed — rather than each piece in isolation. The composition is where this can
+    /// go wrong: a correct engine key paired with a partition read out of the `version` slot resolves a
+    /// perfectly well-formed owner for the wrong partition, and no test of either half would see it.
+    /// The only line left outside the pin is the `nodeSupplier.get().streamReadRouter()` hop above.
+    static Option<NodeId> partitionOwner(MatchedRoute matched, int partitionParamIndex, StreamReadRouter router) {
+        return Option.all(resolveEngineKey(matched), partitionParam(matched, partitionParamIndex)).flatMap(router::resolveOwner);
+    }
+
+    private static Option<Integer> partitionParam(MatchedRoute matched, int partitionParamIndex) {
+        var names = matched.route().paramNames();
+
+        return partitionParamIndex < 0 || partitionParamIndex >= names.size()
+               ? Option.empty()
+               : matched.param(names.get(partitionParamIndex))
+                        .flatMap(ManagementServerImpl::parsePartition);
+    }
+
+    private static Option<Integer> parsePartition(String raw) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> Integer.valueOf(raw))
+                     .option();
+    }
+
     private void forwardManagementRequest(HttpRequest ctx,
                                           InstrumentedResponseWriter response,
                                           String methodName,
@@ -1049,7 +1133,15 @@ class ManagementServerImpl implements ManagementServer {
                                               () -> coreNodeIds(node),
                                               node.taskGroupOwnerResolver(),
                                               () -> nodeSupplier.get()
-                                                                .leader());
+                                                                .leader(),
+
+        // Method reference, not a captured node: this forwarder is
+        // built once and cached, so the owner must be re-read from
+        // the CURRENT node on every dispatch. A captured `node`
+        // would pin a membership view from forwarder-construction
+        // time, which on this endpoint is the view least likely to
+        // still be right (it is queried during failover).
+        this::resolvePartitionOwner);
         var wrapped = Option.<HttpForwarder> some(fwd);
 
         return mgmtForwarderRef.compareAndSet(existing, wrapped)
@@ -1431,13 +1523,23 @@ class ManagementServerImpl implements ManagementServer {
 
     /// Mirrors [StreamManager#engineKey]'s two-shape resolution off a [MatchedRoute]'s raw params
     /// instead of an already-built [ResourceAddress].
-    private static Option<String> resolveEngineKey(MatchedRoute matched) {
+    ///
+    /// [ManagementRoute#STREAM_REPLICAS] joins the write routes here (#1039) rather than growing a
+    /// second reduction for the owner-forwarding dispatch path: it carries the same
+    /// (namespace, stream, version) identity params, and one declaration resolving to two engine keys
+    /// is the defect tracked by #1040. This method's identity is now read by BOTH the pre-auth write
+    /// gate and owner dispatch, so a change to the reduction moves them together.
+    ///
+    /// Package-visible so the identity reduction is pinnable directly against
+    /// `StreamManager.engineKey` — the same reason [#isSystemStreamWriteOverHttp] and
+    /// [#resolvePermission] are.
+    static Option<String> resolveEngineKey(MatchedRoute matched) {
         return switch (matched.route()) {
-            case STREAMS_PUBLISH, STREAMS_DELETE, STREAMS_GROUP_CREATE, STREAMS_GROUP_DELETE -> matched.param("namespace").flatMap(ns -> matched.param("stream")
-                                                                                                                                                .flatMap(stream -> matched.param("version")
-                                                                                                                                                                          .flatMap(ver -> ResourceAddress.resourceAddress(ns,
-                                                                                                                                                                                                                          stream,
-                                                                                                                                                                                                                          ver).option()))).map(StreamManager::engineKey);
+            case STREAMS_PUBLISH, STREAMS_DELETE, STREAMS_GROUP_CREATE, STREAMS_GROUP_DELETE, STREAM_REPLICAS -> matched.param("namespace").flatMap(ns -> matched.param("stream")
+                                                                                                                                                                 .flatMap(stream -> matched.param("version")
+                                                                                                                                                                                           .flatMap(ver -> ResourceAddress.resourceAddress(ns,
+                                                                                                                                                                                                                                           stream,
+                                                                                                                                                                                                                                           ver).option()))).map(StreamManager::engineKey);
             default -> Option.empty();
         };
     }
