@@ -4986,11 +4986,19 @@ GET /api/v1/streams/{namespace}/{stream}/{version}/partitions/{partition}
 GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}
 ```
 
-**Auth:** ALL_AUTHENTICATED · **Routing:** STREAMING task group
+**Auth:** ALL_AUTHENTICATED · **Routing:** partition HRW owner (forwarded)
 
 Replication/backfill-health sensor for the stream-replication class (#260/#261/#333). Returns the partition's replica set as seen by the answering node's `ReplicaRegistry`, with the deterministic HRW owner resolved via the read path's owner resolver. Each replica entry carries its replication `state` (`SYNCING` / `CAUGHT_UP` / `LAGGING`), its acked `confirmedOffset`, and whether it `isHrwOwner`. To detect the #333 write-idle residual, compare a `CAUGHT_UP` replica's `confirmedOffset` against the response's `ownerHeadOffset`.
 
-**Owner authority (read this):** the per-peer confirmed-watermark view is advanced by the owner's `DefaultReplicationManager.handleAck`, so the `ReplicaRegistry` is **authoritative only on the partition's HRW owner** — a non-owner mostly knows only itself. The response is therefore **owner-aware, not owner-forwarded**: per-partition-owner forwarding is not a management `RouteTarget` variant (the owner is computed from `(namespace, stream, version)`+`partition`, not a single path param), and the stream forward transport carries only event reads. `servedByOwner` is `true` when the answering node IS the resolved owner (then `replicas` is the complete, authoritative set). **Routing caveat (#490):** this route is delegate-routed (STREAMING task group), so the answering node is an arbitrary streaming-capable delegate — re-querying a different management port still lands on a delegate, and `servedByOwner=true` is generally unobservable here. To reach the owner's authoritative view over HTTP, query the **local variant below** against the `hrwOwner` node's own management port.
+**Owner authority (read this):** the per-peer confirmed-watermark view is advanced by the owner's `DefaultReplicationManager.handleAck`, so the `ReplicaRegistry` is **authoritative only on the partition's HRW owner** — a non-owner mostly knows only itself. Since #1039 this route is therefore **owner-forwarded**: whichever node receives the request resolves the partition's HRW owner and forwards there, so a successful response carries `servedByOwner: true` and the complete replica set no matter which management port you ask. The answering node is named in the `X-Aether-Served-By` response header.
+
+Before #1039 the route was delegate-routed (`STREAMING` task group), which landed it on an arbitrary streaming-capable node and discarded whether that node was the owner — so it answered `servedByOwner: false` with an empty `replicas` ring, indistinguishable from a genuinely empty partition. Measured on a live 5-node cluster: `servedByOwner: false` from 5 of 5 ports, the owner's own included, for a partition holding 20 events. [verified: aether/aether-invoke/src/test/java/org/pragmatica/aether/http/forward/HttpForwarderPartitionOwnerTest.java pins the forwarding decision; the live-path multi-node confirmation is outstanding — see the fragment for #1039]
+
+**Two failure modes are reported rather than faked:**
+- `503` naming *no partition owner resolvable* — no HRW placement is computable at all (empty member view, or the bootstrap window before the first reconcile). The alternative, answering locally, would look exactly like an empty partition.
+- `503` naming an *owner-forward loop* — two nodes' membership views disagree on the owner (A resolves B while B resolves A). A request already forwarded once by owner resolution carries an `X-Aether-Owner-Forwarded-By` marker and is refused rather than forwarded again, so skew terminates on a named cause instead of a request-budget deadline. This endpoint is queried during failover, so skew is the normal case here.
+
+For "what does *this* node see" — a per-node sweep during failover diagnosis — use the local variant below, which is unchanged and deliberately never forwarded.
 
 ### Partition Replica State (per-node local view)
 
