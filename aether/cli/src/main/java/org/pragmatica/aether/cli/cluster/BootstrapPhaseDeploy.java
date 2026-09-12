@@ -15,6 +15,7 @@ import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapC
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.RuntimeProfile;
 import org.pragmatica.aether.config.cluster.RuntimeType;
 import org.pragmatica.aether.config.cluster.SourceProfile;
@@ -508,8 +509,6 @@ sealed interface BootstrapPhaseDeploy {
     }
 
     static String JVM_JAR_PATH = "/opt/aether/aether-node.jar";
-    static String JVM_LOG_PATH = "/var/log/aether-node.log";
-    static String JVM_PKILL_PATTERN = "^java -jar " + JVM_JAR_PATH;
 
     static String buildJvmRestartCommand(String nodeId,
                                          int clusterPort,
@@ -528,9 +527,25 @@ sealed interface BootstrapPhaseDeploy {
 
     /// JVM re-launch with finalized PEERS. Same env-parity requirement as the container path
     /// ([#buildRestartCommand]): the cluster-identity allow-list (minus AETHER_CLUSTER_SECRET,
-    /// inlined explicitly) is prepended as inline `VAR="value"` env assignments before
-    /// `nohup java` so the relaunched JVM inherits the same identity + dev-mode posture the
-    /// cloud-init start exported. `envLookup` is injectable for unit testing.
+    /// written explicitly) is re-emitted so the relaunched JVM inherits the same identity + dev-mode
+    /// posture the cloud-init start wrote. `envLookup` is injectable for unit testing.
+    ///
+    /// #1021 — this rewrites the node's systemd env file and restarts the unit. It used to
+    /// `pkill -f '^java -jar /opt/aether/aether-node.jar'` and re-launch a bare `nohup java`, which
+    /// had two defects beyond the missing supervisor:
+    ///  - **It matched processes by command line.** The anchor `^java -jar <jar>` was added because
+    ///    an unanchored pattern matched the SSH session's own argv, which carries the same string —
+    ///    the shape of hazard that keeps recurring here. `systemctl restart` names the unit; nothing
+    ///    is pattern-matched.
+    ///  - **It left the running node OUTSIDE the unit.** With the unit installed at boot, a `pkill`
+    ///    would take the unit to `failed` (`Restart=no` — correctly, it must not come back) while the
+    ///    re-launched `nohup` process ran beside it, so `systemctl status aether-node` would report
+    ///    `failed` for a node that was serving. Wiring the unit in without changing this would have
+    ///    manufactured exactly the false signal #1021 exists to remove.
+    ///
+    /// The env file is rewritten whole rather than appended to, so a re-run cannot leave two
+    /// AETHER_PEERS lines with the stale one last. `0600` is re-applied on every write: the file
+    /// carries AETHER_CLUSTER_SECRET.
     static String buildJvmRestartCommand(String nodeId,
                                          int clusterPort,
                                          int managementPort,
@@ -538,31 +553,22 @@ sealed interface BootstrapPhaseDeploy {
                                          String clusterSecret,
                                          ClusterName clusterName,
                                          Fn1<String, String> envLookup) {
-        return "pkill -f '" + JVM_PKILL_PATTERN
-             + "' 2>/dev/null || true"
-             + "; sleep 1"
-             + "; pkill -9 -f '" + JVM_PKILL_PATTERN
-             + "' 2>/dev/null || true"
-             + "; sleep 1"
-             + "; AETHER_CLUSTER_SECRET=\"" + clusterSecret
-             + "\"" + identityEnvAssignments(clusterName, envLookup)
-             + " nohup java -jar " + JVM_JAR_PATH
-             + " --config=/opt/aether/config/aether.toml"
-             + " --node-id=\"" + nodeId
-             + "\""
-             + " --port=\"" + clusterPort
-             + "\""
-             + " --management-port=\"" + managementPort
-             + "\""
-             + " --peers=\"" + peers
-             + "\""
-             + " > " + JVM_LOG_PATH
-             + " 2>&1 & disown";
+        return "install -d -m 0755 " + NodeUserDataRenderer.JVM_ENV_DIR
+             + " && touch " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
+             + " && chmod 600 " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
+             + " && printf '%s\\n'"
+             + " 'AETHER_CLUSTER_SECRET=" + clusterSecret + "'"
+             + identityEnvAssignments(clusterName, envLookup)
+             + " 'AETHER_NODE_ID=" + nodeId + "'"
+             + " 'AETHER_CLUSTER_PORT=" + clusterPort + "'"
+             + " 'AETHER_MANAGEMENT_PORT=" + managementPort + "'"
+             + " 'AETHER_PEERS=" + peers + "'"
+             + " > " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
+             + " && systemctl restart " + NodeUserDataRenderer.JVM_UNIT_NAME;
     }
 
-    /// Inline `VAR="value"` assignments (space-prefixed) for the cluster-identity allow-list
-    /// (minus AETHER_CLUSTER_SECRET, inlined explicitly by the caller), suitable for prefixing a
-    /// `nohup java` invocation on a single SSH command line.
+    /// Space-prefixed `'VAR=value'` printf operands for the cluster-identity allow-list (minus
+    /// AETHER_CLUSTER_SECRET, written explicitly by the caller), one env-file line each.
     private static String identityEnvAssignments(ClusterName clusterName, Fn1<String, String> envLookup) {
         var sb = new StringBuilder();
 
@@ -576,7 +582,7 @@ sealed interface BootstrapPhaseDeploy {
     }
 
     private static Unit appendJvmEnvAssignment(StringBuilder sb, String name, String value) {
-        sb.append(" ").append(name).append("=\"").append(value).append("\"");
+        sb.append(" '").append(name).append('=').append(value).append('\'');
 
         return Unit.unit();
     }

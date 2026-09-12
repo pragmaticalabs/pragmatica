@@ -42,6 +42,15 @@ public sealed interface NodeUserDataRenderer {
     Pattern PLAIN_SEMVER = Pattern.compile("^[0-9]+\\.[0-9]+\\.[0-9]+$");
     String JAR_REPO_PATH = "pragmaticalabs/pragmatica";
 
+    /// #1021 — the JVM-mode launch surface. Shared with `BootstrapPhaseDeploy`, whose finalized-PEERS
+    /// re-launch rewrites [#JVM_ENV_FILE_PATH] and restarts [#JVM_UNIT_NAME] rather than pattern-matching
+    /// the process with `pkill -f`.
+    String JVM_UNIT_NAME = "aether-node.service";
+    String JVM_UNIT_PATH = "/etc/systemd/system/aether-node.service";
+    String JVM_ENV_DIR = "/etc/aether";
+    String JVM_ENV_FILE_PATH = "/etc/aether/node.env";
+    String JVM_LAUNCHER_PATH = "/opt/aether/run-node.sh";
+
     static String deriveJarTag(String version) {
         if (!Verify.Is.present(version)) {
             return "vunknown";
@@ -385,18 +394,84 @@ public sealed interface NodeUserDataRenderer {
         sb.append("fi\n\n");
     }
 
+    /// #1021 — a JVM-mode node is started BY SYSTEMD, not as a bare backgrounded `java -jar … &`.
+    ///
+    /// The old launch left `systemctl list-units | grep -i aether` empty: no unit, no
+    /// `systemctl status`, no `journalctl -u`, and a crashed node was a silent absence. Nothing about
+    /// WHO RECOVERS the node changes — [SystemdUnitTemplate#RESTART_POLICY] is `Restart=no` and CTM
+    /// auto-heal remains the recovery layer. What changes is that a dead node now leaves a queryable
+    /// local trace: the unit sits in `failed` (or `inactive`) with its exit status and its last output
+    /// in the journal, instead of nothing at all.
+    ///
+    /// Three files, in the order the unit needs them:
+    ///  - [#JVM_ENV_FILE_PATH] — the identity allow-list plus the values resolved on the box. Written
+    ///    BEFORE the unit is enabled, `0600`, because it carries AETHER_CLUSTER_SECRET (#287's reason
+    ///    for the `aether.toml` mode, same secret).
+    ///  - [#JVM_LAUNCHER_PATH] — the launcher, carrying the empty-PEERS conditional verbatim from the
+    ///    old launch, so the invocation is unchanged and only its supervisor is new. It `exec`s the
+    ///    JVM, so systemd's MAINPID is the JVM rather than a wrapper shell.
+    ///  - the unit itself, from [SystemdUnitTemplate].
     private static void appendJvmRun(StringBuilder sb, ClusterName clusterName, NodeRole role, String jvmArgs) {
-        sb.append("# --- Start Aether ---\n");
-        // Export the cluster-identity allow-list (and isolated dev-mode) so the JVM picks
-        // up the same identity a containerized sibling receives via -e flags.
-        appendEnv(sb, clusterName, role, false);
-        // Export the resolved routable IP ONLY when non-empty (runtime test — resolved on the host
-        // above); the node reads AETHER_ADVERTISE_HOST from env. Unset → not exported, and the
-        // node's own SWIM-reflection chain takes over rather than advertising an unroutable hostname.
-        sb.append("if [ -n \"${AETHER_ADVERTISE_HOST}\" ]; then export AETHER_ADVERTISE_HOST; fi\n");
+        appendJvmEnvFile(sb, clusterName, role);
+        appendJvmLauncher(sb, jvmArgs);
+        appendJvmUnit(sb);
+    }
+
+    /// The env file systemd reads. Two heredocs on purpose:
+    ///  - the LITERAL block (quoted delimiter) carries values already resolved at render time — the
+    ///    identity allow-list read from the bootstrapping host's env. A quoted delimiter means a value
+    ///    containing `$` is written as typed instead of being expanded by the boot shell.
+    ///  - the EXPANDING block (unquoted delimiter) carries the values that only exist on the box: the
+    ///    shell vars set at the top of this script, and the advertise host resolved by
+    ///    [#appendAdvertiseHostResolution].
+    ///
+    /// AETHER_CLUSTER_SECRET rides the expanding block via the `none()` ref to [#emitIdentityEnv] —
+    /// the same seam `BootstrapPhaseDeploy`'s re-launch uses to avoid emitting the secret twice — so
+    /// it is written once, from the script's own shell var.
+    ///
+    /// AETHER_ADVERTISE_HOST is written only when non-empty, preserving the old launch's runtime test:
+    /// an unset value must leave the var ABSENT so the node's own SWIM-reflection chain takes over,
+    /// rather than present-and-empty, which would advertise nothing.
+    private static void appendJvmEnvFile(StringBuilder sb, ClusterName clusterName, NodeRole role) {
+        sb.append("# --- Write the node env file systemd reads (0600: carries the cluster secret) ---\n");
+        sb.append("install -d -m 0755 ").append(JVM_ENV_DIR).append('\n');
+        sb.append("touch ").append(JVM_ENV_FILE_PATH).append('\n');
+        sb.append("chmod 600 ").append(JVM_ENV_FILE_PATH).append('\n');
+        sb.append("cat > ").append(JVM_ENV_FILE_PATH).append(" <<'AETHER_ENV_LITERAL'\n");
+        emitIdentityEnv((name, value) -> appendEnvFileLine(sb, name, value),
+                        clusterName,
+                        role,
+                        Option.none(),
+                        System::getenv);
+        sb.append("AETHER_ENV_LITERAL\n");
+        sb.append("cat >> ").append(JVM_ENV_FILE_PATH).append(" <<AETHER_ENV_RUNTIME\n");
+        sb.append("AETHER_CLUSTER_SECRET=${AETHER_CLUSTER_SECRET}\n");
+        sb.append("AETHER_NODE_ID=${AETHER_NODE_ID}\n");
+        sb.append("AETHER_CLUSTER_PORT=${AETHER_CLUSTER_PORT}\n");
+        sb.append("AETHER_MANAGEMENT_PORT=${AETHER_MANAGEMENT_PORT}\n");
+        sb.append("AETHER_PEERS=${AETHER_PEERS}\n");
+        sb.append("AETHER_ENV_RUNTIME\n");
+        sb.append("if [ -n \"${AETHER_ADVERTISE_HOST}\" ]; then echo \"AETHER_ADVERTISE_HOST=${AETHER_ADVERTISE_HOST}\" >> ")
+          .append(JVM_ENV_FILE_PATH)
+          .append("; fi\n\n");
+    }
+
+    /// The launcher. `PEERS_ARG` reproduces the old launch's conditional exactly: an empty peer list —
+    /// the normal state of a bootstrap node before `BootstrapPhaseDeploy` finalizes PEERS — must omit
+    /// `--peers` ENTIRELY rather than pass it empty. Keeping that in a script rather than in ExecStart
+    /// avoids resting the first boot of every cloud node on systemd's empty-variable word-splitting.
+    ///
+    /// `exec` so the JVM REPLACES the shell: with `Type=simple` systemd tracks the first process it
+    /// spawns, and without `exec` that would be the wrapper, leaving `systemctl status` reporting on a
+    /// shell rather than on the node.
+    private static void appendJvmLauncher(StringBuilder sb, String jvmArgs) {
+        sb.append("# --- Write the node launcher (systemd ExecStart) ---\n");
+        sb.append("cat > ").append(JVM_LAUNCHER_PATH).append(" <<'AETHER_LAUNCHER'\n");
+        sb.append("#!/bin/bash\n");
+        sb.append("set -euo pipefail\n");
         sb.append("PEERS_ARG=\"\"\n");
-        sb.append("if [ -n \"${AETHER_PEERS}\" ]; then PEERS_ARG=\"--peers=${AETHER_PEERS}\"; fi\n");
-        sb.append("AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\" java ");
+        sb.append("if [ -n \"${AETHER_PEERS:-}\" ]; then PEERS_ARG=\"--peers=${AETHER_PEERS}\"; fi\n");
+        sb.append("exec java ");
         if (!jvmArgs.isEmpty()) {
             sb.append(jvmArgs).append(' ');
         }
@@ -405,7 +480,31 @@ public sealed interface NodeUserDataRenderer {
         sb.append("--node-id=\"${AETHER_NODE_ID}\" ");
         sb.append("--port=\"${AETHER_CLUSTER_PORT}\" ");
         sb.append("--management-port=\"${AETHER_MANAGEMENT_PORT}\" ");
-        sb.append("${PEERS_ARG} &\n\n");
+        sb.append("${PEERS_ARG}\n");
+        sb.append("AETHER_LAUNCHER\n");
+        sb.append("chmod 0755 ").append(JVM_LAUNCHER_PATH).append("\n\n");
+    }
+
+    /// Install and start the unit. `enable --now` both starts it and links it into
+    /// `multi-user.target`, so a rebooted host brings the node back — which is a HOST-level concern
+    /// and distinct from restarting a crashed process, the distinction
+    /// `aether/docs/operators/deployment-recovery.md` §2.3 draws.
+    private static void appendJvmUnit(StringBuilder sb) {
+        sb.append("# --- Install and start the aether-node systemd unit ---\n");
+        sb.append("# Restart=no is deliberate: Aether uses terminal-removal membership and CTM auto-heal\n");
+        sb.append("# owns recovery. The unit exists so a dead node is VISIBLE (systemctl status /\n");
+        sb.append("# journalctl -u aether-node), not so it comes back. See docs/operators/deployment-recovery.md.\n");
+        sb.append("cat > ").append(JVM_UNIT_PATH).append(" <<'AETHER_UNIT'\n");
+        sb.append(SystemdUnitTemplate.generateDefault());
+        sb.append("AETHER_UNIT\n");
+        sb.append("systemctl daemon-reload\n");
+        sb.append("systemctl enable --now ").append(JVM_UNIT_NAME).append("\n\n");
+    }
+
+    private static Unit appendEnvFileLine(StringBuilder sb, String name, String value) {
+        sb.append(name).append('=').append(value).append('\n');
+
+        return Unit.unit();
     }
 
     private static void appendReadinessSignal(StringBuilder sb, String nodeId, int clusterPort, int managementPort) {
