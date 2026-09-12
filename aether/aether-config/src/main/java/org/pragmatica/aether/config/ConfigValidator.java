@@ -20,7 +20,25 @@ import static org.pragmatica.lang.Result.success;
 
 
 public final class ConfigValidator {
-    private static final Set<Integer> VALID_NODE_COUNTS = Set.of(3, 5, 7);
+    /// Owner ruling 2026-09-12: minimum 5, default 7, 9 allowed.
+    ///
+    /// A 3-node cluster tolerates ZERO failures during maintenance: a rolling restart takes one node
+    /// down, leaving 2 of 3, and any further fault loses quorum. Maintenance is planned and routine,
+    /// so a 3-node cluster spends a predictable fraction of its life with no fault budget at all. 5 is
+    /// the smallest size where a planned operation still leaves margin; 7 buys a second concurrent
+    /// fault during maintenance.
+    ///
+    /// This replaces a `VALID_NODE_COUNTS = Set.of(3, 5, 7)` constant that was DEAD — it had exactly
+    /// one occurrence in the tree, its own declaration, while the live rule was the literal chain in
+    /// [#nodeCountErrors]. Editing that set would have changed no behaviour, which is precisely how
+    /// two encodings of one policy drift apart.
+    private static final int MINIMUM_CLUSTER_SIZE = 5;
+
+    /// Upper bound on the CONSENSUS tier, not on the fleet. `[cluster] nodes` is the quorum basis
+    /// (`TopologyConfig#clusterSize`) and every consensus round is broadcast across it. Fleet size is
+    /// bounded separately by `ClusterConfig#maxNodes`, which #298 deliberately leaves UNBOUNDED, so
+    /// capacity beyond this limit is added as workers rather than refused.
+    private static final int MAXIMUM_CLUSTER_SIZE = 9;
     private static final Pattern HEAP_PATTERN = Pattern.compile("^\\d+[mMgG]$");
     private static final Set<String> VALID_GC = Set.of("zgc", "g1");
     /// #250 review: floor below which a storage-maintenance pass (walks every lifecycle in every
@@ -116,13 +134,25 @@ public final class ConfigValidator {
     private static void nodeCountErrors(ClusterConfig cluster, List<String> errors) {
         int nodes = cluster.nodes();
 
-        if (nodes < 3) {
-            errors.add("Minimum 3 nodes required for fault tolerance. Got: " + nodes);
+        if (nodes < MINIMUM_CLUSTER_SIZE) {
+            errors.add("cluster.nodes is " + nodes
+                      + ", below the supported minimum of " + MINIMUM_CLUSTER_SIZE
+                      + ". A " + nodes
+                      + "-node cluster has no fault budget during maintenance: a rolling restart takes one "
+                      + "node down and any further fault then loses quorum. Set cluster.nodes to "
+                      + MINIMUM_CLUSTER_SIZE + ", 7 (recommended) or " + MAXIMUM_CLUSTER_SIZE
+                      + ", and scale the cluster to that size BEFORE upgrading.");
         } else if (nodes % 2 == 0) {
-            errors.add("Node count must be odd (3, 5, 7) for quorum. Got: " + nodes);
-        } else if (nodes > 7) {
-            errors.add("Maximum recommended node count is 7. Got: " + nodes
-                      + ". More nodes add overhead without proportional benefit.");
+            errors.add("cluster.nodes is " + nodes
+                      + ", which is even. Quorum needs an odd count so that no split is a tie. Use "
+                      + MINIMUM_CLUSTER_SIZE + ", 7 or " + MAXIMUM_CLUSTER_SIZE + ".");
+        } else if (nodes > MAXIMUM_CLUSTER_SIZE) {
+            errors.add("cluster.nodes is " + nodes
+                      + ", above the maximum consensus tier of " + MAXIMUM_CLUSTER_SIZE
+                      + ". cluster.nodes sizes the CONSENSUS tier, which every consensus round is "
+                      + "broadcast across — it is not the fleet size. Keep it at "
+                      + MAXIMUM_CLUSTER_SIZE + " or below and add further capacity as workers, which "
+                      + "this limit does not bound.");
         }
     }
 

@@ -14,10 +14,22 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
+/// Per-environment defaults. `defaultNodes` is the CONSENSUS tier size (the quorum basis), bounded by
+/// [ConfigValidator]'s minimum of 5 and maximum of 9.
+///
+/// Owner ruling 2026-09-12 sets the production default at 7: a 3-node cluster tolerates ZERO failures
+/// during maintenance (a rolling restart leaves 2 of 3, and any further fault loses quorum), 5 is the
+/// smallest size where a planned operation still leaves margin, and 7 buys a second concurrent fault
+/// during maintenance. DOCKER and KUBERNETES are deployment targets and take that default.
+///
+/// LOCAL is 5 rather than 7 ON PURPOSE and must not be "corrected" to match the others: it exists for
+/// developer ergonomics, where availability is not a goal and seven JVMs on a laptop is a real cost.
+/// 5 is the smallest value that still satisfies the supported minimum. `StartupConfig#DEFAULT_CLUSTER_SIZE`
+/// and `EmberConfig#DEFAULT_NODES` track THIS value, not the production default, for the same reason.
 public enum Environment {
-    LOCAL("local", 3, "256m", false),
-    DOCKER("docker", 5, "512m", true),
-    KUBERNETES("kubernetes", 5, "1g", true);
+    LOCAL("local", 5, "256m", false),
+    DOCKER("docker", 7, "512m", true),
+    KUBERNETES("kubernetes", 7, "1g", true);
     private static final Fn1<Cause, String> UNKNOWN_ENVIRONMENT = Causes.forOneValue("Unknown environment: %s. Valid: local, docker, kubernetes");
     private final String name;
     private final int defaultNodes;

@@ -105,7 +105,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicBoolean workerReconcileInFlight,
                                     AtomicBoolean workerReconcilePending) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
-    private static final int MINIMUM_CLUSTER_SIZE = 3;
+    /// #1019 / owner ruling 2026-09-12 — the CORE tier floor is 5, not 3. This is the RUNTIME
+    /// scale-down guard: it stops an operator shrinking a live consensus tier below the size at which
+    /// a rolling restart still leaves a fault budget. Kept in step with
+    /// `ConfigValidator#MINIMUM_CLUSTER_SIZE` and `ClusterSizeGate#MINIMUM_SUPPORTED_CLUSTER_SIZE`,
+    /// which enforce the same floor at config-validation and boot respectively.
+    private static final int MINIMUM_CLUSTER_SIZE = 5;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
     private static final String AETHER_CLUSTER_SECRET_ENV = "AETHER_CLUSTER_SECRET";
 
