@@ -22,7 +22,7 @@ This document describes the planned design for multi-cloud infrastructure manage
 |-----------|--------|-------|
 | `docker/aether-node/Dockerfile` | Ready | eclipse-temurin:25-noble, proper layering |
 | `docker/aether-forge/Dockerfile` | Ready | Simulator container |
-| `docker/docker-compose.yml` | Ready | 3-node cluster, healthchecks, networking |
+| `docker/docker-compose.yml` | Ready | 5-node cluster, healthchecks, networking |
 
 ### Generator Infrastructure: Extensible
 

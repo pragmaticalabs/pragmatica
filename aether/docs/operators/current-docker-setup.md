@@ -6,10 +6,12 @@ Status: **Development/Staging Ready**
 
 Aether includes Docker infrastructure for local development and staging environments. This document describes the current setup and how to use it.
 
-**Note:** A cluster is at least three nodes — there is no supported single-node topology; a node
-started with a smaller expected cluster size refuses to boot (#782). This is why the compose file
-below runs three nodes; see "Single machine (three containers)" in
-[Docker Deployment Guide](docker-deployment.md) for the quick start.
+**Note:** A cluster is at least five nodes (#1019, owner ruling 2026-09-12) — there is no supported
+single-node topology, and three is no longer sufficient: a 3-node cluster tolerates ZERO failures
+during maintenance, since a rolling restart leaves 2 of 3 and any further fault loses quorum. A node
+started with a smaller expected cluster size refuses to boot (#782 established the gate, #1019 raised
+its floor). This is why the compose file below runs five nodes; see "Single machine (five
+containers)" in [Docker Deployment Guide](docker-deployment.md) for the quick start.
 
 ---
 
@@ -32,7 +34,7 @@ Forge simulator container for load testing and chaos experiments.
 
 #### `docker/docker-compose.yml`
 
-3-node cluster configuration:
+5-node cluster configuration:
 
 ```yaml
 services:
@@ -42,7 +44,7 @@ services:
       NODE_ID: "node-1"
       CLUSTER_PORT: "8090"
       MANAGEMENT_PORT: "8080"
-      CLUSTER_PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
+      CLUSTER_PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
       AETHER_CLUSTER_NAME: "aether-dev"
       AETHER_CLUSTER_SECRET: "${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
@@ -61,7 +63,7 @@ services:
 
 ## Usage
 
-### Single machine (three containers)
+### Single machine (five containers)
 
 ```bash
 cd docker
@@ -83,9 +85,13 @@ docker compose --profile forge up --build
 | Node 1 Management | 8080 | http://localhost:8080 |
 | Node 2 Management | 8081 | http://localhost:8081 |
 | Node 3 Management | 8082 | http://localhost:8082 |
+| Node 4 Management | 8083 | http://localhost:8083 |
+| Node 5 Management | 8084 | http://localhost:8084 |
 | Node 1 Cluster | 8090 | - |
 | Node 2 Cluster | 8091 | - |
 | Node 3 Cluster | 8092 | - |
+| Node 4 Cluster | 8093 | - |
+| Node 5 Cluster | 8094 | - |
 | Forge (optional) | 8888 | http://localhost:8888 |
 
 ### Health Check

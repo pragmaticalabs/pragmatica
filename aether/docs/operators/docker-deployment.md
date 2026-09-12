@@ -19,11 +19,16 @@ Two container images are available:
 
 ## Quick Start
 
-### Single machine (three containers)
+### Single machine (five containers)
 
-A cluster is at least three nodes — there is no supported single-node topology. On one
-machine, this compose file runs all three as containers. Requires a cluster secret; there is
-no shipped default:
+A cluster is at least five nodes (owner ruling 2026-09-12, #1019) — there is no supported
+single-node topology, and three is no longer enough. A 3-node cluster tolerates ZERO failures
+during maintenance: a rolling restart takes one node down, leaving 2 of 3, and any further
+fault loses quorum. Five is the smallest size where a planned operation still leaves a fault
+budget. `ClusterSizeGate` enforces this at node boot, so a 3-node compose file does not start.
+
+On one machine, this compose file runs all five as containers. Requires a cluster secret; there
+is no shipped default:
 
 ```bash
 cd docker
@@ -46,6 +51,8 @@ This starts:
 - `aether-node-1` on ports 8080 (API), 8090 (cluster)
 - `aether-node-2` on ports 8081 (API), 8091 (cluster)
 - `aether-node-3` on ports 8082 (API), 8092 (cluster)
+- `aether-node-4` on ports 8083 (API), 8093 (cluster)
+- `aether-node-5` on ports 8084 (API), 8094 (cluster)
 
 ### Build images from source (developers)
 
@@ -72,7 +79,7 @@ Access Forge dashboard at http://localhost:8888
 
 ## Docker Compose Configuration
 
-The `docker/docker-compose.yml` defines a 3-node cluster:
+The `docker/docker-compose.yml` defines a 5-node cluster:
 
 ```yaml
 version: "3.9"
@@ -88,7 +95,7 @@ services:
       NODE_ID: "node-1"
       CLUSTER_PORT: "8090"
       MANAGEMENT_PORT: "8080"
-      CLUSTER_PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
+      CLUSTER_PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
       AETHER_CLUSTER_NAME: "aether-dev"
       AETHER_CLUSTER_SECRET: "${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
@@ -104,7 +111,7 @@ services:
       retries: 10
       start_period: 20s
 
-  # node-2 and node-3 similar...
+  # node-2 ... node-5 similar...
 
 networks:
   aether-network:
@@ -133,7 +140,7 @@ node-id-1:hostname-1:port,node-id-2:hostname-2:port,...
 
 Example:
 ```
-node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090
+node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090
 ```
 
 ### Aether Forge
@@ -147,7 +154,7 @@ node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090
 
 ## Running Individual Containers
 
-For a single machine, use the compose quick start above — it already runs the required three
+For a single machine, use the compose quick start above — it already runs the required five
 containers. The manual `docker run` form below is for wiring nodes across separate hosts (or a
 hand-built bridge network) without compose.
 
@@ -160,24 +167,38 @@ docker network create aether-net
 # Start nodes
 docker run -d --name node1 --network aether-net \
   -e NODE_ID=node-1 \
-  -e CLUSTER_PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
+  -e CLUSTER_PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090,node-4:node4:8090,node-5:node5:8090" \
   -e AETHER_CLUSTER_NAME=aether-dev \
   -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
   -p 8080:8080 aether-node:latest
 
 docker run -d --name node2 --network aether-net \
   -e NODE_ID=node-2 \
-  -e CLUSTER_PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
+  -e CLUSTER_PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090,node-4:node4:8090,node-5:node5:8090" \
   -e AETHER_CLUSTER_NAME=aether-dev \
   -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
   -p 8081:8080 aether-node:latest
 
 docker run -d --name node3 --network aether-net \
   -e NODE_ID=node-3 \
-  -e CLUSTER_PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
+  -e CLUSTER_PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090,node-4:node4:8090,node-5:node5:8090" \
   -e AETHER_CLUSTER_NAME=aether-dev \
   -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
   -p 8082:8080 aether-node:latest
+
+docker run -d --name node4 --network aether-net \
+  -e NODE_ID=node-4 \
+  -e CLUSTER_PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090,node-4:node4:8090,node-5:node5:8090" \
+  -e AETHER_CLUSTER_NAME=aether-dev \
+  -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
+  -p 8083:8080 aether-node:latest
+
+docker run -d --name node5 --network aether-net \
+  -e NODE_ID=node-5 \
+  -e CLUSTER_PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090,node-4:node4:8090,node-5:node5:8090" \
+  -e AETHER_CLUSTER_NAME=aether-dev \
+  -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
+  -p 8084:8080 aether-node:latest
 ```
 
 ## Health Checks

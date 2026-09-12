@@ -104,9 +104,9 @@ curl http://localhost:8080/api/backups
 1. Stop all nodes
 2. Ensure `state.toml` is present in the backup directory
 3. Start one node first, with backup enabled. Its peer list (or discovery target) must still name
-   all three configured nodes — the #782 minimum-cluster-size gate checks the CONFIGURED topology,
-   not how many nodes happen to be up, so starting the first node of a properly-configured
-   three-node cluster does not abort. That node will not reach quorum or elect a leader until a
+   all five configured nodes — the minimum-cluster-size gate (#782, floor raised to 5 by #1019)
+   checks the CONFIGURED topology, not how many nodes happen to be up, so starting the first node of
+   a properly-configured five-node cluster does not abort. That node will not reach quorum or elect a leader until a
    second node joins; that is expected while it loads state.
 4. The node loads state from `state.toml` during sync
 5. Start the remaining nodes — they sync from the restored node and the cluster reaches quorum once
