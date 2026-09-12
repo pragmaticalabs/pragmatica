@@ -8,6 +8,7 @@ import java.util.concurrent.Callable;
 
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.cli.ExitCode;
+import org.pragmatica.aether.cli.cluster.init.TopologyDeriver;
 import org.pragmatica.aether.config.cluster.ClusterIdentity;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
@@ -33,7 +34,10 @@ class ClusterScaffoldCommand implements Callable<Integer> {
     @Option(names = "--template", required = true, description = "Output template: docker-compose")
     private String format;
 
-    @Option(names = "--nodes", defaultValue = "5", description = "Number of compose-fixed nodes (default 5)")
+    /// Default stays 5 rather than the production default of 7: a scaffolded compose file runs every
+    /// node on one machine, where the cost of two more JVMs is real and availability is not the goal.
+    /// 5 is the smallest value the #1019 minimum admits.
+    @Option(names = "--nodes", defaultValue = "5", description = "Number of compose-fixed nodes (default 5, minimum 5)")
     private int nodes;
 
     @Option(names = "--image", defaultValue = "aether-node:local", description = "Container image to use (default aether-node:local)")
@@ -73,7 +77,7 @@ class ClusterScaffoldCommand implements Callable<Integer> {
     }
 
     private Result<String> render(ClusterName clusterName) {
-        if (nodes < 3) {
+        if (nodes < TopologyDeriver.MINIMUM_TOTAL_NODES) {
             return new ScaffoldError.InvalidNodeCount(nodes).result();
         }
 
@@ -108,7 +112,8 @@ class ClusterScaffoldCommand implements Callable<Integer> {
         record InvalidNodeCount(int nodes) implements ScaffoldError {
             @Override
             public String message() {
-                return "Invalid --nodes " + nodes + " (must be >= 3)";
+                return "Invalid --nodes " + nodes + " (must be >= " + TopologyDeriver.MINIMUM_TOTAL_NODES
+                     + "): below that a rolling restart leaves no fault budget";
             }
         }
     }

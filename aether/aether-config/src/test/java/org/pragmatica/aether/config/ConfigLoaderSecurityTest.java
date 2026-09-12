@@ -15,7 +15,7 @@ class ConfigLoaderSecurityTest {
     private static final String MINIMAL_CLUSTER = """
         [cluster]
         environment = "docker"
-        nodes = 3
+        nodes = 5
         """;
 
     @Test

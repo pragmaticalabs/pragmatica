@@ -23,7 +23,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 3
+            nodes = 5
 
             [alerts]
             enabled = true
@@ -56,7 +56,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 3
+            nodes = 5
 
             [alerts]
             hysteresis_margin = 0.02
@@ -87,7 +87,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 3
+            nodes = 5
 
             [alerts.webhook]
             enabled = true
@@ -118,7 +118,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 3
+            nodes = 5
 
             [alerts.events]
             enabled = true
@@ -138,7 +138,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 3
+            nodes = 5
             """;
 
         ConfigLoader.loadFromString(toml)
@@ -415,7 +415,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 3
+            nodes = 5
 
             [dht.replication]
             cooldown_delay_ms = 5000
@@ -437,7 +437,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 3
+            nodes = 5
             """;
 
         ConfigLoader.loadFromString(toml)
@@ -454,7 +454,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 3
+            nodes = 5
 
             [dht.replication]
             target_rf = 0
@@ -474,7 +474,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 3
+            nodes = 5
 
             [node]
             heap = "256m"
@@ -495,7 +495,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 3
+            nodes = 5
 
             [slice]
             repositories = ["builtin"]
@@ -514,7 +514,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 3
+            nodes = 5
 
             [slice]
             repositories = ["local", "builtin"]
@@ -550,7 +550,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 3
+            nodes = 5
             """;
 
         ConfigLoader.loadFromString(toml)
@@ -565,7 +565,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 3
+            nodes = 5
             """;
 
         ConfigLoader.loadFromString(toml)
@@ -582,7 +582,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 3
+            nodes = 5
 
             [streaming]
             publish_forward_timeout = "8s"
@@ -605,7 +605,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 3
+            nodes = 5
             """;
 
         ConfigLoader.loadFromString(toml)

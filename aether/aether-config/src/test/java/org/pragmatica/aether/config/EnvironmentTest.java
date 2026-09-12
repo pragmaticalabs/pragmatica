@@ -15,7 +15,8 @@ class EnvironmentTest {
     void local_hasCorrectDefaults() {
         var env = Environment.LOCAL;
 
-        assertThat(env.defaultNodes()).isEqualTo(3);
+        // 5, not 7: LOCAL is dev ergonomics, below the production default on purpose (#1019).
+        assertThat(env.defaultNodes()).isEqualTo(5);
         assertThat(env.defaultHeap()).isEqualTo("256m");
         assertThat(env.defaultTls()).isFalse();
     }
@@ -24,7 +25,7 @@ class EnvironmentTest {
     void docker_hasCorrectDefaults() {
         var env = Environment.DOCKER;
 
-        assertThat(env.defaultNodes()).isEqualTo(5);
+        assertThat(env.defaultNodes()).isEqualTo(7);
         assertThat(env.defaultHeap()).isEqualTo("512m");
         assertThat(env.defaultTls()).isTrue();
     }
@@ -33,7 +34,7 @@ class EnvironmentTest {
     void kubernetes_hasCorrectDefaults() {
         var env = Environment.KUBERNETES;
 
-        assertThat(env.defaultNodes()).isEqualTo(5);
+        assertThat(env.defaultNodes()).isEqualTo(7);
         assertThat(env.defaultHeap()).isEqualTo("1g");
         assertThat(env.defaultTls()).isTrue();
     }
