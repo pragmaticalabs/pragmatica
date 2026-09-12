@@ -158,6 +158,7 @@ import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.DefaultStreamPublisher;
 import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.slice.stream.BlueprintStreamAddresses;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.KvStreamOwnerEpochSource;
 import org.pragmatica.aether.stream.KvCommittedStreamOwnerSource;
@@ -174,6 +175,7 @@ import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
+import org.pragmatica.aether.stream.StreamAddressResolver;
 import org.pragmatica.aether.stream.StreamPublisherFactory;
 import org.pragmatica.aether.stream.StreamingCoordinator;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
@@ -2664,7 +2666,8 @@ public interface AetherNode extends ManageableNode {
                                                                          topicSubscriptionRegistry,
                                                                          sliceInvoker,
                                                                          cacheDhtClient,
-                                                                         contentStorage));
+                                                                         contentStorage,
+                                                                         kvStore));
         var selfAddress = findSelfAddress(config);
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
                                                                                             selfAddress,
@@ -6149,13 +6152,26 @@ public interface AetherNode extends ManageableNode {
                                                   TopicSubscriptionRegistry topicSubscriptionRegistry,
                                                   SliceInvoker sliceInvoker,
                                                   DHTClient cacheDhtClient,
-                                                  StorageInstance contentStorage) {
+                                                  StorageInstance contentStorage,
+                                                  KVStore<AetherKey, AetherValue> kvStore) {
         spi.registerExtension(TopicSubscriptionRegistry.class, topicSubscriptionRegistry);
         spi.registerExtension(SliceInvoker.class, sliceInvoker);
         spi.registerExtension(DHTClient.class, cacheDhtClient);
         // #251 (#99 regression): ContentStoreFactory.provision() requires a StorageInstance extension.
         // Register a tiered content store so slice-facing ContentStore resources can provision.
         spi.registerExtension(StorageInstance.class, contentStorage);
+        // #1040: the stream resource factories materialize a declared stream under its ENGINE KEY
+        // rather than the bare `resources.toml` section name, which needs the deploy-time
+        // alias->ResourceAddress bindings. Those live in the cluster KV-Store, which aether-stream
+        // cannot reach, so the lookup is supplied here as an extension. Registered unconditionally:
+        // absence is what a test/Forge runtime looks like, and on a real node the resolver must
+        // always be present or a declared stream silently falls back to the bare spelling again.
+        spi.registerExtension(StreamAddressResolver.class,
+                              (sliceId, alias) -> Artifact.artifact(sliceId)
+                                                          .map(artifact -> BlueprintStreamAddresses.engineKeyFor(kvStore,
+                                                                                                                  artifact,
+                                                                                                                  alias))
+                                                          .or(alias));
     }
 
     /// A6 cold-boot convergence window: how long after THIS node's `start()` the SWIM cold-boot

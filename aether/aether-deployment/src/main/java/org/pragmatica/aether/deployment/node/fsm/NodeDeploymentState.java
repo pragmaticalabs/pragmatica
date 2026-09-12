@@ -61,6 +61,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.stream.BlueprintStreamAddresses;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.resource.ScheduleConfig;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -1478,11 +1479,20 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// section, e.g. `[streams.orders]` → `orders`). Resolution therefore always failed and every
         /// declarative registration was silently dropped by the `.option()` below — a consumer that
         /// declared correctly still received nothing, with no diagnostic anywhere. Part of #488.
+        ///
+        /// #1040: the bound name is then qualified to the engine key, because "the SAME type the stream
+        /// resource itself is provisioned with" is only half the guarantee — the resource factories now
+        /// rewrite that name to the blueprint's declared address, and a subscriber left on the bare
+        /// alias would register against a ring no publisher writes to. Both sides derive through
+        /// [BlueprintStreamAddresses#engineKeyFor] against the same bindings map, so the property this
+        /// method was written to hold — a consumer resolves to exactly the stream its publisher writes
+        /// to — survives the change rather than being re-established by coincidence.
         private Result<String> resolveStreamName(Artifact artifact, String configSection) {
             return sliceConfigService(artifact).orElse(ConfigService::instance)
                                      .toResult(Causes.cause("ConfigService not available for stream name resolution"))
                                      .flatMap(svc -> svc.config(configSection, StreamConfig.class))
-                                     .map(StreamConfig::name);
+                                     .map(StreamConfig::name)
+                                     .map(alias -> BlueprintStreamAddresses.engineKeyFor(ctx.kvStore(), artifact, alias));
         }
 
         private void handleFailed(SliceNodeKey sliceKey) {

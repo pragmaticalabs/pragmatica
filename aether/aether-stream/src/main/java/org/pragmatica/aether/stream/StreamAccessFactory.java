@@ -46,15 +46,23 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
         return REQUIRES_CONTEXT.promise();
     }
 
+    /// #1040: qualified on the SAME rule as the publish path ([StreamAddressResolver#qualify]).
+    ///
+    /// Qualifying only the writer would have been worse than qualifying neither — publishers would
+    /// have moved to the catalog's ring while readers stayed on the bare one, splitting the world
+    /// differently instead of healing it. The read and write sides of a declaration resolve through
+    /// one function so they cannot be fixed apart.
     @Override
     public Promise<StreamAccess> provision(StreamConfig config, ProvisioningContext context) {
+        var engineConfig = StreamAddressResolver.qualify(config, context);
+
         return context.extension(StreamPartitionManager.class)
                       .flatMap(manager -> context.extension(Serializer.class)
                                                  .flatMap(serializer -> context.extension(Deserializer.class)
                                                                                .flatMap(deserializer -> buildAccess(manager,
                                                                                                                     serializer,
                                                                                                                     deserializer,
-                                                                                                                    config,
+                                                                                                                    engineConfig,
                                                                                                                     context))))
                       .async();
     }
