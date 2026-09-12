@@ -11,9 +11,13 @@ public sealed interface ClusterInitError extends Cause {
     record TooFewNodes(int got) implements ClusterInitError {
         @Override
         public String message() {
-            return "Aether requires at least 3 nodes for consensus quorum (got " + got
-                 + "). "
-                 + "For local single-process dev/test, use --target forge.";
+            return "Aether requires at least " + TopologyDeriver.MINIMUM_TOTAL_NODES
+                 + " nodes (got " + got
+                 + "). A smaller cluster has no fault budget during maintenance: a rolling restart "
+                 + "takes one node down and any further fault then loses quorum. Use --nodes "
+                 + TopologyDeriver.MINIMUM_TOTAL_NODES
+                 + ", 7 (recommended) or " + TopologyDeriver.MAXIMUM_CORE_NODES
+                 + ". For local single-process dev/test, use --target forge.";
         }
     }
 

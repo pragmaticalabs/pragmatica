@@ -92,7 +92,7 @@ class ClusterInitCommand implements Callable<Integer> {
     @Option(names = "--ssh-port", description = "SSH port (ssh target only)", defaultValue = "22")
     private Integer sshPort;
 
-    @Option(names = "--nodes", description = "Total node count (>= 3 required for non-SSH targets)")
+    @Option(names = "--nodes", description = "Total node count (>= 5 required for non-SSH targets; 7 recommended, 9 max consensus tier, extra nodes become workers)")
     private Integer nodes;
 
     @Option(names = "--db-host", description = "Database host (optional)")
