@@ -4398,6 +4398,28 @@ public interface AetherNode extends ManageableNode {
                                                           + " = true with [app-http.api-keys.<key>] to authenticate operators (#573).",
                                                            config.managementPort());
                                               }
+                                                  // The OTHER credential-less shape, and until now it had no voice at all. Above is
+                                                  // `security_mode = "none"`. This is security ON with an EMPTY key set — which is what
+                                                  // the published image now boots with, since `docker/aether-node/aether.toml` no longer
+                                                  // bakes a key. The node is fail-closed and that is intended, so this is not a
+                                                  // misconfiguration warning; it states WHICH credential is the only way in, because the
+                                                  // alternative is an operator reading 401s with nothing in the log explaining them.
+                                                  //
+                                                  // Deliberately not silent-because-intended: a default applied when nothing was
+                                                  // configured has to be loud, or it becomes the fail-open nobody notices. The precedent
+                                                  // is this repo's own log-and-drop-plus-caller-default, which turned a fail-closed
+                                                  // encryption refusal into a green boot with plaintext.
+                                                  if (mgmtSecurityEnabled && config.appHttp()
+                                                                                   .apiKeys()
+                                                                                   .isEmpty()) {
+                                                  LOG.warn("Management API on port {} has NO key declared in configuration. This is the"
+                                                          + " FAIL-CLOSED default: every non-public route is REFUSED until a credential exists."
+                                                          + " The cluster bootstrap admin key (printed once at formation, derived from the"
+                                                          + " cluster secret) is the only credential this node will accept; it is enumerable and"
+                                                          + " revocable via /api/v1/cluster/keys. To pre-provision one instead, set"
+                                                          + " AETHER_API_KEYS=<key>:<name>:<roles>:<ROLE> or an [app-http.api-keys.<key>] table.",
+                                                           config.managementPort());
+                                              }
 
                                                   var mgmtSecurityValidator = SecurityValidator.kvStoreAwareValidator(configValidator,
                                                                                                                       () -> node.kvStore());
@@ -4416,6 +4438,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                            config.tls(),
                                                                                                            mgmtSecurityValidator,
                                                                                                            mgmtSecurityEnabled,
+                                                                                                           () -> config.appHttp()
+                                                                                                                       .apiKeys(),
                                                                                                            serverBossGroup,
                                                                                                            serverWorkerGroup,
                                                                                                            config.managementHttpProtocol(),

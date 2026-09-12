@@ -104,6 +104,12 @@ class ClusterRotateKeyCommand implements Callable<Integer> {
     /// An unreadable or non-array body never resolves to a key; it fails, so the rotation cannot
     /// proceed against a guess. More than one ACTIVE key is refused unless `--key-id` names the
     /// one to retire.
+    /// Mirrors `ApiKeyRoutes.SOURCE_CLUSTER` / `SOURCE_CONFIG`. Duplicated rather than imported: the
+    /// CLI talks to a node over HTTP and is versioned independently of it, so this is a wire
+    /// contract, not a shared constant.
+    static final String SOURCE_CLUSTER = "cluster";
+    static final String SOURCE_CONFIG = "config";
+
     static Result<String> resolveKeyToRetire(String requestedKeyId, String keysJson) {
         return parseActiveKeyIds(keysJson).flatMap(activeKeyIds -> selectKeyToRetire(requestedKeyId, activeKeyIds));
     }
@@ -156,15 +162,25 @@ class ClusterRotateKeyCommand implements Callable<Integer> {
     private static Result<KeyEntry> readKeyEntry(JsonNode keyRecord) {
         var keyId = keyRecord.path("keyId").asText("");
         var status = keyRecord.path("status").asText("");
+        var source = keyRecord.path("source").asText(SOURCE_CLUSTER);
 
         return Verify.Is.present(keyId) && Verify.Is.present(status)
-               ? Result.success(new KeyEntry(keyId, status))
+               ? Result.success(new KeyEntry(keyId, status, source))
                : new RotateKeyError.KeyListUnreadable("a key record carries no keyId/status pair").result();
     }
 
+    /// Rotation candidates: ACTIVE **and** rotatable.
+    ///
+    /// The source filter is not cosmetic. `GET /api/v1/cluster/keys` now also reports keys declared
+    /// in a node's configuration, and it reports them ACTIVE because the node does accept them.
+    /// Without this filter a cluster whose nodes declare one config key would see two ACTIVE
+    /// records, and [#selectSoleActiveKey] refuses to act on an ambiguous set — so `rotate-key`
+    /// would stop working on exactly the deployments that pre-provision a credential, and the
+    /// `--key-id` escape hatch would then name a key the revoke endpoint refuses.
     private static List<String> activeKeyIds(List<KeyEntry> entries) {
         return entries.stream()
                       .filter(KeyEntry::isActive)
+                      .filter(KeyEntry::isRotatable)
                       .map(KeyEntry::keyId)
                       .toList();
     }
@@ -274,9 +290,19 @@ class ClusterRotateKeyCommand implements Callable<Integer> {
 
     private record RotationOutcome(String json, String newKeyId, String oldKeyId) {}
 
-    private record KeyEntry(String keyId, String status) {
+    /// `source` distinguishes a cluster-held key from one declared in a node's configuration file.
+    /// Absent on a node predating the `source` field, where every listed record was cluster-held, so
+    /// a missing value reads as [#SOURCE_CLUSTER] and this command behaves against such a node
+    /// exactly as it did before.
+    private record KeyEntry(String keyId, String status, String source) {
         boolean isActive() {
             return ACTIVE_STATUS.equals(status);
+        }
+
+        /// A config-declared key cannot be rotated: `POST /api/v1/cluster/keys/revoke/{id}` refuses
+        /// it, because its configuration file is its authority and this API cannot rewrite one.
+        boolean isRotatable() {
+            return ! SOURCE_CONFIG.equals(source);
         }
     }
 
