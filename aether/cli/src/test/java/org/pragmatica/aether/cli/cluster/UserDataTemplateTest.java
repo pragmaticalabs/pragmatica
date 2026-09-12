@@ -406,8 +406,12 @@ class UserDataTemplateTest {
 
         assertTrue(script.contains("AETHER_ADVERTISE_HOST=\"$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \\([0-9.]*\\).*/\\1/p' | head -n1)\" || true"),
                    "JVM-mode must also resolve the VM's routable IPv4 with the provider-agnostic command");
-        assertTrue(script.contains("if [ -n \"${AETHER_ADVERTISE_HOST}\" ]; then export AETHER_ADVERTISE_HOST; fi"),
-                   "JVM-mode must export AETHER_ADVERTISE_HOST only when the resolved host is non-empty");
+        // #1021 — same property, new carrier: the resolved host reaches the JVM through the unit's
+        // EnvironmentFile instead of a shell `export`. The conditional is what is load-bearing and is
+        // preserved verbatim: an unset value must leave the var ABSENT, not present-and-empty, so the
+        // node's own SWIM-reflection chain takes over rather than advertising nothing.
+        assertTrue(script.contains("if [ -n \"${AETHER_ADVERTISE_HOST}\" ]; then echo \"AETHER_ADVERTISE_HOST=${AETHER_ADVERTISE_HOST}\" >> /etc/aether/node.env; fi"),
+                   "JVM-mode must write AETHER_ADVERTISE_HOST into the unit env file only when the resolved host is non-empty");
         assertFalse(script.contains("ADVERTISE_ENV"),
                     "JVM-mode must not use the container-only ADVERTISE_ENV docker-run construct");
     }

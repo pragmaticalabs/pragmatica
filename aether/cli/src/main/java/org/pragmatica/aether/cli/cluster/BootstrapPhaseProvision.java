@@ -190,26 +190,14 @@ sealed interface BootstrapPhaseProvision {
                                     SourceName sourceName,
                                     NodeRole role,
                                     ProvisionedNode node) {
-        var _ = BootstrapStatePersistence.read(clusterName)
+        var _ = BootstrapStatePersistence.appendResource(clusterName,
+                                                         CreatedResource.ProvisionedVm.provisionedVm(providerName,
+                                                                                                     node.serverId(),
+                                                                                                     sourceName.value(),
+                                                                                                     role.value()))
                                          .onFailure(cause -> warnVmNotRecorded(node,
                                                                                clusterName,
-                                                                               "the persisted ledger is unreadable: " + cause.message()))
-                                         .or(Option.empty())
-                                         .onEmpty(() -> warnVmNotRecorded(node,
-                                                                          clusterName,
-                                                                          "no bootstrap state is persisted for this cluster"))
-                                         .map(state -> state.withResource(CreatedResource.ProvisionedVm.provisionedVm(providerName,
-                                                                                                                      node.serverId(),
-                                                                                                                      sourceName.value(),
-                                                                                                                      role.value())))
-                                         .onPresent(state -> saveOrWarnVm(state, node, clusterName));
-    }
-
-    @Contract
-    private static void saveOrWarnVm(BootstrapState state, ProvisionedNode node, ClusterName clusterName) {
-        var _ = BootstrapStatePersistence.save(state).onFailure(cause -> warnVmNotRecorded(node,
-                                                                                           clusterName,
-                                                                                           "the ledger write failed: " + cause.message()));
+                                                                               cause.message()));
     }
 
     /// The id is the whole point of this message. With the ledger broken it is the only place the server

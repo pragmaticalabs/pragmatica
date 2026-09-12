@@ -646,16 +646,15 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                              CLUSTER_SECRET,
                                                              CLUSTER_NAME,
                                                              envOf(Map.of("AETHER_INSECURE_DEV_MODE", "true")));
-        assertTrue(cmd.contains("AETHER_INSECURE_DEV_MODE=\"true\""),
-                   () -> "JVM re-launch MUST inline AETHER_INSECURE_DEV_MODE from host env (C2 gate): " + cmd);
-        assertTrue(cmd.contains("AETHER_INSECURE_DEV_MODE=\"true\" nohup java")
-                   || cmd.contains("AETHER_INSECURE_DEV_MODE=\"true\"") && cmd.contains("nohup java"),
-                   () -> "Env assignments must prefix the nohup java invocation: " + cmd);
+        assertTrue(cmd.contains("'AETHER_INSECURE_DEV_MODE=true'"),
+                   () -> "JVM re-launch MUST write AETHER_INSECURE_DEV_MODE from host env into the unit's env file (C2 gate): " + cmd);
         var secretOccurrences = cmd.split("AETHER_CLUSTER_SECRET=", -1).length - 1;
         assertEquals(1, secretOccurrences,
                      () -> "AETHER_CLUSTER_SECRET must appear exactly once in the JVM command: " + cmd);
-        assertTrue(cmd.contains("nohup java -jar /opt/aether/aether-node.jar"),
-                   () -> "JVM re-launch must still relaunch via nohup java -jar: " + cmd);
+        assertTrue(cmd.indexOf("AETHER_INSECURE_DEV_MODE") < cmd.indexOf("systemctl restart"),
+                   () -> "every env line must be written BEFORE the unit is restarted, or the restart reads the old file: " + cmd);
+        assertTrue(cmd.contains("systemctl restart aether-node.service"),
+                   () -> "JVM re-launch must restart the unit: " + cmd);
         assertFalse(cmd.contains("docker"), () -> "JVM command must NOT mention docker: " + cmd);
     }
 
@@ -940,8 +939,17 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
     // --- Bug 20: JVM runtime profile produces JVM SSH-back commands, not docker ---
 
+    /// #1021 — this used to assert the ANCHORED `pkill -f '^java -jar <JAR>'` pattern that Bug 20a
+    /// introduced. The anchor existed because `pkill -f` matches the full command line and the SSH
+    /// session carrying this very command has `java -jar <JAR>` in its own argv, so an unanchored
+    /// pattern self-killed the session.
+    ///
+    /// The re-launch now restarts the systemd unit BY NAME, which removes that hazard class rather
+    /// than guarding it: `systemctl restart aether-node.service` cannot match a command line because
+    /// it does not look at command lines. So the assertions invert — the pattern must be ABSENT — and
+    /// the test keeps its original job of proving the JVM path is not the docker path.
     @Test
-    void deployCloudSource_jvmRuntime_emitsPkillAndNohupJava_notDocker() {
+    void deployCloudSource_jvmRuntime_restartsTheUnitByName_notDockerAndNotByProcessPattern() {
         var ctx = contextWithJvmRuntime(cloudSource());
         var commands = new ConcurrentHashMap<String, String>();
         Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
@@ -960,38 +968,37 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         assertTrue(result.isSuccess(), () -> "JVM cloud deploy must succeed; got: " + result);
         assertEquals(3, commands.size(), "Each JVM node must receive a single restart command");
         for (var cmd : commands.values()) {
-            // Bug 20a: pkill -f matches the regex against the full cmdline. The SSH bash session
-            // running this very command embeds "java -jar <JAR>" in its own argv (in the nohup
-            // line below), so an unanchored pattern would self-kill the session. Anchor with '^'
-            // so only processes whose cmdline STARTS WITH "java -jar <JAR>" match — i.e. the JVM,
-            // not bash. Single quotes are required because the pattern contains spaces.
-            assertTrue(cmd.contains("pkill -f '^java -jar /opt/aether/aether-node.jar'"),
-                       () -> "JVM restart MUST anchor pkill pattern at '^java -jar <JAR>' (Bug 20a): " + cmd);
-            assertTrue(cmd.contains("pkill -9 -f '^java -jar /opt/aether/aether-node.jar'"),
-                       () -> "JVM restart MUST escalate to SIGKILL using the same anchored pattern (Bug 20a): " + cmd);
-            assertFalse(cmd.contains("pkill -f /opt/aether/aether-node.jar 2>")
-                        || cmd.contains("pkill -9 -f /opt/aether/aether-node.jar 2>"),
-                        () -> "Bug 20a regression: bare JAR-path pkill pattern would also kill the SSH "
-                              + "session whose argv contains the JAR path. Pattern MUST be anchored "
-                              + "'^java -jar <JAR>'. Got: " + cmd);
-            assertTrue(cmd.contains("nohup java -jar /opt/aether/aether-node.jar"),
-                       () -> "JVM restart MUST relaunch via nohup java -jar: " + cmd);
-            assertTrue(cmd.contains("--config=/opt/aether/config/aether.toml"),
-                       () -> "JVM restart MUST pass --config=: " + cmd);
-            assertTrue(cmd.contains("--node-id="),
-                       () -> "JVM restart MUST pass --node-id=: " + cmd);
-            assertTrue(cmd.contains("--port="),
-                       () -> "JVM restart MUST pass --port=: " + cmd);
-            assertTrue(cmd.contains("--management-port="),
-                       () -> "JVM restart MUST pass --management-port=: " + cmd);
-            assertTrue(cmd.contains("--peers="),
-                       () -> "JVM restart MUST pass --peers=: " + cmd);
-            assertTrue(cmd.contains("AETHER_CLUSTER_SECRET=\"" + CLUSTER_SECRET + "\""),
-                       () -> "JVM restart MUST inline AETHER_CLUSTER_SECRET as env var: " + cmd);
-            assertTrue(cmd.contains("disown"),
-                       () -> "JVM restart MUST disown so the process survives the SSH session: " + cmd);
-            assertTrue(cmd.contains("/var/log/aether-node.log"),
-                       () -> "JVM restart MUST redirect stdout/stderr to a log file: " + cmd);
+            assertTrue(cmd.contains("systemctl restart aether-node.service"),
+                       () -> "JVM restart MUST drive the systemd unit by name: " + cmd);
+            assertFalse(cmd.contains("pkill"),
+                        () -> "Bug 20a's hazard class is removed, not re-guarded: `pkill -f` matches the SSH "
+                              + "session's own argv, which is why it needed anchoring at all. A unit name "
+                              + "matches nothing. Got: " + cmd);
+            assertFalse(cmd.contains("nohup") || cmd.contains("disown"),
+                        () -> "#1021: the node must run UNDER the unit. A detached re-launch beside a unit "
+                              + "that Restart=no has correctly left `failed` makes `systemctl status` report "
+                              + "failure for a node that is serving. Got: " + cmd);
+            // Every launch parameter the old `nohup java` line carried as a CLI flag is now an env-file
+            // line the unit's EnvironmentFile supplies; the SAME four values must still reach the node.
+            assertTrue(cmd.contains("'AETHER_NODE_ID="),
+                       () -> "JVM restart MUST carry the node id: " + cmd);
+            assertTrue(cmd.contains("'AETHER_CLUSTER_PORT="),
+                       () -> "JVM restart MUST carry the cluster port: " + cmd);
+            assertTrue(cmd.contains("'AETHER_MANAGEMENT_PORT="),
+                       () -> "JVM restart MUST carry the management port: " + cmd);
+            assertTrue(cmd.contains("'AETHER_PEERS="),
+                       () -> "JVM restart MUST carry the finalized peers: " + cmd);
+            assertTrue(cmd.contains("'AETHER_CLUSTER_SECRET=" + CLUSTER_SECRET + "'"),
+                       () -> "JVM restart MUST carry AETHER_CLUSTER_SECRET so the C2 gate passes: " + cmd);
+            assertTrue(cmd.contains("chmod 600 /etc/aether/node.env"),
+                       () -> "the env file carries the cluster secret and must be owner-only: " + cmd);
+            // `--config=` and the `/var/log/aether-node.log` redirect are deliberately NOT asserted
+            // here any more, and neither property was dropped — both moved OUT of the restart command:
+            // the config path is baked into the launcher that the unit's ExecStart runs (pinned by
+            // UserDataTemplatePeersTest.render_launchesTheJvmUnderASystemdUnit_thatDoesNotRestartIt),
+            // and node output now goes to the journal via the unit's StandardOutput/StandardError
+            // (pinned by SystemdUnitTemplateTest), which is what makes `journalctl -u aether-node`
+            // work — the operator-queryable trace #1021 exists to provide.
             assertFalse(cmd.contains("docker run"),
                         () -> "JVM restart MUST NOT use docker run: " + cmd);
             assertFalse(cmd.contains("docker rm"),
@@ -1015,15 +1022,17 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                       sshExec,
                                                       envWithKey("/home/op/.ssh/aether_id_ed25519"));
 
+        // #1021 — same property, new carrier: finalized PEERS and the per-node id now reach the JVM
+        // through the unit's EnvironmentFile rather than as CLI flags on a nohup line.
         var expectedPeers = String.join(",", BootstrapPhaseDeploy.buildThreePartPeers(ctx));
         for (var cmd : commands.values()) {
-            assertTrue(cmd.contains("--peers=\"" + expectedPeers + "\""),
-                       () -> "Each JVM restart command must export the finalized PEERS via CLI flag: " + cmd);
+            assertTrue(cmd.contains("'AETHER_PEERS=" + expectedPeers + "'"),
+                       () -> "Each JVM restart command must write the finalized PEERS into the unit env file: " + cmd);
         }
         var cmd0 = commands.get("203.0.113.10");
-        assertTrue(cmd0.contains("--node-id=\"eu-1-core-0\""), "Per-node node-id: " + cmd0);
+        assertTrue(cmd0.contains("'AETHER_NODE_ID=eu-1-core-0'"), "Per-node node-id: " + cmd0);
         var cmd1 = commands.get("203.0.113.11");
-        assertTrue(cmd1.contains("--node-id=\"eu-1-core-1\""), "Per-node node-id: " + cmd1);
+        assertTrue(cmd1.contains("'AETHER_NODE_ID=eu-1-core-1'"), "Per-node node-id: " + cmd1);
     }
 
     @Test
@@ -1031,7 +1040,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var ctx = contextWithJvmRuntime(cloudSource());
         var order = new ConcurrentLinkedQueue<String>();
         Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
-            var kind = command.startsWith("nohup") || command.contains("pkill") ? "restart" : "preflight";
+            var kind = command.contains("systemctl restart") ? "restart" : "preflight";
             order.add(kind + ":" + host);
             return Result.success("");
         };
@@ -1066,7 +1075,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var ctx = contextWithJvmRuntime(cloudSource());
         var failingHost = "203.0.113.11";
         Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
-            if (failingHost.equals(host) && command.contains("nohup java")) {
+            if (failingHost.equals(host) && command.contains("systemctl restart")) {
                 return new TestError("ssh: connect refused").result();
             }
             return Result.success("");
@@ -1098,23 +1107,27 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                               "eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8090",
                                                               CLUSTER_SECRET,
                                                               CLUSTER_NAME);
-        // Bug 20a: pkill pattern is anchored '^java -jar <JAR>' (single-quoted, leading '^') so
-        // only processes whose cmdline STARTS WITH "java -jar <JAR>" match — i.e. the JVM, NOT
-        // the SSH bash session whose argv embeds the same string later in argv[2].
-        assertTrue(cmd.contains("pkill -f '^java -jar /opt/aether/aether-node.jar'"), cmd);
-        assertTrue(cmd.contains("pkill -9 -f '^java -jar /opt/aether/aether-node.jar'"), cmd);
-        assertFalse(cmd.contains("pkill -f /opt/aether/aether-node.jar 2>")
-                    || cmd.contains("pkill -9 -f /opt/aether/aether-node.jar 2>"),
-                    "Bug 20a: unanchored bare JAR-path pkill pattern is forbidden — would kill the SSH session itself. Got: " + cmd);
-        assertTrue(cmd.contains("AETHER_CLUSTER_SECRET=\"" + CLUSTER_SECRET + "\""), cmd);
-        assertTrue(cmd.contains("nohup java -jar /opt/aether/aether-node.jar"), cmd);
-        assertTrue(cmd.contains("--config=/opt/aether/config/aether.toml"), cmd);
-        assertTrue(cmd.contains("--node-id=\"eu-1-core-0\""), cmd);
-        assertTrue(cmd.contains("--port=\"8090\""), cmd);
-        assertTrue(cmd.contains("--management-port=\"8091\""), cmd);
-        assertTrue(cmd.contains("--peers=\"eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8090\""), cmd);
-        assertTrue(cmd.contains("/var/log/aether-node.log 2>&1"), cmd);
-        assertTrue(cmd.endsWith("disown"), "Command must end with 'disown' to detach: " + cmd);
+        // #1021 — the re-launch drives the systemd unit instead of pattern-matching the process.
+        // `pkill -f` is FORBIDDEN here for two independent reasons: it matched the SSH session's own
+        // argv (Bug 20a, which is why it had to be anchored '^java -jar <JAR>'), and with the unit
+        // installed at boot it would take the unit to `failed` while a bare nohup process ran beside
+        // it — a node that serves while `systemctl status` reports failure, the exact false signal
+        // #1021 exists to remove.
+        assertFalse(cmd.contains("pkill"),
+                    "#1021: the JVM re-launch must name the unit, never pattern-match a command line. Got: " + cmd);
+        assertFalse(cmd.contains("nohup") || cmd.contains("disown"),
+                    "#1021: the node must run UNDER the unit, not beside it as a detached process. Got: " + cmd);
+        assertTrue(cmd.contains("systemctl restart aether-node.service"),
+                   "#1021: the re-launch must restart the unit by name. Got: " + cmd);
+        assertTrue(cmd.contains("AETHER_CLUSTER_SECRET=" + CLUSTER_SECRET), cmd);
+        assertTrue(cmd.contains("AETHER_NODE_ID=eu-1-core-0"), cmd);
+        assertTrue(cmd.contains("AETHER_CLUSTER_PORT=8090"), cmd);
+        assertTrue(cmd.contains("AETHER_MANAGEMENT_PORT=8091"), cmd);
+        assertTrue(cmd.contains("AETHER_PEERS=eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8090"), cmd);
+        assertTrue(cmd.contains("> /etc/aether/node.env"),
+                   "the env file must be REWRITTEN whole, so a re-run cannot leave a stale AETHER_PEERS line last: " + cmd);
+        assertTrue(cmd.contains("chmod 600 /etc/aether/node.env"),
+                   "the env file carries AETHER_CLUSTER_SECRET and must be owner-only: " + cmd);
         assertFalse(cmd.contains("docker"), "JVM command must NOT mention docker: " + cmd);
     }
 

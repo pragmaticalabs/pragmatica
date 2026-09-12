@@ -644,12 +644,52 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         return provisionWithZoneRotation(renderedSpec,
                                          replacementZones(intendedRole)).onFailure(this::recordProvisioningFailure)
+                                        .onSuccess(instance -> recordProvisionedReplacement(instance,
+                                                                                            newNodeId,
+                                                                                            intendedRole,
+                                                                                            sourceName))
                                         .map(ClusterTopologyManagerRecord::asDispatched);
+    }
+
+    /// #1022 — the leader has just created a BILLABLE server, and until this line it dropped the
+    /// provider's id for it on the floor: [#asDispatched] takes an [InstanceInfo] and ignores it.
+    ///
+    /// It cannot write the operator's cleanup ledger, and that is a boundary rather than an oversight.
+    /// The ledger is `~/.aether/clusters/<name>/bootstrap-state.json` on the OPERATOR'S machine, written
+    /// by `aether/cli`; this code runs in `aether-deployment` on a cloud VM, in a different process on a
+    /// different host, in the module `cli` depends ON. No wiring can reverse that. The operator-side half
+    /// of this fix is `BootstrapCleanup#recordSweptVms`, which appends the label-swept VMs to the ledger
+    /// at teardown.
+    ///
+    /// What the leader CAN do is state the id where it is still recoverable — its own journal. That is a
+    /// weaker record than the ledger (it is lost with the VM that holds it, and it is not what an
+    /// operator reads), and it is named as weaker here rather than counted as the fix.
+    ///
+    /// WARN rather than INFO, mirroring `BootstrapPhaseProvision.warnVmNotRecorded`: every line this
+    /// emits is a server that is already charging and that `aether cluster destroy` can find only by the
+    /// `aether-cluster` label sweep. Auto-heal is rare and each occurrence costs money, so one line per
+    /// created VM is proportionate, not noise.
+    @Contract
+    private static void recordProvisionedReplacement(InstanceInfo instance,
+                                                     NodeId newNodeId,
+                                                     NodeRole intendedRole,
+                                                     SourceName sourceName) {
+        log.warn("CTM: auto-heal PROVISIONED a billable instance the bootstrap ledger does NOT hold — "
+                + "instanceId={}, nodeId={}, role={}, source={}, status={}. Teardown reaches it only through "
+                + "the aether-cluster label sweep; if that sweep does not run, delete it by this instanceId.",
+                 instance.id().value(),
+                 newNodeId.id(),
+                 intendedRole.value(),
+                 sourceName,
+                 instance.status());
     }
 
     /// A successful boot is a real DISPATCH — a VM is genuinely coming, so the reconciler keeps its
     /// in-flight placeholder. A boot FAILURE stays in the `Promise` failure channel (handled by the
-    /// `onFailure(recordProvisioningFailure)` above plus the reconciler's placeholder removal).
+    /// `onFailure(recordProvisioningFailure)` above plus the reconciler's placeholder removal). The
+    /// [InstanceInfo] is deliberately discarded HERE and recorded in [#recordProvisionedReplacement]
+    /// instead — a disposition carries no provider identity, and inventing one would put a cloud id into
+    /// a type the reconciler compares by kind.
     private static ProvisionDisposition asDispatched(InstanceInfo instanceInfo) {
         return ProvisionDisposition.dispatched();
     }
