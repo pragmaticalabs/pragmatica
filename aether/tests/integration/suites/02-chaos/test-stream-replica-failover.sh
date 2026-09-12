@@ -166,7 +166,7 @@ replicas_snapshot_owner_view() {
     local attempts="${1:-8}"
     local body last_body="" i served
     for ((i = 0; i < attempts; i++)); do
-        body=$(api_get "/api/v1/streams/replicas/${STREAM_NAME}/${PARTITION}" 2>/dev/null) || body=""
+        body=$(stream_replicas "${STREAM_NAME}" "${PARTITION}" 2>/dev/null) || body=""
         if [ -n "$body" ]; then
             last_body="$body"
             served=$(json_scalar "$body" servedByOwner)
@@ -194,7 +194,7 @@ json_scalar() {
 # Resolve the partition's HRW owner NodeId from any replicas view (header field).
 partition_hrw_owner() {
     local body
-    body=$(api_get "/api/v1/streams/replicas/${STREAM_NAME}/${PARTITION}" 2>/dev/null) || body=""
+    body=$(stream_replicas "${STREAM_NAME}" "${PARTITION}" 2>/dev/null) || body=""
     json_scalar "$body" hrwOwner
 }
 
@@ -404,7 +404,14 @@ test_identify_owner_and_caught_up_replica() {
 
     owner=$(json_scalar "$body" hrwOwner)
     assert_ne "$owner" "" "HRW owner identified: ${owner}"
-    assert_ne "$owner" "none" "HRW owner is not 'none'"
+    # `assert_ne "$owner" "none"` was VACUOUS: '' != 'none' is true, so an empty owner
+    # scored a PASS immediately after the assert_ne above correctly FAILED on the same
+    # value (observed 2026-09-12). Assert the POSITIVE shape required instead of the
+    # negation of one bad value — an owner is a NodeId, never empty and never "none".
+    case "$owner" in
+        ""|none) log_fail "HRW owner is a real NodeId (got: '${owner}')" ;;
+        *)       log_pass "HRW owner is a real NodeId: ${owner}" ;;
+    esac
     OWNER_TO_KILL="$owner"
 
     # A promotable replica MUST exist, else killing the owner cannot preserve history.
