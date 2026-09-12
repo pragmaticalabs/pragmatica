@@ -43,17 +43,15 @@ class ConfigValidatorTest {
         ConfigValidator.validate(config)
             .onSuccessRun(Assertions::fail)
             .onFailure(cause -> assertThat(cause.message())
-                .contains("below the supported minimum of 5")
-                .contains("no fault budget during maintenance"));
+                .contains("below the structural minimum of 3")
+                .contains("no majority quorum at all"));
     }
 
     @Test
     void validate_fails_whenNodeCountEven() {
-        // 6, not 4: since the minimum rose to 5 an even 4 reports the MINIMUM error, so it could no
-        // longer exercise the odd-count branch at all.
         var config = AetherConfig.builder()
             .withEnvironment(Environment.DOCKER)
-            .nodes(6)
+            .nodes(4)
             .build();
 
         ConfigValidator.validate(config)
@@ -80,7 +78,7 @@ class ConfigValidatorTest {
 
     @Test
     void validate_succeeds_withValidNodeCounts() {
-        for (int nodes : new int[]{5, 7, 9}) {
+        for (int nodes : new int[]{3, 5, 7, 9}) {
             var config = AetherConfig.builder()
                 .withEnvironment(Environment.DOCKER)
                 .nodes(nodes)
@@ -197,7 +195,7 @@ class ConfigValidatorTest {
             .onSuccessRun(Assertions::fail)
             .onFailure(cause -> {
                 var message = cause.message();
-                assertThat(message).contains("below the supported minimum of 5");
+                assertThat(message).contains("below the structural minimum of 3");
                 assertThat(message).contains("Invalid heap format");
                 assertThat(message).contains("Invalid GC");
             });

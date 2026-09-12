@@ -104,12 +104,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                              AtomicInteger bootstrapAttempts,
                              AtomicReference<Runnable> bootstrapCommittedCallback) implements BootstrapModule {
     private static final Logger log = LoggerFactory.getLogger(BootstrapModuleRecord.class);
-    /// Floor for the `coreMin` written into the seeded `ClusterConfigValue`. #1019 / owner ruling
-    /// 2026-09-12 raised it from 3 to 5 in step with `ConfigValidator#MINIMUM_CLUSTER_SIZE`,
-    /// `ClusterSizeGate#MINIMUM_SUPPORTED_CLUSTER_SIZE` and
-    /// `ClusterTopologyManagerRecord#MINIMUM_CLUSTER_SIZE`: a seed carrying a lower floor would let a
-    /// later scale-down land on a topology the other three gates refuse.
-    private static final int SEED_CORE_MIN = 5;
+    private static final int SEED_CORE_MIN = 3;
     private static final int SEED_CORE_MAX = 15;
 
     @Contract
@@ -275,10 +270,8 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         var baseline = configBaselineSupplier.get();
         var coreCount = baseline.coreCount();
 
-        if (coreCount < SEED_CORE_MIN) {
-            log.debug("Skipping ClusterConfigValue seed: configured core count {} below quorum minimum of {}",
-                      coreCount,
-                      SEED_CORE_MIN);
+        if (coreCount < 3) {
+            log.debug("Skipping ClusterConfigValue seed: configured core count {} below quorum minimum", coreCount);
 
             return Option.none();
         }

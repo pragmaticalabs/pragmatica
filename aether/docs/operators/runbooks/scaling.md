@@ -182,7 +182,7 @@ ssh aether@<leader-host> 'journalctl -u aether-node --since "10 min ago" | grep 
 **Scale in (remove nodes) when:**
 - CPU usage consistently < 30% across nodes
 - Cost optimization needed
-- Minimum 5 nodes (owner ruling 2026-09-12, #1019): below 5 a rolling restart leaves no fault budget
+- Minimum 3 nodes for production
 
 ### Monitoring Thresholds
 

@@ -23,7 +23,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 5
+            nodes = 3
 
             [alerts]
             enabled = true
@@ -56,7 +56,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 5
+            nodes = 3
 
             [alerts]
             hysteresis_margin = 0.02
@@ -87,7 +87,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 5
+            nodes = 3
 
             [alerts.webhook]
             enabled = true
@@ -118,7 +118,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 5
+            nodes = 3
 
             [alerts.events]
             enabled = true
@@ -138,7 +138,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 5
+            nodes = 3
             """;
 
         ConfigLoader.loadFromString(toml)
@@ -359,12 +359,10 @@ class ConfigLoaderTest {
 
     @Test
     void loadFromString_fails_withInvalidNodeCount() {
-        // 6, not 4: with the minimum at 5 an even 4 reports the MINIMUM error, so it could no longer
-        // reach the odd-count branch this test exists to cover.
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 6
+            nodes = 4
             """;
 
         ConfigLoader.loadFromString(toml)
@@ -417,7 +415,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 5
+            nodes = 3
 
             [dht.replication]
             cooldown_delay_ms = 5000
@@ -439,7 +437,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 5
+            nodes = 3
             """;
 
         ConfigLoader.loadFromString(toml)
@@ -456,7 +454,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 5
+            nodes = 3
 
             [dht.replication]
             target_rf = 0
@@ -476,7 +474,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 5
+            nodes = 3
 
             [node]
             heap = "256m"
@@ -487,7 +485,7 @@ class ConfigLoaderTest {
         ConfigLoader.loadFromString(toml)
             .onFailure(cause -> Assertions.fail(cause.message()))
             .onSuccess(config -> {
-                assertThat(config.cluster().nodes()).isEqualTo(5);
+                assertThat(config.cluster().nodes()).isEqualTo(3);
                 assertThat(config.node().heap()).isEqualTo("256m");
             });
     }
@@ -497,7 +495,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 5
+            nodes = 3
 
             [slice]
             repositories = ["builtin"]
@@ -516,7 +514,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 5
+            nodes = 3
 
             [slice]
             repositories = ["local", "builtin"]
@@ -552,7 +550,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 5
+            nodes = 3
             """;
 
         ConfigLoader.loadFromString(toml)
@@ -567,7 +565,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 5
+            nodes = 3
             """;
 
         ConfigLoader.loadFromString(toml)
@@ -584,7 +582,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 5
+            nodes = 3
 
             [streaming]
             publish_forward_timeout = "8s"
@@ -607,7 +605,7 @@ class ConfigLoaderTest {
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 5
+            nodes = 3
             """;
 
         ConfigLoader.loadFromString(toml)

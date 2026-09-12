@@ -8,7 +8,7 @@ import java.util.concurrent.Callable;
 
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.cli.ExitCode;
-import org.pragmatica.aether.cli.cluster.init.TopologyDeriver;
+import org.pragmatica.aether.cli.cluster.init.CoreWorkerSplit;
 import org.pragmatica.aether.config.cluster.ClusterIdentity;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
@@ -34,9 +34,13 @@ class ClusterScaffoldCommand implements Callable<Integer> {
     @Option(names = "--template", required = true, description = "Output template: docker-compose")
     private String format;
 
-    /// Default stays 5 rather than the production default of 7: a scaffolded compose file runs every
-    /// node on one machine, where the cost of two more JVMs is real and availability is not the goal.
-    /// 5 is the smallest value the #1019 minimum admits.
+    /// A scaffolded compose file is a SINGLE tier of fixed nodes, so one number is honest here and
+    /// `--nodes` is kept rather than split into `--core-nodes`/`--worker-nodes` (#1019).
+    ///
+    /// Default stays 5 rather than the production default of 7: every node runs on one machine, where
+    /// the cost of two more JVMs is real and availability is not the goal. 5 is the smallest value the
+    /// authoring minimum admits. This command CREATES a manifest and is on no boot path, which is why
+    /// it carries the policy minimum at all.
     @Option(names = "--nodes", defaultValue = "5", description = "Number of compose-fixed nodes (default 5, minimum 5)")
     private int nodes;
 
@@ -77,7 +81,7 @@ class ClusterScaffoldCommand implements Callable<Integer> {
     }
 
     private Result<String> render(ClusterName clusterName) {
-        if (nodes < TopologyDeriver.MINIMUM_TOTAL_NODES) {
+        if (nodes < CoreWorkerSplit.MINIMUM_CORE_NODES) {
             return new ScaffoldError.InvalidNodeCount(nodes).result();
         }
 
@@ -113,7 +117,7 @@ class ClusterScaffoldCommand implements Callable<Integer> {
             @Override
             public String message() {
                 return "Invalid --nodes " + nodes
-                     + " (must be >= " + TopologyDeriver.MINIMUM_TOTAL_NODES
+                     + " (must be >= " + CoreWorkerSplit.MINIMUM_CORE_NODES
                      + "): below that a rolling restart leaves no fault budget";
             }
         }

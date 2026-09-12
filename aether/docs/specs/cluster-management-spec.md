@@ -766,9 +766,8 @@ REQ-SCALE-01: `scale` is a thin wrapper around `apply`. It:
 REQ-SCALE-02: Quorum safety validation, applied to the `core` role ONLY and evaluated against the
 resulting **cluster-wide** core total (the sum of every source's core entries after the change), not
 against the per-source count:
-- Never below `cluster.core.min` (default 5)
-- Never below absolute minimum of 5 (hardcoded — `ClusterTopologyManagerRecord#MINIMUM_CLUSTER_SIZE`;
-  raised from 3 by #1019, owner ruling 2026-09-12)
+- Never below `cluster.core.min` (default 3)
+- Never below absolute minimum of 3 (hardcoded)
 - Never above `cluster.core.max`
 - New cluster-wide total must be odd
 

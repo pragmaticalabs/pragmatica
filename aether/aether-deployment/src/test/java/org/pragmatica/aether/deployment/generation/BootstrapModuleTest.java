@@ -122,8 +122,7 @@ class BootstrapModuleTest {
     class ClusterConfigSeed {
         @Test
         void initialCoreSizeBelowQuorum_noClusterConfigSeed() {
-            // initialCoreSize < SEED_CORE_MIN → spec §8: skip seed entirely. #1019 raised that floor
-            // from 3 to 5, so 3 now lands here too (see initialCoreSizeThree_noClusterConfigSeed).
+            // initialCoreSize < 3 → spec §8: skip seed entirely.
             var fixture = newFixture(/* initialCoreSize */ 2);
             fixture.module.onLeaderGained();
 
@@ -135,12 +134,11 @@ class BootstrapModuleTest {
 
         @Test
         void initialCoreSizeAtQuorum_seedEmitted() {
-            // initialCoreSize == 5 (>= quorum) and no existing ClusterConfig — seed is emitted.
-            // Five, not three: #1019 raised the seed floor in step with every other sizing gate.
+            // initialCoreSize == 3 (>= quorum) and no existing ClusterConfig — seed is emitted.
             // The membership-count grace window was intentionally removed (commit 62ae7b19f,
             // "drop seed grace period"); the seed no longer waits for presence-derived members
             // to materialize. Spec §8: at-or-above quorum, seed on first leader gain.
-            var fixture = newFixture(/* initialCoreSize */ 5);
+            var fixture = newFixture(/* initialCoreSize */ 3);
             fixture.module.onLeaderGained();
 
             var clusterConfigPuts = collectPuts(fixture.cluster.batches).stream()
@@ -148,20 +146,7 @@ class BootstrapModuleTest {
                                                                           .toList();
             assertThat(clusterConfigPuts).hasSize(1);
             var seeded = (ClusterConfigValue) clusterConfigPuts.getFirst().value();
-            assertThat(seeded.coreCount()).isEqualTo(5);
-        }
-
-        /// #1019 — three used to be at-quorum and seeded; the floor is now 5, so it skips. Pins the
-        /// boundary that moved, which the `2` case above cannot distinguish.
-        @Test
-        void initialCoreSizeThree_noClusterConfigSeed() {
-            var fixture = newFixture(/* initialCoreSize */ 3);
-            fixture.module.onLeaderGained();
-
-            var clusterConfigPuts = collectPuts(fixture.cluster.batches).stream()
-                                                                          .filter(p -> p.key() instanceof ClusterConfigKey)
-                                                                          .toList();
-            assertThat(clusterConfigPuts).isEmpty();
+            assertThat(seeded.coreCount()).isEqualTo(3);
         }
 
         @Test
@@ -169,7 +154,7 @@ class BootstrapModuleTest {
             // The seed now sources clusterName from AETHER_CLUSTER_NAME so KV and the
             // node-side env gate agree. Empty remains the last-resort fallback (env unset
             // in CI yields ""), so we assert against the env-derived expected value.
-            var fixture = newFixture(/* initialCoreSize */ 5);
+            var fixture = newFixture(/* initialCoreSize */ 3);
             fixture.module.onLeaderGained();
 
             var clusterConfigPuts = collectPuts(fixture.cluster.batches).stream()

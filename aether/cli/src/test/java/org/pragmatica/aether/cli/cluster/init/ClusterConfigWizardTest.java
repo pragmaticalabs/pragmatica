@@ -39,7 +39,8 @@ class ClusterConfigWizardTest {
             //        database (no) -> firewall/security skipped (Docker) -> review (yes)
             var input = "my-cluster\n" +    // cluster name
                         "\n" +              // deployment target: default = DOCKER
-                        "5\n" +             // total node count
+                        "5\n" +             // core (consensus) node count
+                        "0\n" +             // worker node count
                         "n\n" +             // configure database? no
                         "\n";               // generate config? default yes
             var wizard = wizardFor(input);
@@ -71,7 +72,8 @@ class ClusterConfigWizardTest {
                         "cpx32\n" +         // instance type: no default — must be typed
                         "\n" +              // credential env var: default HCLOUD_TOKEN
                         "~/.ssh/id_ed25519.pub\n" + // SSH public key: required for cloud
-                        "5\n" +             // total node count
+                        "5\n" +             // core (consensus) node count
+                        "0\n" +             // worker node count
                         "n\n" +             // configure database? no
                         "\n" +              // firewall preset: default STANDARD
                         "203.0.113.0/24\n" + // admin CIDR: STANDARD needs one too
@@ -126,7 +128,8 @@ class ClusterConfigWizardTest {
                         "cpx32\n" +         // instance type: the actual answer
                         "\n" +              // credential env var: default HCLOUD_TOKEN
                         "~/.ssh/id_ed25519.pub\n" + // SSH public key
-                        "5\n" +             // total node count
+                        "5\n" +             // core (consensus) node count
+                        "0\n" +             // worker node count
                         "n\n" +             // configure database? no
                         "\n" +              // firewall preset: default STANDARD
                         "203.0.113.0/24\n" + // admin CIDR
@@ -147,7 +150,7 @@ class ClusterConfigWizardTest {
         /// written into `instance_type` and reach the provider verbatim.
         @Test
         void run_cloudBlankInstanceType_reprompts_andAcceptsTheNextAnswer() {
-            var input = "prod-eu\n1\n\nhel1\n   \ncpx32\n\n~/.ssh/id_ed25519.pub\n5\nn\n\n203.0.113.0/24\n\n\n\n";
+            var input = "prod-eu\n1\n\nhel1\n   \ncpx32\n\n~/.ssh/id_ed25519.pub\n5\n0\nn\n\n203.0.113.0/24\n\n\n\n";
             var wizard = wizardFor(input);
 
             wizard.run()
@@ -184,7 +187,7 @@ class ClusterConfigWizardTest {
             var input = "prod-eu\n1\n\n" +   // name, CLOUD, default provider
                         "\n" +                 // region: EMPTY -> rejected, re-prompts
                         "nbg1\n" +             // region: the actual answer
-                        "cpx32\n\n~/.ssh/id_ed25519.pub\n5\nn\n\n203.0.113.0/24\n\n\n\n";
+                        "cpx32\n\n~/.ssh/id_ed25519.pub\n5\n0\nn\n\n203.0.113.0/24\n\n\n\n";
             var wizard = wizardFor(input);
 
             wizard.run()
@@ -215,7 +218,7 @@ class ClusterConfigWizardTest {
 
         @Test
         void run_cloudStandardPreset_collectsAdminCidr_andEmitsAdminScopedRules() {
-            var input = "prod-eu\n1\n\nhel1\ncpx32\n\n~/.ssh/id_ed25519.pub\n5\nn\n" +
+            var input = "prod-eu\n1\n\nhel1\ncpx32\n\n~/.ssh/id_ed25519.pub\n5\n0\nn\n" +
                         "\n" +                  // firewall preset: default STANDARD
                         "203.0.113.0/24\n" +    // admin CIDR — STANDARD must ask
                         "\n\n\n";
@@ -229,7 +232,7 @@ class ClusterConfigWizardTest {
         /// An empty answer re-prompts rather than falling through to "no admin rules".
         @Test
         void run_cloudStandardEmptyAdminCidr_reprompts() {
-            var input = "prod-eu\n1\n\nhel1\ncpx32\n\n~/.ssh/id_ed25519.pub\n5\nn\n\n" +
+            var input = "prod-eu\n1\n\nhel1\ncpx32\n\n~/.ssh/id_ed25519.pub\n5\n0\nn\n\n" +
                         "\n" +                  // admin CIDR: EMPTY -> rejected
                         "198.51.100.0/24\n" +   // the actual answer
                         "\n\n\n";
@@ -252,7 +255,7 @@ class ClusterConfigWizardTest {
             var input = "prod-eu\n1\n\nhel1\ncpx32\n\n" +
                         "\n" +                          // SSH public key: EMPTY -> rejected
                         "/tmp/example_key.pub\n" +      // the actual answer
-                        "5\nn\n\n203.0.113.0/24\n\n\n\n";
+                        "5\n0\nn\n\n203.0.113.0/24\n\n\n\n";
             var wizard = wizardFor(input);
 
             wizard.run()
@@ -312,7 +315,7 @@ class ClusterConfigWizardTest {
         /// this class exists to enforce. The gap the first EOF fix left.
         @Test
         void run_dockerInputEndsBeforeReview_failsCleanly_insteadOfGeneratingFromDefaults() {
-            var wizard = wizardFor("c\n4\n5\n");
+            var wizard = wizardFor("c\n4\n5\n0\n");
 
             wizard.run()
                   .onSuccess(a -> fail("Expected failure but generated a config from defaults: " + a))
@@ -338,7 +341,7 @@ class ClusterConfigWizardTest {
         /// not notice.
         @Test
         void run_dockerCompleteInput_stillSucceeds() {
-            var wizard = wizardFor("my-cluster\n\n5\nn\n\n");
+            var wizard = wizardFor("my-cluster\n\n5\n0\nn\n\n");
 
             wizard.run()
                   .onFailure(c -> fail("Expected success but got " + c.message()))

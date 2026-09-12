@@ -14,10 +14,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 // independent of ConfigValidator's declarative [cluster] nodes TOML check. See ClusterSizeGate#enforce.
 // Call-site arithmetic (static vs. discovery, configured vs. resolved) is pinned in
 // aether/node's MainClusterSizeTest, not here — this file only exercises the pure function.
-//
-// #1019 / owner ruling 2026-09-12 — the floor moved from 3 to 5. The previous enforce(3) and
-// enforce(4) success cases were CORRECT for the policy of their day; they are superseded, not wrong.
-// A 3-node cluster tolerates zero failures during maintenance.
+// #1019 — this floor stays STRUCTURAL at 3. enforce_succeeds_whenThree below is the pin: the owner
+// ruling of 2026-09-12 sets the supported minimum for NEW clusters at 5, enforced at authoring
+// (CoreWorkerSplit, via `cluster init`/`scaffold`), and raising THIS constant to 5 would stop
+// existing 3-node clusters from booting — reddening that test, which is the intended alarm.
 class ClusterSizeGateTest {
 
     @Test
@@ -25,7 +25,15 @@ class ClusterSizeGateTest {
         ClusterSizeGate.enforce(0)
             .onSuccessRun(Assertions::fail)
             .onFailure(cause -> assertThat(cause.message())
-                .contains("below the supported minimum of 5"));
+                .contains("a cluster is at least three nodes"));
+    }
+
+    @Test
+    void enforce_fails_whenOne() {
+        ClusterSizeGate.enforce(1)
+            .onSuccessRun(Assertions::fail)
+            .onFailure(cause -> assertThat(cause.message())
+                .contains("a cluster is at least three nodes"));
     }
 
     @Test
@@ -33,57 +41,20 @@ class ClusterSizeGateTest {
         ClusterSizeGate.enforce(2)
             .onSuccessRun(Assertions::fail)
             .onFailure(cause -> assertThat(cause.message())
-                .contains("below the supported minimum of 5"));
+                .contains("a cluster is at least three nodes"));
     }
 
-    // The old minimum. Refused now: a rolling restart leaves 2 of 3 and any further fault
-    // loses quorum, so a 3-node cluster spends planned maintenance with no fault budget.
     @Test
-    void enforce_fails_whenThree() {
+    void enforce_succeeds_whenThree() {
         ClusterSizeGate.enforce(3)
-            .onSuccessRun(Assertions::fail)
-            .onFailure(cause -> assertThat(cause.message())
-                .contains("below the supported minimum of 5"));
+            .onFailureRun(Assertions::fail);
     }
 
     @Test
-    void enforce_fails_whenFour() {
+    void enforce_succeeds_whenFour() {
+        // Deliberately even and not in ConfigValidator.nodeCountErrors' {3,5,7} set — this gate
+        // only enforces the minimum-of-three floor, not the separate odd-count quorum preference.
         ClusterSizeGate.enforce(4)
-            .onSuccessRun(Assertions::fail)
-            .onFailure(cause -> assertThat(cause.message())
-                .contains("below the supported minimum of 5"));
-    }
-
-    @Test
-    void enforce_succeeds_whenFive() {
-        ClusterSizeGate.enforce(5)
             .onFailureRun(Assertions::fail);
-    }
-
-    @Test
-    void enforce_succeeds_whenSeven() {
-        ClusterSizeGate.enforce(7)
-            .onFailureRun(Assertions::fail);
-    }
-
-    // Deliberately even and not in ConfigValidator.nodeCountErrors' {5,7,9} set — this gate only
-    // enforces the minimum floor, not the separate odd-count quorum requirement.
-    @Test
-    void enforce_succeeds_whenSix() {
-        ClusterSizeGate.enforce(6)
-            .onFailureRun(Assertions::fail);
-    }
-
-    // The message is the operator's only signal at a refused boot, so it is pinned rather than
-    // left to drift: it must name the configured size, the minimum, the reason, and the remedy.
-    @Test
-    void enforce_failureMessage_namesSizeMinimumReasonAndRemedy() {
-        ClusterSizeGate.enforce(3)
-            .onSuccessRun(Assertions::fail)
-            .onFailure(cause -> assertThat(cause.message())
-                .contains("Expected cluster size 3")
-                .contains("supported minimum of 5")
-                .contains("no fault budget during maintenance")
-                .contains("scale it BEFORE upgrading"));
     }
 }

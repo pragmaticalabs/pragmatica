@@ -111,7 +111,7 @@ public class ClusterConfigWizard {
                                         SourceType.DOCKER,
                                         Option.none(),
                                         Option.none(),
-                                        new CoreWorkerSplit(3, 0),
+                                        new CoreWorkerSplit(CoreWorkerSplit.MINIMUM_CORE_NODES, 0),
                                         Option.none(),
                                         FirewallPreset.STANDARD,
                                         Option.none(),
@@ -567,18 +567,19 @@ public class ClusterConfigWizard {
 
     private static StepResult stepTopology(ClusterConfigAnswers state, Prompt prompt) {
         if (state.target() == SourceType.SSH) {
-            return sshDerivedTopology(state, prompt);
+            return sshTopology(state, prompt);
         }
 
-        return promptedTopology(state, prompt);
+        return promptedCore(state, prompt);
     }
 
-    private static StepResult sshDerivedTopology(ClusterConfigAnswers state, Prompt prompt) {
+    /// #1019 — the wizard asks for BOTH tiers rather than a total it then splits. The single-number
+    /// question was the interactive face of the same modelling mismatch the CLI flags removed: the
+    /// config models core and worker independently, so a total has to be un-inferred again, and the
+    /// inference is where `--nodes 5` became a three-node consensus tier.
+    private static StepResult sshTopology(ClusterConfigAnswers state, Prompt prompt) {
         return state.ssh()
-                    .map(ssh -> deriveOrFail(state,
-                                             ssh.hosts().size(),
-                                             prompt,
-                                             true))
+                    .map(ssh -> promptedSshCore(state, prompt, ssh.hosts().size()))
                     .or(ClusterConfigWizard::sshHostsMissing);
     }
 
@@ -588,50 +589,109 @@ public class ClusterConfigWizard {
         return new StepResult.Back();
     }
 
-    private static StepResult promptedTopology(ClusterConfigAnswers state, Prompt prompt) {
-        var defaultCount = state.topology().total() >= 3
-                           ? String.valueOf(state.topology().total())
-                           : "3";
-
-        return guardedPrompt(prompt, "Total node count", defaultCount, raw -> parseNodeCount(raw, prompt, state));
+    /// An ssh target's fleet is the host list, so only the CORE size is a question here; the worker
+    /// tier is the remainder.
+    private static StepResult promptedSshCore(ClusterConfigAnswers state, Prompt prompt, int hostCount) {
+        return guardedPrompt(prompt,
+                             "Core (consensus) node count, of " + hostCount + " SSH host(s)",
+                             defaultCore(state),
+                             raw -> parseSshCore(raw, prompt, state, hostCount));
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private static StepResult parseNodeCount(String raw, Prompt prompt, ClusterConfigAnswers state) {
-        int count;
-
-        try {
-            count = Integer.parseInt(raw.trim());
-        } catch (NumberFormatException _) {
-            System.out.println("  ✗ expected integer >= " + TopologyDeriver.MINIMUM_TOTAL_NODES);
-
-            return promptedTopology(state, prompt);
-        }
-
-        return deriveOrFail(state, count, prompt, false);
+    private static StepResult parseSshCore(String raw, Prompt prompt, ClusterConfigAnswers state, int hostCount) {
+        return parseCount(raw).fold(() -> retrySshCore(state, prompt, hostCount),
+                                    core -> sshSplitOrFail(state, prompt, core, hostCount));
     }
 
-    private static StepResult deriveOrFail(ClusterConfigAnswers state, int count, Prompt prompt, boolean fromSsh) {
-        var derived = TopologyDeriver.derive(count);
+    private static StepResult retrySshCore(ClusterConfigAnswers state, Prompt prompt, int hostCount) {
+        System.out.println("  ✗ expected integer >= " + CoreWorkerSplit.MINIMUM_CORE_NODES);
 
-        return derived.fold(cause -> reportTopologyFailure(state, prompt, cause, fromSsh),
-                            split -> announceTopology(state, split));
+        return promptedSshCore(state, prompt, hostCount);
     }
 
-    private static StepResult reportTopologyFailure(ClusterConfigAnswers state,
-                                                    Prompt prompt,
-                                                    Cause cause,
-                                                    boolean fromSsh) {
-        System.out.println("  ✗ " + cause.message());
-        if (fromSsh) {
+    private static StepResult sshSplitOrFail(ClusterConfigAnswers state, Prompt prompt, int core, int hostCount) {
+        if (hostCount < core) {
+            System.out.println("  ✗ core " + core + " exceeds the " + hostCount + " host(s) given");
+
             return new StepResult.Back();
         }
 
-        return promptedTopology(state, prompt);
+        return CoreWorkerSplit.coreWorkerSplit(core, hostCount - core)
+                              .fold(ClusterConfigWizard::sshTopologyFailure,
+                                    split -> announceTopology(state, split));
+    }
+
+    private static StepResult sshTopologyFailure(Cause cause) {
+        System.out.println("  ✗ " + cause.message());
+
+        return new StepResult.Back();
+    }
+
+    private static String defaultCore(ClusterConfigAnswers state) {
+        return state.topology().core() >= CoreWorkerSplit.MINIMUM_CORE_NODES
+               ? String.valueOf(state.topology().core())
+               : String.valueOf(CoreWorkerSplit.MINIMUM_CORE_NODES);
+    }
+
+    private static StepResult promptedCore(ClusterConfigAnswers state, Prompt prompt) {
+        return guardedPrompt(prompt,
+                             "Core (consensus) node count",
+                             defaultCore(state),
+                             raw -> parseCore(raw, prompt, state));
+    }
+
+    private static StepResult parseCore(String raw, Prompt prompt, ClusterConfigAnswers state) {
+        return parseCount(raw).fold(() -> retryCore(state, prompt),
+                                    core -> promptedWorker(state, prompt, core));
+    }
+
+    private static StepResult retryCore(ClusterConfigAnswers state, Prompt prompt) {
+        System.out.println("  ✗ expected integer >= " + CoreWorkerSplit.MINIMUM_CORE_NODES);
+
+        return promptedCore(state, prompt);
+    }
+
+    private static StepResult promptedWorker(ClusterConfigAnswers state, Prompt prompt, int core) {
+        return guardedPrompt(prompt,
+                             "Worker node count",
+                             String.valueOf(state.topology().worker()),
+                             raw -> parseWorker(raw, prompt, state, core));
+    }
+
+    private static StepResult parseWorker(String raw, Prompt prompt, ClusterConfigAnswers state, int core) {
+        return parseCount(raw).fold(() -> retryWorker(state, prompt, core),
+                                    worker -> splitOrFail(state, prompt, core, worker));
+    }
+
+    private static StepResult retryWorker(ClusterConfigAnswers state, Prompt prompt, int core) {
+        System.out.println("  ✗ expected integer >= 0");
+
+        return promptedWorker(state, prompt, core);
+    }
+
+    private static StepResult splitOrFail(ClusterConfigAnswers state, Prompt prompt, int core, int worker) {
+        return CoreWorkerSplit.coreWorkerSplit(core, worker)
+                              .fold(cause -> reportTopologyFailure(state, prompt, cause),
+                                    split -> announceTopology(state, split));
+    }
+
+    private static StepResult reportTopologyFailure(ClusterConfigAnswers state, Prompt prompt, Cause cause) {
+        System.out.println("  ✗ " + cause.message());
+
+        return promptedCore(state, prompt);
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Option<Integer> parseCount(String raw) {
+        try {
+            return Option.some(Integer.parseInt(raw.trim()));
+        } catch (NumberFormatException _) {
+            return Option.none();
+        }
     }
 
     private static StepResult announceTopology(ClusterConfigAnswers state, CoreWorkerSplit split) {
-        System.out.println("  → derived topology: " + split.core() + " core + " + split.worker() + " worker");
+        System.out.println("  → topology: " + split.core() + " core + " + split.worker() + " worker");
 
         return new StepResult.Continue(new ClusterConfigAnswers(state.clusterName(),
                                                                 state.clusterVersion(),

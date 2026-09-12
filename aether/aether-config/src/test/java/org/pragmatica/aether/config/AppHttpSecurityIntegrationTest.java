@@ -17,7 +17,7 @@ class AppHttpSecurityIntegrationTest {
     private static final String MINIMAL_CLUSTER = """
         [cluster]
         environment = "docker"
-        nodes = 5
+        nodes = 3
         """;
 
     @Nested
@@ -308,7 +308,7 @@ class AppHttpSecurityIntegrationTest {
             var toml = """
                 [cluster]
                 environment = "docker"
-                nodes = 5
+                nodes = 3
 
                 [app-http]
                 enabled = "true"

@@ -15,7 +15,7 @@ class EnvironmentTest {
     void local_hasCorrectDefaults() {
         var env = Environment.LOCAL;
 
-        // 5, not 7: LOCAL is dev ergonomics, below the production default on purpose (#1019).
+        // 5, not 7: LOCAL is dev ergonomics and sits below the production default on purpose (#1019).
         assertThat(env.defaultNodes()).isEqualTo(5);
         assertThat(env.defaultHeap()).isEqualTo("256m");
         assertThat(env.defaultTls()).isFalse();

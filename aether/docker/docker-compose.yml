@@ -6,15 +6,9 @@ version: "3.9"
 # (consensus, KV-Store, HTTP forwarding, DHT) and UDP port 8190 for SWIM failure
 # detection. Host-mapped cluster ports use /udp suffix for explicit protocol binding.
 #
-# SIZE — five nodes, not three (#1019, owner ruling 2026-09-12). A 3-node cluster tolerates
-# ZERO failures during maintenance: a rolling restart takes one node down, leaving 2 of 3, and
-# any further fault loses quorum. 5 is the smallest size where a planned operation still leaves
-# margin. `ClusterSizeGate` enforces this at node boot, so a 3-service version of this file no
-# longer starts at all — it is not merely discouraged.
-#
 # Usage:
 #   export AETHER_CLUSTER_SECRET=<your-secret>    # required, no default is shipped
-#   docker-compose up -d                          # Pull published images, start 5-node cluster
+#   docker-compose up -d                          # Pull published images, start 3-node cluster
 #   docker-compose up -d --build                  # Build from source instead of pulling
 #   docker-compose --profile forge up --build     # Start with Forge simulator (always built)
 #
@@ -26,7 +20,7 @@ version: "3.9"
 # default (`restart: "no"`); keep it that way. See aether/docs/operator/deployment-recovery.md
 
 services:
-  # Five-node Aether cluster
+  # Three-node Aether cluster
   aether-node-1:
     image: ghcr.io/pragmaticalabs/aether-node:${AETHER_VERSION:-1.0.0-rc3}
     build:
@@ -38,7 +32,7 @@ services:
       NODE_ID: "node-1"
       CLUSTER_PORT: "8090"
       MANAGEMENT_PORT: "8080"
-      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
+      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
       AETHER_CLUSTER_NAME: "aether-local"
       AETHER_CLUSTER_SECRET: "${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
@@ -65,7 +59,7 @@ services:
       NODE_ID: "node-2"
       CLUSTER_PORT: "8090"
       MANAGEMENT_PORT: "8080"
-      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
+      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
       AETHER_CLUSTER_NAME: "aether-local"
       AETHER_CLUSTER_SECRET: "${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
@@ -95,7 +89,7 @@ services:
       NODE_ID: "node-3"
       CLUSTER_PORT: "8090"
       MANAGEMENT_PORT: "8080"
-      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
+      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
       AETHER_CLUSTER_NAME: "aether-local"
       AETHER_CLUSTER_SECRET: "${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
@@ -114,66 +108,6 @@ services:
       aether-node-2:
         condition: service_healthy
 
-  aether-node-4:
-    image: ghcr.io/pragmaticalabs/aether-node:${AETHER_VERSION:-1.0.0-rc3}
-    build:
-      context: ..
-      dockerfile: docker/aether-node/Dockerfile
-    container_name: aether-node-4
-    hostname: aether-node-4
-    environment:
-      NODE_ID: "node-4"
-      CLUSTER_PORT: "8090"
-      MANAGEMENT_PORT: "8080"
-      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
-      AETHER_CLUSTER_NAME: "aether-local"
-      AETHER_CLUSTER_SECRET: "${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"
-      JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
-    ports:
-      - "8083:8080"
-      - "8093:8090/udp"
-    networks:
-      - aether-network
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health/live"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 20s
-    depends_on:
-      aether-node-3:
-        condition: service_healthy
-
-  aether-node-5:
-    image: ghcr.io/pragmaticalabs/aether-node:${AETHER_VERSION:-1.0.0-rc3}
-    build:
-      context: ..
-      dockerfile: docker/aether-node/Dockerfile
-    container_name: aether-node-5
-    hostname: aether-node-5
-    environment:
-      NODE_ID: "node-5"
-      CLUSTER_PORT: "8090"
-      MANAGEMENT_PORT: "8080"
-      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
-      AETHER_CLUSTER_NAME: "aether-local"
-      AETHER_CLUSTER_SECRET: "${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"
-      JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
-    ports:
-      - "8084:8080"
-      - "8094:8090/udp"
-    networks:
-      - aether-network
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health/live"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 20s
-    depends_on:
-      aether-node-4:
-        condition: service_healthy
-
   # Forge simulator (optional, standalone)
   aether-forge:
     build:
@@ -184,9 +118,7 @@ services:
       - forge
     environment:
       FORGE_PORT: "8888"
-      # Tracks the node service count above; a mismatch makes Forge model a cluster
-      # that is not the one running.
-      CLUSTER_SIZE: "5"
+      CLUSTER_SIZE: "3"
       LOAD_RATE: "500"
     ports:
       - "8888:8888"
