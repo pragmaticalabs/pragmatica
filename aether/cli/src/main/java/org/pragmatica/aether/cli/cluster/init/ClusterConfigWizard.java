@@ -603,7 +603,7 @@ public class ClusterConfigWizard {
         try {
             count = Integer.parseInt(raw.trim());
         } catch (NumberFormatException _) {
-            System.out.println("  ✗ expected integer >= 3");
+            System.out.println("  ✗ expected integer >= " + TopologyDeriver.MINIMUM_TOTAL_NODES);
 
             return promptedTopology(state, prompt);
         }
