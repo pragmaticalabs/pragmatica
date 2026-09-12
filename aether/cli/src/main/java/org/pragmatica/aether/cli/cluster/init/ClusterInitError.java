@@ -14,8 +14,7 @@ public sealed interface ClusterInitError extends Cause {
             return "Aether requires at least " + TopologyDeriver.MINIMUM_TOTAL_NODES
                  + " nodes (got " + got
                  + "). A smaller cluster has no fault budget during maintenance: a rolling restart "
-                 + "takes one node down and any further fault then loses quorum. Use --nodes "
-                 + TopologyDeriver.MINIMUM_TOTAL_NODES
+                 + "takes one node down and any further fault then loses quorum. Use --nodes " + TopologyDeriver.MINIMUM_TOTAL_NODES
                  + ", 7 (recommended) or " + TopologyDeriver.MAXIMUM_CORE_NODES
                  + ". For local single-process dev/test, use --target forge.";
         }

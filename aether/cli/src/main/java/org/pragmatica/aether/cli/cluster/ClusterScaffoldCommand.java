@@ -112,7 +112,8 @@ class ClusterScaffoldCommand implements Callable<Integer> {
         record InvalidNodeCount(int nodes) implements ScaffoldError {
             @Override
             public String message() {
-                return "Invalid --nodes " + nodes + " (must be >= " + TopologyDeriver.MINIMUM_TOTAL_NODES
+                return "Invalid --nodes " + nodes
+                     + " (must be >= " + TopologyDeriver.MINIMUM_TOTAL_NODES
                      + "): below that a rolling restart leaves no fault budget";
             }
         }

@@ -53,8 +53,7 @@ public final class ClusterSizeGate {
                      + " is below the supported minimum of " + MINIMUM_SUPPORTED_CLUSTER_SIZE
                      + " nodes, so this node is refusing to start. A " + size
                      + "-node cluster has no fault budget during maintenance: a rolling restart takes "
-                     + "one node down and any further fault then loses quorum. Scale the cluster to "
-                     + MINIMUM_SUPPORTED_CLUSTER_SIZE
+                     + "one node down and any further fault then loses quorum. Scale the cluster to " + MINIMUM_SUPPORTED_CLUSTER_SIZE
                      + " nodes (7 recommended) and retry; if you are upgrading an existing "
                      + "smaller cluster, scale it BEFORE upgrading. For a single machine, run the "
                      + "documented five-container quick start (docs/operators/docker-deployment.md, "

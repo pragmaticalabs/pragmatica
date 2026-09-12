@@ -33,7 +33,6 @@ public final class ConfigValidator {
     /// [#nodeCountErrors]. Editing that set would have changed no behaviour, which is precisely how
     /// two encodings of one policy drift apart.
     private static final int MINIMUM_CLUSTER_SIZE = 5;
-
     /// Upper bound on the CONSENSUS tier, not on the fleet. `[cluster] nodes` is the quorum basis
     /// (`TopologyConfig#clusterSize`) and every consensus round is broadcast across it. Fleet size is
     /// bounded separately by `ClusterConfig#maxNodes`, which #298 deliberately leaves UNBOUNDED, so
@@ -139,19 +138,20 @@ public final class ConfigValidator {
                       + ", below the supported minimum of " + MINIMUM_CLUSTER_SIZE
                       + ". A " + nodes
                       + "-node cluster has no fault budget during maintenance: a rolling restart takes one "
-                      + "node down and any further fault then loses quorum. Set cluster.nodes to "
-                      + MINIMUM_CLUSTER_SIZE + ", 7 (recommended) or " + MAXIMUM_CLUSTER_SIZE
+                      + "node down and any further fault then loses quorum. Set cluster.nodes to " + MINIMUM_CLUSTER_SIZE
+                      + ", 7 (recommended) or " + MAXIMUM_CLUSTER_SIZE
                       + ", and scale the cluster to that size BEFORE upgrading.");
         } else if (nodes % 2 == 0) {
             errors.add("cluster.nodes is " + nodes
-                      + ", which is even. Quorum needs an odd count so that no split is a tie. Use "
-                      + MINIMUM_CLUSTER_SIZE + ", 7 or " + MAXIMUM_CLUSTER_SIZE + ".");
+                      + ", which is even. Quorum needs an odd count so that no split is a tie. Use " + MINIMUM_CLUSTER_SIZE
+                      + ", 7 or " + MAXIMUM_CLUSTER_SIZE
+                      + ".");
         } else if (nodes > MAXIMUM_CLUSTER_SIZE) {
             errors.add("cluster.nodes is " + nodes
                       + ", above the maximum consensus tier of " + MAXIMUM_CLUSTER_SIZE
                       + ". cluster.nodes sizes the CONSENSUS tier, which every consensus round is "
-                      + "broadcast across — it is not the fleet size. Keep it at "
-                      + MAXIMUM_CLUSTER_SIZE + " or below and add further capacity as workers, which "
+                      + "broadcast across — it is not the fleet size. Keep it at " + MAXIMUM_CLUSTER_SIZE
+                      + " or below and add further capacity as workers, which "
                       + "this limit does not bound.");
         }
     }

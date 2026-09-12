@@ -33,7 +33,6 @@ public sealed interface TopologyDeriver {
     /// Owner ruling 2026-09-12: minimum 5. A 3-node cluster tolerates ZERO failures during
     /// maintenance — a rolling restart leaves 2 of 3, and any further fault loses quorum.
     int MINIMUM_TOTAL_NODES = 5;
-
     /// Largest consensus tier `--nodes` will derive. Beyond this, added nodes are workers.
     int MAXIMUM_CORE_NODES = 9;
 
