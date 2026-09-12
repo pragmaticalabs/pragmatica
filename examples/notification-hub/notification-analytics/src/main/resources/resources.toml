@@ -1,4 +1,23 @@
+# CONSUMER-SIDE REFERENCE, NOT A SECOND DECLARATION (#1040).
+#
+# This blueprint reads the stream `notification-service` owns. `source` names it by its full
+# `namespace:stream:version` address, where the namespace is the producing blueprint's Maven
+# coordinates joined as `groupId.artifactId` (BlueprintNamespace.deriveNamespace) and the version is
+# the stream's declared version, which defaults to 1.0.0 — NOT the artifact's `1.0.0-rc4`.
+#
+# WHY THIS IS NOW REQUIRED. Until #1040 all three notification-hub blueprints declared a bare
+# `[streams.notifications]` and the engine keyed every one of them by the section name alone, so they
+# happened to meet on one ring. That collision WAS the bug: a bare key cannot distinguish this stream
+# from an unrelated blueprint's identically-named one, which is why the engine now keys by the
+# qualified address. Three sibling declarations would now yield three separate rings — a producer
+# writing to one and two consumers polling two empty ones. `source` states the sharing explicitly,
+# which is what StreamResource.External exists for.
+#
+# The config fields below are inert for an external reference (the producing blueprint owns the
+# authoritative config) and are retained only so a consumer that happens to materialize the ring
+# first creates it with the same shape the producer declares.
 [streams.notifications]
+source = "org.pragmatica.aether.example.notification-hub-notification-service:notifications:1.0.0"
 partitions = 4
 retention = "time"
 retention-value = "5m"
