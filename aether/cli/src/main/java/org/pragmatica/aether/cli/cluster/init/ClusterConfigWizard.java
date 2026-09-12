@@ -579,7 +579,9 @@ public class ClusterConfigWizard {
     /// inference is where `--nodes 5` became a three-node consensus tier.
     private static StepResult sshTopology(ClusterConfigAnswers state, Prompt prompt) {
         return state.ssh()
-                    .map(ssh -> promptedSshCore(state, prompt, ssh.hosts().size()))
+                    .map(ssh -> promptedSshCore(state,
+                                                prompt,
+                                                ssh.hosts().size()))
                     .or(ClusterConfigWizard::sshHostsMissing);
     }
 
@@ -616,9 +618,8 @@ public class ClusterConfigWizard {
             return new StepResult.Back();
         }
 
-        return CoreWorkerSplit.coreWorkerSplit(core, hostCount - core)
-                              .fold(ClusterConfigWizard::sshTopologyFailure,
-                                    split -> announceTopology(state, split));
+        return CoreWorkerSplit.coreWorkerSplit(core, hostCount - core).fold(ClusterConfigWizard::sshTopologyFailure,
+                                                                            split -> announceTopology(state, split));
     }
 
     private static StepResult sshTopologyFailure(Cause cause) {
@@ -628,7 +629,8 @@ public class ClusterConfigWizard {
     }
 
     private static String defaultCore(ClusterConfigAnswers state) {
-        return state.topology().core() >= CoreWorkerSplit.MINIMUM_CORE_NODES
+        return state.topology()
+                    .core() >= CoreWorkerSplit.MINIMUM_CORE_NODES
                ? String.valueOf(state.topology().core())
                : String.valueOf(CoreWorkerSplit.MINIMUM_CORE_NODES);
     }
@@ -641,8 +643,7 @@ public class ClusterConfigWizard {
     }
 
     private static StepResult parseCore(String raw, Prompt prompt, ClusterConfigAnswers state) {
-        return parseCount(raw).fold(() -> retryCore(state, prompt),
-                                    core -> promptedWorker(state, prompt, core));
+        return parseCount(raw).fold(() -> retryCore(state, prompt), core -> promptedWorker(state, prompt, core));
     }
 
     private static StepResult retryCore(ClusterConfigAnswers state, Prompt prompt) {
@@ -670,9 +671,8 @@ public class ClusterConfigWizard {
     }
 
     private static StepResult splitOrFail(ClusterConfigAnswers state, Prompt prompt, int core, int worker) {
-        return CoreWorkerSplit.coreWorkerSplit(core, worker)
-                              .fold(cause -> reportTopologyFailure(state, prompt, cause),
-                                    split -> announceTopology(state, split));
+        return CoreWorkerSplit.coreWorkerSplit(core, worker).fold(cause -> reportTopologyFailure(state, prompt, cause),
+                                                                  split -> announceTopology(state, split));
     }
 
     private static StepResult reportTopologyFailure(ClusterConfigAnswers state, Prompt prompt, Cause cause) {

@@ -200,14 +200,14 @@ class ClusterInitCommand implements Callable<Integer> {
         }
 
         return parseCloudProvider(provider).flatMap(p -> InputValidators.validateEnvVarName(credentialEnv).flatMap(envOk -> requestedSplit().flatMap(split -> assembleAnswers(clusterName,
-                                                                                                                                                                                           SourceType.CLOUD,
-                                                                                                                                                                                           org.pragmatica.lang.Option.some(new CloudAnswers(p,
-                                                                                                                                                                                                                                            region,
-                                                                                                                                                                                                                                            instanceType,
-                                                                                                                                                                                                                                            envOk,
-                                                                                                                                                                                                                                            sshPublicKey.trim())),
-                                                                                                                                                                                           org.pragmatica.lang.Option.none(),
-                                                                                                                                                                                           split))));
+                                                                                                                                                                              SourceType.CLOUD,
+                                                                                                                                                                              org.pragmatica.lang.Option.some(new CloudAnswers(p,
+                                                                                                                                                                                                                               region,
+                                                                                                                                                                                                                               instanceType,
+                                                                                                                                                                                                                               envOk,
+                                                                                                                                                                                                                               sshPublicKey.trim())),
+                                                                                                                                                                              org.pragmatica.lang.Option.none(),
+                                                                                                                                                                              split))));
     }
 
     private Result<ClusterConfigAnswers> buildSshAnswers(String clusterName) {
@@ -228,21 +228,21 @@ class ClusterInitCommand implements Callable<Integer> {
         }
 
         return sshSplit().flatMap(split -> assembleAnswers(clusterName,
-                                                                                     SourceType.SSH,
-                                                                                     org.pragmatica.lang.Option.none(),
-                                                                                     org.pragmatica.lang.Option.some(new SshAnswers(hosts,
-                                                                                                                                    sshUser,
-                                                                                                                                    Path.of(sshKey),
-                                                                                                                                    sshPort)),
-                                                                                     split));
+                                                           SourceType.SSH,
+                                                           org.pragmatica.lang.Option.none(),
+                                                           org.pragmatica.lang.Option.some(new SshAnswers(hosts,
+                                                                                                          sshUser,
+                                                                                                          Path.of(sshKey),
+                                                                                                          sshPort)),
+                                                           split));
     }
 
     private Result<ClusterConfigAnswers> buildLocalAnswers(String clusterName, SourceType t) {
         return requestedSplit().flatMap(split -> assembleAnswers(clusterName,
-                                                                              t,
-                                                                              org.pragmatica.lang.Option.none(),
-                                                                              org.pragmatica.lang.Option.none(),
-                                                                              split));
+                                                                 t,
+                                                                 org.pragmatica.lang.Option.none(),
+                                                                 org.pragmatica.lang.Option.none(),
+                                                                 split));
     }
 
     /// Both tiers as given. An absent `--worker-nodes` means zero workers — the honest default for an
@@ -252,7 +252,10 @@ class ClusterInitCommand implements Callable<Integer> {
             return new ClusterInitError.MissingField("--core-nodes").result();
         }
 
-        return CoreWorkerSplit.coreWorkerSplit(coreNodes, workerNodes == null ? 0 : workerNodes);
+        return CoreWorkerSplit.coreWorkerSplit(coreNodes,
+                                               workerNodes == null
+                                               ? 0
+                                               : workerNodes);
     }
 
     /// An ssh target's fleet size is the host list, so the worker tier is its remainder rather than a
@@ -271,8 +274,9 @@ class ClusterInitCommand implements Callable<Integer> {
         }
 
         if (hosts.size() < coreNodes) {
-            return new ClusterInitError.InvalidTopology("--core-nodes " + coreNodes + " exceeds the "
-                                                       + hosts.size() + " host(s) given in --hosts").result();
+            return new ClusterInitError.InvalidTopology("--core-nodes " + coreNodes
+                                                       + " exceeds the " + hosts.size()
+                                                       + " host(s) given in --hosts").result();
         }
 
         return CoreWorkerSplit.coreWorkerSplit(coreNodes, hosts.size() - coreNodes);

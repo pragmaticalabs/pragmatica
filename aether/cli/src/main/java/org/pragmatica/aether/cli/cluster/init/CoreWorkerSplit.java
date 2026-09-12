@@ -25,7 +25,6 @@ public record CoreWorkerSplit(int core, int worker) {
     /// restart takes one node down, leaving 2 of 3, and any further fault loses quorum. 5 is the
     /// smallest core where a planned operation still leaves margin; 7 buys a second concurrent fault.
     public static final int MINIMUM_CORE_NODES = 5;
-
     /// Bounds the CONSENSUS tier only — every consensus round is broadcast across it. The FLEET is
     /// deliberately unbounded (`ClusterConfig#maxNodes`, #298: a default numeric cap silently refuses
     /// provisioning on any cluster already larger than it), so capacity beyond this is added as
@@ -43,8 +42,8 @@ public record CoreWorkerSplit(int core, int worker) {
 
         if (core > MAXIMUM_CORE_NODES) {
             return new ClusterInitError.InvalidTopology("core must be at most " + MAXIMUM_CORE_NODES
-                                                      + " (the consensus tier is broadcast to on every round; add capacity as workers, "
-                                                      + "which are unbounded), got " + core).result();
+                                                       + " (the consensus tier is broadcast to on every round; add capacity as workers, "
+                                                       + "which are unbounded), got " + core).result();
         }
 
         if (worker < 0) {

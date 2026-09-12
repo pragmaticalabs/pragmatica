@@ -17,9 +17,8 @@ public sealed interface ClusterInitError extends Cause {
             return "Aether requires at least " + CoreWorkerSplit.MINIMUM_CORE_NODES
                  + " core nodes (got " + got
                  + "). A smaller core has no fault budget during maintenance: a rolling restart takes "
-                 + "one node down and any further fault then loses quorum. Use --core-nodes "
-                 + CoreWorkerSplit.MINIMUM_CORE_NODES + ", 7 (recommended) or "
-                 + CoreWorkerSplit.MAXIMUM_CORE_NODES
+                 + "one node down and any further fault then loses quorum. Use --core-nodes " + CoreWorkerSplit.MINIMUM_CORE_NODES
+                 + ", 7 (recommended) or " + CoreWorkerSplit.MAXIMUM_CORE_NODES
                  + "; add further capacity with --worker-nodes, which this limit does not bound. "
                  + "For local single-process dev/test, use --target forge.";
         }
