@@ -557,12 +557,16 @@ sealed interface BootstrapPhaseDeploy {
              + " && touch " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && chmod 600 " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && printf '%s\\n'"
-             + " 'AETHER_CLUSTER_SECRET=" + clusterSecret + "'"
-             + identityEnvAssignments(clusterName, envLookup)
-             + " 'AETHER_NODE_ID=" + nodeId + "'"
-             + " 'AETHER_CLUSTER_PORT=" + clusterPort + "'"
-             + " 'AETHER_MANAGEMENT_PORT=" + managementPort + "'"
-             + " 'AETHER_PEERS=" + peers + "'"
+             + " 'AETHER_CLUSTER_SECRET=" + clusterSecret
+             + "'" + identityEnvAssignments(clusterName, envLookup)
+             + " 'AETHER_NODE_ID=" + nodeId
+             + "'"
+             + " 'AETHER_CLUSTER_PORT=" + clusterPort
+             + "'"
+             + " 'AETHER_MANAGEMENT_PORT=" + managementPort
+             + "'"
+             + " 'AETHER_PEERS=" + peers
+             + "'"
              + " > " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && systemctl restart " + NodeUserDataRenderer.JVM_UNIT_NAME;
     }

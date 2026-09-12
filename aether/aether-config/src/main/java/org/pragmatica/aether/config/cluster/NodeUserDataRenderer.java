@@ -41,7 +41,6 @@ public sealed interface NodeUserDataRenderer {
 
     Pattern PLAIN_SEMVER = Pattern.compile("^[0-9]+\\.[0-9]+\\.[0-9]+$");
     String JAR_REPO_PATH = "pragmaticalabs/pragmatica";
-
     /// #1021 — the JVM-mode launch surface. Shared with `BootstrapPhaseDeploy`, whose finalized-PEERS
     /// re-launch rewrites [#JVM_ENV_FILE_PATH] and restarts [#JVM_UNIT_NAME] rather than pattern-matching
     /// the process with `pkill -f`.

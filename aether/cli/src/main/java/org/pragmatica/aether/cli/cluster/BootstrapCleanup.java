@@ -546,7 +546,6 @@ sealed interface BootstrapCleanup {
         }
 
         System.out.printf("  Recording %d swept VM(s) the ledger never held:%n", unrecorded.size());
-
         for (var server : unrecorded) {
             recordSweptVm(server, clusterName, resolvers);
         }
@@ -555,9 +554,14 @@ sealed interface BootstrapCleanup {
     @Contract
     private static void recordSweptVm(Server server, ClusterName clusterName, CleanupResolvers resolvers) {
         var _ = resolvers.ledgerRecorder()
-                         .apply(clusterName, sweptVmResource(server, clusterName))
-                         .onSuccess(_ -> System.out.printf("    + %s (id=%d)%n", server.name(), server.id()))
-                         .onFailure(cause -> warnSweptVmNotRecorded(server, clusterName, cause.message()));
+                         .apply(clusterName,
+                                sweptVmResource(server, clusterName))
+                         .onSuccess(_ -> System.out.printf("    + %s (id=%d)%n",
+                                                           server.name(),
+                                                           server.id()))
+                         .onFailure(cause -> warnSweptVmNotRecorded(server,
+                                                                    clusterName,
+                                                                    cause.message()));
     }
 
     /// Mirrors [BootstrapPhaseProvision#warnVmNotRecorded]: with the ledger unwritable, this line is the

@@ -96,9 +96,9 @@ sealed interface BootstrapStatePersistence {
     /// disk) call for three different operator actions.
     static Result<Unit> appendResource(ClusterName clusterName, CreatedResource resource) {
         return read(clusterName).mapError(BootstrapStatePersistence::unreadable)
-                                .flatMap(state -> state.toResult(LEDGER_ABSENT))
-                                .map(state -> state.withResource(resource))
-                                .flatMap(BootstrapStatePersistence::saveAppended);
+                   .flatMap(state -> state.toResult(LEDGER_ABSENT))
+                   .map(state -> state.withResource(resource))
+                   .flatMap(BootstrapStatePersistence::saveAppended);
     }
 
     Fn1<Cause, String> LEDGER_UNREADABLE = Causes.forOneValue("the persisted ledger is unreadable: %s");

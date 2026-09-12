@@ -34,7 +34,6 @@ public sealed interface SystemdUnitTemplate {
     /// own cloud run; wiring the unit in must not smuggle it.
     String DEFAULT_USER = "root";
     String DEFAULT_GROUP = "root";
-
     /// `Restart=no` IS THE POINT, and it is pinned by a test that fails if it ever becomes anything
     /// else. Aether uses a terminal-removal membership model: a dead NodeId never returns under the
     /// same identity, and recovery is a brand-new node with a new ULID minted by CTM auto-heal.

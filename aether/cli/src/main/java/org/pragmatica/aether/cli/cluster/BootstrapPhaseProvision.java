@@ -195,7 +195,9 @@ sealed interface BootstrapPhaseProvision {
                                                                                                      node.serverId(),
                                                                                                      sourceName.value(),
                                                                                                      role.value()))
-                                         .onFailure(cause -> warnVmNotRecorded(node, clusterName, cause.message()));
+                                         .onFailure(cause -> warnVmNotRecorded(node,
+                                                                               clusterName,
+                                                                               cause.message()));
     }
 
     /// The id is the whole point of this message. With the ledger broken it is the only place the server
