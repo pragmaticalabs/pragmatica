@@ -359,16 +359,18 @@ class ConfigLoaderTest {
 
     @Test
     void loadFromString_fails_withInvalidNodeCount() {
+        // 6, not 4: with the minimum at 5 an even 4 reports the MINIMUM error, so it could no longer
+        // reach the odd-count branch this test exists to cover.
         var toml = """
             [cluster]
             environment = "docker"
-            nodes = 4
+            nodes = 6
             """;
 
         ConfigLoader.loadFromString(toml)
             .onSuccessRun(Assertions::fail)
             .onFailure(cause -> assertThat(cause.message())
-                .contains("Node count must be odd"));
+                .contains("which is even"));
     }
 
     @Test
@@ -485,7 +487,7 @@ class ConfigLoaderTest {
         ConfigLoader.loadFromString(toml)
             .onFailure(cause -> Assertions.fail(cause.message()))
             .onSuccess(config -> {
-                assertThat(config.cluster().nodes()).isEqualTo(3);
+                assertThat(config.cluster().nodes()).isEqualTo(5);
                 assertThat(config.node().heap()).isEqualTo("256m");
             });
     }
