@@ -234,7 +234,7 @@ public final class AetherUp {
                                     (default: docker)
 
             Overrides:
-              --nodes N             Override node count (3, 5, or 7)
+              --nodes N             Override node count (odd, 3-9; 5 is the supported minimum for new clusters)
               --heap SIZE           Override heap size (e.g., 512m, 1g)
               --tls                 Enable TLS (auto-generate certs)
               --no-tls              Disable TLS
