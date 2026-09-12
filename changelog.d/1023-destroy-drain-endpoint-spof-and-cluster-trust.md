@@ -56,12 +56,38 @@ persists** — no new field was added to the registry or the bootstrap state.
   [mechanism: the installed anchor is the derived cluster CA and nothing else, so a certificate from a
   different cluster's secret has no path to it — #209's MITM property, preserved on the destroy path]
 
+- **This does NOT make drain work, and #1023 stays open.** Verified on a live 5-node Hetzner cluster
+  with the registry-named node deleted at the provider: the trust path was built, the CLI fell through
+  to a live member, and enumeration succeeded — then the cluster **refused every drain with HTTP 409,
+  "Disruption budget exceeded"**. A full teardown necessarily drains below the budget, and `destroy` has
+  no way to say "I am tearing the whole thing down". **Tracked as #1032**; this change deliberately does
+  not lower that guard, which is correct and did exactly its job.
+  [mechanism: a 409 is an application-level answer, so TLS, authentication, routing and leader
+  forwarding all worked — the refusal is evidence about the layers beneath it]
+- **An honest diagnostic found a real defect on its first live run.** The disruption-budget problem has
+  presumably existed all along and was unfindable because the old path rendered the failure as
+  `Drains succeeded: 0/0` **under a "destroyed successfully" line**. The same run now prints `0/3`, an
+  explicit warning, and does not claim success. That is the argument for fixing diagnostics, stated as
+  data rather than as principle.
+- **Operator-facing cost this introduces:** a fully unreachable N-node cluster now takes roughly
+  **(N−1) × 130 s** before refusing — about 17 minutes for a dead 9-node cluster, in an outage, which is
+  when `destroy` is actually run. Bounded, and the phase announcement names how many candidates will be
+  tried before the wait begins. A bounded overall deadline is design work, filed separately rather than
+  bundled here.
+- **The fallback list is a bootstrap-time snapshot.** `collectedAddresses` is written once by
+  `BootstrapPhaseCollect` and never updated, so a node that auto-heal replaces *later* at a new address
+  is not a fallback candidate.
+
 **Verification scope — read this before quoting the above.** The CLI path is exercised end-to-end on the
 built `aether.jar` (isolated `-Duser.home`) against a **stub node**, over real TLS, with request-level
 attribution (11 requests, none addressed to the dead endpoint) and a negative control that fails for the
-right reason. It is **not** the feature catalog's *Integration-verified* bar: the certificate was issued
-by the same provider class rather than by a real node at first leadership, the stub answers
-`NODE_LIFECYCLE_LIST` directly so a real **leader-forwarding hop is read but never exercised**, and no
-multi-node cloud cluster was involved. So the drain claim is **[design intent — unverified]** at the
-multi-node-with-failure-injection bar, and verified at the CLI-behaviour bar. Do not read "the tests
-pass" as "drain works on a real cluster" — that conflation is what let `0/0` read as success.
+right reason. It was then confirmed on a live multi-node cloud cluster with a genuinely deleted endpoint
+node, where a CA derived from the recorded secret validated a certificate issued by a **real node at
+first leadership** (`curl` without it `ssl_verify=20`, with it `ssl_verify=0`) and the CLI fell through
+to `primary-core-1`.
+[verified: live 5-node Hetzner cluster, 2026-09-12 — trust path built, fallthrough from a deleted
+endpoint to a live member, 3 nodes enumerated]
+
+**What that live run did NOT establish: that a drain completes.** It did not — see #1032 above. Do not
+read "the tests pass", or even "the fallthrough works", as "drain works"; that conflation is exactly
+what let `0/0` read as success in the first place.
