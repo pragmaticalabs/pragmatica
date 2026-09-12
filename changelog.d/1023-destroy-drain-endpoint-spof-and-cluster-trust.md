@@ -48,8 +48,20 @@ persists** — no new field was added to the registry or the bootstrap state.
   count was always honest, but nothing said which of the two it described. Both the drain and shutdown
   lines now carry `(SKIPPED — no nodes were enumerated…)` when the node list was empty.
 
-**Not verified without a live cloud run.** The original failure was only reproducible on a live
-TLS-auto_generate cloud cluster. What is pinned above is unit-level: endpoint-candidate construction and
-fallthrough, the retarget, the restore-and-refuse path, and which trust anchor is installed. That a
-drain **completes** end-to-end against a real cluster whose first recorded node is dead is
-**[design intent — unverified]** — it requires a cloud bootstrap this change was not able to run.
+- **Certificate validation is enforced, and that is demonstrated rather than asserted.** With a
+  cluster-CA-signed certificate served by a stub node, the **correct** recorded secret completes the
+  handshake and drains (`Drains succeeded: 3/3`); a **wrong** secret, everything else identical, is
+  rejected with `PKIX path validation failed … signature check failed` and refuses. Had this been
+  "fixed" by disabling validation, that control would have passed.
+  [mechanism: the installed anchor is the derived cluster CA and nothing else, so a certificate from a
+  different cluster's secret has no path to it — #209's MITM property, preserved on the destroy path]
+
+**Verification scope — read this before quoting the above.** The CLI path is exercised end-to-end on the
+built `aether.jar` (isolated `-Duser.home`) against a **stub node**, over real TLS, with request-level
+attribution (11 requests, none addressed to the dead endpoint) and a negative control that fails for the
+right reason. It is **not** the feature catalog's *Integration-verified* bar: the certificate was issued
+by the same provider class rather than by a real node at first leadership, the stub answers
+`NODE_LIFECYCLE_LIST` directly so a real **leader-forwarding hop is read but never exercised**, and no
+multi-node cloud cluster was involved. So the drain claim is **[design intent — unverified]** at the
+multi-node-with-failure-injection bar, and verified at the CLI-behaviour bar. Do not read "the tests
+pass" as "drain works on a real cluster" — that conflation is what let `0/0` read as success.
