@@ -24,6 +24,13 @@ x-node-common: &node-common
     DOCKER_GID: "${DOCKER_GID:-984}"
     JAVA_OPTS: "-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
     AETHER_CLUSTER_SECRET: "aether-integration-test-cluster-secret"
+    # #1016 removed the built-in ADMIN credential from the published image, so the suite must
+    # supply its own. `ConfigLoader.resolveApiKeys` reads AETHER_API_KEYS (the keys the node
+    # ACCEPTS) ahead of any TOML. ADMIN is required because formation POSTs hit
+    # /api/v1/cluster/{config,keys,await-quiesced}, all default-gated to ADMIN. Value tracks
+    # lib/common.sh's API_KEY default. Mirrors docker-compose.yml, which #1016 updated and
+    # these two dual-cluster files were left without.
+    AETHER_API_KEYS: "${AETHER_API_KEY:-aether-integration-test-key}:integration-test:service:ADMIN"
     AETHER_DOCKER_NETWORK: "aether-a-network"
     # Cluster identity for CTM-provisioned replacement containers — without this,
     # DockerComputeProvider.clusterOrDefault falls back to "default" and replacements
