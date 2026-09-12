@@ -247,11 +247,32 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// [#onEnumerationFailed] instead of being flattened into an empty node list, because the two states it
     /// used to merge have opposite consequences: a cluster that genuinely has no nodes needs no drain, and a
     /// cluster that cannot be reached needs one it cannot get.
+    /// #1023 — the bootstrap ledger is read HERE, before the first management request, because both of the
+    /// two observed failures are answered by data it already holds: every node's address (the endpoint
+    /// SPOF) and the cluster secret (the trust anchor). Neither is new state; destroy already loaded this
+    /// same ledger, but only in [#cleanupCloudResources], three phases too late to reach the cluster with.
     Result<Integer> performDestruction(ClusterRegistry registry, ClusterName clusterName, Result<String> endpoint) {
         announceDestroyPlan(clusterName);
+        var state = recordedState(clusterName);
 
-        return fetchNodeIds(endpoint).fold(_ -> onEnumerationFailed(registry, clusterName, endpoint),
-                                           nodeIds -> destroyEnumerated(registry, clusterName, nodeIds));
+        prepareClusterTrust(endpoint, state);
+
+        return fetchNodeIds(endpoint, siblingEndpoints(endpoint, state)).fold(_ -> onEnumerationFailed(registry,
+                                                                                                       clusterName,
+                                                                                                       endpoint),
+                                                                              nodeIds -> destroyEnumerated(registry,
+                                                                                                           clusterName,
+                                                                                                           nodeIds));
+    }
+
+    /// An unreadable ledger arrives here as ABSENT, which is deliberate and is NOT a softening of #994's
+    /// SF-1: [#cleanupCloudResources] re-reads the same file and still refuses to report cleanup done when
+    /// it cannot be read. The two decisions are different. "I cannot derive a trust anchor or a fallback
+    /// address" costs an enumeration attempt and ends in the #998 refusal; "I cannot tell which resources
+    /// are still billing" must never end in a removed registry entry.
+    private static org.pragmatica.lang.Option<BootstrapState> recordedState(ClusterName clusterName) {
+        return stateLoader.apply(clusterName)
+                          .or(org.pragmatica.lang.Option.none());
     }
 
     private Result<Integer> destroyEnumerated(ClusterRegistry registry, ClusterName clusterName, List<String> nodeIds) {
@@ -466,6 +487,127 @@ class ClusterDestroyCommand implements Callable<Integer> {
                           .equals(input);
     }
 
+    /// #1023 failure 2 — `SSLHandshakeException … PKIX path building failed`, observed live on a
+    /// `[operations.tls] auto_generate = true` cluster, so drain and shutdown could not run at all.
+    ///
+    /// TRACED, not inferred: [ClusterHttpClient#enableClusterTrust] had exactly ONE caller,
+    /// [ClusterBootstrapOrchestrator#configureClusterHttpClient], on the bootstrap path. Destroy never
+    /// installed any `SSLContext`, so every request it made used the JDK default trust store — and the
+    /// cluster's leaf certificates are signed by a CA derived from `cluster_secret` via HKDF
+    /// ([ClusterTrust], [SelfSignedCertificateProvider]), which is not an anchor in that store. The thing
+    /// that REFUSES the connection is the default `X509TrustManager`, not the cluster: there is no path
+    /// from the presented leaf to any anchor it holds.
+    ///
+    /// The fix installs the SAME anchor bootstrap installs — the cluster's own CA and nothing else. This is
+    /// not a relaxation: verification is strictly narrower than the JDK default, not wider, and
+    /// [ClusterHttpClient#enableTlsSkipVerify] (trust-all) is deliberately NOT used here. #209 removed that
+    /// shortcut from the bootstrap path for the same reason it must not reappear on this one — destroy
+    /// presents the operator API key and issues shutdown commands over this channel.
+    @Contract
+    static void prepareClusterTrust(Result<String> endpoint, org.pragmatica.lang.Option<BootstrapState> state) {
+        httpsEndpoint(endpoint).onPresent(_ -> installTrustForHttps(state));
+    }
+
+    /// `https` is the signal, and it is the one bootstrap itself writes:
+    /// [BootstrapPhasePost#managementScheme] returns `https` exactly when `auto_generate` is true. An
+    /// `http` endpoint needs no anchor, so the whole decision is skipped rather than guessed at.
+    private static org.pragmatica.lang.Option<String> httpsEndpoint(Result<String> endpoint) {
+        return endpoint.option()
+                       .filter(value -> "https".equals(ClusterHttpClient.schemeOf(value)));
+    }
+
+    @Contract
+    private static void installTrustForHttps(org.pragmatica.lang.Option<BootstrapState> state) {
+        recordedClusterSecret(state).onPresent(ClusterDestroyCommand::installDerivedTrust)
+                             .onEmpty(ClusterDestroyCommand::warnNoRecordedClusterSecret);
+    }
+
+    private static org.pragmatica.lang.Option<String> recordedClusterSecret(org.pragmatica.lang.Option<BootstrapState> state) {
+        return state.map(BootstrapState::clusterSecret)
+                    .filter(secret -> !secret.isBlank());
+    }
+
+    @Contract
+    private static void installDerivedTrust(String clusterSecret) {
+        System.out.println("  Trusting this cluster's own CA, derived from the cluster_secret recorded at"
+                          + " bootstrap — the same derivation the nodes used to sign their certificates."
+                          + " No other issuer is trusted for this connection.");
+        ClusterHttpClient.enableClusterTrust(clusterSecret);
+    }
+
+    /// The honest half, and the reason this is a NOTE rather than a silent fallback: with no recorded
+    /// secret there is no anchor to derive, and the alternative — trusting whatever certificate is
+    /// presented — is what #209 removed. An operator reading a bare `PKIX path building failed` cannot
+    /// tell those two states apart, so this names which one they are in BEFORE the request fails.
+    @Contract
+    private static void warnNoRecordedClusterSecret() {
+        System.err.println("  NOTE: this cluster's endpoint is https, but no cluster_secret is recorded in its"
+                          + " bootstrap state, so the CA that signed its certificates cannot be derived. If"
+                          + " TLS was auto-generated, the next request will fail to build a trust path"
+                          + " (PKIX). Certificate verification is deliberately NOT disabled to work around"
+                          + " this.");
+    }
+
+    /// #1023 failure 1 — the registry records ONE node's address as the cluster endpoint
+    /// ([BootstrapPhasePost#managementEndpoint] takes `addresses().getFirst()`), and teardown is exactly
+    /// when that node is most likely to be the one that is already gone. Observed live on 2026-09-11: the
+    /// entry named a node the operator had deliberately killed, enumeration got a `ConnectException`, and
+    /// destroy refused — while three healthy nodes were serving the very same route.
+    ///
+    /// The addresses are NOT a new field. [BootstrapPhaseCollect] already records every provisioned node's
+    /// public IP in `BootstrapState.collectedAddresses`, and destroy already loads that ledger. Only the
+    /// scheme and port are borrowed from the recorded endpoint, so a deliberately port-less or proxied
+    /// entry is REPRODUCED rather than second-guessed — #998's reason for refusing to default a port
+    /// applies unchanged to the siblings built from it.
+    ///
+    /// Any live node can answer, and this is checked at the code that enforces it rather than at a
+    /// docstring: [ManagementRoute#NODE_LIFECYCLE_LIST] is `LEADER`-targeted, and
+    /// `ManagementServer.tryForwardIfNotLeader` FORWARDS the request when the receiving node is not the
+    /// leader. `NODE_DRAIN` and `NODE_SHUTDOWN` forward the same way, which is why the endpoint that
+    /// answers is kept as the override for the rest of the destroy.
+    static List<String> siblingEndpoints(Result<String> endpoint, org.pragmatica.lang.Option<BootstrapState> state) {
+        return endpoint.option()
+                       .map(primary -> hostSubstitutedEndpoints(primary,
+                                                                collectedAddresses(state)))
+                       .or(List.of());
+    }
+
+    private static List<String> collectedAddresses(org.pragmatica.lang.Option<BootstrapState> state) {
+        return state.map(BootstrapState::collectedAddresses)
+                    .or(List.of());
+    }
+
+    private static List<String> hostSubstitutedEndpoints(String primary, List<String> addresses) {
+        return parseEndpoint(primary).filter(ClusterDestroyCommand::hasHttpScheme)
+                            .map(uri -> substituteHosts(uri, primary, addresses))
+                            .or(List.of());
+    }
+
+    private static org.pragmatica.lang.Option<URI> parseEndpoint(String endpoint) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> URI.create(endpoint))
+                     .option();
+    }
+
+    private static boolean hasHttpScheme(URI uri) {
+        return "http".equals(uri.getScheme()) || "https".equals(uri.getScheme());
+    }
+
+    private static List<String> substituteHosts(URI uri, String primary, List<String> addresses) {
+        return addresses.stream()
+                        .filter(address -> !address.isBlank())
+                        .map(address -> endpointForHost(uri, address))
+                        .filter(candidate -> !candidate.equals(primary))
+                        .distinct()
+                        .toList();
+    }
+
+    private static String endpointForHost(URI uri, String address) {
+        return uri.getPort() < 0
+               ? uri.getScheme() + "://" + address
+               : uri.getScheme() + "://" + address + ":" + uri.getPort();
+    }
+
     /// #995 — this is the call that produced the observed silence: one management request, up to
     /// [#requestTimeoutSeconds] before it gives up, and its failure was swallowed by `.or(List.of())`
     /// with no message at all. It now says what it is about to wait for and for how long, and reports a
@@ -476,14 +618,96 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// cluster. The `Result` is returned rather than flattened by `.or(List.of())`: that flattening is what
     /// made an unreachable cluster indistinguishable from an empty one.
     Result<List<String>> fetchNodeIds(Result<String> endpoint) {
-        logPhase(DestroyPhase.ENUMERATE_NODES,
-                 String.format("Listing cluster nodes from %s (one request, timeout %ds)",
-                               endpoint.or("<no endpoint resolved>"),
-                               requestTimeoutSeconds()));
+        return fetchNodeIds(endpoint, List.of());
+    }
 
-        return endpoint.flatMap(_ -> listNodes())
-                       .onFailure(cause -> warnNodeEnumerationFailed(cause, endpoint))
-                       .onSuccess(ClusterDestroyCommand::reportNodesFound);
+    /// #1023 — the recorded endpoint first, then each sibling address in turn.
+    Result<List<String>> fetchNodeIds(Result<String> endpoint, List<String> siblings) {
+        logPhase(DestroyPhase.ENUMERATE_NODES, enumerationAnnouncement(endpoint, siblings));
+
+        return firstSuccessfulEnumeration(endpoint, siblings).onFailure(cause -> warnNodeEnumerationFailed(cause,
+                                                                                                           endpoint))
+                                         .onSuccess(ClusterDestroyCommand::reportNodesFound);
+    }
+
+    /// The first candidate that answers KEEPS the endpoint override, so DRAIN and SHUTDOWN follow the node
+    /// that proved reachable instead of the one the registry happens to name. Enumerating from a live node
+    /// and then draining against a dead one would be a fix in name only.
+    ///
+    /// When every candidate fails, the PRIMARY endpoint's failure is the one returned and reported: it is
+    /// the endpoint the operator recorded, and the siblings are a recovery path, not a redefinition of the
+    /// target. This is also what keeps the #998 diagnostics — the port-less note, and the refusal itself —
+    /// attached to the endpoint they are about.
+    private static Result<List<String>> firstSuccessfulEnumeration(Result<String> endpoint, List<String> siblings) {
+        var primary = endpoint.flatMap(_ -> listNodes());
+
+        return primary.isSuccess() || siblings.isEmpty()
+               ? primary
+               : enumerateFromSiblings(primary, endpoint, siblings);
+    }
+
+    private static Result<List<String>> enumerateFromSiblings(Result<List<String>> primary,
+                                                              Result<String> endpoint,
+                                                              List<String> siblings) {
+        announceSiblingFallback(primary, siblings);
+        for (var candidate : siblings) {
+            var attempt = enumerateFrom(candidate);
+
+            if (attempt.isSuccess()) {
+                return attempt;
+            }
+        }
+
+        restorePrimaryEndpoint(endpoint);
+
+        return primary;
+    }
+
+    private static Result<List<String>> enumerateFrom(String candidate) {
+        System.out.printf("  Trying recorded node address %s...%n", candidate);
+        ClusterHttpClient.setEndpointOverride(candidate);
+
+        return listNodes().onSuccess(_ -> reportSiblingSucceeded(candidate))
+                        .onFailure(cause -> reportSiblingFailed(candidate, cause));
+    }
+
+    @Contract
+    private static void announceSiblingFallback(Result<List<String>> primary, List<String> siblings) {
+        System.out.printf("  The recorded endpoint did not answer (%s). Trying %d other node address(es)"
+                         + " recorded at bootstrap — any live node forwards this request to the leader.%n",
+                          primary.fold(Cause::message, _ -> "no failure"),
+                          siblings.size());
+    }
+
+    @Contract
+    private static void reportSiblingSucceeded(String candidate) {
+        System.out.printf("  %s answered. The rest of this destroy — drain and shutdown — will use it"
+                         + " instead of the recorded endpoint.%n",
+                          candidate);
+    }
+
+    @Contract
+    private static void reportSiblingFailed(String candidate, Cause cause) {
+        System.err.printf("  %s did not answer: %s%n", candidate, cause.message());
+    }
+
+    /// Every sibling failed, so the target goes back to what the operator recorded. Leaving the override
+    /// pointing at the last address tried would make the refusal describe an endpoint nobody chose.
+    @Contract
+    private static void restorePrimaryEndpoint(Result<String> endpoint) {
+        endpoint.onSuccess(ClusterHttpClient::setEndpointOverride);
+    }
+
+    private static String enumerationAnnouncement(Result<String> endpoint, List<String> siblings) {
+        return siblings.isEmpty()
+               ? String.format("Listing cluster nodes from %s (one request, timeout %ds)",
+                               endpoint.or("<no endpoint resolved>"),
+                               requestTimeoutSeconds())
+               : String.format("Listing cluster nodes from %s (timeout %ds), falling back to %d other node"
+                              + " address(es) recorded at bootstrap if it does not answer",
+                               endpoint.or("<no endpoint resolved>"),
+                               requestTimeoutSeconds(),
+                               siblings.size());
     }
 
     private static Result<List<String>> listNodes() {
@@ -668,8 +892,14 @@ class ClusterDestroyCommand implements Callable<Integer> {
         System.out.println();
         System.out.printf("Cluster '%s' destruction summary:%n", clusterName);
         System.out.printf("  Nodes processed: %d%n", nodeIds.size());
-        System.out.printf("  Drains succeeded: %d/%d%n", countSuccesses(drainResults), drainResults.size());
-        System.out.printf("  Shutdowns succeeded: %d/%d%n", countSuccesses(shutdownResults), shutdownResults.size());
+        System.out.printf("  Drains succeeded: %d/%d%s%n",
+                          countSuccesses(drainResults),
+                          drainResults.size(),
+                          skippedNote(nodeIds));
+        System.out.printf("  Shutdowns succeeded: %d/%d%s%n",
+                          countSuccesses(shutdownResults),
+                          shutdownResults.size(),
+                          skippedNote(nodeIds));
         System.out.printf("  Cloud resource cleanup: %s%n",
                           cleanupSucceeded
                           ? "ok"
@@ -698,6 +928,16 @@ class ClusterDestroyCommand implements Callable<Integer> {
         System.out.printf("Cluster '%s' destroyed successfully.%n", clusterName);
 
         return ExitCode.SUCCESS;
+    }
+
+    /// #1023 — `Drains succeeded: 0/0` was the ENTIRE observable outcome of a destroy that drained nothing,
+    /// and a ratio whose denominator is zero reads like a pass. It is a SKIP. The number is unchanged and
+    /// still honest; what was missing is which of the two it describes, so the summary now says so rather
+    /// than leaving the reader to notice that `0/0` is not `3/3`.
+    private static String skippedNote(List<String> nodeIds) {
+        return nodeIds.isEmpty()
+               ? "  (SKIPPED — no nodes were enumerated, so nothing was drained or shut down)"
+               : "";
     }
 
     private static long countSuccesses(List<NodeResult> results) {

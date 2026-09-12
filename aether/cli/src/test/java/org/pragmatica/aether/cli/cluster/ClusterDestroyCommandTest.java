@@ -46,6 +46,8 @@ import picocli.CommandLine.Command;
 import static org.pragmatica.aether.environment.ClusterName.clusterName;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.Option.none;
@@ -109,6 +111,19 @@ class ClusterDestroyCommandTest {
 
     private static BootstrapState emptyState() {
         return BootstrapState.initialState(CLUSTER_NAME, "hash-1", "2026-05-01T00:00:00Z");
+    }
+
+    /// #1023 — a ledger carrying the addresses [BootstrapPhaseCollect] records for EVERY provisioned node,
+    /// which is the data the endpoint SPOF is repaired from. It is not a new field; `stateWithVms` simply
+    /// never populated it, which is why no test could have caught the single-address endpoint.
+    private static BootstrapState stateWithAddresses(String... addresses) {
+        return BootstrapState.initialState(CLUSTER_NAME, "hash-1", "2026-05-01T00:00:00Z")
+                             .withCollectedAddresses(List.of(addresses));
+    }
+
+    private static BootstrapState stateWithSecret(String secret) {
+        return BootstrapState.initialState(CLUSTER_NAME, "hash-1", "2026-05-01T00:00:00Z")
+                             .withClusterSecret(secret);
     }
 
     @Nested
@@ -1035,6 +1050,344 @@ class ClusterDestroyCommandTest {
 
         private static ClusterRegistry registryWithNoEntries() {
             return ClusterRegistry.clusterRegistry(Path.of("unused-registry.toml"), none(), List.of());
+        }
+    }
+
+    /// #1023 — `cluster destroy` could not drain AT ALL on a TLS-auto_generate cloud cluster. Observed
+    /// live on a 5-node Hetzner cluster on 2026-09-11; the final summary read
+    /// `Drains succeeded: 0/0, Shutdowns succeeded: 0/0`, which is a SKIP wearing the shape of a pass.
+    ///
+    /// Two independent failures, pinned separately here because they have different fixes and different
+    /// risk: the registry's endpoint names ONE node and cannot survive it, and the CLI holds no trust
+    /// anchor for the CA the cluster generated for itself.
+    @Nested
+    class SingleEndpointSpofAndClusterTrust {
+
+        private final ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+        private final ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        private PrintStream originalOut;
+
+        private PrintStream originalErr;
+
+        private HttpOperations originalHttpOps;
+
+        private String originalEndpoint;
+
+        @BeforeEach
+        void captureStreamsAndStubHttp() {
+            originalOut = System.out;
+            originalErr = System.err;
+            originalHttpOps = ClusterHttpClient.HTTP_OPS_REF.get();
+            originalEndpoint = ClusterHttpClient.ENDPOINT_OVERRIDE.get();
+            System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
+            System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
+            ClusterHttpClient.setEndpointOverride("https://10.255.255.1:8080");
+        }
+
+        @AfterEach
+        void restoreStreamsAndHttp() {
+            System.setOut(originalOut);
+            System.setErr(originalErr);
+            ClusterHttpClient.HTTP_OPS_REF.set(originalHttpOps);
+            ClusterHttpClient.ENDPOINT_OVERRIDE.set(originalEndpoint);
+        }
+
+        private String stdout() {
+            return out.toString(StandardCharsets.UTF_8);
+        }
+
+        private String stderr() {
+            return err.toString(StandardCharsets.UTF_8);
+        }
+
+        /// Failure 1, the defect itself: the node the registry names is DEAD and three healthy nodes are
+        /// serving the same route. Asserted on the HOSTS the requests actually carried, in order — a call
+        /// count cannot distinguish "tried the sibling" from "retried the primary twice".
+        @Test
+        void fetchNodeIds_fallsThroughToALiveSibling_whenTheRecordedEndpointIsDead() {
+            var attempted = new ArrayList<String>();
+
+            ClusterHttpClient.HTTP_OPS_REF.set(new HostSelectiveHttpOperations("10.0.0.3",
+                                                                               """
+                                                                               [{"nodeId":"core-2"}]
+                                                                               """,
+                                                                               attempted));
+
+            var nodeIds = new ClusterDestroyCommand().fetchNodeIds(TARGET_ENDPOINT,
+                                                                   List.of("https://10.0.0.2:8080",
+                                                                           "https://10.0.0.3:8080"));
+
+            assertEquals(Result.success(List.of("core-2")), nodeIds,
+                         "a live sibling answers the enumeration the dead recorded endpoint could not");
+            assertEquals(List.of("10.255.255.1", "10.0.0.2", "10.0.0.3"), attempted,
+                         "the recorded endpoint must be tried FIRST and each sibling in turn — the operator's "
+                         + "recorded target is not silently replaced");
+        }
+
+        /// The half that makes the fallthrough worth having. Enumerating from a live node and then draining
+        /// against the dead one would be a fix in name only, so the endpoint that answered must become the
+        /// target for the REST of the destroy.
+        @Test
+        void fetchNodeIds_retargetsSubsequentRequests_ontoTheSiblingThatAnswered() {
+            var attempted = new ArrayList<String>();
+
+            ClusterHttpClient.HTTP_OPS_REF.set(new HostSelectiveHttpOperations("10.0.0.3", "[]", attempted));
+
+            new ClusterDestroyCommand().fetchNodeIds(TARGET_ENDPOINT, List.of("https://10.0.0.3:8080"));
+
+            assertEquals("https://10.0.0.3:8080", ClusterHttpClient.ENDPOINT_OVERRIDE.get(),
+                         "DRAIN and SHUTDOWN resolve this override, so it must name the node that proved "
+                         + "reachable rather than the one the registry happens to record");
+            assertTrue(stdout().contains("will use it"),
+                       () -> "and the transcript must record the retarget; got:\n" + stdout());
+        }
+
+        /// Negative control, and it guards #998: when every candidate fails, the endpoint override goes back
+        /// to what the operator recorded, the PRIMARY failure is the one reported, and the refusal stands.
+        /// Leaving the override on the last address tried would make the refusal describe a target nobody
+        /// chose.
+        @Test
+        void fetchNodeIds_restoresTheRecordedEndpointAndStillFails_whenEverySiblingAlsoFails() {
+            var attempted = new ArrayList<String>();
+
+            ClusterHttpClient.HTTP_OPS_REF.set(new HostSelectiveHttpOperations("no-host-answers", "[]", attempted));
+
+            var nodeIds = new ClusterDestroyCommand().fetchNodeIds(TARGET_ENDPOINT, List.of("https://10.0.0.2:8080"));
+
+            assertTrue(nodeIds.isFailure(),
+                       () -> "an unreachable cluster is still an unreachable cluster: " + nodeIds);
+            assertEquals(List.of("10.255.255.1", "10.0.0.2"), attempted, "both candidates were tried");
+            assertEquals("https://10.255.255.1:8080", ClusterHttpClient.ENDPOINT_OVERRIDE.get(),
+                         "the target returns to the recorded endpoint once the recovery path is exhausted");
+            assertTrue(stderr().contains("could not list cluster nodes"),
+                       () -> "#998's refusal must survive the fallback; got:\n" + stderr());
+        }
+
+        /// Positive control for the two above: with NO siblings recorded the behaviour is exactly what it
+        /// was before #1023 — one request, no fallback announcement. Without this, "tried 3 hosts" is
+        /// equally consistent with a loop that always runs.
+        @Test
+        void fetchNodeIds_issuesOneRequestAndAnnouncesNoFallback_whenNoSiblingsAreRecorded() {
+            var attempted = new ArrayList<String>();
+
+            ClusterHttpClient.HTTP_OPS_REF.set(new HostSelectiveHttpOperations("no-host-answers", "[]", attempted));
+
+            new ClusterDestroyCommand().fetchNodeIds(TARGET_ENDPOINT, List.of());
+
+            assertEquals(List.of("10.255.255.1"), attempted, "exactly one request, to the recorded endpoint");
+            assertFalse(stdout().contains("Trying recorded node address"),
+                        () -> "there is nothing to fall back to, so nothing may be announced; got:\n" + stdout());
+            assertTrue(stdout().contains("one request"),
+                       () -> "and the announcement still describes a single request; got:\n" + stdout());
+        }
+
+        /// The construction itself, against #1023's OBSERVED registry entry. Scheme and port are borrowed
+        /// from the recorded endpoint rather than defaulted — #998's reason for refusing to invent a port
+        /// applies unchanged to the siblings built from it — and the primary's own address is not retried.
+        @Test
+        void siblingEndpoints_borrowTheRecordedSchemeAndPort_andExcludeThePrimary() {
+            var state = stateWithAddresses("138.199.236.244", "10.0.0.2", "10.0.0.3");
+
+            var siblings = ClusterDestroyCommand.siblingEndpoints(Result.success("https://138.199.236.244:8080"),
+                                                                  some(state));
+
+            assertEquals(List.of("https://10.0.0.2:8080", "https://10.0.0.3:8080"), siblings,
+                         "https and 8080 come from the recorded entry, and the node it already names is not "
+                         + "tried twice");
+        }
+
+        /// #998's property, preserved: a target with NO recorded endpoint must produce no candidates at all.
+        /// The siblings are a recovery path for a known target, never a way to guess one — draining a
+        /// different cluster's nodes is worse than not draining this one's.
+        @Test
+        void siblingEndpoints_areEmpty_whenTheTargetHasNoRecordedEndpoint() {
+            var noEndpoint = ClusterDestroyCommand.DestroyError.General.NO_TARGET_ENDPOINT.<String> result();
+
+            var siblings = ClusterDestroyCommand.siblingEndpoints(noEndpoint, some(stateWithAddresses("10.0.0.2")));
+
+            assertEquals(List.of(), siblings,
+                         "no recorded endpoint means no scheme and no port, so there is nothing to build a "
+                         + "candidate from — and nothing may be invented");
+        }
+
+        @Test
+        void siblingEndpoints_areEmpty_whenTheLedgerRecordsNoAddresses() {
+            var siblings = ClusterDestroyCommand.siblingEndpoints(TARGET_ENDPOINT, some(stateWithVms(3)));
+
+            assertEquals(List.of(), siblings, "a ledger with no collected addresses offers no fallback");
+        }
+
+        /// Failure 2: the CLI must hold a trust anchor for the CA the cluster generated for itself. The
+        /// observable is that the HTTP client is REPLACED — `enableClusterTrust` installs a new client
+        /// carrying an `SSLContext` whose trust store holds the derived CA and nothing else.
+        @Test
+        void prepareClusterTrust_installsTheDerivedClusterCa_whenHttpsAndASecretIsRecorded() {
+            var before = ClusterHttpClient.HTTP_OPS_REF.get();
+
+            ClusterDestroyCommand.prepareClusterTrust(TARGET_ENDPOINT, some(stateWithSecret("cluster-secret-for-test")));
+
+            assertNotSame(before, ClusterHttpClient.HTTP_OPS_REF.get(),
+                          "an SSLContext trusting the cluster's own CA must actually be installed — without it "
+                          + "every request fails PKIX path building and nothing can be drained");
+            assertTrue(stdout().contains("Trusting this cluster's own CA"),
+                       () -> "and the anchor being used must be stated; got:\n" + stdout());
+        }
+
+        /// Negative control: a plain-http cluster needs no anchor, so the client must be left alone. Without
+        /// this, "the client changed" would also be satisfied by an unconditional replacement.
+        @Test
+        void prepareClusterTrust_leavesTheClientUntouched_whenTheEndpointIsPlainHttp() {
+            var before = ClusterHttpClient.HTTP_OPS_REF.get();
+
+            ClusterDestroyCommand.prepareClusterTrust(Result.success("http://10.0.0.2:8080"),
+                                                      some(stateWithSecret("cluster-secret-for-test")));
+
+            assertSame(before, ClusterHttpClient.HTTP_OPS_REF.get(),
+                       "an http endpoint has no certificate to verify, so no trust decision is taken");
+            assertFalse(stdout().contains("Trusting this cluster's own CA"),
+                        () -> "and nothing is announced; got:\n" + stdout());
+        }
+
+        /// The honest half. With no recorded secret there is no anchor to derive, and the tempting
+        /// workaround — trusting whatever certificate is presented — is exactly what #209 removed. The
+        /// client must be left VERIFYING, and the operator must be told which of the two states they are in
+        /// before the request fails with a bare PKIX error.
+        @Test
+        void prepareClusterTrust_saysSoAndDisablesNothing_whenHttpsButNoSecretIsRecorded() {
+            var before = ClusterHttpClient.HTTP_OPS_REF.get();
+
+            ClusterDestroyCommand.prepareClusterTrust(TARGET_ENDPOINT, some(stateWithVms(1)));
+
+            assertSame(before, ClusterHttpClient.HTTP_OPS_REF.get(),
+                       "certificate verification must NOT be disabled as a workaround: a destroy that "
+                       + "trusts any certificate is worse than one that refuses");
+            assertTrue(stderr().contains("no cluster_secret is recorded"),
+                       () -> "the reason must be named; got:\n" + stderr());
+            assertTrue(stderr().contains("NOT disabled"),
+                       () -> "and the refusal to work around it must be explicit; got:\n" + stderr());
+        }
+
+        @Test
+        void prepareClusterTrust_leavesTheClientUntouched_whenThereIsNoLedgerAtAll() {
+            var before = ClusterHttpClient.HTTP_OPS_REF.get();
+
+            ClusterDestroyCommand.prepareClusterTrust(TARGET_ENDPOINT, none());
+
+            assertSame(before, ClusterHttpClient.HTTP_OPS_REF.get(),
+                       "no ledger means no secret to derive an anchor from");
+            assertTrue(stderr().contains("no cluster_secret is recorded"),
+                       () -> "and it is reported rather than passed over; got:\n" + stderr());
+        }
+
+        /// #1023's summary line. `0/0` is a ratio over an empty set — a SKIP — and it reads like a pass.
+        /// The count is unchanged and was always honest; what was missing is which of the two it describes.
+        @Test
+        void printSummary_marksTheDrainAndShutdownCountsAsSkipped_whenNoNodesWereEnumerated() {
+            ClusterDestroyCommand.finalizeDestruction(registryWithNoEntries(),
+                                                      CLUSTER_NAME,
+                                                      true,
+                                                      List.of(),
+                                                      List.of(),
+                                                      List.of());
+
+            assertTrue(stdout().contains("Drains succeeded: 0/0  (SKIPPED"),
+                       () -> "a zero-denominator ratio must say it is a skip; got:\n" + stdout());
+            assertTrue(stdout().contains("Shutdowns succeeded: 0/0  (SKIPPED"),
+                       () -> "and both counts carry it; got:\n" + stdout());
+        }
+
+        /// Negative control: with nodes actually processed the note must NOT appear, or it is an always-on
+        /// line that says nothing about this destroy.
+        @Test
+        void printSummary_omitsTheSkippedNote_whenNodesWereProcessed() {
+            ClusterDestroyCommand.finalizeDestruction(registryWithNoEntries(),
+                                                      CLUSTER_NAME,
+                                                      true,
+                                                      List.of("core-0"),
+                                                      List.of(new ClusterDestroyCommand.NodeResult("core-0", true)),
+                                                      List.of(new ClusterDestroyCommand.NodeResult("core-0", true)));
+
+            assertTrue(stdout().contains("Drains succeeded: 1/1"),
+                       () -> "precondition: a real drain was counted; got:\n" + stdout());
+            assertFalse(stdout().contains("SKIPPED"),
+                        () -> "nothing was skipped, so the note must be absent; got:\n" + stdout());
+        }
+
+        /// **Wiring, not behaviour** — and it is a separate test for a reason. Every assertion above drives
+        /// `siblingEndpoints` / `fetchNodeIds` directly, so deleting the CALL to them from
+        /// [ClusterDestroyCommand#performDestruction] would restore the whole defect with all of them still
+        /// green. This one enters through `performDestruction` and asserts on the hosts the requests
+        /// carried: the siblings must be derived from the ledger and threaded into the enumeration.
+        @Test
+        void performDestruction_derivesSiblingsFromTheLedgerAndUsesThem_whenTheRecordedEndpointIsDead() {
+            var attempted = new ArrayList<String>();
+            var originalRemover = ClusterDestroyCommand.registryRemover;
+
+            ClusterHttpClient.HTTP_OPS_REF.set(new HostSelectiveHttpOperations("10.0.0.3", "[]", attempted));
+            ClusterDestroyCommand.stateLoader = name -> Result.success(some(stateWithAddresses("10.255.255.1",
+                                                                                               "10.0.0.3")));
+            ClusterDestroyCommand.vmSweeper = (state, name) -> Result.unitResult();
+            ClusterDestroyCommand.registryRemover = (registry, name) -> Result.success(registry);
+            try {
+                var exitCode = new ClusterDestroyCommand().performDestruction(registryWithNoEntries(),
+                                                                             CLUSTER_NAME,
+                                                                             TARGET_ENDPOINT);
+
+                assertEquals(List.of("10.255.255.1", "10.0.0.3"), attempted,
+                             "the dead recorded endpoint is tried first, then the sibling the LEDGER supplied — "
+                             + "if this reads as one host, performDestruction is not passing the siblings on");
+                exitCode.onFailure(cause -> fail("the destroy must produce a summary: " + cause.message()))
+                        .onSuccess(code -> assertEquals(ExitCode.SUCCESS, (int) code,
+                                                        "a cluster reachable through a sibling is NOT an "
+                                                        + "unreachable cluster, so #998 must not refuse it"));
+                assertFalse(stderr().contains("REFUSING to destroy"),
+                            () -> "the refusal is for a cluster that cannot be reached at all; got:\n" + stderr());
+            } finally {
+                ClusterDestroyCommand.registryRemover = originalRemover;
+            }
+        }
+
+        /// The same wiring check for the trust half, and it needs no network: the NO-SECRET branch leaves the
+        /// stubbed client in place, so the note reaching stderr proves `performDestruction` called
+        /// `prepareClusterTrust` before enumerating. Without this, deleting that call would leave every
+        /// trust test above green.
+        @Test
+        void performDestruction_prepareTheTrustAnchor_beforeEnumerating() {
+            var attempted = new ArrayList<String>();
+
+            ClusterHttpClient.HTTP_OPS_REF.set(new HostSelectiveHttpOperations("no-host-answers", "[]", attempted));
+            ClusterDestroyCommand.stateLoader = name -> Result.success(some(stateWithVms(1)));
+
+            new ClusterDestroyCommand().performDestruction(registryWithNoEntries(), CLUSTER_NAME, TARGET_ENDPOINT);
+
+            assertTrue(stderr().contains("no cluster_secret is recorded"),
+                       () -> "performDestruction must take the trust decision for its https target; got:\n"
+                             + stderr());
+            assertTrue(stderr().indexOf("no cluster_secret is recorded") < stderr().indexOf("could not list cluster nodes"),
+                       () -> "and it must take it BEFORE the request it governs — an anchor installed after the "
+                             + "handshake governs nothing; got:\n" + stderr());
+        }
+
+        private static ClusterRegistry registryWithNoEntries() {
+            return ClusterRegistry.clusterRegistry(Path.of("unused-registry.toml"), none(), List.of());
+        }
+    }
+
+    /// Answers for exactly one host and fails for every other, recording the host of each request in order.
+    /// The ORDER is the assertion that matters: a call count cannot tell "fell through to the sibling" from
+    /// "retried the primary", and those are the two behaviours #1023 turns on.
+    private record HostSelectiveHttpOperations(String liveHost, String body, List<String> attempted)
+            implements HttpOperations {
+        @Override
+        @SuppressWarnings("unchecked")
+        public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
+            attempted.add(request.uri().getHost());
+
+            return liveHost.equals(request.uri().getHost())
+                   ? Promise.success(new HttpResult<>(200, HttpHeaders.of(Map.of(), (a, b) -> true), (T) body))
+                   : Causes.cause("connection refused").promise();
         }
     }
 
