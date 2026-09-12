@@ -11,6 +11,22 @@ import org.pragmatica.lang.Unit;
 
 /// #782 — a cluster is at least three nodes; there is no supported single-node topology.
 ///
+/// #1019 — THIS FLOOR IS STRUCTURAL AND STAYS AT 3. The owner ruling of 2026-09-12 sets the supported
+/// minimum for NEW clusters at 5, and that is a POLICY minimum enforced where configs are CREATED
+/// (`aether cluster init` / `scaffold`, via `CoreWorkerSplit`), never here.
+///
+/// The distinction is not bookkeeping, and getting it wrong is self-defeating. Three is where a
+/// majority quorum stops existing at all — arithmetic. Five is where a cluster still has a fault
+/// budget DURING MAINTENANCE: a rolling restart of a 3-node cluster leaves 2 of 3, and any further
+/// fault loses quorum. Enforcing the policy figure HERE would make the first node of a rolling
+/// upgrade refuse to start and fail to rejoin — forbidding, in the name of maintenance safety, the
+/// exact maintenance operation the rule exists to protect — and would retroactively refuse to boot
+/// clusters that are running today.
+///
+/// `ConfigValidator` keeps the same structural floor for the same reason: `ConfigLoader.load` calls
+/// it, and `Main` loads through `ConfigLoader`, so it runs on EVERY node boot and is not an
+/// authoring gate despite reading like one.
+///
 /// Kept as its own top-level gate — not folded into [ConfigValidator], which a sibling change is
 /// editing elsewhere — so it can run on the CONFIGURED expected cluster size (`Main`'s
 /// `expectedClusterSize`: the parsed `--peers=`/`CLUSTER_PEERS` list size, or the discovery/config

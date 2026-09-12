@@ -122,7 +122,7 @@ Next: aether cluster bootstrap cluster-config.toml
 
 ```bash
 # Minimal Docker dev cluster
-aether cluster init --name dev --target docker --nodes 3
+aether cluster init --name dev --target docker --core-nodes 5
 
 # SSH cluster with database
 aether cluster init --name staging \
@@ -136,7 +136,7 @@ aether cluster init --name staging \
 # and providers retire instance types; choose both deliberately from your provider's catalogue.
 aether cluster init --name production \
   --target cloud --provider hetzner --region fsn1 \
-  --nodes 7 --cores 5 --instance-type cpx32 \
+  --core-nodes 5 --worker-nodes 2 --instance-type cpx32 \
   --ssh-public-key ~/.ssh/id_ed25519.pub \
   --firewall restrictive --admin-cidr 203.0.113.0/24 \
   --lb elected --tls auto \

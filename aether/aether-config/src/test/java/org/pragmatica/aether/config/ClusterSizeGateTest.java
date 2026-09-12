@@ -14,6 +14,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 // independent of ConfigValidator's declarative [cluster] nodes TOML check. See ClusterSizeGate#enforce.
 // Call-site arithmetic (static vs. discovery, configured vs. resolved) is pinned in
 // aether/node's MainClusterSizeTest, not here — this file only exercises the pure function.
+// #1019 — this floor stays STRUCTURAL at 3. enforce_succeeds_whenThree below is the pin: the owner
+// ruling of 2026-09-12 sets the supported minimum for NEW clusters at 5, enforced at authoring
+// (CoreWorkerSplit, via `cluster init`/`scaffold`), and raising THIS constant to 5 would stop
+// existing 3-node clusters from booting — reddening that test, which is the intended alarm.
 class ClusterSizeGateTest {
 
     @Test

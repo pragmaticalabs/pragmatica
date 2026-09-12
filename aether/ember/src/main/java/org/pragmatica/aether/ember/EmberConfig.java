@@ -38,6 +38,10 @@ public record EmberConfig(int nodes,
                           int lbPort,
                           int coreMax,
                           int startTimeoutSeconds) {
+    /// In-JVM cluster size for Ember (tests and Forge). Tracks `Environment#LOCAL` (5), NOT the
+    /// production default of 7 — #1019: Ember nodes share one JVM for dev/test, where availability is
+    /// not a goal, so this follows local ergonomics. 5 satisfies the supported minimum; do not raise
+    /// it to 7 for consistency with the production default.
     public static final int DEFAULT_NODES = 5;
     /// Single source of truth stays [EmberCluster#DEFAULT_BASE_PORT]; mirrored here so config
     /// callers need not reach into the cluster class for a default.

@@ -54,8 +54,12 @@
 #     exist. The gate reads the inline span as an invocation and cannot tell a proposal from an
 #     instruction.
 #
-# Current composition: 85 entries - 29 absent commands, 56 absent options - across
-# 34 files, of which 34 are under aether/docs/specs/**.
+# Current composition: 83 entries - 29 absent commands, 54 absent options - across
+# 34 files, of which 14 are under aether/docs/specs/**.
+#
+# #1019 removed `option: --cores on aether cluster init`: that spec line described a per-tier
+# flag the CLI did not have, and `aether cluster init` now ships --core-nodes/--worker-nodes,
+# so the document was corrected rather than the waiver kept.
 
 
 # --- aether/docs/aether-overview.md ---
@@ -151,7 +155,6 @@ aether/docs/specs/cluster-bootstrap-spec.md	option: --dry-run on aether cluster 
 aether/docs/specs/cluster-bootstrap-spec.md	option: --file on aether cluster export
 
 # --- aether/docs/specs/cluster-init-wizard-spec.md ---
-aether/docs/specs/cluster-init-wizard-spec.md	option: --cores on aether cluster init
 aether/docs/specs/cluster-init-wizard-spec.md	option: --lb on aether cluster init
 
 # --- aether/docs/specs/cluster-management-spec.md ---

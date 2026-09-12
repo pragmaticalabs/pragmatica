@@ -1888,10 +1888,10 @@ Generate a `cluster-config.toml` interactively (default) or in batch mode driven
 aether cluster init --output cluster-config.toml
 
 # Batch mode — driven by --target plus per-target flags
-aether cluster init --target docker --name test-cluster --nodes 5 --output cluster-config.toml
+aether cluster init --target docker --name test-cluster --core-nodes 5 --output cluster-config.toml
 
 # Strict non-interactive mode — fails fast if required flags are missing (P-NEW-G)
-aether cluster init --non-interactive --name test-cluster --nodes 5 --output cluster-config.toml
+aether cluster init --non-interactive --name test-cluster --core-nodes 5 --output cluster-config.toml
 ```
 
 | Option | Description |
@@ -1901,7 +1901,8 @@ aether cluster init --non-interactive --name test-cluster --nodes 5 --output clu
 | `--non-interactive` | Force non-interactive mode; default `--target=docker` if absent, fail fast on missing required flags (P-NEW-G, 2026-05-21). Required for CI/integration test usage (TC-07-J3). |
 | `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
 | `--target` | Deployment target: `docker`, `ssh`, `cloud`, or `forge` |
-| `--nodes` | Total node count (>= 3 for non-SSH targets) |
+| `--core-nodes` | Consensus tier size: 5 (minimum), 7 (recommended) or 9 (maximum). Must be odd. Required for non-SSH targets |
+| `--worker-nodes` | Worker tier size (default 0). Not bounded by the consensus-tier maximum. For an `ssh` target it is the remainder of `--hosts` after `--core-nodes` and must not be given |
 | `--hosts` | SSH hosts (ssh target only), comma-separated |
 | `--ssh-user`, `--ssh-key`, `--ssh-port` | SSH credentials (ssh target only) |
 | `--provider`, `--region`, `--instance-type`, `--credential-env` | Cloud target only |
@@ -1911,7 +1912,7 @@ aether cluster init --non-interactive --name test-cluster --nodes 5 --output clu
 | `--tls`, `--tls-cert-env`, `--tls-key-env` | TLS mode: `auto` (default) or `env` |
 | `--secret`, `--secret-env` | Cluster secret mode: `auto` (default) or `env` |
 
-When `--non-interactive` is set without `--target`, the command applies `--target=docker` as the default. Missing required flags (e.g. `--nodes` for docker target) produce a `MissingField` failure and a non-zero exit code rather than dropping into prompts.
+When `--non-interactive` is set without `--target`, the command applies `--target=docker` as the default. Missing required flags (e.g. `--core-nodes` for docker target) produce a `MissingField` failure and a non-zero exit code rather than dropping into prompts.
 
 ### `aether cluster scaffold`
 

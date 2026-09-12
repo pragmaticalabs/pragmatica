@@ -24,7 +24,14 @@ public record StartupConfig(Option<Path> forgeConfig,
                             int clusterSize,
                             int loadRate) {
     private static final int DEFAULT_PORT = 8888;
-    private static final int DEFAULT_CLUSTER_SIZE = 5;
+    /// Forge's local cluster size. Tracks `Environment#LOCAL` (5), NOT the production default of 7.
+    ///
+    /// #1019 — deliberately 5 and not to be "corrected" upward for consistency with the production
+    /// default: Forge runs its nodes in-process for dev/test, where availability is not a goal and
+    /// each extra node is pure local cost. 5 is the smallest value satisfying the supported minimum.
+    /// Package-private rather than private so [ForgeServer]'s `--help` text can render THIS value
+    /// instead of repeating the literal, which is how the two drift apart.
+    static final int DEFAULT_CLUSTER_SIZE = 5;
     private static final int DEFAULT_LOAD_RATE = 1000;
 
     public static Result<StartupConfig> startupConfig(String[] args) {

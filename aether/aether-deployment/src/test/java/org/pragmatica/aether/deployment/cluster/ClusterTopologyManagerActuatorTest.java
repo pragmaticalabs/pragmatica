@@ -468,6 +468,22 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(clusterStore.currentVersion()).isEqualTo(before);
     }
 
+    /// #1019 — pins this floor at exactly 3, which the case above cannot do: 2 is refused by a floor
+    /// of 3 AND by a floor of 5, so it stays green if someone raises the constant. Three is the
+    /// discriminating value.
+    ///
+    /// It is deliberately ACCEPTED. This is the runtime actuator on a LIVE cluster, so it carries the
+    /// STRUCTURAL floor (below three there is no majority quorum), not the 2026-09-12 policy minimum
+    /// of 5 — that is enforced where configs are created (`CoreWorkerSplit`). Raising this to 5 would
+    /// refuse an existing 3-node cluster's own topology.
+    @Test
+    void setDesiredSize_three_acceptedSinceThisFloorIsStructural() {
+        ctm.activate();
+        var result = ctm.setDesiredCount(sourceNameOrDefault("primary"), NodeRole.CORE, 3).await();
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(clusterStore.current().unwrap().coreCount()).isEqualTo(3);
+    }
+
     @Test
     void setAutoHealEnabled_toggleReturnsPriorState() {
         assertThat(ctm.isAutoHealEnabled()).isTrue();

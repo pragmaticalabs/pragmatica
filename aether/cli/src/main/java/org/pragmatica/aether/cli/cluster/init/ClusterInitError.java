@@ -8,11 +8,18 @@ import org.pragmatica.lang.Cause;
 
 
 public sealed interface ClusterInitError extends Cause {
-    record TooFewNodes(int got) implements ClusterInitError {
+    /// Names the CORE tier specifically. The old wording said "nodes", ambiguous in exactly the way
+    /// #1019 was about: the number that matters for quorum is the consensus tier, not the fleet, and
+    /// workers are not bounded by it.
+    record TooFewCoreNodes(int got) implements ClusterInitError {
         @Override
         public String message() {
-            return "Aether requires at least 3 nodes for consensus quorum (got " + got
-                 + "). "
+            return "Aether requires at least " + CoreWorkerSplit.MINIMUM_CORE_NODES
+                 + " core nodes (got " + got
+                 + "). A smaller core has no fault budget during maintenance: a rolling restart takes "
+                 + "one node down and any further fault then loses quorum. Use --core-nodes " + CoreWorkerSplit.MINIMUM_CORE_NODES
+                 + ", 7 (recommended) or " + CoreWorkerSplit.MAXIMUM_CORE_NODES
+                 + "; add further capacity with --worker-nodes, which this limit does not bound. "
                  + "For local single-process dev/test, use --target forge.";
         }
     }
