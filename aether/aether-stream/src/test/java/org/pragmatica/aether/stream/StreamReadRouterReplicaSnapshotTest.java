@@ -50,6 +50,38 @@ class StreamReadRouterReplicaSnapshotTest {
     }
 
     @Test
+    void resolveOwner_returnsTheSameOwnerTheSnapshotReports() {
+        // #1039 relies on this agreement: the management dispatch path forwards STREAM_REPLICAS to
+        // `resolveOwner`, and the node it lands on answers from `replicaSnapshot`. If the two could
+        // name different nodes, the endpoint would forward to a node that then reports
+        // servedByOwner=false — the defect again, one hop further away. Pinned as an identity between
+        // the two calls rather than against a literal, so a future change that splits the resolution
+        // reddens here.
+        var router = router(REPLICA_B);
+
+        assertThat(router.resolveOwner(STREAM, PARTITION))
+                .as("resolveOwner must return the owner replicaSnapshot reports")
+                .isEqualTo(router.replicaSnapshot(STREAM, PARTITION).ownerNodeId().map(NodeId::new));
+        assertThat(router.resolveOwner(STREAM, PARTITION)).isEqualTo(Option.some(REPLICA_B));
+    }
+
+    @Test
+    void resolveOwner_isEmpty_whenNoPlacementIsComputable() {
+        // `ReplicaSetController.ownerFor` returns empty only when no placement can be computed at all
+        // (empty member view / pre-reconcile bootstrap). #1039 turns that into an explicit
+        // PartitionOwnerUnresolved failure rather than a local answer that reads as authoritative.
+        var ownerless = StreamReadRouter.streamReadRouter(partitionManager,
+                                                          Option.some(replicaRegistry),
+                                                          Option.none(),
+                                                          SELF,
+                                                          (_, _) -> Option.none(),
+                                                          StreamReadForwardMetrics.NOOP);
+
+        assertThat(ownerless.resolveOwner(STREAM, PARTITION)).isEqualTo(Option.<NodeId> none());
+        assertThat(ownerless.replicaSnapshot(STREAM, PARTITION).servedByOwner()).isFalse();
+    }
+
+    @Test
     void replicaSnapshot_marksSelfOwnerAndReportsOwnerHead_whenSelfIsHrwOwner() {
         partitionManager.publishLocal(STREAM, PARTITION, "e0".getBytes(), 1L);
         partitionManager.publishLocal(STREAM, PARTITION, "e1".getBytes(), 2L);
