@@ -351,10 +351,8 @@ sealed interface BootstrapPhaseProvision {
     /// this CLI's own minting, not a config error: it is refused rather than defaulted to `core`,
     /// because a silent `core` is exactly the defect this closes.
     static Result<NodeRole> nodeRole(String nodeId, SourceName sourceName) {
-        return NodeRole.nodeRole(extractRole(nodeId, sourceName.value()))
-                       .mapError(cause -> new BootstrapError.DeploymentFailed(nodeId,
-                                                                              "node id encodes no role (expected <source>-<core|worker|spot>-<index>): "
-                                                                             + cause.message()));
+        return NodeRole.nodeRole(extractRole(nodeId, sourceName.value())).mapError(cause -> new BootstrapError.DeploymentFailed(nodeId,
+                                                                                                                                "node id encodes no role (expected <source>-<core|worker|spot>-<index>): " + cause.message()));
     }
 
     private static String extractRole(String nodeId, String sourceName) {

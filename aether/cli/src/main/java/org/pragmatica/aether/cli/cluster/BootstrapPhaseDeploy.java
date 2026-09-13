@@ -331,8 +331,7 @@ sealed interface BootstrapPhaseDeploy {
             var roleResult = BootstrapPhaseProvision.nodeRole(node.nodeId(), sourceName);
 
             if (roleResult.isFailure()) {
-                return new BootstrapError.DeploymentFailed(node.publicIp(),
-                                                           roleResult.fold(Cause::message, _ -> "")).result();
+                return new BootstrapError.DeploymentFailed(node.publicIp(), roleResult.fold(Cause::message, _ -> "")).result();
             }
 
             var role = roleResult.unwrap();
@@ -595,7 +594,9 @@ sealed interface BootstrapPhaseDeploy {
 
     /// Space-prefixed `'VAR=value'` printf operands for the cluster-identity allow-list (minus
     /// AETHER_CLUSTER_SECRET, written explicitly by the caller), one env-file line each.
-    private static String identityEnvAssignments(ClusterName clusterName, NodeRole role, Fn1<String, String> envLookup) {
+    private static String identityEnvAssignments(ClusterName clusterName,
+                                                 NodeRole role,
+                                                 Fn1<String, String> envLookup) {
         var sb = new StringBuilder();
 
         UserDataTemplate.emitIdentityEnv((name, value) -> appendJvmEnvAssignment(sb, name, value),
