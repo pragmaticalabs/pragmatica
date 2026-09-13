@@ -16,19 +16,21 @@
  */
 package org.pragmatica.lang;
 
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Test;
-import org.pragmatica.lang.io.CoreError;
-
 import java.lang.management.ManagementFactory;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.lang.io.CoreError;
+
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+
 
 /// #914 — `await()` / `await(TimeSpan)` parked in a bare loop that never consulted the interrupt
 /// status. `LockSupport.park` returns immediately, without clearing the flag, whenever the caller is
@@ -57,31 +59,34 @@ class PromiseAwaitInterruptionTest {
 
     /// Runs `waiter` on a fresh thread, interrupts it once it is parked, and reports what came back.
     /// The join bound is the whole test: a spinning-forever waiter never fills `outcome`.
-    private static Outcome interruptWhileWaiting(Promise<Unit> promise, java.util.function.Function<Promise<Unit>, Result<Unit>> waiter) {
+    private static Outcome interruptWhileWaiting(Promise<Unit> promise,
+                                                 java.util.function.Function<Promise<Unit>, Result<Unit>> waiter) {
         var outcome = new AtomicReference<Outcome>();
         var started = new CountDownLatch(1);
         var threadId = new AtomicReference<Long>();
         var thread = new Thread(() -> {
-            threadId.set(Thread.currentThread().threadId());
-            started.countDown();
-            var result = waiter.apply(promise);
-            var flag = Thread.currentThread().isInterrupted();
-            var cpu = ManagementFactory.getThreadMXBean().getCurrentThreadCpuTime();
-            outcome.set(new Outcome(result, flag, cpu));
-        }, "await-interruption-waiter");
+                                    threadId.set(Thread.currentThread().threadId());
+                                    started.countDown();
+                                    var result = waiter.apply(promise);
+                                    var flag = Thread.currentThread().isInterrupted();
+                                    var cpu = ManagementFactory.getThreadMXBean().getCurrentThreadCpuTime();
+
+                                    outcome.set(new Outcome(result, flag, cpu));
+                                },
+                                "await-interruption-waiter");
 
         thread.start();
         awaitQuietly(started);
         waitUntilParked(thread);
         thread.interrupt();
         joinQuietly(thread, 5_000);
-
         var cpuIfStuck = ManagementFactory.getThreadMXBean().getThreadCpuTime(threadId.get());
 
         if (outcome.get() == null) {
             fail("await() did not return within 5 s of interrupt(); thread state " + thread.getState()
-                 + ", CPU consumed since start " + TimeUnit.NANOSECONDS.toMillis(cpuIfStuck) + " ms"
-                 + " — that is the spin, not a park");
+                + ", CPU consumed since start " + TimeUnit.NANOSECONDS.toMillis(cpuIfStuck)
+                + " ms"
+                + " — that is the spin, not a park");
         }
 
         return outcome.get();
@@ -94,20 +99,20 @@ class PromiseAwaitInterruptionTest {
         outcome.result().onSuccess(_ -> fail("an unresolved promise cannot yield a success"));
         outcome.result().onFailure(cause -> assertThat(cause).isInstanceOf(CoreError.Interrupted.class));
         assertThat(outcome.flagStillSet()).as("the interrupt is the supervisor's signal to the whole thread, not just to this wait")
-                                          .isTrue();
+                  .isTrue();
         assertThat(TimeUnit.NANOSECONDS.toMillis(outcome.cpuNanos())).as("a parked wait consumes no core; a spinning one consumes the whole wait")
-                                                                     .isLessThan(500);
+                  .isLessThan(500);
     }
 
     @Test
     void await_bounded_endsOnInterrupt_beforeItsDeadline() {
         var start = System.nanoTime();
-        var outcome = interruptWhileWaiting(Promise.promise(), p -> p.await(timeSpan(30).seconds()));
+        var outcome = interruptWhileWaiting(Promise.promise(),
+                                            p -> p.await(timeSpan(30).seconds()));
         var elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
 
         outcome.result().onFailure(cause -> assertThat(cause).isInstanceOf(CoreError.Interrupted.class));
-        assertThat(elapsedMillis).as("the interrupt, not the 30 s deadline, must end the wait")
-                                 .isLessThan(5_000);
+        assertThat(elapsedMillis).as("the interrupt, not the 30 s deadline, must end the wait").isLessThan(5_000);
         assertThat(outcome.flagStillSet()).isTrue();
     }
 
@@ -116,12 +121,11 @@ class PromiseAwaitInterruptionTest {
         var seen = new AtomicReference<Result<Unit>>();
         var thread = new Thread(() -> {
             Thread.currentThread().interrupt();
-            seen.set(Promise.<Unit>promise().await());
+            seen.set(Promise.<Unit> promise().await());
         });
 
         thread.start();
         joinQuietly(thread, 5_000);
-
         assertThat(seen.get()).isNotNull();
         seen.get().onFailure(cause -> assertThat(cause).isInstanceOf(CoreError.Interrupted.class));
         seen.get().onSuccess(_ -> fail("unresolved promise, interrupted caller: must be the Interrupted failure"));
@@ -137,14 +141,14 @@ class PromiseAwaitInterruptionTest {
 
         thread.start();
         joinQuietly(thread, 5_000);
-
         assertThat(seen.get()).isNotNull();
-        seen.get().onFailure(cause -> fail("a resolved promise answers regardless of the caller's interrupt status: " + cause.message()));
+        seen.get()
+            .onFailure(cause -> fail("a resolved promise answers regardless of the caller's interrupt status: " + cause.message()));
     }
 
     @Test
     void await_resolutionStillWins_whenTheWaiterIsNotInterrupted() {
-        var promise = Promise.<Unit>promise();
+        var promise = Promise.<Unit> promise();
         var resolved = new AtomicBoolean();
         var thread = new Thread(() -> {
             promise.await();
@@ -155,7 +159,6 @@ class PromiseAwaitInterruptionTest {
         waitUntilParked(thread);
         promise.succeed(Unit.unit());
         joinQuietly(thread, 5_000);
-
         assertThat(resolved.get()).as("control: the ordinary resolution path is unchanged").isTrue();
     }
 
