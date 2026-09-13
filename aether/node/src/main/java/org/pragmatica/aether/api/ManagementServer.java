@@ -20,6 +20,7 @@ import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.forward.HttpForwarder;
 import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.management.route.ManagementRouteError;
 import org.pragmatica.aether.management.route.MatchedRoute;
 import org.pragmatica.aether.management.route.RouteTarget;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
@@ -1343,6 +1344,21 @@ class ManagementServerImpl implements ManagementServer {
                 return;
             }
         }
+        // #1039 receive-side owner guard. A forwarded request is dispatched by `router.handle` right
+        // below and never re-enters `dispatchManagementRequest`, so `tryForwardIfNotPartitionOwner`
+        // does NOT run on this node — without this check a receiver that disagrees with the sender
+        // about the owner answers anyway and returns 200 with `servedByOwner=false`, which is the
+        // ambiguous answer #1039 exists to remove.
+        if (checkForwardedPartitionOwner(context.method(),
+                                         context.path(),
+                                         nodeSupplier.get()
+                                                     .self(),
+                                         request.sender(),
+                                         this::resolvePartitionOwner)
+                .onFailure(cause -> sendManagementForwardError(network, request, cause.message()))
+                .isFailure()) {
+            return;
+        }
 
         if (router.handle(serverCtx, responseCapture)) {
             responseCapture.completion()
@@ -1379,6 +1395,79 @@ class ManagementServerImpl implements ManagementServer {
                                             notFoundBody);
 
         sendManagementForwardSuccess(network, request, ser, notFound);
+    }
+
+    /// Does this node accept a request that reached it by owner forwarding (#1039)?
+    ///
+    /// Package-visible, static and pure for the same reason [#answersPartitionLocally] is: the
+    /// dispatch around it cannot be driven without a live listener, so the DECISION is the thing a
+    /// test can hold. Success means "dispatch it"; a failure is the cause the receiver sends back,
+    /// which [HttpForwarder#onHttpForwardResponse] hands to the sender's `sendForwardError` as a 503.
+    ///
+    /// Only [RouteTarget.PartitionOwner] routes are judged, and for those the arrival IS the evidence
+    /// of a prior hop: `forwardToPartitionOwner` is the single path that forwards them, so a
+    /// partition-owner route arriving over the cluster channel has been owner-forwarded exactly once.
+    /// Every other target is dispatched exactly as before — a leader-, core-, task-group- or
+    /// node-targeted forward is not an owner decision and must not be re-judged here.
+    ///
+    /// The refusal does NOT re-forward. A second hop is what could cycle; the sender already resolved
+    /// an owner, so a receiver that resolves a different one has observed the skew itself, and naming
+    /// it terminates the disagreement in one round instead of trading it back.
+    ///
+    /// An unmatched route yields success: `router.handle` and the legacy handlers below it own the
+    /// 404, and refusing here would turn an unknown path into a 503.
+    static Result<Unit> checkForwardedPartitionOwner(String methodName,
+                                                     String path,
+                                                     NodeId self,
+                                                     NodeId sender,
+                                                     HttpForwarder.PartitionOwnerResolver ownerResolver) {
+        var matched = parseRoutingMethod(methodName).flatMap(method -> ManagementRoute.match(method, path)
+                                                                                      .option());
+
+        if (matched.isEmpty()) {
+            return Result.unitResult();
+        }
+
+        var matchedRoute = matched.unwrap();
+
+        return switch (matchedRoute.route().target()) {
+            case RouteTarget.PartitionOwner(var partitionParamIndex) -> checkOwnerIsSelf(matchedRoute,
+                                                                                          partitionParamIndex,
+                                                                                          path,
+                                                                                          self,
+                                                                                          sender,
+                                                                                          ownerResolver);
+            // Exhaustive by design rather than a `default`: a new RouteTarget must make this decision
+            // deliberately instead of inheriting "dispatch anyway".
+            case RouteTarget.LocalNode _, RouteTarget.AnyCoreNode _, RouteTarget.TaskGroupTarget _,
+                 RouteTarget.LeaderNode _, RouteTarget.NodeIdParam _ -> Result.unitResult();
+        };
+    }
+
+    /// The owner comparison behind [#checkForwardedPartitionOwner], split out so the switch above
+    /// stays a routing decision and this stays the ownership decision.
+    ///
+    /// An unresolvable owner fails rather than defaulting to local, for the reason spelled out on
+    /// [#answersPartitionLocally]: answering locally would emit `servedByOwner=false` with an empty
+    /// replica ring, indistinguishable from a genuinely empty partition.
+    private static Result<Unit> checkOwnerIsSelf(MatchedRoute matched,
+                                                 int partitionParamIndex,
+                                                 String path,
+                                                 NodeId self,
+                                                 NodeId sender,
+                                                 HttpForwarder.PartitionOwnerResolver ownerResolver) {
+        var routeName = matched.route().name();
+        var owner = ownerResolver.resolve(matched, partitionParamIndex);
+
+        if (owner.isEmpty()) {
+            return ManagementRouteError.partitionOwnerUnresolved(routeName, path).result();
+        }
+
+        if (owner.unwrap().equals(self)) {
+            return Result.unitResult();
+        }
+
+        return ManagementRouteError.ownerForwardLoop(routeName, sender.id()).result();
     }
 
     private void sendManagementForwardSuccess(ClusterNetwork network,
