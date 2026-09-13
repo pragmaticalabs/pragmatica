@@ -52,11 +52,16 @@ export CHAOS_HARNESS_REGROUPED=1
 export CHAOS_HARNESS_ACTIVE=$$
 HARNESS_PGID=$(_harness_pgid_of $$)
 CHAOS_HARNESS_DEADLINE_S="${CHAOS_HARNESS_DEADLINE_S:-480}"
+# The watchdog ticks on a fifo read, not `sleep`: a sleep child outlives the watchdog when the exit
+# trap kills it, and that orphan is a process left in the harness's group at the instant it exits.
+HARNESS_TICK_DIR=$(mktemp -d)
+mkfifo "${HARNESS_TICK_DIR}/tick"
+exec 8<>"${HARNESS_TICK_DIR}/tick"
 (
     trap - EXIT
     watchdog_deadline=$((SECONDS + CHAOS_HARNESS_DEADLINE_S))
     while [ "$SECONDS" -lt "$watchdog_deadline" ]; do
-        command sleep 1
+        read -r -t 1 -u 8 _ || true
         if ! kill -0 "$CHAOS_HARNESS_ACTIVE" 2>/dev/null; then
             # The harness is gone (normal exit, or a driver that killed only the top PID). Anything
             # still in our group is a leak that outlived it — take the group with us, never just exit.
@@ -97,7 +102,7 @@ TEST_CLUSTER="chaos-harness-test-$$"
 STATE_DIR="${HOME}/.aether/clusters/${TEST_CLUSTER}"
 mkdir -p "$STATE_DIR"
 cp "${SCRIPT_DIR}/fixtures/bootstrap-state.json" "${STATE_DIR}/bootstrap-state.json"
-trap 'kill "$HARNESS_WATCHDOG" 2>/dev/null; rm -rf "$WORK" "$STATE_DIR"' EXIT
+trap 'kill "$HARNESS_WATCHDOG" 2>/dev/null; rm -rf "$WORK" "$STATE_DIR" "$HARNESS_TICK_DIR"' EXIT
 export BOOTSTRAP_CLUSTER_NAME="$TEST_CLUSTER"
 
 PASS=0; FAIL=0

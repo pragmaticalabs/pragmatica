@@ -39,3 +39,7 @@
   is gone, not only at the deadline. The `stub-suites` CI job cap rises from 15 to 25 minutes: three suites each
   wedged at the 300s ceiling cost ~15.4 min with the kill grace, which exceeded the old cap.
   `[verified: G5 in aether/tests/integration/test/test-harness-guards.sh — reds with left=2 when the watchdog's group kill on a gone PID is reverted, greens with it]`
+- **The watchdog's `sleep` tick outlived the harness on every normal exit** — the exit trap killed the watchdog,
+  its `sleep 1` child stayed orphaned in the harness's group for up to a second, and the stub-suite runner in CI
+  read that as a leaked process (a coin-flip on each run). The tick is now a fifo read with no child process.
+  `[verified: G6 in test-harness-guards.sh reads the group at the instant of a normal exit — left=1 with the sleep tick, left=0 with the fifo tick]`

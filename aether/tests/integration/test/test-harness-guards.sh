@@ -11,7 +11,9 @@
 #   G4 one group: a harness started below a harness stays in its process group, so a
 #      group kill reaches every level of an unbounded re-entry;
 #   G5 top-PID kill: a driver that kills only the harness's PID (the shape of the 2,342-
-#      process leak) still leaves nothing behind — the watchdog takes the group with it.
+#      process leak) still leaves nothing behind — the watchdog takes the group with it;
+#   G6 clean exit: at the instant a harness exits normally, nothing is left in its group
+#      (the watchdog's tick must not be a child that outlives it).
 # Every probe runs in its own process group under a hard timeout AND a process-count
 # ceiling (GUARD_PROBE_PROC_CEILING, default 300) that kills the whole group, so a broken
 # guard fails this test as "recursion detected (ceiling)" instead of hanging or forking
@@ -52,7 +54,7 @@ run_grouped() {
         my ($t, $out, @cmd) = @ARGV;
         my $ceiling = $ENV{GUARD_PROBE_PROC_CEILING} || 300;
         my $topkill_at = $ENV{GUARD_PROBE_TOPKILL_AT};   # G5: kill ONLY the leader at this many seconds
-        my $settle = $ENV{GUARD_PROBE_SETTLE} || 1.5;    # seconds the group gets to drain before "left" is read
+        my $settle = defined $ENV{GUARD_PROBE_SETTLE} ? $ENV{GUARD_PROBE_SETTLE} : 1.5;  # drain time before "left" is read; 0 = at exit
         my $start = time;
         my $pid = fork; die "fork: $!" unless defined $pid;
         if (!$pid) {
@@ -163,6 +165,17 @@ elif [ "$(field "$r" rc)" = 137 ] && [ "$(field "$r" secs)" -lt 20 ] && [ "$(fie
     ok "G5 a driver that kills only the harness PID leaves no process behind — the watchdog took the group (${r})"
 else
     fail "G5 killing only the harness PID left its group running (${r}): $(tail -3 "$WORK/g5.out" | tr '\n' '|')"
+fi
+
+# G6 — clean exit. A harness that runs its guards and exits 0 must leave its group empty AT THAT
+# INSTANT (settle 0): the runner in CI reads the group right after the leader exits, and a watchdog
+# tick implemented as a `sleep` child survives the exit trap for up to a second.
+r=$(GUARD_PROBE_SETTLE=0 run_grouped 30 "$WORK/g6.out" env -u CHAOS_HARNESS_ACTIVE -u CHAOS_HARNESS_REGROUPED CHAOS_HARNESS_SELFTEST=guards-only bash "$HARNESS")
+if ceiling_hit G6 "$r"; then :
+elif [ "$(field "$r" rc)" = 0 ] && [ "$(field "$r" left)" = 0 ]; then
+    ok "G6 a harness that exits normally leaves nothing in its group at the instant it exits (${r})"
+else
+    fail "G6 a normal exit left a process in the harness group (${r}): $(tail -3 "$WORK/g6.out" | tr '\n' '|')"
 fi
 
 echo ""
