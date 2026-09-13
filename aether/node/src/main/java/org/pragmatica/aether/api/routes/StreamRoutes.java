@@ -338,7 +338,7 @@ public final class StreamRoutes implements RouteSource {
                             .map(partitions -> new StreamConsumersResponse(name, partitions));
     }
 
-    private Result<GroupStatusResponse> joinGroup(JoinGroupRequest request) {
+    Result<GroupStatusResponse> joinGroup(JoinGroupRequest request) {
         return coordinator.joinGroup(request.groupId(),
                                      request.streamName(),
                                      request.partitionCount(),
@@ -348,7 +348,7 @@ public final class StreamRoutes implements RouteSource {
                                                             coordinator.groupStatus(request.groupId())));
     }
 
-    private Result<GroupStatusResponse> leaveGroup(LeaveGroupRequest request) {
+    Result<GroupStatusResponse> leaveGroup(LeaveGroupRequest request) {
         return coordinator.leaveGroup(request.groupId(),
                                       request.streamName(),
                                       request.consumerId())
