@@ -69,8 +69,10 @@ public sealed interface StorageError extends Cause {
     /// `DhtStorageTier` in `org.pragmatica.aether.storage`, a different package, so a
     /// package-private factory would be unreachable from it (see `EncryptionError`'s bare-constructor
     /// records for the same cross-package precedent). Recovery: none from the read path -- retry once
-    /// `start()`'s marker check has resolved the tier's admission gate, or check node logs if the
-    /// node itself failed to start.
+    /// `start()`'s marker check has resolved the tier's admission gate. #1052: that check retries while
+    /// the DHT cannot answer, and the node reports not-ready (`/health/ready` component
+    /// `dht-admission`) until it completes, so this error can outlast one admission bound. Check the
+    /// node's logs for the attempt failures.
     record TierNotAdmitted(String instanceName, long timeoutMillis) implements StorageError {
         @Override
         public String message() {

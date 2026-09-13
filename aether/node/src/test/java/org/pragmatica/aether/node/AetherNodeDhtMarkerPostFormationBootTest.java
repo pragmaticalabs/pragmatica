@@ -25,16 +25,20 @@ import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.StorageEncryptionConfig;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.SecretsProvider;
+import org.pragmatica.aether.node.lifecycle.NodeState;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.dht.DHTConfig;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.storage.EncryptingStorageTier;
+import org.pragmatica.storage.EncryptionError;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,7 +51,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// `createAll`, called from the constructor, awaited the marker check for up to
 /// [StorageFactory#DHT_MARKER_TIMEOUT] before the `DHTClient` could route).
 ///
-/// Two claims, each with its own test:
+/// Four claims, each with its own test:
 ///
 ///   1. Construction stays fast even when the 'artifacts' instance carries a DHT tier with no
 ///      keyring -- the branch that used to block. "start() succeeds" is not evidence of this by
@@ -60,14 +64,23 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 ///      (`ManageableNode.dhtClient()` -- a pre-existing public accessor, not a new test seam; see the
 ///      class-level note on why no new production surface was needed) and is absent before formation,
 ///      present with the active key id as its value after `start()` resolves.
+///   3. #1052: a definite refusal stays fatal. A marker seeded into the node's own DHT before formation,
+///      with no keyring configured, fails `start()` with `EncryptedTierRequiresKeyring`. That failure is
+///      what `Main#exitWithError` turns into exit code 1, and `Main` is unchanged. The same test pins that
+///      periodic work arms without waiting on the check.
+///   4. #1052: readiness waits on admission. A node whose DHT tier is not admitted never reaches
+///      lifecycle `ACTIVE`, even though `start()` resolved. A control node in the same test, admitted
+///      normally, does reach it.
 ///
 /// A genuine cross-boot scenario ("marker written by a PRIOR boot, no keyring THIS boot -> refusal")
-/// is infeasible as a real-boot test here: no seam exists across any of the four
+/// stays infeasible as a real-boot test here: no seam exists across any of the four
 /// `AetherNode.aetherNode(...)` factory overloads to share one node's in-memory DHT store with a
-/// second, separately-constructed node -- every `dhtClient`/`dhtNode` reference in `AetherNode.java`
-/// is local to `assembleNode`, never returned or accepted as a parameter. That scenario stays covered
-/// at the `StorageFactory` unit level by
+/// second, separately-constructed node. Claim 3 reaches the same refusal branch by seeding the marker
+/// into this node's own store before `start()`, through the same pre-existing `dhtClient()` accessor. The
+/// cross-boot shape stays covered at the `StorageFactory` unit level by
 /// `StorageFactoryEncryptionTest#verifyDhtMarker_fails_whenDhtCarriesEncryptionMarker_andDiskUnavailable_andNoKeyringSupplied`.
+/// The transient (retry) path cannot be induced on a real single-node boot, whose DHT always answers. It
+/// is pinned at the `StorageFactory` level by `StorageFactoryDhtMarkerRetryTest`.
 class AetherNodeDhtMarkerPostFormationBootTest {
     private static final String SECRET_PATH = "path/to/k1";
     private static final String ACTIVE_KEY_ID = "k1";
@@ -75,14 +88,21 @@ class AetherNodeDhtMarkerPostFormationBootTest {
     private static final TimeSpan START_BOUND = timeSpan(15).seconds();
     private static final TimeSpan MARKER_READ_BOUND = timeSpan(5).seconds();
     private static final long CONSTRUCTION_BOUND_MS = 5_000;
+    private static final long ACTIVE_BOUND_MS = 30_000;
+    private static final long MIN_NOT_ACTIVE_WINDOW_MS = 5_000;
+    private static final Cause NOT_ADMITTED = Causes.cause("test: DHT tier not admitted");
 
     @TempDir
     Path tempDir;
 
     private AetherNode node;
+    private AetherNode controlNode;
 
     @AfterEach
     void tearDown() {
+        if (controlNode != null) {
+            controlNode.stop().await(timeSpan(10).seconds()).onFailure(cause -> {});
+        }
         if (node != null) {
             node.stop().await(timeSpan(10).seconds()).onFailure(cause -> {});
         }
@@ -145,6 +165,102 @@ class AetherNodeDhtMarkerPostFormationBootTest {
                                               + "'artifacts' instance once cluster formation resolved")
                                             .isTrue();
         assertThat(new String(afterMarker.unwrap(), StandardCharsets.UTF_8)).isEqualTo(ACTIVE_KEY_ID);
+    }
+
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void start_failsWithEncryptedTierRequiresKeyring_whenDhtMarkerPresentAndNoKeyring() {
+        node = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none()), () -> {})
+                          .onFailure(cause -> fail("construction must succeed - " + cause.message()))
+                          .unwrap();
+
+        var check = node.storageSetups()
+                        .get("artifacts")
+                        .dhtMarkerCheck()
+                        .unwrap();
+        var markerKey = check.dhtKeyPrefix() + "/" + EncryptingStorageTier.MARKER_FILE_NAME;
+
+        node.dhtClient()
+            .unwrap()
+            .put(markerKey, ACTIVE_KEY_ID.getBytes(StandardCharsets.UTF_8))
+            .await(MARKER_READ_BOUND)
+            .onFailure(cause -> fail("PRECONDITION: seeding the marker into the node's own DHT failed - " + cause.message()));
+
+        node.start()
+            .await(START_BOUND)
+            .onSuccess(_ -> fail("a DHT marker present with no keyring must still fail start() -- #858's safety "
+                                 + "property, which #1052 keeps; Main#exitWithError turns this failure into exit 1"))
+            .onFailure(cause -> assertThat(cause).as("the refusal must end start() with its own cause; a CoreError.Timeout "
+                                                     + "here means the definite mismatch was being retried")
+                                                 .isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class));
+
+        assertThat(node.nodeLifecycle().currentState()).as("a node whose DHT tier was refused must never report ACTIVE")
+                                                      .isNotEqualTo(NodeState.ACTIVE);
+        assertThat(node.periodicTasks().armedCount()).as("#1052: periodic work arms once formation resolves and must not "
+                                                         + "wait on the marker check -- a replacement still retrying can "
+                                                         + "already be leader, and its leader ticks must run")
+                                                     .isPositive();
+    }
+
+    @Test
+    @Timeout(value = 150, unit = SECONDS)
+    void start_neverReportsActive_whileADhtTierIsNotAdmitted_whileAdmittedControlDoes() throws InterruptedException {
+        controlNode = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none()), () -> {})
+                                 .onFailure(cause -> fail("control construction must succeed - " + cause.message()))
+                                 .unwrap();
+        controlNode.start()
+                   .await(START_BOUND)
+                   .onFailure(cause -> fail("control start() must succeed - " + cause.message()));
+
+        var controlActiveMs = awaitActive(controlNode);
+
+        controlNode.stop().await(timeSpan(10).seconds()).onFailure(cause -> {});
+        controlNode = null;
+
+        node = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none()), () -> {})
+                          .onFailure(cause -> fail("construction must succeed - " + cause.message()))
+                          .unwrap();
+        // Stands in for a marker check that has not admitted the tier: the gate is first-writer-wins, so
+        // start()'s own (successful) check can no longer admit it. Pending and refused are the same case
+        // for readiness -- neither is success.
+        node.storageSetups()
+            .get("artifacts")
+            .dhtMarkerCheck()
+            .unwrap()
+            .readGate()
+            .resolve(NOT_ADMITTED.result());
+
+        node.start()
+            .await(START_BOUND)
+            .onFailure(cause -> fail("start() itself must succeed: this node's DHT holds no marker - " + cause.message()));
+
+        var window = Math.max(MIN_NOT_ACTIVE_WINDOW_MS, 3 * controlActiveMs);
+        var deadline = System.currentTimeMillis() + window;
+
+        while (System.currentTimeMillis() < deadline) {
+            assertThat(node.nodeLifecycle().currentState()).as("a node whose DHT tier is not admitted must not report ACTIVE "
+                                                              + "(the admitted control reached it in %d ms; watched %d ms)",
+                                                              controlActiveMs,
+                                                              window)
+                                                          .isNotEqualTo(NodeState.ACTIVE);
+            Thread.sleep(50);
+        }
+    }
+
+    private static long awaitActive(AetherNode candidate) throws InterruptedException {
+        var started = System.nanoTime();
+        var deadline = System.currentTimeMillis() + ACTIVE_BOUND_MS;
+
+        while (candidate.nodeLifecycle().currentState() != NodeState.ACTIVE && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50);
+        }
+
+        assertThat(candidate.nodeLifecycle().currentState()).as("CONTROL: an admitted single-node boot must reach ACTIVE "
+                                                               + "within %d ms, or the not-ACTIVE assertion proves nothing",
+                                                               ACTIVE_BOUND_MS)
+                                                           .isEqualTo(NodeState.ACTIVE);
+
+        return elapsedMs(started);
     }
 
     private static long elapsedMs(long startedAtNanos) {

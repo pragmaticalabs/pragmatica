@@ -24,8 +24,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public final class DhtStorageTier implements StorageTier {
     /// #858 C1: default bound a gated read waits for the post-formation admission check
     /// (`StorageFactory.verifyDhtMarker`) to resolve `readGate` before failing with
-    /// [StorageError.TierNotAdmitted]. Mirrors `StorageFactory#DHT_MARKER_TIMEOUT` -- both bound the
-    /// same underlying DHT round trip, from opposite ends of the gate.
+    /// [StorageError.TierNotAdmitted]. Same value as `StorageFactory#DHT_MARKER_TIMEOUT`, which bounds
+    /// ONE attempt of that check. #1052: the check retries attempts that could not complete, so `readGate`
+    /// can stay pending longer than this bound. Each operation waiting on it is still refused after this
+    /// bound, never admitted.
     private static final TimeSpan DEFAULT_ADMISSION_TIMEOUT = timeSpan(30).seconds();
 
     private final DHTClient dhtClient;
