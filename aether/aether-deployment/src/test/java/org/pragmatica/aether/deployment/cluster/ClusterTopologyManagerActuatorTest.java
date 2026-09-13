@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster;
 
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
@@ -30,12 +31,15 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
+import org.pragmatica.statemachine.FsmObserver;
 
 import java.io.Serializable;
 import java.time.Duration;
@@ -48,6 +52,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
@@ -67,6 +73,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.pragmatica.aether.deployment.membership.fsm.MembershipDeltaProjector.membershipDeltaProjector;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -127,6 +134,14 @@ class ClusterTopologyManagerActuatorTest {
     /// grace-terminate backstop). Shared by `setUp` and the #1050 grace tests, which need a short grace
     /// to reach expiry through the real `drainNode` → scheduler path rather than a direct call.
     private ClusterTopologyManager ctmWithDrainGrace(TimeSpan drainGrace) {
+        return ctmWithDrainGrace(drainGrace, drainCommandSinkCalls::add, coreCountedMembers::get);
+    }
+
+    /// Variant whose DRAIN sink and membership read are supplied by the caller — the real-membership
+    /// tests route the drain through a real `MembershipFsm` and read its counted set, as `AetherNode` does.
+    private ClusterTopologyManager ctmWithDrainGrace(TimeSpan drainGrace,
+                                                     Consumer<NodeId> drainSink,
+                                                     Supplier<Set<NodeId>> members) {
         var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
                                                       timeSpan(1).millis(),
                                                       AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
@@ -143,11 +158,11 @@ class ClusterTopologyManagerActuatorTest {
                                                              clusterStore::current,
                                                              clusterStore::apply,
                                                              () -> ClusterPhase.NORMAL,
-                                                             drainCommandSinkCalls::add,
+                                                             drainSink,
                                                              drainCommandClearCalls::add,
                                                              Option::none,
                                                              clusterStore::autoHealState,
-                                                             coreCountedMembers::get,
+                                                             members,
                                                              configuredCoreCount::get);
     }
 
@@ -716,6 +731,149 @@ class ClusterTopologyManagerActuatorTest {
         private void awaitDrainCommandCleared(NodeId target) {
             await().atMost(Duration.ofSeconds(5))
                    .until(() -> drainCommandClearCalls.contains(target));
+            assertThat(drainCommandClearCalls).as("the backstop clears the DRAIN command exactly once, in every branch")
+                                              .containsExactly(target);
+        }
+    }
+
+    /// #1050 CTO ruling: a refused reap must never leave a billed orphan VM. Here the stub membership
+    /// supplier is replaced by the REAL producers:
+    /// - a boot-seeded [MembershipFsm] whose DRAIN routing mirrors `AetherNode.requestDrainThroughFsm`,
+    ///   read through `coreCountedMembers` as `AetherNode.drainGraceCoreMemberSupplier` reads it;
+    /// - a synchronous `MembershipDeltaProjector` whose decisions feed `onMembershipDecision`, as
+    ///   AetherNode's router does.
+    ///
+    /// Deaths and departures go through the FSM's SWIM ingress (`onSwimDeparted`), so any reap observed
+    /// after one has come through FSM REMOVED edge → projector `NodeRemoved` → `reapDepartedNode`. The
+    /// FSM's own DEPARTING timeout (#1054) is set to an hour, so it cannot reap inside a test and mask what
+    /// the backstop did. One node-local FSM stands in for every node's FSM; each node sees the same
+    /// REMOVED edge for a departed target.
+    @Nested
+    class DrainGraceWithRealMembership {
+        private static final NodeId PEER_E = nodeId("node-e").unwrap();
+        private static final TimeSpan HOUR = timeSpan(1).hours();
+        private static final HlcTimestamp HLC = new HlcTimestamp(HlcTimestamp.pack(1L, 0), SELF);
+
+        private MembershipFsm fsm;
+
+        @BeforeEach
+        void createFsm() {
+            fsm = MembershipFsm.membershipFsm(FsmObserver.noop(), System::currentTimeMillis, Long.MAX_VALUE, HOUR, HOUR, HOUR);
+        }
+
+        /// The stable-cluster no-regression, on real membership: six seeded cores for a configured five.
+        /// After the drain the target is DEPARTING and uncounted, five remain, and the trim reaps.
+        @Test
+        void surplusDrain_realMembership_stableCluster_reapsAtGraceExpiry() {
+            var issuer = issuerCtm();
+
+            wireAndSeed(issuer::onMembershipDecision);
+            issuer.activate();
+            issuer.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+        }
+
+        /// The orphan pin, deficit arm. A peer dies during the grace, so the reap is refused at expiry.
+        /// The target then departs, and its instance is terminated EXACTLY ONCE, by the departure path.
+        @Test
+        void surplusDrain_realMembership_skippedInDeficit_targetDeparts_reapedExactlyOnceViaNodeRemoved() {
+            var issuer = issuerCtm();
+
+            wireAndSeed(issuer::onMembershipDecision);
+            issuer.activate();
+            issuer.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            fsm.onSwimDeparted(PEER_E, 1L);
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(fsm.coreCountedMembers()).as("arming: the cluster really is four of five at expiry")
+                                                .containsExactlyInAnyOrder(SELF, PEER_A, PEER_B, PEER_C);
+            assertThat(lifecycleManager.terminatedNodeIds()).as("the backstop refused; only the dead peer has been reaped")
+                                                            .containsExactly(PEER_E);
+
+            fsm.onSwimDeparted(PEER_D, 2L);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("the departed target is reaped once, via NodeRemoved; no orphan, no double reap")
+                                                            .containsExactly(PEER_E, PEER_D);
+        }
+
+        /// The orphan pin, deposed-issuer arm. The issuer loses leadership before expiry, so its backstop
+        /// refuses. When the target departs, the NEW leader's active CTM reaps it exactly once, and the
+        /// deposed issuer ignores the `NodeRemoved`.
+        @Test
+        void surplusDrain_realMembership_skippedByDeposedIssuer_targetDeparts_reapedExactlyOnceByNewLeader() {
+            var issuer = issuerCtm();
+            var newLeader = ctmWithDrainGrace(timeSpan(150).millis(), _ -> {}, fsm::coreCountedMembers);
+
+            wireAndSeed(((Consumer<MembershipDecision>) issuer::onMembershipDecision).andThen(newLeader::onMembershipDecision));
+            issuer.activate();
+            issuer.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            issuer.deactivate();
+            newLeader.activate();
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("a deposed issuer's backstop refused")
+                                                            .isEmpty();
+
+            fsm.onSwimDeparted(PEER_D, 2L);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("the active new leader reaps the departed target once; the deposed issuer does not")
+                                                            .containsExactly(PEER_D);
+        }
+
+        /// The live-member arm. The target refuted its drain (DEPARTING→MEMBER at a higher incarnation)
+        /// and is a counted member again, while a peer died. Five are counted only WITH the target, so
+        /// the cluster needs it: the reap is refused and the node stays.
+        @Test
+        void surplusDrain_realMembership_targetStillLiveCountedMember_clusterNeedsIt_notReaped() {
+            var issuer = issuerCtm();
+
+            wireAndSeed(issuer::onMembershipDecision);
+            issuer.activate();
+            issuer.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            fsm.onSwimDeparted(PEER_E, 1L);
+            fsm.onSwimHealthy(PEER_D, 5L);
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(fsm.coreCountedMembers()).as("arming: the target is a live counted member again, and five are counted only with it")
+                                                .containsExactlyInAnyOrder(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
+            assertThat(lifecycleManager.terminatedNodeIds()).as("a live target the cluster needs is never reaped by the backstop")
+                                                            .containsExactly(PEER_E);
+        }
+
+        private ClusterTopologyManager issuerCtm() {
+            return ctmWithDrainGrace(timeSpan(150).millis(), fsmRoutedDrainSink(), fsm::coreCountedMembers);
+        }
+
+        /// Mirrors `AetherNode.requestDrainThroughFsm`: the DRAIN command registry, then the FSM's
+        /// DrainRequested, which moves the target to DEPARTING.
+        private Consumer<NodeId> fsmRoutedDrainSink() {
+            return ((Consumer<NodeId>) drainCommandSinkCalls::add).andThen(fsm::onDrainRequested);
+        }
+
+        /// Attach the projector BEFORE seeding. The seed's JOINED edges must be announced, because an
+        /// unannounced member's death emits no `NodeRemoved`. Then seed six cores for a configured five.
+        private void wireAndSeed(Consumer<MembershipDecision> decisionSink) {
+            var projector = membershipDeltaProjector(() -> true,
+                                                     () -> 1L,
+                                                     () -> HLC,
+                                                     decisionSink,
+                                                     _ -> {},
+                                                     _ -> {},
+                                                     _ -> {},
+                                                     Runnable::run,
+                                                     SharedScheduler::schedule);
+
+            fsm.onMembershipDelta(projector::onDelta);
+            fsm.seed(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D, PEER_E));
+        }
+
+        private void awaitClearedExactlyOnce(NodeId target) {
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> drainCommandClearCalls.contains(target));
+            assertThat(drainCommandClearCalls).as("the backstop clears the DRAIN command exactly once, in every branch")
+                                              .containsExactly(target);
         }
     }
 

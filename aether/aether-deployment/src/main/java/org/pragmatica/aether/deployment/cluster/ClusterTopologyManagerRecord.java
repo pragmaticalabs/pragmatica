@@ -1305,6 +1305,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// DEPARTING and already uncounted, but one that refuted its drain (DEPARTING→MEMBER at a higher
     /// incarnation) is counted again and must not cover its own removal. Whenever `configured >= 1`,
     /// failing (2) implies failing (3); (2) is kept separate so the log names the stronger condition.
+    ///
+    /// **Which count.** `coreCountedMembers` is the COUNTED projection (`MembershipFsm.coreCountedMembers`:
+    /// role-scoped MEMBER + SUSPECT), not the strict MEMBER-only set and not the observed-reachability
+    /// projection. It is the exact denominator the `LeaderReconciler` used to decide the drain and logs as
+    /// `clusterMembershipCount` / `quorumSafe`, so a refused reap always agrees with the reconciler's own pass
+    /// log at the same instant. A stricter view would refuse reaps during the SUSPECT flaps the reconciler
+    /// deliberately rides through, and would report a deficit that no log line shows. Trade-off: a SUSPECT
+    /// member that is really dying still counts until its eviction backstop fires, so a reap inside that
+    /// window can proceed.
     /// Pure — the caller supplies the inputs it read once.
     static GraceReapVerdict graceReapVerdict(boolean issuerActive,
                                              Set<NodeId> coreCountedMembers,
