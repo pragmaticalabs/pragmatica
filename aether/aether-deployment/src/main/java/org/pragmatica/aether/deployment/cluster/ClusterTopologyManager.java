@@ -54,6 +54,13 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// untouched.
     default void reconcileWorkerTopology() {}
 
+    /// #1050 (verify-1057-r2 S1) — raw SWIM declared `nodeId` FAULTY: positive death evidence, delivered by the
+    /// SWIM observation listener at the FAULTY edge. A departed-node reap that ran out of liveness re-checks while
+    /// SWIM still reported the node SUSPECTED (the suspicion window is LHM-scaled and can outlast the whole re-check
+    /// budget) is re-armed by this evidence; nothing else is. Default no-op so test fakes and non-provisioning
+    /// implementations are untouched.
+    default void onSwimFaulty(NodeId nodeId) {}
+
     void onClusterPhaseChanged(ClusterPhase newPhase);
     void activate();
     void deactivate();

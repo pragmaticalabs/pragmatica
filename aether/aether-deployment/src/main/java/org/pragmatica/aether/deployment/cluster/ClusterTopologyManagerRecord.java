@@ -105,7 +105,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicBoolean workerReconcileInFlight,
                                     AtomicBoolean workerReconcilePending,
                                     MembershipLiveness liveness,
-                                    AtomicLong activationEpoch) implements ClusterTopologyManager {
+                                    AtomicLong activationEpoch,
+                                    Set<NodeId> abandonedReaps) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
@@ -218,7 +219,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicBoolean(false),
                                                 new AtomicBoolean(false),
                                                 liveness,
-                                                new AtomicLong(0L));
+                                                new AtomicLong(0L),
+                                                ConcurrentHashMap.newKeySet());
     }
 
     private long nowMs() {
@@ -398,6 +400,21 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         log.warn("CTM: Self-shutdown observed for {}", selfShutdown.nodeId());
     }
 
+    /// #1050 (S1) — SWIM FAULTY is the death evidence that re-arms an ABANDONED reap ([#reapUnlessLive]) of the
+    /// same node, and nothing else: a node whose reap was never abandoned is not touched here (its departure
+    /// goes through `NodeRemoved`, its death-after-grace through the activation replay). The re-armed reap is
+    /// still evidence-gated — a node that somehow shows life again is deferred, never terminated.
+    @Contract
+    @Override
+    public void onSwimFaulty(NodeId nodeId) {
+        if (!active.get() || !abandonedReaps.remove(nodeId)) {
+            return;
+        }
+
+        log.info("CTM: SWIM reported {} FAULTY — re-arming the abandoned reap", nodeId);
+        reapUnlessLive(nodeId, activationEpoch.get(), REAP_LIVENESS_RECHECKS);
+    }
+
     @Contract
     @Override
     public void onClusterPhaseChanged(ClusterPhase newPhase) {
@@ -462,7 +479,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// propagated, so this stays a pure notification side effect of the membership-decision handler.
     @Contract
     private void reapDepartedNode(NodeId departedNodeId) {
-        reapUnlessLive(departedNodeId, REAP_LIVENESS_RECHECKS);
+        reapUnlessLive(departedNodeId, activationEpoch.get(), REAP_LIVENESS_RECHECKS);
     }
 
     @Contract
@@ -1264,7 +1281,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             log.info("CTM v2: drain grace expired for {} (reason={}) — target not live, reaping container + clearing DRAIN command",
                      targetNodeId,
                      reason);
-            reapUnlessLive(targetNodeId, REAP_LIVENESS_RECHECKS);
+            reapUnlessLive(targetNodeId, activationEpoch.get(), REAP_LIVENESS_RECHECKS);
         } else {
             logReapSkipped(targetNodeId, reason, verdict, remainingCoreMembers(counted, targetNodeId), configured);
         }
@@ -1355,10 +1372,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     /// #1062 — bounded liveness re-checks before a reap. The interval is `provisioningTimeout /
     /// REAP_LIVENESS_RECHECKS` (5s at the 60s default), and the whole deferral is bounded by
-    /// `provisioningTimeout`. Derived: a genuinely dead peer loses the leader's transport link within the
-    /// zombie-link TTL (`pingInterval × 8`, 8s at defaults) or at SWIM's FAULTY disconnect. Its raw SWIM
-    /// health has already left HEALTHY/SUSPECTED at FAULTY. A real death therefore clears the evidence well
-    /// inside the window, and a node still showing life after the whole window is treated as live.
+    /// `provisioningTimeout`. Derived for the transport term only: a genuinely dead peer loses the leader's
+    /// transport link within the zombie-link TTL (`pingInterval × 8`, 8s at defaults) or at SWIM's FAULTY
+    /// disconnect. The SWIM term is NOT bounded by this window: a dead peer stays SUSPECTED for SWIM's
+    /// suspicion window, `suspectTimeout × min(lhm + 1, 8) × min(max(1, ln(N + 1)), 3)` (`SwimProtocol`), which at
+    /// LHM 4 and four alive peers is ~80s and at LHM 7 ~129s — past both the grace and the whole re-check budget.
+    /// A reap that runs out of re-checks on SWIM life alone is therefore ABANDONED but not forgotten: the FAULTY
+    /// edge that ends the suspicion window re-arms it ([#onSwimFaulty]). A node still SUSPECTED forever is never
+    /// terminated — "not live" needs positive evidence.
     static final int REAP_LIVENESS_RECHECKS = 12;
     /// R4 — the activation replay only touches instances labelled with this role. Worker and spot
     /// instances are the worker reconcile's inventory, never this replay's.
@@ -1368,9 +1389,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// ([MembershipLiveness#demonstrablyLive]). A genuinely departed node is reaped on the first check, adding
     /// no delay to a real death whose evidence has already cleared. Evidence of life defers the reap (WARN,
     /// with the evidence) and re-checks it, bounded by [#REAP_LIVENESS_RECHECKS]. A node still live when the
-    /// re-checks run out is left alone: a live node is never terminated.
+    /// re-checks run out is left alone — ABANDONED, and parked in `abandonedReaps` so the next SWIM FAULTY for it
+    /// ([#onSwimFaulty]) re-arms the reap; a live node is never terminated. `epoch` is the activation the chain
+    /// belongs to; a re-check finding another activation drops out ([#recheckDeferredReap]).
     @Contract
-    private void reapUnlessLive(NodeId nodeId, int rechecksLeft) {
+    private void reapUnlessLive(NodeId nodeId, long epoch, int rechecksLeft) {
+        abandonedReaps.remove(nodeId);
         if (!liveness.demonstrablyLive(nodeId)) {
             terminateDeparted(nodeId);
 
@@ -1378,7 +1402,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         if (rechecksLeft <= 0) {
-            log.warn("CTM: reap of {} ABANDONED — still showing life after {} re-checks ({}); a live node is never terminated",
+            abandonedReaps.add(nodeId);
+            log.warn("CTM: reap of {} ABANDONED — still showing life after {} re-checks ({}); a live node is never terminated; re-armed by the next SWIM FAULTY for it",
                      nodeId,
                      REAP_LIVENESS_RECHECKS,
                      liveness.evidence(nodeId));
@@ -1390,21 +1415,22 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                  nodeId,
                  liveness.evidence(nodeId),
                  reapRecheckInterval().millis());
-        SharedScheduler.schedule(() -> recheckDeferredReap(nodeId, rechecksLeft - 1), reapRecheckInterval());
+        SharedScheduler.schedule(() -> recheckDeferredReap(nodeId, epoch, rechecksLeft - 1), reapRecheckInterval());
     }
 
-    /// A deferred re-check stops once this CTM is deactivated. A deposed view never reaps; the next
-    /// activation's replay ([#scheduleActivationReplay]) owns the instance.
+    /// A deferred re-check stops once this CTM is deactivated, or re-activated since the chain began (N2 of
+    /// verify-1057-r2: a deferral must not survive deactivate→activate and run beside the new activation's replay).
+    /// A deposed view never reaps; the next activation's replay ([#scheduleActivationReplay]) owns the instance.
     @Contract
-    private void recheckDeferredReap(NodeId nodeId, int rechecksLeft) {
-        if (!active.get()) {
-            log.debug("CTM: deferred reap of {} dropped — deactivated; the next activation's replay owns the instance",
+    private void recheckDeferredReap(NodeId nodeId, long epoch, int rechecksLeft) {
+        if (!active.get() || activationEpoch.get() != epoch) {
+            log.debug("CTM: deferred reap of {} dropped — deactivated or re-activated since; the current activation's replay owns the instance",
                       nodeId);
 
             return;
         }
 
-        reapUnlessLive(nodeId, rechecksLeft);
+        reapUnlessLive(nodeId, epoch, rechecksLeft);
     }
 
     private TimeSpan reapRecheckInterval() {
@@ -1425,11 +1451,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// can be delivered while every CTM is inactive and is then dropped, and a refused grace reap is not
     /// retried. Two inventory reads are taken [#activationReplayGrace] apart. An instance is terminated only
     /// when, at BOTH reads, its node is neither tracked by the FSM, nor showing independent evidence of life,
-    /// nor a replacement still in flight ([MembershipLiveness#replayProtected]). Each read acts only while
-    /// this activation is still current, active and quorum-safe; otherwise it yields nothing.
+    /// nor a replacement still in flight ([MembershipLiveness#replayProtected]). Each read, and the terminate
+    /// once the second read resolves, acts only while this activation is still current, active and quorum-safe;
+    /// otherwise it yields nothing.
     @Contract
     private void scheduleActivationReplay() {
-        var epoch = activationEpoch.incrementAndGet();
+        var epoch = activationEpoch.get();
 
         replayCandidates(epoch).onSuccess(firstRead -> scheduleReplayConfirmation(epoch, firstRead));
     }
@@ -1452,11 +1479,20 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     private void confirmActivationReplay(long epoch, Set<NodeId> firstRead) {
-        replayCandidates(epoch).onSuccess(secondRead -> terminateOrphans(firstRead, secondRead));
+        replayCandidates(epoch).onSuccess(secondRead -> terminateOrphans(epoch, firstRead, secondRead));
     }
 
+    /// The listing is asynchronous, so the activation that was current when the second read was ISSUED can be
+    /// deposed or superseded by the time it RESOLVES (verify-1057-r2 S2). The terminate re-checks
+    /// [#replayMayAct] at resolution; a deposed view terminates nothing.
     @Contract
-    private void terminateOrphans(Set<NodeId> firstRead, Set<NodeId> secondRead) {
+    private void terminateOrphans(long epoch, Set<NodeId> firstRead, Set<NodeId> secondRead) {
+        if (!replayMayAct(epoch)) {
+            log.debug("CTM: activation replay — second read resolved after this activation ended; terminating nothing");
+
+            return;
+        }
+
         firstRead.stream().filter(secondRead::contains).forEach(this::terminateOrphan);
     }
 
@@ -1529,7 +1565,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         if (!active.compareAndSet(false, true)) {
             return;
         }
-
+        // The activation epoch is bumped FIRST: every deferred reap and replay read started under this
+        // activation carries it, and a re-check or resolution that finds another epoch drops out.
+        activationEpoch.incrementAndGet();
         resetProvisioningCircuit("activate (leader handoff)");
         formationAnchorMs.set(nowMs());
         // CTM v2: the internal slot-reconcile loop is OFF. The LeaderReconciler (spec §7) owns
@@ -1602,6 +1640,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         transitionTo(new NodeReconcilerState.Inactive("deactivated (not leader)"));
+        // A deposed view never reaps: parked (abandoned) reaps die with the activation; the next
+        // activation's replay owns those instances.
+        abandonedReaps.clear();
         log.info("CTM: Deactivated");
     }
 

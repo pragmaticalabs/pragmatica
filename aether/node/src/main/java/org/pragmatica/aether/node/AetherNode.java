@@ -3206,6 +3206,9 @@ public interface AetherNode extends ManageableNode {
         // SUSPECT / FAULTY / DEPARTED / UNKNOWN map to the matching onSwim* ingress; the FSM drives the
         // per-member lifecycle and evicts on the DEAD edge. Leader-gating happens inside the FSM.
         swimHealthDetector.addObservationListener(obs -> routeSwimEdgeToMembershipFsm(obs, membershipFsm));
+        // #1050 (verify-1057-r2 S1): the FAULTY edge is the death evidence that re-arms a departed-node reap the CTM
+        // abandoned while SWIM still reported the node SUSPECTED. Pinned by `SwimFaultyToCtmRoutingTest`.
+        swimHealthDetector.addObservationListener(obs -> routeSwimFaultyToCtm(obs, clusterTopologyManager));
         // P3 (membership unification): quorum-loss is detected by QuorumLossDetector from the
         // unified tracker's stable membership (armed after first quorum; grace =
         // quorumLossDrainThreshold) and drives the §8.2 unified `DrainProcedure` directly.
@@ -5077,6 +5080,16 @@ public interface AetherNode extends ManageableNode {
         };
 
         quicNetwork.setFollowerObservationWiring(isLeaderSupplier, reporter, epochAdapter);
+    }
+
+    /// #1050 — only the FAULTY edge reaches [`ClusterTopologyManager#onSwimFaulty`]; every other observation
+    /// (including `DepartedObserved`, which SWIM emits as the second half of the same FAULTY-edge pair) is
+    /// dropped here. The CTM acts on it only for a reap it has abandoned.
+    @Contract
+    static void routeSwimFaultyToCtm(SwimObservation observation, ClusterTopologyManager clusterTopologyManager) {
+        if (observation instanceof SwimObservation.FaultyObserved faulty) {
+            clusterTopologyManager.onSwimFaulty(faulty.peer());
+        }
     }
 
     /// Route a SWIM observation edge into the authoritative [`MembershipFsm`]. HEALTHY / SUSPECT /

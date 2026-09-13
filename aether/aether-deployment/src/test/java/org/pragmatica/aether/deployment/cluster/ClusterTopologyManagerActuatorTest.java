@@ -127,6 +127,8 @@ class ClusterTopologyManagerActuatorTest {
     private final AtomicInteger configuredCoreCount = new AtomicInteger(5);
     /// Counts reads of the transport evidence, so a test can prove a deferral's re-checks STOP.
     private final AtomicInteger transportReads = new AtomicInteger();
+    /// Same for the raw-SWIM evidence: a reap that stopped reading it was ABANDONED, not merely deferred.
+    private final AtomicInteger swimReads = new AtomicInteger();
 
     @BeforeEach
     void setUp() {
@@ -153,7 +155,7 @@ class ClusterTopologyManagerActuatorTest {
     private MembershipLiveness stubLiveness() {
         return MembershipLiveness.membershipLiveness(coreCountedMembers::get,
                                                      trackedMembers::get,
-                                                     id -> swimAliveNodes.get().contains(id),
+                                                     this::swimAlive,
                                                      this::transportConnected,
                                                      inFlightNodes::get,
                                                      configuredCoreCount::get);
@@ -163,6 +165,12 @@ class ClusterTopologyManagerActuatorTest {
         transportReads.incrementAndGet();
 
         return transportConnectedNodes.get().contains(nodeId);
+    }
+
+    private boolean swimAlive(NodeId nodeId) {
+        swimReads.incrementAndGet();
+
+        return swimAliveNodes.get().contains(nodeId);
     }
 
     /// Variant whose DRAIN sink and evidence are supplied by the caller — the real-membership tests route the
@@ -1290,6 +1298,50 @@ class ClusterTopologyManagerActuatorTest {
 
             assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(DEAD);
         }
+
+        /// S2 (verify-1057-r2): the second listing is ISSUED while the activation is current but RESOLVES after
+        /// `deactivate()`. The terminate re-checks the activation at resolution, so a deposed view terminates
+        /// nothing. At `ff50a3274` this terminated `DEAD`.
+        @Test
+        void replay_secondListingResolvesAfterDeactivation_terminatesNothing() {
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            lifecycleManager.holdListingsAfter(1);
+            var replayCtm = ctmWithDrainGrace(GRACE);
+
+            replayCtm.activate();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(lifecycleManager::listingHeld);
+
+            assertThat(lifecycleManager.listCalls.get()).as("arming: the second read was issued while active").isEqualTo(2);
+
+            replayCtm.deactivate();
+            lifecycleManager.releaseHeldListing();
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("a listing that resolves on a deposed CTM terminates nothing")
+                                                            .isEmpty();
+        }
+
+        /// Control for the held-listing fixture: released with the activation still current, the same second
+        /// read terminates the orphan. Proves the hold itself does not suppress the terminate.
+        @Test
+        void replay_secondListingResolvesWhileStillActive_terminatesTheOrphan() {
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            lifecycleManager.holdListingsAfter(1);
+            var replayCtm = ctmWithDrainGrace(GRACE);
+
+            replayCtm.activate();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(lifecycleManager::listingHeld);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("arming: nothing terminated while the read is pending").isEmpty();
+
+            lifecycleManager.releaseHeldListing();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(DEAD));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(DEAD);
+        }
     }
 
     /// #1062 / R5 — `reapDepartedNode` re-checks liveness before an irreversible terminate. A DEAD verdict on a node
@@ -1409,6 +1461,133 @@ class ClusterTopologyManagerActuatorTest {
             reaper.deactivate();
             transportConnectedNodes.set(Set.of());
             settleFor(Duration.ofMillis(400));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// N2 (verify-1057-r2): a deferral started under one activation does not survive deactivate→activate. The
+        /// stale chain drops out at its next re-check even though the CTM is active again; the new activation's
+        /// replay owns the instance (here it lists nothing — the cluster is unnamed). At `ff50a3274` the stale chain
+        /// terminated `PEER_D` once the evidence cleared.
+        @Test
+        void nodeRemoved_reactivatedDuringDeferral_staleDeferralDropped() {
+            transportConnectedNodes.set(Set.of(PEER_D));
+            var reaper = activeCtm(SLOW_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+            reaper.deactivate();
+            reaper.activate();
+            transportConnectedNodes.set(Set.of());
+            settleFor(Duration.ofMillis(400));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// Waits until the reap of `PEER_D` has been ABANDONED: the re-checks stop reading the evidence. Margin: the
+        /// 12 re-checks span the 150ms grace; the wait is four times that, then a quiet interval twice the grace.
+        private void awaitAbandoned() {
+            settleFor(Duration.ofMillis(600));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("arming: still live at every re-check, never terminated")
+                                                            .isEmpty();
+
+            var readsAfterBound = swimReads.get();
+
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(swimReads.get()).as("arming: the re-checks have stopped — the reap is ABANDONED, not deferred")
+                                       .isEqualTo(readsAfterBound);
+        }
+
+        /// S1 (verify-1057-r2): SWIM's suspicion window is LHM-scaled and can outlast both the 60s grace and the
+        /// whole re-check budget, so a dead node can still read SUSPECTED when the last re-check runs. The reap is
+        /// abandoned — and re-armed by the FAULTY edge that ends the window. Terminated exactly once. At `ff50a3274`
+        /// nothing retried and the instance stayed billed until an unrelated leadership change.
+        @Test
+        void nodeRemoved_swimSuspectedPastEveryRecheck_reapedOnceWhenSwimReportsFaulty() {
+            swimAliveNodes.set(Set.of(PEER_D));
+            var reaper = activeCtm(FAST_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+            awaitAbandoned();
+
+            swimAliveNodes.set(Set.of());
+            reaper.onSwimFaulty(PEER_D);
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(PEER_D));
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+        }
+
+        /// The control (72e179cfe: "not live" needs POSITIVE evidence): a node SWIM keeps reporting SUSPECTED, with no
+        /// FAULTY edge ever, is never terminated — the abandoned reap stays parked.
+        @Test
+        void nodeRemoved_swimSuspectedForever_isNeverTerminated() {
+            swimAliveNodes.set(Set.of(PEER_D));
+            var reaper = activeCtm(FAST_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+            awaitAbandoned();
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// FAULTY re-arms only a reap that was abandoned. A FAULTY edge for a node whose reap was never abandoned — a
+        /// live member SWIM condemns and later refutes — reads no evidence and terminates nothing; its death, if
+        /// real, arrives as `NodeRemoved`.
+        @Test
+        void swimFaulty_forANodeWhoseReapWasNeverAbandoned_terminatesNothing() {
+            var reaper = activeCtm(FAST_GRACE);
+            var readsBefore = swimReads.get() + transportReads.get();
+
+            reaper.onSwimFaulty(PEER_D);
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+            assertThat(swimReads.get() + transportReads.get()).as("no reap chain was started").isEqualTo(readsBefore);
+        }
+
+        /// The re-armed reap is still evidence-gated: FAULTY with the leader's transport link still up defers, and
+        /// the terminate follows the link dropping — never the FAULTY edge alone.
+        @Test
+        void swimFaulty_reArmedReap_stillDefersWhileTransportConnected() {
+            swimAliveNodes.set(Set.of(PEER_D));
+            var reaper = activeCtm(FAST_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+            awaitAbandoned();
+
+            swimAliveNodes.set(Set.of());
+            transportConnectedNodes.set(Set.of(PEER_D));
+            reaper.onSwimFaulty(PEER_D);
+            settleFor(Duration.ofMillis(100));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("FAULTY alone, link still up: deferred").isEmpty();
+
+            transportConnectedNodes.set(Set.of());
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(PEER_D));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+        }
+
+        /// A parked reap dies with its activation: after deactivate→activate the FAULTY edge re-arms nothing, because
+        /// the new activation's replay owns the instance (here it lists nothing — the cluster is unnamed).
+        @Test
+        void swimFaulty_afterReactivation_doesNotReviveTheAbandonedReap() {
+            swimAliveNodes.set(Set.of(PEER_D));
+            var reaper = activeCtm(FAST_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+            awaitAbandoned();
+
+            reaper.deactivate();
+            reaper.activate();
+            swimAliveNodes.set(Set.of());
+            reaper.onSwimFaulty(PEER_D);
+            settleFor(Duration.ofMillis(300));
 
             assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
         }
@@ -1551,6 +1730,33 @@ class ClusterTopologyManagerActuatorTest {
         private final ConcurrentHashMap<NodeId, InstanceInfo> inventory = new ConcurrentHashMap<>();
         final AtomicInteger listCalls = new AtomicInteger();
         private final AtomicReference<Map<String, String>> lastListFilter = new AtomicReference<>(Map.of());
+        /// S2 (verify-1057-r2): listings after the `holdListingsAfter` count stay PENDING until released, so a test
+        /// can change the CTM's state between a listing being issued and its resolution — the provider latency window.
+        private final AtomicInteger holdListingsAfter = new AtomicInteger(Integer.MAX_VALUE);
+        private final AtomicReference<Promise<List<InstanceInfo>>> heldListing = new AtomicReference<>();
+        private final AtomicReference<Map<String, String>> heldFilter = new AtomicReference<>(Map.of());
+
+        void holdListingsAfter(int completedListings) {
+            holdListingsAfter.set(completedListings);
+        }
+
+        boolean listingHeld() {
+            return heldListing.get() != null;
+        }
+
+        /// Resolves the held listing with the inventory as it stands NOW.
+        void releaseHeldListing() {
+            var held = heldListing.getAndSet(null);
+
+            held.succeed(matching(heldFilter.get()));
+        }
+
+        private List<InstanceInfo> matching(Map<String, String> tagFilter) {
+            return inventory.values()
+                            .stream()
+                            .filter(instance -> instance.tags().entrySet().containsAll(tagFilter.entrySet()))
+                            .toList();
+        }
 
         void addInstance(NodeId nodeId, String cluster, String role) {
             inventory.put(nodeId,
@@ -1610,12 +1816,15 @@ class ClusterTopologyManagerActuatorTest {
         }
 
         @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
-            listCalls.incrementAndGet();
+            var call = listCalls.incrementAndGet();
             lastListFilter.set(Map.copyOf(tagFilter));
-            return Promise.success(inventory.values()
-                                            .stream()
-                                            .filter(instance -> instance.tags().entrySet().containsAll(tagFilter.entrySet()))
-                                            .toList());
+            if (call > holdListingsAfter.get()) {
+                var pending = Promise.<List<InstanceInfo>> promise();
+                heldFilter.set(Map.copyOf(tagFilter));
+                heldListing.set(pending);
+                return pending;
+            }
+            return Promise.success(matching(tagFilter));
         }
 
         @Override public Promise<Unit> restartNode(NodeId nodeId) {

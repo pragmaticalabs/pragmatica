@@ -8,15 +8,19 @@ import java.util.List;
 import java.util.Set;
 
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.statemachine.FsmObserver;
+import org.pragmatica.swim.SwimHealth;
 
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /// The #1050 / #1062 wiring pin, at the REAL seam. `AetherNode.drainGraceLiveness` builds every piece of
 /// membership and liveness evidence the CTM consults before an irreversible reap, plus the configured core
@@ -106,6 +110,36 @@ class DrainGraceLivenessSeamTest {
 
         assertThat(liveness.configuredCoreCount()
                            .getAsInt()).isEqualTo(TOPOLOGY_CORE_NODES);
+    }
+
+    /// S3 (verify-1057-r2): the SWIM term of `live` is raw `CoreSwimHealthDetector.healthOf` — HEALTHY or SUSPECTED
+    /// is alive, FAULTY and UNKNOWN are not. Pinned in BOTH directions with a published detector, so a seam that
+    /// stops reporting SWIM life (`_ -> false`) reddens here, not only the unpublished→false arm below. The detector
+    /// is a stub at exactly the method the seam reads; what `healthOf` itself returns from a live `SwimProtocol` is
+    /// pinned by the swim module.
+    @Test
+    void drainGraceLiveness_swimAlive_isHealthyOrSuspected_neverFaultyOrUnknown() {
+        var detector = mock(CoreSwimHealthDetector.class);
+        var faulty = new NodeId("node-faulty");
+        var unknown = new NodeId("node-unknown");
+
+        when(detector.healthOf(PEER_B)).thenReturn(SwimHealth.HEALTHY);
+        when(detector.healthOf(PEER_C)).thenReturn(SwimHealth.SUSPECTED);
+        when(detector.healthOf(faulty)).thenReturn(SwimHealth.FAULTY);
+        when(detector.healthOf(unknown)).thenReturn(SwimHealth.UNKNOWN);
+
+        var liveness = AetherNode.drainGraceLiveness(() -> null, Option::none, TOPOLOGY_CORE_NODES, () -> detector, _ -> false, () -> null, Set::of);
+
+        assertThat(liveness.swimAlive()
+                           .test(PEER_B)).as("HEALTHY is alive").isTrue();
+        assertThat(liveness.swimAlive()
+                           .test(PEER_C)).as("SUSPECTED is alive — the suspicion window is refutation time").isTrue();
+        assertThat(liveness.swimAlive()
+                           .test(faulty)).as("FAULTY is confirmed death").isFalse();
+        assertThat(liveness.swimAlive()
+                           .test(unknown)).as("UNKNOWN is a departed or forgotten member, not life").isFalse();
+        assertThat(liveness.live(PEER_C)).as("the SWIM term alone makes a SUSPECTED node live, transport down").isTrue();
+        assertThat(liveness.live(faulty)).as("FAULTY with transport down is not live").isFalse();
     }
 
     /// Before the FSM, the SWIM detector or the reconciler is published, every projection reads empty or
