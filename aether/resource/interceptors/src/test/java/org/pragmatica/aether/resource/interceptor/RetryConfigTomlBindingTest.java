@@ -10,8 +10,8 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
 import org.pragmatica.config.source.TomlConfigSource;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -124,11 +124,16 @@ class RetryConfigTomlBindingTest {
         assertThat(attempts.get()).isEqualTo(3);
     }
 
+    // The failure said "transient" in its message and nothing in its type, so under #280's
+    // default policy (retry only Cause.Transient) it stopped being retried; the fixture now
+    // classifies it the way the prose always claimed.
+    private record TransientFailure(String message) implements Cause.Transient {}
+
     private static Promise<String> attemptOperation(AtomicInteger attempts) {
         var attempt = attempts.incrementAndGet();
 
         return attempt < 3
-               ? Promise.failure(Causes.cause("transient failure #" + attempt))
+               ? Promise.failure(new TransientFailure("transient failure #" + attempt))
                : Promise.success("ok after " + attempt + " attempts");
     }
 

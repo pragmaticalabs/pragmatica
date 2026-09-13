@@ -49,6 +49,56 @@ class RetryInterceptorPredicateTest {
                    .onFailure(cause -> assertThat(cause).as("the caller sees its own cause, not a retry wrapper").isInstanceOf(InsufficientFunds.class));
     }
 
+    /// A cause that declares itself transient — what infrastructure failures classify as.
+    private record PeerBusy(String message) implements Cause.Transient {}
+
+    /// Could not be written before the fix (`Cause.Transient` is new); the budget is what the pin
+    /// counts: `max_attempts` is calls at the METHOD, the first included.
+    @Test
+    void defaultPolicy_transientFailure_isRetried_upToMaxAttempts() {
+        var attempts = new AtomicInteger();
+        var intercepted = interceptor(RetryConfig.retryConfig(3, ONE_MS)).intercept(failingWith(attempts, new PeerBusy("later")));
+
+        intercepted.apply("x").await().onSuccess(_ -> fail("must fail"));
+
+        assertThat(attempts.get()).isEqualTo(3);
+    }
+
+    @Test
+    void nonTerminalPolicy_unclassifiedFailure_isRetried_theOldBehaviourOptedInto() {
+        var attempts = new AtomicInteger();
+        var config = RetryConfig.retryConfig(3, ONE_MS).map(c -> c.withRetryOn(RetryOn.NON_TERMINAL));
+        var intercepted = interceptor(config).intercept(failingWith(attempts, new InsufficientFunds("no")));
+
+        intercepted.apply("x").await().onSuccess(_ -> fail("must fail"));
+
+        assertThat(attempts.get()).isEqualTo(3);
+    }
+
+    @Test
+    void singleAttemptBudget_transientFailure_isNotRetried() {
+        var attempts = new AtomicInteger();
+        var intercepted = interceptor(RetryConfig.retryConfig(1, ONE_MS)).intercept(failingWith(attempts, new PeerBusy("later")));
+
+        intercepted.apply("x").await().onSuccess(_ -> fail("must fail"));
+
+        assertThat(attempts.get()).isEqualTo(1);
+    }
+
+    @Test
+    void transientFailure_thenSuccess_returnsTheSuccess() {
+        var attempts = new AtomicInteger();
+        Fn1<Promise<String>, String> flaky = _ -> attempts.incrementAndGet() < 3
+                                                 ? new PeerBusy("later").<String> promise()
+                                                 : Promise.success("ok");
+        var intercepted = interceptor(RetryConfig.retryConfig(3, ONE_MS)).intercept(flaky);
+
+        var value = intercepted.apply("x").await().fold(cause -> fail("must succeed: " + cause.message()), v -> v);
+
+        assertThat(value).isEqualTo("ok");
+        assertThat(attempts.get()).isEqualTo(3);
+    }
+
     private static RetryMethodInterceptor interceptor(org.pragmatica.lang.Result<RetryConfig> config) {
         return config.flatMap(c -> new RetryInterceptorFactory().provision(c).await())
                      .fold(cause -> fail("provision must succeed: " + cause.message()), i -> i);
