@@ -55,18 +55,20 @@ public record MembershipLiveness(Supplier<Set<NodeId>> coreCountedMembers,
                                       configuredCoreCount);
     }
 
-    /// R1′(a): a live, counted member — counted (so neither DEPARTING nor DEAD) AND alive by raw SWIM. A
-    /// surplus trim never reaps such a node, whoever is leader.
-    public boolean liveCountedMember(NodeId nodeId) {
-        return coreCountedMembers.get()
-                                 .contains(nodeId) && swimAlive.test(nodeId);
+    /// R1′(a), refined after verify-1058: LIVE by liveness EVIDENCE, never by membership projection. A node is live
+    /// when raw SWIM reports it HEALTHY or SUSPECTED, OR the active leader's own transport link to it is connected.
+    /// A DEPARTING target whose DRAIN was never delivered (for example, withdrawn to MEMBER and re-drained) is
+    /// therefore still live. NOT live requires positive evidence of death or exit: raw SWIM FAULTY or UNKNOWN (a
+    /// departed or forgotten member) AND the leader's transport link down. A surplus trim never reaps a live node.
+    public boolean live(NodeId nodeId) {
+        return swimAlive.test(nodeId) || transportConnected.test(nodeId);
     }
 
-    /// #1062: ANY independent evidence of life — the leader's transport link, raw SWIM, or a counted
-    /// membership. A reap facing such evidence is deferred, never executed.
+    /// #1062: ANY evidence of life — [#live] (raw SWIM or the leader's transport link), or a counted membership. A
+    /// reap facing such evidence is deferred, never executed.
     public boolean demonstrablyLive(NodeId nodeId) {
-        return transportConnected.test(nodeId) || swimAlive.test(nodeId) || coreCountedMembers.get()
-                                                                                              .contains(nodeId);
+        return live(nodeId) || coreCountedMembers.get()
+                                                 .contains(nodeId);
     }
 
     /// R4: an instance of such a node is never touched by the activation replay — it is tracked by the FSM,

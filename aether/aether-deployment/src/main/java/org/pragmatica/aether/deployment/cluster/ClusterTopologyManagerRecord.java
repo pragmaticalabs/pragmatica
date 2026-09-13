@@ -1257,7 +1257,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private void surplusTrimGraceExpired(NodeId targetNodeId, DrainReason reason) {
         var counted = liveness.coreCountedMembers().get();
         var configured = liveness.configuredCoreCount().getAsInt();
-        var targetLive = liveness.liveCountedMember(targetNodeId);
+        var targetLive = liveness.live(targetNodeId);
         var verdict = graceReapVerdict(active.get(), targetLive, counted, configured, targetNodeId);
 
         if (verdict == GraceReapVerdict.REAP) {
@@ -1303,9 +1303,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// #1050 (R1′) — may a SURPLUS drain's grace-expiry reap still proceed? The drain was decided when the
     /// cluster had a surplus; by expiry nodes may have died, the target may have returned to service, or
     /// leadership may have moved. Checks, in order:
-    /// 1. **Target live** — counted (neither DEPARTING nor DEAD) and alive by raw SWIM: never reaped,
-    ///    whoever is leader. A surplus trim never abruptly kills a live node (this also covers a drain
-    ///    withdrawn back to MEMBER).
+    /// 1. **Target live** — by liveness evidence ([MembershipLiveness#live]: raw SWIM HEALTHY/SUSPECTED, or the
+    ///    active leader's transport connected), never by membership projection: never reaped, whoever is leader.
+    ///    A DEPARTING target whose DRAIN was never delivered is live. A surplus trim never abruptly kills a live node.
     /// 2. **Leadership** — a deposed issuer never reaps.
     /// 3. **Quorum safety** — the counted members other than the target must hold `configured / 2 + 1` of a
     ///    KNOWN configured core size. An unknown size (`configured < 1`) is NOT quorum-safe (fail-closed).
@@ -1320,11 +1320,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// safety until its eviction backstop fires.
     /// Pure — the caller supplies the inputs it read once.
     static GraceReapVerdict graceReapVerdict(boolean issuerActive,
-                                             boolean targetLiveCountedMember,
+                                             boolean targetLive,
                                              Set<NodeId> coreCountedMembers,
                                              int configuredCoreCount,
                                              NodeId target) {
-        if (targetLiveCountedMember) {
+        if (targetLive) {
             return GraceReapVerdict.TARGET_LIVE;
         }
 

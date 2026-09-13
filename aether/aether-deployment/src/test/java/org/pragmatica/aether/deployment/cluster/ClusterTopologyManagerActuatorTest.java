@@ -745,6 +745,28 @@ class ClusterTopologyManagerActuatorTest {
             assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
         }
 
+        /// R1′(a) refined (verify-1058): LIVE means liveness evidence, not counted membership. The target is DEPARTING
+        /// (uncounted) but still SWIM-alive and reachable by the leader's transport, as a target whose DRAIN was never
+        /// delivered is. It is never reaped by the backstop, even once it dies afterwards. A verdict keyed on counted
+        /// membership would call it not live, defer the reap on its evidence, and reap it when the evidence cleared.
+        @Test
+        void surplusDrain_graceExpiry_departingButAliveTarget_isNeverReapedByTheBackstop() {
+            var slowCtm = ctmWithDrainGrace(timeSpan(1200).millis());
+
+            slowCtm.activate();
+            coreCountedMembers.set(SPARE_FIVE);
+            swimAliveNodes.set(ALL_SIX);
+            transportConnectedNodes.set(Set.of(PEER_D));
+            slowCtm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            awaitClearedExactlyOnce(PEER_D);
+            swimAliveNodes.set(SPARE_FIVE);
+            transportConnectedNodes.set(Set.of());
+            settleFor(Duration.ofMillis(500));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("a DEPARTING-but-alive target is live: the backstop skips it outright")
+                                                            .isEmpty();
+        }
+
         /// R1′(b): a deposed issuer never reaps, even a target that is not live.
         @Test
         void surplusDrain_graceExpiry_keepsTarget_whenIssuerNoLongerLeader() {
@@ -974,6 +996,37 @@ class ClusterTopologyManagerActuatorTest {
             fsm.onSwimDeparted(PEER_D, 2L);
 
             assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+        }
+
+        /// The CTO-required case on REAL membership (verify-1058). The drained target is withdrawn to MEMBER, as #1058's
+        /// DrainUnacknowledged does, and the reconciler re-drains it, so it is DEPARTING at grace expiry. It is still
+        /// SWIM-alive, and the leader's transport to it is connected. It is NOT reaped, and the backstop leaves it alone
+        /// even after it halts. A verdict keyed on counted membership reddens this test.
+        @Test
+        void surplusDrain_realMembership_reDrainedDepartingTarget_swimAliveAndConnected_isNotReaped() {
+            var issuer = ctmWithDrainGrace(timeSpan(1200).millis(), fsmRoutedDrainSink(), fsmLiveness());
+
+            swimAliveNodes.set(ALL_SIX);
+            transportConnectedNodes.set(Set.of(PEER_D));
+            wireAndSeed(issuer::onMembershipDecision);
+            issuer.activate();
+            issuer.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            fsm.onSwimHealthy(PEER_D, 5L);
+            fsm.onDrainRequested(PEER_D);
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(fsm.memberStates().get(PEER_D)).as("arming: the re-drained target is DEPARTING at expiry")
+                                                      .isEqualTo("Departing");
+            assertThat(fsm.coreCountedMembers()).as("arming: DEPARTING is not counted")
+                                                .doesNotContain(PEER_D);
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+
+            swimAliveNodes.set(SPARE_FIVE);
+            transportConnectedNodes.set(Set.of());
+            settleFor(Duration.ofMillis(500));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("live at expiry: the backstop never schedules a reap of it")
+                                                            .isEmpty();
         }
 
         private ClusterTopologyManager issuerCtm() {
