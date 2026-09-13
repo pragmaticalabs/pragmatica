@@ -46,6 +46,9 @@ if [ -z "${CHAOS_HARNESS_REGROUPED:-}" ] && command -v perl >/dev/null 2>&1 \
     export CHAOS_HARNESS_REGROUPED=1
     exec perl -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' bash "$0" "$@"
 fi
+# Any harness started below this one (reachable only if guard 1 fails) must stay in THIS
+# process group, never regroup, so a group kill or a process-count ceiling reaches it.
+export CHAOS_HARNESS_REGROUPED=1
 export CHAOS_HARNESS_ACTIVE=$$
 HARNESS_PGID=$(_harness_pgid_of $$)
 CHAOS_HARNESS_DEADLINE_S="${CHAOS_HARNESS_DEADLINE_S:-480}"
@@ -103,6 +106,15 @@ case "${CHAOS_HARNESS_SELFTEST:-}" in
     reenter)
         bash "$0"
         exit $?
+        ;;
+    nested-pgid)
+        echo "  outer harness pgid $(_harness_pgid_of $$)"
+        env -u CHAOS_HARNESS_ACTIVE CHAOS_HARNESS_SELFTEST=print-pgid bash "$0"
+        exit $?
+        ;;
+    print-pgid)
+        echo "  inner harness pgid $(_harness_pgid_of $$)"
+        exit 0
         ;;
     hang)
         ( while :; do command sleep 1; done ) &
