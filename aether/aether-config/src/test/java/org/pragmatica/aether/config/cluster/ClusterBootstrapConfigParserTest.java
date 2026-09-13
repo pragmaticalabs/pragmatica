@@ -693,5 +693,19 @@ class ClusterBootstrapConfigParserTest {
                     .contains("replacement_ceiling")
                     .contains("positive"));
         }
+
+        /// #1049 round 3 (S4) — a ceiling that cannot exceed the 3m first-listing floor plus the 2m join
+        /// allowance is refused at load, not clamped: `30s` is below the measured 50–63s mint-to-join, and the
+        /// leader evicts past the ceiling whatever the provider reports. Five minutes exactly cannot exceed it.
+        @Test
+        void parse_replacementCeilingNotAboveFloorPlusJoinAllowance_failsNamingTheMinimum() {
+            List.of("30s", "4m", "5m")
+                .forEach(value -> ClusterBootstrapConfigParser.parse(CLOUD_WITH_CEILING.formatted("replacement_ceiling = \"" + value + "\""))
+                                                              .onSuccess(config -> Assertions.fail("Expected " + value + " to be refused, not accepted"))
+                                                              .onFailure(cause -> assertThat(cause.message())
+                                                                  .contains("replacement_ceiling")
+                                                                  .contains("must exceed 5m")
+                                                                  .contains(value)));
+        }
     }
 }

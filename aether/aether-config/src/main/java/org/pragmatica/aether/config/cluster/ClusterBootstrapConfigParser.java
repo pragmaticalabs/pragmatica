@@ -265,6 +265,7 @@ public final class ClusterBootstrapConfigParser {
                                                           + "')"))
                        .map(parsed -> TimeSpan.fromDuration(parsed.duration()))
                        .flatMap(ceiling -> requirePositiveCeiling(section, raw, ceiling))
+                       .flatMap(ceiling -> requireCeilingAboveMinimum(section, raw, ceiling))
                        .map(Option::some);
     }
 
@@ -273,6 +274,23 @@ public final class ClusterBootstrapConfigParser {
             return parseFailed(section
                               + "." + REPLACEMENT_CEILING_KEY
                               + " must be a positive duration, e.g. \"10m\" (was '" + raw
+                              + "')").result();
+        }
+
+        return success(ceiling);
+    }
+
+    /// #1049 — refuse, at load, a ceiling that cannot outlast the first-listing floor plus a join allowance
+    /// ([SourceProfile#MINIMUM_REPLACEMENT_CEILING]); never clamp it, so the operator sees the value that
+    /// is in force.
+    private static Result<TimeSpan> requireCeilingAboveMinimum(String section, String raw, TimeSpan ceiling) {
+        if (ceiling.nanos() <= SourceProfile.MINIMUM_REPLACEMENT_CEILING.nanos()) {
+            return parseFailed(section
+                              + "." + REPLACEMENT_CEILING_KEY
+                              + " must exceed " + SourceProfile.MINIMUM_REPLACEMENT_CEILING.duration().toMinutes()
+                              + "m: the " + SourceProfile.REPLACEMENT_FIRST_LISTING_FLOOR.duration().toMinutes()
+                              + "m an absent replacement is watched for plus a " + SourceProfile.REPLACEMENT_JOIN_ALLOWANCE.duration().toMinutes()
+                              + "m join allowance; a shorter ceiling re-dispatches replacements that are still booting (was '" + raw
                               + "')").result();
         }
 
