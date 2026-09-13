@@ -19,6 +19,11 @@
   readiness sweep forgets it within three pings. The latch keeps it acknowledged, so it still terminalizes at expiry
   instead of being withdrawn to MEMBER and re-added to the DHT ring. The latch resets on every entry into DEPARTING;
   a newer incarnation ends the episode through the existing recovery edge `[design intent — unverified]`.
+  **Precondition:** the acknowledgement rides the ping *after* the one that delivered the DRAIN (the pong precedes the
+  drain handler), so a drainee that halts within about one ping interval of delivery is never acknowledged; that
+  drainee still terminalizes only because zombie-link eviction (`pingInterval × 8`, plus one ping) fits inside
+  `splitTimeout`. A `pingInterval` of 2s or more, or LHM-stretched detection, reopens the withdraw-to-MEMBER path
+  for a fast-halting idle drainee `[unverified: derived from defaults, not measured on a cluster]`.
 - A delivered, acknowledged drain terminalizes at expiry with exactly one REMOVED edge. A withdrawn drain delivered later
   ends in exactly one death through SWIM's FAULTY edge, which emits `FaultyObserved` and `DepartedObserved` together
   `[mechanism: REMOVED fires only on the fresh DEAD edge of a member that had joined, and DEAD absorbs every later SWIM event]`.
