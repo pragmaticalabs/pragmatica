@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.membership.fsm;
 
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DownHysteresisMet;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DrainRequested;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DrainUnacknowledged;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.JoinGraceExpiredNeverHealthy;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.LivenessGone;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.PeerConnected;
@@ -76,6 +77,7 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
                 case SwimUnknown _ -> tx.ignore();
                 case DrainRequested _ -> tx.transitionTo(ctx.departing());
                 case Stopped _ -> tx.transitionTo(ctx.dead());
+                case DrainUnacknowledged _ -> tx.ignore();
                 case JoinGraceExpiredNeverHealthy _ -> tx.transitionTo(ctx.dead());
             }
         }
@@ -104,6 +106,7 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
                 case SwimUnknown _ -> tx.ignore();
                 case DrainRequested _ -> tx.transitionTo(ctx.departing());
                 case Stopped _ -> tx.transitionTo(ctx.dead());
+                case DrainUnacknowledged _ -> tx.ignore();
                 case JoinGraceExpiredNeverHealthy _ -> tx.ignore();
             }
         }
@@ -139,6 +142,7 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
                 case SwimUnknown _ -> tx.ignore();
                 case DrainRequested _ -> tx.transitionTo(ctx.departing());
                 case Stopped _ -> tx.transitionTo(ctx.dead());
+                case DrainUnacknowledged _ -> tx.ignore();
                 case JoinGraceExpiredNeverHealthy _ -> tx.ignore();
             }
         }
@@ -149,8 +153,11 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
     /// edge, a `SwimHealthy` carrying a STRICTLY HIGHER incarnation than the high-water mark
     /// recovers the member back to MEMBER (it refuted / restarted mid-drain — mere liveness at the
     /// known incarnation does NOT cancel a drain), and the manager-armed DEPARTING timeout
-    /// ([`MembershipFsm`]) terminalizes a drainer that goes silent via a delayed `Stopped`. All
-    /// other signals are absorbed.
+    /// ([`MembershipFsm`]) terminalizes a drainer that goes silent via a delayed `Stopped`. When
+    /// that timeout finds a drain-initiated departure the target never acknowledged and no death
+    /// evidence corroborates, the manager dispatches `DrainUnacknowledged` instead, which withdraws
+    /// the drain back to MEMBER (#1054 — the DRAIN never reached a live target). All other signals
+    /// are absorbed.
     record Departing(MembershipContext ctx) implements MembershipState {
         @Override
         public boolean countsTowardEffective() {
@@ -162,6 +169,7 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
         public void handle(MembershipEvent event, TransitionRequest<MembershipState, MembershipEvent> tx) {
             switch (event) {
                 case Stopped _ -> tx.transitionTo(ctx.dead());
+                case DrainUnacknowledged _ -> tx.transitionTo(ctx.memberState());
                 case SwimDeparted e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
                 case SwimHealthy e -> recoverFromDepartingIfNewer(ctx, e.incarnation(), tx);
                 case PeerConnected _, UpHysteresisMet _, SwimSuspect _, SwimFaulty _, PeerDisconnected _, LivenessGone _, DownHysteresisMet _, SwimUnknown _, DrainRequested _, JoinGraceExpiredNeverHealthy _ -> tx.ignore();
@@ -194,6 +202,7 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
                 case SwimUnknown _ -> tx.ignore();
                 case DrainRequested _ -> tx.ignore();
                 case Stopped _ -> tx.ignore();
+                case DrainUnacknowledged _ -> tx.ignore();
                 case JoinGraceExpiredNeverHealthy _ -> tx.ignore();
             }
         }

@@ -3096,6 +3096,11 @@ public interface AetherNode extends ManageableNode {
         // Publish the FSM into the deferred holder so the membership consumers wired earlier (DHT
         // livePeers, accessibility filter, quorum-count propagation) read the authoritative FSM set.
         membershipFsmRef.set(membershipFsm);
+        // #1054: every DRAINING pong the leader records is a drain acknowledgement, latched by the FSM for the
+        // member's drain episode. It is latched as the pong lands because the readiness sweep forgets a halted
+        // drainee within three pings, long before the DEPARTING timeout. An acknowledged drain terminalizes at
+        // expiry; an undelivered DRAIN to a live target is withdrawn to MEMBER instead of reaped.
+        pongSignalFan.onDrainingReported(membershipFsm::onDrainAcknowledged);
         // Wave-1 Enrichment A (cluster-topology-overhaul spec): per-node TRANSITION JOURNAL —
         // bounded per-layer ring buffer recording EVERY MembershipFsm transition and EVERY
         // PeerState transition, dumpable via GET /api/cluster/journal. Diagnostic-only and
