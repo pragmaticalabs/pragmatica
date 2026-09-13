@@ -772,7 +772,16 @@ http_status_with_body() {
 # Wait for condition with timeout
 # ---------------------------------------------------------------------------
 wait_for() {
-    local description="$1" check_cmd="$2" timeout="${3:-60}" interval="${4:-2}"
+    local description="$1" check_cmd="$2" timeout="${3:-60}" interval="${4:-2}" value_cmd="${5:-}"
+    # value_cmd (H5, 2026-09-13): optional command whose stdout is the "observed
+    # value" the predicate is polling on (e.g. a count helper). Used ONLY to make
+    # the final timeout message legible — never to decide pass/fail, and never
+    # normalized to a number: a count helper's own honest-read contract (empty
+    # stdout + non-zero rc = "read failed", never a plausible "0") must survive
+    # unchanged here, or an unreachable endpoint would look identical to a
+    # genuine low reading. See _cluster_active_core_count_checked /
+    # _cluster_member_count_checked in lib/cluster.sh for that contract.
+    local last_value=""
     # Scale timeouts on slower environments (cloud VMs have higher inter-node latency than
     # docker-localhost). TIMEOUT_SCALE=3 default for cloud, 1 elsewhere — set in run-tests.sh.
     timeout=$((timeout * ${TIMEOUT_SCALE:-1}))
@@ -833,9 +842,34 @@ wait_for() {
             2|127)
                 # Bash parse error / command not found — predicate is buggy, not just false.
                 # Surface it so a test author can fix the typo instead of waiting for timeout.
-                log_warn "wait_for predicate emitted shell error (rc=${rc}): $(head -c 300 < "$errfile")"
+                # H5 (2026-09-13): this is also what a HONEST count-helper failure looks
+                # like — e.g. `[ "$(some_count)" -eq N ]` with some_count's stdout empty
+                # because its endpoint was unreachable becomes `[ "" -eq N ]`, rc=2,
+                # "integer expression expected". That is NOT a typo; it is the helper
+                # correctly refusing to guess a number for "unreachable" (see
+                # wait_for_node_count's identical rationale below). Label it as a
+                # possible unreachable-read rather than a bare "buggy predicate" so it
+                # doesn't read as a test-authoring bug every single poll.
+                if printf '%s' "$(cat "$errfile")" | grep -q 'integer expression expected'; then
+                    log_warn "wait_for predicate could not be evaluated (rc=${rc}, empty read — likely an unreachable endpoint, not a false predicate): $(head -c 300 < "$errfile")"
+                else
+                    log_warn "wait_for predicate emitted shell error (rc=${rc}): $(head -c 300 < "$errfile")"
+                fi
                 ;;
         esac
+        # H5: best-effort capture of the "observed value" for the timeout message.
+        # An empty read is recorded AS empty (never coerced to "0" or any other
+        # plausible-looking number) so the final message cannot misreport
+        # "unreachable" as "confirmed low reading".
+        if [ -n "$value_cmd" ]; then
+            local v
+            v=$(eval "$value_cmd" 2>/dev/null)
+            if [ -n "$v" ]; then
+                last_value="$v"
+            else
+                last_value="<empty read — endpoint unreachable or value unavailable>"
+            fi
+        fi
         # On cloud, a non-zero predicate may mean the pinned endpoint just died
         # (the node it pointed at was killed). Rotate to a live node BEFORE the
         # next poll so the dead endpoint isn't re-probed at full cost every
@@ -848,7 +882,7 @@ wait_for() {
         # overshooting the wall-clock ceiling by an extra `interval` for no reason.
         [ "$SECONDS" -lt "$deadline" ] && sleep "$interval"
     done
-    log_fail "${description} (timed out after $((SECONDS - start_seconds))s, budget ${timeout}s)"
+    log_fail "${description} (timed out after $((SECONDS - start_seconds))s, budget ${timeout}s)${last_value:+ — last observed value: ${last_value}}"
     rm -f "$errfile"
     return 1
 }
@@ -1284,6 +1318,58 @@ cloud_ssh() {
     ssh "${SSH_OPTS[@]}" \
         -i "${AETHER_SSH_KEY}" \
         "${CLOUD_SSH_USER:-root}@${target_ip}" "$@"
+}
+
+# ---------------------------------------------------------------------------
+# JVM-runtime systemd unit inspection (H1/H2, 2026-09-13 cloud-JVM harness
+# fixes: docker inspect over SSH is a hard failure on --runtime jvm, since a
+# JVM cloud VM has no docker daemon at all — the node runs as systemd unit
+# `aether-node`, Restart=no by deliberate product design. Shared here (rather
+# than duplicated per suite) so it is unit-testable via
+# test/test-cloud-helpers.sh by stubbing cloud_ssh/ssh, and so every caller
+# reads the halt reason the same way.
+# ---------------------------------------------------------------------------
+
+# Read one or more `systemctl show aether-node` properties on a node's own VM
+# over SSH. Prints raw "KEY=value\n..." lines on stdout in whatever order
+# systemd returns them (callers extract by field name via jvm_unit_field, so
+# order never matters). Returns the ssh/remote-command rc — a non-zero rc
+# means either the SSH transport failed or the remote systemctl invocation
+# itself failed; the caller must not treat rc!=0 output as a valid reading.
+jvm_unit_show() {
+    local node_id="$1" properties="$2"
+    cloud_ssh "$node_id" "systemctl show aether-node --property=${properties} 2>&1"
+}
+
+# Extract one KEY=value field's value from jvm_unit_show's raw output. Prints
+# nothing if the field is absent (e.g. rc!=0 output, or a field name typo) —
+# callers must treat an empty result as "not read", never coerce it into a
+# passing or failing comparison value.
+jvm_unit_field() {
+    local show="$1" field="$2"
+    printf '%s\n' "$show" | sed -n "s/^${field}=//p" | head -1 | tr -d '\r'
+}
+
+# H2 (2026-09-13): assert the self-drain HALT REASON on a JVM-runtime node by
+# reading its systemd unit's ExecMainStatus directly over SSH — the
+# JVM-runtime analog of `docker inspect .State.ExitCode`. An SSH/systemctl
+# read failure is a hard log_fail (never a silent pass): a caller only
+# reaches this once it has established the check IS verifiable on this
+# runtime (unlike the pre-fix cloud/container skip, which used to score a
+# zero-assertion PASS instead of a SKIP — see test-self-drain-quorum-loss.sh's
+# run_test/skip_test dispatch for that half of the fix). Unit-tested via
+# test/test-cloud-helpers.sh with a stubbed ssh/systemctl.
+jvm_unit_exec_main_status_is_two() {
+    local node_id="$1" label="${2:-$1}"
+    local show rc exec_status
+    show=$(jvm_unit_show "$node_id" "ExecMainStatus")
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        log_fail "${label} ExecMainStatus unreadable: SSH/systemctl failed (rc=${rc}): $(printf '%s' "$show" | head -c 300)"
+        return 1
+    fi
+    exec_status=$(jvm_unit_field "$show" "ExecMainStatus")
+    assert_eq "$exec_status" "2" "${label} ExecMainStatus is 2 (Runtime.halt(2) from SelfDrainCoordinator, read via systemctl show)"
 }
 
 # ---------------------------------------------------------------------------

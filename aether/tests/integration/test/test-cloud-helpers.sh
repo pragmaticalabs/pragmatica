@@ -182,7 +182,110 @@ else
     fail "cloud_server_id provider 'aws' expected rc=2, got rc=${rc}"
 fi
 
-unset -f hcloud api_get
+# ---------------------------------------------------------------------------
+# H1/H2 (2026-09-13 cloud-JVM harness fixes): jvm_unit_show / jvm_unit_field /
+# jvm_unit_exec_main_status_is_two (lib/common.sh). On --runtime jvm there is
+# no docker daemon on the cloud VM — the node runs as systemd unit
+# `aether-node` — so the self-drain halt reason is read via
+# `systemctl show aether-node --property=...` over SSH instead of
+# `docker inspect`. These tests stub `ssh` (cloud_ssh's underlying command;
+# node-id -> IP resolution reuses the CTM-replacement `api_get` stub above —
+# NOT yet unset, see the combined `unset -f hcloud api_get ssh` below — so no
+# new fixture is needed) to prove:
+#   (a) ExecMainStatus=2                     -> PASS
+#   (b) ExecMainStatus=0 (graceful shutdown) -> FAIL
+#   (c) ActiveState=active, ExecMainStatus=2 -> FAIL (H1's tier-2 signature
+#       check requires BOTH fields; a still-active unit is never a drain halt)
+#   (d) an SSH/transport error (rc=255)      -> FAIL, never a silent pass
+# ---------------------------------------------------------------------------
+
+# Stub `ssh`: cloud_ssh invokes `ssh "${SSH_OPTS[@]}" -i "$KEY" user@ip "$cmd"`
+# — the remote command is always the LAST argument. Branch on which
+# `systemctl show --property=...` was requested and on $STUB_SSH_RC to
+# simulate a transport failure independent of the property set.
+ssh() {
+    local remote_cmd="${@: -1}"
+    if [ -n "${STUB_SSH_RC:-}" ] && [ "${STUB_SSH_RC}" != "0" ]; then
+        return "$STUB_SSH_RC"
+    fi
+    case "$remote_cmd" in
+        *"--property=ExecMainStatus"*)
+            printf 'ExecMainStatus=%s\n' "${STUB_EXEC_MAIN_STATUS:-2}" ;;
+        *"--property=ActiveState,ExecMainStatus"*)
+            printf 'ActiveState=%s\nExecMainStatus=%s\n' \
+                "${STUB_ACTIVE_STATE:-failed}" "${STUB_EXEC_MAIN_STATUS:-2}" ;;
+        *) return 127 ;;   # unrecognized command — "systemctl: command not found" shape
+    esac
+}
+
+# 15) jvm_unit_show + jvm_unit_field: parse a canned systemctl-show reading.
+STUB_SSH_RC=0 STUB_ACTIVE_STATE=failed STUB_EXEC_MAIN_STATUS=2
+show=$(jvm_unit_show "$CTM_NODE" "ActiveState,ExecMainStatus")
+got_active=$(jvm_unit_field "$show" "ActiveState")
+got_exec=$(jvm_unit_field "$show" "ExecMainStatus")
+[ "$got_active" = "failed" ] && [ "$got_exec" = "2" ] \
+    && ok "jvm_unit_show/jvm_unit_field parse ActiveState=failed, ExecMainStatus=2" \
+    || fail "jvm_unit_show/jvm_unit_field expected failed/2, got '${got_active}'/'${got_exec}'"
+
+# 16) jvm_unit_exec_main_status_is_two: ExecMainStatus=2 -> PASS (green case).
+STUB_SSH_RC=0 STUB_EXEC_MAIN_STATUS=2
+if jvm_unit_exec_main_status_is_two "$CTM_NODE" "test-node" >/dev/null 2>&1; then
+    ok "jvm_unit_exec_main_status_is_two: ExecMainStatus=2 -> PASS"
+else
+    fail "jvm_unit_exec_main_status_is_two: ExecMainStatus=2 should PASS"
+fi
+
+# 17) jvm_unit_exec_main_status_is_two: ExecMainStatus=0 (graceful shutdown,
+# NOT a self-drain) -> FAIL. This is the mutation this suite exists to catch:
+# a self-drain assertion that can't tell ExecMainStatus=2 from 0 is vacuous.
+STUB_SSH_RC=0 STUB_EXEC_MAIN_STATUS=0
+if jvm_unit_exec_main_status_is_two "$CTM_NODE" "test-node" >/dev/null 2>&1; then
+    fail "jvm_unit_exec_main_status_is_two: ExecMainStatus=0 should FAIL (not a self-drain halt)"
+else
+    ok "jvm_unit_exec_main_status_is_two: ExecMainStatus=0 -> FAIL"
+fi
+
+# 18) jvm_unit_exec_main_status_is_two: an SSH/transport error must FAIL, never
+# be scored as a pass by a string-equality guard silently matching an empty
+# read against something other than "2".
+STUB_SSH_RC=255
+if jvm_unit_exec_main_status_is_two "$CTM_NODE" "test-node" >/dev/null 2>&1; then
+    fail "jvm_unit_exec_main_status_is_two: SSH error (rc=255) should FAIL, not silently pass"
+else
+    ok "jvm_unit_exec_main_status_is_two: SSH error (rc=255) -> FAIL"
+fi
+STUB_SSH_RC=0
+
+# 19) H1 tier-2 signature check (ActiveState=failed AND ExecMainStatus=2):
+# ActiveState=active with ExecMainStatus=2 must still FAIL — a unit that is
+# still running is never a designed drain halt, regardless of what a stale
+# ExecMainStatus reads. Exercises the exact two-field conjunction
+# test-self-drain-quorum-loss.sh's _confirm_survivor_departure tier 2 uses.
+STUB_SSH_RC=0 STUB_ACTIVE_STATE=active STUB_EXEC_MAIN_STATUS=2
+show=$(jvm_unit_show "$CTM_NODE" "ActiveState,ExecMainStatus")
+active_state=$(jvm_unit_field "$show" "ActiveState")
+exec_status=$(jvm_unit_field "$show" "ExecMainStatus")
+if [ "$active_state" = "failed" ] && [ "$exec_status" = "2" ]; then
+    fail "H1 signature check: ActiveState=active should FAIL, not match the drain-halt signature"
+else
+    ok "H1 signature check: ActiveState=active, ExecMainStatus=2 -> FAIL (not a drain halt)"
+fi
+
+# 20) H1 tier-2 signature check: the designed halt (ActiveState=failed,
+# ExecMainStatus=2) DOES match — the positive control for test 19's negative,
+# proving the conjunction isn't just always-false.
+STUB_SSH_RC=0 STUB_ACTIVE_STATE=failed STUB_EXEC_MAIN_STATUS=2
+show=$(jvm_unit_show "$CTM_NODE" "ActiveState,ExecMainStatus")
+active_state=$(jvm_unit_field "$show" "ActiveState")
+exec_status=$(jvm_unit_field "$show" "ExecMainStatus")
+if [ "$active_state" = "failed" ] && [ "$exec_status" = "2" ]; then
+    ok "H1 signature check: ActiveState=failed, ExecMainStatus=2 -> matches drain-halt signature (positive control for test 19)"
+else
+    fail "H1 signature check: ActiveState=failed, ExecMainStatus=2 should match the drain-halt signature"
+fi
+
+unset -f hcloud api_get ssh
+unset STUB_SSH_RC STUB_ACTIVE_STATE STUB_EXEC_MAIN_STATUS
 
 echo ""
 echo "  ----"

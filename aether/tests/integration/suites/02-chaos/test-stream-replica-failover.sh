@@ -44,6 +44,23 @@ K_EVENTS="${K_EVENTS:-5}"   # additional markers published after repair (livenes
 MARKER_PREFIX="FLVR-FAILOVER-MARKER"
 KILLED_OWNER=""             # set by the kill step; consumed by cleanup()
 
+# H4 (2026-09-13): bounded-wait budget for the pre-kill "a CAUGHT_UP non-owner
+# replica exists" check (test_identify_owner_and_caught_up_replica). The
+# previous form checked has_caught_up_replica_excluding exactly ONCE against
+# whatever replicas_snapshot_owner_view happened to return (test duration
+# ~1s) — sufficient once the owner view was reachable, but the non-owner
+# replica's OWN backfill/catch-up is a separate, asynchronous process that
+# can still be in flight at that instant. Observed on cloud
+# (cloud-jvm-chaos-run-2026-09-13.md H4): the replica logged
+# "self CAUGHT_UP at offset 19" ~30s after this step ran, so the one-shot
+# check scored a hard FAIL on a replica that was correctly converging, not on
+# a broken one. Scaled by TIMEOUT_SCALE like every other cross-node
+# convergence wait in this suite; 60s (unscaled) covers the observed ~30s
+# with 2x headroom. The assertion itself is unchanged: it still requires a
+# genuine CAUGHT_UP non-owner replica within the budget, never a weaker one —
+# a replica that never reaches CAUGHT_UP still fails this step.
+CAUGHT_UP_REPLICA_WAIT_S=60
+
 # ---------------------------------------------------------------------------
 # Marker helpers
 # ---------------------------------------------------------------------------
@@ -432,10 +449,26 @@ test_identify_owner_and_caught_up_replica() {
     OWNER_TO_KILL="$owner"
 
     # A promotable replica MUST exist, else killing the owner cannot preserve history.
-    if has_caught_up_replica_excluding "$body" "$owner"; then
+    # H4 (2026-09-13): bounded wait, not a single check — see CAUGHT_UP_REPLICA_WAIT_S
+    # above for why (the non-owner replica's own backfill can still be catching up at
+    # this instant even though the owner view is already reachable). The wait re-fetches
+    # a fresh owner-authoritative view each round; the assertion itself is unchanged —
+    # timing out still fails the step, exactly as the old one-shot check did.
+    local caught_up_deadline caught_up="false"
+    caught_up_deadline=$((SECONDS + CAUGHT_UP_REPLICA_WAIT_S * ${TIMEOUT_SCALE:-1}))
+    while :; do
+        if has_caught_up_replica_excluding "$body" "$owner"; then
+            caught_up="true"
+            break
+        fi
+        [ "$SECONDS" -ge "$caught_up_deadline" ] && break
+        sleep 3
+        body=$(replicas_snapshot_owner_view 10)
+    done
+    if [ "$caught_up" = "true" ]; then
         log_pass "A CAUGHT_UP replica other than owner ${owner} exists (promotable)"
     else
-        log_fail "No CAUGHT_UP non-owner replica before kill — replication not established (body head: ${body:0:300})"
+        log_fail "No CAUGHT_UP non-owner replica before kill within $((CAUGHT_UP_REPLICA_WAIT_S * ${TIMEOUT_SCALE:-1}))s — replication not established (body head: ${body:0:300})"
         return 1
     fi
 }

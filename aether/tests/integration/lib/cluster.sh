@@ -266,6 +266,27 @@ cluster_active_core_count() {
     fi
 }
 
+# Honest-read companion to cluster_active_core_count (H5 / #441 review WARNING
+# a, 2026-09-13): the legacy contract above prints "0" with rc=0 for BOTH "the
+# topology read genuinely says 0 active cores" AND "the mgmt API was
+# unreachable" — a caller polling for `-eq 0` (e.g. "confirm a full self-drain
+# before reaping VMs") cannot tell those apart, and a merely-unreachable read
+# would look identical to a confirmed full drain. Mirrors
+# _cluster_member_count_checked's contract exactly: prints the count and
+# returns 0 on a genuine read; prints NOTHING and returns 1 when the topology
+# fetch itself failed. Never echoes 0 for a failed read — that would be the
+# exact "unreachable becomes a plausible number" mistake this function exists
+# to avoid. Callers that want the legacy always-succeeds/defaults-to-0
+# behaviour keep using cluster_active_core_count.
+_cluster_active_core_count_checked() {
+    local topology
+    topology=$(api_get "/api/v1/cluster/topology" 2>/dev/null || true)
+    if [ -z "$topology" ]; then
+        return 1
+    fi
+    cluster_active_core_count
+}
+
 # Whether the cluster currently has quorum (leader committed AND ≥ ⌈N/2⌉+1 ON_DUTY nodes).
 # Returns "true" or "false" (cluster.quorate field on StatusResponse).
 cluster_quorate() {

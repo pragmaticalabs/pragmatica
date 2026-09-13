@@ -198,6 +198,13 @@ case "$ENV_TYPE" in
                 exit 2
                 ;;
         esac
+        # Export for suite scripts (each `bash "$test_file"` is a fresh process —
+        # a plain, unexported CLOUD_RUNTIME never reaches them). --runtime jvm
+        # cloud VMs run the node as systemd unit `aether-node` with no docker
+        # daemon; suites that currently assume `docker inspect` over SSH
+        # (test-self-drain-quorum-loss.sh S19/S20) need this to branch (H1/H2,
+        # 2026-09-13 cloud-JVM harness fixes).
+        export CLOUD_RUNTIME
         ;;
     *)
         echo "ERROR: Invalid --env value: ${ENV_TYPE}. Must be docker, remote, or cloud."
