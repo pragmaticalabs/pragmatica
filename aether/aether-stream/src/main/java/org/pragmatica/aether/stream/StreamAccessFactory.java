@@ -68,10 +68,10 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
         return context.extension(Serializer.class)
                       .flatMap(serializer -> context.extension(Deserializer.class)
                                                     .flatMap(deserializer -> buildAccess(manager,
-                                                                                          serializer,
-                                                                                          deserializer,
-                                                                                          config,
-                                                                                          context)));
+                                                                                         serializer,
+                                                                                         deserializer,
+                                                                                         config,
+                                                                                         context)));
     }
 
     @SuppressWarnings("unchecked")

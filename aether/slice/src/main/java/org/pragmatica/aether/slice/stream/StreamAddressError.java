@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
-import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn2;
@@ -41,13 +40,12 @@ public sealed interface StreamAddressError extends Cause {
     /// The fix in both cases is the same: name the owner explicitly with
     /// `source = "<namespace>:<stream>:<version>"`, which is what `StreamResource.External` is for.
     record UnboundStreamAlias(String alias, BlueprintId blueprintId, String message) implements StreamAddressError {
-        static final Fn2<UnboundStreamAlias, String, BlueprintId> FACTORY =
-                Causes.forTwoValues("Stream alias '%s' has no address binding in blueprint %s. A blueprint-declared "
-                                   + "stream resolves through the bindings published at deploy time; an alias missing "
-                                   + "from them is either a `version = \"latest\"` declaration (which has no concrete "
-                                   + "address) or a stream-config validation failure (which publishes empty bindings). "
-                                   + "Declare the owning stream explicitly with `source = \"<namespace>:<stream>:<version>\"`.",
-                                    UnboundStreamAlias::new);
+        static final Fn2<UnboundStreamAlias, String, BlueprintId> FACTORY = Causes.forTwoValues("Stream alias '%s' has no address binding in blueprint %s. A blueprint-declared "
+                                                                                               + "stream resolves through the bindings published at deploy time; an alias missing "
+                                                                                               + "from them is either a `version = \"latest\"` declaration (which has no concrete "
+                                                                                               + "address) or a stream-config validation failure (which publishes empty bindings). "
+                                                                                               + "Declare the owning stream explicitly with `source = \"<namespace>:<stream>:<version>\"`.",
+                                                                                                UnboundStreamAlias::new);
     }
 
     /// The slice names an owning blueprint, but that blueprint has no bindings entry at all.
@@ -57,19 +55,9 @@ public sealed interface StreamAddressError extends Cause {
     /// same-batch ordering above, the reachable cause is a cluster deployed before stream bindings
     /// existed — an upgrade that needs a redeploy, not a declaration to fix.
     record UnresolvedStreamBindings(String alias, BlueprintId blueprintId, String message) implements StreamAddressError {
-        static final Fn2<UnresolvedStreamBindings, String, BlueprintId> FACTORY =
-                Causes.forTwoValues("Cannot resolve stream alias '%s': blueprint %s published no stream bindings. "
-                                   + "Redeploy the blueprint so its alias-to-address bindings are written.",
-                                    UnresolvedStreamBindings::new);
-    }
-
-    /// The slice is not deployed under any blueprint that this node can see — reported only where a
-    /// caller needs to distinguish it; [BlueprintStreamAddresses#engineKeyFor] treats it as the
-    /// legitimate bare-name case rather than an error.
-    record NoOwningBlueprint(Artifact artifact, String alias, String message) implements StreamAddressError {
-        static final Fn2<NoOwningBlueprint, Artifact, String> FACTORY =
-                Causes.forTwoValues("Slice %s is not deployed under a blueprint, so stream alias '%s' has no catalog address.",
-                                    NoOwningBlueprint::new);
+        static final Fn2<UnresolvedStreamBindings, String, BlueprintId> FACTORY = Causes.forTwoValues("Cannot resolve stream alias '%s': blueprint %s published no stream bindings. "
+                                                                                                     + "Redeploy the blueprint so its alias-to-address bindings are written.",
+                                                                                                      UnresolvedStreamBindings::new);
     }
 
     record unused() implements StreamAddressError {

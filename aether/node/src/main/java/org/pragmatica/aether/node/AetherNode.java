@@ -6167,10 +6167,9 @@ public interface AetherNode extends ManageableNode {
         // absence is what a test/Forge runtime looks like, and on a real node the resolver must
         // always be present or a declared stream silently falls back to the bare spelling again.
         spi.registerExtension(StreamAddressResolver.class,
-                              (sliceId, alias) -> Artifact.artifact(sliceId)
-                                                          .flatMap(artifact -> BlueprintStreamAddresses.engineKeyFor(kvStore,
-                                                                                                                     artifact,
-                                                                                                                     alias)));
+                              (sliceId, alias) -> Artifact.artifact(sliceId).flatMap(artifact -> BlueprintStreamAddresses.engineKeyFor(kvStore,
+                                                                                                                                       artifact,
+                                                                                                                                       alias)));
     }
 
     /// A6 cold-boot convergence window: how long after THIS node's `start()` the SWIM cold-boot

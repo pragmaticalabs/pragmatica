@@ -54,7 +54,7 @@ public interface StreamAddressResolver {
     /// of passing the declared alias through. Streams were the one declared resource that did not.
     static Result<StreamConfig> qualify(StreamConfig config, ProvisioningContext context) {
         return resolvedKey(config, context).map(key -> key.map(config::withName))
-                                           .or(Result.success(config));
+                          .or(Result.success(config));
     }
 
     /// The resolver's verdict, or [Option#none] when this runtime carries no deployment context.
@@ -68,6 +68,7 @@ public interface StreamAddressResolver {
                       .option()
                       .flatMap(resolver -> context.extension(String.class)
                                                   .option()
-                                                  .map(sliceId -> resolver.engineKeyFor(sliceId, config.name())));
+                                                  .map(sliceId -> resolver.engineKeyFor(sliceId,
+                                                                                        config.name())));
     }
 }

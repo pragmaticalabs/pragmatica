@@ -71,7 +71,7 @@ public sealed interface BlueprintStreamAddresses {
                                               Artifact artifact,
                                               String alias) {
         return owningBlueprint(kvStore, artifact).flatMap(blueprintId -> bindings(kvStore, blueprintId))
-                                                 .flatMap(value -> value.addressFor(alias));
+                              .flatMap(value -> value.addressFor(alias));
     }
 
     private static Result<String> resolveWithinBlueprint(KVStore<AetherKey, AetherValue> kvStore,
@@ -79,8 +79,8 @@ public sealed interface BlueprintStreamAddresses {
                                                          String alias) {
         return bindings(kvStore, blueprintId).toResult(StreamAddressError.UnresolvedStreamBindings.FACTORY.apply(alias,
                                                                                                                  blueprintId))
-                                             .flatMap(value -> addressWithin(value, blueprintId, alias))
-                                             .map(StreamEngineKey::engineKey);
+                       .flatMap(value -> addressWithin(value, blueprintId, alias))
+                       .map(StreamEngineKey::engineKey);
     }
 
     private static Result<ResourceAddress> addressWithin(BlueprintStreamBindingsValue value,
