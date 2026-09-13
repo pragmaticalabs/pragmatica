@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
-import java.io.IOException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.ArrayList;
@@ -712,13 +711,13 @@ class BlueprintServiceInstance implements BlueprintService {
 
     private Promise<SliceJar> loadSliceJar(ResolvedSlice slice) {
         return repository.locate(slice.artifact())
-                         .map(location -> sliceJar(slice.artifact(), location));
+                         .map(location -> sliceJar(slice.artifact(),
+                                                   location));
     }
 
     private static SliceJar sliceJar(Artifact artifact, Location location) {
         return SliceJar.sliceJar(artifact,
-                                 TopologyParser.parseFromJar(location.url(), artifact.asString())
-                                               .or(List.of()),
+                                 TopologyParser.parseFromJar(location.url(), artifact.asString()).or(List.of()),
                                  readSliceResourcesToml(artifact, location.url()));
     }
 
@@ -727,23 +726,27 @@ class BlueprintServiceInstance implements BlueprintService {
     /// the loader agree on which entry is read and how (#1067). The platform classloader as parent keeps the
     /// lookup inside the jar. At load the slice classloader asks its shared-library parent first, so a copy of
     /// that entry visible to the parent would shadow the jar's own there and is not modelled here
-    /// `[unverified: whether any shared library ships one]`.
-    ///
-    /// FER: a jar that cannot be opened reads as shipping no file — the convention `SliceStore` applies at load
-    /// to an entry it cannot read. Guarantee earned: the check then answers from the node composite alone, which
-    /// can only refuse more, never admit a section the loader would not see. Mechanism: logged, then `Option.none()`.
+    /// `[unverified: whether any shared library ships one]`. A jar that cannot be opened reads as shipping no
+    /// file — the convention `SliceStore` applies at load to an entry it cannot read — so the check then answers
+    /// from the node composite alone, which can only refuse more, never admit a section the loader would not see.
     private static Option<String> readSliceResourcesToml(Artifact artifact, URL jarUrl) {
-        return Result.lift(Causes::fromThrowable, () -> readThroughJarClassLoader(jarUrl))
-                     .onFailure(cause -> log.warn("Config-section pre-flight could not read the resources.toml of {}: {}",
-                                                  artifact.asString(),
-                                                  cause.message()))
-                     .or(Option.none());
+        var jarClassLoader = new URLClassLoader(new URL[]{jarUrl}, ClassLoader.getPlatformClassLoader());
+        var resourcesToml = SliceStore.readSliceResourcesToml(jarClassLoader);
+
+        closeJarClassLoader(artifact, jarClassLoader);
+
+        return resourcesToml;
     }
 
-    private static Option<String> readThroughJarClassLoader(URL jarUrl) throws IOException {
-        try (var jarClassLoader = new URLClassLoader(new URL[]{jarUrl}, ClassLoader.getPlatformClassLoader())) {
-            return SliceStore.readSliceResourcesToml(jarClassLoader);
-        }
+    /// FER: the entry has already been read in full, so a failing close changes nothing the check sees.
+    /// Guarantee earned: the pre-flight verdict is unaffected; what is given up is at most one jar handle held
+    /// on the leader until the classloader is collected. Mechanism: logged, then the failure is dropped.
+    private static Unit closeJarClassLoader(Artifact artifact, URLClassLoader jarClassLoader) {
+        return Result.lift(Causes::fromThrowable, jarClassLoader::close)
+                     .onFailure(cause -> log.warn("Config-section pre-flight could not close the jar classloader for {}: {}",
+                                                  artifact.asString(),
+                                                  cause.message()))
+                     .or(Unit.unit());
     }
 
     private Promise<ExpandedBlueprint> storeBlueprint(ExpandedBlueprint expanded) {

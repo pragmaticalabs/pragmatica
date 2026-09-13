@@ -55,7 +55,9 @@ public interface ConfigSectionPreflightValidator {
     /// One resolved slice jar as the pre-flight sees it: the topologies its manifests declare, and the text
     /// of the jar's own `META-INF/resources.toml` when it ships one.
     record SliceJar(Artifact artifact, List<SliceTopology> topologies, Option<String> resourcesToml) {
-        public static SliceJar sliceJar(Artifact artifact, List<SliceTopology> topologies, Option<String> resourcesToml) {
+        public static SliceJar sliceJar(Artifact artifact,
+                                        List<SliceTopology> topologies,
+                                        Option<String> resourcesToml) {
             return new SliceJar(artifact, topologies, resourcesToml);
         }
     }
@@ -63,9 +65,7 @@ public interface ConfigSectionPreflightValidator {
     /// Validates every resource dependency across all given slice jars, aggregating every missing
     /// section into a single failure (acceptance criterion: a complete list, not stop-at-first).
     static Result<Unit> validate(List<SliceJar> sliceJars, Option<ConfigurationProvider> nodeComposite) {
-        var checks = sliceJars.stream()
-                              .flatMap(sliceJar -> checkSliceJar(sliceJar, nodeComposite))
-                              .toList();
+        var checks = sliceJars.stream().flatMap(sliceJar -> checkSliceJar(sliceJar, nodeComposite)).toList();
 
         return Result.allOf(checks).mapToUnit();
     }
@@ -78,17 +78,21 @@ public interface ConfigSectionPreflightValidator {
                        .flatMap(topology -> checkTopology(topology, loaderView));
     }
 
-    private static Stream<Result<Unit>> checkTopology(SliceTopology topology, Option<ConfigurationProvider> loaderView) {
+    private static Stream<Result<Unit>> checkTopology(SliceTopology topology,
+                                                      Option<ConfigurationProvider> loaderView) {
         return topology.resources()
                        .stream()
-                       .map(resource -> checkSection(topology.sliceName(), resource, loaderView));
+                       .map(resource -> checkSection(topology.sliceName(),
+                                                     resource,
+                                                     loaderView));
     }
 
     /// The layers the loader would consult for this slice's resource sections. The `.or(nodeComposite)` is
     /// not an absorbed failure: an unparseable jar `resources.toml` yields no layer at load too, and the
     /// runtime then answers from the node composite alone (see the interface header).
     private static ConfigurationProvider loaderView(SliceJar sliceJar, ConfigurationProvider nodeComposite) {
-        return SliceStore.sliceIntrinsicLayer(sliceJar.artifact(), sliceJar.resourcesToml())
+        return SliceStore.sliceIntrinsicLayer(sliceJar.artifact(),
+                                              sliceJar.resourcesToml())
                          .map(intrinsic -> SliceStore.layerSliceComposite(intrinsic, nodeComposite))
                          .or(nodeComposite);
     }

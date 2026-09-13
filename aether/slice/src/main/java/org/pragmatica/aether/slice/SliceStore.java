@@ -160,7 +160,8 @@ public interface SliceStore {
     /// local/deployment values — e.g. docker's node aether.toml matching the slice — make the order moot,
     /// which is why this was latent until a divergent cloud deployment exercised it.) Presence is
     /// order-independent: a section is in the composite iff it is in either layer.
-    static ConfigurationProvider layerSliceComposite(ConfigurationProvider intrinsic, ConfigurationProvider nodeComposite) {
+    static ConfigurationProvider layerSliceComposite(ConfigurationProvider intrinsic,
+                                                     ConfigurationProvider nodeComposite) {
         var labelledIntrinsic = NamedConfigProvider.namedConfigProvider("slice.toml", intrinsic);
 
         return LayeredConfigProvider.layered(List.of(nodeComposite, labelledIntrinsic));
@@ -369,8 +370,7 @@ public interface SliceStore {
                              .onPresent(intrinsic -> log.info("Slice {} intrinsic config loaded from {}: {} keys",
                                                               artifact,
                                                               SLICE_RESOURCES_TOML,
-                                                              intrinsic.keys()
-                                                                       .size()))
+                                                              intrinsic.keys().size()))
                              .flatMap(intrinsic -> resolveIntrinsicSecrets(artifact, intrinsic, secretResolver));
         }
 
