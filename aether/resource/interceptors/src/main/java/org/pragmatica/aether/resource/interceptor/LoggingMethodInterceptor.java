@@ -18,7 +18,8 @@ import org.slf4j.LoggerFactory;
 /// shared by every intercepted method gave operators nothing to tune per method (#280 R28).
 public record LoggingMethodInterceptor(LogConfig config, Logger log) implements MethodInterceptor {
     public LoggingMethodInterceptor(LogConfig config) {
-        this(config, LoggerFactory.getLogger(config.name()));
+        this(config,
+             LoggerFactory.getLogger(config.name()));
     }
 
     @Override

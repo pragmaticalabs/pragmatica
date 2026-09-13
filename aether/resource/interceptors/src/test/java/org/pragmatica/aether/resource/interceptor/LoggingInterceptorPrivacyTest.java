@@ -8,7 +8,6 @@ import java.lang.reflect.Field;
 import java.util.Arrays;
 
 import org.junit.jupiter.api.Test;
-
 import org.slf4j.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -22,16 +21,19 @@ import static org.junit.jupiter.api.Assertions.fail;
 class LoggingInterceptorPrivacyTest {
     @Test
     void logConfig_defaults_doNotLogArgsOrResults() {
-        var config = LogConfig.logConfig("payment.flow").fold(cause -> fail("valid name: " + cause.message()), c -> c);
+        var config = LogConfig.logConfig("payment.flow").fold(cause -> fail("valid name: " + cause.message()),
+                                                              c -> c);
 
         assertThat(config.logArgs()).as("request content is PII until proven otherwise; logging it is opt-in").isFalse();
-        assertThat(config.logResult()).as("result content is PII until proven otherwise; logging it is opt-in").isFalse();
+        assertThat(config.logResult()).as("result content is PII until proven otherwise; logging it is opt-in")
+                  .isFalse();
         assertThat(config.logDuration()).isTrue();
     }
 
     @Test
     void logConfig_defaultsWithLevel_doNotLogArgsOrResults() {
-        var config = LogConfig.logConfig("payment.flow", LogLevel.DEBUG).fold(cause -> fail("valid name: " + cause.message()), c -> c);
+        var config = LogConfig.logConfig("payment.flow", LogLevel.DEBUG).fold(cause -> fail("valid name: " + cause.message()),
+                                                                              c -> c);
 
         assertThat(config.logArgs()).isFalse();
         assertThat(config.logResult()).isFalse();
@@ -41,11 +43,12 @@ class LoggingInterceptorPrivacyTest {
     /// class-named logger and the per-instance one.
     @Test
     void interceptor_logsThroughALoggerNamedForItsInjectionPoint() {
-        var config = LogConfig.logConfig("payment.flow").fold(cause -> fail("valid name: " + cause.message()), c -> c);
+        var config = LogConfig.logConfig("payment.flow").fold(cause -> fail("valid name: " + cause.message()),
+                                                              c -> c);
         var interceptor = new LoggingMethodInterceptor(config);
 
         assertThat(loggerOf(interceptor).getName()).as("per-injection-point logger, so one method's level can be tuned without the others")
-                                                   .isEqualTo("payment.flow");
+                  .isEqualTo("payment.flow");
     }
 
     private static Logger loggerOf(LoggingMethodInterceptor interceptor) {

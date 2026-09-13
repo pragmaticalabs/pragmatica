@@ -22,7 +22,6 @@ public enum RetryOn {
     /// Retry everything that is not terminal — the behaviour before #280. Opt in for a method
     /// whose every failure is known to be infrastructural, or whose causes are not yet classified.
     NON_TERMINAL;
-
     public boolean retries(Cause cause) {
         return switch (this) {
             case TRANSIENT -> cause.isTransient();
