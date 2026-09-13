@@ -102,9 +102,13 @@ your own change introduces; leave the rest, and say in the PR that you did.
 For quick iteration on a single module: `mvn test -pl <module>`. The full matrix CI actually runs
 is in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — format+lint check, `mvn install
 -pl '!examples'`, the postgres-async integration suite, an end-to-end `mvn verify` over
-`examples/`, and a separate Forge-tests job (`-Pwith-e2e`) [mechanism:
-`.github/workflows/ci.yml`]. There is no separate staging environment; passing this matrix is the
-bar for merge.
+`examples/`, a separate Forge-tests job (`-Pwith-e2e`, everything except `@Tag("Heavy")`), and a
+`stub-suites` job running the cloud harness stub suites `aether/tests/integration/test/test-*.sh`
+[mechanism: `.github/workflows/ci.yml`]. There is no separate staging environment; passing this
+matrix is the bar for merge. The `@Tag("Heavy")` forge probes are not part of that matrix. They run
+in [`.github/workflows/heavy-forge.yml`](.github/workflows/heavy-forge.yml): nightly on `main`, on
+`workflow_dispatch`, and on any pull request labelled `run-heavy`. Add the label when your change
+touches auto-heal, drains, membership or stream ownership, which only those probes exercise.
 
 **`build.sh` does not run a cluster — run `./forge.sh` before pushing.** Steps 4-5 of `build.sh`
 *compile* the e2e and Forge tests; nothing local executes them [mechanism: `build.sh` step 4 runs
