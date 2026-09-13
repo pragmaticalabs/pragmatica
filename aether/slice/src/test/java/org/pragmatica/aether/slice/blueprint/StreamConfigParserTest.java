@@ -100,6 +100,43 @@ class StreamConfigParserTest {
                     ResourceAddress.resourceAddress("io.acme.inventory:stock-updates:2.0.0").unwrap());
         }
 
+        /// The exact shape #1040 migrated `examples/notification-hub`'s consumers to, pinned because two
+        /// things in it could silently be wrong and neither would fail loudly.
+        ///
+        /// FIRST, the namespace carries HYPHENS. A blueprint-derived namespace is `groupId.artifactId`
+        /// (`BlueprintNamespace.deriveNamespace`), and this artifactId is `notification-hub-notification-service`
+        /// — so the whole migration rests on `validateAppNamespace` admitting hyphens. If it did not, the
+        /// address would fail to parse and the consumers would fall back to the bare alias, restoring the
+        /// defect in the exact place the fix was applied.
+        ///
+        /// SECOND, config keys sit ALONGSIDE `source`. They are inert for an external reference (the
+        /// producing blueprint owns the authoritative config) and are retained in that example only so a
+        /// consumer that materializes the ring first shapes it like the producer's. The parser must treat
+        /// the section as External regardless — silently reading it as Owned would namespace it into the
+        /// CONSUMER's namespace and point it at a ring nobody writes to.
+        @Test
+        void externalWithHyphenatedBlueprintNamespaceAndInertConfigKeys() {
+            var toml = """
+                    [streams.notifications]
+                    source = "org.pragmatica.aether.example.notification-hub-notification-service:notifications:1.0.0"
+                    partitions = 4
+                    retention = "time"
+                    retention-value = "5m"
+                    max-event-size = "64KB"
+                    """;
+
+            var result = parseResources(toml).unwrap();
+
+            assertThat(result).containsOnlyKeys("notifications");
+            var resource = result.get("notifications");
+            assertThat(resource).isInstanceOf(StreamResource.External.class);
+            var external = (StreamResource.External) resource;
+            assertThat(external.target().namespace().value())
+                    .isEqualTo("org.pragmatica.aether.example.notification-hub-notification-service");
+            assertThat(external.target().asString())
+                    .isEqualTo("org.pragmatica.aether.example.notification-hub-notification-service:notifications:1.0.0");
+        }
+
         @Test
         void multipleStreamsCoexist() {
             var toml = """
