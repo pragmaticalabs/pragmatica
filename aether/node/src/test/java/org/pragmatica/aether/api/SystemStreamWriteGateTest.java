@@ -31,6 +31,16 @@ class SystemStreamWriteGateTest {
             assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp("POST", path)).isTrue();
         }
 
+        /// #742 review SF-1: `STREAMS_PUBLISH_BATCH` was in neither the identity-write set nor
+        /// `resolveEngineKey`, so a privileged `…/system/cluster-events/1.0.0/publish-batch` appended
+        /// caller payloads to the framework's own ring while `…/publish` was refused.
+        @Test
+        void catalogForm_publishBatch_toSystemNamespace_isGated() {
+            var path = ManagementRoute.STREAMS_PUBLISH_BATCH.assemble("system", "cluster-events", "1.0.0").unwrap();
+
+            assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp("POST", path)).isTrue();
+        }
+
         @Test
         void catalogForm_delete_systemNamespace_isGated() {
             var path = ManagementRoute.STREAMS_DELETE.assemble("system", "cluster-events", "1.0.0").unwrap();
@@ -86,6 +96,13 @@ class SystemStreamWriteGateTest {
 
     @Nested
     class Allowed {
+
+        @Test
+        void catalogForm_publishBatch_appNamespace_isNotGated() {
+            var path = ManagementRoute.STREAMS_PUBLISH_BATCH.assemble("orders", "events", "1.0.0").unwrap();
+
+            assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp("POST", path)).isFalse();
+        }
 
         @Test
         void catalogForm_publish_appNamespace_isNotGated() {

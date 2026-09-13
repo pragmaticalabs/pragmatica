@@ -11,6 +11,8 @@ import org.pragmatica.aether.api.routes.StreamRoutes.LeaveGroupRequest;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
@@ -72,6 +74,45 @@ class StreamRoutesGroupSystemStreamTest {
 
         assertThat(failureMessage(result)).containsIgnoringCase("system stream")
                   .doesNotContainIgnoringCase(COORDINATOR_REACHED);
+    }
+
+    /// #742 review SF-2: the versioned gate canonicalizes `system:cluster-events:1.0.0` to the engine
+    /// key `cluster-events` before the predicate; the legacy guard applied the predicate to the raw
+    /// body string, so the catalog spelling walked past it and the coordinator proposed the very
+    /// `ConsumerGroupKey(…, "system:cluster-events:1.0.0", i)` records the versioned gate refuses.
+    @Test
+    void joinAndLeave_catalogSpellingOfASystemStream_areRejectedBeforeTheCoordinatorIsReached() {
+        var join = routes().joinGroup(new JoinGroupRequest("g1", "system:cluster-events:1.0.0", 4, "c1"));
+        var leave = routes().leaveGroup(new LeaveGroupRequest("g1", "system:cluster-events:1.0.0", "c1"));
+
+        assertThat(failureMessage(join)).containsIgnoringCase("system stream")
+                                        .doesNotContainIgnoringCase(COORDINATOR_REACHED);
+        assertThat(failureMessage(leave)).containsIgnoringCase("system stream")
+                                         .doesNotContainIgnoringCase(COORDINATOR_REACHED);
+    }
+
+    /// #742 review SF-3: a plain `Causes.cause` renders as HTTP 500 through `ProblemResponses`; the
+    /// versioned gate answers 405. The guard's refusal must carry the same status.
+    @Test
+    void guardRefusal_carriesTheVersionedGatesStatus_notA500() {
+        var result = routes().joinGroup(new JoinGroupRequest("g1", "cluster-events", 4, "c1"));
+
+        result.onSuccess(_ -> fail("must be refused"));
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(HttpStatusAware.class);
+            assertThat(((HttpStatusAware) cause).httpStatus()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
+        });
+    }
+
+    /// #742 review N-2: a missing `streamName` passed the predicate (`equals(null)` is false) and
+    /// reached the coordinator; CREATE already refuses it as `Missing stream name`.
+    @Test
+    void joinAndLeave_missingStreamName_areRefused_notForwarded() {
+        var join = routes().joinGroup(new JoinGroupRequest("g1", null, 4, "c1"));
+        var leave = routes().leaveGroup(new LeaveGroupRequest("g1", " ", "c1"));
+
+        assertThat(failureMessage(join)).containsIgnoringCase("missing stream name");
+        assertThat(failureMessage(leave)).containsIgnoringCase("missing stream name");
     }
 
     @Test
