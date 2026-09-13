@@ -929,10 +929,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// the time this runs, so drain/shutdown failures are reported by name and do not change the exit
     /// code — a script that retried on it would be retrying a cluster that no longer exists.
     private static void warnIncomplete(String operation, List<NodeResult> results) {
-        var failed = results.stream()
-                            .filter(result -> !result.success())
-                            .map(NodeResult::nodeId)
-                            .toList();
+        var failed = results.stream().filter(result -> !result.success()).map(NodeResult::nodeId).toList();
 
         if (failed.isEmpty()) {
             return;

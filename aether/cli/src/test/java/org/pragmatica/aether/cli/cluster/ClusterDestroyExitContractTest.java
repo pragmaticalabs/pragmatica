@@ -2,15 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.cli.cluster;
-
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.cli.ExitCode;
-import org.pragmatica.aether.environment.ClusterName;
-import org.pragmatica.lang.Result;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
@@ -20,10 +12,19 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BiFunction;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.fail;
+import org.pragmatica.aether.cli.ExitCode;
+import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.lang.Result;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
 
 /// #587 (3) — the exit code is a retry signal, and it must agree with the registry. #521's contract is
 /// "non-zero + registry entry KEPT" for a cloud cleanup failure: something is still billing, re-run.
@@ -35,15 +36,10 @@ class ClusterDestroyExitContractTest {
     private static final ClusterName CLUSTER = ClusterName.clusterName("exit-contract").unwrap();
 
     private final ByteArrayOutputStream out = new ByteArrayOutputStream();
-
     private final ByteArrayOutputStream err = new ByteArrayOutputStream();
-
     private PrintStream originalOut;
-
     private PrintStream originalErr;
-
     private BiFunction<ClusterRegistry, ClusterName, Result<ClusterRegistry>> originalRemover;
-
     private List<String> removals;
 
     @BeforeEach
@@ -94,15 +90,15 @@ class ClusterDestroyExitContractTest {
                                         .or(-1);
 
         assertThat(removals).as("complete cleanup removes the entry — that is unchanged")
-                            .containsExactly(CLUSTER.value());
+                  .containsExactly(CLUSTER.value());
         assertThat(code).as("with the entry removed there is nothing a re-run can do, so the exit code "
-                            + "must not tell a script to re-run")
-                        .isEqualTo(ExitCode.SUCCESS);
+                           + "must not tell a script to re-run")
+                  .isEqualTo(ExitCode.SUCCESS);
         assertThat(err.toString(StandardCharsets.UTF_8)).as("the undrained nodes are named, and the contract is stated")
-                                                         .contains("2 of 3 drain operations failed")
-                                                         .contains("core-2")
-                                                         .contains("core-3")
-                                                         .contains("nothing is left to retry");
+                  .contains("2 of 3 drain operations failed")
+                  .contains("core-2")
+                  .contains("core-3")
+                  .contains("nothing is left to retry");
     }
 
     @Test
@@ -118,7 +114,7 @@ class ClusterDestroyExitContractTest {
 
         assertThat(code).isEqualTo(ExitCode.SUCCESS);
         assertThat(err.toString(StandardCharsets.UTF_8)).contains("1 of 3 shutdown operations failed")
-                                                         .contains("core-1");
+                  .contains("core-1");
     }
 
     /// The control: #521's half of the contract is untouched. Cleanup failure still keeps the entry
@@ -147,7 +143,6 @@ class ClusterDestroyExitContractTest {
                                                   results(true, true, true),
                                                   results(true, true, true))
                              .onFailure(cause -> fail(cause.message()));
-
         assertThat(err.toString(StandardCharsets.UTF_8)).doesNotContain("operations failed");
     }
 }
