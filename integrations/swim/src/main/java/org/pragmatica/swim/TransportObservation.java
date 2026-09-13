@@ -30,14 +30,27 @@ import org.pragmatica.lang.Cause;
 ///
 /// Variants:
 /// - [`PeerReachable`] — local transport reports the peer's connection
-///   established or recovered.
-/// - [`PeerUnreachable`] — local transport reports the peer's connection
-///   lost / failed; SWIM may shorten its suspect window for this peer
-///   from the default toward a configured floor.
+///   established or recovered. It retracts the transport's own
+///   [`HintOrigin#LINK_LOST`] hint for that peer and never reports the peer alive.
+/// - [`PeerUnreachable`] — local transport reports death evidence for the peer;
+///   SWIM may shorten its suspect window for this peer from the default toward a
+///   configured floor. Its [`HintOrigin`] decides how long SWIM believes it (#1061).
 public sealed interface TransportObservation {
     NodeId peer();
 
+    /// Where a [`PeerUnreachable`] hint's evidence comes from (#1061).
+    enum HintOrigin {
+        /// The local transport lost its link to the peer (eviction, channel close). The
+        /// evidence describes that link only, so SWIM disregards it while the link is
+        /// connected and drops it when the transport reconnects.
+        LINK_LOST,
+        /// The link is up but the peer stopped answering a liveness exchange carried over it
+        /// (a hung process). A connected link does not contradict it, so it survives
+        /// reconnects; only SWIM's own HEALTHY evidence clears it.
+        PEER_UNRESPONSIVE
+    }
+
     record PeerReachable(NodeId peer) implements TransportObservation {}
 
-    record PeerUnreachable(NodeId peer, Cause cause) implements TransportObservation {}
+    record PeerUnreachable(NodeId peer, Cause cause, HintOrigin origin) implements TransportObservation {}
 }

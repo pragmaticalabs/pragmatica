@@ -3003,9 +3003,9 @@ public interface AetherNode extends ManageableNode {
         // DepartedObserved → synchronous-DEAD pipeline (the same path the QUIC `onPeerLeft` listener
         // feeds) and refutes the hint when pongs resume, so a transient flap no longer false-evicts a
         // healthy peer. The owner-side SWIM-HEALTHY early-skip in `emitPingTimeoutIfExceeded` still
-        // suppresses the hint for a peer SWIM already trusts (avoids conflicting evidence).
-        metricsCollector.setUnreachableReporter(nodeId -> swimHealthDetector.recordTransportHint(new TransportObservation.PeerUnreachable(nodeId,
-                                                                                                                                          QuicTransportCause.PING_TIMEOUT)));
+        // suppresses the hint for a peer SWIM already trusts (avoids conflicting evidence). The hint is
+        // PEER_UNRESPONSIVE (#1061): it keeps flooring and vetoing while the QUIC link is CONNECTED.
+        metricsCollector.setUnreachableReporter(nodeId -> swimHealthDetector.recordTransportHint(QuicTransportCause.PING_TIMEOUT.unreachableHint(nodeId)));
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> swimHealthDetector.onLeaderChanged(change.leaderId())));
         var announceTopology = config.topology();
@@ -4910,8 +4910,7 @@ public interface AetherNode extends ManageableNode {
             @Contract
             public void onPeerLeft(NodeId nodeId) {
                 LOG.debug("QuicPeerState: onPeerLeft({}) — recordTransportHint(unreachable)", nodeId);
-                swimDetector.recordTransportHint(new TransportObservation.PeerUnreachable(nodeId,
-                                                                                          QuicTransportCause.PEER_LEFT));
+                swimDetector.recordTransportHint(QuicTransportCause.PEER_LEFT.unreachableHint(nodeId));
             }
         };
 
@@ -4924,16 +4923,24 @@ public interface AetherNode extends ManageableNode {
                             });
     }
 
+    /// Each cause carries the SWIM hint origin that decides how long SWIM believes it (#1061):
+    /// a QUIC `onPeerLeft` describes one lost link, and PeerReachable or a live link overrides
+    /// it; a missed-pong timeout describes a connected-but-silent peer, and a live link does not.
     enum QuicTransportCause implements Cause {
-        PEER_LEFT("QUIC peer connection closed"),
-        PING_TIMEOUT("cluster-sync ping/pong timeout (missed-pong threshold)");
+        PEER_LEFT("QUIC peer connection closed", TransportObservation.HintOrigin.LINK_LOST),
+        PING_TIMEOUT("cluster-sync ping/pong timeout (missed-pong threshold)", TransportObservation.HintOrigin.PEER_UNRESPONSIVE);
         private final String message;
-        QuicTransportCause(String message) {
+        private final TransportObservation.HintOrigin origin;
+        QuicTransportCause(String message, TransportObservation.HintOrigin origin) {
             this.message = message;
+            this.origin = origin;
         }
         @Override
         public String message() {
             return message;
+        }
+        TransportObservation.PeerUnreachable unreachableHint(NodeId peer) {
+            return new TransportObservation.PeerUnreachable(peer, this, origin);
         }
     }
 

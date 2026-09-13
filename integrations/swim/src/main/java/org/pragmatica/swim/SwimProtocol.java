@@ -39,6 +39,7 @@ import java.util.function.Supplier;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -262,10 +263,13 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// window for the peer toward the [`#TRANSPORT_HINT_SUSPECT_FLOOR_MS`] floor and
     /// (b) INITIATES ALIVE->SUSPECT for a currently-ALIVE, ever-healthy peer
     /// ([#initiateTransportDrivenSuspicion]) so the high-confidence death signal is not
-    /// wasted on a timer that may never start (#94); `PeerReachable` is ignored — SWIM
-    /// gossip/probe state is the sole authority on liveness/recovery. Transport may
-    /// accelerate DEATH suspicion, never report life: FAULTY still requires the floored
-    /// window to expire WITHOUT refutation.
+    /// wasted on a timer that may never start (#94). Hints are origin-aware (#1061): a
+    /// `LINK_LOST` hint describes one transport link, so it counts only while
+    /// [#transportConnected] reports that link down, and `PeerReachable` retracts it; a
+    /// `PEER_UNRESPONSIVE` hint counts with the link connected and survives `PeerReachable`.
+    /// Retracting transport's own stale link evidence is not reporting life: SWIM
+    /// gossip/probe state is the sole authority on liveness/recovery, and nothing here moves a
+    /// peer toward ALIVE. FAULTY still requires the window to expire WITHOUT refutation.
     private final Map<NodeId, TransportHintState> transportHints = new ConcurrentHashMap<>();
     private final List<Consumer<SwimObservation>> observationListeners = new CopyOnWriteArrayList<>();
     /// Cluster-wide `TransportObservation` emitters. SWIM-internal `SwimObservation`
@@ -504,9 +508,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// `PeerUnreachable` (a) biases this peer's suspect-window timer toward the
     /// [`#TRANSPORT_HINT_SUSPECT_FLOOR_MS`] floor and (b) initiates ALIVE->SUSPECT for a
     /// currently-ALIVE, ever-healthy peer (see [#applyUnreachableHint]); `PeerReachable`
-    /// is ignored — SWIM gossip/probe-ack state is the sole authority on liveness and
-    /// recovery. Transport may accelerate DEATH suspicion, never report life: a peer
-    /// driven SUSPECT this way still returns to ALIVE if it refutes within the window.
+    /// retracts only the transport's own `LINK_LOST` hint ([#retractLinkLostHint]) — SWIM
+    /// gossip/probe-ack state is the sole authority on liveness and recovery. Transport may
+    /// accelerate DEATH suspicion, never report life: a peer driven SUSPECT this way still
+    /// returns to ALIVE only if it refutes within the window.
     @Contract
     public void recordTransportHint(NodeId peer, TransportObservation hint) {
         if (selfId.equals(peer)) {
@@ -514,17 +519,44 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
 
         switch (hint) {
-            case TransportObservation.PeerReachable _ -> { /* no-op: SWIM probe-ack is the sole recovery authority; transport may report death, never life */ }
-            case TransportObservation.PeerUnreachable _ -> applyUnreachableHint(peer);
+            case TransportObservation.PeerReachable _ -> retractLinkLostHint(peer);
+            case TransportObservation.PeerUnreachable unreachable -> applyUnreachableHint(peer, unreachable.origin());
         }
+    }
+
+    /// Retract a `LINK_LOST` hint for `peer` when the transport reports the link re-established
+    /// (#1061). The hint described the link that was lost; a completed handshake disproves it
+    /// for the link that now exists. This is not reporting life: the member's SWIM state and
+    /// suspicion clock are untouched, and only a probe-ack or a higher-incarnation ALIVE ends
+    /// the suspicion. A `PEER_UNRESPONSIVE` hint is kept, since a reconnect says nothing about a
+    /// peer that is connected but silent.
+    private void retractLinkLostHint(NodeId peer) {
+        option(transportHints.get(peer)).filter(TransportHintState::linkLost)
+              .onPresent(_ -> applyLinkLostRetraction(peer));
+    }
+
+    private void applyLinkLostRetraction(NodeId peer) {
+        transportHints.computeIfPresent(peer, SwimProtocol::withoutLinkLost);
+        LOG.info("SWIM transport hint: link to {} re-established — LINK_LOST death hint retracted "
+                + "(SWIM state unchanged); effective suspect window now {}ms",
+                 peer.id(),
+                 effectiveSuspicionWindowMs(peer, config.suspectTimeout().millis()));
+    }
+
+    @NullReturn
+    private static TransportHintState withoutLinkLost(NodeId peer, TransportHintState state) {
+        return state.peerUnresponsive()
+               ? TransportHintState.transportHintState(TransportObservation.HintOrigin.PEER_UNRESPONSIVE)
+               : null;
     }
 
     /// Apply a transport `PeerUnreachable` hint. Two effects, both death-only (transport
     /// may report death, never life — the [#transportHints] field invariant is preserved):
     ///
-    /// 1. Record the per-peer unreachable bias so the suspect-window evaluation
-    ///    ([#effectiveSuspectTimeoutMs]) is floored to [`#TRANSPORT_HINT_SUSPECT_FLOOR_MS`].
-    ///    This shortens an ALREADY-RUNNING suspect window (the legacy behavior).
+    /// 1. Record the per-peer hint, tagged with its `origin`, so the suspect-window evaluation
+    ///    ([#effectiveSuspectTimeoutMs]) is floored to [`#TRANSPORT_HINT_SUSPECT_FLOOR_MS`]
+    ///    while the hint is current ([#hasCurrentTransportDeathHint]). This shortens an
+    ///    ALREADY-RUNNING suspect window (the legacy behavior).
     /// 2. INITIATE suspicion NOW for a peer we have positive prior-liveness evidence on —
     ///    `everSeenHealthy` AND currently `ALIVE` ([#initiateTransportDrivenSuspicion]). The
     ///    high-confidence transport death signal (a previously-CONNECTED QUIC peer gone
@@ -537,10 +569,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     ///
     /// The order matters: the bias (1) is recorded BEFORE suspicion is initiated (2) so
     /// [#beginSuspicion]'s window honors the floor from the first tick.
-    private void applyUnreachableHint(NodeId peer) {
-        transportHints.put(peer, new TransportHintState(true, System.currentTimeMillis()));
-        LOG.debug("SWIM transport hint: peer {} reported unreachable; suspect window biased to {}ms floor",
+    private void applyUnreachableHint(NodeId peer, TransportObservation.HintOrigin origin) {
+        transportHints.merge(peer, TransportHintState.transportHintState(origin), TransportHintState::combine);
+        LOG.debug("SWIM transport hint: peer {} reported unreachable (origin {}); suspect window biased to {}ms floor while current",
                   peer.id(),
+                  origin,
                   TRANSPORT_HINT_SUSPECT_FLOOR_MS);
         initiateTransportDrivenSuspicion(peer);
     }
@@ -947,10 +980,11 @@ public final class SwimProtocol implements SwimMessageHandler {
         var suspicion = newSuspicion(accuser);
 
         suspicions.put(suspect, suspicion);
-        LOG.info("SWIM suspicion start (Wave-6 Lifeguard): suspect {} accused by {}; window {}ms "
-                + "(min {}ms, max {}ms, LHM score {}, multiplier x{}, K={})",
+        LOG.info("SWIM suspicion start (Wave-6 Lifeguard): suspect {} accused by {}; effective window {}ms "
+                + "(dogpile {}ms, min {}ms, max {}ms, LHM score {}, multiplier x{}, K={})",
                  suspect.id(),
                  accuser.id(),
+                 effectiveSuspicionWindowMs(suspect, config.suspectTimeout().millis()),
                  dogpileWindowMs(suspicion),
                  suspicion.minWindowMs(),
                  suspicion.maxWindowMs(),
@@ -1082,8 +1116,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void expireSuspectIfOverdue(NodeId nodeId, long timestamp, long now, long baseSuspectTimeoutMillis) {
-        var windowMs = suspicionWindowMs(nodeId, baseSuspectTimeoutMillis);
-        var effectiveTimeoutMs = effectiveSuspectTimeoutMs(nodeId, windowMs);
+        var effectiveTimeoutMs = effectiveSuspicionWindowMs(nodeId, baseSuspectTimeoutMillis);
 
         if (now - timestamp < effectiveTimeoutMs) {
             return;
@@ -1099,14 +1132,37 @@ public final class SwimProtocol implements SwimMessageHandler {
         endSuspicion(nodeId);
     }
 
-    /// Apply the transport-hint bias to the per-peer suspect window. When
-    /// QUIC has reported the peer unreachable, shorten the timeout to the
-    /// floor (or the configured default if it is shorter than the floor).
-    /// Otherwise keep the configured default. Spec §4.1, §11.
+    /// The window a suspicion of `nodeId` actually expires on: the dogpile/cluster-size window
+    /// ([#suspicionWindowMs]) with the transport-hint floor applied ([#effectiveSuspectTimeoutMs]).
+    /// Shared by the expiry check and the suspicion journal lines so the logged window is the
+    /// one enforced (#1061).
+    private long effectiveSuspicionWindowMs(NodeId nodeId, long baseSuspectTimeoutMillis) {
+        return effectiveSuspectTimeoutMs(nodeId, suspicionWindowMs(nodeId, baseSuspectTimeoutMillis));
+    }
+
+    /// Apply the transport-hint bias to the per-peer suspect window. When the
+    /// transport holds CURRENT death evidence for the peer ([#hasCurrentTransportDeathHint]),
+    /// shorten the timeout to the floor (or the configured default if it is shorter than
+    /// the floor). Otherwise keep the configured default. Spec §4.1, §11.
     private long effectiveSuspectTimeoutMs(NodeId nodeId, long defaultMs) {
-        return option(transportHints.get(nodeId)).filter(TransportHintState::unreachable)
-                     .map(_ -> Math.min(defaultMs, TRANSPORT_HINT_SUSPECT_FLOOR_MS))
-                     .or(defaultMs);
+        return hasCurrentTransportDeathHint(nodeId)
+               ? Math.min(defaultMs, TRANSPORT_HINT_SUSPECT_FLOOR_MS)
+               : defaultMs;
+    }
+
+    /// Whether the transport currently holds death evidence for `peer` (#1061). A
+    /// `PEER_UNRESPONSIVE` hint counts as recorded: the link being connected does not
+    /// contradict a peer that is connected but silent. A `LINK_LOST` hint counts only while
+    /// [#transportConnected] reports no live link, because a connected link disproves the
+    /// link-loss it described. Consulted at decision time, so an out-of-order reconnect event
+    /// cannot leave a stale link-loss hint in force.
+    private boolean hasCurrentTransportDeathHint(NodeId peer) {
+        return option(transportHints.get(peer)).map(state -> isCurrentDeathEvidence(peer, state))
+                     .or(false);
+    }
+
+    private boolean isCurrentDeathEvidence(NodeId peer, TransportHintState state) {
+        return state.peerUnresponsive() || (state.linkLost() && !transportConnected.test(peer));
     }
 
     private void transitionToFaulty(SwimMember member) {
@@ -2026,8 +2082,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// docker-killed victim), the gossiped FAULTY is ACCEPTED — canonical SWIM dissemination is
     /// preserved, refutation handles any error, and a real death is NOT kept artificially counted
     /// (the auto-heal deficit-stall regression the prior accept-on-absent gate caused). This is why
-    /// the predicate keys off POSITIVE live-transport reachability, not the (death-only,
-    /// never-`unreachable==false`) `transportHints` map, which cannot express "currently connected".
+    /// the predicate keys off POSITIVE live-transport reachability, not the (death-only)
+    /// `transportHints` map, which cannot express "currently connected".
     private boolean isContradictedByLiveTransport(NodeId peer) {
         return transportConnected.test(peer);
     }
@@ -2090,9 +2146,22 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
     }
 
-    /// Per-peer transport-hint state. `unreachable=true` shortens this peer's
-    /// suspect-window evaluation toward the [`#TRANSPORT_HINT_SUSPECT_FLOOR_MS`] floor.
-    record TransportHintState(boolean unreachable, long appliedAtMs) {}
+    /// Per-peer transport-hint state, one flag per `TransportObservation.HintOrigin` so a
+    /// `LINK_LOST` retraction never discards a `PEER_UNRESPONSIVE` hint (#1061). A current
+    /// hint ([#hasCurrentTransportDeathHint]) shortens this peer's suspect-window evaluation
+    /// toward the [`#TRANSPORT_HINT_SUSPECT_FLOOR_MS`] floor.
+    record TransportHintState(boolean linkLost, boolean peerUnresponsive) {
+        static TransportHintState transportHintState(TransportObservation.HintOrigin origin) {
+            return switch (origin) {
+                case LINK_LOST -> new TransportHintState(true, false);
+                case PEER_UNRESPONSIVE -> new TransportHintState(false, true);
+            };
+        }
+
+        TransportHintState combine(TransportHintState other) {
+            return new TransportHintState(linkLost || other.linkLost(), peerUnresponsive || other.peerUnresponsive());
+        }
+    }
 
     // -- Observation emission (edge-triggered, P5 idempotent) --
     /// Mark a peer HEALTHY-observed and emit `HealthyObserved` (idempotent
@@ -2146,7 +2215,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     ///
     /// Fix 2 (#336 reachability-evidence): a NORMAL-phase first-hand FAULTY for an EVER-HEALTHY
     /// peer is additionally held (`coConfirmedFaulty`) until corroborated by ≥2 distinct accusers
-    /// or a transport-unreachable hint — so a single prober's transient SUSPECT cannot terminally
+    /// or a current transport death hint (#1061) — so a single prober's transient SUSPECT cannot terminally
     /// depart an established peer.
     private void emitFaultyOrUnknown(NodeId peer, long incarnation, boolean firstHand) {
         var booting = isBooting.getAsBoolean();
@@ -2199,12 +2268,12 @@ public final class SwimProtocol implements SwimMessageHandler {
         return ! firstHand || transportVetoConfirms(peer) || distinctAccusers(peer) >= SwimConfig.MIN_FAULTY_CONFIRMERS;
     }
 
-    /// Fix 2: a transport `PeerUnreachable` hint independently corroborates the death (the
-    /// high-confidence transport death signal), so a FAULTY edge is not held even if only this
-    /// node accused via SWIM.
+    /// Fix 2: a CURRENT transport `PeerUnreachable` hint independently corroborates the death
+    /// (the high-confidence transport death signal), so a FAULTY edge is not held even if only
+    /// this node accused via SWIM. A `LINK_LOST` hint whose link has since reconnected is not
+    /// current and corroborates nothing (#1061, [#hasCurrentTransportDeathHint]).
     private boolean transportVetoConfirms(NodeId peer) {
-        return option(transportHints.get(peer)).map(TransportHintState::unreachable)
-                     .or(false);
+        return hasCurrentTransportDeathHint(peer);
     }
 
     /// Fix 2: distinct independent accusers recorded for `peer`'s active suspicion (the
@@ -2384,6 +2453,14 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// assert LHM stretch / dogpile shrink deterministically without timing.
     Option<Long> suspicionWindowForTest(NodeId peer) {
         return option(suspicions.get(peer)).map(SwimProtocol::dogpileWindowMs);
+    }
+
+    /// Test-only: the window `peer`'s active suspicion expires on RIGHT NOW (dogpile and
+    /// cluster-size scaling plus the current transport-hint floor), empty when no suspicion is
+    /// active. The same computation the expiry check and the suspicion journal line use (#1061).
+    Option<Long> effectiveSuspicionWindowForTest(NodeId peer) {
+        return option(suspicions.get(peer)).map(_ -> effectiveSuspicionWindowMs(peer,
+                                                                                config.suspectTimeout().millis()));
     }
 
     /// This node's current durable self-incarnation (boot-seeded monotonic generation;

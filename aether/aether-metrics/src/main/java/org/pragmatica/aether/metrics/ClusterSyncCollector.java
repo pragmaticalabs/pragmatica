@@ -295,8 +295,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     private final AtomicReference<java.util.function.Predicate<NodeId>> peerLocallyAlive = new AtomicReference<>(_ -> true);
 
     /// Option 1 (S01) — consumer that feeds a transport-unreachable HINT into SWIM on ping-timeout.
-    /// Default no-op until `AetherNode` wires it to `swimHealthDetector.recordTransportHint(new
-    /// TransportObservation.PeerUnreachable(peer, QuicTransportCause.PING_TIMEOUT))`. Replaces the
+    /// Default no-op until `AetherNode` wires it to `swimHealthDetector.recordTransportHint(
+    /// QuicTransportCause.PING_TIMEOUT.unreachableHint(peer))` (a `PEER_UNRESPONSIVE` hint, #1061). Replaces the
     /// former destructive disconnect — SWIM arbitrates the hint and refutes it when pongs resume.
     private final AtomicReference<Consumer<NodeId>> unreachableReporter = new AtomicReference<>(_ -> {});
 

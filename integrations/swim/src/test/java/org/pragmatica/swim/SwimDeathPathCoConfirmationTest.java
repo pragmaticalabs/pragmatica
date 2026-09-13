@@ -19,16 +19,28 @@ package org.pragmatica.swim;
 import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.Filter;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.LoggerConfig;
+import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.Ack;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
@@ -225,6 +237,296 @@ class SwimDeathPathCoConfirmationTest {
         }
     }
 
+    /// #1061 — origin-aware transport death hints. A QUIC eviction's `LINK_LOST` hint describes the
+    /// link that was lost. Once the transport has reconnected, it must neither floor the suspect
+    /// window to 3s nor act as the #336 kill-gate corroboration for a lone first-hand FAULTY. A
+    /// `PEER_UNRESPONSIVE` hint (ClusterSync missed pongs: connected but silent) keeps both with the
+    /// link CONNECTED. `PeerReachable` never moves a peer toward ALIVE. Every test drives the real
+    /// entry point (`recordTransportHint`) and, where timing matters, the real tick loop; no hint
+    /// state is injected.
+    @Nested
+    class OriginAwareTransportHints {
+        private static final long SUSPECT_TIMEOUT_MS = 5_000L;
+        private static final long FLOOR_MS = 3_000L;
+        private static final String SWIM_LOGGER = "org.pragmatica.swim.SwimProtocol";
+
+        private final Set<NodeId> liveTransport = new CopyOnWriteArraySet<>();
+        // Suspect window (5s) clearly above the 3s floor so the two are distinguishable in time;
+        // fast ticks so expiry lands within ~40ms of the window; joinGrace 0.
+        private final SwimConfig config = swimConfig(timeSpan(40).millis(),
+                                                     timeSpan(20).millis(),
+                                                     3,
+                                                     timeSpan(SUSPECT_TIMEOUT_MS).millis(),
+                                                     8,
+                                                     timeSpan(40).millis()).withJoinGrace(timeSpan(0).millis());
+        private RecordingTransport transport;
+        private RecordingListener listener;
+        private RecordingObservationSink observations;
+        private SwimProtocol protocol;
+
+        @BeforeEach
+        void setUp() {
+            transport = new RecordingTransport();
+            listener = new RecordingListener();
+            observations = new RecordingObservationSink();
+            liveTransport.clear();
+            // NORMAL phase; transportConnected mirrors this node's live QUIC links, as production wires it.
+            protocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR,
+                                                 () -> false, liveTransport::contains)
+                                   .unwrap();
+            protocol.addObservationListener(observations);
+        }
+
+        @Test
+        void linkLostHint_thenLinkReconnected_loneFirstHandFaultyHeldAtDefaultWindow() {
+            seenHealthy(protocol, NODE_A, ADDR_A);
+            // Eviction: link down, QUIC onPeerLeft -> LINK_LOST hint initiates SUSPECT under the floor.
+            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            assertThat(stateOf(NODE_A)).isEqualTo(MemberState.SUSPECT);
+            assertThat(windowOf(NODE_A))
+                .as("While the evicted link is down the LINK_LOST hint floors the window")
+                .isEqualTo(FLOOR_MS);
+
+            // Re-dial completes: the link is CONNECTED again and QUIC onPeerReconnected -> PeerReachable.
+            liveTransport.add(NODE_A);
+            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+            assertThat(windowOf(NODE_A))
+                .as("After the reconnect the suspicion runs on the default window, not the 3s floor")
+                .isEqualTo(SUSPECT_TIMEOUT_MS);
+
+            protocol.start();
+            try {
+                await().during(Duration.ofMillis(3_800))
+                       .atMost(Duration.ofSeconds(5))
+                       .until(() -> !listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
+                await().atMost(Duration.ofSeconds(10))
+                       .until(() -> listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
+            } finally {
+                protocol.stop();
+            }
+
+            assertThat(forPeer(SwimObservation.DepartedObserved.class, NODE_A))
+                .as("A reconnected link's LINK_LOST hint must not corroborate a lone first-hand FAULTY — no DepartedObserved")
+                .isEmpty();
+            assertThat(forPeer(SwimObservation.FaultyObserved.class, NODE_A))
+                .as("The under-confirmed first-hand verdict is held by the #336 kill-gate")
+                .isEmpty();
+            assertThat(forPeer(SwimObservation.UnknownObserved.class, NODE_A))
+                .as("The held verdict surfaces as UNKNOWN")
+                .isNotEmpty();
+        }
+
+        @Test
+        void linkLostHint_linkConnectedBeforeReachableEvent_floorAndVetoWithheld() {
+            seenHealthy(protocol, NODE_A, ADDR_A);
+            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            assertThat(windowOf(NODE_A)).isEqualTo(FLOOR_MS);
+
+            // Out-of-order delivery: the new link is already CONNECTED but PeerReachable has not been
+            // delivered, so the hint is still recorded. It must be judged against the live link.
+            liveTransport.add(NODE_A);
+            assertThat(windowOf(NODE_A))
+                .as("A recorded LINK_LOST hint does not floor the window while the link is CONNECTED")
+                .isEqualTo(SUSPECT_TIMEOUT_MS);
+
+            protocol.start();
+            try {
+                await().during(Duration.ofMillis(3_800))
+                       .atMost(Duration.ofSeconds(5))
+                       .until(() -> !listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
+                await().atMost(Duration.ofSeconds(10))
+                       .until(() -> listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
+            } finally {
+                protocol.stop();
+            }
+
+            assertThat(forPeer(SwimObservation.DepartedObserved.class, NODE_A))
+                .as("A recorded LINK_LOST hint does not veto the kill-gate while the link is CONNECTED")
+                .isEmpty();
+            assertThat(forPeer(SwimObservation.UnknownObserved.class, NODE_A)).isNotEmpty();
+        }
+
+        @Test
+        void linkLostHint_linkStillDown_floorsAndVetoes() {
+            seenHealthy(protocol, NODE_A, ADDR_A);
+            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            var hintedAt = System.currentTimeMillis();
+            assertThat(windowOf(NODE_A)).isEqualTo(FLOOR_MS);
+
+            protocol.start();
+            try {
+                await().atMost(Duration.ofSeconds(5))
+                       .until(() -> !forPeer(SwimObservation.FaultyObserved.class, NODE_A).isEmpty());
+            } finally {
+                protocol.stop();
+            }
+
+            assertThat(System.currentTimeMillis() - hintedAt)
+                .as("A link that is still down keeps the 3s floor — real transport-confirmed death is not slowed")
+                .isLessThan(SUSPECT_TIMEOUT_MS);
+            assertThat(forPeer(SwimObservation.DepartedObserved.class, NODE_A))
+                .as("A current LINK_LOST hint still corroborates the lone first-hand FAULTY")
+                .hasSize(1);
+        }
+
+        @Test
+        void peerUnresponsiveHint_linkConnected_floorsAndVetoesThroughReachable() {
+            seenHealthy(protocol, NODE_A, ADDR_A);
+            // Hung peer: the QUIC link stays CONNECTED throughout, but the peer misses pongs.
+            liveTransport.add(NODE_A);
+            protocol.recordTransportHint(NODE_A, peerUnresponsive(NODE_A));
+            var hintedAt = System.currentTimeMillis();
+            assertThat(stateOf(NODE_A)).isEqualTo(MemberState.SUSPECT);
+            // A reachable event (catch-up or reconnect) says nothing about a connected-but-silent peer.
+            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+            assertThat(windowOf(NODE_A))
+                .as("A PEER_UNRESPONSIVE hint floors the window with the link CONNECTED and survives PeerReachable")
+                .isEqualTo(FLOOR_MS);
+
+            protocol.start();
+            try {
+                await().atMost(Duration.ofSeconds(5))
+                       .until(() -> !forPeer(SwimObservation.FaultyObserved.class, NODE_A).isEmpty());
+            } finally {
+                protocol.stop();
+            }
+
+            assertThat(System.currentTimeMillis() - hintedAt).isLessThan(SUSPECT_TIMEOUT_MS);
+            assertThat(forPeer(SwimObservation.DepartedObserved.class, NODE_A))
+                .as("A PEER_UNRESPONSIVE hint still corroborates the lone first-hand FAULTY with the link CONNECTED")
+                .hasSize(1);
+        }
+
+        @Test
+        void linkLostHint_reachableWithoutTransportView_retractsFloorAndReappliesOnNextLoss() {
+            // No transport view (id -> false): only the PeerReachable retraction can lift the floor.
+            var noViewProtocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
+                                             .unwrap();
+            seenHealthy(noViewProtocol, NODE_A, ADDR_A);
+            noViewProtocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            assertThat(noViewProtocol.effectiveSuspicionWindowForTest(NODE_A).or(-1L)).isEqualTo(FLOOR_MS);
+
+            noViewProtocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+            assertThat(noViewProtocol.effectiveSuspicionWindowForTest(NODE_A).or(-1L))
+                .as("PeerReachable retracts the transport's own LINK_LOST hint")
+                .isEqualTo(SUSPECT_TIMEOUT_MS);
+
+            noViewProtocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            assertThat(noViewProtocol.effectiveSuspicionWindowForTest(NODE_A).or(-1L))
+                .as("The retraction is not a latch: the next link loss floors the window again")
+                .isEqualTo(FLOOR_MS);
+        }
+
+        @Test
+        void peerReachable_neverPromotesToAlive_onlyProbeAckDoes() {
+            seenHealthy(protocol, NODE_A, ADDR_A);
+            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            var suspectedAt = protocol.suspectTimestampForTest(NODE_A).or(-1L);
+            var healthyEdgesBefore = forPeer(SwimObservation.HealthyObserved.class, NODE_A).size();
+
+            liveTransport.add(NODE_A);
+            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+
+            assertThat(stateOf(NODE_A))
+                .as("PeerReachable retracts link evidence; it never moves the peer toward ALIVE")
+                .isEqualTo(MemberState.SUSPECT);
+            assertThat(protocol.suspectTimestampForTest(NODE_A).or(-2L))
+                .as("The suspicion clock is untouched by PeerReachable")
+                .isEqualTo(suspectedAt);
+            assertThat(forPeer(SwimObservation.HealthyObserved.class, NODE_A))
+                .as("No HEALTHY edge from a transport event")
+                .hasSize(healthyEdgesBefore);
+
+            protocol.start();
+            try {
+                await().atMost(Duration.ofSeconds(4))
+                       .until(() -> isAliveAfterAckingLatestProbe(NODE_A, ADDR_A));
+            } finally {
+                protocol.stop();
+            }
+
+            assertThat(forPeer(SwimObservation.HealthyObserved.class, NODE_A))
+                .as("A verified probe-ack is what returns the peer to ALIVE")
+                .hasSize(healthyEdgesBefore + 1);
+        }
+
+        @Test
+        void suspicionJournal_logsEnforcedWindow_atStartAndOnRetraction() {
+            var context = (LoggerContext) LogManager.getContext(false);
+            var configuration = context.getConfiguration();
+            var loggerConfig = new LoggerConfig(SWIM_LOGGER, Level.INFO, true);
+            var appender = new CapturingAppender("Swim1061WindowCapture");
+
+            appender.start();
+            loggerConfig.addAppender(appender, Level.INFO, null);
+            configuration.addLogger(SWIM_LOGGER, loggerConfig);
+            context.updateLoggers();
+            try {
+                seenHealthy(protocol, NODE_A, ADDR_A);
+                protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+
+                assertThat(appender.messages)
+                    .as("The suspicion-start line prints the window the expiry check enforces (3s floor), not the dogpile window")
+                    .anyMatch(line -> line.contains("suspect node-a accused by node-self; effective window " + FLOOR_MS + "ms"));
+
+                liveTransport.add(NODE_A);
+                protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+                var enforced = windowOf(NODE_A);
+
+                assertThat(enforced).isEqualTo(SUSPECT_TIMEOUT_MS);
+                assertThat(appender.messages)
+                    .as("The retraction line prints the window now enforced")
+                    .anyMatch(line -> line.contains("LINK_LOST death hint retracted")
+                                      && line.contains("effective suspect window now " + enforced + "ms"));
+            } finally {
+                configuration.removeLogger(SWIM_LOGGER);
+                context.updateLoggers();
+                appender.stop();
+            }
+        }
+
+        private boolean isAliveAfterAckingLatestProbe(NodeId peer, InetSocketAddress addr) {
+            transport.sentMessages.stream()
+                                  .filter(sent -> sent.target().equals(addr) && sent.message() instanceof Ping)
+                                  .map(sent -> ((Ping) sent.message()).sequence())
+                                  .reduce((first, second) -> second)
+                                  .ifPresent(seq -> protocol.onMessage(addr, new Ack(peer, seq, List.of())));
+            return stateOf(peer) == MemberState.ALIVE;
+        }
+
+        private void seenHealthy(SwimProtocol target, NodeId nodeId, InetSocketAddress addr) {
+            target.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(new MembershipUpdate(nodeId, MemberState.ALIVE, 0, addr))));
+        }
+
+        private TransportObservation.PeerUnreachable linkLost(NodeId peer) {
+            return new TransportObservation.PeerUnreachable(peer,
+                                                            Causes.cause("QUIC link evicted"),
+                                                            TransportObservation.HintOrigin.LINK_LOST);
+        }
+
+        private TransportObservation.PeerUnreachable peerUnresponsive(NodeId peer) {
+            return new TransportObservation.PeerUnreachable(peer,
+                                                            Causes.cause("cluster-sync missed pongs"),
+                                                            TransportObservation.HintOrigin.PEER_UNRESPONSIVE);
+        }
+
+        private MemberState stateOf(NodeId peer) {
+            return protocol.members().get(peer).state();
+        }
+
+        private long windowOf(NodeId peer) {
+            return protocol.effectiveSuspicionWindowForTest(peer).or(-1L);
+        }
+
+        private <T extends SwimObservation> List<T> forPeer(Class<T> type, NodeId peer) {
+            return observations.byType(type)
+                               .stream()
+                               .filter(observation -> observation.peer().equals(peer))
+                               .toList();
+        }
+    }
+
     @Nested
     class IsolationEraVerdictExpiry {
         @Test
@@ -386,6 +688,19 @@ class SwimDeathPathCoConfirmationTest {
     record SentMessage(InetSocketAddress target, SwimMessage message) {}
 
     record FaultyCall(NodeId nodeId, boolean firstHand) {}
+
+    /// In-memory log4j2 appender capturing formatted messages for journal-line assertions.
+    static final class CapturingAppender extends AbstractAppender {
+        final CopyOnWriteArrayList<String> messages = new CopyOnWriteArrayList<>();
+
+        CapturingAppender(String name) {
+            super(name, (Filter) null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY);
+        }
+
+        @Override public void append(LogEvent event) {
+            messages.add(event.getMessage().getFormattedMessage());
+        }
+    }
 
     static class RecordingTransport implements SwimTransport {
         final CopyOnWriteArrayList<SentMessage> sentMessages = new CopyOnWriteArrayList<>();
