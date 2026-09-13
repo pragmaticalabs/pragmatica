@@ -80,22 +80,32 @@ public record CacheMethodInterceptor(CacheBackend cache,
 
     /// A backend failure on read is a miss.
     private Promise<Option<Object>> lookup(Object key) {
-        return cache.get(key).recover(cause -> missBecause("get", key, cause));
+        return cache.get(key)
+                    .recover(cause -> missBecause("get", key, cause));
     }
 
     /// A backend failure on write is absorbed; the method's result stands.
     private Promise<Unit> store(Object key, Object value) {
-        return cache.put(key, value).recover(cause -> skippedBecause("put", key, cause));
+        return cache.put(key, value)
+                    .recover(cause -> skippedBecause("put", key, cause));
     }
 
     private Option<Object> missBecause(String operation, Object key, Cause cause) {
-        log.debug("Cache {} {} failed for key {}, treating as a miss: {}", cacheName.or("<unnamed>"), operation, key, cause.message());
+        log.debug("Cache {} {} failed for key {}, treating as a miss: {}",
+                  cacheName.or("<unnamed>"),
+                  operation,
+                  key,
+                  cause.message());
 
         return Option.none();
     }
 
     private Unit skippedBecause(String operation, Object key, Cause cause) {
-        log.debug("Cache {} {} failed for key {}, entry not cached: {}", cacheName.or("<unnamed>"), operation, key, cause.message());
+        log.debug("Cache {} {} failed for key {}, entry not cached: {}",
+                  cacheName.or("<unnamed>"),
+                  operation,
+                  key,
+                  cause.message());
 
         return Unit.unit();
     }

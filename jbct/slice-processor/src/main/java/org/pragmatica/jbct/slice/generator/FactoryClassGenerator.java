@@ -400,10 +400,7 @@ public class FactoryClassGenerator {
                 var key = provisionKey(interceptor, method);
 
                 if (!seen.containsKey(key)) {
-                    var varName = issueUniqueName(lowercaseFirst(interceptor.variableSafeName())
-                                                 + "_" + interceptor.variableSafeConfigSection()
-                                                 + (carriesKey(method) ? "_" + method.name() : ""),
-                                                  issuedNames);
+                    var varName = issueUniqueName(variableNameFor(interceptor, method), issuedNames);
 
                     seen.put(key, new InterceptorEntry(varName, interceptor, method));
                 }
@@ -429,7 +426,19 @@ public class FactoryClassGenerator {
     }
 
     private static boolean carriesKey(MethodModel method) {
-        return method.keyExtractor().isPresent() || method.multiParamKeyParam().isPresent();
+        var singleKey = method.keyExtractor().isPresent();
+        var multiParamKey = method.multiParamKeyParam().isPresent();
+
+        return singleKey || multiParamKey;
+    }
+
+    /// Generated variable name: type + section, plus the method for a per-method instance.
+    private String variableNameFor(ResourceQualifierModel interceptor, MethodModel method) {
+        var base = lowercaseFirst(interceptor.variableSafeName()) + "_" + interceptor.variableSafeConfigSection();
+
+        return carriesKey(method)
+               ? base + "_" + method.name()
+               : base;
     }
 
     /// Returns `candidate` if unused, otherwise the first free `candidate_N` (N starting at 2).
@@ -896,14 +905,14 @@ public class FactoryClassGenerator {
         var typeName = importTracker.use(qualifier.resourceType().toString());
 
         return findKeyInfoForInterceptor(entry).fold(() -> "ctx.resources().provide(" + typeName
-                                                                 + ".class, \"" + configSection
-                                                                 + "\")",
-                                                            ki -> generateProvideWithContext(configSection,
-                                                                                             ki,
-                                                                                             entry.firstMethod(),
-                                                                                             model,
-                                                                                             importTracker,
-                                                                                             typeName));
+                                                          + ".class, \"" + configSection
+                                                          + "\")",
+                                                     ki -> generateProvideWithContext(configSection,
+                                                                                      ki,
+                                                                                      entry.firstMethod(),
+                                                                                      model,
+                                                                                      importTracker,
+                                                                                      typeName));
     }
 
     private String generateProvideWithContext(String configSection,
