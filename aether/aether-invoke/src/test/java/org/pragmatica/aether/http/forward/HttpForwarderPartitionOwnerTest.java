@@ -20,6 +20,7 @@ import org.pragmatica.aether.management.route.MatchedRoute;
 import org.pragmatica.aether.slice.delegation.TaskAssignmentError;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.http.Headers;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.lang.Option;
@@ -191,6 +192,65 @@ class HttpForwarderPartitionOwnerTest {
         assertThat(networkB.sendTargets()).as("B must not bounce the request back to A").isEmpty();
         assertThat(resolverB.calls()).as("the loop guard must precede resolution — a skewed view cannot authorize a second hop")
                                      .isEmpty();
+    }
+
+    @Test
+    void forwardManagement_failsWithOwnerForwardLoop_whenTheMarkerArrivesLowercasedByHeaderNormalization() {
+        // The test above hands B a context with the marker key exactly as A wrote it, which is NOT
+        // what a real second hop carries: the receiving node rebuilds the request through
+        // `ForwardedRequestContext`, which calls `Headers.headers(...)`, and that normalizes every
+        // key to lowercase. An exact-case guard passes the test above and misses here — so this runs
+        // A's stamped headers through the REAL `Headers` normalizer rather than lowercasing them by
+        // hand, because a hand-rolled imitation would encode my belief about the normalizer instead
+        // of using it.
+        var networkA = new RecordingClusterNetwork(Set.of(OWNER));
+        var serializerA = new CapturingSerializer();
+
+        forwarder(SELF, networkA, serializerA, new RecordingResolver(Option.some(OWNER))).forwardManagement(context(REPLICAS_PATH,
+                                                                                                                    Map.of()),
+                                                                                                            "req-case");
+
+        var stamped = serializerA.captured().getFirst();
+        var normalized = Headers.headers(stamped.headers()).asMap();
+
+        assertThat(normalized)
+                .as("control: the normalizer must actually have changed the key, or this test proves nothing")
+                .doesNotContainKey(HttpForwarder.OWNER_FORWARDED_BY_HEADER)
+                .containsKey(HttpForwarder.OWNER_FORWARDED_BY_HEADER.toLowerCase());
+
+        var networkB = new RecordingClusterNetwork(Set.of(SELF));
+        var arrivedAtB = HttpRequestContext.httpRequestContext(stamped.path(), "GET", Map.of(), normalized, "req-case");
+
+        var result = forwarder(OWNER, networkB, new NoopSerializer(), new RecordingResolver(Option.some(SELF)))
+                             .forwardManagement(arrivedAtB, "req-case")
+                             .await();
+
+        result.onSuccess(_ -> fail("a lowercased marker must still terminate the loop"))
+              .onFailure(cause -> assertThat(cause).isInstanceOf(ManagementRouteError.OwnerForwardLoop.class));
+        assertThat(networkB.sendTargets()).isEmpty();
+    }
+
+    @Test
+    void forwardManagement_refusesRatherThanAnsweringLocally_whenAClientSpoofsTheMarker() {
+        // The header is not stripped at ingress, so state what a spoofing client actually gets. It is
+        // a refusal, not the #1039 bypass: no non-authoritative answer is reachable this way, because
+        // the guard fails the request instead of falling through to local handling. Lowercase because
+        // that is the form an inbound header takes after `Headers.asMap()` — and the form a client
+        // using HTTP/2 sends on the wire regardless.
+        var network = new RecordingClusterNetwork(Set.of(OWNER));
+        var resolver = new RecordingResolver(Option.some(OWNER));
+
+        var result = forwarder(SELF, network, new NoopSerializer(), resolver)
+                             .forwardManagement(context(REPLICAS_PATH,
+                                                        Map.of(HttpForwarder.OWNER_FORWARDED_BY_HEADER.toLowerCase(),
+                                                               List.of("spoofed-by-client"))),
+                                                "req-spoof")
+                             .await();
+
+        result.onSuccess(_ -> fail("a spoofed marker must not yield an answer of any kind"))
+              .onFailure(cause -> assertThat(cause).isInstanceOf(ManagementRouteError.OwnerForwardLoop.class));
+        assertThat(network.sendTargets()).as("and it must not be forwarded either").isEmpty();
+        assertThat(resolver.calls()).as("the guard precedes resolution, so no owner is even computed").isEmpty();
     }
 
     @Test

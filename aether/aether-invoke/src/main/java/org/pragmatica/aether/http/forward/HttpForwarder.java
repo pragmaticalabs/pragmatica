@@ -113,9 +113,20 @@ public interface HttpForwarder {
     /// owner forwarding into that receive path later makes the cycle reachable, and this refuses it
     /// at the first re-forward instead of letting it run down the clock.
     ///
-    /// An inbound HTTP client can set this header on its own request and get the loop error back.
-    /// That is self-limiting (it refuses only the caller's own request, on an API-key-gated route)
-    /// and is preferred over trusting an unmarked request unconditionally.
+    /// NOT STRIPPED AT INGRESS, so state the reachable behaviour exactly. An authenticated client
+    /// that sets this header itself, against a node that is not the partition owner, gets the
+    /// `OwnerForwardLoop` failure back as a 503. It cannot obtain a NON-AUTHORITATIVE answer: the
+    /// guard fails the request, and nothing converts a forward failure into local handling —
+    /// `ManagementServerImpl.tryForwardIfNotPartitionOwner` hands the request to the forwarder and
+    /// returns `true`, so `router.handle` is never reached, and `ManagementRouteError.NotLocalTarget`
+    /// has no consumer anywhere in the tree despite what its own message says. So the spoof is a
+    /// self-inflicted denial on an API-key-gated route, not the #1039 bypass.
+    ///
+    /// Stripping it at ingress would be tighter, and was considered and rejected here: the only place
+    /// to strip is `ManagementServerImpl.toManagementRequestContext`, which cannot distinguish an
+    /// external client request from a request that arrived over the cluster forward channel — so
+    /// stripping there would also erase a genuine marker and disable the tripwire below. Tightening
+    /// this needs a separate ingress/internal split, which is out of #1039's scope.
     String OWNER_FORWARDED_BY_HEADER = "X-Aether-Owner-Forwarded-By";
 
     static HttpForwarder httpForwarder(NodeId selfNodeId,
@@ -814,13 +825,27 @@ public interface HttpForwarder {
                                                                                requestContext.path()));
             }
 
-            /// The node that owner-forwarded this request, if any. Exact-key lookup: the marker is
-            /// written by [#withOwnerForwardMarker] and read back off the same `@Codec`-serialized
-            /// header map, so the key survives the hop unchanged.
+            /// The node that owner-forwarded this request, if any.
+            ///
+            /// CASE-INSENSITIVE, and that is load-bearing rather than defensive. An exact-key lookup
+            /// reads the marker written by [#withOwnerForwardMarker] but MISSES it after a real hop:
+            /// the receiving node rebuilds the request through `ForwardedRequestContext`, which calls
+            /// `Headers.headers(...)`, whose documented contract normalizes every key to lowercase —
+            /// so a second-hop context carries `x-aether-owner-forwarded-by`, not the mixed-case name
+            /// this constant declares. An exact-case guard would therefore pass its own unit test
+            /// (which hands the context over unnormalized) and fail silently in the one situation it
+            /// exists for.
             private static Option<String> ownerForwardMarker(HttpRequestContext requestContext) {
-                return Option.option(requestContext.headers().get(OWNER_FORWARDED_BY_HEADER))
-                             .filter(values -> !values.isEmpty())
-                             .map(List::getFirst);
+                return requestContext.headers()
+                                     .entrySet()
+                                     .stream()
+                                     .filter(entry -> OWNER_FORWARDED_BY_HEADER.equalsIgnoreCase(entry.getKey()))
+                                     .map(Map.Entry::getValue)
+                                     .filter(values -> !values.isEmpty())
+                                     .map(List::getFirst)
+                                     .findFirst()
+                                     .map(Option::option)
+                                     .orElseGet(Option::none);
             }
 
             private HttpRequestContext withOwnerForwardMarker(HttpRequestContext requestContext) {
