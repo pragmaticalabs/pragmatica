@@ -46,6 +46,22 @@ jobs:
       - name: Install all artifacts
         run: mvn install -B -DskipTests
 
+      # Heavy classes deploy standalone test blueprints (test-stream, test-entity, ...) by coordinates.
+      # Nothing in the reactor installs them. build.sh step 5 does it locally, and without this step 11
+      # classes failed in setUp on "Artifact not found in local repository". `clean` for the same reason
+      # build.sh gives: an incremental build re-jars stale generated factories.
+      - name: Build test blueprints
+        run: |
+          shopt -s nullglob
+          poms=(aether/tests/blueprints/*/pom.xml)
+          (( ${#poms[@]} > 0 )) || { echo "no aether/tests/blueprints/*/pom.xml found; refusing to continue" >&2; exit 1; }
+          for pom in "${poms[@]}"; do
+            echo "::group::${pom}"
+            mvn -B -f "$pom" clean install -DskipTests
+            echo "::endgroup::"
+          done
+          echo "built ${#poms[@]} test blueprints"
+
       # -Dgroups=Heavy selects the tagged classes, so a newly tagged class is picked up with no edit
       # here. -Dfailsafe.excludedGroups= clears the pom's exclusion slot. The failsafe fork timeout is
       # raised from the pom's 1800s default because this job keeps every Heavy class in one fork, and
