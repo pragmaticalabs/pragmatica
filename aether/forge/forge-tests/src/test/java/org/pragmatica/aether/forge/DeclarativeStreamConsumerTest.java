@@ -81,9 +81,16 @@ class DeclarativeStreamConsumerTest {
     private static final int EVENT_COUNT = 30;
     private static final int ORDER_COUNT = 10;
 
-    private static final String CONSUMER_EVENTS_STREAM = "consumer-events";
-    private static final String ORDER_EVENTS_STREAM = "order-events";
-    private static final String SPREAD_EVENTS_STREAM = "spread-events";
+    /// The engine keys the declarative consumers register and attach under — and so the `stream` field
+    /// `/api/v1/streams/declarative-consumers` reports. Since #1041 that is the blueprint-qualified
+    /// `namespace:alias:version` resolved from the deploy-time bindings, not the bare `[streams.X]` alias.
+    /// The bare spelling matched nothing from then on; it went unnoticed only because, until #1066, the
+    /// body publish wrote no bindings and no consumer registered at all. The namespace is this test's
+    /// blueprint group and artifact ([#BLUEPRINT_ID]).
+    private static final String STREAM_NAMESPACE = "forge.test.declarative-consumer";
+    private static final String CONSUMER_EVENTS_STREAM = STREAM_NAMESPACE + ":consumer-events:1.0.0";
+    private static final String ORDER_EVENTS_STREAM = STREAM_NAMESPACE + ":order-events:1.0.0";
+    private static final String SPREAD_EVENTS_STREAM = STREAM_NAMESPACE + ":spread-events:1.0.0";
 
     /// Attachments expected cluster-wide once settled: one partition each for consumer-events and
     /// order-events, plus the five of spread-events. With the slice on EVERY node each partition's own

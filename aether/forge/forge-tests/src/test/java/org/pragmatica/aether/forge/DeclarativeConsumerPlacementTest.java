@@ -81,7 +81,11 @@ class DeclarativeConsumerPlacementTest {
     private static final int EXPECTED_ATTACHMENTS = 7;
     private static final int EVENT_COUNT = 25;
 
-    private static final String SPREAD_EVENTS_STREAM = "spread-events";
+    /// The engine key the declarative consumer attaches under, as `/api/v1/streams/declarative-consumers`
+    /// reports it: since #1041 the blueprint-qualified `namespace:alias:version`, not the bare alias. The
+    /// bare spelling became unreachable only once #1066 made the body publish write bindings. The
+    /// namespace is this test's blueprint group and artifact ([#BLUEPRINT_ID]).
+    private static final String SPREAD_EVENTS_STREAM = "forge.test.declarative-consumer-placement:spread-events:1.0.0";
 
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration DELIVERY_TIMEOUT = Duration.ofSeconds(90);
