@@ -1,17 +1,20 @@
 ### Fixed (2026-09-13 — #1050, #1062: surplus-drain and departed-node reaps could kill a live node or orphan a billed instance)
 - **A surplus trim never terminates a live node.** Before this change, `graceTerminate` reaped a surplus-drained node at
   grace expiry unconditionally. For `OVERPROVISION_*` drains it now keys on the TARGET first:
-  - A target that is still a live counted member (counted, so neither DEPARTING nor DEAD, and alive by raw SWIM) is never
-    reaped, whoever is leader. That includes a drain withdrawn back to MEMBER.
+  - A target that is still LIVE is never reaped, whoever is leader. Liveness is judged by evidence, not membership
+    projection: raw SWIM reports it HEALTHY or SUSPECTED, or the leader's transport link to it is connected. A DEPARTING
+    target whose DRAIN was never delivered (withdrawn to MEMBER and re-drained) is therefore live. A target is not live
+    only with positive evidence of death or exit: SWIM FAULTY or UNKNOWN AND the transport link down.
   - A target that is not live is reaped only by an active CTM whose remaining counted members are quorum-safe for a
     known configured core size. An unknown size (below 1) is refused (fail-closed).
   - A deficit no longer blocks the reap: terminating a node that is not live removes no capacity.
   - The DRAIN command is cleared in every branch.
 
-  [mechanism: `ClusterTopologyManagerRecord.graceReapVerdict`, pinned by
+  [mechanism: `ClusterTopologyManagerRecord.graceReapVerdict` and `MembershipLiveness.live`, pinned by
   `ClusterTopologyManagerActuatorTest.DrainGraceRecheck` and `.DrainGraceWithRealMembership` through the real
-  `drainNode` → scheduler path; red at `c974cb3f4`:
-  `surplusDrain_realMembership_targetReturnedToMember_isNeverReaped_evenWithSpareCapacity`]
+  `drainNode` → scheduler path, and by `MembershipLivenessTest`. Red at `c974cb3f4`:
+  `surplusDrain_realMembership_targetReturnedToMember_isNeverReaped_evenWithSpareCapacity`. Red under a verdict keyed on
+  counted membership: `surplusDrain_realMembership_reDrainedDepartingTarget_swimAliveAndConnected_isNotReaped`]
 - **A refused or dropped reap no longer leaves a billed orphan.** `activate()` now runs a one-shot activation replay over
   this cluster's labelled core instances (`aether-cluster`, `aether-role=core`). It terminates an instance only when, at
   two reads `provisioningTimeout` apart, its node is neither tracked by the membership FSM, nor showing evidence of life,
@@ -46,4 +49,7 @@
   - [unverified: a repeated terminate is recorded twice by the in-JVM recorder; only the lifecycle layer's quiet
     completion of a not-found terminate is tested (`NodeLifecycleManagerTerminateTest`). A provider still listing a
     server that is being deleted would receive a second terminate call]
+  - [unverified: a DRAIN that can never be delivered makes the reconciler re-drain a live target without bound (withdraw,
+    re-drain, skip at every grace); this fix only guarantees the target is never reaped. The churn belongs to #1058 and
+    #1055]
   - Out of scope: the 15s DEPARTING-timeout reap (#1054) and the age-0 ephemeral OVERPROVISION drain (#1055).
