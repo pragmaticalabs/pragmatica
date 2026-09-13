@@ -27,7 +27,10 @@ public sealed interface HttpEmailError extends Cause {
 
         @Override
         public boolean isTerminal() {
-            return statusCode >= 400 && statusCode < 500 && statusCode != 408 && statusCode != 429;
+            return statusCode >= 400
+                   && statusCode < 500
+                   && statusCode != 408
+                   && statusCode != 429;
         }
     }
 

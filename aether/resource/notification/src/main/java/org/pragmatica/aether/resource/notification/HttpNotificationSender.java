@@ -32,7 +32,8 @@ final class HttpNotificationSender implements NotificationSender {
     private Promise<NotificationResult> sendEmail(Notification.Email email) {
         var message = toEmailMessage(email);
 
-        return retry.execute(() -> sender.send(message).map(response -> notificationResult(response, "http")))
+        return retry.execute(() -> sender.send(message)
+                                         .map(response -> notificationResult(response, "http")))
                     .mapError(cause -> new NotificationError.DeliveryFailed("HTTP delivery failed: " + cause.message()));
     }
 

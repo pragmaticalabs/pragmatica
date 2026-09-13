@@ -31,10 +31,11 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// control — they pass before and after the fix — so the permanent cases are the pins.
 class NotificationRetryClassificationTest {
     private static final RetryConfig THREE_QUICK_ATTEMPTS = RetryConfig.retryConfig(3, 1, 2, 1.0);
+
     private static final Notification.Email EMAIL = Notification.Email.email("from@example.com",
-                                                                            List.of("to@example.com"),
-                                                                            "Subject",
-                                                                            NotificationBody.Text.text("Body"));
+                                                                             List.of("to@example.com"),
+                                                                             "Subject",
+                                                                             NotificationBody.Text.text("Body"));
 
     @Nested
     class Smtp {
@@ -46,6 +47,11 @@ class NotificationRetryClassificationTest {
         @Test
         void tlsFailed_isPermanent_soOneAttempt() {
             assertThat(smtpAttempts(new SmtpError.TlsFailed("STARTTLS rejected"))).isEqualTo(1);
+        }
+
+        @Test
+        void protocolError_isPermanent_soOneAttempt() {
+            assertThat(smtpAttempts(new SmtpError.ProtocolError("EHLO rejected"))).isEqualTo(1);
         }
 
         /// RFC 5321 §4.2.1: 5yz is a permanent negative completion. `Rejected` carries the reply code
@@ -120,9 +126,7 @@ class NotificationRetryClassificationTest {
         var attempts = new AtomicInteger();
         var sender = new SmtpNotificationSender(failingClient(attempts, cause), THREE_QUICK_ATTEMPTS);
 
-        sender.send(EMAIL)
-              .await()
-              .onSuccess(_ -> fail("delivery must fail"));
+        sender.send(EMAIL).await().onSuccess(_ -> fail("delivery must fail"));
 
         return attempts.get();
     }
@@ -136,9 +140,7 @@ class NotificationRetryClassificationTest {
         };
         var sender = new HttpNotificationSender(failing, THREE_QUICK_ATTEMPTS);
 
-        sender.send(EMAIL)
-              .await()
-              .onSuccess(_ -> fail("delivery must fail"));
+        sender.send(EMAIL).await().onSuccess(_ -> fail("delivery must fail"));
 
         return attempts.get();
     }

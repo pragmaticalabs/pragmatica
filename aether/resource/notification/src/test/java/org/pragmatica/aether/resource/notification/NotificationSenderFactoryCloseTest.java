@@ -29,11 +29,9 @@ class NotificationSenderFactoryCloseTest {
         var closes = new AtomicInteger();
         var sender = new SmtpNotificationSender(countingClient(closes), RetryConfig.DEFAULT);
 
-        factory.close(sender)
-               .await()
-               .onFailure(cause -> fail("close should succeed: " + cause.message()));
-
-        assertThat(closes.get()).as("factory.close must reach SmtpClient.close(), which releases the event loop").isEqualTo(1);
+        factory.close(sender).await().onFailure(cause -> fail("close should succeed: " + cause.message()));
+        assertThat(closes.get()).as("factory.close must reach SmtpClient.close(), which releases the event loop")
+                  .isEqualTo(1);
     }
 
     private static SmtpClient countingClient(AtomicInteger closes) {

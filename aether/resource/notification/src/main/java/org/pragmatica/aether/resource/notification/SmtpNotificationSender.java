@@ -40,7 +40,8 @@ final class SmtpNotificationSender implements NotificationSender, AsyncCloseable
     private Promise<NotificationResult> sendEmail(Notification.Email email) {
         var message = toSmtpMessage(email);
 
-        return retry.execute(() -> client.send(message).map(response -> notificationResult(response, "smtp")))
+        return retry.execute(() -> client.send(message)
+                                         .map(response -> notificationResult(response, "smtp")))
                     .mapError(cause -> new NotificationError.DeliveryFailed("SMTP delivery failed: " + cause.message()));
     }
 
