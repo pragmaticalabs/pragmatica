@@ -34,7 +34,6 @@ import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
-import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.http.HttpOperations;
@@ -4229,17 +4228,38 @@ public class AetherCli implements Runnable {
             CommandLine.usage(this, System.out);
         }
 
-        /// Bare name (no colon) defaults to the system-namespace catalog address at the default
-        /// version, preserving `status`/`publish`/`read`/`delete`'s original single-name UX; anything
-        /// containing a colon is parsed as a full `namespace:stream:version` address via the canonical
-        /// [ResourceAddress#resourceAddress] parser. Needed because those four commands now address the
-        /// catalog-form routes (`STREAM_GET`/`STREAMS_PUBLISH`/`STREAM_READ`/`STREAMS_DELETE` —
-        /// management-api-versioning-spec.md hard cutover) instead of the old flat bare-name routes, so
-        /// a non-`system` namespace needs a way in that a bare name alone can't express.
+        /// A stream address must be the full `namespace:stream:version`. A bare name is REFUSED (#1044).
+        ///
+        /// It previously defaulted to the system-namespace catalog address, preserving the original
+        /// single-name UX for `status`/`publish`/`read`/`delete`. That convenience became a silent wrong
+        /// answer when #1040 qualified application streams: a bare name resolves to `system:<name>:1.0.0`,
+        /// which `StreamEngineKey` reduces back to a bare engine key, while the application stream now
+        /// lives under `<blueprint-ns>:<stream>:<version>`. The command then succeeded and returned an
+        /// EMPTY result — indistinguishable from a stream with no events. Measured on a live 5-node
+        /// cluster 2026-09-13 with 20 events present: the bare name returned 0 of 20, the full identity
+        /// returned 20 of 20, same instant.
+        ///
+        /// This file already made the argument for the neighbouring replicas route: "a stream identity
+        /// that could silently mean two different engine keys is worse than requiring the caller to say
+        /// which one". The same now holds for these four commands, so they refuse rather than guess.
+        /// `system` streams are unaffected in substance — they are still reachable, spelled in full.
         private static Result<ResourceAddress> resolveStreamAddress(String raw) {
             return raw.contains(":")
                    ? ResourceAddress.resourceAddress(raw)
-                   : ResourceAddress.systemResource(raw, ResourceVersion.defaultVersion());
+                   : bareStreamNameRefused(raw);
+        }
+
+        /// Names the exact form to retype, including the `system:` spelling for the case the bare name
+        /// used to mean — a refusal that does not say what to write instead just relocates the problem.
+        private static Result<ResourceAddress> bareStreamNameRefused(String raw) {
+            return Causes.cause("'" + raw
+                               + "' is a bare stream name, which is ambiguous: it names no "
+                               + "namespace. Use the full namespace:stream:version — e.g. "
+                               + "'<your-namespace>:" + raw
+                               + ":1.0.0', or 'system:" + raw
+                               + ":1.0.0' for a "
+                               + "system stream. 'aether streams list' shows the catalog address of every "
+                               + "stream.").result();
         }
 
         private static int handleAddressError(Cause cause) {
