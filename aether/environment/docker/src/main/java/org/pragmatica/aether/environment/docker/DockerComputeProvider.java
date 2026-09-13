@@ -344,6 +344,27 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         // otherwise 503 on healed nodes). Kept standalone so dev-mode can never silently
         // ride the identity allow-list into a production deploy.
         propagateEnvVar(command, ClusterIdentityEnv.INSECURE_DEV_MODE);
+        // --- Test-only boot delay (EXPERIMENT, never production) ---
+        // oss/internal/brief-p1-bigboy-bootdelay-repro-2026-09-13.md: reproduce the cloud auto-heal
+        // failure pattern by delaying a CTM replacement's join, in the test path only. Deliberately
+        // TWO DIFFERENT variable names: the leader process (this JVM) is asked for
+        // AETHER_CTM_TEST_BOOT_DELAY_SECONDS, and — if present — emits AETHER_TEST_BOOT_DELAY (the
+        // name the image entrypoint sleeps on, see docker/aether-node/Dockerfile) into the MINTED
+        // container's env only. Reading the leader's own env for the trigger name would also delay
+        // the leader itself; reading a different name means only the entrypoint of the container
+        // being created is affected. Compose-fixed seed nodes never receive AETHER_TEST_BOOT_DELAY
+        // (this method only runs for CTM-provisioned instances), so bootstrap is never delayed.
+        // Absent in production: no operator sets AETHER_CTM_TEST_BOOT_DELAY_SECONDS, so this block
+        // is a no-op there, which is why it is not a production-facing knob.
+        var testBootDelaySeconds = System.getenv("AETHER_CTM_TEST_BOOT_DELAY_SECONDS");
+        if (testBootDelaySeconds != null && !testBootDelaySeconds.isEmpty()) {
+            command.add("-e");
+            command.add("AETHER_TEST_BOOT_DELAY=" + testBootDelaySeconds);
+        }
+        // Forward the TRIGGER name itself (not just its effect) so a replacement that later
+        // becomes leader and mints its own replacements still applies the delay — otherwise the
+        // experiment stops reproducing after one generation of churn.
+        propagateEnvVar(command, "AETHER_CTM_TEST_BOOT_DELAY_SECONDS");
         // Defense-in-depth: never pass an unresolved `${env:...}` literal to `--group-add`
         // (docker rejects it pre-start with exit 125). Treat it as absent.
         if (!config.dockerGid().isEmpty() && !config.dockerGid().startsWith("${env:")) {

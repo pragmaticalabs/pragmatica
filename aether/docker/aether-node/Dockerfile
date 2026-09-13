@@ -73,7 +73,14 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=45s --retries=3 \
 USER aether
 
 # Entrypoint builds command from environment variables
+#
+# AETHER_TEST_BOOT_DELAY (seconds, optional): EXPERIMENT-ONLY hook for
+# oss/internal/brief-p1-bigboy-bootdelay-repro-2026-09-13.md, reproducing the cloud
+# auto-heal failure pattern by delaying a replacement's join in the test path only.
+# Never set in production; DockerComputeProvider emits it into a CTM-minted
+# replacement's own env, never into compose-fixed seed nodes' env.
 ENTRYPOINT ["sh", "-c", "\
+    ${AETHER_TEST_BOOT_DELAY:+sleep ${AETHER_TEST_BOOT_DELAY}; } \
     CORES=$(nproc 2>/dev/null || echo 2); \
     VTHREAD_PARALLELISM=$(( CORES > 8 ? CORES : 8 )); \
     java $JAVA_OPTS \

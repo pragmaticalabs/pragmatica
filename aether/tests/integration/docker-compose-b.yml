@@ -49,6 +49,13 @@ x-node-common: &node-common
     # explicitly opts OUT via per-test unset when exercising the TLS-rotation
     # NOT_CONFIGURED skip path — see 05-security/CHARTER.md.
     AETHER_INSECURE_DEV_MODE: "true"
+    # EXPERIMENT-ONLY (oss/internal/brief-p1-bigboy-bootdelay-repro-2026-09-13.md): when set, read
+    # by DockerComputeProvider on whichever node is currently leader and forwarded (under the
+    # different name AETHER_TEST_BOOT_DELAY) into CTM-minted replacements only -- never into these
+    # compose-fixed seed nodes' own boot. Defaults to empty (no delay, no behavior change) unless a
+    # `.env` file next to this compose file on the deploy host sets it -- see the brief's control/
+    # treatment arms. Not a production knob: nothing in production sets this variable.
+    AETHER_CTM_TEST_BOOT_DELAY_SECONDS: "${AETHER_CTM_TEST_BOOT_DELAY_SECONDS:-}"
   healthcheck:
     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
     interval: 10s
