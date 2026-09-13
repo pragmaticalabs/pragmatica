@@ -115,7 +115,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         return TimedOut.timedOut(operation).unwrap();
     }
 
-    record TransactionRolledBack(String reason) implements DatabaseConnectorError {
+    record TransactionRolledBack(String reason) implements DatabaseConnectorError, Cause.Transient {
         public static Result<TransactionRolledBack> transactionRolledBack(String reason) {
             return success(new TransactionRolledBack(reason));
         }

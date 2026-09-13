@@ -22,6 +22,7 @@ class TransientClassificationTest {
         Cause[] transientCauses = {
             new JdbcError.ConnectionFailed("refused", Option.none()),
             new JdbcError.Timeout("query"),
+            new JdbcError.TransactionRollback("serialization failure"),
         };
 
         for (var cause : transientCauses) {

@@ -55,6 +55,7 @@ class TransientClassificationTest {
             new DHTError.NoAvailableNodes(),
             new DHTError.OperationTimeout(),
             new DHTError.MigrationInProgress(),
+            new DatabaseConnectorError.TransactionRolledBack("40001"),
         };
 
         for (var cause : transientCauses) {

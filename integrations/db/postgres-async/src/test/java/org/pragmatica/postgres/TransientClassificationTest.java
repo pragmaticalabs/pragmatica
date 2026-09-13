@@ -22,6 +22,10 @@ class TransientClassificationTest {
             new SqlError.ChannelClosed("closed"),
             new SqlError.PoolExhausted("full"),
             new SqlError.CommunicationError("reset"),
+            new SqlError.ServerErrorTransactionRollback(new SqlError.ServerResponse("40001", "ERROR", "could not serialize access"), "serialization_failure"),
+            new SqlError.ServerConnectionException(new SqlError.ServerResponse("08006", "FATAL", "connection failure"), "connection_failure"),
+            new SqlError.ServerErrorInsufficientResources(new SqlError.ServerResponse("53300", "FATAL", "too many connections"), "too_many_connections"),
+            new SqlError.ServerErrorOperatorIntervention(new SqlError.ServerResponse("57P03", "FATAL", "the database system is starting up"), "cannot_connect_now"),
         };
 
         for (var cause : transientCauses) {
@@ -36,6 +40,7 @@ class TransientClassificationTest {
             new SqlError.ConfigurationError("bad"),
             new SqlError.NoResultsReturned("none"),
             new SqlError.ConnectionPoolClosed("closed"),
+            new SqlError.ServerDataException(new SqlError.ServerResponse("22012", "ERROR", "division by zero"), "division_by_zero"),
         };
 
         for (var cause : unclassified) {

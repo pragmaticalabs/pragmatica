@@ -88,7 +88,7 @@ public sealed interface JooqError extends Cause {
     }
 
     /// Transaction rollback (deadlock, serialization failure, etc).
-    record TransactionRollback(String message) implements JooqError {
+    record TransactionRollback(String message) implements JooqError, Cause.Transient {
         @Override
         public String message() {
             return "Transaction rolled back: " + message;

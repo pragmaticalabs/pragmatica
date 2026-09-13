@@ -14,43 +14,33 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/// Retries through core [Retry], but only failures the configured [RetryOn] policy admits. A
-/// failure the policy refuses is returned as-is after the first attempt WITHOUT entering `Retry`,
-/// so a business verdict is neither re-driven nor logged as a retry giving up (#280 R26).
-///
-/// The first attempt is made here and `retry` carries the REMAINING budget (`maxAttempts - 1`,
-/// see `RetryInterceptorFactory`), so the method sees exactly `maxAttempts` calls in total. One
-/// consequence to know when reading logs: `Retry`'s own "failed after N of M attempts" line counts
-/// its M, which is one less than the configured `max_attempts`.
-public record RetryMethodInterceptor(Retry retry, int remainingAttempts, RetryOn retryOn) implements MethodInterceptor {
+/// Retries through core [Retry] under the configured [RetryOn] policy, evaluated on EVERY failure:
+/// a failure the policy refuses ends the call at once with that cause, on attempt one or attempt
+/// N alike. (Round-1 of #280 applied the policy to the first failure only and then handed the
+/// budget to a loop that stops solely on `isTerminal()`, so a business verdict on attempt two was
+/// re-driven — review of #1088, B1.) `max_attempts` counts calls at the method, the first included.
+public record RetryMethodInterceptor(Retry retry, RetryOn retryOn) implements MethodInterceptor {
     private static final Logger log = LoggerFactory.getLogger(RetryMethodInterceptor.class);
 
     @Override
     public <R, T> Fn1<Promise<R>, T> intercept(Fn1<Promise<R>, T> method) {
-        return request -> method.apply(request)
-                                .fold(result -> result.fold(cause -> retryOrReturn(method, request, cause),
-                                                            Promise::success));
+        return request -> retry.execute(() -> method.apply(request), this::admits);
     }
 
-    private <R, T> Promise<R> retryOrReturn(Fn1<Promise<R>, T> method, T request, Cause cause) {
-        if (remainingAttempts > 0 && retryOn.retries(cause)) {
-            return retry.execute(() -> method.apply(request));
-        }
+    /// The policy, with ONE DEBUG line when it declines a non-terminal cause: a retry that silently
+    /// becomes a no-op is the silent-wrong-state class, and a WARN per business failure is the #718
+    /// flood; DEBUG through SLF4J is the level an operator raises for one logger when a retry
+    /// "stopped working" (#280). A terminal cause is refused by `Retry` before this runs and is not
+    /// logged here — it is the documented never-retry state, not a surprise.
+    private boolean admits(Cause cause) {
+        var admitted = retryOn.retries(cause);
 
-        return declined(cause).promise();
-    }
-
-    /// A failure the policy declined is returned unchanged, with ONE DEBUG line naming the cause
-    /// type and the policy — a retry that silently becomes a no-op is the silent-wrong-state class,
-    /// and a WARN per business failure is the #718 flood; DEBUG through SLF4J is the level an
-    /// operator can raise for one logger when a retry "stopped working" (#280).
-    private Cause declined(Cause cause) {
-        if (!cause.isTerminal()) {
+        if (!admitted && !cause.isTerminal()) {
             log.debug("Retry declined for {} under retry_on={}: cause is not classified transient (mark it Cause.Transient, or set retry_on=NON_TERMINAL)",
                       cause.getClass().getName(),
                       retryOn);
         }
 
-        return cause;
+        return admitted;
     }
 }

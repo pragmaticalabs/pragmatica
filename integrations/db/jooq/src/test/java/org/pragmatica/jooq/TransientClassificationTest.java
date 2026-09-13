@@ -22,6 +22,7 @@ class TransientClassificationTest {
         Cause[] transientCauses = {
             new JooqError.ConnectionFailed("refused", Option.none()),
             new JooqError.Timeout("query"),
+            new JooqError.TransactionRollback("deadlock"),
         };
 
         for (var cause : transientCauses) {

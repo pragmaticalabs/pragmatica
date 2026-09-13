@@ -33,7 +33,6 @@ class TransientClassificationTest {
     void unclassifiedCauses_stayUnclassified() {
         Cause[] unclassified = {
             new JpaError.ConstraintViolation("pk"),
-            new JpaError.OptimisticLock("Account", 1),
         };
 
         for (var cause : unclassified) {

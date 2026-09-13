@@ -77,7 +77,7 @@ public sealed interface JdbcError extends Cause {
     }
 
     /// Transaction rollback (deadlock, serialization failure, etc).
-    record TransactionRollback(String message) implements JdbcError {
+    record TransactionRollback(String message) implements JdbcError, Cause.Transient {
         @Override
         public String message() {
             return "Transaction rolled back: " + message;
