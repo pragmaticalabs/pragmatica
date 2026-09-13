@@ -4,10 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.config.cluster.PortMapping;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -48,6 +54,37 @@ class BootstrapPhasePostContextTest {
                                                                                                  "https://138.199.236.244:8080",
                                                                                                  some("AETHER_FRESH_API_KEY"))));
                                   });
+    }
+
+    /// The WIRING, which the two `registerAndActivate` tests above cannot see (a call site that
+    /// went back to `registry.add` alone would leave them green): the real registration step, driven
+    /// against a scratch registry whose current context is another cluster, must save the
+    /// bootstrapped cluster as current and announce it.
+    @Test
+    void registerClusterLocally_savesTheBootstrappedClusterAsCurrent_andAnnouncesIt() throws IOException {
+        var registryPath = tempDir.resolve("clusters.toml");
+        var out = new ByteArrayOutputStream();
+        var originalOut = System.out;
+
+        Files.writeString(registryPath, "[current]\ncontext = \"old-dead\"\n\n[clusters.old-dead]\nendpoint = \"http://10.0.0.1:8080\"\n");
+        System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
+        try {
+            BootstrapPhasePost.registerClusterLocally(BootstrapPhasePostEndpointTest.context(true,
+                                                                                            PortMapping.defaultPortMapping(),
+                                                                                            "138.199.236.244"),
+                                                      ClusterRegistry.load(registryPath));
+        } finally {
+            System.setOut(originalOut);
+        }
+
+        var saved = Files.readString(registryPath);
+
+        assertThat(saved).as("the file the next command reads names the bootstrapped cluster as current")
+                         .contains("context = \"endpoint-probe\"")
+                         .contains("[clusters.endpoint-probe]")
+                         .contains("endpoint = \"https://138.199.236.244:8080\"")
+                         .contains("[clusters.old-dead]");
+        assertThat(out.toString(StandardCharsets.UTF_8)).contains("Active cluster context: endpoint-probe");
     }
 
     @Test

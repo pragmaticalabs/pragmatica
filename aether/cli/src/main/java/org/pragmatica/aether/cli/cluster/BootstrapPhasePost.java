@@ -79,6 +79,15 @@ sealed interface BootstrapPhasePost {
 
     @Contract
     private static void registerClusterLocally(BootstrapContext ctx) {
+        registerClusterLocally(ctx, ClusterRegistry.load());
+    }
+
+    /// Package-visible seam over the loaded registry so the whole step — register, activate, save,
+    /// announce — is pinnable against a scratch file (`BootstrapPhasePostContextTest`) without
+    /// writing the operator's `~/.aether/clusters.toml`. The one-arg form above is the only
+    /// production caller and only supplies the default registry.
+    @Contract
+    static void registerClusterLocally(BootstrapContext ctx, Result<ClusterRegistry> loaded) {
         var clusterName = ctx.config().cluster().name();
         var apiKeyEnvName = ClusterBootstrapOrchestrator.deriveApiKeyEnvName(clusterName);
         // #209: register the endpoint with the scheme the cluster actually serves. When TLS is
@@ -87,14 +96,10 @@ sealed interface BootstrapPhasePost {
         // #998: and with the PORT the management plane actually listens on — see [#managementEndpoint].
         var endpoint = managementEndpoint(ctx);
 
-        ClusterRegistry.load()
-                       .flatMap(registry -> registerAndActivate(registry,
-                                                                clusterName.value(),
-                                                                endpoint,
-                                                                Option.some(apiKeyEnvName)))
-                       .flatMap(ClusterRegistry::save)
-                       .onSuccess(_ -> System.out.printf("Active cluster context: %s%n", clusterName))
-                       .onFailure(cause -> System.err.println("Warning: failed to register cluster locally: " + cause.message()));
+        loaded.flatMap(registry -> registerAndActivate(registry, clusterName.value(), endpoint, Option.some(apiKeyEnvName)))
+              .flatMap(ClusterRegistry::save)
+              .onSuccess(_ -> System.out.printf("Active cluster context: %s%n", clusterName))
+              .onFailure(cause -> System.err.println("Warning: failed to register cluster locally: " + cause.message()));
     }
 
     /// #584 — the cluster just bootstrapped becomes the ACTIVE context. `ClusterRegistry.add` keeps
