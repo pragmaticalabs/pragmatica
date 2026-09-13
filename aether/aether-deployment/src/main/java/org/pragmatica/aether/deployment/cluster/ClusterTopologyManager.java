@@ -133,7 +133,8 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// minted as `nodeId`: [ReplacementInstanceState#PRESENT] while it provisions or runs,
     /// [ReplacementInstanceState#FAILED] once every listed instance is stopping or terminated,
     /// [ReplacementInstanceState#ABSENT] when the provider lists none, and
-    /// [ReplacementInstanceState#UNKNOWN] when it cannot answer. The returned `Promise` does not fail:
+    /// [ReplacementInstanceState#UNKNOWN] when it cannot answer or reports only statuses it cannot state
+    /// (and none provisioning or running). The returned `Promise` does not fail:
     /// an unanswerable query IS the `UNKNOWN` answer, so the caller never has to guess what a failure
     /// meant. One provider listing per call — the caller owns the cadence.
     Promise<ReplacementInstanceState> replacementInstanceState(NodeId nodeId);

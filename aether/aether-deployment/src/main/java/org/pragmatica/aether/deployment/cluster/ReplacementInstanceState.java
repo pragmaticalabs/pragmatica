@@ -21,11 +21,13 @@ public enum ReplacementInstanceState {
     /// Every instance the provider lists for the node is stopping or terminated — the boot failed.
     FAILED,
     /// The provider answered and lists NO instance for the node. A deletion once the instance has been
-    /// observed [#PRESENT], or once the reconciler's first-listing grace has passed since the replacement
-    /// was dispatched: inside that grace a never-seen absence may be a create call still outstanding or a
-    /// provider listing that lags creation, so the reconciler treats it like [#UNKNOWN].
+    /// observed [#PRESENT]. For an instance never observed, only once the reconciler has counted enough
+    /// consecutive successful absent listings over its first-listing floor (`LeaderReconciler`): before
+    /// that, it may be a provider listing that lags creation.
     ABSENT,
-    /// The provider could not answer — the listing failed, or no compute provider is wired. Never read
-    /// as existing or as gone: the entry is kept until the hard ceiling.
+    /// The provider could not answer — the listing failed, no compute provider is wired, or every listed
+    /// instance is in a status the provider could not state (`InstanceStatus.Unknown`) and none is
+    /// provisioning or running. Never read as existing or as gone, and never counted as an absence: the
+    /// entry is kept until the hard ceiling.
     UNKNOWN
 }
