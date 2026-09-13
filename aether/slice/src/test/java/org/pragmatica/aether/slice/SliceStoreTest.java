@@ -423,6 +423,11 @@ class SliceStoreTest {
             """;
 
     private sliceStore storeWithNodeComposite(Map<String, String> nodeValues) {
+        return storeWithNodeComposite(nodeValues, Option.empty());
+    }
+
+    private sliceStore storeWithNodeComposite(Map<String, String> nodeValues,
+                                              Option<Fn1<Promise<String>, String>> secretResolver) {
         return (sliceStore) SliceStore.sliceStore(registry,
                                                   List.of(),
                                                   sharedLoader,
@@ -431,7 +436,7 @@ class SliceStoreTest {
                                                   SliceActionConfig.sliceActionConfig(),
                                                   Option.some(IntrinsicConfigProvider.intrinsicConfigProvider("node.toml", nodeValues)),
                                                   Option.empty(),
-                                                  Option.empty(),
+                                                  secretResolver,
                                                   SliceLoadingContext.noResourceOverlay());
     }
 
@@ -516,6 +521,26 @@ class SliceStoreTest {
 
         assertThat(resolved.isEmpty()).isTrue();
     }
+
+    /// #1067 moved the loader's parse onto `SliceStore.sliceIntrinsicLayer`, which the deploy-time pre-flight
+    /// shares, and kept secret resolution as the loader's own following step. The tests above pin
+    /// `resolveIntrinsicSecrets` in isolation; this pins that the LOAD path still applies it — deleting the step
+    /// from `loadSliceIntrinsicProviderFromClassLoader` left every other test in this module green.
+    @Test
+    void buildSliceCompositeFromClassLoader_resolvesIntrinsicSecrets_whenResolverConfigured() {
+        Fn1<Promise<String>, String> resolver = path -> Promise.success("resolved-" + path);
+        var store = storeWithNodeComposite(Map.of("deployed.endpoint.host", "node.internal"), Option.some(resolver));
+
+        var composite = store.buildSliceCompositeFromClassLoader(artifact, resourcesTomlLoader(SECRET_TOML));
+
+        assertThat(composite.isPresent()).isTrue();
+        assertThat(composite.unwrap().getString("database.password").unwrap()).isEqualTo("resolved-db/password");
+    }
+
+    private static final String SECRET_TOML = """
+            [database]
+            password = "${secrets:db/password}"
+            """;
 
     @Test
     void intrinsicSecretsDroppedMessage_namesSliceFailedKeyAndConsequence() {
