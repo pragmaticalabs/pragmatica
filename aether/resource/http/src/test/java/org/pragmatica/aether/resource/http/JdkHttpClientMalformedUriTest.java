@@ -15,14 +15,16 @@ import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.type.TypeToken;
 
 import org.junit.jupiter.api.Test;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.utils.Causes.cause;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.pragmatica.lang.Option.none;
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// #270 R6: a malformed path threw `IllegalArgumentException` synchronously out of `get`/`post`/…
@@ -42,7 +44,7 @@ class JdkHttpClientMalformedUriTest {
         public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
             sends.incrementAndGet();
 
-            return Promise.failure(Causes.cause("backend reached with " + request.uri()));
+            return Promise.failure(cause("backend reached with " + request.uri()));
         }
     }
 
@@ -83,7 +85,7 @@ class JdkHttpClientMalformedUriTest {
 
     @Test
     void getJson_withUnparseablePath_failsThePromise_doesNotThrow() {
-        assertFailsWithoutThrowing(client -> client.getJson(UNPARSEABLE, new org.pragmatica.lang.type.TypeToken<String>() {}, none()));
+        assertFailsWithoutThrowing(client -> client.getJson(UNPARSEABLE, new TypeToken<String>() {}, none()));
     }
 
     /// Control for the instrument: a well-formed path reaches the backend exactly once.
@@ -93,7 +95,6 @@ class JdkHttpClientMalformedUriTest {
         var client = JdkHttpClient.jdkHttpClient(config(none()), operations);
 
         client.get("http://example.com/ok").await();
-
         assertThat(operations.sends.get()).isEqualTo(1);
     }
 
@@ -101,7 +102,7 @@ class JdkHttpClientMalformedUriTest {
     @Test
     void get_withMalformedBaseUrl_failsThePromise_doesNotThrow() {
         var operations = new CountingOperations();
-        var client = JdkHttpClient.jdkHttpClient(config(Option.some("http://bad host")), operations);
+        var client = JdkHttpClient.jdkHttpClient(config(some("http://bad host")), operations);
 
         assertFailsWithoutThrowing(client, operations, c -> c.get("/path"));
     }
@@ -126,8 +127,7 @@ class JdkHttpClientMalformedUriTest {
             return;
         }
 
-        promise.await()
-               .onSuccess(_ -> fail("a malformed URI must fail the promise"));
+        promise.await().onSuccess(_ -> fail("a malformed URI must fail the promise"));
         assertThat(operations.sends.get()).as("the backend must not be reached with a malformed URI").isZero();
     }
 

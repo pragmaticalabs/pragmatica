@@ -22,7 +22,9 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.AsyncCloseable;
+import org.pragmatica.lang.parse.Network;
 import org.pragmatica.lang.type.TypeToken;
+import org.pragmatica.lang.utils.Causes;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 
@@ -107,7 +109,7 @@ final class JdkHttpClient implements HttpClient, AsyncCloseable {
 
     @Override
     public Promise<HttpResult<String>> get(String path, Map<String, String> headers) {
-        return request(path, headers, HttpRequest.Builder::GET).fold(Promise::failure, operations::sendString);
+        return sendString(path, headers, HttpRequest.Builder::GET);
     }
 
     @Override
@@ -117,10 +119,9 @@ final class JdkHttpClient implements HttpClient, AsyncCloseable {
 
     @Override
     public Promise<HttpResult<String>> post(String path, String body, Map<String, String> headers) {
-        return request(path,
-                       headers,
-                       builder -> builder.POST(BodyPublishers.ofString(body)).header("Content-Type", "application/json"))
-                       .fold(Promise::failure, operations::sendString);
+        return sendString(path,
+                          headers,
+                          builder -> withJsonBody(builder.POST(BodyPublishers.ofString(body))));
     }
 
     @Override
@@ -130,10 +131,9 @@ final class JdkHttpClient implements HttpClient, AsyncCloseable {
 
     @Override
     public Promise<HttpResult<String>> put(String path, String body, Map<String, String> headers) {
-        return request(path,
-                       headers,
-                       builder -> builder.PUT(BodyPublishers.ofString(body)).header("Content-Type", "application/json"))
-                       .fold(Promise::failure, operations::sendString);
+        return sendString(path,
+                          headers,
+                          builder -> withJsonBody(builder.PUT(BodyPublishers.ofString(body))));
     }
 
     @Override
@@ -143,7 +143,7 @@ final class JdkHttpClient implements HttpClient, AsyncCloseable {
 
     @Override
     public Promise<HttpResult<String>> delete(String path, Map<String, String> headers) {
-        return request(path, headers, HttpRequest.Builder::DELETE).fold(Promise::failure, operations::sendString);
+        return sendString(path, headers, HttpRequest.Builder::DELETE);
     }
 
     @Override
@@ -153,11 +153,9 @@ final class JdkHttpClient implements HttpClient, AsyncCloseable {
 
     @Override
     public Promise<HttpResult<String>> patch(String path, String body, Map<String, String> headers) {
-        return request(path,
-                       headers,
-                       builder -> builder.method("PATCH", BodyPublishers.ofString(body))
-                                         .header("Content-Type", "application/json"))
-                       .fold(Promise::failure, operations::sendString);
+        return sendString(path,
+                          headers,
+                          builder -> withJsonBody(builder.method("PATCH", BodyPublishers.ofString(body))));
     }
 
     @Override
@@ -170,25 +168,38 @@ final class JdkHttpClient implements HttpClient, AsyncCloseable {
         return request(path, headers, HttpRequest.Builder::GET).fold(Promise::failure, operations::sendBytes);
     }
 
+    private Promise<HttpResult<String>> sendString(String path,
+                                                   Map<String, String> headers,
+                                                   UnaryOperator<HttpRequest.Builder> method) {
+        return request(path, headers, method).fold(Promise::failure, operations::sendString);
+    }
+
+    private static HttpRequest.Builder withJsonBody(HttpRequest.Builder builder) {
+        return builder.header("Content-Type", "application/json");
+    }
+
     private Duration requestTimeout() {
         return Duration.ofMillis(config.requestTimeout().millis());
     }
 
     /// Build the request as a `Result`, so a URI that does not parse, a URI without a scheme, or a
     /// header the JDK refuses FAILS THE PROMISE instead of escaping `get`/`post`/… as an exception.
-    /// Both `URI.create` and `HttpRequest.Builder` throw unchecked (`IllegalArgumentException`) for
-    /// these; the old code unwrapped the parse and let the builder throw, which is what #270 R6 is.
+    /// `HttpRequest.Builder` throws unchecked for the last two; the old code unwrapped the parse and
+    /// let the builder throw, which is what #270 R6 is.
     private Result<HttpRequest> request(String path,
                                         Map<String, String> headers,
                                         UnaryOperator<HttpRequest.Builder> method) {
         var url = config.baseUrl().map(base -> joinUrl(base, path)).or(path);
 
-        return Result.lift(throwable -> new HttpClientError.InvalidRequest(url, throwable.getMessage()),
-                           () -> buildRequest(url, headers, method));
+        return Network.parseURI(url)
+                      .flatMap(uri -> Result.lift(Causes::fromThrowable,
+                                                  () -> buildRequest(uri, headers, method)))
+                      .mapError(cause -> new HttpClientError.InvalidRequest(url,
+                                                                            cause.message()));
     }
 
-    private HttpRequest buildRequest(String url, Map<String, String> headers, UnaryOperator<HttpRequest.Builder> method) {
-        var builder = method.apply(HttpRequest.newBuilder().uri(URI.create(url)).timeout(requestTimeout()));
+    private HttpRequest buildRequest(URI uri, Map<String, String> headers, UnaryOperator<HttpRequest.Builder> method) {
+        var builder = method.apply(HttpRequest.newBuilder().uri(uri).timeout(requestTimeout()));
 
         applyHeaders(builder, headers);
 
