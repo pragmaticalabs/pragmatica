@@ -807,20 +807,34 @@ class ClusterDestroyCommand implements Callable<Integer> {
         var drainResult = ClusterHttpClient.post(NODE_DRAIN, List.of(nodeId), "{}");
 
         if (drainResult.isFailure()) {
-            System.err.printf("  Failed to drain %s: %s%n", nodeId, drainResult.fold(Cause::message, v -> v));
+            var cause = drainResult.fold(c -> c, _ -> null);
 
-            return new NodeResult(nodeId, false);
+            System.err.printf("  Failed to drain %s: %s%n", nodeId, cause.message());
+
+            return NodeResult.failed(nodeId, refusalReason(cause));
         }
 
         var success = waitForDecommissioned(nodeId);
 
         if (success) {
             System.out.printf("  Node %s decommissioned.%n", nodeId);
-        } else {
-            System.err.printf("  Node %s did not decommission in time.%n", nodeId);
+
+            return NodeResult.succeeded(nodeId);
         }
 
-        return new NodeResult(nodeId, success);
+        System.err.printf("  Node %s did not decommission in time.%n", nodeId);
+
+        return NodeResult.failed(nodeId, "timed out after " + DRAIN_TIMEOUT_SECONDS + "s waiting for DECOMMISSIONED");
+    }
+
+    /// The reason the summary warning carries per node (#587 review NIT-2): a refusal keeps its HTTP
+    /// status (a 409 is the cluster's disruption budget or a non-READY node, a 401/403 the credential),
+    /// anything else its cause text — the transcript above has the full body, the one-line summary
+    /// has enough to tell "refused" from "unreachable".
+    private static String refusalReason(Cause cause) {
+        return cause instanceof ClusterHttpClient.HttpError.ApiError apiError
+               ? "refused with HTTP " + apiError.statusCode()
+               : "error: " + cause.message();
     }
 
     private static boolean waitForDecommissioned(String nodeId) {
@@ -854,13 +868,10 @@ class ClusterDestroyCommand implements Callable<Integer> {
         for (var nodeId : nodeIds) {
             System.out.printf("Shutting down node %s...%n", nodeId);
             var result = ClusterHttpClient.post(NODE_SHUTDOWN, List.of(nodeId), "{}");
-            var success = result.isSuccess();
 
-            if (!success) {
-                System.err.printf("  Failed to shutdown %s.%n", nodeId);
-            }
-
-            results.add(new NodeResult(nodeId, success));
+            result.onFailure(cause -> System.err.printf("  Failed to shutdown %s: %s%n", nodeId, cause.message()));
+            results.add(result.fold(cause -> NodeResult.failed(nodeId, refusalReason(cause)),
+                                    _ -> NodeResult.succeeded(nodeId)));
         }
 
         return List.copyOf(results);
@@ -929,7 +940,10 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// the time this runs, so drain/shutdown failures are reported by name and do not change the exit
     /// code — a script that retried on it would be retrying a cluster that no longer exists.
     private static void warnIncomplete(String operation, List<NodeResult> results) {
-        var failed = results.stream().filter(result -> !result.success()).map(NodeResult::nodeId).toList();
+        var failed = results.stream()
+                            .filter(result -> !result.success())
+                            .map(result -> result.nodeId() + ": " + result.reason())
+                            .toList();
 
         if (failed.isEmpty()) {
             return;
@@ -940,7 +954,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
                           failed.size(),
                           results.size(),
                           operation,
-                          String.join(", ", failed));
+                          String.join("; ", failed));
     }
 
     /// #1023 — `Drains succeeded: 0/0` was the ENTIRE observable outcome of a destroy that drained nothing,
@@ -974,7 +988,21 @@ class ClusterDestroyCommand implements Callable<Integer> {
         return ExitCode.ERROR;
     }
 
-    record NodeResult(String nodeId, boolean success) {}
+    /// `reason` is empty for a success and names why otherwise (refused with a status, timed out,
+    /// error) — it travels into the summary warning so the one-line outcome says more than a count.
+    record NodeResult(String nodeId, boolean success, String reason) {
+        NodeResult(String nodeId, boolean success) {
+            this(nodeId, success, "");
+        }
+
+        static NodeResult succeeded(String nodeId) {
+            return new NodeResult(nodeId, true, "");
+        }
+
+        static NodeResult failed(String nodeId, String reason) {
+            return new NodeResult(nodeId, false, reason);
+        }
+    }
 
     /// #998 — destroy's own refusals, as causes rather than as printed text, so the enumeration gate can
     /// FAIL for a reason instead of producing an empty list that looks like a healthy empty cluster.

@@ -72,10 +72,14 @@ class ClusterDestroyExitContractTest {
                                                                                         none())));
     }
 
+    private static ClusterDestroyCommand.NodeResult result(String nodeId, boolean success) {
+        return success
+               ? ClusterDestroyCommand.NodeResult.succeeded(nodeId)
+               : ClusterDestroyCommand.NodeResult.failed(nodeId, "refused with HTTP 409");
+    }
+
     private static List<ClusterDestroyCommand.NodeResult> results(boolean first, boolean second, boolean third) {
-        return List.of(new ClusterDestroyCommand.NodeResult("core-1", first),
-                       new ClusterDestroyCommand.NodeResult("core-2", second),
-                       new ClusterDestroyCommand.NodeResult("core-3", third));
+        return List.of(result("core-1", first), result("core-2", second), result("core-3", third));
     }
 
     @Test
@@ -94,10 +98,12 @@ class ClusterDestroyExitContractTest {
         assertThat(code).as("with the entry removed there is nothing a re-run can do, so the exit code "
                            + "must not tell a script to re-run")
                   .isEqualTo(ExitCode.SUCCESS);
-        assertThat(err.toString(StandardCharsets.UTF_8)).as("the undrained nodes are named, and the contract is stated")
+        assertThat(err.toString(StandardCharsets.UTF_8)).as("the undrained nodes are named WITH their reason, the drained "
+                                                             + "one is not, and the contract is stated")
                   .contains("2 of 3 drain operations failed")
-                  .contains("core-2")
-                  .contains("core-3")
+                  .contains("core-2: refused with HTTP 409")
+                  .contains("core-3: refused with HTTP 409")
+                  .doesNotContain("core-1")
                   .contains("nothing is left to retry");
     }
 
@@ -114,7 +120,9 @@ class ClusterDestroyExitContractTest {
 
         assertThat(code).isEqualTo(ExitCode.SUCCESS);
         assertThat(err.toString(StandardCharsets.UTF_8)).contains("1 of 3 shutdown operations failed")
-                  .contains("core-1");
+                  .contains("core-1: refused with HTTP 409")
+                  .doesNotContain("core-2")
+                  .doesNotContain("core-3");
     }
 
     /// The control: #521's half of the contract is untouched. Cleanup failure still keeps the entry
