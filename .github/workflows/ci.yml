@@ -99,11 +99,12 @@ jobs:
   # Runaway guard: each suite runs in its own process group. The whole group is killed at 300s or 300
   # processes, whichever comes first. Measured: the job took 7-8s with one suite (test-cloud-helpers.sh,
   # under 1s); #1053's test-chaos-harness.sh took 21s locally and 59s at load average 34. 300s is about 5x
-  # the contended figure. The 15-minute job cap covers two suites each hitting the 300s ceiling plus
-  # setup, and it stops a runner-level hang long before GitHub's 6-hour default.
+  # the contended figure. A wedged suite costs ~307s (300s wait + 2s TERM grace + up to 5s for the KILL),
+  # so three suites all wedged are ~15.4 min; the 25-minute job cap covers that plus setup, holds a fourth
+  # suite, and still stops a runner-level hang long before GitHub's 6-hour default.
   stub-suites:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Checkout code
