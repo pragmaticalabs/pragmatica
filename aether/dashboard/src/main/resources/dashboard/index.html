@@ -12,7 +12,7 @@
     <link rel="stylesheet" href="css/forge.css">
 </head>
 <body>
-    <!-- Auth overlay — shown when no API key in sessionStorage -->
+    <!-- Auth overlay — shown when the server refuses an unauthenticated request (#703), never on a missing key alone -->
     <div id="auth-overlay" style="display:none; position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.85); align-items:center; justify-content:center;">
         <div style="background:var(--surface-1, #1a1a2e); border:1px solid var(--border, #333); border-radius:8px; padding:2rem; min-width:320px; text-align:center;">
             <h2 style="color:var(--text-1, #e0e0e0); margin:0 0 0.5rem; font-size:1.2rem;">AETHER</h2>
@@ -28,17 +28,55 @@
     <script>
     window.AetherAuth = {
         overlay: null,
+        // #703: the server's posture is LEARNED, never assumed. 'unknown' until the probe answers;
+        // 'open' when the server serves the dashboard's data to an unauthenticated caller (Forge's
+        // dashboard port, a node with security_mode = NONE); 'key' when it refuses one with 401/403.
+        posture: 'unknown',
+        // The one request both the posture probe and key validation use, so the posture measured
+        // is the gate a key would actually face.
+        STATUS_PATH: '/api/nodes/status',
 
         init: function() {
             this.overlay = document.getElementById('auth-overlay');
             // #293/G7: the API key is never read from the URL (keys in URLs leak into logs/proxies/
             // history). It is supplied via the auth overlay and sent as the X-API-Key header.
-            // Show overlay if no key
-            if (!this.hasValidKey()) this.show();
+            if (this.hasValidKey()) return;
+            // #703: no stored key says nothing about whether the server wants one — ask it.
+            this.probePosture();
         },
 
         hasValidKey: function() {
             return !!sessionStorage.getItem('aether-api-key');
+        },
+
+        // #703: the app may start once a key is held OR the server has been observed to need none.
+        isReady: function() {
+            return this.hasValidKey() || this.posture === 'open';
+        },
+
+        // #703: probe the gate itself with a bare request. 2xx = the server answered without a
+        // credential, so there is nothing to ask for. 401/403 = the gate refused, exactly the case
+        // the overlay exists for. Anything else (404, 5xx, network) says nothing about the gate:
+        // fall back to asking, as before — never to 'open' (a blank key is not a fix).
+        probePosture: function() {
+            var self = this;
+            fetch(this.STATUS_PATH).then(function(r) {
+                if (r.ok) {
+                    self.posture = 'open';
+                    window.dispatchEvent(new Event('aether-auth-success'));
+                    return;
+                }
+                if (r.status === 401 || r.status === 403) {
+                    self.posture = 'key';
+                    self.show();
+                    return;
+                }
+                console.warn('Auth posture undetermined: GET ' + self.STATUS_PATH + ' answered ' + r.status);
+                self.show();
+            }).catch(function() {
+                console.warn('Auth posture undetermined: GET ' + self.STATUS_PATH + ' unreachable');
+                self.show();
+            });
         },
 
         show: function() {
@@ -59,7 +97,7 @@
         submit: function(key) {
             var self = this;
             // Validate key against server before accepting
-            fetch('/api/nodes/status', { headers: { 'x-api-key': key } }).then(function(r) {
+            fetch(this.STATUS_PATH, { headers: { 'x-api-key': key } }).then(function(r) {
                 if (r.ok) {
                     sessionStorage.setItem('aether-api-key', key);
                     self.hide();
@@ -76,6 +114,7 @@
         // Called by RestClient on 401 — only acts if we thought we had a valid key
         onUnauthorized: function() {
             sessionStorage.removeItem('aether-api-key');
+            this.posture = 'key';
             this.show();
         }
     };
