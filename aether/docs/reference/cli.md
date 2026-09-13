@@ -1586,7 +1586,11 @@ aether schema baseline orders_db -v 3
 
 > **`status`/`publish`/`read`/`delete` take an address, not just a name.** These now dispatch to
 > catalog-form `(namespace, stream, version)` routes (management-api-versioning-spec.md §3.2, #742).
-> A bare name (no colon) defaults to `system:<name>:1.0.0`, preserving the original single-name UX;
+> A stream address must be the full `namespace:stream:version`. A bare name is REFUSED (#1044): it
+> names no namespace, and silently assuming `system:` returned an empty result for every application
+> stream once engine keys were qualified (#1040) — a well-formed empty answer indistinguishable from a
+> stream with no events. The error names the form to retype, including the `system:<name>:1.0.0`
+> spelling for a system stream. `aether streams list` shows the catalog address of every stream;
 > a `namespace:stream:version` triple addresses any stream. `list`, `consumers`, and `create` are
 > unaffected and remain on their existing flat addressing.
 
