@@ -13,8 +13,10 @@
   `Retry` stops on `isTerminal()` without scheduling another attempt.] Anything else (a timed-out
   attempt, no quorum, an unreachable peer) is retried with exponential backoff: 1 s, doubling to a 30 s
   cap, jittered, with no give-up bound. Each attempt stays bounded at 30 s. Each failed attempt logs one
-  WARN line. [mechanism: `StorageFactory.verifyDhtMarker` runs `Retry` with `Integer.MAX_VALUE` attempts
-  on `DHT_MARKER_RETRY_BACKOFF`.]
+  WARN line naming the instance and the attempt number, through `StorageFactory`'s SLF4J logger (not
+  `System.Logger`, #1077). [mechanism: `StorageFactory.verifyDhtMarker` runs `Retry` with
+  `Integer.MAX_VALUE` attempts on `DHT_MARKER_RETRY_BACKOFF`; `attemptAndReport` counts attempts per call
+  and emits the WARN.]
 - **While the check is pending, the node stays in the cluster and is not ready.**
   - Every operation on the instance's DHT tier stays gated (#858 C1/#874) and is refused with
     `StorageError.TierNotAdmitted` after its 30 s admission bound. [mechanism: the gate is now resolved
@@ -33,7 +35,14 @@
   retrying can already be leader, and holding periodic work behind the check would disable that
   leader's periodic ticks. What must not precede verification stays enforced by the tier gate and the
   readiness gate, not by this ordering. [mechanism: `PeriodicTasks#isCancelled` is the loop's stop signal.
-  A stopped node's next attempt ends the loop with the terminal `EncryptionError.DhtMarkerCheckAbandoned`.]
+  A stopped node's next attempt ends the loop with the terminal `EncryptionError.DhtMarkerCheckAbandoned`.
+  In practice only `stop()` raises that signal: the other canceller, the failed-boot guard, runs at
+  construction, before the loop exists.]
+- **A stop during the retry is not a boot failure.** SIGTERM while the check is still retrying runs the
+  shutdown hook, whose `stop()` ends `start()` with `DhtMarkerCheckAbandoned`. `Main` now logs that at
+  INFO and lets the hook own the exit, instead of `Failed to start node` at ERROR plus a second
+  `System.exit(1)`. Every other start failure still exits 1. [mechanism: `Main.onStartFailure` matches
+  the abandon cause; pinned by `MainShutdownTest$StartFailure`.]
 - **"Could not read" is never treated as "marker absent".** [mechanism: `DistributedDHTClient.get`
   returns an absent value only after an R-set quorum answered with a miss. Too few live replicas fail
   fast with `QuorumNotReached`, an empty target set fails with `NO_AVAILABLE_NODES`, and an unanswered
@@ -41,15 +50,24 @@
   the post-miss fallback probe of replicas outside the R-set, which runs after the quorum has already
   answered "absent". That is pre-existing #428 behaviour and this fix does not change it.]
 - **Test coverage, below the `[verified:]` bar.** None of these tests is multi-node or live-path.
-  - `StorageFactoryDhtMarkerRetryTest` (6) drives the assembled `StorageInstance` against a scripted
+  - `StorageFactoryDhtMarkerRetryTest` (7) drives the assembled `StorageInstance` against a scripted
     DHT client. It includes a read refused with `TierNotAdmitted` after the real 30 s admission bound
-    while the check keeps retrying.
-  - `AetherNodeDhtMarkerPostFormationBootTest` (4) runs a real self-forming single-node `start()`: the
-    refusal still fails `start()`, periodic work arms before the check settles, and a node whose tier
-    is not admitted never reaches `ACTIVE` while an admitted control does.
-  - `StatusRoutesDhtAdmissionTest` (3) and `PeriodicTasksTest` cover the rest.
+    while the check keeps retrying, and captures the per-attempt WARN through log4j2: three failed
+    attempts give exactly three WARNs, each naming the instance and its attempt number
+    (`verifyDhtMarker_warnsOncePerFailedAttempt_namingInstanceAndAttemptNumber`; WARN demoted to DEBUG,
+    or the attempt number dropped, reds it). Its no-DHT-client admission case now creates an instance,
+    so the "no marker check anywhere" assertion is not vacuous.
+  - `AetherNodeDhtMarkerPostFormationBootTest` (5) runs a real self-forming single-node `start()`: the
+    refusal still fails `start()`, periodic work arms before the check settles, a node whose tier
+    is not admitted never reaches `ACTIVE` while an admitted control does, and `/health/ready`'s
+    `dht-admission` component reads the REAL node's `storageSetups()` -- DOWN naming `artifacts` while
+    its gate is unresolved, UP once `start()` admitted it
+    (`readiness_reportsDhtAdmissionDownNamingArtifacts_beforeStart_andUpOnceAdmitted`; a `List.of()`
+    at the wiring reds it, which `StatusRoutesDhtAdmissionTest`'s `Map.of()` stub cannot see).
+  - `StatusRoutesDhtAdmissionTest` (3), `PeriodicTasksTest` and `MainShutdownTest$StartFailure` (2)
+    cover the rest.
   - Red on the unmodified base for the tests that compile there; mutation probes per hunk are in the
-    PR description.
+    PR description and the fix-round reports.
 - **What is NOT covered:** no cloud or multi-node docker run of the fix; the docker repro is the
   evidence for the defect only. [design intent — unverified: a replacement joining under
   `Kill_2_nodes` churn now verifies and becomes ready once the ring converges.] `Promise.allOfOrCancel`
