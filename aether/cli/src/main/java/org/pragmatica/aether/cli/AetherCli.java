@@ -29,6 +29,7 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
+import org.pragmatica.aether.cli.cluster.ClusterRegistry;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.ConfigLoader;
@@ -271,7 +272,26 @@ public class AetherCli implements Runnable {
     }
 
     private void setAddressFromConfigOrDefault(Option<Path> configArg) {
-        configArg.filter(Files::exists).onPresent(this::readConfigFromPath).onEmpty(() -> nodeAddress = DEFAULT_ADDRESS);
+        configArg.filter(Files::exists).onPresent(this::readConfigFromPath).onEmpty(this::setAddressFromContextOrDefault);
+    }
+
+    /// #584 — endpoint precedence: explicit `--connect`/`--endpoint` or `--config` > the registry's
+    /// active cluster context > the built-in localhost default. This used to install the default
+    /// unconditionally, so `ClusterHttpClient.resolveEndpoint` never reached `registry.current()`
+    /// and a freshly bootstrapped cluster's context routed nothing but `destroy`/`rotate-key`
+    /// (which install their own override): `cluster scale` after bootstrap dialled `localhost:8080`
+    /// and reported the ticket's bare `ConnectException`. The default now applies only when no
+    /// context is set. A registry that cannot be read is treated as no context — the same fallback
+    /// as no registry — since a corrupt file must not stop `aether --connect …` from working.
+    private void setAddressFromContextOrDefault() {
+        nodeAddress = activeContext().map(ClusterRegistry.ClusterEntry::endpoint)
+                                     .or(DEFAULT_ADDRESS);
+    }
+
+    private static Option<ClusterRegistry.ClusterEntry> activeContext() {
+        return ClusterRegistry.load()
+                                                                .option()
+                                                                .flatMap(ClusterRegistry::current);
     }
 
     @Contract
@@ -591,9 +611,14 @@ public class AetherCli implements Runnable {
                             AetherCli::extractResponseBody);
     }
 
+    /// `--api-key` > `AETHER_API_KEY` > the active context's `api_key_env` (#584: the same fallback
+    /// `ClusterHttpClient.resolveApiKey` makes, so a context-routed top-level command carries the
+    /// credential the registry recorded for that cluster rather than dialling it unauthenticated).
     private Option<String> resolveApiKey() {
         return option(apiKey).filter(k -> !k.isBlank())
-                     .orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()));
+                     .orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()))
+                     .orElse(() -> activeContext().flatMap(ClusterRegistry.ClusterEntry::apiKeyEnv)
+                                                  .flatMap(envName -> option(System.getenv(envName))));
     }
 
     private void attachApiKey(HttpRequest.Builder builder) {
