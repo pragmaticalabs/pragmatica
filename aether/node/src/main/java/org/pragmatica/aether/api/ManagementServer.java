@@ -1651,7 +1651,7 @@ class ManagementServerImpl implements ManagementServer {
     /// [#resolvePermission] are.
     static Option<String> resolveEngineKey(MatchedRoute matched) {
         return switch (matched.route()) {
-            case STREAMS_PUBLISH, STREAMS_DELETE, STREAMS_GROUP_CREATE, STREAMS_GROUP_DELETE, STREAM_REPLICAS -> matched.param("namespace").flatMap(ns -> matched.param("stream")
+            case STREAMS_PUBLISH, STREAMS_PUBLISH_BATCH, STREAMS_DELETE, STREAMS_GROUP_CREATE, STREAMS_GROUP_DELETE, STREAM_REPLICAS -> matched.param("namespace").flatMap(ns -> matched.param("stream")
                                                                                                                                                                  .flatMap(stream -> matched.param("version")
                                                                                                                                                                                            .flatMap(ver -> ResourceAddress.resourceAddress(ns,
                                                                                                                                                                                                                                            stream,
@@ -1661,10 +1661,12 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     /// Identity-bearing write routes this pre-auth path gate covers — see
-    /// [#rejectSystemStreamWrite]'s doc for why [ManagementRoute#STREAM_CREATE] (covered instead by
-    /// a separate, post-auth, handler-level guard) and the `CONSUMER_GROUP_*` routes (an open gap)
-    /// are excluded.
+    /// [#rejectSystemStreamWrite]'s doc for why [ManagementRoute#STREAM_CREATE] and the
+    /// `CONSUMER_GROUP_*` routes are covered instead by a post-auth, handler-level guard (body-carried
+    /// identity). `STREAMS_PUBLISH_BATCH` was missing from this set until #742's review: the batch
+    /// form wrote to the framework's own ring while the single form was refused.
     private static final Set<ManagementRoute> STREAM_IDENTITY_WRITE_ROUTES = Set.of(ManagementRoute.STREAMS_PUBLISH,
+                                                                                    ManagementRoute.STREAMS_PUBLISH_BATCH,
                                                                                     ManagementRoute.STREAMS_DELETE,
                                                                                     ManagementRoute.STREAMS_GROUP_CREATE,
                                                                                     ManagementRoute.STREAMS_GROUP_DELETE);

@@ -26,6 +26,7 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
@@ -41,6 +42,8 @@ import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator.ConsumerIn
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.HttpError;
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.PathParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -54,9 +57,15 @@ import org.pragmatica.lang.utils.Causes;
 public final class StreamRoutes implements RouteSource {
     private static final Cause MISSING_STREAM_NAME = Causes.cause("Missing stream name");
 
-    private static final Cause SYSTEM_STREAM_NAME_FORBIDDEN = Causes.cause("Cannot create a stream using a reserved system stream name");
+    /// Both refusals carry the status the pre-auth path gate answers with (405, see
+    /// `ManagementServer.rejectSystemStreamWrite`): a bare `Causes.cause` is not `HttpStatusAware`
+    /// and `ProblemResponses` renders it as 500, which made the guard's refusal indistinguishable
+    /// by status from an internal failure (#742 review).
+    private static final Cause SYSTEM_STREAM_NAME_FORBIDDEN = HttpError.httpError(HttpStatus.METHOD_NOT_ALLOWED,
+                                                                                  Causes.cause("Cannot create a stream using a reserved system stream name"));
 
-    private static final Cause SYSTEM_STREAM_GROUP_FORBIDDEN = Causes.cause("Cannot join or leave a consumer group on a reserved system stream");
+    private static final Cause SYSTEM_STREAM_GROUP_FORBIDDEN = HttpError.httpError(HttpStatus.METHOD_NOT_ALLOWED,
+                                                                                   Causes.cause("Cannot join or leave a consumer group on a reserved system stream"));
 
     private static final int DEFAULT_PARTITIONS = 4;
 
@@ -286,7 +295,7 @@ public final class StreamRoutes implements RouteSource {
     /// would otherwise find `streamManager().streamInfo(name)` empty and mint a caller-controlled
     /// config under a reserved name.
     private Result<StreamCreateResponse> createFreshStream(String name, int partitions) {
-        if (SystemStreams.isForbiddenEngineKey(name)) {
+        if (namesSystemStream(name)) {
             return Result.failure(SYSTEM_STREAM_NAME_FORBIDDEN);
         }
 
@@ -346,7 +355,11 @@ public final class StreamRoutes implements RouteSource {
     /// named stream. First statement, unconditionally, before any coordinator call. Package-visible
     /// (like `createStream`) so `StreamRoutesGroupSystemStreamTest` can pin it.
     Result<GroupStatusResponse> joinGroup(JoinGroupRequest request) {
-        if (SystemStreams.isForbiddenEngineKey(request.streamName())) {
+        if (isBlank(request.streamName())) {
+            return Result.failure(MISSING_STREAM_NAME);
+        }
+
+        if (namesSystemStream(request.streamName())) {
             return Result.failure(SYSTEM_STREAM_GROUP_FORBIDDEN);
         }
 
@@ -360,7 +373,11 @@ public final class StreamRoutes implements RouteSource {
     }
 
     Result<GroupStatusResponse> leaveGroup(LeaveGroupRequest request) {
-        if (SystemStreams.isForbiddenEngineKey(request.streamName())) {
+        if (isBlank(request.streamName())) {
+            return Result.failure(MISSING_STREAM_NAME);
+        }
+
+        if (namesSystemStream(request.streamName())) {
             return Result.failure(SYSTEM_STREAM_GROUP_FORBIDDEN);
         }
 
@@ -369,6 +386,23 @@ public final class StreamRoutes implements RouteSource {
                                       request.consumerId())
                           .map(_ -> new GroupStatusResponse(request.groupId(),
                                                             coordinator.groupStatus(request.groupId())));
+    }
+
+    /// The predicate the pre-auth path gate applies, with the SAME canonicalization in front of it
+    /// (#742 review SF-2): a body-carried name may be the bare engine key (`cluster-events`) or the
+    /// catalog spelling (`system:cluster-events:1.0.0`); the versioned gate reduces the latter through
+    /// `ResourceAddress` → `StreamManager.engineKey` before asking `SystemStreams`, and so does this.
+    /// A name that does not parse as an address is checked as the bare key it is.
+    private static boolean namesSystemStream(String name) {
+        return SystemStreams.isForbiddenEngineKey(name)
+               || ResourceAddress.resourceAddress(name)
+                                 .map(StreamManager::engineKey)
+                                 .map(SystemStreams::isForbiddenEngineKey)
+                                 .or(false);
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 
     private Result<GroupStatusResponse> groupStatus(String groupId) {

@@ -73,6 +73,23 @@ class StreamRoutesCreateSystemStreamTest {
         }
     }
 
+    /// #742 review SF-2, same shape here: the catalog spelling reduces to the reserved engine key and
+    /// must be refused the same way the bare key is — before it would mint an app stream under a
+    /// `system:`-prefixed engine key.
+    @Test
+    void createStream_catalogSpellingOfASystemStream_isRejectedAndNothingIsMinted() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+        try {
+            var result = routesFor(manager, emptyStore()).createStream(new StreamCreateRequest("system:cluster-events:1.0.0", 4));
+
+            result.onSuccess(_ -> fail("the catalog spelling of a reserved system stream must be rejected"));
+            assertThat(manager.streamInfo("system:cluster-events:1.0.0").isEmpty()).isTrue();
+            assertThat(manager.streamInfo("cluster-events").isEmpty()).isTrue();
+        } finally {
+            manager.close();
+        }
+    }
+
     @Test
     void createStream_ordinaryAppStreamName_stillSucceeds() {
         var manager = streamPartitionManager(Long.MAX_VALUE);
