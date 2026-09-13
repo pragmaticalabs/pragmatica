@@ -8,6 +8,7 @@ package org.pragmatica.aether.slice;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceStore.EntryState;
 import org.pragmatica.aether.slice.SliceStore.LoadedSliceEntry;
@@ -24,11 +25,16 @@ import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.jar.JarEntry;
+import java.util.jar.JarOutputStream;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -409,6 +415,83 @@ class SliceStoreTest {
                                        .contains("resources.toml");
             assertThat(cause.message()).contains(artifact.asString());
         });
+    }
+
+    // === Intrinsic layer comes from the slice's OWN jar, never from a dependency jar (#1067 review SF-1) ===
+    //
+    // The slice classloader is composed over [own jar, conflicting shared jars…] and every `[slices]`
+    // dependency jar is appended to it before the slice class loads. A lookup of META-INF/resources.toml
+    // THROUGH that loader answers from the first jar that ships one — so a slice without a file of its own
+    // silently inherited a dependency's file as its intrinsic layer, while the deploy-time pre-flight
+    // reads the own jar alone. The two readers must agree, and the own jar is the layer that was ever
+    // meant.
+
+    @Test
+    void buildSliceCompositeFromClassLoader_ignoresDependencyJarToml_whenOwnJarShipsNone() throws IOException {
+        var ownJar = jar("own.jar", Option.none());
+        var dependencyJar = jar("dependency.jar", Option.some(DEPENDENCY_TOML));
+        var store = storeWithNodeComposite(Map.of("deployed.endpoint.host", "node.internal"));
+
+        try (var loader = new SliceClassLoader(new URL[]{ownJar}, sharedLoader)) {
+            loader.addSliceDependencyUrl(dependencyJar);
+
+            // Control, inside the same run: the composed loader CAN see the dependency's file, so an
+            // empty layer below is a choice of the reader, not an artefact of the fixture.
+            assertThat(loader.getResourceAsStream("META-INF/resources.toml")).isNotNull();
+
+            var composite = store.buildSliceCompositeFromClassLoader(artifact, loader);
+
+            assertThat(composite.isPresent()).describedAs("no own file is an EMPTY layer, not a dropped composite").isTrue();
+            assertThat(composite.unwrap().getString("deployed.endpoint.host").unwrap()).isEqualTo("node.internal");
+            assertThat(composite.unwrap().getString("database.orders.url").isEmpty())
+                    .describedAs("the dependency jar's [database.orders] is NOT this slice's intrinsic layer")
+                    .isTrue();
+        }
+    }
+
+    @Test
+    void buildSliceCompositeFromClassLoader_readsOwnJarToml_ignoringDependencyJar() throws IOException {
+        var ownJar = jar("own.jar", Option.some(WELL_FORMED_TOML));
+        var dependencyJar = jar("dependency.jar", Option.some(DEPENDENCY_TOML));
+        var store = storeWithNodeComposite(Map.of("deployed.endpoint.host", "node.internal"));
+
+        try (var loader = new SliceClassLoader(new URL[]{ownJar}, sharedLoader)) {
+            loader.addSliceDependencyUrl(dependencyJar);
+
+            var composite = store.buildSliceCompositeFromClassLoader(artifact, loader);
+
+            assertThat(composite.isPresent()).isTrue();
+            assertThat(composite.unwrap().getString("deployed.endpoint.port").unwrap()).isEqualTo("8080");
+            assertThat(composite.unwrap().getString("database.orders.url").isEmpty())
+                    .describedAs("the own jar's file is the whole intrinsic layer; the dependency's is not merged in")
+                    .isTrue();
+        }
+    }
+
+    private static final String DEPENDENCY_TOML = """
+            [database.orders]
+            url = "from-dependency-jar"
+            """;
+
+    @TempDir
+    Path tempDir;
+
+    /// A jar under the temp dir carrying `META-INF/resources.toml` with the given text, or no such entry.
+    private URL jar(String name, Option<String> resourcesToml) throws IOException {
+        var path = tempDir.resolve(name);
+
+        try (var out = new JarOutputStream(Files.newOutputStream(path))) {
+            out.putNextEntry(new JarEntry("META-INF/MANIFEST.MF"));
+            out.closeEntry();
+
+            if (resourcesToml.isPresent()) {
+                out.putNextEntry(new JarEntry("META-INF/resources.toml"));
+                out.write(resourcesToml.unwrap().getBytes(StandardCharsets.UTF_8));
+                out.closeEntry();
+            }
+        }
+
+        return path.toUri().toURL();
     }
 
     private static final String WELL_FORMED_TOML = """
