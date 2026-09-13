@@ -93,6 +93,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     private static final Duration LOG_EVERY = Duration.ofSeconds(5);
 
     private static final Pattern CONFIG_VERSION = Pattern.compile("\"configVersion\"\\s*:\\s*(\\d+)");
+    private static final Pattern NEW_COUNT = Pattern.compile("\"newCount\"\\s*:\\s*(\\d+)");
 
     private EmberCluster cluster;
     private final HttpOperations http = jdkHttpOperations();
@@ -163,7 +164,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
         var port = leaderPort();
         var version = readConfigVersion(port);
         var response = postScale(port, targetCores, version);
-        log.info("CHURN-PROBE: POST /api/v1/cluster/scale {{coreCount:{}, expectedVersion:{}}} -> {}",
+        log.info("CHURN-PROBE: POST /api/v1/cluster/scale {{role:core, count:{}, expectedVersion:{}}} -> {}",
                  targetCores, version, response);
         return awaitCounted(targetCores, SCALE_TIMEOUT);
     }
@@ -215,9 +216,18 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
 
     // ----- HTTP helpers (scale trigger + slice deploy/resolve) -----
 
+    /// Posts the current `ManagementApiResponses.ScaleRequest` shape — `source` / `role` / `count` /
+    /// `expectedVersion` — as `PostRestartSlowRejoinDeficitFillProbeTest` does. A blank `source` asks
+    /// the server to infer it, which succeeds because the Ember cluster declares exactly one source
+    /// carrying `core`.
+    ///
+    /// #1069: this body was the pre-#581 `{coreCount, expectedVersion}`. The server refused it with
+    /// HTTP 400 `Type mismatch: expected int, got unknown`, the response was only logged, and the
+    /// up-leg guard then waited out its whole budget and failed as "no physical churn".
     @TerminalOperation
-    private String postScale(int port, int coreCount, int expectedVersion) {
-        var body = "{\"coreCount\":" + coreCount + ",\"expectedVersion\":" + expectedVersion + "}";
+    private String postScale(int port, int count, int expectedVersion) {
+        var body = "{\"source\":\"\",\"role\":\"core\",\"count\":" + count
+                   + ",\"expectedVersion\":" + expectedVersion + "}";
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + "/api/v1/cluster/scale"))
                                  .header("Content-Type", "application/json")
@@ -226,8 +236,40 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
                                  .build();
         return http.sendString(request)
                    .await()
-                   .map(ArtifactChurnSurvival5to7to5ProbeTest::renderResponse)
+                   .onFailure(cause -> failScaleTrigger("got no response: " + cause.message()))
+                   .map(result -> requireScaleAccepted(result, count, expectedVersion))
                    .or("scale POST failed (no response)");
+    }
+
+    /// A scale that did not land fails HERE, with the server's status and message, before any
+    /// membership wait. Accepted means a 2xx that reports the requested count and the config version
+    /// one past the fencing version the request carried (`ClusterConfigValue.withDesiredCount`).
+    private static String requireScaleAccepted(HttpResult<String> result, int count, int expectedVersion) {
+        if (result.statusCode() / 100 != 2) {
+            failScaleTrigger("returned HTTP " + result.statusCode() + " " + result.body());
+        }
+        var newCount = jsonNumber(NEW_COUNT, result.body());
+        var configVersion = jsonNumber(CONFIG_VERSION, result.body());
+        if (newCount != count || configVersion != expectedVersion + 1L) {
+            failScaleTrigger("was accepted but reported newCount=" + newCount + " configVersion=" + configVersion
+                             + " (expected newCount=" + count + " configVersion=" + (expectedVersion + 1L)
+                             + "; a different version means another writer committed between the read and the scale): "
+                             + renderResponse(result));
+        }
+        return renderResponse(result);
+    }
+
+    private static void failScaleTrigger(String detail) {
+        throw new AssertionError("SCALE TRIGGER DID NOT LAND: POST /api/v1/cluster/scale " + detail
+                                 + " — nothing below this point would be measuring a scale, so the probe stops "
+                                 + "here instead of reporting a convergence failure.");
+    }
+
+    private static long jsonNumber(Pattern field, String body) {
+        var matcher = field.matcher(body);
+        return matcher.find()
+               ? Long.parseLong(matcher.group(1))
+               : -1L;
     }
 
     private static String renderResponse(HttpResult result) {

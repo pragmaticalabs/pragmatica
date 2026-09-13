@@ -30,9 +30,9 @@
 |---|---|---|---|---|---|
 | TC-03-001 | `test_seed_config` | `test-01-quorum-safety.sh:10` | C1, C2 | smoke | `wait_for_cluster_ready 60` + `wait_for_leader 60` + `seed_cluster_config`; helper rc propagated via `set -e` |
 | TC-03-002 | `test_initial_state` | `test-01-quorum-safety.sh:16` | C1 | smoke | `member_count >= 3` floor (allows previous-suite-degraded cluster) |
-| TC-03-003 | `test_reject_scale_to_1` | `test-01-quorum-safety.sh:63` | C3 | core | `direct_scale_status` POSTs to leader (or per-node iteration in docker mode); accepts any `>= 400` as rejection |
-| TC-03-004 | `test_reject_scale_to_2` | `test-01-quorum-safety.sh:74` | C3 | core | Same shape as TC-03-003 with `coreCount=2` |
-| TC-03-005 | `test_reject_scale_above_max` | `test-01-quorum-safety.sh:85` | C4 | core | Same shape with `coreCount=20` |
+| TC-03-003 | `test_reject_scale_to_1` | `test_reject_scale_to_1` in `test-01-quorum-safety.sh` | C3 | core | `assert_scale_refused` POSTs `{role:core, count:1}` via `direct_scale_response` to the leader (or per-node iteration in docker mode); requires `>= 400` AND a detail containing `Quorum safety violation` |
+| TC-03-004 | `test_reject_scale_to_2` | `test_reject_scale_to_2` in `test-01-quorum-safety.sh` | C3 | core | Same shape as TC-03-003 with `count=2` |
+| TC-03-005 | `test_reject_scale_above_max` | `test_reject_scale_above_max` in `test-01-quorum-safety.sh` | C4 | core | Same shape with `count=21`, detail `Invalid core max` (20 is even and is refused by the odd-count check before the max check) |
 | TC-03-006 | `test_cluster_unchanged` | `test-01-quorum-safety.sh:96` | C5 | regression-net | `member_count >= 3` floor (same as initial) + `assert_cluster_healthy`; name overstates — only checks floor |
 
 ### test-02-scale-up.sh
@@ -71,9 +71,9 @@
 | TC ID | Limitation | Tracking |
 |---|---|---|
 | TC-03-002 | `member_count >= 3` floor — strict 5 would be a stronger entry assertion | Audit §1.6 (WEAK, severity LOW) |
-| TC-03-003 | `>= 400` accepts ANY 4xx OR 5xx as "rejection". A 503/500 from a broken validator (server crash) would pass as "rejected". `direct_scale_status` iterates all nodes and returns first non-000; follower "not leader" 4xx is indistinguishable from validator rejection | Audit §1.6 (PARTIAL 5xx-as-rejection, severity MEDIUM) |
-| TC-03-004 | Same `>= 400` accepts-any-error issue as TC-03-003 | Audit §1.6 (PARTIAL, severity MEDIUM) |
-| TC-03-005 | Same `>= 400` accepts-any-error issue as TC-03-003 | Audit §1.6 (PARTIAL, severity MEDIUM) |
+| TC-03-003 | **Narrowed 2026-09-13 (#1069).** The bodies were the pre-#581 `{coreCount}` shape, so the request decoder refused every call with HTTP 400 before the validator ran, and `>= 400` passed on that. The refusal detail must now name the validator's message, which rules out decoder, crash and follower "not leader" refusals. Still open: the HTTP status itself is not pinned (quorum refusals are 409, max refusals 400) | Audit §1.6 (PARTIAL 5xx-as-rejection, severity MEDIUM); #1069 |
+| TC-03-004 | Same as TC-03-003 | Audit §1.6 (PARTIAL, severity MEDIUM); #1069 |
+| TC-03-005 | Same as TC-03-003 | Audit §1.6 (PARTIAL, severity MEDIUM); #1069 |
 | TC-03-006 | Name claims "unchanged" but only checks `member_count >= 3` floor (same floor as `test_initial_state`); pre/post comparison would be stricter | Audit §1.6 (WEAK name/check mismatch, severity LOW) |
 | TC-03-015 | `start_load` counts `200..399` as success — 3xx-as-success in error-rate denominator. Low impact: app route deliberately returns 200 | Audit §1.6 (SOUND-with-3xx-caveat, severity LOW) |
 | TC-03-017 | Previously the suite's egregious HIGH-severity tautology (`assert_ne "$(cluster_events)" ""`). **CLOSED in commit c68a3ec37** — rewritten to push a unique SHA-256-tagged artifact pre-scale, refresh entry point post-scale, and assert HTTP 200 + size + SHA-256 equality. The new implementation is the actual no-data-loss contract | Audit §1.6 (was HIGH); CLOSED in c68a3ec37 |
