@@ -13,6 +13,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.storage.InMemoryMetadataStore.inMemoryMetadataStore;
 import static org.pragmatica.storage.SnapshotConfig.snapshotConfig;
 import static org.pragmatica.storage.SnapshotManager.snapshotManager;
@@ -211,11 +212,11 @@ class StorageIntegrationTest {
             var diskTier = LocalDiskTier.localDiskTier(tempDir.resolve("full-cache-blocks"), 10 * 1024 * 1024).unwrap();
             var instance = StorageInstance.storageInstance("full-cache", List.of(tooSmallMemory, diskTier));
 
-            java.util.Arrays.fill(content, (byte) 7);
+            Arrays.fill(content, (byte) 7);
 
             var id = instance.put(content)
                              .await()
-                             .fold(cause -> org.junit.jupiter.api.Assertions.fail("a cache-tier put failure must not fail a durably completed write: " + cause.message()),
+                             .fold(cause -> fail("a cache-tier put failure must not fail a durably completed write: " + cause.message()),
                                    v -> v);
 
             assertThat(tooSmallMemory.usedBytes()).isZero();
