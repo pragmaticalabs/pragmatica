@@ -73,9 +73,15 @@ public interface HttpForwarder {
     /// (`headers().remove` / `removeHeader`: zero sites), so any caller could set it and change the
     /// dispatch decision on a first hop. Hop state now travels where a client cannot reach it.
     ///
-    /// Supply `Option.none()` for anything arriving over HTTP. A future caller forwarding a request
-    /// that arrived over the cluster channel passes `HttpForwardRequest.sender` — the peer identity
-    /// the transport already carries as a typed field, so no new channel is needed for it.
+    /// Supply `Option.none()` for anything arriving over HTTP.
+    ///
+    /// NO PRODUCTION CALLER SUPPLIES A PRESENT VALUE, and none is expected to: a forwarded management
+    /// request is dispatched by `router.handle` on the receiving node and never re-enters this
+    /// forwarder, so the loop guard below cannot fire in production. The reachable skew guard is
+    /// `ManagementServerImpl.checkForwardedPartitionOwner`, which re-resolves the owner on the
+    /// RECEIVING node and refuses there — strictly stronger, because it fires on a disagreement
+    /// regardless of hop count. This parameter is retained pending a decision to retire it, not
+    /// because anything depends on it; the only present value it ever sees is a test's.
     Promise<HttpResponseData> forwardManagement(HttpRequestContext requestContext,
                                                 String requestId,
                                                 Option<NodeId> previousHop);

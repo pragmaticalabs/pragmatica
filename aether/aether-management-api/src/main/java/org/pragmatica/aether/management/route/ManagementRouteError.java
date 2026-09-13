@@ -173,11 +173,19 @@ public sealed interface ManagementRouteError extends Cause {
         }
     }
 
-    /// A request already forwarded once by owner resolution arrived at a node that would forward it
-    /// again (#1039) — the membership-skew cycle, where A resolves B as owner while B resolves A.
+    /// An owner-forwarded request arrived at a node that does not resolve ITSELF as the partition's
+    /// owner (#1039) — membership skew, where A forwards to B while B resolves A, or some third node.
     ///
-    /// Terminates the cycle with a named cause instead of letting it decay into the budget-exhaustion
-    /// deadline the forwarder would otherwise report, which is indistinguishable from a slow peer.
+    /// Raised by the RECEIVER, before dispatch, in `ManagementServerImpl.checkForwardedPartitionOwner`.
+    /// The receiver refuses rather than forwarding again: a second hop is what could cycle, and the
+    /// sender has already made an owner decision, so the disagreement itself is the answer. That
+    /// terminates skew on a named cause in one round instead of letting it decay into the
+    /// budget-exhaustion deadline, which is indistinguishable from a slow peer — and, more
+    /// importantly, instead of answering with `servedByOwner=false` and a partial ring, which is
+    /// indistinguishable from a genuinely empty partition.
+    ///
+    /// `previousHop` is the peer the cluster transport names (`HttpForwardRequest.sender`), never a
+    /// client-supplied header.
     record OwnerForwardLoop(String routeName, String previousHop) implements ManagementRouteError {
         @Override
         public String message() {
