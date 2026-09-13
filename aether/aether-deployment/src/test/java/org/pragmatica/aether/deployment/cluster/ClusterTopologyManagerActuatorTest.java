@@ -726,6 +726,25 @@ class ClusterTopologyManagerActuatorTest {
             assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
         }
 
+        /// R1′(a) ordering: a target that is live at expiry is skipped outright, and the grace path schedules no
+        /// deferred reap. If it dies moments later, the backstop does not reap it; its death goes through the
+        /// departure path or the activation replay, like any other death. The margin is five re-check intervals.
+        @Test
+        void surplusDrain_graceExpiry_liveTargetAtExpiry_isNotReapedByTheBackstopEvenIfItDiesLater() {
+            var slowCtm = ctmWithDrainGrace(timeSpan(1200).millis());
+
+            slowCtm.activate();
+            coreCountedMembers.set(ALL_SIX);
+            swimAliveNodes.set(ALL_SIX);
+            slowCtm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            awaitClearedExactlyOnce(PEER_D);
+            coreCountedMembers.set(SPARE_FIVE);
+            swimAliveNodes.set(SPARE_FIVE);
+            settleFor(Duration.ofMillis(500));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
         /// R1′(b): a deposed issuer never reaps, even a target that is not live.
         @Test
         void surplusDrain_graceExpiry_keepsTarget_whenIssuerNoLongerLeader() {
