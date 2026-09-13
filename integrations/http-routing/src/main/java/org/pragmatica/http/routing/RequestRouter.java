@@ -101,7 +101,8 @@ public final class RequestRouter {
         var viable = candidates.stream()
                                .filter(route -> route.pathParamCount() <= trailingSegmentCount(route.path(),
                                                                                                inputPath))
-                               .filter(route -> route.spacers().isEmpty() || routeMatchesPath(route, inputPath))
+                               .filter(route -> route.spacers()
+                                                     .isEmpty() || routeMatchesPath(route, inputPath))
                                .toList();
 
         if (viable.isEmpty()) {
@@ -144,10 +145,8 @@ public final class RequestRouter {
     }
 
     private Option<Route<?>> findFallbackRoute(List<Route<?>> candidates) {
-        return Option.from(candidates.stream()
-                                     .filter(route -> route.spacers()
-                                                           .isEmpty())
-                                     .findFirst());
+        return Option.from(candidates.stream().filter(route -> route.spacers()
+                                                                    .isEmpty()).findFirst());
     }
 
     /// Count the trailing path segments of `inputPath` beyond the candidates' shared `basePath`.

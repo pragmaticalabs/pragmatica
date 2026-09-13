@@ -1,14 +1,16 @@
 package org.pragmatica.http.routing;
 
+import org.pragmatica.lang.Promise;
+
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.lang.Promise;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.http.HttpMethod.GET;
 import static org.pragmatica.http.routing.PathParameter.aLong;
 import static org.pragmatica.http.routing.PathParameter.spacer;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #764, the residual half of the dispatch defect. `RequestRouter.selectBestRoute`'s arity guard
 /// exempted spacer-bearing routes ("left to their own matching"), and `findFallbackRoute` returned
@@ -17,19 +19,20 @@ import static org.pragmatica.http.routing.PathParameter.spacer;
 /// (`RequestContext.NOT_FOUND`) from a route that IS registered and listed, instead of the ordinary
 /// no-match. An under-specified match must be a routing miss.
 class SpacerRouteArityGuardTest {
-
     record TestResponse(String result) {}
 
     private static Route<TestResponse> edit() {
-        return Route.<TestResponse>get("/api/users/")
-                    .withPath(aLong(), spacer("edit"))
+        return Route.<TestResponse> get("/api/users/")
+                    .withPath(aLong(),
+                              spacer("edit"))
                     .to((id, _) -> Promise.success(new TestResponse("edit " + id)))
                     .asJson();
     }
 
     private static Route<TestResponse> profile() {
-        return Route.<TestResponse>get("/api/users/")
-                    .withPath(aLong(), spacer("profile"))
+        return Route.<TestResponse> get("/api/users/")
+                    .withPath(aLong(),
+                              spacer("profile"))
                     .to((id, _) -> Promise.success(new TestResponse("profile " + id)))
                     .asJson();
     }
