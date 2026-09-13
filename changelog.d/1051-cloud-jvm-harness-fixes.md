@@ -34,3 +34,8 @@
   the read fails or does not parse. `wait_for` takes an optional value reader: one read per poll, the predicate is not
   evaluated on a failed read, and the timeout message states the last value read or that the read failed.
   `[mechanism: aether/tests/integration/lib/cluster.sh and lib/common.sh; stub-tested by test/test-chaos-harness.sh]`
+- **The harness watchdog stood down when only the harness PID died**, leaving the hung case's group running — the
+  shape of the 2,342-process leak under a top-PID-only driver. It now kills its process group whenever the harness
+  is gone, not only at the deadline. The `stub-suites` CI job cap rises from 15 to 25 minutes: three suites each
+  wedged at the 300s ceiling cost ~15.4 min with the kill grace, which exceeded the old cap.
+  `[verified: G5 in aether/tests/integration/test/test-harness-guards.sh — reds with left=2 when the watchdog's group kill on a gone PID is reverted, greens with it]`

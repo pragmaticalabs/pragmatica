@@ -9,7 +9,9 @@
 #   G3 precondition: a suite without its source guard stops the harness before any
 #      case runs; G3c is the control that the same copy WITH the guard passes it;
 #   G4 one group: a harness started below a harness stays in its process group, so a
-#      group kill reaches every level of an unbounded re-entry.
+#      group kill reaches every level of an unbounded re-entry;
+#   G5 top-PID kill: a driver that kills only the harness's PID (the shape of the 2,342-
+#      process leak) still leaves nothing behind — the watchdog takes the group with it.
 # Every probe runs in its own process group under a hard timeout AND a process-count
 # ceiling (GUARD_PROBE_PROC_CEILING, default 300) that kills the whole group, so a broken
 # guard fails this test as "recursion detected (ceiling)" instead of hanging or forking
@@ -49,6 +51,8 @@ run_grouped() {
         use strict; use warnings; use POSIX ":sys_wait_h";
         my ($t, $out, @cmd) = @ARGV;
         my $ceiling = $ENV{GUARD_PROBE_PROC_CEILING} || 300;
+        my $topkill_at = $ENV{GUARD_PROBE_TOPKILL_AT};   # G5: kill ONLY the leader at this many seconds
+        my $settle = $ENV{GUARD_PROBE_SETTLE} || 1.5;    # seconds the group gets to drain before "left" is read
         my $start = time;
         my $pid = fork; die "fork: $!" unless defined $pid;
         if (!$pid) {
@@ -65,9 +69,10 @@ run_grouped() {
             $peak = $n if $n > $peak;
             if ($n > $ceiling) { kill "KILL", -$pid; waitpid($pid, 0); $rc = "CEILING"; last }
             if (time - $start >= $t) { kill "KILL", -$pid; waitpid($pid, 0); $rc = "TIMEOUT"; last }
+            if (defined $topkill_at && time - $start >= $topkill_at) { kill "KILL", $pid; undef $topkill_at }
             select(undef, undef, undef, 0.25);
         }
-        select(undef, undef, undef, 1.5);
+        select(undef, undef, undef, $settle);
         my $left = $members->();
         kill "KILL", -$pid;
         printf "rc=%s secs=%d left=%d peak=%d\n", $rc, time - $start, $left, $peak;
@@ -148,6 +153,16 @@ elif [ "$(field "$r" rc)" = 0 ] && [ -n "$outer" ] && [ "$outer" = "$inner" ] &&
     ok "G4 a harness started below a harness stays in its process group (${outer} = ${inner}) (${r})"
 else
     fail "G4 a nested harness left its parent's process group (outer='${outer}' inner='${inner}') (${r}): $(tail -3 "$WORK/g4.out" | tr '\n' '|')"
+fi
+
+# G5 — top-PID kill. The hung harness's own PID is killed at 3s with a 60s deadline still far off;
+# the watchdog must notice the harness is gone and kill the group, so nothing is left.
+r=$(GUARD_PROBE_TOPKILL_AT=3 GUARD_PROBE_SETTLE=4 run_grouped 30 "$WORK/g5.out" env -u CHAOS_HARNESS_ACTIVE -u CHAOS_HARNESS_REGROUPED CHAOS_HARNESS_DEADLINE_S=60 CHAOS_HARNESS_SELFTEST=hang bash "$HARNESS")
+if ceiling_hit G5 "$r"; then :
+elif [ "$(field "$r" rc)" = 137 ] && [ "$(field "$r" secs)" -lt 20 ] && [ "$(field "$r" left)" = 0 ]; then
+    ok "G5 a driver that kills only the harness PID leaves no process behind — the watchdog took the group (${r})"
+else
+    fail "G5 killing only the harness PID left its group running (${r}): $(tail -3 "$WORK/g5.out" | tr '\n' '|')"
 fi
 
 echo ""

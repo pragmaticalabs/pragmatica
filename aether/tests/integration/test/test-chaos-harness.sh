@@ -57,7 +57,14 @@ CHAOS_HARNESS_DEADLINE_S="${CHAOS_HARNESS_DEADLINE_S:-480}"
     watchdog_deadline=$((SECONDS + CHAOS_HARNESS_DEADLINE_S))
     while [ "$SECONDS" -lt "$watchdog_deadline" ]; do
         command sleep 1
-        kill -0 "$CHAOS_HARNESS_ACTIVE" 2>/dev/null || exit 0
+        if ! kill -0 "$CHAOS_HARNESS_ACTIVE" 2>/dev/null; then
+            # The harness is gone (normal exit, or a driver that killed only the top PID). Anything
+            # still in our group is a leak that outlived it — take the group with us, never just exit.
+            if [ -n "$HARNESS_PGID" ] && [ "$HARNESS_PGID" = "$CHAOS_HARNESS_ACTIVE" ]; then
+                kill -KILL -- "-${HARNESS_PGID}" 2>/dev/null
+            fi
+            exit 0
+        fi
     done
     echo "  FAIL  harness guard: deadline of ${CHAOS_HARNESS_DEADLINE_S}s exceeded — killing process group ${HARNESS_PGID:-<unknown>}"
     if [ -n "$HARNESS_PGID" ] && [ "$HARNESS_PGID" = "$CHAOS_HARNESS_ACTIVE" ]; then
