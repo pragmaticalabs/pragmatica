@@ -69,6 +69,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
@@ -79,6 +80,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.consensus.net.NodeInfo.LABEL_ZONE;
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
 
@@ -746,12 +748,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// unparseable, or no cloud source backs the role (Docker / forge).
     @Override
     public TimeSpan replacementCeiling(NodeRole intendedRole) {
-        return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
-                     .filter(toml -> !toml.isBlank())
+        return persistedCloudSource(intendedRole).map(SourceProfile::effectiveReplacementCeiling)
+                                   .or(SourceProfile.DEFAULT_REPLACEMENT_CEILING);
+    }
+
+    /// The cloud [SourceProfile] backing `intendedRole` in the persisted cluster TOML, or empty when the
+    /// TOML is blank or unparseable or no cloud source declares the role.
+    private Option<SourceProfile> persistedCloudSource(NodeRole intendedRole) {
+        return option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or("")).filter(Verify.Is::present)
                      .flatMap(ClusterTopologyManagerRecord::parseConfig)
-                     .flatMap(config -> cloudSourceFor(config, intendedRole))
-                     .map(SourceProfile::effectiveReplacementCeiling)
-                     .or(SourceProfile.DEFAULT_REPLACEMENT_CEILING);
+                     .flatMap(config -> cloudSourceFor(config, intendedRole));
     }
 
     /// #334 — auto-heal zone rotation. Mirrors the bootstrap rotation (`BootstrapPhaseProvision`):

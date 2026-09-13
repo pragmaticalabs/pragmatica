@@ -175,8 +175,7 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
     @Override
     public Promise<List<InstanceInfo>> instancesForNode(NodeId nodeId) {
         return computeProvider.fold(() -> EnvironmentError.operationNotSupported("instancesForNode: no ComputeProvider").promise(),
-                                    provider -> provider.listInstances(Map.of(NODE_ID_TAG,
-                                                                              nodeId.id())));
+                                    provider -> provider.listInstances(Map.of(NODE_ID_TAG, nodeId.id())));
     }
 
     @Override

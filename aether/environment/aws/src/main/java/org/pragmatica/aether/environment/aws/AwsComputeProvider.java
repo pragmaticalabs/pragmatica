@@ -108,11 +108,11 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     @Override
     public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
         return translateKeys(tagFilter).entrySet()
-                                       .stream()
-                                       .findFirst()
-                                       .map(entry -> describeByTag(entry.getKey(),
-                                                                   entry.getValue()))
-                                       .orElseGet(this::listInstances);
+                            .stream()
+                            .findFirst()
+                            .map(entry -> describeByTag(entry.getKey(),
+                                                        entry.getValue()))
+                            .orElseGet(this::listInstances);
     }
 
     /// Provider-agnostic node-id key upper layers select by (`NodeLifecycleManager.NODE_ID_TAG`). This

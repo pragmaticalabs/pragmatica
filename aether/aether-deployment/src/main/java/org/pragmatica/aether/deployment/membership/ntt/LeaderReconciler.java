@@ -289,7 +289,6 @@ public final class LeaderReconciler {
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
 
     private final ConcurrentHashMap<NodeId, InFlightEntry> inFlightProvisioning = new ConcurrentHashMap<>();
-
     /// Node ids with a provider status query outstanding (#1049) — the single-flight guard, so a slow
     /// provider never accumulates stacked queries for the same replacement across poll ticks.
     private final Set<NodeId> statusQueriesOutstanding = ConcurrentHashMap.newKeySet();
@@ -430,7 +429,9 @@ public final class LeaderReconciler {
             return;
         }
 
-        var inherited = InFlightEntry.inherited(timeSource.nanoTime(), ctm.replacementCeiling(NodeRole.CORE));
+        var inherited = InFlightEntry.inFlightEntry(timeSource.nanoTime(),
+                                                    ctm.replacementCeiling(NodeRole.CORE),
+                                                    InFlightState.UNCONFIRMED);
         // Core-scoped (Wave 2 / W2): a retained dispatch is fulfilled only by a CORE member —
         // matches the fulfillment-clear in runReconcileBody, which also reads coreCountedMembers().
         var currentMembers = membershipFsm.coreCountedMembers();
@@ -646,8 +647,12 @@ public final class LeaderReconciler {
     public Map<NodeId, Long> inFlightProvisioningSnapshot() {
         return inFlightProvisioning.entrySet()
                                    .stream()
-                                   .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
-                                                                         entry -> entry.getValue().sinceNanos()));
+                                   .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, LeaderReconciler::stampOf));
+    }
+
+    private static long stampOf(Map.Entry<NodeId, InFlightEntry> entry) {
+        return entry.getValue()
+                    .sinceNanos();
     }
 
     /// CAS-debounce entry point. First trigger schedules a short-debounced reconcile;
@@ -1321,7 +1326,10 @@ public final class LeaderReconciler {
 
     @Contract
     private void dispatchSingleProvision(long nowNanos, NodeId placeholder, Set<NodeId> currentMembers) {
-        inFlightProvisioning.put(placeholder, InFlightEntry.dispatching(nowNanos, ctm.replacementCeiling(NodeRole.CORE)));
+        inFlightProvisioning.put(placeholder,
+                                 InFlightEntry.inFlightEntry(nowNanos,
+                                                             ctm.replacementCeiling(NodeRole.CORE),
+                                                             InFlightState.DISPATCHING));
         armInFlightSweep();
         // Pass the SAME minted placeholder as the new node's intended identity: the provisioned
         // node boots under exactly this id (CTM threads it into ProvisionContext.nodeId()), so the
@@ -1366,7 +1374,9 @@ public final class LeaderReconciler {
     private void markDispatched(NodeId placeholder) {
         Option.option(inFlightProvisioning.get(placeholder))
               .filter(InFlightEntry::isDispatching)
-              .onPresent(entry -> inFlightProvisioning.replace(placeholder, entry, entry.withState(InFlightState.UNCONFIRMED)));
+              .onPresent(entry -> inFlightProvisioning.replace(placeholder,
+                                                               entry,
+                                                               entry.withState(InFlightState.UNCONFIRMED)));
     }
 
     @Contract
@@ -1385,7 +1395,10 @@ public final class LeaderReconciler {
     /// as well as on the sweep tick.
     @Contract
     private void evictInFlightPastCeiling(long nowNanos) {
-        inFlightProvisioning.entrySet().removeIf(entry -> isPastCeilingLogged(nowNanos, entry.getKey(), entry.getValue()));
+        inFlightProvisioning.entrySet()
+                            .removeIf(entry -> isPastCeilingLogged(nowNanos,
+                                                                   entry.getKey(),
+                                                                   entry.getValue()));
     }
 
     private static boolean isPastCeilingLogged(long nowNanos, NodeId id, InFlightEntry entry) {
@@ -1748,12 +1761,8 @@ public final class LeaderReconciler {
     /// #1049 — one in-flight replacement: when it was stamped (dispatch or inheritance, on
     /// [`#timeSource`]), the per-source ceiling that bounds it, and its [`InFlightState`].
     private record InFlightEntry(long sinceNanos, TimeSpan ceiling, InFlightState state) {
-        static InFlightEntry dispatching(long sinceNanos, TimeSpan ceiling) {
-            return new InFlightEntry(sinceNanos, ceiling, InFlightState.DISPATCHING);
-        }
-
-        static InFlightEntry inherited(long sinceNanos, TimeSpan ceiling) {
-            return new InFlightEntry(sinceNanos, ceiling, InFlightState.UNCONFIRMED);
+        static InFlightEntry inFlightEntry(long sinceNanos, TimeSpan ceiling, InFlightState state) {
+            return new InFlightEntry(sinceNanos, ceiling, state);
         }
 
         InFlightEntry withState(InFlightState next) {

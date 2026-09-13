@@ -290,10 +290,10 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
 
     static String toLabelFilter(Map<String, String> tagFilter) {
         return translateKeys(tagFilter).entrySet()
-                                       .stream()
-                        .map(GcpComputeProvider::toLabelFilterEntry)
-                        .reduce(GcpComputeProvider::combineWithAnd)
-                        .orElse("");
+                            .stream()
+                            .map(GcpComputeProvider::toLabelFilterEntry)
+                            .reduce(GcpComputeProvider::combineWithAnd)
+                            .orElse("");
     }
 
     private static String toLabelFilterEntry(Map.Entry<String, String> entry) {

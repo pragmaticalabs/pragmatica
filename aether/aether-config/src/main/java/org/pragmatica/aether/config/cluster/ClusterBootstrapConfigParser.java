@@ -239,9 +239,12 @@ public final class ClusterBootstrapConfigParser {
                                                             SourceName name,
                                                             String section,
                                                             SourceType type) {
-        return Result.all(parseProvider(doc, section),
-                          parseReplacementCeiling(doc, section))
-                     .map((provider, ceiling) -> assembleSourceProfile(doc, name, section, type, provider, ceiling));
+        return Result.all(parseProvider(doc, section), parseReplacementCeiling(doc, section)).map((provider, ceiling) -> assembleSourceProfile(doc,
+                                                                                                                                               name,
+                                                                                                                                               section,
+                                                                                                                                               type,
+                                                                                                                                               provider,
+                                                                                                                                               ceiling));
     }
 
     /// #1049 — `replacement_ceiling` is optional (absent → the runtime's ten-minute default), but a
@@ -255,18 +258,22 @@ public final class ClusterBootstrapConfigParser {
     }
 
     private static Result<Option<TimeSpan>> resolveReplacementCeiling(String section, String raw) {
-        return timeSpan(raw).mapError(cause -> parseFailed(section + "." + REPLACEMENT_CEILING_KEY
+        return timeSpan(raw).mapError(cause -> parseFailed(section
+                                                          + "." + REPLACEMENT_CEILING_KEY
                                                           + ": " + cause.message()
-                                                          + " (was '" + raw + "')"))
-                            .map(parsed -> TimeSpan.fromDuration(parsed.duration()))
-                            .flatMap(ceiling -> requirePositiveCeiling(section, raw, ceiling))
-                            .map(Option::some);
+                                                          + " (was '" + raw
+                                                          + "')"))
+                       .map(parsed -> TimeSpan.fromDuration(parsed.duration()))
+                       .flatMap(ceiling -> requirePositiveCeiling(section, raw, ceiling))
+                       .map(Option::some);
     }
 
     private static Result<TimeSpan> requirePositiveCeiling(String section, String raw, TimeSpan ceiling) {
         if (ceiling.nanos() <= 0) {
-            return parseFailed(section + "." + REPLACEMENT_CEILING_KEY
-                              + " must be a positive duration, e.g. \"10m\" (was '" + raw + "')").result();
+            return parseFailed(section
+                              + "." + REPLACEMENT_CEILING_KEY
+                              + " must be a positive duration, e.g. \"10m\" (was '" + raw
+                              + "')").result();
         }
 
         return success(ceiling);

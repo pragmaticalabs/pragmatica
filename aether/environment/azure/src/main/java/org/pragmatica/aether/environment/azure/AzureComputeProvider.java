@@ -286,9 +286,9 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
     static String buildTagFilterQuery(Map<String, String> tagFilter) {
         var baseQuery = "Resources | where type == \"microsoft.compute/virtualmachines\"";
         var tagClauses = translateKeys(tagFilter).entrySet()
-                                                 .stream()
-                                  .map(AzureComputeProvider::toTagClause)
-                                  .collect(Collectors.joining(" "));
+                                      .stream()
+                                      .map(AzureComputeProvider::toTagClause)
+                                      .collect(Collectors.joining(" "));
 
         return baseQuery + tagClauses;
     }
