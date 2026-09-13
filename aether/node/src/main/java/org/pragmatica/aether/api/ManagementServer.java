@@ -1594,15 +1594,16 @@ class ManagementServerImpl implements ManagementServer {
     /// privileges naming a framework stream in the body — auth level does not matter here because
     /// the check runs regardless of it.
     ///
-    /// [ManagementRoute#CONSUMER_GROUP_JOIN]/[ManagementRoute#CONSUMER_GROUP_LEAVE] are a known,
-    /// currently open gap, not covered here: their target stream name travels in the request body
+    /// [ManagementRoute#CONSUMER_GROUP_JOIN]/[ManagementRoute#CONSUMER_GROUP_LEAVE] are likewise not
+    /// covered here: their target stream name travels in the request body
     /// (`JoinGroupRequest`/`LeaveGroupRequest`), not the path, and this gate only inspects
-    /// method+path. It closes once these routes gain path-resolvable identity per the catalog-form
-    /// reshape (management-api-versioning-spec.md §3.3) — deliberately deferred (ruled 2026-08-30,
-    /// #754), not merely untidy: catalog `deleteGroup` evicts every consumer at a stream address,
-    /// so a naive fold of `LEAVE` onto it would be a destructive semantic inversion under the same
-    /// user-facing verb (legacy `LEAVE` removes one named consumer). Closing this gap requires that
-    /// design fix first, not just a path-identity reshape — see #754.
+    /// method+path. Since #742 they carry the same post-auth, handler-level guard as CREATE —
+    /// `StreamRoutes#joinGroup`/`#leaveGroup`, first statement, same predicate, pinned by
+    /// `StreamRoutesGroupSystemStreamTest`. The path-identity reshape (management-api-versioning-spec.md
+    /// §3.3) remains deferred (ruled 2026-08-30, #754), not merely untidy: catalog `deleteGroup`
+    /// evicts every consumer at a stream address, so a naive fold of `LEAVE` onto it would be a
+    /// destructive semantic inversion under the same user-facing verb (legacy `LEAVE` removes one
+    /// named consumer). That design fix is #754's, independent of the guard.
     ///
     /// A route match whose params fail to resolve to a [ResourceAddress] (malformed namespace or
     /// version) fails closed — treated as forbidden, not passed through.

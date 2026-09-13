@@ -4,7 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
-import org.junit.jupiter.api.Test;
+import java.lang.reflect.Proxy;
+
 import org.pragmatica.aether.api.routes.StreamRoutes.JoinGroupRequest;
 import org.pragmatica.aether.api.routes.StreamRoutes.LeaveGroupRequest;
 import org.pragmatica.aether.node.ManageableNode;
@@ -13,10 +14,11 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
-import java.lang.reflect.Proxy;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+
 
 /// #742 — the legacy flat `POST /streams/groups/join` / `.../leave` (`StreamRoutes#joinGroup` /
 /// `#leaveGroup`) carry their target stream name in the request body, so `ManagementServer`'s
@@ -39,13 +41,15 @@ class StreamRoutesGroupSystemStreamTest {
         return (ManageableNode) Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
                                                        new Class[]{ManageableNode.class},
                                                        (_, method, _) -> switch (method.getName()) {
-                                                           case "self" -> NodeId.randomNodeId("test");
-                                                           default -> throw new UnsupportedOperationException("Not stubbed in test proxy: " + method.getName());
-                                                       });
+            case "self" -> NodeId.randomNodeId("test");
+            default -> throw new UnsupportedOperationException("Not stubbed in test proxy: " + method.getName());
+        });
     }
 
     private static StreamRoutes routes() {
-        return StreamRoutes.streamRoutes(StreamRoutesGroupSystemStreamTest::nodeStub, ConsumerGroupCoordinator.noOp(), null);
+        return StreamRoutes.streamRoutes(StreamRoutesGroupSystemStreamTest::nodeStub,
+                                         ConsumerGroupCoordinator.noOp(),
+                                         null);
     }
 
     private static String failureMessage(Result<?> result) {
@@ -57,9 +61,9 @@ class StreamRoutesGroupSystemStreamTest {
         var result = routes().joinGroup(new JoinGroupRequest("g1", "cluster-events", 4, "c1"));
 
         assertThat(failureMessage(result)).as("the guard must refuse in its own words, BEFORE the coordinator — a "
-                                              + "NOT_LEADER here would mean the call reached rebalance")
-                                          .containsIgnoringCase("system stream")
-                                          .doesNotContainIgnoringCase(COORDINATOR_REACHED);
+                                             + "NOT_LEADER here would mean the call reached rebalance")
+                  .containsIgnoringCase("system stream")
+                  .doesNotContainIgnoringCase(COORDINATOR_REACHED);
     }
 
     @Test
@@ -67,7 +71,7 @@ class StreamRoutesGroupSystemStreamTest {
         var result = routes().leaveGroup(new LeaveGroupRequest("g1", "cluster-events", "c1"));
 
         assertThat(failureMessage(result)).containsIgnoringCase("system stream")
-                                          .doesNotContainIgnoringCase(COORDINATOR_REACHED);
+                  .doesNotContainIgnoringCase(COORDINATOR_REACHED);
     }
 
     @Test
@@ -76,8 +80,8 @@ class StreamRoutesGroupSystemStreamTest {
         var leave = routes().leaveGroup(new LeaveGroupRequest("g1", "orders", "c1"));
 
         assertThat(failureMessage(join)).as("an ordinary application stream must pass the guard and reach the "
-                                            + "coordinator, whose noOp answer is NOT_LEADER")
-                                        .containsIgnoringCase(COORDINATOR_REACHED);
+                                           + "coordinator, whose noOp answer is NOT_LEADER")
+                  .containsIgnoringCase(COORDINATOR_REACHED);
         assertThat(failureMessage(leave)).containsIgnoringCase(COORDINATOR_REACHED);
     }
 }

@@ -5623,11 +5623,12 @@ body is rejected the same as anyone else), but it is not the same short-circuit-
 guarantee the path-based gate above gives the other write routes.
 
 `CONSUMER_GROUP_JOIN`/`CONSUMER_GROUP_LEAVE` carry their target
-stream name in the request body rather than the path — a known, currently open gap this path-only
-gate cannot see, closed once these routes gain path-resolvable identity via the catalog-form
-reshape (management-api-versioning-spec.md §3.3). Tracked as its own ticket (rc4 provisional,
-cross-referencing #300), pending an evidence-based answer to whether joining/leaving a consumer
-group on a framework stream actually mutates state or is merely untidy.
+stream name in the request body rather than the path, so this path-only gate cannot see them. Since
+#742 they are protected the same way `STREAM_CREATE` is: a post-auth, handler-level guard in
+`StreamRoutes#joinGroup`/`#leaveGroup` that refuses a reserved system stream name before the
+coordinator is called (`Cannot join or leave a consumer group on a reserved system stream`). The
+evidence question that ticket was filed on was answered: joining/leaving does mutate state — both
+call `rebalance`, which proposes replicated KV assignment records under the named stream.
 
 Reads of `system:*` streams (e.g. `system:cluster-events`) are unaffected; only writes are gated.
 The compile-time SPI split already blocks application code from producing into system streams;

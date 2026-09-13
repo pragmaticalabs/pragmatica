@@ -55,6 +55,7 @@ public final class StreamRoutes implements RouteSource {
     private static final Cause MISSING_STREAM_NAME = Causes.cause("Missing stream name");
 
     private static final Cause SYSTEM_STREAM_NAME_FORBIDDEN = Causes.cause("Cannot create a stream using a reserved system stream name");
+
     private static final Cause SYSTEM_STREAM_GROUP_FORBIDDEN = Causes.cause("Cannot join or leave a consumer group on a reserved system stream");
 
     private static final int DEFAULT_PARTITIONS = 4;
