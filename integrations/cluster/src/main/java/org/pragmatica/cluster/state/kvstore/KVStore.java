@@ -251,9 +251,14 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// Silent install: replace storage with the restored map, NO notifications. The
     /// notification consequences are computed later by [#replayNotifications()] as a diff against
     /// [#lastReplayedView].
+    ///
+    /// Overlay first, then drop the keys the snapshot lacks — never `clear()` then `putAll()`. A
+    /// concurrent reader on another thread (a gate deciding whether a committed record exists, #1068)
+    /// must never observe an EMPTY store mid-install: between the two steps here it sees the union of
+    /// old and new, never less than either.
     private void installSilently(Map<K, V> restored) {
-        storage.clear();
         storage.putAll(restored);
+        storage.keySet().retainAll(restored.keySet());
     }
 
     /// Notification replay — the `sync → activate → replay` step (cluster-topology-overhaul §5.8,

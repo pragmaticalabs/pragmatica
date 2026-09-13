@@ -231,7 +231,8 @@ public final class NodeDeploymentContext {
                                               new ConcurrentHashMap<>(),
                                               ConfigNotificationManager.configNotificationManager(),
                                               RoutingEpochAckTracker.routingEpochAckTracker(),
-                                              pendingReactivation);
+                                              pendingReactivation,
+                                              new ConcurrentHashMap<>());
     }
 
     public NodeDeploymentState.Leaving newLeaving(DrainReason reason) {

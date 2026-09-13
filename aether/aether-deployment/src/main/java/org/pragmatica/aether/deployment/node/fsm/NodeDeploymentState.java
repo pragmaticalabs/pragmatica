@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.deployment.CommittedSliceTarget;
 import org.pragmatica.aether.deployment.config.ConfigNotificationManager;
 import org.pragmatica.aether.deployment.drain.DrainReason;
@@ -23,6 +24,8 @@ import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.LeavingReq
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactRemoveReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeRoutesPutReceived;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.SliceTargetPutReceived;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.VersionRoutingPutReceived;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.invoke.CronExpression;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
@@ -128,7 +131,11 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                   ConcurrentHashMap<SliceNodeKey, SliceDeployment> deployments,
                   ConfigNotificationManager configNotificationManager,
                   RoutingEpochAckTracker routingEpochAckTracker,
-                  List<SuspendedSlice> pendingReactivation) implements NodeDeploymentState {
+                  List<SuspendedSlice> pendingReactivation,
+                  // #1068: starts refused for want of a committed target, keyed by slice, holding the
+                  // state that was refused. Re-evaluated on the next SliceTargetPut/VersionRoutingPut
+                  // for the same artifact base; dropped when a newer put or a removal for the key arrives.
+                  ConcurrentHashMap<SliceNodeKey, SliceState> deferredStarts) implements NodeDeploymentState {
         private static final Logger log = LoggerFactory.getLogger(Active.class);
         private static final TimeSpan CONSENSUS_OPERATION_TIMEOUT = TimeSpan.timeSpan(30).seconds();
         private static final int CONSENSUS_MAX_RETRIES = 2;
@@ -181,6 +188,12 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 case NodeArtifactRemoveReceived(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) -> handleNodeArtifactRemove(valueRemove,
                                                                                                                                          tx);
                 case NodeRoutesPutReceived(var valuePut) -> handleNodeRoutesPut(valuePut, tx);
+                case SliceTargetPutReceived(var valuePut) -> tx.handle(() -> redriveDeferredStarts(valuePut.cause()
+                                                                                                           .key()
+                                                                                                           .artifactBase()));
+                case VersionRoutingPutReceived(var valuePut) -> tx.handle(() -> redriveDeferredStarts(valuePut.cause()
+                                                                                                              .key()
+                                                                                                              .artifactBase()));
                 case LeavingRequested(DrainReason reason) -> tx.transitionTo(ctx.newLeaving(reason));
                 case QuorumDisappeared _ -> handleQuorumDisappeared(tx);
                 case Shutdown _ -> handleShutdown(tx);
@@ -321,6 +334,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             log.debug("ValueRemove received for key: {}", sliceKey);
             var deployment = Option.option(deployments.remove(sliceKey));
 
+            deferredStarts.remove(sliceKey);
             routingEpochAckTracker.clear(sliceKey);
             if (shouldForceCleanup(deployment)) {
                 forceCleanupSlice(sliceKey);
@@ -330,6 +344,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private void recordDeployment(SliceNodeKey sliceKey, SliceNodeValue sliceNodeValue) {
             var state = sliceNodeValue.state();
             var timestamp = ctx.nowMs();
+
+            deferredStarts.remove(sliceKey);
             var previousDeployment = Option.option(deployments.get(sliceKey));
             var previousState = previousDeployment.map(SliceDeployment::state);
             var deployment = SliceDeployment.sliceDeployment(sliceKey, state, timestamp);
@@ -402,7 +418,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private void handleLoading(SliceNodeKey sliceKey) {
-            if (!committedTargetPermits(sliceKey, "load")) {
+            if (!committedTargetPermits(sliceKey, SliceState.LOAD)) {
                 return;
             }
 
@@ -437,7 +453,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private void handleActivating(SliceNodeKey sliceKey) {
-            if (!committedTargetPermits(sliceKey, "activate")) {
+            if (!committedTargetPermits(sliceKey, SliceState.ACTIVATE)) {
                 return;
             }
 
@@ -726,7 +742,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// it resurrected a slice with no owning blueprint (measured in CI run 34772700962). The
         /// gate below is what makes the claim's absence of a target decisive.
         private void redeployClaimedActiveSlice(SliceNodeKey sliceKey) {
-            if (!committedTargetPermits(sliceKey, "redeploy")) {
+            if (!committedTargetPermits(sliceKey, SliceState.ACTIVE)) {
                 return;
             }
 
@@ -741,23 +757,55 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         /// #1068 — the node-side half of "a rolled-back version never starts again". Every path that
         /// starts a slice (LOAD, ACTIVATE, the KV-convergence redeploy) first asks the COMMITTED store
-        /// whether it still targets this version ([CommittedSliceTarget]); Rabia's total order puts
-        /// the rollback's `SliceTargetKey` removal before any later start command, so a node that
-        /// applied the removal refuses. A refusal writes nothing: the leader's orphan sweep
-        /// (`StaleEntryCleaner.cleanupOrphanedSliceEntries`) owns the leftover key and re-issues
-        /// UNLOAD until it is gone.
-        private boolean committedTargetPermits(SliceNodeKey sliceKey, String operation) {
+        /// whether it still targets this version ([CommittedSliceTarget]). The store read here is the
+        /// one the consensus applier writes into — the same `KVStore` instance `RabiaNode` drives — so
+        /// a node that applied the rollback's `SliceTargetKey` removal refuses every later start.
+        ///
+        /// A refusal is DEFERRED, never final. Measured in CI run 34785390505 (`SliceMediaTypeTest`):
+        /// follower smt-3 applied a LOAD 4 ms before it applied the `SliceTargetKey` put the leader had
+        /// already acted on, refused, and nothing re-checked — the slice never loaded. Whether that
+        /// follower applied out of order or caught up through a snapshot install, the store CAN lack an
+        /// earlier put when a later command runs. So the refused state is parked in `deferredStarts`
+        /// and re-driven by [#redriveDeferredStarts] when a target or routing entry for the base
+        /// arrives; a rollback leftover (target REMOVED, nothing arrives) stays parked and writes
+        /// nothing — the leader's orphan sweep (`StaleEntryCleaner.cleanupOrphanedSliceEntries`) owns
+        /// that key and re-issues UNLOAD until it is gone, and the UNLOAD put clears the deferral.
+        private boolean committedTargetPermits(SliceNodeKey sliceKey, SliceState refusedState) {
             if (CommittedSliceTarget.permits(ctx.kvStore(), sliceKey.artifact())) {
+                deferredStarts.remove(sliceKey);
+
                 return true;
             }
 
-            log.warn("Node {} refuses to {} {}: no committed SliceTarget names this version (#1068) — "
-                    + "the blueprint was rolled back or superseded; the leader's orphan sweep removes the entry",
+            deferredStarts.put(sliceKey, refusedState);
+            log.warn("Node {} defers {} of {}: no committed SliceTarget names this version (#1068) — "
+                    + "re-evaluated when a target arrives; if the blueprint was rolled back the leader's orphan sweep removes the entry",
                      ctx.self().id(),
-                     operation,
+                     refusedState,
                      sliceKey.artifact());
 
             return false;
+        }
+
+        /// #1068 — a committed `SliceTargetKey` or `VersionRoutingKey` for `base` just arrived: every
+        /// start this node deferred for that base is re-driven through the same gate. Not permitted
+        /// still (a different version) parks it again.
+        private void redriveDeferredStarts(ArtifactBase base) {
+            var matching = deferredStarts.keySet()
+                                         .stream()
+                                         .filter(sliceKey -> base.matches(sliceKey.artifact()))
+                                         .toList();
+
+            matching.forEach(this::redriveDeferredStart);
+        }
+
+        private void redriveDeferredStart(SliceNodeKey sliceKey) {
+            Option.option(deferredStarts.remove(sliceKey))
+                  .onPresent(state -> log.info("Node {} re-evaluating deferred {} of {} after a committed target arrived (#1068)",
+                                               ctx.self().id(),
+                                               state,
+                                               sliceKey.artifact()))
+                  .onPresent(state -> processStateTransition(sliceKey, state));
         }
 
         private Promise<Unit> publishHttpRoutes(SliceNodeKey sliceKey) {

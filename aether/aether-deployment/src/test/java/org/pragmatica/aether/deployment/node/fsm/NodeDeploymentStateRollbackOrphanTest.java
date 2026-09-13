@@ -11,6 +11,8 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.SliceTargetPutReceived;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.VersionRoutingPutReceived;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceActionConfig;
@@ -115,13 +117,35 @@ class NodeDeploymentStateRollbackOrphanTest {
     }
 
     private void seedCommittedTarget(Version version) {
-        applyToKvStore(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(BASE),
+        seedCommittedTarget(BASE, version);
+    }
+
+    private void seedCommittedTarget(ArtifactBase base, Version version) {
+        applyToKvStore(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(base),
                                            SliceTargetValue.sliceTargetValue(version, 1)));
     }
 
     private void seedVersionRouting(Version oldVersion, Version newVersion) {
         applyToKvStore(new KVCommand.Put<>(VersionRoutingKey.versionRoutingKey(BASE),
                                            VersionRoutingValue.versionRoutingValue(oldVersion, newVersion)));
+    }
+
+    /// The committed target arrives AFTER a start was applied: seed it, then deliver the notification the
+    /// KV store routes for it.
+    private void targetArrives(ArtifactBase base, Version version) {
+        var key = SliceTargetKey.sliceTargetKey(base);
+        var value = SliceTargetValue.sliceTargetValue(version, 1);
+
+        applyToKvStore(new KVCommand.Put<>(key, value));
+        harness.dispatch(new SliceTargetPutReceived(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none())));
+    }
+
+    private void routingArrives(Version oldVersion, Version newVersion) {
+        var key = VersionRoutingKey.versionRoutingKey(BASE);
+        var value = VersionRoutingValue.versionRoutingValue(oldVersion, newVersion);
+
+        applyToKvStore(new KVCommand.Put<>(key, value));
+        harness.dispatch(new VersionRoutingPutReceived(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none())));
     }
 
     private void dispatchNodeArtifactPut(NodeId node, Artifact artifact, SliceState state) {
@@ -244,6 +268,93 @@ class NodeDeploymentStateRollbackOrphanTest {
             dispatchNodeArtifactPut(SELF, ARTIFACT, SliceState.ACTIVATE);
 
             await().atMost(SETTLE).untilAsserted(() -> assertThat(sliceStore.activateRequests).containsExactly(ARTIFACT));
+        }
+    }
+
+    /// A refusal is deferred, not final. CI run 34785390505 (`SliceMediaTypeTest`): follower smt-3 applied
+    /// the leader's LOAD 4 ms BEFORE it applied the `SliceTargetKey` put the leader had already acted on,
+    /// refused, and nothing re-checked when the target arrived — the slice never loaded (404s). The store a
+    /// follower reads can lack an earlier put when a later command runs, so the gate must re-evaluate when
+    /// the target arrives, while a rollback leftover (target removed, nothing ever arrives) stays parked.
+    @Nested
+    class DeferredStart {
+        @Test
+        void loadAppliedBeforeTarget_isLoadedWhenTheTargetArrives() {
+            harness.dispatch(new QuorumEstablished());
+
+            dispatchNodeArtifactPut(SELF, ARTIFACT, SliceState.LOAD);
+            settle();
+            assertThat(sliceStore.loadRequests).as("no target yet — the LOAD is deferred").isEmpty();
+
+            targetArrives(BASE, V1);
+
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(sliceStore.loadRequests).containsExactly(ARTIFACT));
+        }
+
+        @Test
+        void activeClaimAppliedBeforeTarget_isRedeployedWhenTheTargetArrives() {
+            seedRolledBackOrphan();
+            harness.dispatch(new QuorumEstablished());
+
+            dispatchNodeArtifactPut(SELF, ARTIFACT, SliceState.ACTIVE);
+            settle();
+            assertThat(sliceStore.loadRequests).isEmpty();
+
+            targetArrives(BASE, V1);
+
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(sliceStore.loadRequests).containsExactly(ARTIFACT));
+        }
+
+        @Test
+        void oldVersionLoadAppliedBeforeRouting_isLoadedWhenTheRoutingArrives() {
+            seedCommittedTarget(V2);
+            harness.dispatch(new QuorumEstablished());
+
+            dispatchNodeArtifactPut(SELF, ARTIFACT, SliceState.LOAD);
+            settle();
+            assertThat(sliceStore.loadRequests).as("target names V2 and no routing names V1 yet").isEmpty();
+
+            routingArrives(V1, V2);
+
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(sliceStore.loadRequests).containsExactly(ARTIFACT));
+        }
+
+        @Test
+        void targetForAnotherBase_doesNotReDrive() {
+            harness.dispatch(new QuorumEstablished());
+
+            dispatchNodeArtifactPut(SELF, ARTIFACT, SliceState.LOAD);
+            targetArrives(ArtifactBase.artifactBase("org.example:slice-other").unwrap(), V1);
+
+            settle();
+            assertThat(sliceStore.loadRequests).as("a target for a different base is not this slice's target").isEmpty();
+        }
+
+        @Test
+        void targetOfAnotherVersion_staysDeferred() {
+            harness.dispatch(new QuorumEstablished());
+
+            dispatchNodeArtifactPut(SELF, ARTIFACT, SliceState.LOAD);
+            targetArrives(BASE, V2);
+
+            settle();
+            assertThat(sliceStore.loadRequests).as("the arriving target names a different version").isEmpty();
+        }
+
+        /// The rollback ordering: the leader's sweep UNLOADs the leftover before any target for the base
+        /// could arrive again; the UNLOAD supersedes the deferred start, so a later target must not
+        /// resurrect it.
+        @Test
+        void deferredStartSupersededByUnload_isNotResurrectedByALaterTarget() {
+            harness.dispatch(new QuorumEstablished());
+            dispatchNodeArtifactPut(SELF, ARTIFACT, SliceState.LOAD);
+            dispatchNodeArtifactPut(SELF, ARTIFACT, SliceState.UNLOAD);
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(cluster.commands).anyMatch(NodeDeploymentStateRollbackOrphanTest::removesOwnKey));
+
+            targetArrives(BASE, V1);
+
+            settle();
+            assertThat(sliceStore.loadRequests).as("the UNLOAD replaced the deferred LOAD; nothing is left to re-drive").isEmpty();
         }
     }
 

@@ -175,10 +175,14 @@ record StaleEntryCleaner(Active active) {
             var state = entry.getValue();
 
             active.sliceStates().remove(key);
-            if (state == SliceState.UNLOAD || state == SliceState.UNLOADING) {
-                active.removeNodeArtifactKey(key);
-            } else {
-                active.issueUnloadCommand(key);
+            switch (state) {
+                // The leader's own command, not acted on by the next tick: remove the key outright.
+                case UNLOAD -> active.removeNodeArtifactKey(key);
+                // The node is mid-teardown and removes its own key at the end of its unload chain;
+                // removing it here only races that chain's UNLOADING put (duplicate writes, no gain).
+                // A node that dies mid-unload is a departed node, cleanupStaleNodeArtifactEntries' case.
+                case UNLOADING -> {}
+                default -> active.issueUnloadCommand(key);
             }
         }
 

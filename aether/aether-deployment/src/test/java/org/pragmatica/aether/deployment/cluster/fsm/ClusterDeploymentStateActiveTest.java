@@ -347,15 +347,27 @@ class ClusterDeploymentStateActiveTest {
         }
 
         @Test
-        void orphanedKeyAlreadyUnloading_isRemovedUntilGone() {
-            seedOrphanInStore(SliceState.UNLOADING);
+        void orphanedKeyStillAtUnload_isRemovedUntilGone() {
+            seedOrphanInStore(SliceState.UNLOAD);
             harness.dispatch(new Activate());
             cluster.commands.clear();
 
             activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
             activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
 
-            assertThat(removalsOf(orphanKey)).as("an orphan already unloading is removed, and re-removed while it persists").hasSize(2);
+            assertThat(removalsOf(orphanKey)).as("an UNLOAD nobody acted on is removed, and re-removed while it persists").hasSize(2);
+        }
+
+        /// The node's own unload chain ends with a Remove of its key; a sweep removal would only race it.
+        @Test
+        void orphanedKeyUnloading_isLeftToTheNode() {
+            seedOrphanInStore(SliceState.UNLOADING);
+            harness.dispatch(new Activate());
+            cluster.commands.clear();
+
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(cluster.commands).as("a key mid-teardown is neither removed nor re-unloaded").isEmpty();
         }
 
         @Test
