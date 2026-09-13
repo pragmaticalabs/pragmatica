@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -104,11 +105,16 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
     Logger LOG = LoggerFactory.getLogger(NodeDeploymentState.class);
     NodeDeploymentContext ctx();
 
-    record Dormant(NodeDeploymentContext ctx, List<SuspendedSlice> suspendedSlices) implements NodeDeploymentState {
+    /// `deferredStarts` (#1068) rides the quorum cycle with the suspended slices: an ACTIVATE or ACTIVE
+    /// claim refused for want of a target before quorum was lost has no other route back — the leader
+    /// never re-issues either, and only LOAD keys are rescanned on re-entry.
+    record Dormant(NodeDeploymentContext ctx,
+                   List<SuspendedSlice> suspendedSlices,
+                   Map<SliceNodeKey, SliceState> deferredStarts) implements NodeDeploymentState {
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
             switch (event) {
-                case QuorumEstablished _ -> tx.transitionTo(ctx.newActive(suspendedSlices));
+                case QuorumEstablished _ -> tx.transitionTo(ctx.newActive(suspendedSlices, deferredStarts));
                 case Shutdown _ -> tx.transitionTo(ctx.stopped());
                 default -> tx.ignore();
             }
@@ -207,7 +213,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             log.info("Node {} NodeDeploymentManager deactivated with {} suspended slices",
                      ctx.self().id(),
                      suspended.size());
-            tx.transitionTo(ctx.newDormantWithSuspended(suspended));
+            tx.transitionTo(ctx.newDormantWithSuspended(suspended, Map.copyOf(deferredStarts)));
         }
 
         private void handleShutdown(TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {

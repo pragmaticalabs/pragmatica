@@ -34,6 +34,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
+import org.pragmatica.consensus.fsm.ClusterFsmEvent.QuorumDisappeared;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.QuorumEstablished;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeState;
@@ -355,6 +356,60 @@ class NodeDeploymentStateRollbackOrphanTest {
 
             settle();
             assertThat(sliceStore.loadRequests).as("the UNLOAD replaced the deferred LOAD; nothing is left to re-drive").isEmpty();
+        }
+    }
+
+    /// The deferral must survive a quorum cycle. `Active` is rebuilt on every `QuorumEstablished`; a LOAD
+    /// comes back through the onEntry rescan of LOAD keys, but an ACTIVATE or an ACTIVE claim has no
+    /// other route back — the leader re-issues neither and neither state has a stuck timeout — so a
+    /// deferral dropped with the old `Active` was a start lost for good.
+    @Nested
+    class DeferredStartAcrossQuorumCycle {
+        private void quorumCycle() {
+            harness.dispatch(new QuorumDisappeared());
+            harness.dispatch(new QuorumEstablished());
+        }
+
+        @Test
+        void deferredActiveClaim_afterQuorumCycle_isRedeployedWhenTargetArrives() {
+            seedRolledBackOrphan();
+            harness.dispatch(new QuorumEstablished());
+            dispatchNodeArtifactPut(SELF, ARTIFACT, SliceState.ACTIVE);
+            settle();
+            assertThat(sliceStore.loadRequests).isEmpty();
+
+            quorumCycle();
+            targetArrives(BASE, V1);
+
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(sliceStore.loadRequests).containsExactly(ARTIFACT));
+        }
+
+        @Test
+        void deferredActivate_afterQuorumCycle_isActivatedWhenTargetArrives() {
+            sliceStore.loaded.add(ARTIFACT);
+            harness.dispatch(new QuorumEstablished());
+            dispatchNodeArtifactPut(SELF, ARTIFACT, SliceState.ACTIVATE);
+            settle();
+            assertThat(sliceStore.activateRequests).isEmpty();
+
+            quorumCycle();
+            targetArrives(BASE, V1);
+
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(sliceStore.activateRequests).containsExactly(ARTIFACT));
+        }
+
+        /// Control: the LOAD arm already survived through the onEntry rescan of LOAD keys.
+        @Test
+        void deferredLoad_afterQuorumCycle_isLoadedWhenTargetArrives() {
+            harness.dispatch(new QuorumEstablished());
+            dispatchNodeArtifactPut(SELF, ARTIFACT, SliceState.LOAD);
+            settle();
+            assertThat(sliceStore.loadRequests).isEmpty();
+
+            quorumCycle();
+            targetArrives(BASE, V1);
+
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(sliceStore.loadRequests).containsExactly(ARTIFACT));
         }
     }
 

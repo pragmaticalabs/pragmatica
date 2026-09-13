@@ -100,8 +100,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// Snapshot restore ([#restoreSnapshot]) intentionally bypasses all fences: a restored snapshot
     /// is the authoritative committed state, not a competing write.
     private boolean staleWrite(K key, Object incoming) {
-        return staleLeaderWrite(key, incoming) || staleEpochWrite(key, incoming) || staleSuccessorWrite(key, incoming)
-               || regressiveWatermarkWrite(key, incoming);
+        return staleLeaderWrite(key, incoming) || staleEpochWrite(key, incoming) || staleSuccessorWrite(key, incoming) || regressiveWatermarkWrite(key,
+                                                                                                                                                   incoming);
     }
 
     /// H4 leader fence (cluster-topology-overhaul §Wave 8.2): `LeaderKey` writes are

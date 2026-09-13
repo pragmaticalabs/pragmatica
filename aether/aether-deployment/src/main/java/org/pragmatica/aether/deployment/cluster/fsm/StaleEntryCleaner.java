@@ -175,14 +175,15 @@ record StaleEntryCleaner(Active active) {
             var state = entry.getValue();
 
             active.sliceStates().remove(key);
-            switch (state) {
-                // The leader's own command, not acted on by the next tick: remove the key outright.
-                case UNLOAD -> active.removeNodeArtifactKey(key);
-                // The node is mid-teardown and removes its own key at the end of its unload chain;
-                // removing it here only races that chain's UNLOADING put (duplicate writes, no gain).
-                // A node that dies mid-unload is a departed node, cleanupStaleNodeArtifactEntries' case.
-                case UNLOADING -> {}
-                default -> active.issueUnloadCommand(key);
+            // UNLOADING is NOT left to the node (measured in CI run 34788864919: sovr-2's own
+            // `deleteSliceNodeKey` gave up after CONSENSUS_MAX_RETRIES under a timing-out consensus and
+            // the key sat at UNLOADING for the whole 4-minute wait). A node's chain removes its key at
+            // most twice; this sweep is what removes it until it is gone. The duplicate Remove when the
+            // node's own succeeds is harmless.
+            if (state == SliceState.UNLOAD || state == SliceState.UNLOADING) {
+                active.removeNodeArtifactKey(key);
+            } else {
+                active.issueUnloadCommand(key);
             }
         }
 

@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.node.fsm;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -19,9 +20,11 @@ import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -193,7 +196,7 @@ public final class NodeDeploymentContext {
         this.activeOnEntryCallback = new AtomicReference<>();
         this.clock = clock;
         this.currentEpochSupplier = currentEpochSupplier;
-        this.dormant = new NodeDeploymentState.Dormant(this, List.of());
+        this.dormant = new NodeDeploymentState.Dormant(this, List.of(), Map.of());
         this.stopped = new NodeDeploymentState.Stopped(this);
     }
 
@@ -218,21 +221,27 @@ public final class NodeDeploymentContext {
         return stopped;
     }
 
-    public NodeDeploymentState newDormantWithSuspended(List<SuspendedSlice> suspended) {
-        if (suspended.isEmpty()) {
+    public NodeDeploymentState newDormantWithSuspended(List<SuspendedSlice> suspended,
+                                                       Map<SliceNodeKey, SliceState> deferredStarts) {
+        if (suspended.isEmpty() && deferredStarts.isEmpty()) {
             return dormant;
         }
 
-        return new NodeDeploymentState.Dormant(this, suspended);
+        return new NodeDeploymentState.Dormant(this, suspended, deferredStarts);
     }
 
     public NodeDeploymentState.Active newActive(List<SuspendedSlice> pendingReactivation) {
+        return newActive(pendingReactivation, Map.of());
+    }
+
+    public NodeDeploymentState.Active newActive(List<SuspendedSlice> pendingReactivation,
+                                                Map<SliceNodeKey, SliceState> deferredStarts) {
         return new NodeDeploymentState.Active(this,
                                               new ConcurrentHashMap<>(),
                                               ConfigNotificationManager.configNotificationManager(),
                                               RoutingEpochAckTracker.routingEpochAckTracker(),
                                               pendingReactivation,
-                                              new ConcurrentHashMap<>());
+                                              new ConcurrentHashMap<>(deferredStarts));
     }
 
     public NodeDeploymentState.Leaving newLeaving(DrainReason reason) {

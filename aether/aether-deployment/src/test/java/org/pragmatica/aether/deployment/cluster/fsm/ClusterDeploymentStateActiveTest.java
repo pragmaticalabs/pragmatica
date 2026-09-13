@@ -358,16 +358,18 @@ class ClusterDeploymentStateActiveTest {
             assertThat(removalsOf(orphanKey)).as("an UNLOAD nobody acted on is removed, and re-removed while it persists").hasSize(2);
         }
 
-        /// The node's own unload chain ends with a Remove of its key; a sweep removal would only race it.
+        /// A key stuck at UNLOADING is the ticket's own shape (CI run 34788864919: the node's own key removal
+        /// spent its consensus retries and nothing else re-issued): the sweep removes it until it is gone.
         @Test
-        void orphanedKeyUnloading_isLeftToTheNode() {
+        void orphanedKeyAlreadyUnloading_isRemovedUntilGone() {
             seedOrphanInStore(SliceState.UNLOADING);
             harness.dispatch(new Activate());
             cluster.commands.clear();
 
             activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
 
-            assertThat(cluster.commands).as("a key mid-teardown is neither removed nor re-unloaded").isEmpty();
+            assertThat(removalsOf(orphanKey)).as("an orphan already unloading is removed, and re-removed while it persists").hasSize(2);
         }
 
         @Test
