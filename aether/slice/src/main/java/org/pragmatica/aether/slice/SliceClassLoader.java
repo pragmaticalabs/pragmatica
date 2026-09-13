@@ -97,7 +97,9 @@ public class SliceClassLoader extends URLClassLoader {
     public Option<URL> sliceJarUrl() {
         var urls = getURLs();
 
-        return urls.length == 0 ? Option.none() : Option.some(urls[0]);
+        return urls.length == 0
+               ? Option.none()
+               : Option.some(urls[0]);
     }
 
     @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
