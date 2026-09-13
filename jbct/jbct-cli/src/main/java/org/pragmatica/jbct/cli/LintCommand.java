@@ -54,13 +54,14 @@ public class LintCommand implements Callable<Integer> {
         var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
 
         if (filesToProcess.isEmpty()) {
-            System.out.println("No Java files found.");
+            operatorOut().println("No Java files found.");
+            printResults(List.of());
 
             return 0;
         }
 
         if (verbose) {
-            System.out.println("Found " + filesToProcess.size() + " Java file(s) to lint.");
+            operatorOut().println("Found " + filesToProcess.size() + " Java file(s) to lint.");
         }
 
         var allDiagnostics = new ArrayList<Diagnostic>();
@@ -124,7 +125,7 @@ public class LintCommand implements Callable<Integer> {
                              }
 
                                  if (verbose && diagnostics.isEmpty()) {
-                                 System.out.println("  ✓ " + file);
+                                 operatorOut().println("  ✓ " + file);
                              }
                              })
                   .onFailure(cause -> {
@@ -133,16 +134,29 @@ public class LintCommand implements Callable<Integer> {
                   });
     }
 
+    /// #633 — stdout is the document channel for the machine formats: `json`/`sarif` always emit
+    /// exactly one document there (an empty one for a clean run — a parser fails on empty input the
+    /// same way it fails on trailing text), and everything operator-facing goes through
+    /// [#operatorOut]. Text keeps stdout for both, as its readers expect.
     private void printResults(List<Diagnostic> diagnostics) {
-        if (diagnostics.isEmpty()) {
-            return;
-        }
-
         switch (outputFormat) {
-            case text -> printTextResults(diagnostics);
+            case text -> {
+                if (!diagnostics.isEmpty()) {
+                    printTextResults(diagnostics);
+                }
+            }
             case json -> printJsonResults(diagnostics);
             case sarif -> printSarifResults(diagnostics);
         }
+    }
+
+    /// Where the summary, progress and "nothing to do" lines go: stdout for `text`, stderr for the
+    /// machine formats — the same split `FileCollector`'s diagnostics and `score --format json`
+    /// already make, so a consumer can hand stdout straight to a parser.
+    private java.io.PrintStream operatorOut() {
+        return outputFormat == OutputFormat.text
+               ? System.out
+               : System.err;
     }
 
     private void printTextResults(List<Diagnostic> diagnostics) {
@@ -244,10 +258,12 @@ public class LintCommand implements Callable<Integer> {
     /// therefore reachable only when [AnalysisCoverage#isPartial()] is false, and the counts on the
     /// partial line are prefixed by the coverage clause that says which denominator they belong to.
     private void printSummary(AnalysisCoverage coverage, int errors, int warnings, int infos) {
-        System.out.println();
-        coverage.gapReport("lint").onPresent(System.out::println);
+        var out = operatorOut();
+
+        out.println();
+        coverage.gapReport("lint").onPresent(out::println);
         if (coverage.isPartial()) {
-            System.out.println("✗ Checked " + coverage.render()
+            out.println("✗ Checked " + coverage.render()
                               + ": " + errors
                               + " error(s), " + warnings
                               + " warning(s), " + infos
@@ -257,12 +273,12 @@ public class LintCommand implements Callable<Integer> {
         }
 
         if (errors == 0 && warnings == 0 && infos == 0) {
-            System.out.println("✓ All " + coverage.collected() + " file(s) passed JBCT compliance check.");
+            out.println("✓ All " + coverage.collected() + " file(s) passed JBCT compliance check.");
 
             return;
         }
 
-        System.out.println("Checked " + coverage.render()
+        out.println("Checked " + coverage.render()
                           + ": " + errors
                           + " error(s), " + warnings
                           + " warning(s), " + infos
