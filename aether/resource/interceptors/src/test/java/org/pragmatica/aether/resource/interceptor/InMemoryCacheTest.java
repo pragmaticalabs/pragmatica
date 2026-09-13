@@ -83,6 +83,54 @@ class InMemoryCacheTest {
         }
     }
 
+    /// #279 (4): `put` evicted only EXPIRED entries when full and then inserted unconditionally, so
+    /// `maxEntries` bounded nothing for a hot cache — every entry live, every put growing the map.
+    @Nested
+    class Bound {
+        @Test
+        void put_beyondMaxEntries_withNothingExpired_evictsToStayWithinTheBound() {
+            var cache = InMemoryCache.inMemoryCache(60, 3);
+
+            for (int i = 0; i < 10; i++) {
+                cache.put("key" + i, "value" + i);
+            }
+
+            var present = 0;
+
+            for (int i = 0; i < 10; i++) {
+                present += getCached(cache, "key" + i).isPresent() ? 1 : 0;
+            }
+
+            assertThat(present).as("maxEntries is a cap, not a hint").isLessThanOrEqualTo(3);
+        }
+
+        @Test
+        void put_beyondMaxEntries_keepsTheMostRecentlyUsed() {
+            var cache = InMemoryCache.inMemoryCache(60, 2);
+
+            cache.put("a", "1");
+            cache.put("b", "2");
+            getCached(cache, "a");
+            cache.put("c", "3");
+
+            assertThat(getCached(cache, "a").isPresent()).as("a was touched after b, so b is the victim").isTrue();
+            assertThat(getCached(cache, "c").isPresent()).isTrue();
+            assertThat(getCached(cache, "b").isEmpty()).isTrue();
+        }
+
+        @Test
+        void put_overwriteAtTheBound_doesNotEvict() {
+            var cache = InMemoryCache.inMemoryCache(60, 2);
+
+            cache.put("a", "1");
+            cache.put("b", "2");
+            cache.put("a", "1'");
+
+            assertThat(getCached(cache, "a").or("missing")).isEqualTo("1'");
+            assertThat(getCached(cache, "b").isPresent()).isTrue();
+        }
+    }
+
     @Nested
     class Remove {
         @Test
