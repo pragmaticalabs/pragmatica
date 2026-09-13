@@ -525,6 +525,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var cmd = BootstrapPhaseDeploy.buildRestartCommand("ghcr.io/pragmaticalabs/aether-node:" + CLUSTER_VERSION,
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
+                                                           NodeRole.CORE,
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8091",
@@ -557,6 +558,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
+                                                           NodeRole.CORE,
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
@@ -571,6 +573,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
+                                                           NodeRole.CORE,
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
@@ -585,6 +588,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
+                                                           NodeRole.CORE,
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
@@ -605,6 +609,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
+                                                           NodeRole.CORE,
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
@@ -626,6 +631,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
+                                                           NodeRole.CORE,
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
@@ -640,6 +646,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     @Test
     void buildJvmRestartCommand_inlinesInsecureDevMode_whenPresentInInjectedEnv_secretOnce() {
         var cmd = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-1-core-0",
+                                                             NodeRole.CORE,
                                                              8090,
                                                              8091,
                                                              "eu-1-core-0:1.2.3.4:8090",
@@ -661,6 +668,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     @Test
     void buildJvmRestartCommand_omitsIdentityVars_whenInjectedEnvEmpty() {
         var cmd = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-1-core-0",
+                                                             NodeRole.CORE,
                                                              8090,
                                                              8091,
                                                              "eu-1-core-0:1.2.3.4:8090",
@@ -1102,6 +1110,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     void buildJvmRestartCommand_includesAllRequiredCliFlagsAndEnv_inExpectedOrder() {
         // Mutation guard: any future refactor that drops/renames a CLI flag should fail here.
         var cmd = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-1-core-0",
+                                                              NodeRole.CORE,
                                                               8090,
                                                               8091,
                                                               "eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8090",

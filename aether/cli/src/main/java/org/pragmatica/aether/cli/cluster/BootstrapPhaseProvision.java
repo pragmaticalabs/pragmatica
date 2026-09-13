@@ -12,6 +12,7 @@ import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
+import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.NodeRole;
@@ -343,6 +344,17 @@ sealed interface BootstrapPhaseProvision {
         return source.provider()
                      .map(CloudProviderName::value)
                      .or(source.type().value());
+    }
+
+    /// #296 — the role a node id encodes (`<source>-<role>-<index>`, minted by every provisioning
+    /// branch in this phase), as the deploy phase needs it. A failure is an invariant violation of
+    /// this CLI's own minting, not a config error: it is refused rather than defaulted to `core`,
+    /// because a silent `core` is exactly the defect this closes.
+    static Result<NodeRole> nodeRole(String nodeId, SourceName sourceName) {
+        return NodeRole.nodeRole(extractRole(nodeId, sourceName.value()))
+                       .mapError(cause -> new BootstrapError.DeploymentFailed(nodeId,
+                                                                              "node id encodes no role (expected <source>-<core|worker|spot>-<index>): "
+                                                                             + cause.message()));
     }
 
     private static String extractRole(String nodeId, String sourceName) {
