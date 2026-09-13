@@ -85,9 +85,10 @@ class LeaderReconcilerTest {
     /// test sets another.
     private static final TimeSpan EXPECTED_POLL_INTERVAL = membershipConfig().splitTimeout();
     private static final TimeSpan DEFAULT_REPLACEMENT_CEILING = timeSpan(10).minutes();
-    /// #1049 round 2 — the first-listing grace: four poll intervals (60s at the default) from dispatch, after
-    /// which a replacement the provider has never listed and does not list counts as deleted.
-    private static final TimeSpan EXPECTED_FIRST_LISTING_GRACE = timeSpan(EXPECTED_POLL_INTERVAL.nanos() * 4).nanos();
+    /// #1049 round 3 — a never-listed replacement counts as deleted only after twelve consecutive successful
+    /// listings omit it AND three minutes have passed since it became pollable (its create call resolved).
+    private static final TimeSpan EXPECTED_FIRST_LISTING_FLOOR = timeSpan(3).minutes();
+    private static final int EXPECTED_ABSENT_LISTINGS = 12;
     private static final TimeSpan EXPECTED_GRACE_WINDOW =
         timeSpan(membershipConfig().splitTimeout().nanos() * 3 / 2).nanos();
     private static final TimeSpan EXPECTED_DEBOUNCE_WINDOW = membershipConfig().splitTimeout();
@@ -286,6 +287,21 @@ class LeaderReconcilerTest {
         for (var i = 0; i < count; i++) {
             advanceOnePollInterval();
         }
+    }
+
+    /// #1049 round 3 — as [`#advanceOnePollInterval`], for any advance: the manual scheduler runs the live
+    /// sweep whenever the test says, so a test can place listings off the 15s grid.
+    @Contract
+    private void advanceAndTick(long millis) {
+        advanceAndRunSweepOnly(millis);
+        triggerAndFireReconcile();
+    }
+
+    /// #1049 round 3 — advance the clock and fire the live in-flight sweep, with no reconcile pass after it.
+    @Contract
+    private void advanceAndRunSweepOnly(long millis) {
+        timeSource.advanceTimeMillis(millis);
+        scheduler.tasksByDelay(EXPECTED_POLL_INTERVAL).forEach(ManualTask::runIfLive);
     }
 
     @Nested
@@ -1068,6 +1084,14 @@ class LeaderReconcilerTest {
             return ctm.instanceStateQueries().size();
         }
 
+        /// Fire the live sweep without moving the clock, returning the provider status queries issued so far —
+        /// waits for an asynchronously resolved create to make its entry pollable, at a fixed instant.
+        private int tickInPlaceAndCountQueries() {
+            advanceAndTick(0);
+
+            return ctm.instanceStateQueries().size();
+        }
+
         @Test
         void inFlightEntry_providerReportsBooting_isNotReDispatched_pastSplitTimeoutTimesThree() {
             var minted = dispatchOneReplacement();
@@ -1097,8 +1121,8 @@ class LeaderReconcilerTest {
                 .as("an instance the provider listed and no longer lists was deleted")
                 .isEmpty();
             assertThat(EXPECTED_POLL_INTERVAL.millis() * 2)
-                .as("the drop came inside the first-listing grace — an absence after a listing needs no grace")
-                .isLessThan(EXPECTED_FIRST_LISTING_GRACE.millis());
+                .as("the drop came one absence and 30s in — an absence after a listing needs no count and no floor")
+                .isLessThan(EXPECTED_FIRST_LISTING_FLOOR.millis());
             assertThat(ctm.provisionReplacementCalls())
                 .as("the re-opened deficit re-ages past the debounce before re-dispatch")
                 .hasSize(1);
@@ -1109,32 +1133,77 @@ class LeaderReconcilerTest {
             assertThat(ctm.provisionReplacementCalls()).hasSize(2);
         }
 
-        /// Round 2 (b): a listing can lag creation, so inside the first-listing grace an absence before the
-        /// instance was ever listed is not a deletion.
+        /// Round 3 (S1, ruling test a) — a create call that resolves 55s after dispatch, followed by one listing
+        /// that lags and omits the instance, mints exactly once. Round 2's grace ran from dispatch and had
+        /// expired by then, so that one lagged listing minted a duplicate while the instance existed.
         @Test
-        void inFlightEntry_neverListedAbsent_withinFirstListingGrace_isNotReDispatched() {
+        void inFlightEntry_createResolvesAt55s_oneLaggedListing_mintsExactlyOnce() {
+            var pendingProvision = Promise.<ProvisionDisposition> promise();
+
+            ctm.holdNextProvision(pendingProvision);
             var minted = dispatchOneReplacement();
 
             ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
-            advancePollIntervals(4);
+            advancePollIntervals(3);
+            timeSource.advanceTimeMillis(10_000);
+            pendingProvision.succeed(ProvisionDisposition.dispatched());
+            await().atMost(2, TimeUnit.SECONDS).until(() -> tickAndCountQueries() >= 1);
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advancePollIntervals(EXPECTED_ABSENT_LISTINGS + 2);
 
-            assertThat(reconciler.inFlightProvisioningKeys())
-                .as("at the grace (60s), not past it, a never-listed absence is not a deletion")
-                .containsExactly(minted);
-            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+            assertThat(ctm.provisionReplacementCalls())
+                .as("one lagged listing after a slow create is not a deletion")
+                .hasSize(1);
+            assertThat(reconciler.inFlightProvisioningKeys()).containsExactly(minted);
         }
 
-        /// Round 2 (a): past the first-listing grace a never-listed absence IS a deletion (an asynchronous
-        /// provisioning failure) — re-dispatched after the normal debounce, not after the ten-minute ceiling.
+        /// Round 3 (S1, ruling test b) — listings that fail (the CTM answers them UNKNOWN) never count toward the
+        /// absences: after twenty failed listings and five minutes, eleven successful absences are still not a
+        /// deletion; the twelfth is.
         @Test
-        void inFlightEntry_neverListedAbsent_pastFirstListingGrace_isReDispatchedAfterDebounce() {
+        void inFlightEntry_neverListed_failedListingsDoNotCountTowardAbsences() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.UNKNOWN);
+            advancePollIntervals(20);
+            ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
+            advancePollIntervals(EXPECTED_ABSENT_LISTINGS - 1);
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("eleven successful absences after twenty failed listings, long past the floor, are not twelve")
+                .containsExactly(minted);
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+
+            advanceOnePollInterval();
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("the twelfth successful absence past the floor is a deletion")
+                .isEmpty();
+
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+        }
+
+        /// Round 3 (S1, ruling test c) — twelve consecutive successful listings omitting a never-listed replacement,
+        /// the last of them three minutes after its create resolved, re-dispatch it after the normal debounce;
+        /// eleven do not.
+        @Test
+        void inFlightEntry_neverListed_twelveConsecutiveAbsencesReachingTheFloor_reDispatchAfterDebounce() {
             var minted = dispatchOneReplacement();
 
             ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
-            advancePollIntervals(5);
+            advancePollIntervals(EXPECTED_ABSENT_LISTINGS - 1);
 
             assertThat(reconciler.inFlightProvisioningKeys())
-                .as("past the grace (the 75s poll) a never-listed absence is a deletion")
+                .as("eleven absences, 165s after the create resolved: neither the count nor the floor is met")
+                .containsExactly(minted);
+
+            advanceOnePollInterval();
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("the twelfth absence, at the 180s floor, is a deletion")
                 .isEmpty();
             assertThat(ctm.provisionReplacementCalls())
                 .as("the re-opened deficit re-ages past the debounce before re-dispatch")
@@ -1144,6 +1213,58 @@ class LeaderReconcilerTest {
             triggerAndFireReconcile();
 
             assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+        }
+
+        /// Round 3 (S1) — the floor binds when listings land off the poll grid: twelve absences, the last 175s
+        /// after the create resolved, are not yet a deletion; the thirteenth, at 190s, is.
+        @Test
+        void inFlightEntry_neverListed_twelveAbsencesInsideTheFloor_areNotYetADeletion() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
+            advanceAndTick(10_000);
+            for (var i = 1; i < EXPECTED_ABSENT_LISTINGS; i++) {
+                advanceAndTick(EXPECTED_POLL_INTERVAL.millis());
+            }
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("twelve absences, the last 175s after the create resolved, are inside the 3-minute floor")
+                .containsExactly(minted);
+
+            advanceAndTick(EXPECTED_POLL_INTERVAL.millis());
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("past the floor, with the count already met, the absence is a deletion")
+                .isEmpty();
+        }
+
+        /// Round 3 (S1) — the floor runs from when the create call resolved, never from dispatch: after a create
+        /// that resolves 55s after dispatch, twelve absences whose last is 165s after it resolved (220s after
+        /// dispatch) are not yet a deletion; the thirteenth, 180s after it resolved, is.
+        @Test
+        void inFlightEntry_slowCreate_floorRunsFromCreateResolution_notFromDispatch() {
+            var pendingProvision = Promise.<ProvisionDisposition> promise();
+
+            ctm.holdNextProvision(pendingProvision);
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
+            timeSource.advanceTimeMillis(55_000);
+            pendingProvision.succeed(ProvisionDisposition.dispatched());
+            await().atMost(2, TimeUnit.SECONDS).until(() -> tickInPlaceAndCountQueries() >= 1);
+            for (var i = 1; i < EXPECTED_ABSENT_LISTINGS; i++) {
+                advanceAndTick(EXPECTED_POLL_INTERVAL.millis());
+            }
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("twelve absences 165s after the create resolved, though 220s after dispatch, are inside the floor")
+                .containsExactly(minted);
+
+            advanceAndTick(EXPECTED_POLL_INTERVAL.millis());
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("180s after the create resolved, with the count met, the absence is a deletion")
+                .isEmpty();
         }
 
         @Test
@@ -1234,38 +1355,82 @@ class LeaderReconcilerTest {
                 .hasSize(1);
         }
 
-        /// Round 2 — the first-listing grace also runs from the mint time: a prior leader that minted an id
-        /// and never created it leaves a never-listed absence the new leader drops at its first poll.
+        /// Round 3 (S1) — an inherited never-listed replacement counts absences, and its floor, from inheritance,
+        /// not from its mint: minted five minutes ago, twelve absences spanning 175s since inheritance are not a
+        /// deletion; the thirteenth, at 190s, is.
         @Test
-        void newLeader_inheritedNeverListedEntryMintedLongerAgoThanGrace_isDroppedAtFirstAbsentListing() {
-            inheritReplacement(mintedAt(System.currentTimeMillis() - EXPECTED_FIRST_LISTING_GRACE.millis()
-                                        - timeSpan(30).seconds().millis()),
-                               ReplacementInstanceState.ABSENT);
+        void newLeader_inheritedNeverListedEntry_countsAbsencesFromInheritance_notFromMint() {
+            var inherited = inheritReplacement(mintedAt(System.currentTimeMillis() - timeSpan(5).minutes().millis()),
+                                               ReplacementInstanceState.ABSENT);
+
+            advanceAndTick(10_000);
+            for (var i = 1; i < EXPECTED_ABSENT_LISTINGS; i++) {
+                advanceAndTick(EXPECTED_POLL_INTERVAL.millis());
+            }
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("minted five minutes ago, but its twelve listings span only 175s since this leader inherited it")
+                .containsExactly(inherited);
+
+            advanceAndTick(EXPECTED_POLL_INTERVAL.millis());
+
+            assertThat(reconciler.inFlightProvisioningKeys()).isEmpty();
+        }
+
+        /// Round 3 (V13) — the inherited age needs no cap: `nanoTime` may have any origin, including a negative
+        /// one, and an id minted at the epoch still reads as past the ceiling, because the ceiling check subtracts
+        /// modulo 2^64.
+        @Test
+        void newLeader_inheritedIdMintedAtTheEpoch_onANegativeNanoTimeOrigin_isEvictedAndReDispatched() {
+            timeSource.advanceTimeMillis(-8_000_000_000_000L);
+            var inherited = inheritReplacement(mintedAt(0L), ReplacementInstanceState.PRESENT);
 
             advanceOnePollInterval();
 
-            assertThat(reconciler.inFlightProvisioningKeys()).isEmpty();
-            assertThat(ctm.provisionReplacementCalls()).isEmpty();
-
-            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
-            triggerAndFireReconcile();
-
+            assertThat(reconciler.inFlightProvisioningKeys()).doesNotContain(inherited);
             assertThat(ctm.provisionReplacementCalls()).hasSize(1);
         }
 
-        /// Round 2 — the inherited counterpart of the within-grace test: minted inside the first-listing
-        /// grace, a never-listed absence is not yet a deletion.
+        /// Round 3 (V20, N2) — a query from the prior leadership term that never settles does not hold the
+        /// single-flight slot into the next term: `deactivate` clears the outstanding set. The cost N2 names is
+        /// that a flap can briefly have two queries out for one id; their answers are applied through
+        /// value-guarded `replace`/`remove`, so the second changes nothing once the first has.
         @Test
-        void newLeader_inheritedNeverListedEntryMintedWithinGrace_isKept() {
-            var inherited = inheritReplacement(mintedAt(System.currentTimeMillis() - timeSpan(20).seconds().millis()),
-                                               ReplacementInstanceState.ABSENT);
+        void leadershipFlap_queryLeftUnsettledByThePriorTerm_doesNotBlockPollingInTheNextTerm() {
+            var inherited = inheritOneReplacement(ReplacementInstanceState.PRESENT);
 
+            ctm.holdInstanceStateAnswers(Promise.<ReplacementInstanceState> promise());
             advanceOnePollInterval();
 
+            assertThat(ctm.instanceStateQueries()).containsExactly(inherited);
+
+            reconciler.deactivate();
+            ctm.releaseInstanceStateAnswers();
+            leaderTerm.set(3L);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getLast().runIfLive();
+            advanceOnePollInterval();
+
+            assertThat(ctm.instanceStateQueries())
+                .as("the next term asks again rather than waiting on a query that will never answer")
+                .hasSize(2);
+        }
+
+        /// Round 3 (V07) — the sweep tick evicts an entry past its ceiling by itself, with no reconcile pass
+        /// between ticks: the eviction does not wait for some other trigger to run a pass.
+        @Test
+        void inFlightSweep_alone_evictsAnEntryPastItsCeiling() {
+            ctm.setReplacementCeiling(timeSpan(2).minutes());
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            for (var i = 0; i < 9; i++) {
+                advanceAndRunSweepOnly(EXPECTED_POLL_INTERVAL.millis());
+            }
+
             assertThat(reconciler.inFlightProvisioningKeys())
-                .as("35s after its mint a never-listed absence is inside the grace")
-                .containsExactly(inherited);
-            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+                .as("at 135s, past the 120s ceiling, the sweep alone evicted it")
+                .isEmpty();
         }
 
         /// Round 2 — a configured `<prefix>-<ordinal>` id carries no mint time, so its ceiling restarts at
@@ -2585,6 +2750,11 @@ class LeaderReconcilerTest {
         @Contract
         void holdInstanceStateAnswers(Promise<ReplacementInstanceState> answer) {
             heldInstanceStateAnswer.set(Option.some(answer));
+        }
+
+        @Contract
+        void releaseInstanceStateAnswers() {
+            heldInstanceStateAnswer.set(Option.none());
         }
 
         @Contract
