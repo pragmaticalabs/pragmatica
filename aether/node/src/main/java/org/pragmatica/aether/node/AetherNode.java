@@ -3096,6 +3096,12 @@ public interface AetherNode extends ManageableNode {
         // Publish the FSM into the deferred holder so the membership consumers wired earlier (DHT
         // livePeers, accessibility filter, quorum-count propagation) read the authoritative FSM set.
         membershipFsmRef.set(membershipFsm);
+        // #1054: a drain-initiated DEPARTING timeout terminalizes the target only when the target
+        // acknowledged the DRAIN (reported DRAINING on its pong) or death evidence arrived; an
+        // undelivered DRAIN to a live target is withdrawn to MEMBER instead of reaped.
+        membershipFsm.drainAcknowledgementSource(drainAcknowledgement(pongSignalFan,
+                                                                      nodeReportedStateHolder,
+                                                                      config.self()));
         // Wave-1 Enrichment A (cluster-topology-overhaul spec): per-node TRANSITION JOURNAL —
         // bounded per-layer ring buffer recording EVERY MembershipFsm transition and EVERY
         // PeerState transition, dumpable via GET /api/cluster/journal. Diagnostic-only and
@@ -4725,6 +4731,19 @@ public interface AetherNode extends ManageableNode {
         }
 
         return matching;
+    }
+
+    /// #1054 — the issuer-side DRAIN acknowledgement the membership FSM consults when a drain-initiated
+    /// DEPARTING timeout expires. A target acknowledges by reporting `DRAINING` on its pong, which it
+    /// does only after its local drain handler ran (`ClusterSyncCollector` sends the pong BEFORE
+    /// invoking the handler, so the acknowledgement lands one ping after delivery). Reads the same
+    /// leader readiness view the CDM draining set reads ([#nodesReporting]); on a follower that view
+    /// is empty, so a follower-issued drain is never taken as acknowledged. A named seam, not an
+    /// inline lambda, so `DrainAcknowledgementSeamTest` pins the selection of `DRAINING` here.
+    static Predicate<NodeId> drainAcknowledgement(ClusterSyncPongSignalFan fan,
+                                                  NodeReportedStateHolder selfHolder,
+                                                  NodeId self) {
+        return target -> nodesReporting(fan, selfHolder, self, NodeReportedState.DRAINING).contains(target);
     }
 
     @Contract

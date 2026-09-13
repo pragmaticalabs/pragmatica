@@ -17,10 +17,12 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DownHysteresisMet;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DrainRequested;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DrainUnacknowledged;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.JoinGraceExpiredNeverHealthy;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.LivenessGone;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.PeerConnected;
@@ -233,6 +235,23 @@ public final class MembershipFsm {
     /// the no-op by passing `null` to [`#onDepartingRecovery`].
     private volatile Consumer<NodeId> onDepartingRecovery = ignored -> {};
 
+    /// Drain-acknowledgement source (#1054) consulted ONCE when a DEPARTING timeout expires on a
+    /// drain-initiated departure: `true` when the issuer has evidence the target received the DRAIN
+    /// and acted on it. The DRAIN reaches the target only on the leader's next ping, so without this
+    /// the timeout could not tell "the target is draining" from "the target never heard" and would
+    /// declare a live, serving node DEAD — whose REMOVED edge becomes `NodeRemoved` and the active
+    /// CTM's container reap. An unacknowledged drain with no death evidence is withdrawn to MEMBER
+    /// instead ([`MemberTracking#terminalizeIfStillDeparting`]).
+    ///
+    /// Default `false` — no source, no acknowledgement known: an unwired host never declares a
+    /// live target dead on the timeout alone, and a genuinely departed drainer still reaches DEAD
+    /// through SWIM's FAULTY edge (which delivers `FaultyObserved` + `DepartedObserved` together).
+    /// AetherNode wires it to the leader readiness view (`NodeReportedState.DRAINING` on the
+    /// target's pong). Evaluated with only the member's transition guard held, never under the
+    /// per-member monitor, so the monitor stays a leaf. Reset to the default by passing `null` to
+    /// [`#drainAcknowledgementSource`].
+    private volatile Predicate<NodeId> drainAcknowledgementSource = ignored -> false;
+
     /// Wave-1 transition journal feed (cluster-topology-overhaul spec, Enrichment A): invoked
     /// with one [MembershipTransitionRecord] per ACTUAL per-member state change (dispatches that
     /// leave the state unchanged emit nothing), from the SAME central chokepoint
@@ -436,6 +455,24 @@ public final class MembershipFsm {
                                    : listener;
     }
 
+    /// Register the drain-acknowledgement source (#1054) consulted when a drain-initiated DEPARTING
+    /// timeout expires — see [`#drainAcknowledgementSource`]. AetherNode wires this to the leader
+    /// readiness view (`NodeReportedState.DRAINING` on the target's pong). A `null` argument resets
+    /// it to the never-acknowledged default. Mirrors [`#onConfirmedDeparture`]'s nullable-reset
+    /// semantics.
+    @Contract
+    public void drainAcknowledgementSource(Predicate<NodeId> source) {
+        this.drainAcknowledgementSource = source == null
+                                          ? ignored -> false
+                                          : source;
+    }
+
+    /// Forwarding source handed to each [`MemberTracking`] — reads the volatile source at EACH
+    /// invocation, so wiring installed after a member's tracking was created is still consulted.
+    private boolean isDrainAcknowledged(NodeId id) {
+        return drainAcknowledgementSource.test(id);
+    }
+
     /// Register the Wave-1 transition-journal listener invoked once per ACTUAL per-member state
     /// change, at the central dispatch chokepoint. Since #929 the listener runs AFTER the
     /// per-member monitor is released (still serialised per member by
@@ -584,7 +621,8 @@ public final class MembershipFsm {
     /// Wave 7 — the drain command is routed THROUGH the FSM instead of bypassing it). Drives
     /// OBSERVED/MEMBER/SUSPECT → DEPARTING: the target stops counting toward effective and the
     /// DEPARTING timeout (H2) terminalizes it if it goes silent; a `SwimHealthy` at a strictly
-    /// higher incarnation recovers it mid-drain. Ignored in DEPARTING/DEAD.
+    /// higher incarnation recovers it mid-drain. When the timeout finds the DRAIN unacknowledged and no
+    /// death evidence, it withdraws the drain back to MEMBER instead (#1054). Ignored in DEPARTING/DEAD.
     @Contract
     public void onDrainRequested(NodeId id) {
         withMember(id, tracking -> tracking.dispatch(new DrainRequested()));
@@ -1081,6 +1119,7 @@ public final class MembershipFsm {
                                           this::onJoinGraceReaped,
                                           this::onDepartingEdge,
                                           this::onDepartingRecoveryEdge,
+                                          this::isDrainAcknowledged,
                                           this::emitTransition,
                                           this::emitMembershipDelta,
                                           wallClockMs.getAsLong(),
@@ -1124,6 +1163,9 @@ public final class MembershipFsm {
         /// strictly-newer-incarnation `SwimHealthy` refuting the drain). Wired to the DHT ring
         /// RE-ADD; the symmetric counterpart to [`#onEnteredDeparting`]. Default no-op upstream.
         private final Consumer<NodeId> onDepartingRecovery;
+        /// Drain-acknowledgement source (#1054) — the manager's [`MembershipFsm#isDrainAcknowledged`]
+        /// forwarder, consulted by [`#terminalizeIfStillDeparting`] with only the transition guard held.
+        private final Predicate<NodeId> drainAcknowledged;
         /// Wave-1 transition journal sink — receives one [`MembershipTransitionRecord`] per
         /// ACTUAL state change from [`#dispatch`]. Diagnostic-only (default no-op upstream).
         private final Consumer<MembershipTransitionRecord> transitionSink;
@@ -1187,6 +1229,12 @@ public final class MembershipFsm {
         /// fenced rejoin (DEAD→OBSERVED→MEMBER) re-fires JOINED because the flag was cleared.
         /// Mutated only under this monitor, like the co-confirmation flags.
         private boolean everJoined = false;
+        /// Whether the CURRENT tenure in DEPARTING was entered on [`DrainRequested`] (#1054). Assigned on
+        /// every fresh edge INTO `Departing` ([`#enteredDeparting`]), so a later sustained-absence or
+        /// graceful-leave departure never inherits a previous drain's flag. Only a drain-initiated
+        /// departure has a DRAIN whose delivery can be in doubt, so only it can be withdrawn at expiry.
+        /// Mutated only under this monitor.
+        private boolean drainInitiated = false;
         /// Transport-connectivity flag for the join-grace reaper gate (gate RCA fix,
         /// 2026-06-11): flipped by the [`PeerConnected`] / [`PeerDisconnected`] events already
         /// dispatched into this FSM (the flag is bookkeeping ONLY — the state table's handling
@@ -1245,6 +1293,7 @@ public final class MembershipFsm {
                                Consumer<NodeId> onJoinGraceReaped,
                                Consumer<NodeId> onEnteredDeparting,
                                Consumer<NodeId> onDepartingRecovery,
+                               Predicate<NodeId> drainAcknowledged,
                                Consumer<MembershipTransitionRecord> transitionSink,
                                Consumer<MembershipDeltaEdge> deltaSink,
                                long firstTrackedAtMs,
@@ -1256,6 +1305,7 @@ public final class MembershipFsm {
             this.onJoinGraceReaped = onJoinGraceReaped;
             this.onEnteredDeparting = onEnteredDeparting;
             this.onDepartingRecovery = onDepartingRecovery;
+            this.drainAcknowledged = drainAcknowledged;
             this.transitionSink = transitionSink;
             this.deltaSink = deltaSink;
             this.firstTrackedAtMs = firstTrackedAtMs;
@@ -1366,7 +1416,7 @@ public final class MembershipFsm {
             }
 
             if (!wasDeparting && isDeparting()) {
-                enteredDeparting(emissions);
+                enteredDeparting(event, emissions);
             }
 
             if (wasDeparting && !isDeparting()) {
@@ -1435,8 +1485,10 @@ public final class MembershipFsm {
         /// drain-command edge. Reached only via the deliberate-departure transitions
         /// (`DrainRequested` / `SwimDeparted` / `DownHysteresisMet`) — the transport-doubt flaps
         /// never reach DEPARTING in the [`MembershipState`] table — so this can never storm per
-        /// QUIC flap. The ring prune it actuates is idempotent with the later DEAD-edge prune.
-        private synchronized void enteredDeparting(List<Runnable> emissions) {
+        /// QUIC flap. The ring prune it actuates is idempotent with the later DEAD-edge prune. Also
+        /// records whether this DEPARTING tenure was drain-initiated (#1054, [`#drainInitiated`]).
+        private synchronized void enteredDeparting(MembershipEvent triggeringEvent, List<Runnable> emissions) {
+            drainInitiated = triggeringEvent instanceof DrainRequested;
             armDepartureTimeout();
             emissions.add(() -> onEnteredDeparting.accept(id));
         }
@@ -1602,12 +1654,42 @@ public final class MembershipFsm {
         /// `Stopped` would kill a recovered MEMBER. The `Stopped` dispatch routes through the
         /// central chokepoint, so the resulting DEAD edge journals, fires the death hook, and
         /// emits the REMOVED delta exactly like any other death.
+        ///
+        /// #1054: the firing first re-validates a drain-initiated departure. The DRAIN reaches the
+        /// target only on the issuer's next ping, so a delayed or lost delivery leaves a live, serving
+        /// target in DEPARTING here. When [`#isWithdrawableDrain`] holds and the issuer never saw the
+        /// target acknowledge the DRAIN, the firing dispatches `DrainUnacknowledged` instead, which
+        /// withdraws the member to MEMBER — no DEAD edge, no REMOVED delta, so no `NodeRemoved` and no
+        /// container reap. A drain delivered later still ends in exactly one death, through SWIM's
+        /// FAULTY edge. The acknowledgement source is external code, so it is consulted with only this
+        /// guard held, after the monitor-scoped read has returned — the monitor stays a leaf.
         private void terminalizeIfStillDeparting() {
             synchronized (transitionGuard) {
-                if (isDeparting()) {
-                    dispatch(new Stopped());
+                if (!isDeparting()) {
+                    return;
                 }
+
+                if (isWithdrawableDrain() && !drainAcknowledged.test(id)) {
+                    log.warn("DEPARTING timeout for {}: DRAIN never acknowledged and no death evidence — withdrawing the drain, member returns to MEMBER (window={})",
+                             id,
+                             departureTimeout);
+                    dispatch(new DrainUnacknowledged());
+
+                    return;
+                }
+
+                dispatch(new Stopped());
             }
+        }
+
+        /// The withdrawal predicate's monitor-scoped half (#1054), all reads under ONE monitor
+        /// acquisition: this DEPARTING tenure was drain-initiated, the member had joined (MEMBER is
+        /// where it counted before the drain, so a never-joined member is never withdrawn INTO the
+        /// counted set), and no death evidence arrived. Death evidence is SWIM-FAULTY, or a liveness
+        /// loss the transport has not since contradicted: transport may VETO a death with a
+        /// re-established link, exactly as in [`#joinGraceReapDeferred`], and never supplies life.
+        private synchronized boolean isWithdrawableDrain() {
+            return drainInitiated && everJoined && !swimFaultySeen && (!livenessGoneSeen || transportConnected);
         }
 
         /// Arm the join-grace reaper (M10, Wave 7): after [`#joinGrace`] the member is reaped
