@@ -14,6 +14,12 @@
     <name>Aether Forge Integration Tests</name>
     <description>Integration tests for Aether Forge</description>
 
+    <properties>
+        <!-- One reused fork runs every selected class, so this bounds the whole run, not one class.
+             1800 fits the per-PR job. heavy-forge.yml raises it, because the Heavy set runs in one fork. -->
+        <failsafe.forkedProcessTimeoutInSeconds>1800</failsafe.forkedProcessTimeoutInSeconds>
+    </properties>
+
     <dependencies>
         <!-- Forge core -->
         <dependency>
@@ -105,7 +111,7 @@
                     <excludedGroups>${failsafe.excludedGroups}</excludedGroups>
                     <forkCount>1</forkCount>
                     <reuseForks>true</reuseForks>
-                    <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
+                    <forkedProcessTimeoutInSeconds>${failsafe.forkedProcessTimeoutInSeconds}</forkedProcessTimeoutInSeconds>
                     <argLine>${vthread.argLine} --enable-native-access=ALL-UNNAMED</argLine>
                 </configuration>
                 <executions>
