@@ -1652,10 +1652,10 @@ class ManagementServerImpl implements ManagementServer {
     static Option<String> resolveEngineKey(MatchedRoute matched) {
         return switch (matched.route()) {
             case STREAMS_PUBLISH, STREAMS_PUBLISH_BATCH, STREAMS_DELETE, STREAMS_GROUP_CREATE, STREAMS_GROUP_DELETE, STREAM_REPLICAS -> matched.param("namespace").flatMap(ns -> matched.param("stream")
-                                                                                                                                                                 .flatMap(stream -> matched.param("version")
-                                                                                                                                                                                           .flatMap(ver -> ResourceAddress.resourceAddress(ns,
-                                                                                                                                                                                                                                           stream,
-                                                                                                                                                                                                                                           ver).option()))).map(StreamManager::engineKey);
+                                                                                                                                                                                        .flatMap(stream -> matched.param("version")
+                                                                                                                                                                                                                  .flatMap(ver -> ResourceAddress.resourceAddress(ns,
+                                                                                                                                                                                                                                                                  stream,
+                                                                                                                                                                                                                                                                  ver).option()))).map(StreamManager::engineKey);
             default -> Option.empty();
         };
     }

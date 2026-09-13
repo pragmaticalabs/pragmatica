@@ -394,15 +394,16 @@ public final class StreamRoutes implements RouteSource {
     /// `ResourceAddress` → `StreamManager.engineKey` before asking `SystemStreams`, and so does this.
     /// A name that does not parse as an address is checked as the bare key it is.
     private static boolean namesSystemStream(String name) {
-        return SystemStreams.isForbiddenEngineKey(name)
-               || ResourceAddress.resourceAddress(name)
-                                 .map(StreamManager::engineKey)
-                                 .map(SystemStreams::isForbiddenEngineKey)
-                                 .or(false);
+        return SystemStreams.isForbiddenEngineKey(name) || ResourceAddress.resourceAddress(name)
+                                                                          .map(StreamManager::engineKey)
+                                                                          .map(SystemStreams::isForbiddenEngineKey)
+                                                                          .or(false);
     }
 
     private static boolean isBlank(String value) {
-        return value == null || value.isBlank();
+        return Option.option(value)
+                     .filter(v -> !v.isBlank())
+                     .isEmpty();
     }
 
     private Result<GroupStatusResponse> groupStatus(String groupId) {

@@ -86,9 +86,9 @@ class StreamRoutesGroupSystemStreamTest {
         var leave = routes().leaveGroup(new LeaveGroupRequest("g1", "system:cluster-events:1.0.0", "c1"));
 
         assertThat(failureMessage(join)).containsIgnoringCase("system stream")
-                                        .doesNotContainIgnoringCase(COORDINATOR_REACHED);
+                  .doesNotContainIgnoringCase(COORDINATOR_REACHED);
         assertThat(failureMessage(leave)).containsIgnoringCase("system stream")
-                                         .doesNotContainIgnoringCase(COORDINATOR_REACHED);
+                  .doesNotContainIgnoringCase(COORDINATOR_REACHED);
     }
 
     /// #742 review SF-3: a plain `Causes.cause` renders as HTTP 500 through `ProblemResponses`; the

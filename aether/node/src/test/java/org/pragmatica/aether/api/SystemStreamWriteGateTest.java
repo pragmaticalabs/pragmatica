@@ -4,11 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.management.route.ManagementRoute;
 
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// Spec event-stream-namespaces §6.1/§12.2: writes to `system:*` streams over the HTTP surface are
 /// rejected with 405 Method Not Allowed regardless of caller role, independent of the role/auth
@@ -20,10 +22,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// `CONSUMER_GROUP_JOIN`/`CONSUMER_GROUP_LEAVE`) breaks these tests loudly at the assembly call
 /// rather than silently testing a path shape no real route registers.
 class SystemStreamWriteGateTest {
-
     @Nested
     class Rejected {
-
         @Test
         void catalogForm_publish_toSystemNamespace_isGated() {
             var path = ManagementRoute.STREAMS_PUBLISH.assemble("system", "cluster-events", "1.0.0").unwrap();
@@ -69,8 +69,8 @@ class SystemStreamWriteGateTest {
         /// the literal `system` namespace here, same as it would for the real dispatch.
         @Test
         void catalogForm_percentEncodedSystemNamespace_isGated() {
-            assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp(
-                    "POST", "/api/v1/streams/%73ystem/cluster-events/1.0.0/publish")).isTrue();
+            assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp("POST",
+                                                                        "/api/v1/streams/%73ystem/cluster-events/1.0.0/publish")).isTrue();
         }
 
         /// Condition: a route match whose params fail to resolve to a [org.pragmatica.aether.slice.resource.ResourceAddress]
@@ -78,8 +78,8 @@ class SystemStreamWriteGateTest {
         /// simplest way to force that resolution failure while still matching the route shape.
         @Test
         void catalogForm_malformedVersion_failsClosed_isGated() {
-            assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp(
-                    "POST", "/api/v1/streams/system/cluster-events/not-a-version/publish")).isTrue();
+            assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp("POST",
+                                                                        "/api/v1/streams/system/cluster-events/not-a-version/publish")).isTrue();
         }
 
         /// `Namespace`'s charset is lowercase-only (`[a-z0-9][a-z0-9._-]{0,127}`), so a case-variant
@@ -89,14 +89,13 @@ class SystemStreamWriteGateTest {
         /// matching would have been.
         @Test
         void catalogForm_caseVariantNamespace_failsAddressResolution_isGatedFailClosed() {
-            assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp(
-                    "POST", "/api/v1/streams/System/cluster-events/1.0.0/publish")).isTrue();
+            assertThat(ManagementServerImpl.isSystemStreamWriteOverHttp("POST",
+                                                                        "/api/v1/streams/System/cluster-events/1.0.0/publish")).isTrue();
         }
     }
 
     @Nested
     class Allowed {
-
         @Test
         void catalogForm_publishBatch_appNamespace_isNotGated() {
             var path = ManagementRoute.STREAMS_PUBLISH_BATCH.assemble("orders", "events", "1.0.0").unwrap();
