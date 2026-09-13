@@ -57,6 +57,14 @@ class SpacerRouteArityGuardTest {
                       .isTrue();
         }
 
+        /// Pins the ARITY clause alone (review of #1076, SF-1): "edit" satisfies the spacer clause, so
+        /// only the arity guard can refuse this one-segment path. With the old spacer exemption it was
+        /// dispatched and died as `Invalid long value: edit` + `Not Found: Unknown request path`.
+        @Test
+        void findRoute_spacerPresentButUnderSupplied_isNoMatch() {
+            assertThat(router.findRoute(GET, "/api/users/edit").isEmpty()).isTrue();
+        }
+
         @Test
         void findRoute_fullySpecifiedPath_stillResolves() {
             router.findRoute(GET, "/api/users/42/edit")
@@ -81,6 +89,12 @@ class SpacerRouteArityGuardTest {
             // candidates.getFirst() — the `edit` route — for a path that names neither spacer.
             assertThat(router.findRoute(GET, "/api/users/42/delete").isEmpty()).as("a spacer route whose spacer is absent from the path cannot serve it")
                       .isTrue();
+        }
+
+        @Test
+        void findRoute_spacerPresentButUnderSupplied_isNoMatch() {
+            assertThat(router.findRoute(GET, "/api/users/edit").isEmpty()).isTrue();
+            assertThat(router.findRoute(GET, "/api/users/profile").isEmpty()).isTrue();
         }
 
         @Test
