@@ -22,9 +22,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.AsyncCloseable;
-import org.pragmatica.lang.parse.Network;
 import org.pragmatica.lang.type.TypeToken;
-import org.pragmatica.lang.utils.Causes;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 
@@ -32,6 +30,7 @@ import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.PropertyNamingStrategies;
 
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
 
@@ -182,28 +181,34 @@ final class JdkHttpClient implements HttpClient, AsyncCloseable {
         return Duration.ofMillis(config.requestTimeout().millis());
     }
 
-    /// Build the request as a `Result`, so a URI that does not parse, a URI without a scheme, or a
-    /// header the JDK refuses FAILS THE PROMISE instead of escaping `get`/`post`/… as an exception.
-    /// `HttpRequest.Builder` throws unchecked for the last two; the old code unwrapped the parse and
-    /// let the builder throw, which is what #270 R6 is.
+    /// Build the request as a `Result`, so a URI that does not parse, a URI without a scheme, a
+    /// header the JDK refuses, or a null path FAILS THE PROMISE instead of escaping `get`/`post`/…
+    /// as an exception. EVERYTHING that touches the caller's input runs inside the lift — the base
+    /// join included, which is where a null path used to throw synchronously when a `base_url` was
+    /// configured (review of #1080, SF-3). `URI.create` rather than `Network.parseURI` on purpose:
+    /// the latter's cause carries the whole stack trace as its message, and `InvalidRequest.detail`
+    /// carries the exception's one-line message (SF-2). The old code unwrapped the parse and let
+    /// the builder throw, which is what #270 R6 is.
     private Result<HttpRequest> request(String path,
                                         Map<String, String> headers,
                                         UnaryOperator<HttpRequest.Builder> method) {
-        var url = config.baseUrl().map(base -> joinUrl(base, path)).or(path);
-
-        return Network.parseURI(url)
-                      .flatMap(uri -> Result.lift(Causes::fromThrowable,
-                                                  () -> buildRequest(uri, headers, method)))
-                      .mapError(cause -> new HttpClientError.InvalidRequest(url,
-                                                                            cause.message()));
+        return Result.lift(throwable -> invalidRequest(path, throwable),
+                           () -> buildRequest(path, headers, method));
     }
 
-    private HttpRequest buildRequest(URI uri, Map<String, String> headers, UnaryOperator<HttpRequest.Builder> method) {
-        var builder = method.apply(HttpRequest.newBuilder().uri(uri).timeout(requestTimeout()));
+    private HttpRequest buildRequest(String path, Map<String, String> headers, UnaryOperator<HttpRequest.Builder> method) {
+        var url = config.baseUrl().map(base -> joinUrl(base, path)).or(path);
+        var builder = method.apply(HttpRequest.newBuilder().uri(URI.create(url)).timeout(requestTimeout()));
 
         applyHeaders(builder, headers);
 
         return builder.build();
+    }
+
+    private static HttpClientError.InvalidRequest invalidRequest(String path, Throwable throwable) {
+        var detail = option(throwable.getMessage()).or(throwable.getClass().getSimpleName());
+
+        return new HttpClientError.InvalidRequest(String.valueOf(path), detail);
     }
 
     private static String joinUrl(String base, String path) {

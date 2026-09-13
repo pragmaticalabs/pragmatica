@@ -15,6 +15,7 @@ import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
 
 import org.junit.jupiter.api.Test;
@@ -35,6 +36,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 class JdkHttpClientMalformedUriTest {
     private static final String UNPARSEABLE = "http://example.com/a b";
     private static final String SCHEMELESS = "example.com/no-scheme";
+    private static final TimeSpan TIMEOUT = timeSpan(5).seconds();
 
     /// Backend that must never be reached: counts arrivals, answers nothing useful.
     private static final class CountingOperations implements HttpOperations {
@@ -88,13 +90,62 @@ class JdkHttpClientMalformedUriTest {
         assertFailsWithoutThrowing(client -> client.getJson(UNPARSEABLE, new TypeToken<String>() {}, none()));
     }
 
+    /// SF-3 (review of #1080): with a `base_url` configured the base join ran BEFORE the lift, so a
+    /// null path threw `NullPointerException` synchronously while the same null without a base
+    /// failed the promise. Both must land in the `Result`.
+    @Test
+    void get_withNullPath_andBaseUrl_failsThePromise_doesNotThrow() {
+        var operations = new CountingOperations();
+        var client = JdkHttpClient.jdkHttpClient(config(some("http://example.com")), operations);
+
+        assertFailsWithoutThrowing(client, operations, c -> c.get(null));
+    }
+
+    @Test
+    void get_withNullPath_andNoBaseUrl_failsThePromise_doesNotThrow() {
+        assertFailsWithoutThrowing(client -> client.get(null));
+    }
+
+    /// SF-1: the failure IS an `InvalidRequest`, terminal, and its detail is the exception's
+    /// one-line message — not a stack trace (SF-2: `Causes.fromThrowable` puts 90 lines in
+    /// `message()`, and `detail` used to be built from it).
+    @Test
+    void malformedUri_failsAs_terminalInvalidRequest_withOneLineDetail() {
+        var operations = new CountingOperations();
+        var client = JdkHttpClient.jdkHttpClient(config(none()), operations);
+
+        var cause = client.get(UNPARSEABLE)
+                          .await(TIMEOUT)
+                          .fold(c -> c, _ -> fail("must fail"));
+
+        assertThat(cause).isInstanceOf(HttpClientError.InvalidRequest.class);
+        assertThat(cause.isTerminal()).as("the same arguments produce the same refusal").isTrue();
+        assertThat(((HttpClientError.InvalidRequest) cause).uri()).isEqualTo(UNPARSEABLE);
+        assertThat(((HttpClientError.InvalidRequest) cause).detail().lines().count()).as("detail is a message, not a trace").isEqualTo(1);
+        assertThat(cause.message()).contains("Illegal character");
+    }
+
+    @Test
+    void schemelessUri_failsAs_terminalInvalidRequest() {
+        var operations = new CountingOperations();
+        var client = JdkHttpClient.jdkHttpClient(config(none()), operations);
+
+        var cause = client.get(SCHEMELESS)
+                          .await(TIMEOUT)
+                          .fold(c -> c, _ -> fail("must fail"));
+
+        assertThat(cause).isInstanceOf(HttpClientError.InvalidRequest.class);
+        assertThat(cause.isTerminal()).isTrue();
+        assertThat(((HttpClientError.InvalidRequest) cause).detail().lines().count()).isEqualTo(1);
+    }
+
     /// Control for the instrument: a well-formed path reaches the backend exactly once.
     @Test
     void get_withWellFormedPath_reachesTheBackend() {
         var operations = new CountingOperations();
         var client = JdkHttpClient.jdkHttpClient(config(none()), operations);
 
-        client.get("http://example.com/ok").await();
+        client.get("http://example.com/ok").await(TIMEOUT);
         assertThat(operations.sends.get()).isEqualTo(1);
     }
 
