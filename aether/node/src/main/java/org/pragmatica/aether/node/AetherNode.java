@@ -4952,8 +4952,9 @@ public interface AetherNode extends ManageableNode {
     /// ClusterSync pong listener (#1061 R-b): a pong retracts that peer's `PEER_UNRESPONSIVE` hint via
     /// `PeerResponsive` — ClusterSync withdrawing its own stale evidence on contrary evidence of the
     /// same kind. SWIM state is untouched; SWIM probe-ack remains the sole ALIVE authority. The
-    /// leader's own pong (the collector records every sender, self included) reports nothing: there
-    /// is no hint about `self` to retract, and `SwimProtocol.recordTransportHint` would drop it.
+    /// A pong from `self` reports nothing — a defensive guard, not a producer: no production path
+    /// delivers one (`QuicClusterNetwork.broadcastPayload` iterates peers, which excludes self, and a
+    /// pong is sent to the leader only), and there would be no hint about `self` to retract anyway.
     static Consumer<ClusterSyncMessage.ClusterSyncPong> pongResponsiveReporter(NodeId self,
                                                                                Consumer<TransportObservation> swimHints) {
         return pong -> {

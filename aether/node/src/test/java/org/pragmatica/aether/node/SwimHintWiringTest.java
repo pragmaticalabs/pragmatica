@@ -82,8 +82,8 @@ class SwimHintWiringTest {
             .containsExactly(new TransportObservation.PeerResponsive(PEER));
     }
 
-    /// Round 3 (review NIT 2): the leader pongs itself and the collector fans every pong out, so the
-    /// reporter drops the self-pong at the source instead of relying on SWIM to discard it.
+    /// Round 3 (review NIT 2): defensive — no production path delivers a self-pong (the broadcast
+    /// excludes self; pongs go to the leader only), so this pins the guard, not a producer.
     @Test
     void pongResponsiveReporter_selfPong_sendsNothing() {
         AetherNode.pongResponsiveReporter(SELF, hints::add).accept(ClusterSyncPong.clusterSyncPong(SELF, Map.of()));
