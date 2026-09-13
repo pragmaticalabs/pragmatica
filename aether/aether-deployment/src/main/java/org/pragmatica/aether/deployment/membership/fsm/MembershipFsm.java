@@ -1689,7 +1689,10 @@ public final class MembershipFsm {
         /// loss the transport has not since contradicted: transport may VETO a death with a
         /// re-established link, exactly as in [`#joinGraceReapDeferred`], and never supplies life.
         private synchronized boolean isWithdrawableDrain() {
-            return drainInitiated && everJoined && !swimFaultySeen && (!livenessGoneSeen || transportConnected);
+            return drainInitiated
+                   && everJoined
+                   && !swimFaultySeen
+                   && (!livenessGoneSeen || transportConnected);
         }
 
         /// Arm the join-grace reaper (M10, Wave 7): after [`#joinGrace`] the member is reaped
