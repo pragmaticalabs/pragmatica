@@ -192,11 +192,12 @@ final class JdkHttpClient implements HttpClient, AsyncCloseable {
     private Result<HttpRequest> request(String path,
                                         Map<String, String> headers,
                                         UnaryOperator<HttpRequest.Builder> method) {
-        return Result.lift(throwable -> invalidRequest(path, throwable),
-                           () -> buildRequest(path, headers, method));
+        return Result.lift(throwable -> invalidRequest(path, throwable), () -> buildRequest(path, headers, method));
     }
 
-    private HttpRequest buildRequest(String path, Map<String, String> headers, UnaryOperator<HttpRequest.Builder> method) {
+    private HttpRequest buildRequest(String path,
+                                     Map<String, String> headers,
+                                     UnaryOperator<HttpRequest.Builder> method) {
         var url = config.baseUrl().map(base -> joinUrl(base, path)).or(path);
         var builder = method.apply(HttpRequest.newBuilder().uri(URI.create(url)).timeout(requestTimeout()));
 

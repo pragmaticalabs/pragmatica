@@ -113,15 +113,13 @@ class JdkHttpClientMalformedUriTest {
     void malformedUri_failsAs_terminalInvalidRequest_withOneLineDetail() {
         var operations = new CountingOperations();
         var client = JdkHttpClient.jdkHttpClient(config(none()), operations);
-
-        var cause = client.get(UNPARSEABLE)
-                          .await(TIMEOUT)
-                          .fold(c -> c, _ -> fail("must fail"));
+        var cause = client.get(UNPARSEABLE).await(TIMEOUT).fold(c -> c, _ -> fail("must fail"));
 
         assertThat(cause).isInstanceOf(HttpClientError.InvalidRequest.class);
         assertThat(cause.isTerminal()).as("the same arguments produce the same refusal").isTrue();
         assertThat(((HttpClientError.InvalidRequest) cause).uri()).isEqualTo(UNPARSEABLE);
-        assertThat(((HttpClientError.InvalidRequest) cause).detail().lines().count()).as("detail is a message, not a trace").isEqualTo(1);
+        assertThat(((HttpClientError.InvalidRequest) cause).detail().lines().count()).as("detail is a message, not a trace")
+                  .isEqualTo(1);
         assertThat(cause.message()).contains("Illegal character");
     }
 
@@ -129,10 +127,7 @@ class JdkHttpClientMalformedUriTest {
     void schemelessUri_failsAs_terminalInvalidRequest() {
         var operations = new CountingOperations();
         var client = JdkHttpClient.jdkHttpClient(config(none()), operations);
-
-        var cause = client.get(SCHEMELESS)
-                          .await(TIMEOUT)
-                          .fold(c -> c, _ -> fail("must fail"));
+        var cause = client.get(SCHEMELESS).await(TIMEOUT).fold(c -> c, _ -> fail("must fail"));
 
         assertThat(cause).isInstanceOf(HttpClientError.InvalidRequest.class);
         assertThat(cause.isTerminal()).isTrue();
