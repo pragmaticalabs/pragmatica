@@ -36,7 +36,7 @@ class MetricsInterceptorFlagsTest {
 
         invoke(registry, config(false, true));
 
-        var counter = registry.find("calls.success").counter();
+        var counter = registry.find("calls.success.count").counter();
 
         assertThat(counter).as("record_counts = true must record a counter").isNotNull();
         assertThat(counter.count()).isEqualTo(1.0);
@@ -49,7 +49,7 @@ class MetricsInterceptorFlagsTest {
         invoke(registry, config(true, false));
 
         assertThat(registry.find("calls.success").timer()).isNotNull();
-        assertThat(registry.find("calls.success").counter()).isNull();
+        assertThat(registry.find("calls.success.count").counter()).isNull();
     }
 
     private static MetricsConfig config(boolean timing, boolean counts) {
