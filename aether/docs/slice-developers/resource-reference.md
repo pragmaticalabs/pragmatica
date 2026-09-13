@@ -975,8 +975,8 @@ Provisioned by `RateGuardFactory` (`ResourceFactory<RateGuard, RateGuardConfig>`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | `String` | required | Metric name prefix |
-| `record_timing` | `boolean` | `true` | Record execution timing |
-| `record_counts` | `boolean` | `true` | Record success/failure counts |
+| `record_timing` | `boolean` | `true` | Record a timer `<name>.success` / `<name>.failure` per call |
+| `record_counts` | `boolean` | `true` | Record a counter `<name>.success.count` / `<name>.failure.count` per call (a separate meter: Micrometer refuses two meter types under one id) |
 | `tags` | `List<String>` | empty | Additional metric tags (key-value pairs) |
 
 The `MeterRegistry` is not a config field — it is resolved from the node's real, Management-API-backed
@@ -1012,14 +1012,18 @@ tags = "region=eu,tier=gold"
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name` | `String` | required | Logger name prefix |
+| `name` | `String` | required | Logger name — each injection point logs through `LoggerFactory.getLogger(name)`, so its level is tuned per method in the logging configuration (#280) |
 | `level` | `LogLevel` | required | Log level (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`) |
-| `log_args` | `boolean` | required | Log method arguments |
-| `log_result` | `boolean` | required | Log method results |
+| `log_args` | `boolean` | required | Log method arguments — the request's `toString()`, unredacted. Treat it as personal data: leave `false` unless the request type is known to carry none |
+| `log_result` | `boolean` | required | Log method results — the result's `toString()`, truncated to 100 characters, unredacted. Same caution as `log_args` |
 | `log_duration` | `boolean` | required | Log execution duration |
 
 `LogConfig` declares no `DEFAULT` static field, so the generic config binder treats every key above
-as mandatory — there is no config-level fallback to `INFO`/`true` if a key is omitted from TOML.
+as mandatory — there is no config-level fallback if a key is omitted from TOML. The programmatic
+factories (`LogConfig.logConfig(name[, level])`) default `log_args` and `log_result` to `false`
+(#280). Lines carry no request-id: the interceptor chain runs below `InvocationContext`
+(`aether-invoke`), so correlating an entry/exit pair with the request that caused it is not
+available here yet — tracked in #280.
 
 ```toml
 [logging.payment-flow]
