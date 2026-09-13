@@ -1686,19 +1686,6 @@ public interface AetherNode extends ManageableNode {
                                        .onSuccess(_ -> clusterNode.network()
                                                                   .whenReady(startSwimTrigger))
                                        .flatMap(_ -> startClusterAsync())
-                                       // #858: check/write each DHT-tier instance's encryption marker
-                                       // here — AFTER startClusterAsync() resolves (cluster formation
-                                       // complete, dhtClient can route) and BEFORE armPeriodicTasks /
-                                       // "started" (no DHT read is reachable before this point: deployed
-                                       // slices need leader election + quorum, which themselves need
-                                       // formation). Was boot-time, inside the constructor path
-                                       // (createAll → createOne), where it always blocked the full 30 s
-                                       // DHT_MARKER_TIMEOUT because the DHTClient handed to the
-                                       // constructor cannot route yet (#858). A no-keyring instance whose
-                                       // marker is present fails HERE with
-                                       // EncryptionError.EncryptedTierRequiresKeyring, which aborts
-                                       // start() and stops the node — same cause as before, just later.
-                                       .flatMap(_ -> verifyDhtMarkers())
                                        // #644: arm the deferred periodic tasks only now, once cluster
                                        // formation has resolved — a created-but-unstarted node performs
                                        // no periodic work, and none of the deferred tasks participates
@@ -1712,17 +1699,47 @@ public interface AetherNode extends ManageableNode {
                                        // PeriodicTasks.arm() is a no-op after stop(), closing the
                                        // late-resolution race in the other direction.
                                        .map(this::armPeriodicTasks)
+                                       // #858: check/write each DHT-tier instance's encryption marker
+                                       // here — AFTER startClusterAsync() resolves (cluster formation
+                                       // complete, dhtClient can route). Was boot-time, inside the
+                                       // constructor path (createAll → createOne), where it always blocked
+                                       // the full 30 s DHT_MARKER_TIMEOUT because the DHTClient handed to
+                                       // the constructor cannot route yet (#858).
+                                       //
+                                       // #1052: AFTER armPeriodicTasks, not before. The check now retries
+                                       // for as long as the DHT cannot answer (a ring still converging),
+                                       // and LeaderManager picks the lowest id of the sorted topology, so
+                                       // a replacement still retrying can already be leader. Holding the
+                                       // periodic work behind the check would switch off that leader's
+                                       // generation bump, readiness sweep and activation heal. What must
+                                       // not precede the check is enforced elsewhere, not by this order:
+                                       // every DHT-tier get/put/delete/exists waits on the instance's
+                                       // readGate (#874), and the node reports not-ready until every gate
+                                       // admits (markSubsystemsReadyOnceDhtAdmitted). Only
+                                       // EncryptionError.EncryptedTierRequiresKeyring (a marker present
+                                       // with no keyring) fails start() — and Main#exitWithError still
+                                       // stops the node on it; a timeout or an unreachable quorum is
+                                       // retried and never exits.
+                                       .flatMap(_ -> verifyDhtMarkers())
                                        .onSuccess(_ -> log.info("Aether node {} started, cluster forming...",
                                                                 self()));
             }
 
-            /// #858: post-formation DHT encryption-marker check/write, run once from [#start] between
+            /// #858: post-formation DHT encryption-marker check/write, run once from [#start] after
             /// `startClusterAsync()` and `armPeriodicTasks`. Generic over `storageSetups`' CONTENTS —
             /// iterates whatever [StorageFactory.StorageSetup#dhtMarkerCheck] entries are present, no
             /// hardcoded instance list — so an instance that starts carrying a DHT tier later (#783:
             /// `content` routed through `createAll`) is covered automatically without touching this
             /// method. No `dhtClient` (no DHT-backed instance in this config) short-circuits to
             /// `Promise.UNIT` — nothing to check.
+            ///
+            /// #1052: retries until each check completes or definitively refuses; `periodicTasks`'
+            /// cancellation is the loop's stop signal, so a stopped node stops retrying. In practice
+            /// that signal is `stop()` alone: the other canceller, the failed-boot guard
+            /// (`cancelArmedWork`, from `verifyRoutedTypesEncodable`), runs at construction, before
+            /// [#start] and therefore before this loop exists. Consequence: a refusal leaves periodic
+            /// work armed until whoever owns the node stops it (`Main#exitWithError`, Ember's
+            /// `abortStart`, a test's tear-down).
             private Promise<Unit> verifyDhtMarkers() {
                 var checks = storageSetups.values()
                                           .stream()
@@ -1730,7 +1747,9 @@ public interface AetherNode extends ManageableNode {
                                           .flatMap(Option::stream)
                                           .toList();
 
-                return dhtClient.map(client -> StorageFactory.verifyDhtMarkers(client, checks))
+                return dhtClient.map(client -> StorageFactory.verifyDhtMarkers(client,
+                                                                               checks,
+                                                                               periodicTasks::isCancelled))
                                 .or(Promise.UNIT);
             }
 
@@ -4359,8 +4378,15 @@ public interface AetherNode extends ManageableNode {
 
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(retentionInvariantWatch::tick,
                                                                       RETENTION_INVARIANT_CHECK_INTERVAL));
-        nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReady(nodeLifecycle::signalReady,
-                                                                           nodeReportedStateHolder));
+        // #1052: self-ready (lifecycle ACTIVE, reported READY) waits for every DHT-backed storage
+        // instance to be admitted by its post-formation encryption-marker check, which now retries while
+        // the DHT cannot answer. Without this the node would report ready while its DHT tiers still refuse
+        // every operation.
+        var dhtAdmission = StorageFactory.dhtAdmission(storageSetups);
+
+        nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReadyOnceDhtAdmitted(dhtAdmission,
+                                                                                          nodeLifecycle::signalReady,
+                                                                                          nodeReportedStateHolder));
         // Activation level-heal: a cold-start `restart_all_nodes` can drop the single CAS-latched
         // ClusterStateNotification.ACTIVE edge while the router delegate is being rebuilt, leaving NDM
         // stuck in Dormant (self-ready/subsystemsReady never fire) so the node reports SYNCING forever.
@@ -4713,6 +4739,18 @@ public interface AetherNode extends ManageableNode {
     private static void markSubsystemsReady(Runnable signalReady, NodeReportedStateHolder holder) {
         signalReady.run();
         holder.onSubsystemsReady();
+    }
+
+    /// #1052: the NDM self-ready signal, deferred until `dhtAdmission` succeeds -- every DHT-backed
+    /// storage instance admitted by its post-formation encryption-marker check. Already admitted (or no
+    /// DHT tier at all: an empty set resolves at once), it runs synchronously, exactly as before. Still
+    /// pending, it runs when the last gate admits. A refusal never runs it: the node stays `JOINING`
+    /// while `start()` fails on the same cause.
+    @Contract
+    private static void markSubsystemsReadyOnceDhtAdmitted(Promise<Unit> dhtAdmission,
+                                                           Runnable signalReady,
+                                                           NodeReportedStateHolder holder) {
+        dhtAdmission.onSuccess(_ -> markSubsystemsReady(signalReady, holder));
     }
 
     /// B4/C-1 (membership v2 §7.5): nodes the leader observes in a given reported state — peers from

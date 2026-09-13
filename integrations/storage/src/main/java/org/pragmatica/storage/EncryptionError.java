@@ -55,7 +55,11 @@ public sealed interface EncryptionError extends Cause {
     /// `encrypted = true` (or `streams_encrypted = true`) and keep `keyId` resolvable in
     /// `[storage.encryption.keys]`, or migrate to a fresh, unmarked directory or DHT namespace
     /// (tracked separately -- #831).
-    record EncryptedTierRequiresKeyring(String instanceName, String keyId) implements EncryptionError {
+    ///
+    /// #1052: [Cause.Terminal] -- a definite answer read back from the store, which no retry can change.
+    /// It is the one DHT encryption-marker outcome that ends the post-formation check (and `start()`);
+    /// every other outcome of that check is retried.
+    record EncryptedTierRequiresKeyring(String instanceName, String keyId) implements EncryptionError, Cause.Terminal {
         @Override
         public String message() {
             return "Storage instance '" + instanceName
@@ -113,18 +117,34 @@ public sealed interface EncryptionError extends Cause {
         }
     }
 
-    /// #858 C2: the boot-time DHT encryption-marker get/put (run after cluster formation completes,
-    /// so the DHT client can route) did not resolve within `StorageFactory#DHT_MARKER_TIMEOUT` --
-    /// distinct from [EncryptedTierRequiresKeyring] (marker present, no keyring configured): this
-    /// fires when the DHT client itself never answered within the bound, so `start()` cannot tell
-    /// whether a marker exists at all. `start()` fails on it rather than falling through to either the
-    /// encrypted or the plaintext assumption.
+    /// #858 C2: ONE attempt of the post-formation DHT encryption-marker get/put (run after cluster
+    /// formation completes, so the DHT client can route) did not resolve within
+    /// `StorageFactory#DHT_MARKER_TIMEOUT` -- distinct from [EncryptedTierRequiresKeyring] (marker
+    /// present, no keyring configured): this fires when the DHT client itself never answered within the
+    /// bound, so the attempt cannot tell whether a marker exists at all. It never falls through to
+    /// either the encrypted or the plaintext assumption.
+    ///
+    /// #1052: transient, not fatal. A ring still converging produces it, so the check retries with
+    /// backoff while the instance's DHT tier stays gated and the node stays not-ready -- it no longer
+    /// fails `start()`.
     record DhtMarkerCheckTimedOut(String instanceName, long timeoutMillis) implements EncryptionError {
         @Override
         public String message() {
             return "DHT encryption-marker check for instance '" + instanceName
                  + "' timed out after " + timeoutMillis
                  + "ms";
+        }
+    }
+
+    /// #1052: the post-formation DHT encryption-marker check for `instanceName` stopped retrying because
+    /// its node was stopped before the check completed. [Cause.Terminal] so the retry loop ends instead
+    /// of acting on behalf of a node that no longer exists. It says nothing about the marker itself.
+    /// The instance's DHT tier was never admitted, so it stays refused.
+    record DhtMarkerCheckAbandoned(String instanceName) implements EncryptionError, Cause.Terminal {
+        @Override
+        public String message() {
+            return "DHT encryption-marker check for instance '" + instanceName
+                 + "' abandoned: node stopped before the check completed";
         }
     }
 }
