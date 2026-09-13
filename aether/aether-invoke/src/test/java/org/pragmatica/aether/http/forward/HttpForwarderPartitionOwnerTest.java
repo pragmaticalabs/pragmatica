@@ -20,7 +20,6 @@ import org.pragmatica.aether.management.route.MatchedRoute;
 import org.pragmatica.aether.slice.delegation.TaskAssignmentError;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
-import org.pragmatica.http.Headers;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.lang.Option;
@@ -146,46 +145,47 @@ class HttpForwarderPartitionOwnerTest {
     }
 
     @Test
-    void forwardManagement_stampsTheForwardingNodeOntoTheForwardedRequest() {
+    void forwardManagement_putsNoHopStateIntoTheForwardedRequest() {
+        // The inverse of what this test asserted in round 1. Hop state used to be stamped into the
+        // forwarded request's headers, which is data a client also controls — so the loop guard's only
+        // input sat in a channel the caller could write. It now travels as a parameter, and the
+        // forwarded request's headers must be identical to the ones that arrived.
         var network = new RecordingClusterNetwork(Set.of(OWNER));
         var serializer = new CapturingSerializer();
+        var arrived = context(REPLICAS_PATH, Map.of("X-Client-Trace", List.of("abc")));
 
-        forwarder(SELF, network, serializer, new RecordingResolver(Option.some(OWNER))).forwardManagement(context(REPLICAS_PATH,
-                                                                                                                  Map.of()),
-                                                                                                          "req-stamp");
+        forwarder(SELF, network, serializer, new RecordingResolver(Option.some(OWNER))).forwardManagement(arrived,
+                                                                                                          "req-nostamp");
 
         assertThat(serializer.captured()).hasSize(1);
         assertThat(serializer.captured().getFirst().headers())
-                .as("the forwarded request must name its forwarding hop so a second owner-forward is detectable")
-                .containsEntry(HttpForwarder.OWNER_FORWARDED_BY_HEADER, List.of(SELF.id()));
+                .as("no hop marker may be added to the request — carrying it there is what made the guard spoofable")
+                .isEqualTo(arrived.headers());
     }
 
     @Test
     void forwardManagement_failsWithOwnerForwardLoop_whenTwoNodesDisagreeOnTheOwner() {
-        // The membership-skew cycle, driven end to end rather than hand-fed: A's OWN stamped output
-        // is what B receives. A believes B owns the partition; B believes A does. Without the marker
-        // this pair would bounce until the request budget ran out, reporting a deadline — a symptom
-        // indistinguishable from a slow peer. With it, the second hop terminates on a named cause.
+        // The membership-skew cycle: A believes B owns the partition, B believes A does. B is handed
+        // the hop A actually took — the identity the cluster transport already carries as
+        // `HttpForwardRequest.sender` — and must refuse rather than bounce it back. Without the guard
+        // this pair would trade the request until the budget ran out and report a deadline, which is
+        // indistinguishable from a slow peer.
         var nodeA = SELF;
         var nodeB = OWNER;
         var networkA = new RecordingClusterNetwork(Set.of(nodeB));
-        var serializerA = new CapturingSerializer();
 
-        forwarder(nodeA, networkA, serializerA, new RecordingResolver(Option.some(nodeB))).forwardManagement(context(REPLICAS_PATH,
-                                                                                                                     Map.of()),
-                                                                                                             "req-skew");
+        forwarder(nodeA, networkA, new NoopSerializer(), new RecordingResolver(Option.some(nodeB)))
+                .forwardManagement(context(REPLICAS_PATH, Map.of()), "req-skew");
 
         assertThat(networkA.sendTargets()).as("precondition: A forwards to the node it believes owns the partition")
                                           .containsExactly(nodeB);
-        assertThat(serializerA.captured()).hasSize(1);
 
-        var arrivedAtB = serializerA.captured().getFirst();
         var networkB = new RecordingClusterNetwork(Set.of(nodeA));
         var resolverB = new RecordingResolver(Option.some(nodeA));
 
-        var result = forwarder(nodeB, networkB, new NoopSerializer(), resolverB).forwardManagement(arrivedAtB,
-                                                                                                   "req-skew")
-                                                                                .await();
+        var result = forwarder(nodeB, networkB, new NoopSerializer(), resolverB)
+                             .forwardManagement(context(REPLICAS_PATH, Map.of()), "req-skew", Option.some(nodeA))
+                             .await();
 
         result.onSuccess(_ -> fail("a second owner-forward under skew must not proceed"))
               .onFailure(cause -> assertThat(cause).isInstanceOf(ManagementRouteError.OwnerForwardLoop.class));
@@ -195,62 +195,25 @@ class HttpForwarderPartitionOwnerTest {
     }
 
     @Test
-    void forwardManagement_failsWithOwnerForwardLoop_whenTheMarkerArrivesLowercasedByHeaderNormalization() {
-        // The test above hands B a context with the marker key exactly as A wrote it, which is NOT
-        // what a real second hop carries: the receiving node rebuilds the request through
-        // `ForwardedRequestContext`, which calls `Headers.headers(...)`, and that normalizes every
-        // key to lowercase. An exact-case guard passes the test above and misses here — so this runs
-        // A's stamped headers through the REAL `Headers` normalizer rather than lowercasing them by
-        // hand, because a hand-rolled imitation would encode my belief about the normalizer instead
-        // of using it.
-        var networkA = new RecordingClusterNetwork(Set.of(OWNER));
-        var serializerA = new CapturingSerializer();
+    void forwardManagement_stillForwardsToTheOwner_whenAClientSuppliesTheFormerMarkerHeader() {
+        // THE test for the client-spoofability hole. A caller who knows the old header name — it was
+        // published in management-api.md — must not be able to switch the loop guard on and collect a
+        // non-authoritative answer, which is the defect #1039 exists to remove. Both casings, because
+        // `Headers.asMap()` lowercases inbound keys while a hand-built map need not.
+        for (var name : List.of("X-Aether-Owner-Forwarded-By", "x-aether-owner-forwarded-by")) {
+            var network = new RecordingClusterNetwork(Set.of(OWNER));
+            var resolver = new RecordingResolver(Option.some(OWNER));
 
-        forwarder(SELF, networkA, serializerA, new RecordingResolver(Option.some(OWNER))).forwardManagement(context(REPLICAS_PATH,
-                                                                                                                    Map.of()),
-                                                                                                            "req-case");
+            forwarder(SELF, network, new NoopSerializer(), resolver)
+                    .forwardManagement(context(REPLICAS_PATH, Map.of(name, List.of("node-impostor"))), "req-spoof");
 
-        var stamped = serializerA.captured().getFirst();
-        var normalized = Headers.headers(stamped.headers()).asMap();
-
-        assertThat(normalized)
-                .as("control: the normalizer must actually have changed the key, or this test proves nothing")
-                .doesNotContainKey(HttpForwarder.OWNER_FORWARDED_BY_HEADER)
-                .containsKey(HttpForwarder.OWNER_FORWARDED_BY_HEADER.toLowerCase());
-
-        var networkB = new RecordingClusterNetwork(Set.of(SELF));
-        var arrivedAtB = HttpRequestContext.httpRequestContext(stamped.path(), "GET", Map.of(), normalized, "req-case");
-
-        var result = forwarder(OWNER, networkB, new NoopSerializer(), new RecordingResolver(Option.some(SELF)))
-                             .forwardManagement(arrivedAtB, "req-case")
-                             .await();
-
-        result.onSuccess(_ -> fail("a lowercased marker must still terminate the loop"))
-              .onFailure(cause -> assertThat(cause).isInstanceOf(ManagementRouteError.OwnerForwardLoop.class));
-        assertThat(networkB.sendTargets()).isEmpty();
-    }
-
-    @Test
-    void forwardManagement_refusesRatherThanAnsweringLocally_whenAClientSpoofsTheMarker() {
-        // The header is not stripped at ingress, so state what a spoofing client actually gets. It is
-        // a refusal, not the #1039 bypass: no non-authoritative answer is reachable this way, because
-        // the guard fails the request instead of falling through to local handling. Lowercase because
-        // that is the form an inbound header takes after `Headers.asMap()` — and the form a client
-        // using HTTP/2 sends on the wire regardless.
-        var network = new RecordingClusterNetwork(Set.of(OWNER));
-        var resolver = new RecordingResolver(Option.some(OWNER));
-
-        var result = forwarder(SELF, network, new NoopSerializer(), resolver)
-                             .forwardManagement(context(REPLICAS_PATH,
-                                                        Map.of(HttpForwarder.OWNER_FORWARDED_BY_HEADER.toLowerCase(),
-                                                               List.of("spoofed-by-client"))),
-                                                "req-spoof")
-                             .await();
-
-        result.onSuccess(_ -> fail("a spoofed marker must not yield an answer of any kind"))
-              .onFailure(cause -> assertThat(cause).isInstanceOf(ManagementRouteError.OwnerForwardLoop.class));
-        assertThat(network.sendTargets()).as("and it must not be forwarded either").isEmpty();
-        assertThat(resolver.calls()).as("the guard precedes resolution, so no owner is even computed").isEmpty();
+            assertThat(network.sendTargets())
+                    .as("a client-supplied '%s' must not suppress owner forwarding", name)
+                    .containsExactly(OWNER);
+            assertThat(resolver.calls())
+                    .as("and the owner must still be resolved, not short-circuited")
+                    .hasSize(1);
+        }
     }
 
     @Test

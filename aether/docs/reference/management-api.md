@@ -4996,7 +4996,7 @@ Before #1039 the route was delegate-routed (`STREAMING` task group), which lande
 
 **Two failure modes are reported rather than faked:**
 - `503` naming *no partition owner resolvable* — no HRW placement is computable at all (empty member view, or the bootstrap window before the first reconcile). The alternative, answering locally, would look exactly like an empty partition.
-- `503` naming an *owner-forward loop* — two nodes' membership views disagree on the owner (A resolves B while B resolves A). A request already forwarded once by owner resolution carries an `X-Aether-Owner-Forwarded-By` marker and is refused rather than forwarded again, so skew terminates on a named cause instead of a request-budget deadline. This endpoint is queried during failover, so skew is the normal case here.
+- `503` naming an *owner-forward loop* — two nodes' membership views disagree on the owner (A resolves B while B resolves A). A request that has already been owner-forwarded once is refused rather than forwarded again, so skew terminates on a named cause instead of a request-budget deadline. This endpoint is queried during failover, so skew is the normal case here. The hop is tracked internally, NOT in a request header: no client-supplied header affects this endpoint's routing, and setting one has no effect.
 
 For "what does *this* node see" — a per-node sweep during failover diagnosis — use the local variant below, which is unchanged and deliberately never forwarded.
 

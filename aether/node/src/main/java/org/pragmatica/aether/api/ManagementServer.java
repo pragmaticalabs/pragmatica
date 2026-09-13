@@ -1102,7 +1102,15 @@ class ManagementServerImpl implements ManagementServer {
                                      String requestId) {
         Deadline.runWith(Deadline.startingNow(forwardingTimeouts.managementRequestBudget()),
                          () -> forwarder.forwardManagement(toManagementRequestContext(ctx, path),
-                                                           requestId))
+                                                           requestId,
+                                                           Option.none())
+                         // Option.none() is the SECURITY-RELEVANT argument, not a placeholder (#1039).
+                         // This is the client-facing entry, so the request has taken no internal hop
+                         // and the owner-forward loop guard must not treat it as one. Passing hop
+                         // state explicitly is what keeps it out of the request itself: an earlier
+                         // design carried it in an `X-Aether-Owner-Forwarded-By` header, which a
+                         // caller could set to change this node's dispatch decision.
+                        )
                 .onSuccess(responseData -> sendForwardedResponse(response, responseData))
                 .onFailure(cause -> sendForwardError(response, path, requestId, cause))
                 .onResultRun(() -> recordRequestMetrics(methodName, path, response, startTime));
