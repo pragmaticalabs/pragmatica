@@ -4955,7 +4955,7 @@ public interface AetherNode extends ManageableNode {
     /// leader's own pong (the collector records every sender, self included) reports nothing: there
     /// is no hint about `self` to retract, and `SwimProtocol.recordTransportHint` would drop it.
     static Consumer<ClusterSyncMessage.ClusterSyncPong> pongResponsiveReporter(NodeId self,
-                                                                                Consumer<TransportObservation> swimHints) {
+                                                                               Consumer<TransportObservation> swimHints) {
         return pong -> {
             if (!self.equals(pong.sender())) {
                 swimHints.accept(new TransportObservation.PeerResponsive(pong.sender()));
