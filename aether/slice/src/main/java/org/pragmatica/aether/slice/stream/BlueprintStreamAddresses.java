@@ -56,7 +56,7 @@ public sealed interface BlueprintStreamAddresses {
     /// declarations and open for `latest` consumers; see #1040.
     static String engineKeyFor(KVStore<AetherKey, AetherValue> kvStore, Artifact artifact, String alias) {
         return addressFor(kvStore, artifact, alias).map(StreamEngineKey::engineKey)
-                                                   .or(alias);
+                         .or(alias);
     }
 
     /// The catalog address `alias` was deployed under, or [Option#none] when the owning blueprint or
@@ -65,7 +65,7 @@ public sealed interface BlueprintStreamAddresses {
                                               Artifact artifact,
                                               String alias) {
         return owningBlueprint(kvStore, artifact).flatMap(blueprintId -> bindings(kvStore, blueprintId))
-                                                 .flatMap(value -> value.addressFor(alias));
+                              .flatMap(value -> value.addressFor(alias));
     }
 
     private static Option<BlueprintId> owningBlueprint(KVStore<AetherKey, AetherValue> kvStore, Artifact artifact) {

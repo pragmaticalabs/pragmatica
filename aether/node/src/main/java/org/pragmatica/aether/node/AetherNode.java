@@ -6169,8 +6169,8 @@ public interface AetherNode extends ManageableNode {
         spi.registerExtension(StreamAddressResolver.class,
                               (sliceId, alias) -> Artifact.artifact(sliceId)
                                                           .map(artifact -> BlueprintStreamAddresses.engineKeyFor(kvStore,
-                                                                                                                  artifact,
-                                                                                                                  alias))
+                                                                                                                 artifact,
+                                                                                                                 alias))
                                                           .or(alias));
     }
 

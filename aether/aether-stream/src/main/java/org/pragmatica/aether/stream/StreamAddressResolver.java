@@ -42,7 +42,8 @@ public interface StreamAddressResolver {
     static StreamConfig qualify(StreamConfig config, ProvisioningContext context) {
         return context.extension(StreamAddressResolver.class)
                       .flatMap(resolver -> context.extension(String.class)
-                                                  .map(sliceId -> resolver.engineKeyFor(sliceId, config.name())))
+                                                  .map(sliceId -> resolver.engineKeyFor(sliceId,
+                                                                                        config.name())))
                       .map(config::withName)
                       .or(config);
     }

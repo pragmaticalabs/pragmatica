@@ -1492,7 +1492,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                      .toResult(Causes.cause("ConfigService not available for stream name resolution"))
                                      .flatMap(svc -> svc.config(configSection, StreamConfig.class))
                                      .map(StreamConfig::name)
-                                     .map(alias -> BlueprintStreamAddresses.engineKeyFor(ctx.kvStore(), artifact, alias));
+                                     .map(alias -> BlueprintStreamAddresses.engineKeyFor(ctx.kvStore(),
+                                                                                         artifact,
+                                                                                         alias));
         }
 
         private void handleFailed(SliceNodeKey sliceKey) {
