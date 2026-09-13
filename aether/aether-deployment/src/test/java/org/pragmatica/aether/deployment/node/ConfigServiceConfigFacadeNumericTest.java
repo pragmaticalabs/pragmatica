@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.node;
 
 import java.util.Map;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.slice.ConfigFacade;
 import org.pragmatica.config.ConfigService;
@@ -24,10 +25,14 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// as absent). Every probe here calls through a `ConfigService` whose value is not a number and
 /// asserts no exception escapes.
 class ConfigServiceConfigFacadeNumericTest {
-    private static final ConfigFacade FACADE = NodeDeploymentManager.configServiceToFacade(stringsOnly(Map.of("pool.size", "twelve",
-                                                                                                                 "pool.ratio", "half",
-                                                                                                                 "pool.max", "42",
-                                                                                                                 "pool.load", "0.75")));
+    private static final ConfigFacade FACADE = NodeDeploymentManager.configServiceToFacade(stringsOnly(Map.of("pool.size",
+                                                                                                              "twelve",
+                                                                                                              "pool.ratio",
+                                                                                                              "half",
+                                                                                                              "pool.max",
+                                                                                                              "42",
+                                                                                                              "pool.load",
+                                                                                                              "0.75")));
 
     @Test
     void requireLong_malformedValue_failsTheResult_doesNotThrow() {
@@ -77,7 +82,7 @@ class ConfigServiceConfigFacadeNumericTest {
         assertThat(FACADE.getLong("pool", "nope").isEmpty()).isTrue();
     }
 
-    private static <T> T callWithoutThrowing(java.util.function.Supplier<T> call) {
+    private static <T> T callWithoutThrowing(Supplier<T> call) {
         try {
             return call.get();
         } catch (RuntimeException e) {
