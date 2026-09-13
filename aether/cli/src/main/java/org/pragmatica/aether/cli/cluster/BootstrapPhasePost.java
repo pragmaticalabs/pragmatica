@@ -88,11 +88,21 @@ sealed interface BootstrapPhasePost {
         var endpoint = managementEndpoint(ctx);
 
         ClusterRegistry.load()
-                       .map(registry -> registry.add(clusterName.value(),
-                                                     endpoint,
-                                                     Option.some(apiKeyEnvName)))
+                       .flatMap(registry -> registerAndActivate(registry,
+                                                                clusterName.value(),
+                                                                endpoint,
+                                                                Option.some(apiKeyEnvName)))
                        .flatMap(ClusterRegistry::save)
                        .onFailure(cause -> System.err.println("Warning: failed to register cluster locally: " + cause.message()));
+    }
+
+    /// Package-visible so the registry step is pinnable without writing the operator's real
+    /// `~/.aether/clusters.toml` — the same reason [#managementEndpoint] is.
+    static Result<ClusterRegistry> registerAndActivate(ClusterRegistry registry,
+                                                       String name,
+                                                       String endpoint,
+                                                       Option<String> apiKeyEnv) {
+        return success(registry.add(name, endpoint, apiKeyEnv));
     }
 
     private static String managementScheme(BootstrapContext ctx) {
