@@ -9,9 +9,7 @@ import java.lang.reflect.Proxy;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.Executors;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -87,12 +85,22 @@ class LoggingInterceptorExitLineTest {
         return LogConfig.logConfig("payment.flow").fold(cause -> fail(cause.message()), c -> c);
     }
 
+    /// Resolved on another thread AFTER the interceptor has registered its exit callback — the
+    /// callback therefore runs on that thread, whose MDC is empty. (Resolving before returning would
+    /// run the callback on the caller's thread and pin nothing.)
+    @SuppressWarnings("JBCT-EX-01")
     private static Promise<String> resolvedOnAnotherThread(String value) {
         var promise = Promise.<String> promise();
 
-        try (var executor = Executors.newSingleThreadExecutor()) {
-            CompletableFuture.runAsync(() -> promise.succeed(value), executor).join();
-        }
+        Thread.ofPlatform().daemon().start(() -> {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException _) {
+                Thread.currentThread().interrupt();
+            }
+
+            promise.succeed(value);
+        });
 
         return promise;
     }
