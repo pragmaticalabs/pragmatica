@@ -800,7 +800,7 @@ deploy_docker() {
 # CLOUD_TOML_A / CLOUD_TOML_B must already be resolved (and exported — #441
 # S20) by the Step-2 cloud branch before either function runs.
 bootstrap_cloud_cluster_a() {
-    aether cluster bootstrap "$CLOUD_TOML_A" --cluster "$CLUSTER_A_NAME" --yes --wait --timeout 300
+    aether cluster bootstrap "$CLOUD_TOML_A" --cluster "$CLUSTER_A_NAME" --yes --wait --timeout 600
     # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
     # Default CLUSTER_A_MGMT/APP point at docker-compose host-mapped ports (5150/8070),
     # which don't exist on Hetzner VMs (mgmt=8080, app=8070 per cloud-hetzner.toml).
@@ -822,7 +822,7 @@ bootstrap_cloud_cluster_a() {
 }
 
 bootstrap_cloud_cluster_b() {
-    aether cluster bootstrap "$CLOUD_TOML_B" --cluster "$CLUSTER_B_NAME" --yes --wait --timeout 300
+    aether cluster bootstrap "$CLOUD_TOML_B" --cluster "$CLUSTER_B_NAME" --yes --wait --timeout 600
     # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
     local cluster_b_ip
     cluster_b_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_B_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1)

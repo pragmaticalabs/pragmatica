@@ -2746,10 +2746,17 @@ _cloud_full_drain_recover() {
     # the operator's environment; this subshell inherits them from run-tests.sh).
     log_info "_cloud_full_drain_recover: fresh bootstrap of '${cluster_name}' from ${toml}"
     local boot_out boot_rc
-    boot_out=$(aether cluster bootstrap "$toml" --cluster "$cluster_name" --yes --wait --timeout 300 2>&1)
+    # --timeout 600, not 300: a cold 5-VM provision + formation does not fit 300s (#362's
+    # own step-2 note). --keep-on-failure because this is a RECOVERY path — when it fails
+    # it is the only witness to why, and the default cleanup destroys all five VMs before
+    # their cloud-init/node logs can be read. Measured 2026-09-12: this bootstrap reached
+    # "All nodes healthy", failed the quorum gate, and deleted every VM, leaving the cause
+    # undiagnosable. #1030 is the same complaint against the operator-facing path.
+    boot_out=$(aether cluster bootstrap "$toml" --cluster "$cluster_name" --yes --wait --timeout 600 --keep-on-failure 2>&1)
     boot_rc=$?
     if [ "$boot_rc" -ne 0 ]; then
         log_fail "_cloud_full_drain_recover: aether cluster bootstrap '${cluster_name}' failed (rc=${boot_rc}): ${boot_out}"
+        log_warn "_cloud_full_drain_recover: VMs were KEPT for diagnosis (--keep-on-failure) — they are BILLABLE; reap with tools/cloud-reaper.sh --cluster ${cluster_name} --destroy --force"
         return 1
     fi
     log_info "_cloud_full_drain_recover: bootstrap complete: $(printf '%s' "$boot_out" | tail -3)"
@@ -3988,14 +3995,67 @@ stream_list() {
     aether_json "streams list" 2>/dev/null || api_get "/api/v1/streams"
 }
 
+# Resolve a BARE stream name to its catalog coordinate "namespace/stream/version".
+#
+# The 2026-09-02 catalog migration (7a523c9e3) moved every stream route to
+# /streams/{namespace}/{stream}/{version}/<verb>. The harness only ever held a bare
+# name, so the old flat paths did NOT 404 — they MISROUTED. RouteMatcher buckets by
+# (method, segment count), and the flat 6-token /streams/replicas/{name}/{partition}
+# lands in the same bucket as STREAMS_METADATA (/streams/{ns}/{stream}/{version}),
+# which absorbed it as namespace="replicas", version="{partition}". Measured against a
+# live rc4 node 2026-09-12: it returns 500 "Resource version must match
+# MAJOR.MINOR.PATCH", while a well-formed-but-absent triple returns 500 "Stream not
+# found" — same handler, different failure, which is what proves the misroute.
+#
+# Resolving against the LIVE catalog rather than hard-coding the triple keeps this from
+# rotting the same way: if the coordinate changes, the lookup follows it.
+# Prints "ns/stream/version" on stdout; returns 1 if the name is not in the catalog.
+stream_coordinate() {
+    local name="$1" body coord
+    body=$(api_get "/api/v1/streams" 2>/dev/null) || return 1
+    coord=$(printf '%s' "$body" \
+        | tr '}' '\n' \
+        | grep -F "\"stream\":\"${name}\"" \
+        | sed -E 's/.*"namespace":"([^"]*)".*"stream":"([^"]*)".*"version":"([^"]*)".*/\1\/\2\/\3/' \
+        | head -1)
+    [ -n "$coord" ] || return 1
+    printf '%s' "$coord"
+}
+
 stream_info() {
-    local name="$1"
-    api_get "/api/v1/streams/${name}"
+    local name="$1" coord
+    coord=$(stream_coordinate "$name") || return 1
+    api_get "/api/v1/streams/${coord}"
 }
 
 stream_publish() {
-    local name="$1" body="$2"
-    api_post "/api/v1/streams/publish/${name}" "$body"
+    local name="$1" body="$2" coord
+    coord=$(stream_coordinate "$name") || return 1
+    api_post "/api/v1/streams/${coord}/publish" "$body"
+}
+
+# The catalog identity in CLI form: `namespace:stream:version`.
+#
+# `stream_coordinate` emits the slash form because management ROUTES are path-shaped; the CLI takes
+# the colon form. Both descend from the same catalog lookup, so they cannot disagree.
+#
+# Callers must use this rather than a bare name. `aether streams read|status|publish|delete` document
+# a bare-name convenience that "defaults to system:name:1.0.0" — harmless while the engine also keyed
+# app streams by their bare section name, and WRONG since #1040 qualified them: the bare form now
+# resolves to the `system` namespace, which `StreamEngineKey` reduces back to a bare key that holds
+# no app stream. Measured 2026-09-12: publishing through the catalog and reading by bare name returned
+# 0 of 20 markers while the events were demonstrably present on the qualified ring.
+stream_identity() {
+    local coord
+    coord=$(stream_coordinate "$1") || return 1
+    printf '%s' "${coord//\//:}"
+}
+
+# Replica-set view for a partition (STREAM_REPLICAS). Partition defaults to 0.
+stream_replicas() {
+    local name="$1" partition="${2:-0}" coord
+    coord=$(stream_coordinate "$name") || return 1
+    api_get "/api/v1/streams/${coord}/replicas/${partition}"
 }
 
 # ---------------------------------------------------------------------------
