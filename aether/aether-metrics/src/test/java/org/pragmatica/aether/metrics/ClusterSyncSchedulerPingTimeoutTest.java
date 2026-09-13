@@ -14,6 +14,9 @@ import org.pragmatica.lang.io.TimeSpan;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -127,6 +130,88 @@ class ClusterSyncSchedulerPingTimeoutTest {
 
         assertThat(reported).as("PEER_A crossed the threshold; PEER_B's pongs kept resetting it")
                             .containsExactly(PEER_A);
+    }
+
+    /// #1061 R-a (review B1): misses accumulated while the old link stalled — suppressed from reporting
+    /// because SWIM still trusted the peer — must not reach the threshold on the replacement link.
+    @Test
+    void linkReestablished_afterStallMisses_firstTickOnNewLinkReportsNothing() {
+        var reported = new CopyOnWriteArrayList<NodeId>();
+        var swimTrusted = new CopyOnWriteArraySet<>(Set.of(PEER_A));
+        var collector = new MutableLivenessCollector(swimTrusted);
+        collector.setUnreachableReporter(reported::add);
+        var scheduler = leaderScheduler(collector, Set.of(PEER_A));
+
+        tick(scheduler, 8);
+        assertThat(reported).as("SWIM-HEALTHY early-skip suppresses the report during the stall").isEmpty();
+
+        // Eviction + re-dial: SWIM now suspects the peer, and the replacement link is established.
+        swimTrusted.clear();
+        scheduler.onLinkEstablished(PEER_A);
+        scheduler.sendPingsNow();
+
+        assertThat(reported)
+            .as("The first tick on the new link counts one miss, not the stalled link's nine")
+            .isEmpty();
+    }
+
+    /// #1061 R-c: a hung peer never pongs, so after a (re)connect its count grows again in the new link
+    /// epoch and the report still fires once the threshold is reached — hung-peer detection is kept.
+    @Test
+    void hungPeer_afterLinkReestablished_reportsAtThresholdMissesInNewLinkEpoch() {
+        var reported = new CopyOnWriteArrayList<NodeId>();
+        var collector = new MutableLivenessCollector(new CopyOnWriteArraySet<>());
+        collector.setUnreachableReporter(reported::add);
+        var scheduler = leaderScheduler(collector, Set.of(PEER_A));
+
+        tick(scheduler, 4);
+        assertThat(reported).as("Control: the unanswered peer is reported on the old link").isNotEmpty();
+
+        scheduler.onLinkEstablished(PEER_A);
+        reported.clear();
+        tick(scheduler, 2);
+        assertThat(reported).as("Two misses in the new link epoch stay below the threshold").isEmpty();
+
+        scheduler.sendPingsNow();
+        assertThat(reported)
+            .as("The third consecutive miss in the new link epoch reports the hung peer")
+            .containsExactly(PEER_A);
+    }
+
+    private static ClusterSyncScheduler leaderScheduler(ClusterSyncCollector collector, Set<NodeId> connected) {
+        var scheduler = ClusterSyncScheduler.clusterSyncScheduler(SELF,
+                                                                  new ConnectedPeersNetwork(connected),
+                                                                  collector,
+                                                                  TimeSpan.timeSpan(1).hours(),
+                                                                  () -> 7L,
+                                                                  3,
+                                                                  () -> Epoch.epoch(7L, 0L));
+        scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
+        scheduler.onQuorumStateChange(ClusterStateNotification.active());
+        return scheduler;
+    }
+
+    private static void tick(ClusterSyncScheduler scheduler, int times) {
+        for (var i = 0; i < times; i++) {
+            scheduler.sendPingsNow();
+        }
+    }
+
+    /// `SwimAwareCollector` variant whose SWIM-trusted set is live, so a test can model SWIM moving a
+    /// peer from HEALTHY to SUSPECT between ticks.
+    private static final class MutableLivenessCollector extends NoopClusterSyncCollector {
+        private final Set<NodeId> swimTrusted;
+        private final AtomicReference<Consumer<NodeId>> unreachableReporter = new AtomicReference<>(_ -> {});
+
+        MutableLivenessCollector(Set<NodeId> swimTrusted) {
+            this.swimTrusted = swimTrusted;
+        }
+
+        @Override public boolean peerLocallyAlive(NodeId peer) { return swimTrusted.contains(peer); }
+
+        @Override public void setUnreachableReporter(Consumer<NodeId> reporter) { unreachableReporter.set(reporter); }
+
+        @Override public void reportUnreachable(NodeId peer) { unreachableReporter.get().accept(peer); }
     }
 
     /// `NoopNetwork` variant with a fixed `connectedPeers()` set — the broadcast/miss-tracking

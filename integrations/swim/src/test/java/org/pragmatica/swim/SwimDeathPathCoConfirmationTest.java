@@ -415,22 +415,95 @@ class SwimDeathPathCoConfirmationTest {
         }
 
         @Test
-        void linkLostHint_reachableWithoutTransportView_retractsFloorAndReappliesOnNextLoss() {
-            // No transport view (id -> false): only the PeerReachable retraction can lift the floor.
-            var noViewProtocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
-                                             .unwrap();
-            seenHealthy(noViewProtocol, NODE_A, ADDR_A);
-            noViewProtocol.recordTransportHint(NODE_A, linkLost(NODE_A));
-            assertThat(noViewProtocol.effectiveSuspicionWindowForTest(NODE_A).or(-1L)).isEqualTo(FLOOR_MS);
+        void linkLostHint_retractedWhileConnected_staysRetractedWhenLinkDropsBeforeNextLoss() {
+            seenHealthy(protocol, NODE_A, ADDR_A);
+            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            assertThat(windowOf(NODE_A)).isEqualTo(FLOOR_MS);
 
-            noViewProtocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
-            assertThat(noViewProtocol.effectiveSuspicionWindowForTest(NODE_A).or(-1L))
-                .as("PeerReachable retracts the transport's own LINK_LOST hint")
+            liveTransport.add(NODE_A);
+            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+            // The live-link gate alone would re-apply the floor the moment the link drops; the
+            // retraction removed the hint itself, so only a NEW link-loss report floors again.
+            liveTransport.remove(NODE_A);
+            assertThat(windowOf(NODE_A))
+                .as("PeerReachable while connected retracts the LINK_LOST hint, not merely masks it")
                 .isEqualTo(SUSPECT_TIMEOUT_MS);
 
-            noViewProtocol.recordTransportHint(NODE_A, linkLost(NODE_A));
-            assertThat(noViewProtocol.effectiveSuspicionWindowForTest(NODE_A).or(-1L))
+            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            assertThat(windowOf(NODE_A))
                 .as("The retraction is not a latch: the next link loss floors the window again")
+                .isEqualTo(FLOOR_MS);
+        }
+
+        @Test
+        void lateReachable_whileLinkDown_keepsLinkLostFloorAndVeto() {
+            seenHealthy(protocol, NODE_A, ADDR_A);
+            // Eviction #2 of the replacement link is delivered, then the delayed PeerReachable of
+            // reconnect #1 arrives while the link is DOWN (#1061 R-d, review S2).
+            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            var hintedAt = System.currentTimeMillis();
+            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+            assertThat(windowOf(NODE_A))
+                .as("A late PeerReachable must not erase a current link-loss hint")
+                .isEqualTo(FLOOR_MS);
+
+            protocol.start();
+            try {
+                await().atMost(Duration.ofSeconds(5))
+                       .until(() -> !forPeer(SwimObservation.FaultyObserved.class, NODE_A).isEmpty());
+            } finally {
+                protocol.stop();
+            }
+
+            assertThat(System.currentTimeMillis() - hintedAt).isLessThan(SUSPECT_TIMEOUT_MS);
+            assertThat(forPeer(SwimObservation.DepartedObserved.class, NODE_A))
+                .as("The link is down: the current link loss still corroborates the lone first-hand FAULTY")
+                .hasSize(1);
+        }
+
+        @Test
+        void peerUnresponsiveHint_thenPeerResponsive_retractsFloorAndVeto() {
+            seenHealthy(protocol, NODE_A, ADDR_A);
+            liveTransport.add(NODE_A);
+            protocol.recordTransportHint(NODE_A, peerUnresponsive(NODE_A));
+            assertThat(windowOf(NODE_A)).isEqualTo(FLOOR_MS);
+
+            // A ClusterSync pong arrives: contrary evidence of the same kind (#1061 R-b).
+            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerResponsive(NODE_A));
+            assertThat(stateOf(NODE_A))
+                .as("The retraction never reports life")
+                .isEqualTo(MemberState.SUSPECT);
+            assertThat(windowOf(NODE_A))
+                .as("After the pong the suspicion runs on the default window")
+                .isEqualTo(SUSPECT_TIMEOUT_MS);
+
+            protocol.start();
+            try {
+                await().during(Duration.ofMillis(3_800))
+                       .atMost(Duration.ofSeconds(5))
+                       .until(() -> !listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
+                await().atMost(Duration.ofSeconds(10))
+                       .until(() -> listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
+            } finally {
+                protocol.stop();
+            }
+
+            assertThat(forPeer(SwimObservation.DepartedObserved.class, NODE_A))
+                .as("A retracted PEER_UNRESPONSIVE hint corroborates nothing — the lone first-hand FAULTY is held")
+                .isEmpty();
+            assertThat(forPeer(SwimObservation.UnknownObserved.class, NODE_A)).isNotEmpty();
+        }
+
+        @Test
+        void peerResponsive_whileLinkDown_keepsLinkLostHint() {
+            seenHealthy(protocol, NODE_A, ADDR_A);
+            protocol.recordTransportHint(NODE_A, peerUnresponsive(NODE_A));
+            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+
+            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerResponsive(NODE_A));
+
+            assertThat(windowOf(NODE_A))
+                .as("A pong retracts only PEER_UNRESPONSIVE; the down link's LINK_LOST hint still floors")
                 .isEqualTo(FLOOR_MS);
         }
 
@@ -481,6 +554,9 @@ class SwimDeathPathCoConfirmationTest {
             context.updateLoggers();
             try {
                 seenHealthy(protocol, NODE_A, ADDR_A);
+                // A second ALIVE member widens the enforced window past the base timeout (cluster-size
+                // term), so a retraction line printing the base timeout cannot pass by coincidence.
+                seenHealthy(protocol, NODE_B, ADDR_B);
                 protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
 
                 assertThat(appender.messages)
@@ -491,10 +567,25 @@ class SwimDeathPathCoConfirmationTest {
                 protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
                 var enforced = windowOf(NODE_A);
 
-                assertThat(enforced).isEqualTo(SUSPECT_TIMEOUT_MS);
+                assertThat(enforced)
+                    .as("Fixture check: the enforced window differs from the base timeout")
+                    .isGreaterThan(SUSPECT_TIMEOUT_MS);
                 assertThat(appender.messages)
                     .as("The retraction line prints the window now enforced")
                     .anyMatch(line -> line.contains("LINK_LOST death hint retracted")
+                                      && line.contains("effective suspect window now " + enforced + "ms"));
+
+                // PEER_UNRESPONSIVE only: a PeerReachable has no LINK_LOST hint to retract and logs nothing.
+                protocol.recordTransportHint(NODE_A, peerUnresponsive(NODE_A));
+                protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+                assertThat(appender.messages.stream().filter(line -> line.contains("LINK_LOST death hint retracted")))
+                    .as("No LINK_LOST retraction is journaled when no LINK_LOST hint was recorded")
+                    .hasSize(1);
+
+                protocol.recordTransportHint(NODE_A, new TransportObservation.PeerResponsive(NODE_A));
+                assertThat(appender.messages)
+                    .as("The pong retraction line prints the window now enforced")
+                    .anyMatch(line -> line.contains("PEER_UNRESPONSIVE death hint retracted")
                                       && line.contains("effective suspect window now " + enforced + "ms"));
             } finally {
                 configuration.removeLogger(SWIM_LOGGER);

@@ -265,8 +265,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// ([#initiateTransportDrivenSuspicion]) so the high-confidence death signal is not
     /// wasted on a timer that may never start (#94). Hints are origin-aware (#1061): a
     /// `LINK_LOST` hint describes one transport link, so it counts only while
-    /// [#transportConnected] reports that link down, and `PeerReachable` retracts it; a
-    /// `PEER_UNRESPONSIVE` hint counts with the link connected and survives `PeerReachable`.
+    /// [#transportConnected] reports that link down, and `PeerReachable` retracts it while the
+    /// link is connected; a `PEER_UNRESPONSIVE` hint counts with the link connected, survives
+    /// `PeerReachable`, and is retracted by a ClusterSync pong (`PeerResponsive`).
     /// Retracting transport's own stale link evidence is not reporting life: SWIM
     /// gossip/probe state is the sole authority on liveness/recovery, and nothing here moves a
     /// peer toward ALIVE. FAULTY still requires the window to expire WITHOUT refutation.
@@ -503,13 +504,15 @@ public final class SwimProtocol implements SwimMessageHandler {
         return HealthSnapshot.healthSnapshot(view);
     }
 
-    /// Record a transport-level hint from Layer 0 (QUIC). Advisory only —
+    /// Record a transport-level hint from Layer 0 (QUIC) or ClusterSync. Advisory only —
     /// SWIM remains authoritative and is the sole authority on liveness/recovery.
     /// `PeerUnreachable` (a) biases this peer's suspect-window timer toward the
     /// [`#TRANSPORT_HINT_SUSPECT_FLOOR_MS`] floor and (b) initiates ALIVE->SUSPECT for a
-    /// currently-ALIVE, ever-healthy peer (see [#applyUnreachableHint]); `PeerReachable`
-    /// retracts only the transport's own `LINK_LOST` hint ([#retractLinkLostHint]) — SWIM
-    /// gossip/probe-ack state is the sole authority on liveness and recovery. Transport may
+    /// currently-ALIVE, ever-healthy peer (see [#applyUnreachableHint]). `PeerReachable`
+    /// retracts the transport's own `LINK_LOST` hint while the link is connected
+    /// ([#retractLinkLostHint]); `PeerResponsive` retracts ClusterSync's own `PEER_UNRESPONSIVE`
+    /// hint on a pong ([#retractPeerUnresponsiveHint]). Neither touches SWIM state — SWIM
+    /// gossip/probe-ack is the sole authority on liveness and recovery. Transport may
     /// accelerate DEATH suspicion, never report life: a peer driven SUSPECT this way still
     /// returns to ALIVE only if it refutes within the window.
     @Contract
@@ -520,18 +523,26 @@ public final class SwimProtocol implements SwimMessageHandler {
 
         switch (hint) {
             case TransportObservation.PeerReachable _ -> retractLinkLostHint(peer);
+            case TransportObservation.PeerResponsive _ -> retractPeerUnresponsiveHint(peer);
             case TransportObservation.PeerUnreachable unreachable -> applyUnreachableHint(peer, unreachable.origin());
         }
     }
 
     /// Retract a `LINK_LOST` hint for `peer` when the transport reports the link re-established
     /// (#1061). The hint described the link that was lost; a completed handshake disproves it
-    /// for the link that now exists. This is not reporting life: the member's SWIM state and
-    /// suspicion clock are untouched, and only a probe-ack or a higher-incarnation ALIVE ends
-    /// the suspicion. A `PEER_UNRESPONSIVE` hint is kept, since a reconnect says nothing about a
-    /// peer that is connected but silent.
+    /// for the link that now exists. Retracted only while [#transportConnected] reports the link
+    /// CONNECTED at this moment (#1061 R-d): a `PeerReachable` delivered late, after a newer
+    /// eviction of the replacement link, must not erase that eviction's current hint. This is
+    /// not reporting life: the member's SWIM state and suspicion clock are untouched, and only a
+    /// probe-ack or a higher-incarnation ALIVE ends the suspicion. A `PEER_UNRESPONSIVE` hint is
+    /// kept, since a reconnect says nothing about a peer that is connected but silent.
     private void retractLinkLostHint(NodeId peer) {
-        option(transportHints.get(peer)).filter(TransportHintState::linkLost).onPresent(_ -> clearLinkLostFlag(peer));
+        option(transportHints.get(peer)).filter(state -> isRetractableLinkLoss(peer, state))
+              .onPresent(_ -> clearLinkLostFlag(peer));
+    }
+
+    private boolean isRetractableLinkLoss(NodeId peer, TransportHintState state) {
+        return state.linkLost() && transportConnected.test(peer);
     }
 
     private void clearLinkLostFlag(NodeId peer) {
@@ -547,6 +558,33 @@ public final class SwimProtocol implements SwimMessageHandler {
     private static TransportHintState withoutLinkLost(NodeId peer, TransportHintState state) {
         return state.peerUnresponsive()
                ? TransportHintState.transportHintState(TransportObservation.HintOrigin.PEER_UNRESPONSIVE)
+               : null;
+    }
+
+    /// Retract a `PEER_UNRESPONSIVE` hint for `peer` when ClusterSync receives a pong from it
+    /// (#1061 R-b). The hint was ClusterSync's evidence that the peer stopped answering its
+    /// liveness exchange; a pong is contrary evidence of the same kind, so ClusterSync withdraws
+    /// it. This is not reporting life: the member's SWIM state and suspicion clock are untouched,
+    /// and the suspicion runs on its unfloored window unless another current hint applies. A
+    /// `LINK_LOST` hint is kept — a pong over some link says nothing about a link that is down.
+    private void retractPeerUnresponsiveHint(NodeId peer) {
+        option(transportHints.get(peer)).filter(TransportHintState::peerUnresponsive)
+              .onPresent(_ -> clearPeerUnresponsiveFlag(peer));
+    }
+
+    private void clearPeerUnresponsiveFlag(NodeId peer) {
+        transportHints.computeIfPresent(peer, SwimProtocol::withoutPeerUnresponsive);
+        LOG.info("SWIM transport hint: pong received from {} — PEER_UNRESPONSIVE death hint retracted "
+                + "(SWIM state unchanged); effective suspect window now {}ms",
+                 peer.id(),
+                 effectiveSuspicionWindowMs(peer,
+                                            config.suspectTimeout().millis()));
+    }
+
+    @NullReturn
+    private static TransportHintState withoutPeerUnresponsive(NodeId peer, TransportHintState state) {
+        return state.linkLost()
+               ? TransportHintState.transportHintState(TransportObservation.HintOrigin.LINK_LOST)
                : null;
     }
 
@@ -1155,8 +1193,12 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// `PEER_UNRESPONSIVE` hint counts as recorded: the link being connected does not
     /// contradict a peer that is connected but silent. A `LINK_LOST` hint counts only while
     /// [#transportConnected] reports no live link, because a connected link disproves the
-    /// link-loss it described. Consulted at decision time, so an out-of-order reconnect event
-    /// cannot leave a stale link-loss hint in force.
+    /// link-loss it described. Consulted at decision time, so a recorded link-loss hint whose
+    /// reconnect event has not been delivered yet neither floors nor vetoes while the link is up.
+    /// The opposite ordering — a late reconnect event after a newer eviction — is handled at
+    /// retraction, which requires the link to be connected ([#retractLinkLostHint]). A
+    /// `PEER_UNRESPONSIVE` hint stops counting when a ClusterSync pong retracts it
+    /// ([#retractPeerUnresponsiveHint]).
     private boolean hasCurrentTransportDeathHint(NodeId peer) {
         return option(transportHints.get(peer)).map(state -> isCurrentDeathEvidence(peer, state))
                      .or(false);

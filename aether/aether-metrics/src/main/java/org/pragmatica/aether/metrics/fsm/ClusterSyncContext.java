@@ -88,6 +88,13 @@ public final class ClusterSyncContext {
 
     private static final TimeSpan EVICTION_HINT_TTL = TimeSpan.timeSpan(15).seconds();
 
+    /// #1061 R-a — per-peer missed-pong epoch, advanced when the transport link to the peer is
+    /// (re)established and when a pong from it arrives ([#startMissedPongEpoch]). The ping tick
+    /// counts misses only within the current epoch (`Pinging.missesInEpoch`). A plain concurrent
+    /// write rather than an FSM event, because an FSM transition that loses its CAS to a
+    /// concurrent tick is dropped (`transitionToOrDrop`), and a dropped reset would re-admit the
+    /// stale count behind a PING_TIMEOUT hint.
+    private final Map<NodeId, Long> missedPongEpochs = new ConcurrentHashMap<>();
     private final PeriodicObservationConfig periodicConfig;
     private final ClusterSyncState dormant;
     private final ClusterSyncState stopped;
@@ -274,6 +281,18 @@ public final class ClusterSyncContext {
         observedEpoch.remove(peer);
     }
 
+    /// Start a new missed-pong epoch for `peer` (#1061 R-a): misses counted before this call no
+    /// longer count toward the ping-timeout threshold. The epoch value only ever grows, so a peer
+    /// that is forgotten and re-joins can never alias an old count.
+    @Contract
+    public void startMissedPongEpoch(NodeId peer) {
+        missedPongEpochs.merge(peer, 1L, Long::sum);
+    }
+
+    public long missedPongEpoch(NodeId peer) {
+        return missedPongEpochs.getOrDefault(peer, 0L);
+    }
+
     public ScheduledFuture<?> schedulePingTimer(Runnable tick) {
         return SharedScheduler.scheduleAtFixedRate(tick, interval);
     }
@@ -402,11 +421,13 @@ public final class ClusterSyncContext {
             return;
         }
         // Option 1 (S01) — feed the missed-pong observation into SWIM as a transport-unreachable
-        // HINT instead of manufacturing a destructive `network.disconnect`. SWIM already drives the
-        // full SUSPECT → 3s-floored-FAULTY → DepartedObserved → synchronous-DEAD pipeline (the same
-        // path the QUIC `onPeerLeft` listener feeds), and the hint is naturally refuted when pongs
-        // resume — so a transient flap no longer false-evicts a healthy peer. The reporter is wired
-        // in `AetherNode` to `CoreSwimHealthDetector.recordTransportHint(PeerUnreachable)`.
+        // HINT (origin PEER_UNRESPONSIVE) instead of manufacturing a destructive `network.disconnect`.
+        // The hint floors SWIM's suspect window and corroborates a lone first-hand FAULTY even while
+        // the QUIC link is CONNECTED. So `missed` counts only consecutive misses on the current link
+        // since the last pong (#1061 R-a, `Pinging.missesInEpoch`), and a later pong from the peer
+        // retracts the hint (#1061 R-b, `AetherNode.pongResponsiveReporter`). Neither moves SWIM
+        // toward ALIVE: only a SWIM probe-ack or a higher-incarnation ALIVE ends the suspicion. The
+        // reporter is wired in `AetherNode.pingTimeoutReporter`.
         collector.reportUnreachable(peer);
     }
 

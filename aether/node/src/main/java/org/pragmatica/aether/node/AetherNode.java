@@ -2999,14 +2999,14 @@ public interface AetherNode extends ManageableNode {
         // robust against owner partial-network errors. See `ClusterSyncCollector.processEvictionHints`.
         metricsCollector.setPeerLocallyAlive(nodeId -> swimHealthDetector.healthOf(nodeId) == SwimHealth.HEALTHY);
         // Option 1 (S01) — feed cluster-sync missed-pong into SWIM as a transport-unreachable HINT
-        // instead of a destructive disconnect. SWIM drives the SUSPECT → 3s-floored-FAULTY →
-        // DepartedObserved → synchronous-DEAD pipeline (the same path the QUIC `onPeerLeft` listener
-        // feeds) and refutes the hint when pongs resume, so a transient flap no longer false-evicts a
-        // healthy peer. The owner-side SWIM-HEALTHY early-skip in `emitPingTimeoutIfExceeded` still
-        // suppresses the hint for a peer SWIM already trusts (avoids conflicting evidence). The hint is
-        // PEER_UNRESPONSIVE (#1061): it keeps flooring and vetoing while the QUIC link is CONNECTED.
-        metricsCollector.setUnreachableReporter(nodeId -> swimHealthDetector.recordTransportHint(unreachableHint(QuicTransportCause.PING_TIMEOUT,
-                                                                                                                 nodeId)));
+        // instead of a destructive disconnect. The owner-side SWIM-HEALTHY early-skip in
+        // `emitPingTimeoutIfExceeded` still suppresses the hint for a peer SWIM already trusts. The hint
+        // is PEER_UNRESPONSIVE (#1061): it floors and vetoes with the QUIC link CONNECTED, so its count
+        // covers only the current link since the last pong (R-a, reset by the QUIC listener attached
+        // below and by every pong), and a pong from the peer retracts it (R-b). Neither reports life:
+        // only a SWIM probe-ack ends the suspicion.
+        metricsCollector.setUnreachableReporter(pingTimeoutReporter(swimHealthDetector::recordTransportHint));
+        metricsCollector.addPongListener(pongResponsiveReporter(swimHealthDetector::recordTransportHint));
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> swimHealthDetector.onLeaderChanged(change.leaderId())));
         var announceTopology = config.topology();
@@ -3503,7 +3503,7 @@ public interface AetherNode extends ManageableNode {
                                        leaderEpochSupplier,
                                        nttConnectTap,
                                        nttDisconnectTap);
-        attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector);
+        attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector, metricsScheduler::onLinkEstablished);
         attachBroadcastMembershipView(clusterNode.network(), membershipFsm);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForPublisher(change,
@@ -4882,7 +4882,9 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    private static void attachQuicPeerStateListener(ClusterNetwork network, CoreSwimHealthDetector swimDetector) {
+    private static void attachQuicPeerStateListener(ClusterNetwork network,
+                                                    CoreSwimHealthDetector swimDetector,
+                                                    Consumer<NodeId> linkEstablished) {
         LOG.debug("attachQuicPeerStateListener: network class={}",
                   Option.option(network).map(n -> n.getClass()
                                                    .getName()).or("null"));
@@ -4892,36 +4894,59 @@ public interface AetherNode extends ManageableNode {
             return;
         }
 
-        var listener = new QuicPeerStateListener() {
-            @Override
-            @Contract
-            public void onPeerJoined(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerJoined({}) — recordTransportHint(reachable)", nodeId);
-                swimDetector.recordTransportHint(new TransportObservation.PeerReachable(nodeId));
-            }
-
-            @Override
-            @Contract
-            public void onPeerReconnected(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerReconnected({}) — recordTransportHint(reachable)", nodeId);
-                swimDetector.recordTransportHint(new TransportObservation.PeerReachable(nodeId));
-            }
-
-            @Override
-            @Contract
-            public void onPeerLeft(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerLeft({}) — recordTransportHint(unreachable)", nodeId);
-                swimDetector.recordTransportHint(unreachableHint(QuicTransportCause.PEER_LEFT, nodeId));
-            }
-        };
-
-        quicNetwork.setPeerStateListener(listener);
+        quicNetwork.setPeerStateListener(quicPeerStateListener(swimDetector::recordTransportHint, linkEstablished));
         quicNetwork.connectedPeers()
                    .forEach(peer -> {
                                 LOG.debug("QuicPeerState: catch-up recordTransportHint(reachable) for already-connected peer {}",
                                           peer);
                                 swimDetector.recordTransportHint(new TransportObservation.PeerReachable(peer));
                             });
+    }
+
+    /// The QUIC peer-state listener feeding SWIM transport hints and ClusterSync link epochs (#1061).
+    /// Package-private so a test pins the observation each callback produces, not only the
+    /// cause→origin mapping. A join or reconnect first starts a new ClusterSync missed-pong epoch
+    /// for the peer (R-a: misses counted against the previous link are discarded) and then sends
+    /// `PeerReachable`; a departure sends a `PEER_LEFT` hint, which is `LINK_LOST`.
+    static QuicPeerStateListener quicPeerStateListener(Consumer<TransportObservation> swimHints,
+                                                       Consumer<NodeId> linkEstablished) {
+        return new QuicPeerStateListener() {
+            @Override
+            @Contract
+            public void onPeerJoined(NodeId nodeId) {
+                LOG.debug("QuicPeerState: onPeerJoined({}) — link epoch + recordTransportHint(reachable)", nodeId);
+                linkEstablished.accept(nodeId);
+                swimHints.accept(new TransportObservation.PeerReachable(nodeId));
+            }
+
+            @Override
+            @Contract
+            public void onPeerReconnected(NodeId nodeId) {
+                LOG.debug("QuicPeerState: onPeerReconnected({}) — link epoch + recordTransportHint(reachable)", nodeId);
+                linkEstablished.accept(nodeId);
+                swimHints.accept(new TransportObservation.PeerReachable(nodeId));
+            }
+
+            @Override
+            @Contract
+            public void onPeerLeft(NodeId nodeId) {
+                LOG.debug("QuicPeerState: onPeerLeft({}) — recordTransportHint(unreachable)", nodeId);
+                swimHints.accept(unreachableHint(QuicTransportCause.PEER_LEFT, nodeId));
+            }
+        };
+    }
+
+    /// ClusterSync missed-pong reporter: each report is a `PING_TIMEOUT` (`PEER_UNRESPONSIVE`) SWIM
+    /// hint (#1061). Package-private so a test pins the cause this call site reports.
+    static Consumer<NodeId> pingTimeoutReporter(Consumer<TransportObservation> swimHints) {
+        return nodeId -> swimHints.accept(unreachableHint(QuicTransportCause.PING_TIMEOUT, nodeId));
+    }
+
+    /// ClusterSync pong listener (#1061 R-b): a pong retracts that peer's `PEER_UNRESPONSIVE` hint via
+    /// `PeerResponsive` — ClusterSync withdrawing its own stale evidence on contrary evidence of the
+    /// same kind. SWIM state is untouched; SWIM probe-ack remains the sole ALIVE authority.
+    static Consumer<ClusterSyncMessage.ClusterSyncPong> pongResponsiveReporter(Consumer<TransportObservation> swimHints) {
+        return pong -> swimHints.accept(new TransportObservation.PeerResponsive(pong.sender()));
     }
 
     enum QuicTransportCause implements Cause {
