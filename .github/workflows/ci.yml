@@ -113,7 +113,26 @@ jobs:
         run: bash --version | head -1 && awk --version 2>&1 | head -1 && sed --version | head -1 && command -v mktemp tee perl pgrep mkfifo
 
       - name: Run harness stub suites
+        env:
+          STUB_SUITE_PGID_FILE: ${{ runner.temp }}/stub-suite-pgids.txt
         run: bash aether/tests/integration/test/run-stub-suites.sh
+
+      # An independent check of the runner's own "none left" claim: a ps snapshot written to a file,
+      # matched against the process group of every suite the runner recorded.
+      - name: No stub-suite process survives
+        if: always()
+        run: |
+          pgids="${RUNNER_TEMP}/stub-suite-pgids.txt"
+          snap="${RUNNER_TEMP}/ps-after-stub-suites.txt"
+          ps -eo pid=,pgid=,etime=,args= > "$snap"
+          if [ ! -s "$pgids" ]; then
+            echo "no suite process groups were recorded, so this check examined nothing" >&2
+            exit 1
+          fi
+          echo "recorded suites: $(wc -l < "$pgids"); processes in snapshot: $(wc -l < "$snap")"
+          awk 'NR == FNR { suite[$2] = $1; next }
+               ($2 in suite) { print "SURVIVOR of " suite[$2] ": " $0; n++ }
+               END { print (n + 0) " processes survive in recorded suite groups"; exit (n > 0) }' "$pgids" "$snap"
 
   # Heavy forge tests run in heavy-forge.yml (nightly, on demand, or on a PR labelled run-heavy).
 

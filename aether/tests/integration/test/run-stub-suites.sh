@@ -66,6 +66,7 @@ run_suite() {
     local suite="$1" out="$2"
     perl -e 'setpgrp(0, 0) or die "setpgrp: $!\n"; exec @ARGV or die "exec: $!\n"' bash "$suite" > "$out" 2>&1 < /dev/null &
     local pgid=$! start=$SECONDS n members
+    SUITE_PGID=$pgid
     KILLED=""; MEMBERS=""; PEAK=0; LEFT=0
     while kill -0 "$pgid" 2>/dev/null; do
         if members="$(pgrep -g "$pgid" 2>/dev/null)"; then
@@ -112,6 +113,8 @@ for s in "${suites[@]}"; do
     suite_start=$SECONDS
     run_suite "$s" "$out"
     SUITE_SECS=$((SECONDS - suite_start))
+    # Name and process group per suite, so a later step can check a ps snapshot against them.
+    [ -n "${STUB_SUITE_PGID_FILE:-}" ] && echo "${name} ${SUITE_PGID}" >> "$STUB_SUITE_PGID_FILE"
     if [ -n "$KILLED" ]; then
         tail -n 40 "$out"
     else
