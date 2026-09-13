@@ -14,6 +14,7 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Node
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.SliceLoadingFailure.Unrecognised;
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -171,7 +172,10 @@ class RetryExhaustionTerminalTest {
         leaderSideCluster.commands.clear();
         ((ClusterDeploymentState.Active) leaderHarness.state()).reconcile();
 
-        assertThat(leaderSideCluster.commandKeysFor(SLICE))
+        // #1068: the rollback removed the SliceTarget while the LOAD key it had issued is still in the
+        // store, so this reconcile's orphan sweep UNLOADs that leftover — a teardown, the opposite of
+        // a re-drive. Only LOAD/ACTIVATE would be the loop this test pins.
+        assertThat(leaderSideCluster.startCommandsFor(SLICE))
                 .as("and the terminal must HOLD: a reconcile after exhaustion must not re-drive the "
                     + "artifact, which is the step that turned the old exhaustion into a loop")
                 .isEmpty();
@@ -395,6 +399,21 @@ class RetryExhaustionTerminalTest {
         private List<AetherKey> commandKeysFor(Artifact artifact) {
             synchronized (commands) {
                 return commands.stream()
+                               .map(KVCommand::key)
+                               .filter(key -> key.asString()
+                                                 .contains(artifact.asString()))
+                               .toList();
+            }
+        }
+
+        /// Every LOAD or ACTIVATE the leader issued for the given artifact — a re-drive. UNLOAD and
+        /// Remove are teardown and deliberately excluded (#1068's orphan sweep issues them).
+        private List<AetherKey> startCommandsFor(Artifact artifact) {
+            synchronized (commands) {
+                return commands.stream()
+                               .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                  && put.value() instanceof NodeArtifactValue value
+                                                  && (value.state() == SliceState.LOAD || value.state() == SliceState.ACTIVATE))
                                .map(KVCommand::key)
                                .filter(key -> key.asString()
                                                  .contains(artifact.asString()))
