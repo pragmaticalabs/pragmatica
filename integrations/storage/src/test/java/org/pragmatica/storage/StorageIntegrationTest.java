@@ -200,6 +200,29 @@ class StorageIntegrationTest {
             assertThat(waterfallInstance.get(id).await().unwrap().unwrap()).isEqualTo(CONTENT_A);
         }
 
+        /// #910: the memory tier here is SMALLER than the block, so its put fails with `TierFull`
+        /// after the durable disk write has already succeeded. The caller must still see success —
+        /// the bytes are durably stored — and must read them back through the disk tier. (The
+        /// sibling above writes 25 bytes into a 32-byte tier and never fills it.)
+        @Test
+        void memoryTierGenuinelyFull_putSucceeds_andReadsFromDisk() {
+            var content = new byte[64];
+            var tooSmallMemory = MemoryTier.memoryTier(32);
+            var diskTier = LocalDiskTier.localDiskTier(tempDir.resolve("full-cache-blocks"), 10 * 1024 * 1024).unwrap();
+            var instance = StorageInstance.storageInstance("full-cache", List.of(tooSmallMemory, diskTier));
+
+            java.util.Arrays.fill(content, (byte) 7);
+
+            var id = instance.put(content)
+                             .await()
+                             .fold(cause -> org.junit.jupiter.api.Assertions.fail("a cache-tier put failure must not fail a durably completed write: " + cause.message()),
+                                   v -> v);
+
+            assertThat(tooSmallMemory.usedBytes()).isZero();
+            assertThat(diskTier.usedBytes()).isGreaterThan(0);
+            assertThat(instance.get(id).await().unwrap().unwrap()).isEqualTo(content);
+        }
+
         @Test
         void blockExistsInBothTiers_readsFromMemory() {
             var memoryTier = MemoryTier.memoryTier(1024 * 1024);
