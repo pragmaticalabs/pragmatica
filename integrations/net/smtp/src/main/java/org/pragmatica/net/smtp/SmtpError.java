@@ -19,16 +19,28 @@ import org.pragmatica.lang.Cause;
 
 
 /// SMTP client errors.
+///
+/// Permanence follows RFC 5321 §4.2.1: a 5yz reply is a permanent negative completion — the same
+/// message will be refused again — while 4yz is transient. The classification lives on the cause
+/// (`Cause.Terminal` / [#isTerminal]) so a retry facility stops without inspecting the message
+/// text (#271). Authentication and TLS failures are permanent for the same reason: retrying with
+/// the same credentials or the same trust store cannot change the verdict.
 public sealed interface SmtpError extends Cause {
     record ConnectionFailed(String message) implements SmtpError {}
 
-    record AuthFailed(String message) implements SmtpError {}
+    record AuthFailed(String message) implements SmtpError, Cause.Terminal {}
 
-    record Rejected(String message) implements SmtpError {}
+    /// A command refused with a negative reply; `code` is the server's reply code.
+    record Rejected(int code, String message) implements SmtpError {
+        @Override
+        public boolean isTerminal() {
+            return code >= 500;
+        }
+    }
 
     record Timeout(String message) implements SmtpError {}
 
-    record TlsFailed(String message) implements SmtpError {}
+    record TlsFailed(String message) implements SmtpError, Cause.Terminal {}
 
-    record ProtocolError(String message) implements SmtpError {}
+    record ProtocolError(String message) implements SmtpError, Cause.Terminal {}
 }

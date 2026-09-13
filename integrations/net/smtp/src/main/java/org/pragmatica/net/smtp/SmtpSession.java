@@ -168,7 +168,7 @@ class SmtpSession {
 
     private void handleMailFrom(int code, String text) {
         if (!isSuccess(code)) {
-            failSession(new SmtpError.Rejected("MAIL FROM rejected: " + code + " " + text));
+            failSession(new SmtpError.Rejected(code, "MAIL FROM rejected: " + code + " " + text));
 
             return;
         }
@@ -186,7 +186,7 @@ class SmtpSession {
 
     private void handleRcptTo(int code, String text) {
         if (!isSuccess(code)) {
-            failSession(new SmtpError.Rejected("RCPT TO rejected: " + code + " " + text));
+            failSession(new SmtpError.Rejected(code, "RCPT TO rejected: " + code + " " + text));
 
             return;
         }
@@ -206,7 +206,7 @@ class SmtpSession {
 
     private void handleData(int code, String text) {
         if (code != 354) {
-            failSession(new SmtpError.Rejected("DATA rejected: " + code + " " + text));
+            failSession(new SmtpError.Rejected(code, "DATA rejected: " + code + " " + text));
 
             return;
         }
@@ -225,7 +225,7 @@ class SmtpSession {
 
     private void handleDataContent(int code, String text) {
         if (!isSuccess(code)) {
-            failSession(new SmtpError.Rejected("Message rejected: " + code + " " + text));
+            failSession(new SmtpError.Rejected(code, "Message rejected: " + code + " " + text));
 
             return;
         }

@@ -48,6 +48,18 @@ class NotificationRetryClassificationTest {
             assertThat(smtpAttempts(new SmtpError.TlsFailed("STARTTLS rejected"))).isEqualTo(1);
         }
 
+        /// RFC 5321 §4.2.1: 5yz is a permanent negative completion. `Rejected` carries the reply code
+        /// since #271, so this could not be written before the fix — it is not a red-before pin.
+        @Test
+        void rejected5xx_isPermanent_soOneAttempt() {
+            assertThat(smtpAttempts(new SmtpError.Rejected(550, "RCPT TO rejected: 550 no such user"))).isEqualTo(1);
+        }
+
+        @Test
+        void rejected4xx_isTransient_soAllAttempts() {
+            assertThat(smtpAttempts(new SmtpError.Rejected(451, "MAIL FROM rejected: 451 try again"))).isEqualTo(3);
+        }
+
         @Test
         void connectionFailed_isTransient_soAllAttempts() {
             assertThat(smtpAttempts(new SmtpError.ConnectionFailed("refused"))).isEqualTo(3);

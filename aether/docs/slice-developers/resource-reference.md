@@ -646,6 +646,13 @@ Nested under `[notification.retry_config]`:
 | `max_delay` | duration | `30s` | Maximum retry delay |
 | `backoff_multiplier` | `double` | `2.0` | Exponential backoff multiplier |
 
+The schedule applies to **transient** failures only. A failure the backend has classified as
+permanent — SMTP `AuthFailed`, `TlsFailed`, `ProtocolError`, or a `Rejected` with a 5yz reply
+code; HTTP `AuthError` (401/403), `VendorNotFound`, or a `RequestFailed` with any 4xx status
+other than 408 and 429 — is not retried: the same request would get the same answer, and
+`DeliveryFailed` is returned after the first attempt (#271). SMTP 4yz replies, connection
+failures and timeouts, and HTTP 5xx/408/429 take the full schedule.
+
 ### API
 
 `NotificationSender` provides a single method:
@@ -684,7 +691,7 @@ sender.send(notification)
 |---------|------|
 | `BackendNotConfigured` | Unknown backend or missing backend-specific configuration |
 | `UnsupportedChannel` | Notification type not supported by this backend |
-| `DeliveryFailed` | All retry attempts exhausted |
+| `DeliveryFailed` | Retry attempts exhausted, or a permanent failure on the first attempt (see Retry Configuration) |
 
 ### TOML Examples
 

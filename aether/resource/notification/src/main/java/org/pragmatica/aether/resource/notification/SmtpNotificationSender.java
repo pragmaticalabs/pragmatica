@@ -4,24 +4,25 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.notification;
 
-import java.util.concurrent.TimeUnit;
-
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.AsyncCloseable;
+import org.pragmatica.lang.utils.Retry;
 import org.pragmatica.net.smtp.SmtpClient;
 import org.pragmatica.net.smtp.SmtpMessage;
 
 import static org.pragmatica.aether.resource.notification.NotificationResult.notificationResult;
-import static org.pragmatica.lang.Unit.unit;
 
 
-final class SmtpNotificationSender implements NotificationSender {
+/// `AsyncCloseable` because the client it holds owns a Netty event loop that only `SmtpClient.close()`
+/// shuts down; the factory's default close dispatch reaches it through this interface (#271 R8).
+final class SmtpNotificationSender implements NotificationSender, AsyncCloseable {
     private final SmtpClient client;
-    private final RetryConfig retryConfig;
+    private final Retry retry;
 
     SmtpNotificationSender(SmtpClient client, RetryConfig retryConfig) {
         this.client = client;
-        this.retryConfig = retryConfig;
+        this.retry = retryConfig.retry();
     }
 
     @Override
@@ -31,47 +32,16 @@ final class SmtpNotificationSender implements NotificationSender {
         };
     }
 
+    @Override
+    public Promise<Unit> close() {
+        return client.close();
+    }
+
     private Promise<NotificationResult> sendEmail(Notification.Email email) {
         var message = toSmtpMessage(email);
 
-        return sendWithRetry(message,
-                             1,
-                             retryConfig.initialDelay().millis());
-    }
-
-    private Promise<NotificationResult> sendWithRetry(SmtpMessage message, int attempt, long delayMs) {
-        return client.send(message)
-                     .map(response -> notificationResult(response, "smtp"))
-                     .fold(result -> result.fold(cause -> {
-                                                     if (attempt >= retryConfig.maxAttempts()) {
-                                                     return new NotificationError.DeliveryFailed("SMTP delivery failed after " + attempt
-                                                                                                + " attempts: " + cause.message()).<NotificationResult> promise();
-                                                 }
-
-                                                     return delayThen(delayMs).flatMap(_ -> sendWithRetry(message,
-                                                                                                          attempt + 1,
-                                                                                                          nextDelay(delayMs)));
-                                                 },
-                                                 Promise::success));
-    }
-
-    private long nextDelay(long currentDelayMs) {
-        return Math.min((long)(currentDelayMs * retryConfig.backoffMultiplier()),
-                        retryConfig.maxDelay().millis());
-    }
-
-    private static Promise<Unit> delayThen(long delayMs) {
-        return Promise.promise(promise -> {
-            Thread.ofVirtual().start(() -> {
-                try {
-                    TimeUnit.MILLISECONDS.sleep(delayMs);
-                    promise.succeed(unit());
-                } catch (InterruptedException _) {
-                    Thread.currentThread().interrupt();
-                    promise.succeed(unit());
-                }
-            });
-        });
+        return retry.execute(() -> client.send(message).map(response -> notificationResult(response, "smtp")))
+                    .mapError(cause -> new NotificationError.DeliveryFailed("SMTP delivery failed: " + cause.message()));
     }
 
     static SmtpMessage toSmtpMessage(Notification.Email email) {
