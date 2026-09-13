@@ -129,7 +129,7 @@ ls aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/*Test.java
 ```
 
 Two JUnit tags partition the suite: `@Tag("Smoke")` (fast, run by default via `./forge.sh`) and
-`@Tag("Heavy")` (slower probes, excluded from the default CI run).
+`@Tag("Heavy")` (slower probes, excluded from the per-PR CI run and run separately; see [CI](#ci)).
 
 ## Test Categories
 
@@ -214,9 +214,11 @@ set) out of the reactor — don't widen that scope without reading `forge.sh`'s 
 
 ### CI
 
-Forge runs in CI as the `ci` mode above (everything except `@Tag("Heavy")`); check
-`.github/workflows/` for the current trigger conditions rather than assuming a specific branch
-rule, which is a CI-config detail this doc shouldn't duplicate.
+Forge runs in CI as the `ci` mode above (everything except `@Tag("Heavy")`). The Heavy probes run
+in a separate, non-required workflow (`heavy-forge.yml`, selecting them with `-Dgroups=Heavy`),
+which does not run on every pull request. Check `.github/workflows/` for the current trigger
+conditions rather than assuming a specific branch rule, which is a CI-config detail this doc
+shouldn't duplicate.
 
 ## Best Practices
 
