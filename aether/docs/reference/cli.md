@@ -1905,7 +1905,8 @@ aether cluster init --non-interactive --name test-cluster --nodes 5 --output clu
 | Option | Description |
 |--------|-------------|
 | `--output` | Output path (default `cluster-config.toml`) |
-| `--force` | Overwrite an existing output file wholesale. Without it, an existing file is **merged into** (#311): every key `init` generates follows the new flags/answers, every key it does not generate is kept and listed (`Merged into <path>: kept N key(s) …`), comments are not preserved, and a file that does not parse is refused rather than replaced. Interactive mode confirms the merge (default yes). |
+| `--force` | Overwrite an existing output file wholesale. Without it, an existing file is **merged into in place** — see "Re-running against an existing file" below. |
+| `--merge` | Consent, given up front, to rewrite `init`-generated keys whose value in the existing file differs from the new flags/answers. Batch mode refuses without it (non-zero exit, file untouched); interactive mode asks instead. |
 | `--non-interactive` | Force non-interactive mode; default `--target=docker` if absent, fail fast on missing required flags (P-NEW-G, 2026-05-21). Required for CI/integration test usage (TC-07-J3). |
 | `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
 | `--target` | Deployment target: `docker`, `ssh`, `cloud`, or `forge` |
@@ -1920,6 +1921,35 @@ aether cluster init --non-interactive --name test-cluster --nodes 5 --output clu
 | `--secret`, `--secret-env` | Cluster secret mode: `auto` (default) or `env` |
 
 When `--non-interactive` is set without `--target`, the command applies `--target=docker` as the default. Missing required flags (e.g. `--nodes` for docker target) produce a `MissingField` failure and a non-zero exit code rather than dropping into prompts.
+
+#### Re-running against an existing file (#311)
+
+The file is the operator's. Without `--force`, `init` rewrites **only the lines holding keys it
+generates**, and every other line — comments, blank lines, section order, value spelling, hand-added
+keys, sections and `[[…]]` tables — is left byte-for-byte. Concretely:
+
+- **Same answers → byte-identical file.** Re-running with unchanged flags changes nothing
+  (`Merged into <path>: already matches the answers, nothing changed`).
+- **A generated key whose value you changed by hand** is reported as `section.key: <old> → <new>`
+  and rewritten only with consent. Batch mode (`--non-interactive` or `--target`) **refuses** with
+  the list and exits non-zero unless `--merge` is given; interactive mode prints the list and asks
+  (`[y/N]`, default keeps your values). With consent, only the value on that line changes — the
+  key's spelling and any trailing `# comment` stay.
+- **A generated key or section the file lacks** (a new answer, e.g. `--nodes 5` adding
+  `[source.primary.worker]`) is appended into its section, or inserted as a new section after the
+  nearest preceding generated section the file has. No consent is needed: nothing existing moves.
+- **Generated `[[source.primary.firewall.allow_ingress]]` rules** are matched by port, protocol and
+  CIDR (a rule you re-described is not duplicated). Missing ones are appended after the file's last
+  rule; rules `init` does not generate are kept. **Nothing is ever removed:** a changed
+  `--admin-cidr` adds the new admin rules and keeps the old ones, listed as kept — remove them by
+  hand, or use `--force`.
+- **Keys `init` does not generate are listed** (`kept N key(s) init does not generate — …`), because
+  a merge cannot tell a hand-added key from one `init` used to generate and no longer does.
+- **A file the merge cannot read is refused, never clobbered** — including valid TOML using a
+  feature the reader does not support (dates and times); the message names the reason and
+  `--force`.
+- The generated header comments (`# Topology: …`) are comments and are not rewritten; after a
+  changed answer they may describe the previous answers.
 
 ### `aether cluster scaffold`
 

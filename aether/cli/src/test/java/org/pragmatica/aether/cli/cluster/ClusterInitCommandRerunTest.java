@@ -53,6 +53,9 @@ class ClusterInitCommandRerunTest {
         originalIn = System.in;
         System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
         System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
+        // A batch run must never prompt; if a regression makes it prompt, it reads EOF and takes
+        // the default instead of hanging the suite on the real stdin (a mutation did exactly that).
+        System.setIn(InputStream.nullInputStream());
     }
 
     @AfterEach
