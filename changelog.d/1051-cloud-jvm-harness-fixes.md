@@ -15,7 +15,12 @@
   VM may be running or unreadable, and at least one must be positively drain-halted (`aether-node` loaded with
   `ActiveState=failed` or `ExecMainStatus=2`, or an exited container). VMs whose unit is stopped or not loaded, or
   that the provider reports not found, count only beside a halted one, so a cluster still bootstrapping is never
-  reaped. A failed or empty enumeration refuses the reap; management-API silence is never taken as death. It
+  reaped. A failed or empty enumeration refuses the reap, as does a VM that an earlier listing showed and a later one
+  omits unless the provider reports it deleted; a VM counts as deleted only on hcloud's exact
+  `hcloud: Server not found: <id>` response. Management-API silence is never taken as death: the same confirmation
+  now gates every recovery reap in the harness, including `restart_all_nodes`' candidates (0 active cores, silent
+  management ports, stragglers, no progress), which the suite's cleanup reaches. End-of-run teardown, which deletes
+  the run's clusters by design, is unchanged. It
   then reaps and rebootstraps and asserts 5 healthy cores within 600s measured from the start of confirmation (not
   scaled by `TIMEOUT_SCALE`), printing the elapsed time and the budget, followed by the standard recovery path's
   leader, readiness and test-echo baseline barriers.
