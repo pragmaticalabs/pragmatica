@@ -132,6 +132,46 @@ public interface SliceStore {
         };
     }
 
+    /// The slice-intrinsic config layer a slice's `META-INF/resources.toml` text contributes, parsed and
+    /// flattened exactly as the loader does it at slice load, with `${secrets:...}` placeholders left
+    /// unresolved — resolving them is the loader's own later, per-node step (#269).
+    ///
+    /// - No file: an empty layer, so the slice composite answers from the node composite alone.
+    /// - A file that does not parse: `Option.none()`. The loader then attaches NO slice composite, and
+    ///   resource provisioning falls back to the node-wide `ConfigService` — the node composite alone.
+    ///
+    /// Public, with [#layerSliceComposite] and [#readSliceResourcesToml], so the deploy-time
+    /// config-section pre-flight evaluates a slice's sections over the layering this loader applies
+    /// rather than over a copy of it (#1067).
+    static Option<ConfigurationProvider> sliceIntrinsicLayer(Artifact artifact, Option<String> resourcesToml) {
+        return resourcesToml.fold(() -> Option.some(IntrinsicConfigProvider.intrinsicConfigProvider(artifact.asString(),
+                                                                                                    Map.of())),
+                                  content -> sliceStore.parseToFlatMap(artifact, content)
+                                                       .map(values -> IntrinsicConfigProvider.intrinsicConfigProvider(artifact.asString(),
+                                                                                                                      values)));
+    }
+
+    /// The slice composite's layering. Override precedence: the node-composite (operator KV-overlay ⊕
+    /// node.toml) WINS over the slice's intrinsic resources.toml. The slice ships LOCAL defaults that each
+    /// deployment overrides with environment-specific values (see the resources.toml header and
+    /// `sliceStore.logShadowedKeys` — "intrinsic shadowed by operator override"). Since
+    /// LayeredConfigProvider is first-wins (index 0 = top priority), the composite must come FIRST;
+    /// slice.toml is the fallback only for keys the deployment does not override. (Identical
+    /// local/deployment values — e.g. docker's node aether.toml matching the slice — make the order moot,
+    /// which is why this was latent until a divergent cloud deployment exercised it.) Presence is
+    /// order-independent: a section is in the composite iff it is in either layer.
+    static ConfigurationProvider layerSliceComposite(ConfigurationProvider intrinsic, ConfigurationProvider nodeComposite) {
+        var labelledIntrinsic = NamedConfigProvider.namedConfigProvider("slice.toml", intrinsic);
+
+        return LayeredConfigProvider.layered(List.of(nodeComposite, labelledIntrinsic));
+    }
+
+    /// The text of `META-INF/resources.toml` as `classLoader` resolves it — the lookup the loader makes
+    /// through the slice classloader. An entry that cannot be read reads as absent, as it does at load.
+    static Option<String> readSliceResourcesToml(ClassLoader classLoader) {
+        return sliceStore.readSliceResourcesTomlFromClassLoader(classLoader);
+    }
+
     interface LoadedSlice {
         Artifact artifact();
         Slice slice();
@@ -269,22 +309,14 @@ public interface SliceStore {
         }
 
         // Package-private (not private) so SliceStoreTest can pin the override precedence
-        // directly — this ordering is load-bearing and was previously inverted.
+        // directly — this ordering is load-bearing and was previously inverted. The ordering itself
+        // lives in SliceStore.layerSliceComposite, which the deploy-time pre-flight shares (#1067).
         static ConfigurationProvider assembleSliceComposite(Artifact artifact,
                                                             ConfigurationProvider intrinsic,
                                                             ConfigurationProvider composite) {
             logShadowedKeys(artifact, intrinsic, composite);
-            var labelledIntrinsic = NamedConfigProvider.namedConfigProvider("slice.toml", intrinsic);
-            // Override precedence: the node-composite (operator KV-overlay ⊕ node.toml) WINS over
-            // the slice's intrinsic resources.toml. The slice ships LOCAL defaults that each
-            // deployment overrides with environment-specific values (see the resources.toml header
-            // and logShadowedKeys above — "intrinsic shadowed by operator override"). Since
-            // LayeredConfigProvider is first-wins (index 0 = top priority), the composite must come
-            // FIRST; slice.toml is the fallback only for keys the deployment does not override.
-            // (Identical local/deployment values — e.g. docker's node aether.toml matching the
-            // slice — make the order moot, which is why this was latent until a divergent cloud
-            // deployment exercised it.)
-            return LayeredConfigProvider.layered(List.of(composite, labelledIntrinsic));
+
+            return SliceStore.layerSliceComposite(intrinsic, composite);
         }
 
         /// Emit one INFO log entry per intrinsic key whose value is shadowed by an existing
@@ -330,20 +362,16 @@ public interface SliceStore {
             if (tomlContent.isEmpty()) {
                 log.debug("Slice {} has no {}; intrinsic config provider omitted", artifact, SLICE_RESOURCES_TOML);
 
-                return Option.some(IntrinsicConfigProvider.intrinsicConfigProvider(artifact.asString(), Map.of()));
+                return SliceStore.sliceIntrinsicLayer(artifact, tomlContent);
             }
 
-            return tomlContent.flatMap(content -> parseToFlatMap(artifact, content))
-                              .flatMap(values -> {
-                                           log.info("Slice {} intrinsic config loaded from {}: {} keys",
-                                                    artifact,
-                                                    SLICE_RESOURCES_TOML,
-                                                    values.size());
-                                           var intrinsic = IntrinsicConfigProvider.intrinsicConfigProvider(artifact.asString(),
-                                                                                                           values);
-
-                                           return resolveIntrinsicSecrets(artifact, intrinsic, secretResolver);
-                                       });
+            return SliceStore.sliceIntrinsicLayer(artifact, tomlContent)
+                             .onPresent(intrinsic -> log.info("Slice {} intrinsic config loaded from {}: {} keys",
+                                                              artifact,
+                                                              SLICE_RESOURCES_TOML,
+                                                              intrinsic.keys()
+                                                                       .size()))
+                             .flatMap(intrinsic -> resolveIntrinsicSecrets(artifact, intrinsic, secretResolver));
         }
 
         /// Resolve `${secrets:...}` placeholders in the slice-intrinsic layer, when a secret

@@ -4,11 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import java.io.IOException;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.Blueprint;
 import org.pragmatica.aether.slice.blueprint.BlueprintArtifact;
 import org.pragmatica.aether.slice.blueprint.BlueprintArtifactParser;
@@ -36,6 +40,7 @@ import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
 import org.pragmatica.aether.deployment.schema.SchemaError;
 import org.pragmatica.aether.deployment.validation.ConfigSectionPreflightValidator;
+import org.pragmatica.aether.deployment.validation.ConfigSectionPreflightValidator.SliceJar;
 import org.pragmatica.aether.deployment.validation.StreamResourceValidator;
 import org.pragmatica.aether.deployment.validation.ValidatedStreamResources;
 import org.pragmatica.aether.slice.repository.Location;
@@ -165,13 +170,6 @@ public interface BlueprintService {
                                              KVStore<AetherKey, AetherValue> store,
                                              Repository repository) {
         return new BlueprintServiceInstance(cluster, store, repository, Option.empty(), Option.empty());
-    }
-
-    static List<SliceTopology> flattenTopologyResults(List<Result<List<SliceTopology>>> results) {
-        return results.stream()
-                      .flatMap(result -> result.or(List.of())
-                                               .stream())
-                      .toList();
     }
 
     static int extractVersionNumber(String filename) {
@@ -651,14 +649,25 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private Promise<ExpandedBlueprint> validatePubSub(ExpandedBlueprint expanded) {
-        return loadAllTopologies(expanded.loadOrder()).flatMap(topologies -> {
-            noteConfigSectionPreflightSkipIfBlind(topologies);
+        return loadAllSliceJars(expanded.loadOrder()).flatMap(sliceJars -> validateSliceJars(expanded, sliceJars));
+    }
 
-            return PubSubValidator.validate(topologies)
-                                  .flatMap(_ -> ConfigSectionPreflightValidator.validate(topologies, nodeComposite))
-                                  .map(_ -> expanded)
-                                  .async();
-        });
+    private Promise<ExpandedBlueprint> validateSliceJars(ExpandedBlueprint expanded, List<SliceJar> sliceJars) {
+        var topologies = topologiesOf(sliceJars);
+
+        noteConfigSectionPreflightSkipIfBlind(topologies);
+
+        return PubSubValidator.validate(topologies)
+                              .flatMap(_ -> ConfigSectionPreflightValidator.validate(sliceJars, nodeComposite))
+                              .map(_ -> expanded)
+                              .async();
+    }
+
+    private static List<SliceTopology> topologiesOf(List<SliceJar> sliceJars) {
+        return sliceJars.stream()
+                        .flatMap(sliceJar -> sliceJar.topologies()
+                                                     .stream())
+                        .toList();
     }
 
     /// Fail-open is a quiet gate by construction (#547): with no [ConfigurationProvider] wired,
@@ -686,15 +695,55 @@ class BlueprintServiceInstance implements BlueprintService {
         }
     }
 
-    private Promise<List<SliceTopology>> loadAllTopologies(List<ResolvedSlice> slices) {
-        return Promise.allOf(slices.stream().map(this::loadTopology).toList()).map(BlueprintService::flattenTopologyResults);
+    /// FER, kept exactly as the topology-only load this replaces behaved before #1067: a slice whose jar
+    /// cannot be located here is left out of both validators instead of failing the publish. Guarantee
+    /// earned: none for that slice — it goes unchecked. Mechanism: `Promise.allOf` collects each locate as a
+    /// `Result`, and a failed one is dropped by [#locatedSliceJars].
+    private Promise<List<SliceJar>> loadAllSliceJars(List<ResolvedSlice> slices) {
+        return Promise.allOf(slices.stream().map(this::loadSliceJar).toList()).map(BlueprintServiceInstance::locatedSliceJars);
     }
 
-    private Promise<List<SliceTopology>> loadTopology(ResolvedSlice slice) {
+    private static List<SliceJar> locatedSliceJars(List<Result<SliceJar>> results) {
+        return results.stream()
+                      .flatMap(result -> result.option()
+                                               .stream())
+                      .toList();
+    }
+
+    private Promise<SliceJar> loadSliceJar(ResolvedSlice slice) {
         return repository.locate(slice.artifact())
-                         .map(location -> TopologyParser.parseFromJar(location.url(),
-                                                                      slice.artifact().asString())
-                                                        .or(List.of()));
+                         .map(location -> sliceJar(slice.artifact(), location));
+    }
+
+    private static SliceJar sliceJar(Artifact artifact, Location location) {
+        return SliceJar.sliceJar(artifact,
+                                 TopologyParser.parseFromJar(location.url(), artifact.asString())
+                                               .or(List.of()),
+                                 readSliceResourcesToml(artifact, location.url()));
+    }
+
+    /// The jar's own `META-INF/resources.toml`, looked up by the loader's own function
+    /// ([SliceStore#readSliceResourcesToml]) through a classloader over this jar alone, so the pre-flight and
+    /// the loader agree on which entry is read and how (#1067). The platform classloader as parent keeps the
+    /// lookup inside the jar. At load the slice classloader asks its shared-library parent first, so a copy of
+    /// that entry visible to the parent would shadow the jar's own there and is not modelled here
+    /// `[unverified: whether any shared library ships one]`.
+    ///
+    /// FER: a jar that cannot be opened reads as shipping no file — the convention `SliceStore` applies at load
+    /// to an entry it cannot read. Guarantee earned: the check then answers from the node composite alone, which
+    /// can only refuse more, never admit a section the loader would not see. Mechanism: logged, then `Option.none()`.
+    private static Option<String> readSliceResourcesToml(Artifact artifact, URL jarUrl) {
+        return Result.lift(Causes::fromThrowable, () -> readThroughJarClassLoader(jarUrl))
+                     .onFailure(cause -> log.warn("Config-section pre-flight could not read the resources.toml of {}: {}",
+                                                  artifact.asString(),
+                                                  cause.message()))
+                     .or(Option.none());
+    }
+
+    private static Option<String> readThroughJarClassLoader(URL jarUrl) throws IOException {
+        try (var jarClassLoader = new URLClassLoader(new URL[]{jarUrl}, ClassLoader.getPlatformClassLoader())) {
+            return SliceStore.readSliceResourcesToml(jarClassLoader);
+        }
     }
 
     private Promise<ExpandedBlueprint> storeBlueprint(ExpandedBlueprint expanded) {

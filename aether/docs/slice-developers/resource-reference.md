@@ -166,20 +166,31 @@ The `type` prefix determines which `ResourceFactory` handles provisioning. The `
 Deploying a blueprint runs a pre-flight check over every slice's generic resource dependencies
 (`[type.qualifier]` sections — database, cache, HTTP client, idempotency store, and any other
 resource declared via `@ResourceQualifier`) before any node activates a slice. If one or more
-declared sections have no matching config anywhere in the target cluster, the deploy fails up front
-with the complete list of missing sections, naming the slice, the resource type, and the section —
-not one node at a time, discovered only when that node's `SpiResourceProvider` tries to load the
-resource [mechanism: `ConfigSectionPreflightValidator`, aggregated via `Result.allOf`].
+declared sections are in none of the layers the slice loader would consult for that slice — the
+operator KV-Store overlay, `aether.toml`, and the slice jar's own `META-INF/resources.toml` — the deploy
+fails up front with the complete list of missing sections, naming the slice, the resource type, and the
+section — not one node at a time, discovered only when that node's `SpiResourceProvider` tries to load
+the resource [mechanism: `ConfigSectionPreflightValidator` over `SliceStore.layerSliceComposite`, aggregated
+via `Result.allOf`]. A section shipped only in the slice's own jar passes, because the loader resolves it
+there (#1067) [verified: `BlueprintPublishOwnershipTest.ConfigPreflight.publish_succeeds_whenDeclaredSectionShipsOnlyInTheSliceJar`].
 
 **Scope and honest limits:**
 - Only generic resources are checked. Pub-sub topics (publishers and subscribers) are exempt from
   this pre-flight — see the fallback note below and [Pub-Sub Messaging](#pub-sub-messaging-subscriber).
 - The check verifies *presence*, not environmental correctness — a `[database.orders]` section that
   resolves but points at an unreachable host still passes. It checks the **leader's** composite
-  configuration view (KV-Store operator overlay layered over the leader's own `aether.toml`),
-  checked once at deploy time — a section present there but absent from a *different* node's local
-  config file is not caught here `[design intent — unverified]`. A failing check's message names
-  this exact view so it is not mistaken for a cross-node homogeneity guarantee.
+  configuration view (KV-Store operator overlay layered over the leader's own `aether.toml`) plus each
+  slice jar's own `resources.toml`, checked once at deploy time — a section present there but absent
+  from a *different* node's local config file is not caught here `[design intent — unverified]`. A
+  failing check's message names this exact view so it is not mistaken for a cross-node homogeneity
+  guarantee.
+- The view is per slice: a section one slice ships in its jar does not satisfy another slice. A slice
+  `resources.toml` that does not parse contributes nothing, as at load, where provisioning then answers
+  from the node's own configuration alone
+  [verified: `ConfigSectionPreflightValidatorTest.SliceJarLayer`].
+- `${secrets:...}` placeholders in a slice's `resources.toml` are not resolved by the check. At load, one
+  secret that fails to resolve drops that slice's whole file on that node, so a section present only
+  there passes this check and still fails at provisioning `[unverified: no test drives that path]`.
 - If the node has no configuration provider at all, the check fails **open** — deploy proceeds
   unchanged, since absence of a provider means "not checkable," not "not configured." This is a
   quiet gate by construction, so the skip itself is not: the node logs a warning naming how many

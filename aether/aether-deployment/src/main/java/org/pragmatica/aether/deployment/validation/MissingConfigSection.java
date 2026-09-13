@@ -8,8 +8,9 @@ import org.pragmatica.lang.Cause;
 
 
 /// A slice declares a generic resource dependency ([org.pragmatica.aether.slice.topology.SliceTopology.ResourceDep])
-/// whose `resources.toml` section is not found in the leader's composite configuration view
-/// (node.toml layered with the operator KV overlay), checked at deploy time. Raised by
+/// whose `resources.toml` section is not found in any layer the slice loader would consult for that
+/// slice, as seen from the leader at deploy time: the operator KV overlay, the leader's node.toml, and
+/// the slice jar's own `META-INF/resources.toml` (#1067). Raised by
 /// [ConfigSectionPreflightValidator] so the gap surfaces as one aggregated failure instead of a
 /// per-node [org.pragmatica.aether.resource.SpiResourceProvider] load failure after slices have
 /// already started activating (#547). The message names the exact view checked so an operator
@@ -19,7 +20,7 @@ public record MissingConfigSection(String field, String rule, String message) im
 
     public static MissingConfigSection missingConfigSection(String sliceName, String resourceType, String section) {
         var field = "[" + section + "]";
-        var message = "slice '%s' requires config section [%s] for its %s resource — not found in the leader's composite configuration view (node.toml layered with the operator KV overlay), checked at deploy time. This does not confirm the section is present on every follower's node.toml. Add the section before deploying, or remove the resource dependency from the slice.".formatted(sliceName,
+        var message = "slice '%s' requires config section [%s] for its %s resource — not found in any layer the slice loader would consult, as seen from the leader at deploy time (the operator KV overlay, the leader's node.toml, and the slice jar's own META-INF/resources.toml). This does not confirm the section is present on every follower's node.toml. Add the section before deploying, or remove the resource dependency from the slice.".formatted(sliceName,
                                                                                                                                                                                                                                                                                                                                                                                                  section,
                                                                                                                                                                                                                                                                                                                                                                                                  resourceType);
 
