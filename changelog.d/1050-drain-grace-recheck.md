@@ -1,21 +1,49 @@
-### Fixed (2026-09-13 — #1050: a surplus drain's grace expiry reaped without re-checking the cluster)
-- **A surplus drain's grace-expiry reap no longer terminates a node the cluster has since come to need.** `graceTerminate`
-  used to call `terminateNode` unconditionally. It now re-checks, for `OVERPROVISION_*` drains only: the issuing CTM is
-  still active (leader), and the core-counted members other than the target are still quorum-safe and still cover the
-  configured core count. If any check fails the reap is skipped and logged with the reason; the DRAIN command is cleared
-  either way. The inputs are the `LeaderReconciler`'s own drain-decision inputs (`MembershipFsm.coreCountedMembers()` and
-  the configured core count). [mechanism: `ClusterTopologyManagerRecord.graceReapVerdict`, pinned by
-  `ClusterTopologyManagerActuatorTest.DrainGraceRecheck` through the real `drainNode` → scheduler path; the membership
-  read is the `AetherNode.drainGraceCoreMemberSupplier` seam, pinned by `DrainGraceCoreMemberSupplierSeamTest`]
-- A refused reap leaves no orphan. When the target later departs, the active CTM reaps it exactly once through
-  `NodeRemoved` → `reapDepartedNode`; a deposed issuer never reaps. [mechanism: pinned by
-  `ClusterTopologyManagerActuatorTest.DrainGraceWithRealMembership`, driving a real `MembershipFsm` and
-  `MembershipDeltaProjector` into the CTM. The route is quorum-gated: under `NOT_QUORUM_SAFE` the reap waits for quorum to
-  return.]
-- `JOIN_GRACE_REAP` and `OPERATOR_COMMAND` drains still reap as issued. A never-joined zombie has no other reaper and is
-  normally reaped during the deficit it was provisioned to fill. [mechanism: `DrainReason.isSurplusTrim`]
-- **What this does not cover.** A DRAIN that reached its target cannot be withdrawn: `DrainProcedure.initiate` runs once
-  and halts the node within its 30s grace, 6s in the observed run. A surplus drain is also routed through the issuer's
-  `MembershipFsm`, whose DEPARTING timeout (`splitTimeout`, 15s) reaps the target via `NodeRemoved` while the issuer is
-  still leader, before this 60s backstop fires. The new check therefore changes the outcome only when the issuer has lost
-  leadership, or the target has not been reaped by then. [unverified: no multi-node run; unit-level only]
+### Fixed (2026-09-13 — #1050, #1062: surplus-drain and departed-node reaps could kill a live node or orphan a billed instance)
+- **A surplus trim never terminates a live node.** Before this change, `graceTerminate` reaped a surplus-drained node at
+  grace expiry unconditionally. For `OVERPROVISION_*` drains it now keys on the TARGET first:
+  - A target that is still a live counted member (counted, so neither DEPARTING nor DEAD, and alive by raw SWIM) is never
+    reaped, whoever is leader. That includes a drain withdrawn back to MEMBER.
+  - A target that is not live is reaped only by an active CTM whose remaining counted members are quorum-safe for a
+    known configured core size. An unknown size (below 1) is refused (fail-closed).
+  - A deficit no longer blocks the reap: terminating a node that is not live removes no capacity.
+  - The DRAIN command is cleared in every branch.
+
+  [mechanism: `ClusterTopologyManagerRecord.graceReapVerdict`, pinned by
+  `ClusterTopologyManagerActuatorTest.DrainGraceRecheck` and `.DrainGraceWithRealMembership` through the real
+  `drainNode` → scheduler path; red at `c974cb3f4`:
+  `surplusDrain_realMembership_targetReturnedToMember_isNeverReaped_evenWithSpareCapacity`]
+- **A refused or dropped reap no longer leaves a billed orphan.** `activate()` now runs a one-shot activation replay over
+  this cluster's labelled core instances (`aether-cluster`, `aether-role=core`). It terminates an instance only when, at
+  two reads `provisioningTimeout` apart, its node is neither tracked by the membership FSM, nor showing evidence of life,
+  nor a replacement in flight. A replay read acts only while its activation is current, active and quorum-safe.
+  Terminating an instance that is already gone completes quietly.
+
+  [mechanism: pinned by `ClusterTopologyManagerActuatorTest.ActivationReplay` and
+  `.OrphanFreeAcrossLeadershipAndQuorum`. The latter reproduces verify-1057's two orphan probes, including a run where
+  quorum is actually lost and restored so `NodeRemoved` reaches only inactive CTMs. Both were red at `c974cb3f4`.]
+- **A departed-node reap re-checks liveness first (#1062).** `reapDepartedNode` terminates only while the node shows no
+  independent evidence of life: the leader's transport link, raw SWIM, or a counted membership.
+  - With such evidence the reap is deferred (WARN, with the evidence) and re-checked every `provisioningTimeout / 12`
+    (5s at defaults), for at most `provisioningTimeout` (60s).
+  - A node still live after the last re-check is never terminated.
+  - A genuinely departed node is reaped at once, with no added delay.
+
+  [mechanism: pinned by `ClusterTopologyManagerActuatorTest.DepartedReapLivenessRecheck`, which includes #1062's
+  transport-still-connected acceptance test, red at `c974cb3f4`]
+- The membership and liveness evidence reaches the CTM through one named seam, `AetherNode.drainGraceLiveness`. It also
+  supplies the configured core count that the `LeaderReconciler` and `QuorumLossDetector` use.
+  [mechanism: pinned by `DrainGraceLivenessSeamTest`; its body forcing the count to 0 reddens it]
+- `JOIN_GRACE_REAP` and `OPERATOR_COMMAND` drains still reap as issued, and never read membership. [mechanism:
+  `DrainReason.isSurplusTrim`, every constant pinned by `DrainReasonTest`]
+- **Limits.**
+  - [unverified: an orphan left by a refused or dropped reap is terminated only once some CTM activates and then holds
+    leadership and quorum safety for one `provisioningTimeout`, with a successful inventory listing; an instance whose
+    node-id or role label is missing is never replayed]
+  - [unverified: the in-JVM tests use one node-local FSM and a synchronous projector; no multi-node, forge or cloud run
+    was made]
+  - [unverified: SUSPECT still counts as coverage — a peer killed during the grace and still SUSPECT at expiry keeps the
+    counted set whole for the quorum-safety check until its eviction backstop fires]
+  - [unverified: a repeated terminate is recorded twice by the in-JVM recorder; only the lifecycle layer's quiet
+    completion of a not-found terminate is tested (`NodeLifecycleManagerTerminateTest`). A provider still listing a
+    server that is being deleted would receive a second terminate call]
+  - Out of scope: the 15s DEPARTING-timeout reap (#1054) and the age-0 ephemeral OVERPROVISION drain (#1055).
