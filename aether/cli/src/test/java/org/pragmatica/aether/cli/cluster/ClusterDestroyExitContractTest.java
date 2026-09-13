@@ -99,7 +99,7 @@ class ClusterDestroyExitContractTest {
                            + "must not tell a script to re-run")
                   .isEqualTo(ExitCode.SUCCESS);
         assertThat(err.toString(StandardCharsets.UTF_8)).as("the undrained nodes are named WITH their reason, the drained "
-                                                             + "one is not, and the contract is stated")
+                                                           + "one is not, and the contract is stated")
                   .contains("2 of 3 drain operations failed")
                   .contains("core-2: refused with HTTP 409")
                   .contains("core-3: refused with HTTP 409")
