@@ -331,8 +331,13 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         var properties = Option.<Map<?, ?>> option(row.properties()).or(Map.of());
 
         return rowPowerStateCode(properties).map(AzureComputeProvider::powerStateToStatus)
-                                .or(() -> rowProvisioningState(properties).map(AzureComputeProvider::provisioningStateToStatus)
-                                                              .or(InstanceStatus.UNKNOWN));
+                                .or(() -> rowProvisioningStatus(properties));
+    }
+
+    /// The row's provisioning state, mapped; [InstanceStatus#UNKNOWN] when the row carries none.
+    private static InstanceStatus rowProvisioningStatus(Map<?, ?> properties) {
+        return rowProvisioningState(properties).map(AzureComputeProvider::provisioningStateToStatus)
+                                   .or(InstanceStatus.UNKNOWN);
     }
 
     /// Resource Graph carries a VM's power state at `properties.extended.instanceView.powerState.code`.
