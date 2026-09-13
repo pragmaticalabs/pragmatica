@@ -10,12 +10,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+
 import picocli.CommandLine;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #633 — `jbct lint --format json|sarif` must leave stdout holding ONE parseable document and
 /// nothing else. It printed the human summary to stdout after the document (so `json.load` failed
@@ -70,6 +72,7 @@ class LintCommandMachineFormatTest {
         out.reset();
         err.reset();
         var args = new java.util.ArrayList<>(java.util.List.of(flags));
+
         args.add(sources.toString());
 
         return new CommandLine(new LintCommand()).execute(args.toArray(String[]::new));
@@ -82,26 +85,26 @@ class LintCommandMachineFormatTest {
     @Test
     void json_withFindings_stdoutIsExactlyTheArray_summaryGoesToStderr() throws IOException {
         write("Warny.java", VIOLATING);
-
         var exitCode = lint("--format", "json");
 
         assertThat(exitCode).isOne();
         var doc = parsedStdout();
+
         assertThat(doc.isArray()).as("stdout must parse as the diagnostics array and nothing more: " + out).isTrue();
         assertThat(doc.size()).isPositive();
         assertThat(err.toString(UTF_8)).as("the summary is operator-facing and belongs on stderr")
-                                       .contains("Checked 1 file(s)");
+                  .contains("Checked 1 file(s)");
         assertThat(out.toString(UTF_8)).doesNotContain("Checked");
     }
 
     @Test
     void json_cleanRun_stdoutIsAnEmptyArray_notNothing() throws IOException {
         write("Pure.java", CLEAN);
-
         var exitCode = lint("--format", "json");
 
         assertThat(exitCode).isZero();
-        assertThat(parsedStdout().isArray()).as("a clean run must still emit a document a parser can load: " + out).isTrue();
+        assertThat(parsedStdout().isArray()).as("a clean run must still emit a document a parser can load: " + out)
+                  .isTrue();
         assertThat(parsedStdout().size()).isZero();
         assertThat(err.toString(UTF_8)).contains("passed JBCT compliance check");
     }
@@ -109,10 +112,9 @@ class LintCommandMachineFormatTest {
     @Test
     void sarif_stdoutIsOneSarifDocument_summaryGoesToStderr() throws IOException {
         write("Warny.java", VIOLATING);
-
         lint("--format", "sarif");
-
         var doc = parsedStdout();
+
         assertThat(doc.path("version").asText()).isEqualTo("2.1.0");
         assertThat(doc.path("runs").get(0).path("results").size()).isPositive();
         assertThat(err.toString(UTF_8)).contains("Checked 1 file(s)");
@@ -121,9 +123,7 @@ class LintCommandMachineFormatTest {
     @Test
     void json_verbose_progressLinesGoToStderr() throws IOException {
         write("Pure.java", CLEAN);
-
         lint("--format", "json", "-v");
-
         assertThat(parsedStdout().isArray()).as("-v must not corrupt the document: " + out).isTrue();
         assertThat(err.toString(UTF_8)).contains("Found 1 Java file(s) to lint.");
     }
@@ -140,9 +140,7 @@ class LintCommandMachineFormatTest {
     @Test
     void text_summaryStaysOnStdout() throws IOException {
         write("Warny.java", VIOLATING);
-
         lint();
-
         assertThat(out.toString(UTF_8)).contains("Checked 1 file(s)");
     }
 }

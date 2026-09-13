@@ -264,10 +264,10 @@ public class LintCommand implements Callable<Integer> {
         coverage.gapReport("lint").onPresent(out::println);
         if (coverage.isPartial()) {
             out.println("✗ Checked " + coverage.render()
-                              + ": " + errors
-                              + " error(s), " + warnings
-                              + " warning(s), " + infos
-                              + " info(s)");
+                       + ": " + errors
+                       + " error(s), " + warnings
+                       + " warning(s), " + infos
+                       + " info(s)");
 
             return;
         }
@@ -279,9 +279,9 @@ public class LintCommand implements Callable<Integer> {
         }
 
         out.println("Checked " + coverage.render()
-                          + ": " + errors
-                          + " error(s), " + warnings
-                          + " warning(s), " + infos
-                          + " info(s)");
+                   + ": " + errors
+                   + " error(s), " + warnings
+                   + " warning(s), " + infos
+                   + " info(s)");
     }
 }
