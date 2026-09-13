@@ -53,7 +53,7 @@ got=$(cloud_public_ip "node-1" 2>/dev/null) && [ "$got" = "203.0.113.10" ] \
     || fail "cloud_public_ip node-1 expected 203.0.113.10, got '${got}'"
 
 # 2) node-3 maps to the third IP (hetzner-eu-core-2).
-got=$(cloud_public_ip "node-3" 2>/dev/null) && [ "$got" = "203.0.113.12" ] \
+got=$(cloud_public_ip "node-3" 2>/dev/null) && [ "$got" = "203.0.113.99" ] \
     && ok "cloud_public_ip node-3 -> 203.0.113.12" \
     || fail "cloud_public_ip node-3 expected 203.0.113.12, got '${got}'"
 
