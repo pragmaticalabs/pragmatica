@@ -35,7 +35,7 @@ import static org.pragmatica.lang.Option.some;
 /// - an init-owned key the file lacks is appended into its section, and a section the file lacks
 ///   is inserted after the nearest preceding generated block the file has (else at the end);
 /// - a generated `[[…]]` element the file lacks is appended after the file's last element of that
-///   array; an element is "present" when an existing one matches it on every key but
+///   array; an element is "present" when an existing one matches it on every scalar key but
 ///   `description`, so an operator's re-described rule is not duplicated;
 /// - everything else — comments, blank lines, operator keys, operator sections and elements,
 ///   section order, value spelling — is left byte-for-byte, and listed as kept when init does not
@@ -257,7 +257,7 @@ public sealed interface InPlaceTomlMerge {
     private static Map<String, Object> identity(Map<String, Object> element) {
         return element.entrySet()
                       .stream()
-                      .filter(entry -> !"description".equals(entry.getKey()))
+                      .filter(entry -> !"description".equals(entry.getKey()) && !(entry.getValue() instanceof Map))
                       .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 

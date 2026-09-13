@@ -241,6 +241,26 @@ class ClusterInitCommandRerunTest {
         assertThat(stdout()).contains("runtime.default.jvm_args").contains("→");
     }
 
+    @Test
+    void rerun_withMerge_appliesAChangeAndAnAdditionTogether_eachAtItsOwnLine(@TempDir Path tmp) {
+        var output = tmp.resolve("cluster-config.toml");
+
+        assertThat(init(output, "3")).isEqualTo(0);
+        var edited = handTuned(output);
+
+        assertThat(init(output, "5", "--merge")).as(stderr()).isEqualTo(0);
+        var merged = read(output);
+        var mergedLines = merged.lines().toList();
+        var expected = new ArrayList<>(edited.lines().toList());
+        var afterCore = expected.indexOf("[source.primary.core]") + 2;
+
+        expected.set(expected.indexOf(TUNED_JVM_ARGS), GENERATED_JVM_ARGS);
+        expected.addAll(afterCore, List.of("", "[source.primary.worker]", "count = 2"));
+        assertThat(mergedLines).as("the rewrite lands on the jvm_args line and the insertion after [source.primary.core], "
+                                   + "whatever order the edits are applied in")
+                  .isEqualTo(expected);
+    }
+
     // ---- new answers: absent init-owned keys are appended in place, nothing else moves ----------
 
     @Test
