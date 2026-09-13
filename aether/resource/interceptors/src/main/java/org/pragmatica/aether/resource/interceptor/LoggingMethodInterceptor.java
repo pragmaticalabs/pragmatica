@@ -43,7 +43,8 @@ public record LoggingMethodInterceptor(LogConfig config, Logger log) implements 
         var startNanos = System.nanoTime();
 
         return method.apply(request)
-                     .onResult(result -> withContext(context, () -> logExit(result, startNanos)));
+                     .onResult(result -> withContext(context,
+                                                     () -> logExit(result, startNanos)));
     }
 
     @Contract
@@ -51,7 +52,6 @@ public record LoggingMethodInterceptor(LogConfig config, Logger log) implements 
         var own = Option.option(MDC.getCopyOfContextMap());
 
         context.onPresent(MDC::setContextMap);
-
         try {
             logging.run();
         } finally {
@@ -107,7 +107,9 @@ public record LoggingMethodInterceptor(LogConfig config, Logger log) implements 
     }
 
     private static <R> String outcome(Result<R> result) {
-        return result.fold(cause -> "failed " + cause.getClass().getSimpleName(), _ -> "ok");
+        return result.fold(cause -> "failed " + cause.getClass()
+                                                     .getSimpleName(),
+                           _ -> "ok");
     }
 
     @Contract

@@ -128,7 +128,7 @@ public interface Retry {
                                  failure.cause().message());
                         yield output.fail(failure.cause());
                     }
-                    case Result.Failure<T> failure when !retryable.test(failure.cause()) -> {
+                    case Result.Failure<T> failure when!retryable.test(failure.cause()) -> {
                         log.debug("Operation failed with a cause the retry policy declines (attempt {}/{}), not retrying: {}",
                                   attempt,
                                   maxAttempts,
