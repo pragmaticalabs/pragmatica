@@ -24,6 +24,7 @@ import org.pragmatica.net.smtp.SmtpTlsMode;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 
 /// #271 (review of PR #1075, BLOCKING-1): permanence must come from the REPLY CODE, on every
@@ -34,75 +35,90 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// `ProbeSmtp4yzOnEhloAuthTest`.
 class SmtpReplyCodeClassificationTest {
     private static final RetryConfig THREE_QUICK = RetryConfig.retryConfig(3, 1, 2, 1.0);
+
     private static final Notification.Email EMAIL = Notification.Email.email("a@example.com",
-                                                                            List.of("b@example.com"),
-                                                                            "s",
-                                                                            NotificationBody.Text.text("b"));
+                                                                             List.of("b@example.com"),
+                                                                             "s",
+                                                                             NotificationBody.Text.text("b"));
 
     enum Stage {
-        GREETING, EHLO, STARTTLS, AUTH, MAIL_FROM
+        GREETING,
+        EHLO,
+        STARTTLS,
+        AUTH,
+        MAIL_FROM
     }
 
     @Test
-    void auth454_isTransient_soThreeAttempts() throws IOException {
+    void auth454_isTransient_soThreeAttempts() {
         assertThat(attempts("454 4.7.0 Temporary authentication failure", Stage.AUTH)).isEqualTo(3);
     }
 
     @Test
-    void ehlo421_isTransient_soThreeAttempts() throws IOException {
+    void ehlo421_isTransient_soThreeAttempts() {
         assertThat(attempts("421 4.3.2 Service not available, closing transmission channel", Stage.EHLO)).isEqualTo(3);
     }
 
     @Test
-    void startTls454_isTransient_soThreeAttempts() throws IOException {
+    void startTls454_isTransient_soThreeAttempts() {
         assertThat(attempts("454 4.7.0 TLS not available due to temporary reason", Stage.STARTTLS)).isEqualTo(3);
     }
 
     @Test
-    void greeting554_isPermanent_soOneAttempt() throws IOException {
+    void greeting554_isPermanent_soOneAttempt() {
         assertThat(attempts("554 No SMTP service here", Stage.GREETING)).isEqualTo(1);
     }
 
     @Test
-    void greeting421_isTransient_soThreeAttempts() throws IOException {
+    void greeting421_isTransient_soThreeAttempts() {
         assertThat(attempts("421 4.3.2 Service not available", Stage.GREETING)).isEqualTo(3);
     }
 
     @Test
-    void auth535_isPermanent_soOneAttempt() throws IOException {
+    void auth535_isPermanent_soOneAttempt() {
         assertThat(attempts("535 5.7.8 bad credentials", Stage.AUTH)).isEqualTo(1);
     }
 
     @Test
-    void startTls554_isPermanent_soOneAttempt() throws IOException {
+    void startTls554_isPermanent_soOneAttempt() {
         assertThat(attempts("554 5.7.3 TLS not supported", Stage.STARTTLS)).isEqualTo(1);
     }
 
     @Test
-    void mailFrom550_isPermanent_soOneAttempt() throws IOException {
+    void mailFrom550_isPermanent_soOneAttempt() {
         assertThat(attempts("550 5.7.1 rejected", Stage.MAIL_FROM)).isEqualTo(1);
     }
 
     @Test
-    void mailFrom451_isTransient_soThreeAttempts() throws IOException {
+    void mailFrom451_isTransient_soThreeAttempts() {
         assertThat(attempts("451 4.7.1 try again later", Stage.MAIL_FROM)).isEqualTo(3);
     }
 
     @SuppressWarnings("JBCT-EX-01")
-    private static int attempts(String failReply, Stage failAt) throws IOException {
+    private static int attempts(String failReply, Stage failAt) {
+        try {
+            return attemptsAgainstScriptedServer(failReply, failAt);
+        } catch (IOException e) {
+            return fail("scripted server failed: " + e);
+        }
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static int attemptsAgainstScriptedServer(String failReply, Stage failAt) throws IOException {
         var connections = new AtomicInteger();
 
         try (var server = new ServerSocket(0, 50, InetAddress.getLoopbackAddress())) {
             Thread.ofPlatform().daemon().start(() -> serve(server, connections, failReply, failAt));
-
             var tlsMode = failAt == Stage.STARTTLS
                           ? SmtpTlsMode.STARTTLS
                           : SmtpTlsMode.NONE;
-            var config = SmtpConfig.smtpConfig("127.0.0.1", server.getLocalPort(), tlsMode, SmtpAuth.smtpAuth("u", "p"))
+            var config = SmtpConfig.smtpConfig("127.0.0.1",
+                                               server.getLocalPort(),
+                                               tlsMode,
+                                               SmtpAuth.smtpAuth("u", "p"))
                                    .withCommandTimeout(TimeSpan.timeSpan(5).seconds());
             var client = SmtpClient.smtpClient(config);
             var sender = new SmtpNotificationSender(client, THREE_QUICK);
-
             var result = sender.send(EMAIL).await();
 
             assertThat(result.isFailure()).as("delivery must fail: " + result).isTrue();
@@ -122,7 +138,7 @@ class SmtpReplyCodeClassificationTest {
                 }
             }
         } catch (IOException _) {
-            // server closed
+        // server closed
         }
     }
 
@@ -138,8 +154,7 @@ class SmtpReplyCodeClassificationTest {
         }
 
         reply(out, "220 probe ESMTP");
-        in.readLine(); // EHLO
-
+        in.readLine();  // EHLO
         if (failAt == Stage.EHLO) {
             reply(out, failReply);
 
@@ -149,16 +164,14 @@ class SmtpReplyCodeClassificationTest {
         reply(out, "250-probe");
         reply(out, "250-STARTTLS");
         reply(out, "250 AUTH PLAIN");
-
         if (failAt == Stage.STARTTLS) {
-            in.readLine(); // STARTTLS
+            in.readLine();  // STARTTLS
             reply(out, failReply);
 
             return;
         }
 
-        in.readLine(); // AUTH PLAIN
-
+        in.readLine();  // AUTH PLAIN
         if (failAt == Stage.AUTH) {
             reply(out, failReply);
 
@@ -166,9 +179,9 @@ class SmtpReplyCodeClassificationTest {
         }
 
         reply(out, "235 2.7.0 ok");
-        in.readLine(); // MAIL FROM
+        in.readLine();  // MAIL FROM
         reply(out, failReply);
-        in.readLine(); // QUIT or close
+        in.readLine();  // QUIT or close
     }
 
     @SuppressWarnings("JBCT-EX-01")

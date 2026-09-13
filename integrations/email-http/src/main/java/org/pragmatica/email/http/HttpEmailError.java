@@ -36,7 +36,7 @@ public sealed interface HttpEmailError extends Cause {
         /// Only failures are constructed here, so what is not permanent is worth retrying.
         @Override
         public boolean isTransient() {
-            return !isTerminal();
+            return ! isTerminal();
         }
     }
 

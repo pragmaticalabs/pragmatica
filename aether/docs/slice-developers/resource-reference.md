@@ -647,11 +647,14 @@ Nested under `[notification.retry_config]`:
 | `backoff_multiplier` | `double` | `2.0` | Exponential backoff multiplier |
 
 The schedule applies to **transient** failures only. A failure the backend has classified as
-permanent — SMTP `AuthFailed`, `TlsFailed`, `ProtocolError`, or a `Rejected` with a 5yz reply
-code; HTTP `AuthError` (401/403), `VendorNotFound`, or a `RequestFailed` with any 4xx status
-other than 408 and 429 — is not retried: the same request would get the same answer, and
-`DeliveryFailed` is returned after the first attempt (#271). SMTP 4yz replies, connection
-failures and timeouts, and HTTP 5xx/408/429 take the full schedule.
+permanent — SMTP: any **5yz reply on any command** (the greeting, EHLO, STARTTLS, AUTH, MAIL
+FROM, RCPT TO, DATA — every refusal record carries the reply code and RFC 5321 §4.2.1 decides),
+or a local TLS setup failure (`TlsSetupFailed`); HTTP: `AuthError` (401/403), `VendorNotFound`,
+or a `RequestFailed` with any 4xx status other than 408 and 429 — is not retried: the same
+request would get the same answer, and `DeliveryFailed` is returned after the first attempt
+(#271). SMTP **4yz replies on any command** (`454 Temporary authentication failure`, `454 TLS
+not available due to temporary reason`, `421` at the greeting or EHLO, `451` at MAIL FROM),
+connection failures and timeouts, and HTTP 5xx/408/429 take the full schedule.
 
 ### API
 
