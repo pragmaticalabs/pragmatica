@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
-import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.config.cluster.NodeRole;
@@ -181,8 +180,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          Consumer<NodeId> drainCommandSink,
                                                          Consumer<NodeId> drainCommandClear,
                                                          Supplier<Option<AutoHealStateValue>> autoHealStateReader,
-                                                         Supplier<Set<NodeId>> coreCountedMembers,
-                                                         IntSupplier configuredCoreCount) {
+                                                         MembershipLiveness liveness) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
                                                                          lifecycleManager,
                                                                          config,
@@ -195,8 +193,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          drainCommandSink,
                                                                          drainCommandClear,
                                                                          autoHealStateReader,
-                                                                         coreCountedMembers,
-                                                                         configuredCoreCount);
+                                                                         liveness);
     }
 
     /// #336 production factory — additionally wires the leader's OWN RESOLVED config as
@@ -214,10 +211,9 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// enable/disable flag — a direct local lookup against `AetherKey.AutoHealStateKey.SINGLETON`,
     /// never a separately-maintained cache. `AetherNode` wires it to the production `KVStore`.
     ///
-    /// `coreCountedMembers` / `configuredCoreCount` (#1050) are the `LeaderReconciler`'s own
-    /// drain-decision inputs (`MembershipFsm.coreCountedMembers()` and the configured core count),
-    /// re-read when a surplus drain's grace expires so the backstop reaps only while the cluster can
-    /// still spare the node. REQUIRED for the same fail-open reason as `autoHealStateReader`.
+    /// `liveness` (#1050 / #1062) is the membership and liveness evidence consulted before every irreversible
+    /// reap — the drain-grace backstop, the departed-node reap and the activation replay
+    /// ([MembershipLiveness]). REQUIRED for the same fail-open reason as `autoHealStateReader`.
     static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
                                                          NodeLifecycleManager lifecycleManager,
                                                          AutoHealConfig config,
@@ -230,8 +226,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          Consumer<NodeId> drainCommandClear,
                                                          Supplier<Option<TomlDocument>> resolvedLocalConfig,
                                                          Supplier<Option<AutoHealStateValue>> autoHealStateReader,
-                                                         Supplier<Set<NodeId>> coreCountedMembers,
-                                                         IntSupplier configuredCoreCount) {
+                                                         MembershipLiveness liveness) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
                                                                          lifecycleManager,
                                                                          config,
@@ -245,7 +240,6 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          drainCommandClear,
                                                                          resolvedLocalConfig,
                                                                          autoHealStateReader,
-                                                                         coreCountedMembers,
-                                                                         configuredCoreCount);
+                                                                         liveness);
     }
 }

@@ -197,8 +197,7 @@ class ClusterTopologyManagerRenderUserDataTest {
                                                                         ignored -> {},
                                                                         () -> Option.some(leaderResolved),
                                                                         Option::none,
-                                                                        Set::of,
-                                                                        () -> 0);
+                                                                        MembershipLiveness.UNWIRED);
         ctmWithKeys.activate();
 
         var result = ctmWithKeys.provisionReplacement(nodeId("node-r3").unwrap(),
