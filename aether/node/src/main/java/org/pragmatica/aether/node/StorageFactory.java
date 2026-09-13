@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -633,31 +634,43 @@ public final class StorageFactory {
                                          org.pragmatica.lang.io.TimeSpan attemptTimeout,
                                          BackoffStrategy backoff,
                                          BooleanSupplier stopped) {
+        var attempts = new AtomicInteger();
+
         return Retry.retry()
                     .attempts(Integer.MAX_VALUE)
                     .strategy(backoff)
-                    .execute(() -> attemptUnlessStopped(client, check, attemptTimeout, stopped))
+                    .execute(() -> attemptUnlessStopped(client,
+                                                        check,
+                                                        attemptTimeout,
+                                                        stopped,
+                                                        attempts.incrementAndGet()))
                     .onResult(check.readGate()::resolve);
     }
 
     private static Promise<Unit> attemptUnlessStopped(DHTClient client,
                                                       DhtMarkerCheck check,
                                                       org.pragmatica.lang.io.TimeSpan attemptTimeout,
-                                                      BooleanSupplier stopped) {
+                                                      BooleanSupplier stopped,
+                                                      int attempt) {
         return stopped.getAsBoolean()
                ? new EncryptionError.DhtMarkerCheckAbandoned(check.instanceName()).promise()
-               : attemptAndReport(client, check, attemptTimeout);
+               : attemptAndReport(client, check, attemptTimeout, attempt);
     }
 
-    /// #1052: one WARN per failed attempt. The rate is bounded by [#DHT_MARKER_RETRY_BACKOFF]: at most one
-    /// line per 30 s per instance once the backoff has reached its cap. core `Retry` logs per-attempt
-    /// progress only at DEBUG (#718), which would leave a node that is not ready silent at the default
-    /// level.
+    /// #1052: one WARN per failed attempt, naming the instance and the attempt number (1-based, counted
+    /// per [#verifyDhtMarker] call -- core `Retry` does not hand its attempt index to the operation). The
+    /// rate is bounded by [#DHT_MARKER_RETRY_BACKOFF]: at most one line per 30 s per instance once the
+    /// backoff has reached its cap. core `Retry` logs per-attempt progress only at DEBUG (#718), which
+    /// would leave a node that is not ready silent at the default level. Emitted through this class's
+    /// SLF4J logger (onto log4j2 in the node), not `System.Logger` (#1077), so it reaches the node's
+    /// appenders and `StorageFactoryDhtMarkerRetryTest` can capture it.
     private static Promise<Unit> attemptAndReport(DHTClient client,
                                                   DhtMarkerCheck check,
-                                                  org.pragmatica.lang.io.TimeSpan attemptTimeout) {
-        return attemptDhtMarker(client, check, attemptTimeout).onFailure(cause -> log.warn("DHT encryption-marker check attempt for instance '{}' did not complete: {} "
+                                                  org.pragmatica.lang.io.TimeSpan attemptTimeout,
+                                                  int attempt) {
+        return attemptDhtMarker(client, check, attemptTimeout).onFailure(cause -> log.warn("DHT encryption-marker check attempt {} for instance '{}' did not complete: {} "
                                                                                           + "(operations on its DHT tier stay gated and the node stays not-ready until the check completes)",
+                                                                                           attempt,
                                                                                            check.instanceName(),
                                                                                            cause.message()));
     }
@@ -761,8 +774,10 @@ public final class StorageFactory {
     /// means the attempt never learned whether a marker exists, so it fails on THIS cause (#1052: and
     /// is retried)
     /// ([EncryptionError.DhtMarkerCheckTimedOut]) -- never [EncryptionError.EncryptedTierRequiresKeyring],
-    /// which means the opposite: the marker WAS read successfully and named a key id absent from the
-    /// configured keyring.
+    /// which means the opposite: the marker WAS read successfully, it is present, and no keyring is
+    /// configured for the instance ([#refuseIfDhtEncryptedWithoutKeyring] -- the only branch that raises
+    /// it here; it compares nothing against a keyring, and with a keyring configured the marker is
+    /// overwritten unread, #831).
     private static Cause remapMarkerTimeout(Cause cause, String instanceName, org.pragmatica.lang.io.TimeSpan timeout) {
         return cause instanceof CoreError.Timeout
                ? new EncryptionError.DhtMarkerCheckTimedOut(instanceName, timeout.millis())

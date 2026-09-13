@@ -9,10 +9,20 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Configurator;
+import org.apache.logging.log4j.core.config.Property;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -63,21 +73,53 @@ class StorageFactoryDhtMarkerRetryTest {
     /// Longer than `DhtStorageTier`'s 30 s production admission bound, so a gated read settles on its own.
     private static final TimeSpan GATED_READ_BOUND = timeSpan(60).seconds();
 
+    private static final String FACTORY_LOGGER = StorageFactory.class.getName();
+    private static final String ATTEMPT_WARN_PREFIX = "DHT encryption-marker check attempt ";
+
     @TempDir
     Path tempDir;
 
-    private StorageFactory.StorageSetup setupWith(DHTClient client) {
-        var config = StorageConfig.storageConfig(8L * 1024 * 1024,
-                                                 64L * 1024 * 1024,
-                                                 tempDir.resolve("vault-disk").toString(),
-                                                 tempDir.resolve("snapshots").toString(),
-                                                 1000,
-                                                 "60s",
-                                                 5,
-                                                 "",
-                                                 false);
+    private CapturingAppender appender;
+    private LoggerContext loggerContext;
 
-        return StorageFactory.createAll(Map.of(INSTANCE, config), NODE_ID, Option.some(client), Option.none())
+    /// Same shape as `MavenProtocolRoutesAuthTest`: the node logs through SLF4J onto log4j2, so the
+    /// appender attaches to the log4j2 `LoggerConfig` for `StorageFactory`'s logger name (#1077: a
+    /// `System.Logger` emission would bypass this and the node's appenders alike).
+    @BeforeEach
+    void installLogCapture() {
+        Configurator.setLevel(FACTORY_LOGGER, Level.WARN);
+        loggerContext = (LoggerContext) LogManager.getContext(false);
+        appender = new CapturingAppender();
+        appender.start();
+        loggerContext.getConfiguration()
+                     .getLoggerConfig(FACTORY_LOGGER)
+                     .addAppender(appender, Level.WARN, null);
+        loggerContext.updateLoggers();
+    }
+
+    @AfterEach
+    void removeLogCapture() {
+        loggerContext.getConfiguration()
+                     .getLoggerConfig(FACTORY_LOGGER)
+                     .removeAppender(appender.getName());
+        appender.stop();
+        loggerContext.updateLoggers();
+    }
+
+    private StorageConfig vaultConfig() {
+        return StorageConfig.storageConfig(8L * 1024 * 1024,
+                                           64L * 1024 * 1024,
+                                           tempDir.resolve("vault-disk").toString(),
+                                           tempDir.resolve("snapshots").toString(),
+                                           1000,
+                                           "60s",
+                                           5,
+                                           "",
+                                           false);
+    }
+
+    private StorageFactory.StorageSetup setupWith(DHTClient client) {
+        return StorageFactory.createAll(Map.of(INSTANCE, vaultConfig()), NODE_ID, Option.some(client), Option.none())
                              .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
                              .unwrap()
                              .get(INSTANCE);
@@ -244,14 +286,54 @@ class StorageFactoryDhtMarkerRetryTest {
         assertThat(client.markerGets()).isEqualTo(2);
     }
 
+    /// #1052 fix round 2 (SF-2): the per-attempt WARN is the operator's only signal while the check
+    /// retries (`configuration.md`'s recovery step reads it), so it is pinned, not eyeballed: one WARN per
+    /// failed attempt, none for the attempt that succeeds, each naming the instance and its attempt
+    /// number in order. A WARN demoted to DEBUG, or one that drops the instance or the count, reds here.
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void verifyDhtMarker_warnsOncePerFailedAttempt_namingInstanceAndAttemptNumber() {
+        var client = new ScriptedDHTClient();
+        var setup = setupWith(client);
+        var check = checkOf(setup);
+
+        client.failNextMarkerGetsWithoutQuorum(3);
+
+        StorageFactory.verifyDhtMarker(client, check, SHORT_ATTEMPT_TIMEOUT, FAST_BACKOFF, NEVER_STOPPED)
+                      .await(SETTLE_BOUND)
+                      .onFailure(cause -> fail("three transient failures then success must verify - " + cause.message()));
+
+        assertThat(client.markerGets()).as("PRECONDITION: three failed attempts and one successful retry").isEqualTo(4);
+
+        var attemptWarnings = appender.warnings()
+                                      .stream()
+                                      .filter(message -> message.startsWith(ATTEMPT_WARN_PREFIX))
+                                      .toList();
+
+        assertThat(attemptWarnings).as("exactly one WARN per FAILED attempt: three, not four (the successful "
+                                       + "retry is not a failure) and not zero (DEBUG is silent at the default level)")
+                                   .hasSize(3);
+        assertThat(attemptWarnings).allSatisfy(message -> assertThat(message).as("each WARN must name the storage instance")
+                                                                              .contains("instance '" + INSTANCE + "'"));
+        assertThat(attemptWarnings).as("each WARN must carry its 1-based attempt number, in order")
+                                   .satisfiesExactly(first -> assertThat(first).startsWith(ATTEMPT_WARN_PREFIX + "1 for instance"),
+                                                     second -> assertThat(second).startsWith(ATTEMPT_WARN_PREFIX + "2 for instance"),
+                                                     third -> assertThat(third).startsWith(ATTEMPT_WARN_PREFIX + "3 for instance"));
+    }
+
+    /// #1052 fix round 2 (N-3): an instance IS present, so `allMatch(isEmpty)` is a real check, not a
+    /// vacuous pass over an empty map -- what makes it carry no check is the absent DHT client, the
+    /// same shape as every Ember boot.
     @Test
     void dhtAdmission_isAlreadyResolved_whenNoInstanceCarriesADhtTier() {
-        var setups = StorageFactory.createAll(Map.of(), NODE_ID, Option.none(), Option.none())
+        var setups = StorageFactory.createAll(Map.of(INSTANCE, vaultConfig()), NODE_ID, Option.none(), Option.none())
                                    .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
                                    .unwrap();
 
+        assertThat(setups).as("PRECONDITION: the instance must exist, or the all-match below is vacuous")
+                          .containsKey(INSTANCE);
         assertThat(setups.values().stream().allMatch(setup -> setup.dhtMarkerCheck().isEmpty()))
-                .as("PRECONDITION: no DHT client means no marker check anywhere")
+                .as("PRECONDITION: no DHT client means no marker check on the instance")
                 .isTrue();
         assertThat(StorageFactory.dhtAdmission(setups).isResolved())
                 .as("with nothing to admit, self-ready must not be deferred at all (it runs synchronously)")
@@ -268,6 +350,24 @@ class StorageFactoryDhtMarkerRetryTest {
 
         assertThat(client.markerGets()).as("PRECONDITION: the check must be retrying before the owner stops")
                                        .isGreaterThanOrEqualTo(atLeast);
+    }
+
+    /// Captures WARN events emitted by `StorageFactory` so the #1052 per-attempt line can be asserted.
+    private static final class CapturingAppender extends AbstractAppender {
+        private final List<String> messages = new CopyOnWriteArrayList<>();
+
+        private CapturingAppender() {
+            super("storage-factory-dht-marker-capture", null, null, true, Property.EMPTY_ARRAY);
+        }
+
+        @Override
+        public void append(LogEvent event) {
+            messages.add(event.getMessage().getFormattedMessage());
+        }
+
+        List<String> warnings() {
+            return List.copyOf(messages);
+        }
     }
 
     /// In-memory `DHTClient` whose marker-key gets can be scripted to hang, to fail fast without quorum, or

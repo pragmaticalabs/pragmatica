@@ -1734,8 +1734,12 @@ public interface AetherNode extends ManageableNode {
             /// `Promise.UNIT` — nothing to check.
             ///
             /// #1052: retries until each check completes or definitively refuses; `periodicTasks`'
-            /// cancellation (stop(), or the failed-boot guard) is the loop's stop signal, so a stopped
-            /// node stops retrying.
+            /// cancellation is the loop's stop signal, so a stopped node stops retrying. In practice
+            /// that signal is `stop()` alone: the other canceller, the failed-boot guard
+            /// (`cancelArmedWork`, from `verifyRoutedTypesEncodable`), runs at construction, before
+            /// [#start] and therefore before this loop exists. Consequence: a refusal leaves periodic
+            /// work armed until whoever owns the node stops it (`Main#exitWithError`, Ember's
+            /// `abortStart`, a test's tear-down).
             private Promise<Unit> verifyDhtMarkers() {
                 var checks = storageSetups.values()
                                           .stream()

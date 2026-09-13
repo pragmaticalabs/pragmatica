@@ -18,6 +18,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.api.ManagementApiResponses.ComponentHealth;
+import org.pragmatica.aether.api.routes.StatusRoutes;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
@@ -71,6 +73,14 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 ///   4. #1052: readiness waits on admission. A node whose DHT tier is not admitted never reaches
 ///      lifecycle `ACTIVE`, even though `start()` resolved. A control node in the same test, admitted
 ///      normally, does reach it.
+///   5. #1052 fix round 2 (SF-1): `/health/ready`'s `dht-admission` component reads THIS node's
+///      `storageSetups()`. Pinned on a real node because `StatusRoutesDhtAdmissionTest` stubs
+///      `storageSetups -> Map.of()`, and a stub that hands the builder the empty case cannot see the
+///      builder ignoring its input (a `List.of()` at the wiring stayed green under round 1's mutation
+///      matrix). Before `start()` the 'artifacts' gate is unresolved -- the same state the builder sees
+///      while the check retries after formation -- so the component reads DOWN naming `artifacts`; once
+///      `start()` has admitted the tier it reads UP. The retrying state itself is not inducible on a
+///      single-node boot (below), so "before start()" is its real-node stand-in.
 ///
 /// A genuine cross-boot scenario ("marker written by a PRIOR boot, no keyring THIS boot -> refusal")
 /// stays infeasible as a real-boot test here: no seam exists across any of the four
@@ -245,6 +255,44 @@ class AetherNodeDhtMarkerPostFormationBootTest {
                                                           .isNotEqualTo(NodeState.ACTIVE);
             Thread.sleep(50);
         }
+    }
+
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void readiness_reportsDhtAdmissionDownNamingArtifacts_beforeStart_andUpOnceAdmitted() {
+        node = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none()), () -> {})
+                          .onFailure(cause -> fail("construction must succeed - " + cause.message()))
+                          .unwrap();
+        var routes = StatusRoutes.statusRoutes(() -> node, node::appHttpServer);
+
+        assertThat(node.storageSetups().get("artifacts").dhtAdmissionPending()).as("PRECONDITION: the real node's 'artifacts' "
+                                                                                    + "marker check is pending before start()")
+                                                                                .isTrue();
+
+        var before = dhtAdmissionComponent(routes);
+        assertThat(before.status()).as("/health/ready must read the REAL node's pending check as DOWN -- an empty or "
+                                       + "stubbed setups map at the wiring would read UP here")
+                                   .isEqualTo("DOWN");
+        assertThat(before.detail()).as("the component must name the instance holding the node not-ready")
+                                   .contains("artifacts");
+
+        node.start()
+            .await(START_BOUND)
+            .onFailure(cause -> fail("start() must succeed: this node's DHT holds no marker - " + cause.message()));
+
+        var after = dhtAdmissionComponent(routes);
+        assertThat(after.status()).as("once start() admitted the tier the same wiring must read UP (detail: %s)",
+                                      after.detail())
+                                  .isEqualTo("UP");
+    }
+
+    private static ComponentHealth dhtAdmissionComponent(StatusRoutes routes) {
+        return routes.buildReadinessResponse()
+                     .components()
+                     .stream()
+                     .filter(component -> component.name().equals("dht-admission"))
+                     .findFirst()
+                     .orElseGet(() -> fail("/health/ready must carry the dht-admission component"));
     }
 
     private static long awaitActive(AetherNode candidate) throws InterruptedException {
