@@ -21,6 +21,7 @@ import org.pragmatica.http.HttpResult;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.TerminalOperation;
+import org.pragmatica.lang.parse.Number;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -321,7 +322,7 @@ class ScaleUpFiveToSevenProbeTest {
     private static long jsonNumber(Pattern field, String body) {
         var matcher = field.matcher(body);
         return matcher.find()
-               ? Long.parseLong(matcher.group(1))
+               ? Number.parseLong(matcher.group(1)).or(-1L)
                : -1L;
     }
 
