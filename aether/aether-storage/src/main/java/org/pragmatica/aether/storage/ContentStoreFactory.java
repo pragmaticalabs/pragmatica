@@ -38,7 +38,6 @@ public final class ContentStoreFactory implements ResourceFactory<ContentStore, 
                       .map(instance -> ContentStore.contentStore(instance, config))
                       .async();
     }
-
     // No close override, deliberately (#893). A content store owns nothing releasable: the
     // StorageInstance it writes through is the NODE's (registered by
     // AetherNode.registerRuntimeExtensions and shut down by the node), so closing it from one
