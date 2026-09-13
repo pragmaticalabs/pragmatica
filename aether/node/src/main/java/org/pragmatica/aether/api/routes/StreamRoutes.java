@@ -55,6 +55,7 @@ public final class StreamRoutes implements RouteSource {
     private static final Cause MISSING_STREAM_NAME = Causes.cause("Missing stream name");
 
     private static final Cause SYSTEM_STREAM_NAME_FORBIDDEN = Causes.cause("Cannot create a stream using a reserved system stream name");
+    private static final Cause SYSTEM_STREAM_GROUP_FORBIDDEN = Causes.cause("Cannot join or leave a consumer group on a reserved system stream");
 
     private static final int DEFAULT_PARTITIONS = 4;
 
@@ -338,7 +339,16 @@ public final class StreamRoutes implements RouteSource {
                             .map(partitions -> new StreamConsumersResponse(name, partitions));
     }
 
+    /// #742 — same guard as [#createFreshStream], for the same reason: the target stream name is
+    /// body-carried, so [ManagementServer]'s pre-auth write-gate cannot see it, and the coordinator's
+    /// `joinGroup`/`leaveGroup` both `rebalance` — real, replicated KV assignment records under the
+    /// named stream. First statement, unconditionally, before any coordinator call. Package-visible
+    /// (like `createStream`) so `StreamRoutesGroupSystemStreamTest` can pin it.
     Result<GroupStatusResponse> joinGroup(JoinGroupRequest request) {
+        if (SystemStreams.isForbiddenEngineKey(request.streamName())) {
+            return Result.failure(SYSTEM_STREAM_GROUP_FORBIDDEN);
+        }
+
         return coordinator.joinGroup(request.groupId(),
                                      request.streamName(),
                                      request.partitionCount(),
@@ -349,6 +359,10 @@ public final class StreamRoutes implements RouteSource {
     }
 
     Result<GroupStatusResponse> leaveGroup(LeaveGroupRequest request) {
+        if (SystemStreams.isForbiddenEngineKey(request.streamName())) {
+            return Result.failure(SYSTEM_STREAM_GROUP_FORBIDDEN);
+        }
+
         return coordinator.leaveGroup(request.groupId(),
                                       request.streamName(),
                                       request.consumerId())
