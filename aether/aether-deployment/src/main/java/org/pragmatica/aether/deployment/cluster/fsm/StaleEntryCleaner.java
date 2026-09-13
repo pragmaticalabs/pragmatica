@@ -7,18 +7,18 @@ package org.pragmatica.aether.deployment.cluster.fsm;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
-import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.CommittedSliceTarget;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState.Active;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
@@ -145,20 +145,27 @@ record StaleEntryCleaner(Active active) {
 
     // Fire-and-forget cleanup sweep (see cleanupStaleNodeRoutes): callers ignore the outcome;
     // issueUnloadCommand / removeNodeArtifactKey each report their own failure internally.
+    //
+    // #1068: the sweep walks the COMMITTED `NodeArtifactKey` entries, not `active.sliceStates()`, and
+    // re-issues on every tick until the key is absent from the store. The projection walk dropped the
+    // entry BEFORE issuing the UNLOAD, so one consensus timeout (measured: 30s, during a rollback in
+    // CI run 34772700962) left the key in the store for good — and a node then healed its ACTIVE
+    // claim into a running slice with no owning blueprint. Keys of departed nodes are left to
+    // cleanupStaleNodeArtifactEntries, which removes them outright.
     @Contract
     void cleanupOrphanedSliceEntries() {
         if (!active.coreMembershipResolved()) {
             return;
         }
 
-        var orphanedEntries = active.sliceStates()
-                                    .entrySet()
-                                    .stream()
-                                    .filter(entry -> !active.blueprints()
-                                                            .containsKey(entry.getKey().artifact()))
-                                    .filter(entry -> committedTargetAbsent(entry.getKey().artifact()))
-                                    .toList();
+        var currentNodes = new HashSet<>(active.activeNodes());
+        var orphanedEntries = new ArrayList<Map.Entry<SliceNodeKey, SliceState>>();
 
+        active.ctx()
+              .kvStore()
+              .forEach(NodeArtifactKey.class,
+                       NodeArtifactValue.class,
+                       (key, value) -> collectOrphanedSliceEntry(orphanedEntries, key, value, currentNodes));
         if (orphanedEntries.isEmpty()) {
             return;
         }
@@ -175,32 +182,37 @@ record StaleEntryCleaner(Active active) {
             }
         }
 
-        log.info("Cleaning up {} orphaned slice entries (no matching blueprint)", orphanedEntries.size());
+        log.info("Cleaning up {} orphaned slice entries (no committed slice target)", orphanedEntries.size());
     }
 
     /// CONFIRM AGAINST THE AUTHORITY BEFORE DESTROYING. `active.blueprints()` is a leader-local
     /// PROJECTION rebuilt only on `Active` entry; nothing re-derives it during a term. A single missed
-    /// `AppBlueprintPut` — or a rename path that clears the entry and loses the re-put — therefore makes
-    /// every slice of that artifact look orphaned for the leader's whole term, and this sweep runs each
-    /// reconcile tick and force-UNLOADs them cluster-wide. The operator sees healthy slices unloading
+    /// `AppBlueprintPut` — or a rename path that clears the entry and loses the re-put — therefore made
+    /// every slice of that artifact look orphaned for the leader's whole term, and this sweep ran each
+    /// reconcile tick and force-UNLOADed them cluster-wide. The operator saw healthy slices unloading
     /// under "orphaned slice entries (no matching blueprint)".
     ///
     /// Same defect shape as the stuck-slice remediator (fixed 2026-08-16), which judged a slice by a
     /// projection and destroyed one that had been serving traffic 35s earlier — and the same fail-safe
-    /// direction: the committed `SliceTargetValue` is the authority, and a slice is treated as orphaned
-    /// only when the KV also has nothing for it. An absent or unreadable target falls through to the
-    /// previous behaviour, so a genuinely orphaned slice is still cleaned up.
-    ///
-    /// The VERSION is part of the check: a target that has moved to a newer version means this artifact
-    /// is superseded and genuinely should be unloaded, so a stale version is still an orphan.
-    private boolean committedTargetAbsent(Artifact artifact) {
-        return active.ctx()
-                     .kvStore()
-                     .get(SliceTargetKey.sliceTargetKey(artifact.base()))
-                     .filter(SliceTargetValue.class::isInstance)
-                     .map(SliceTargetValue.class::cast)
-                     .filter(target -> target.currentVersion()
-                                             .equals(artifact.version()))
-                     .isEmpty();
+    /// direction: the committed `SliceTargetValue` is the authority, and the projection is not consulted
+    /// at all (#1068). A slice is orphaned exactly when [CommittedSliceTarget] permits nothing for its
+    /// version — the VERSION is part of the check, so a target that has moved to a newer version means
+    /// this artifact is superseded and genuinely should be unloaded, unless a rolling update's routing
+    /// entry still names it.
+    private void collectOrphanedSliceEntry(List<Map.Entry<SliceNodeKey, SliceState>> result,
+                                           NodeArtifactKey key,
+                                           NodeArtifactValue value,
+                                           Set<NodeId> currentNodes) {
+        if (!currentNodes.contains(key.nodeId())) {
+            return;
+        }
+
+        if (CommittedSliceTarget.permits(active.ctx().kvStore(),
+                                         key.artifact())) {
+            return;
+        }
+
+        result.add(Map.entry(SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId()),
+                             value.state()));
     }
 }

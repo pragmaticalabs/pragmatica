@@ -25,6 +25,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
+import org.pragmatica.aether.deployment.CommittedSliceTarget;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.ReconciliationAdjustment;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
@@ -2298,7 +2299,20 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                     .contains(dependency);
         }
 
+        /// #1068 — the leader's half of "a rolled-back version never starts again": a LOADED slice
+        /// whose version no committed target names (the blueprint rolled back or was superseded
+        /// between LOAD and LOADED) is UNLOADed instead of activated. Same predicate as the node-side
+        /// gate and the orphan sweep, read from the committed store, never from `blueprints`.
         private void issueActivateCommand(SliceNodeKey sliceKey) {
+            if (!CommittedSliceTarget.permits(ctx.kvStore(), sliceKey.artifact())) {
+                log.warn("No committed SliceTarget names {} — issuing UNLOAD instead of ACTIVATE for {} (#1068)",
+                         sliceKey.artifact(),
+                         sliceKey.nodeId());
+                issueUnloadCommand(sliceKey);
+
+                return;
+            }
+
             log.debug("Issuing ACTIVATE command for {}", sliceKey);
             applyStateWrite(sliceKey, SliceState.ACTIVATE).onFailure(cause -> log.error("Failed to issue ACTIVATE command for {}: {}",
                                                                                         sliceKey,

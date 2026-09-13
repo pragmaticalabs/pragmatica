@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.CommittedSliceTarget;
 import org.pragmatica.aether.deployment.config.ConfigNotificationManager;
 import org.pragmatica.aether.deployment.drain.DrainReason;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SliceDeployment;
@@ -360,17 +361,16 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private void forceCleanupSlice(SliceNodeKey sliceKey) {
-            unpublishEndpoints(sliceKey).flatMap(this::unpublishTopicSubscriptions)
-                              .flatMap(this::unpublishStreamSubscriptions)
-                              .flatMap(key -> releaseStreamReferences(key).map(_ -> key))
-                              .flatMap(this::unpublishScheduledTasks)
-                              .flatMap(this::unpublishHttpRoutes)
-                              .withSuccess(this::unregisterSliceFromInvocation)
-                              .flatMap(key -> ctx.sliceStore()
-                                                 .deactivateSlice(key.artifact()))
-                              .flatMap(_ -> ctx.sliceStore()
-                                               .unloadSlice(sliceKey.artifact()))
-                              .onFailure(cause -> logCleanupFailure(sliceKey, cause));
+            unpublishTopicSubscriptions(sliceKey).flatMap(this::unpublishStreamSubscriptions)
+                                       .flatMap(key -> releaseStreamReferences(key).map(_ -> key))
+                                       .flatMap(this::unpublishScheduledTasks)
+                                       .flatMap(this::unpublishHttpRoutes)
+                                       .withSuccess(this::unregisterSliceFromInvocation)
+                                       .flatMap(key -> ctx.sliceStore()
+                                                          .deactivateSlice(key.artifact()))
+                                       .flatMap(_ -> ctx.sliceStore()
+                                                        .unloadSlice(sliceKey.artifact()))
+                                       .onFailure(cause -> logCleanupFailure(sliceKey, cause));
         }
 
         private void logCleanupFailure(SliceNodeKey sliceKey, Cause cause) {
@@ -402,6 +402,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private void handleLoading(SliceNodeKey sliceKey) {
+            if (!committedTargetPermits(sliceKey, "load")) {
+                return;
+            }
+
             transitionTo(sliceKey, SliceState.LOADING).flatMap(this::loadSliceWithTimeout)
                         .flatMap(key -> transitionTo(key, SliceState.LOADED))
                         .withFailure(cause -> handleLoadingFailure(sliceKey, cause));
@@ -433,6 +437,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private void handleActivating(SliceNodeKey sliceKey) {
+            if (!committedTargetPermits(sliceKey, "activate")) {
+                return;
+            }
+
             findLoadedSlice(sliceKey.artifact()).onEmpty(() -> handleSliceNotFoundForActivation(sliceKey))
                            .onPresent(_ -> performActivation(sliceKey));
         }
@@ -683,14 +691,13 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private void handleActivationFailure(SliceNodeKey sliceKey, Cause cause) {
             log.error("Activation failed for {}: {}", sliceKey.artifact(), cause.message());
             unregisterSliceFromInvocation(sliceKey);
-            unpublishEndpoints(sliceKey).flatMap(this::unpublishHttpRoutes)
-                              .flatMap(this::unpublishTopicSubscriptions)
-                              .flatMap(this::unpublishStreamSubscriptions)
-                              .flatMap(this::unpublishScheduledTasks)
-                              .withFailure(partialCause -> log.warn("Partial unpublish during activation-failure cleanup for {}: {}",
-                                                                    sliceKey.artifact(),
-                                                                    partialCause.message()))
-                              .withResult(_ -> transitionToFailed(sliceKey, cause, Unrecognised.RETRY));
+            unpublishHttpRoutes(sliceKey).flatMap(this::unpublishTopicSubscriptions)
+                               .flatMap(this::unpublishStreamSubscriptions)
+                               .flatMap(this::unpublishScheduledTasks)
+                               .withFailure(partialCause -> log.warn("Partial unpublish during activation-failure cleanup for {}: {}",
+                                                                     sliceKey.artifact(),
+                                                                     partialCause.message()))
+                               .withResult(_ -> transitionToFailed(sliceKey, cause, Unrecognised.RETRY));
         }
 
         private void handleActive(SliceNodeKey sliceKey) {
@@ -713,7 +720,16 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// post-activation action-log replay of pre-activation `NodeArtifactKey` events (§5.8)
         /// or any live ACTIVE put observed without a locally loaded slice; a load failure lands
         /// in FAILED through the regular `handleLoadingFailure` path (CDM-visible).
+        ///
+        /// #1068: "the KV desired state" is the committed `SliceTargetKey`, not the ACTIVE claim on
+        /// its own. A rollback whose UNLOAD timed out leaves exactly such a claim behind, and healing
+        /// it resurrected a slice with no owning blueprint (measured in CI run 34772700962). The
+        /// gate below is what makes the claim's absence of a target decisive.
         private void redeployClaimedActiveSlice(SliceNodeKey sliceKey) {
+            if (!committedTargetPermits(sliceKey, "redeploy")) {
+                return;
+            }
+
             log.info("Node {} KV claims ACTIVE for {} but the slice is not loaded locally — redeploying (KV convergence)",
                      ctx.self().id(),
                      sliceKey.artifact());
@@ -721,6 +737,27 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                         .flatMap(key -> transitionTo(key, SliceState.LOADED))
                         .onSuccess(key -> processStateTransition(key, SliceState.ACTIVATE))
                         .onFailure(cause -> handleLoadingFailure(sliceKey, cause));
+        }
+
+        /// #1068 — the node-side half of "a rolled-back version never starts again". Every path that
+        /// starts a slice (LOAD, ACTIVATE, the KV-convergence redeploy) first asks the COMMITTED store
+        /// whether it still targets this version ([CommittedSliceTarget]); Rabia's total order puts
+        /// the rollback's `SliceTargetKey` removal before any later start command, so a node that
+        /// applied the removal refuses. A refusal writes nothing: the leader's orphan sweep
+        /// (`StaleEntryCleaner.cleanupOrphanedSliceEntries`) owns the leftover key and re-issues
+        /// UNLOAD until it is gone.
+        private boolean committedTargetPermits(SliceNodeKey sliceKey, String operation) {
+            if (CommittedSliceTarget.permits(ctx.kvStore(), sliceKey.artifact())) {
+                return true;
+            }
+
+            log.warn("Node {} refuses to {} {}: no committed SliceTarget names this version (#1068) — "
+                    + "the blueprint was rolled back or superseded; the leader's orphan sweep removes the entry",
+                     ctx.self().id(),
+                     operation,
+                     sliceKey.artifact());
+
+            return false;
         }
 
         private Promise<Unit> publishHttpRoutes(SliceNodeKey sliceKey) {
@@ -828,8 +865,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private void performDeactivation(SliceNodeKey sliceKey) {
-            transitionTo(sliceKey, SliceState.DEACTIVATING).flatMap(this::unpublishEndpoints)
-                        .flatMap(this::unpublishTopicSubscriptions)
+            transitionTo(sliceKey, SliceState.DEACTIVATING).flatMap(this::unpublishTopicSubscriptions)
                         .flatMap(this::unpublishStreamSubscriptions)
                         .flatMap(key -> releaseStreamReferences(key).map(_ -> key))
                         .flatMap(this::unpublishScheduledTasks)
@@ -867,35 +903,14 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       .map(_ -> sliceKey);
         }
 
-        private Promise<SliceNodeKey> unpublishEndpoints(SliceNodeKey sliceKey) {
-            var artifact = sliceKey.artifact();
-
-            return findLoadedSlice(artifact).map(ls -> unpublishEndpointsForSlice(artifact,
-                                                                                  ls.slice()))
-                                  .or(Promise.unitPromise())
-                                  .map(_ -> sliceKey);
-        }
-
-        private Promise<Unit> unpublishEndpointsForSlice(Artifact artifact, Slice slice) {
-            var methods = slice.methods();
-
-            if (methods.isEmpty()) {
-                return Promise.unitPromise();
-            }
-
-            var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(ctx.self(), artifact);
-            var nodeArtifactValue = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
-            KVCommand<AetherKey> command = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
-
-            return applyWithRetry(List.of(command),
-                                  0).onSuccess(_ -> log.debug("Unpublished {} endpoints for slice {}",
-                                                              methods.size(),
-                                                              artifact))
-                                 .onFailure(cause -> log.error("Failed to unpublish endpoints for {}: {}",
-                                                               artifact,
-                                                               cause.message()));
-        }
-
+        // #1068: there is deliberately no `unpublishEndpoints` mirror of `publishEndpoints`. The one
+        // that existed wrote `NodeArtifactValue(ACTIVE, methods=[])` into every teardown chain —
+        // between the UNLOADING put and the key removal, between DEACTIVATING and LOADED, and after a
+        // key had already been removed. `EndpointRegistry` ignores empty-method puts, so it
+        // unpublished nothing; the transitional put before it already carries an empty method list
+        // and the unload's Remove unregisters. What the write DID do was claim ACTIVE for a slice
+        // being torn down, and one such claim committing after the local unload is the resurrection
+        // measured in CI run 34772700962.
         private Promise<SliceNodeKey> publishTopicSubscriptions(SliceNodeKey sliceKey) {
             var artifact = sliceKey.artifact();
 
@@ -1502,8 +1517,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private void handleUnloading(SliceNodeKey sliceKey) {
-            transitionTo(sliceKey, SliceState.UNLOADING).flatMap(this::unpublishEndpoints)
-                        .flatMap(this::unpublishTopicSubscriptions)
+            transitionTo(sliceKey, SliceState.UNLOADING).flatMap(this::unpublishTopicSubscriptions)
                         .flatMap(this::unpublishStreamSubscriptions)
                         .flatMap(key -> releaseStreamReferences(key).map(_ -> key))
                         .flatMap(this::unpublishScheduledTasks)
@@ -2013,9 +2027,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private void handleReactivationFailure(SliceNodeKey sliceKey, Cause cause) {
             log.error("Failed to reactivate slice {}: {}", sliceKey.artifact(), cause.message());
             unregisterSliceFromInvocation(sliceKey);
-            unpublishEndpoints(sliceKey).flatMap(this::unpublishTopicSubscriptions)
-                              .flatMap(this::unpublishScheduledTasks)
-                              .flatMap(this::unpublishHttpRoutes);
+            unpublishTopicSubscriptions(sliceKey).flatMap(this::unpublishScheduledTasks)
+                                       .flatMap(this::unpublishHttpRoutes);
             deployments.remove(sliceKey);
         }
 
