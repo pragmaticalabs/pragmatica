@@ -80,7 +80,7 @@ USER aether
 # Never set in production; DockerComputeProvider emits it into a CTM-minted
 # replacement's own env, never into compose-fixed seed nodes' env.
 ENTRYPOINT ["sh", "-c", "\
-    ${AETHER_TEST_BOOT_DELAY:+sleep ${AETHER_TEST_BOOT_DELAY}; } \
+    if [ -n \"${AETHER_TEST_BOOT_DELAY:-}\" ]; then sleep \"$AETHER_TEST_BOOT_DELAY\"; fi; \
     CORES=$(nproc 2>/dev/null || echo 2); \
     VTHREAD_PARALLELISM=$(( CORES > 8 ? CORES : 8 )); \
     java $JAVA_OPTS \
