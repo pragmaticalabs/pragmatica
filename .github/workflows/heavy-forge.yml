@@ -24,7 +24,10 @@ jobs:
       (contains(github.event.pull_request.labels.*.name, 'run-heavy') &&
        (github.event.action != 'labeled' || github.event.label.name == 'run-heavy'))
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    # Measured on #1063 (run 34769833940): setup through blueprints took 2m39s and the test step 51m04s.
+    # Eight classes spent their full 4-minute setUp wait in that run. Step budget 100m (~2x measured),
+    # fork 5700s so failsafe reaps before the step dies, job 120m.
+    timeout-minutes: 120
     concurrency:
       group: heavy-forge-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
@@ -70,8 +73,8 @@ jobs:
         run: >
           mvn verify -B -Pwith-e2e -pl aether/forge/forge-tests
           -Dgroups=Heavy -Dfailsafe.excludedGroups=
-          -Dfailsafe.forkedProcessTimeoutInSeconds=9600
-        timeout-minutes: 170
+          -Dfailsafe.forkedProcessTimeoutInSeconds=5700
+        timeout-minutes: 100
 
       # Counts <testcase> elements, never the <testsuite tests="N"> attribute, which reads 0 for
       # @Nested classes.
