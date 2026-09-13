@@ -2,15 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.storage;
-
-import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.slice.ProvisioningContext;
-import org.pragmatica.storage.ContentStore;
-import org.pragmatica.storage.ContentStoreConfig;
-import org.pragmatica.storage.MemoryTier;
-import org.pragmatica.storage.StorageInstance;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -18,8 +10,17 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.pragmatica.aether.slice.ProvisioningContext;
+import org.pragmatica.storage.ContentStore;
+import org.pragmatica.storage.ContentStoreConfig;
+import org.pragmatica.storage.MemoryTier;
+import org.pragmatica.storage.StorageInstance;
+
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+
 
 /// #893: `ContentStoreFactory.close` was a no-op override — `return Promise.unitPromise()` — which
 /// reports success while releasing nothing and is indistinguishable from a working close. A
@@ -45,8 +46,8 @@ class ContentStoreFactoryCloseTest {
                              .toList();
 
         assertThat(declared).as("ContentStoreFactory must not override close(T): the store owns nothing releasable"
-                                 + " and a no-op override is the #893 defect")
-                            .isEmpty();
+                               + " and a no-op override is the #893 defect")
+                  .isEmpty();
     }
 
     /// The reason the override is absent, pinned as a behaviour so an overcorrection ("close it
@@ -55,27 +56,38 @@ class ContentStoreFactoryCloseTest {
     @Test
     void close_doesNotShutDown_theNodeOwnedStorageInstance() {
         var shutdowns = new AtomicInteger();
-        var storage = countingShutdowns(StorageInstance.storageInstance("content", List.of(MemoryTier.memoryTier(MEMORY_BYTES))),
+        var storage = countingShutdowns(StorageInstance.storageInstance("content",
+                                                                        List.of(MemoryTier.memoryTier(MEMORY_BYTES))),
                                         shutdowns);
         var context = ProvisioningContext.provisioningContext().withExtension(StorageInstance.class, storage);
 
-        factory.provision(ContentStoreConfig.contentStoreConfig(), context)
+        factory.provision(ContentStoreConfig.contentStoreConfig(),
+                          context)
                .flatMap(factory::close)
                .await()
                .onFailure(cause -> fail("close should succeed: " + cause.message()));
-
         assertThat(shutdowns.get()).as("a slice's release must never shut down the node's StorageInstance").isZero();
     }
 
     private static StorageInstance countingShutdowns(StorageInstance delegate, AtomicInteger shutdowns) {
         return (StorageInstance) Proxy.newProxyInstance(StorageInstance.class.getClassLoader(),
                                                         new Class<?>[]{StorageInstance.class},
-                                                        (_, method, args) -> {
-                                                            if ("shutdown".equals(method.getName())) {
-                                                                shutdowns.incrementAndGet();
-                                                            }
+                                                        (_, method, args) -> countThenDelegate(delegate,
+                                                                                               shutdowns,
+                                                                                               method,
+                                                                                               args));
+    }
 
-                                                            return method.invoke(delegate, args);
-                                                        });
+    // Method.invoke's checked exceptions belong to InvocationHandler.invoke, which declares Throwable.
+    @SuppressWarnings("JBCT-EX-01")
+    private static Object countThenDelegate(StorageInstance delegate,
+                                            AtomicInteger shutdowns,
+                                            Method method,
+                                            Object[] args) throws Exception {
+        if ("shutdown".equals(method.getName())) {
+            shutdowns.incrementAndGet();
+        }
+
+        return method.invoke(delegate, args);
     }
 }
