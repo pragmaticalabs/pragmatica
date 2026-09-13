@@ -74,4 +74,20 @@ class MembershipLivenessTest {
     void replayProtected_noEvidence_isUnprotected() {
         assertThat(liveness(Set.of(), Set.of(), Set.of(), Set.of(), Set.of()).replayProtected(TARGET)).isFalse();
     }
+
+    /// SF-1: protected by raw SWIM life and nothing else — the shape the replay parks.
+    @Test
+    void swimOnlyProtected_swimAliveAlone_isTrue() {
+        assertThat(liveness(Set.of(), Set.of(), Set.of(TARGET), Set.of(), Set.of()).swimOnlyProtected(TARGET)).isTrue();
+    }
+
+    /// Any second protection — tracked, counted, in flight, or the link up — is not SWIM-only; nor is no SWIM life.
+    @Test
+    void swimOnlyProtected_anyOtherProtection_orNoSwimLife_isFalse() {
+        assertThat(liveness(Set.of(), Set.of(TARGET), Set.of(TARGET), Set.of(), Set.of()).swimOnlyProtected(TARGET)).as("tracked").isFalse();
+        assertThat(liveness(Set.of(TARGET), Set.of(), Set.of(TARGET), Set.of(), Set.of()).swimOnlyProtected(TARGET)).as("counted").isFalse();
+        assertThat(liveness(Set.of(), Set.of(), Set.of(TARGET), Set.of(), Set.of(TARGET)).swimOnlyProtected(TARGET)).as("in flight").isFalse();
+        assertThat(liveness(Set.of(), Set.of(), Set.of(TARGET), Set.of(TARGET), Set.of()).swimOnlyProtected(TARGET)).as("link up").isFalse();
+        assertThat(liveness(Set.of(), Set.of(), Set.of(), Set.of(), Set.of()).swimOnlyProtected(TARGET)).as("no SWIM life").isFalse();
+    }
 }

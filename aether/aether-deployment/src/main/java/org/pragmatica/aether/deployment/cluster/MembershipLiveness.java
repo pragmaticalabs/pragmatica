@@ -79,6 +79,26 @@ public record MembershipLiveness(Supplier<Set<NodeId>> coreCountedMembers,
                                                                                                   .contains(nodeId);
     }
 
+    /// SF-1 (verify-1057-r3): [#replayProtected] holds for `nodeId` ONLY because raw SWIM still reports it alive —
+    /// untracked, uncounted, not in flight, transport down. That is the shape of a dead node inside SWIM's suspicion
+    /// window seen by a leader that has no parked reap for it; the replay parks such a node so the FAULTY edge that
+    /// ends the window re-arms the reap. Any other protection (tracked, counted, in flight, link up) is not parked:
+    /// the FSM's own departure path, or a later replay, owns it.
+    public boolean swimOnlyProtected(NodeId nodeId) {
+        return swimAlive.test(nodeId)
+               && !transportConnected.test(nodeId)
+               && !knownToTheCluster(nodeId);
+    }
+
+    /// Tracked or counted by the FSM, or a replacement still in flight — every protection but raw SWIM life.
+    private boolean knownToTheCluster(NodeId nodeId) {
+        var tracked = trackedMembers.get();
+        var counted = coreCountedMembers.get();
+        var inFlight = inFlightProvisioning.get();
+
+        return tracked.contains(nodeId) || counted.contains(nodeId) || inFlight.contains(nodeId);
+    }
+
     /// The evidence behind a liveness decision, for the log line that records it.
     public String evidence(NodeId nodeId) {
         return "transportConnected=" + transportConnected.test(nodeId)

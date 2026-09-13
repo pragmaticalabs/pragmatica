@@ -400,10 +400,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         log.warn("CTM: Self-shutdown observed for {}", selfShutdown.nodeId());
     }
 
-    /// #1050 (S1) — SWIM FAULTY is the death evidence that re-arms an ABANDONED reap ([#reapUnlessLive]) of the
-    /// same node, and nothing else: a node whose reap was never abandoned is not touched here (its departure
-    /// goes through `NodeRemoved`, its death-after-grace through the activation replay). The re-armed reap is
-    /// still evidence-gated — a node that somehow shows life again is deferred, never terminated.
+    /// #1050 (S1) — SWIM FAULTY is the death evidence that re-arms a PARKED reap of the same node — one
+    /// [#reapUnlessLive] abandoned, or one the activation replay parked ([#unprotectedOrParked]) — and nothing
+    /// else: a node with no parked reap is not touched here (its departure goes through `NodeRemoved`, its
+    /// death-after-grace through the activation replay). The re-armed reap is still evidence-gated — a node that
+    /// somehow shows life again is deferred, never terminated. Only the FAULTY edge re-arms: SWIM's UNKNOWN edge
+    /// (a suspicion window that expired WITHOUT co-confirmation — a transport hint or enough accusers) reads
+    /// not-alive to [MembershipLiveness#live] but is not positive death evidence (72e179cfe), so a parked reap
+    /// stays parked through it; a chain still running at that edge terminates on its own next re-check.
     @Contract
     @Override
     public void onSwimFaulty(NodeId nodeId) {
@@ -444,6 +448,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void handleNodeJoined(NodeJoined joined) {
         log.info("CTM: Node {} joined", joined.nodeId());
+        // A rejoin under the same id ends the parked episode: the new incarnation's death, if it comes, arrives
+        // as its own `NodeRemoved` (verify-1057-r3 NIT-1 — a stale park would run a second chain beside it).
+        abandonedReaps.remove(joined.nodeId());
         onNodeReady(joined.nodeId());
     }
 
@@ -1440,6 +1447,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     private void terminateDeparted(NodeId nodeId) {
+        abandonedReaps.remove(nodeId);
         lifecycleManager.terminateNode(nodeId)
                         .onFailure(cause -> log.debug("CTM: reap of departed node {} not actioned: {}",
                                                       nodeId,
@@ -1534,8 +1542,27 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     private Set<NodeId> unprotectedNodeIds(List<InstanceInfo> instances) {
         return nodeIdsOf(instances).filter(nodeId -> !nodeId.equals(observer.self().id()))
-                        .filter(nodeId -> !liveness.replayProtected(nodeId))
+                        .filter(this::unprotectedOrParked)
                         .collect(Collectors.toSet());
+    }
+
+    /// SF-1 (verify-1057-r3) — a listed instance the replay skips ONLY because raw SWIM still reports its node alive
+    /// ([MembershipLiveness#swimOnlyProtected]) is PARKED, not forgotten: a parked reap dies with the activation that
+    /// parked it (`deactivate()`), and the new leader's own SWIM can still hold the dead node SUSPECTED at its first
+    /// read, so the FAULTY edge that follows would otherwise re-arm nothing until the next activation. Parking here
+    /// closes that window; the reap it re-arms is still evidence-gated. Nothing else is parked.
+    private boolean unprotectedOrParked(NodeId nodeId) {
+        if (!liveness.replayProtected(nodeId)) {
+            return true;
+        }
+
+        if (liveness.swimOnlyProtected(nodeId) && abandonedReaps.add(nodeId)) {
+            log.info("CTM: activation replay — instance of {} is protected only by SWIM life ({}); parked, re-armed by the next SWIM FAULTY for it",
+                     nodeId,
+                     liveness.evidence(nodeId));
+        }
+
+        return false;
     }
 
     /// The parseable node ids carried by listed instances. An instance without a node-id label cannot be
@@ -1640,8 +1667,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         transitionTo(new NodeReconcilerState.Inactive("deactivated (not leader)"));
-        // A deposed view never reaps: parked (abandoned) reaps die with the activation; the next
-        // activation's replay owns those instances.
+        // A deposed view never reaps: parked (abandoned) reaps die with the activation. The next activation's
+        // replay re-parks any such instance its own SWIM still reports alive (SF-1) and reaps the rest.
         abandonedReaps.clear();
         log.info("CTM: Deactivated");
     }

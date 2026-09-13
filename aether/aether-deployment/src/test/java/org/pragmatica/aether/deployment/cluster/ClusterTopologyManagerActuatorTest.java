@@ -8,6 +8,7 @@ import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
@@ -1342,6 +1343,64 @@ class ClusterTopologyManagerActuatorTest {
 
             assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(DEAD);
         }
+
+        /// SF-1 (verify-1057-r3, the reviewer's probeB): the old leader abandoned and parked the reap of `DEAD`, then
+        /// lost leadership — its park died with it. The new leader's own SWIM still holds `DEAD` SUSPECTED at its
+        /// replay's first read, so the instance is protected and would have been forgotten until the next activation.
+        /// The replay parks it instead, and the FAULTY edge that ends the suspicion window reaps it, exactly once. At
+        /// `93e7dd349` the FAULTY edge re-armed nothing.
+        @Test
+        void replay_leadershipChangeInsideSuspicionWindow_parkedOrphanReapedAtTheFaultyEdge() {
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            swimAliveNodes.set(Set.of(DEAD));
+            var oldLeader = ctmWithDrainGrace(GRACE);
+
+            oldLeader.activate();
+            oldLeader.onMembershipDecision(MembershipDecision.nodeRemoved(DEAD, List.of(SELF, PEER_A, PEER_B)));
+            settleFor(Duration.ofMillis(600));
+            oldLeader.deactivate();
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("arming: the old leader abandoned the reap").isEmpty();
+
+            var newLeader = ctmWithDrainGrace(GRACE);
+
+            newLeader.activate();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.listCalls.get() >= 2);
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("arming: still SUSPECTED at the new leader's reads — protected, not terminated")
+                                                            .isEmpty();
+
+            swimAliveNodes.set(Set.of());
+            newLeader.onSwimFaulty(DEAD);
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(DEAD));
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(DEAD);
+        }
+
+        /// The replay parks ONLY a node protected by nothing but SWIM life. A node the FSM still tracks is the FSM's
+        /// to depart; a FAULTY edge for it re-arms nothing here — otherwise a tracked, uncounted node would be reaped
+        /// on SWIM's say-so alone.
+        @Test
+        void replay_trackedAndSwimAliveInstance_isNotParked() {
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            swimAliveNodes.set(Set.of(DEAD));
+            trackedMembers.set(Set.of(DEAD));
+            var replayCtm = ctmWithDrainGrace(GRACE);
+
+            replayCtm.activate();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.listCalls.get() >= 1);
+
+            swimAliveNodes.set(Set.of());
+            replayCtm.onSwimFaulty(DEAD);
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
     }
 
     /// #1062 / R5 — `reapDepartedNode` re-checks liveness before an irreversible terminate. A DEAD verdict on a node
@@ -1591,6 +1650,47 @@ class ClusterTopologyManagerActuatorTest {
 
             assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
         }
+
+        /// NIT-1 (verify-1057-r3): a rejoin under the same id ends the parked episode. The new incarnation's death
+        /// arrives as its own `NodeRemoved`; the stale park must not run a second chain beside it.
+        @Test
+        void nodeJoined_clearsTheParkedReap_faultyAfterRejoinReArmsNothing() {
+            swimAliveNodes.set(Set.of(PEER_D));
+            var reaper = activeCtm(FAST_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+            awaitAbandoned();
+
+            reaper.onMembershipDecision(MembershipDecision.nodeJoined(PEER_D, List.of(SELF, PEER_A, PEER_B, PEER_D)));
+            swimAliveNodes.set(Set.of());
+            reaper.onSwimFaulty(PEER_D);
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// NIT-4 (verify-1057-r3): the activation epoch is bumped FIRST in `activate()`. A `NodeRemoved` delivered
+        /// while `activate()` is still running (here through the lifecycle manager's `resetProvisionerState`, which
+        /// `activate()` calls synchronously) starts a deferral under the NEW epoch, so it survives and reaps once the
+        /// evidence clears. With the bump inside `scheduleActivationReplay` the chain carries the old epoch and is
+        /// dropped at its first re-check.
+        @Test
+        void nodeRemoved_deliveredInsideActivate_deferralBelongsToThatActivation() {
+            transportConnectedNodes.set(Set.of(PEER_D));
+            var reaper = ctmWithDrainGrace(SLOW_GRACE);
+
+            lifecycleManager.onResetProvisionerState(() -> reaper.onMembershipDecision(removedD()));
+            reaper.activate();
+            lifecycleManager.onResetProvisionerState(() -> {});
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("arming: deferred on the live link").isEmpty();
+
+            transportConnectedNodes.set(Set.of());
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(PEER_D));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+        }
     }
 
     /// Collects WARN messages so a test can assert on what production actually emitted. Mirrors the
@@ -1738,6 +1838,19 @@ class ClusterTopologyManagerActuatorTest {
 
         void holdListingsAfter(int completedListings) {
             holdListingsAfter.set(completedListings);
+        }
+
+        /// NIT-4 (verify-1057-r3): `resetProvisionerState` is called synchronously INSIDE `activate()`, after the CTM
+        /// is active and before its replay is scheduled — the only seam through which a test can deliver a
+        /// membership decision at that instant.
+        private final AtomicReference<Runnable> onResetProvisionerState = new AtomicReference<>(() -> {});
+
+        void onResetProvisionerState(Runnable hook) {
+            onResetProvisionerState.set(hook);
+        }
+
+        @Override public void resetProvisionerState(Option<ClusterName> clusterName) {
+            onResetProvisionerState.get().run();
         }
 
         boolean listingHeld() {
