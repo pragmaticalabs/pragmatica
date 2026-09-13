@@ -933,6 +933,12 @@ teardown() {
             # run the array is empty here even though cluster A was bootstrapped.
             # On the serialized cloud flow A is normally already reaped in Step 9.5
             # — this reap then finds nothing and exits 0 (idempotent by design).
+            #
+            # END-OF-RUN TEARDOWN (#1051 round 3): deletes whole clusters BY DESIGN once the
+            # run is over. It is not a liveness decision, so it deliberately does not go
+            # through _cloud_reap_after_confirmed_drain: "unreachable is not dead" governs
+            # recovery reaps (S20, restart_all_nodes), not the planned destruction of a
+            # finished run's clusters.
             [ "${A_SUITES_SELECTED:-0}" -gt 0 ] && ("${REPO_ROOT}/../tools/cloud-reaper.sh" --cluster "$CLUSTER_A_NAME" --destroy --force 2>&1 | tail -3 || true)
             [ ${#B_SUITES[@]} -gt 0 ] && ("${REPO_ROOT}/../tools/cloud-reaper.sh" --cluster "$CLUSTER_B_NAME" --destroy --force 2>&1 | tail -3 || true)
             # Catch-all sweep for CTM-provisioned ORPHANS. The scoped `--cluster <name>`
@@ -1341,6 +1347,8 @@ if [ "$GATE_PASSED" = true ]; then
     # normal teardown (or --skip-teardown preservation) governs cluster A.
     if [ "$ENV_TYPE" = "cloud" ] && [ ${#B_SUITES[@]} -gt 0 ]; then
         if [ "$A_SUITES_SELECTED" -gt 0 ]; then
+            # SERIALIZATION TEARDOWN (#1051 round 3): deletes cluster A BY DESIGN after its
+            # suites finished — not a liveness decision (see the end-of-run teardown note).
             log_step "Reaping Cluster A before Cluster B bring-up (serialized cloud clusters)"
             reap_cloud_cluster "$CLUSTER_A_NAME" || \
                 log_warn "Cluster A reap did not fully converge — proceeding to Cluster B bring-up (leftover A VMs reduce scale-up headroom; final teardown sweeps them)"

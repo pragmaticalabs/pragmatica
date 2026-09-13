@@ -2436,11 +2436,15 @@ _cloud_running_vm_ips() {
     if ! command -v hcloud >/dev/null 2>&1; then
         return 1
     fi
-    # #441 Defect B: the previous `--selector "aether-cluster=${cluster_name}"`
-    # query structurally never matched — provisioned VMs (seed AND CTM
-    # replacement alike) are only ever stamped with `aether-node-id`;
-    # `aether-cluster` is a separate label that CTM does not currently set on
-    # every VM (product-side gap, tracked separately as #442 v2b). That made
+    # #441 Defect B (run 8, historical): at that time a
+    # `--selector "aether-cluster=${cluster_name}"` query matched nothing,
+    # because provisioned VMs were stamped only with `aether-node-id`. That is
+    # no longer true of the product (#1051 round 3): HetznerComputeProvider
+    # stamps `aether-cluster` on every VM it provisions, CTM replacements
+    # included (provision -> labelsFor -> buildLabels), which is the label the
+    # drain confirmation (_cloud_cluster_vms) and the --strict-cluster reap
+    # select on. This helper keeps the key-presence query below for VMs
+    # provisioned before that. At the time, the empty match made
     # this function's "0 running VMs" result look trustworthy even while VMs
     # were fully alive, and the caller (restart_all_nodes) treated that
     # false-empty as confirmed-dead and reaped + rebootstrapped a LIVE
@@ -2717,7 +2721,11 @@ ensure_cloud_pg_database() {
 ## VM the reap would delete is classified from a direct read:
 ##   halted     POSITIVELY drain-halted. jvm: the aether-node unit is LoadState=loaded
 ##              with ActiveState=failed or ExecMainStatus=2. container: the aether-node
-##              container exited (State.Status exited|dead). Exit status recorded.
+##              container exited (State.Status exited|dead) with ANY exit code — a
+##              container has no "failed" state. Exit status recorded. This is the
+##              reap gate's evidence class, deliberately broader than S19's
+##              halt-REASON predicate jvm_unit_is_drain_halt (failed AND 2), which
+##              answers a different question (lib/common.sh).
 ##   stopped    jvm: unit loaded, inactive, and neither failed nor exit 2 — no running
 ##              node, but not a drain halt.
 ##   notloaded  jvm: unit not loaded (LoadState!=loaded, e.g. not yet installed) — no
@@ -2811,23 +2819,33 @@ _cloud_vm_node_state() {
     return 0
 }
 
-# Whether the provider positively reports a VM id as not found. A describe that
-# fails any other way (auth, network, timeout) is not evidence the VM is gone.
+# Whether the provider positively reports a VM id as deleted. Only hcloud's own
+# deleted-server response counts: `hcloud server describe <id>` exits non-zero with
+# exactly `hcloud: Server not found: <id>` as its whole output (hcloud v1.62.2,
+# measured against a fake API answering GET /servers/<id> with 404
+# {"error":{"code":"not_found"}} and an empty name lookup). Every other failure is
+# NOT evidence the VM is gone, including other "not found" texts
+# (`hcloud: project not found (not_found)`, a proxy's `server responded with status
+# code 404`), auth, network and timeouts — the VM stays unreadable (#1051 round 3).
 _cloud_vm_reported_gone() {
     local id="$1" out
     if out=$(_run_with_timeout 10 hcloud server describe "$id" </dev/null 2>&1); then
         return 1
     fi
-    printf '%s' "$out" | grep -qi 'not found'
+    [ "$(printf '%s' "$out" | tr -d '\r')" = "hcloud: Server not found: ${id}" ]
 }
 
 # One confirmation round over every VM carrying aether-cluster=<cluster>. Prints one
 # verdict line per VM — "<verdict> <name> (id <id>, <ip>): <evidence>" — plus an
 # "unknown: <why>" line when the round cannot confirm for a reason no single VM
-# carries. rc 0 only when no VM is alive or unreadable and at least one is halted.
+# carries, and a "listed: <ids>" line naming the ids this listing returned.
+# <seen> (optional) is the ids earlier rounds listed: one missing from this listing
+# counts only if hcloud reports it deleted, else it is unreadable — a listing that
+# silently drops a VM must not confirm a drain (#1051 round 3).
+# rc 0 only when no VM is alive or unreadable and at least one is halted.
 _cloud_full_drain_round() {
-    local cluster_name="$1" runtime="$2"
-    local listing id name status ip state verdict evidence unconfirmed=0 halted=0
+    local cluster_name="$1" runtime="$2" seen="${3:-}"
+    local listing id name status ip state verdict evidence unconfirmed=0 halted=0 listed=""
     if ! listing=$(_cloud_cluster_vms "$cluster_name"); then
         echo "unknown: hcloud enumeration of aether-cluster=${cluster_name} failed or timed out"
         return 1
@@ -2838,6 +2856,7 @@ _cloud_full_drain_round() {
     fi
     while read -r id name status ip; do
         [ -n "$id" ] || continue
+        listed="${listed} ${id}"
         state=$(_cloud_vm_node_state "$ip" "$runtime")
         verdict="${state%% *}"
         evidence="${state#* }"
@@ -2863,6 +2882,18 @@ _cloud_full_drain_round() {
                 ;;
         esac
     done <<< "$listing"
+    echo "listed:${listed}"
+    for id in $seen; do
+        case " ${listed} " in
+            *" ${id} "*) continue ;;
+        esac
+        if _cloud_vm_reported_gone "$id"; then
+            echo "gone (id ${id}): listed in an earlier round, absent now, hcloud reports the server deleted"
+        else
+            echo "unreadable (id ${id}): listed in an earlier round but absent from this listing and not reported deleted — the enumeration may be partial"
+            unconfirmed=1
+        fi
+    done
     if [ "$unconfirmed" -eq 0 ] && [ "$halted" -eq 0 ]; then
         echo "unknown: no VM is positively drain-halted (aether-node LoadState=loaded with ActiveState=failed or ExecMainStatus=2, or an exited container) — stopped, not-loaded or gone VMs alone may be a cluster still bootstrapping"
         return 1
@@ -2872,18 +2903,24 @@ _cloud_full_drain_round() {
 
 # Re-probes until a round confirms the full drain, or <bound> seconds have passed.
 # <bound> is NOT scaled by TIMEOUT_SCALE: the caller's budget is already a cloud
-# wall-clock figure. rc 0 confirmed; rc 1 not confirmed, after a log_fail naming
-# what blocked the last round (alive or unreadable VMs, or no halted VM).
+# wall-clock figure. <bound> is checked BETWEEN rounds, never inside one: a round
+# that starts always completes (one hcloud listing <=10s plus one SSH read <=20s per
+# VM), and a failed round is followed by a CLOUD_DRAIN_PROBE_INTERVAL_S pause, so
+# confirmation can overrun <bound> by up to one pause plus one round; the caller's
+# overall budget is the enforced ceiling. Ids listed by any round are carried into
+# later rounds (see _cloud_full_drain_round). rc 0 confirmed; rc 1 not confirmed,
+# after a log_fail naming what blocked the last round.
 _cloud_await_full_drain() {
     local cluster_name="$1" runtime="$2" bound="$3"
-    local start=$SECONDS round=0 report rc
+    local start=$SECONDS round=0 report rc seen=""
     if [ -z "$cluster_name" ]; then
         log_fail "full self-drain confirmation: no cluster name (BOOTSTRAP_CLUSTER_NAME unset) — refusing to enumerate or reap an unscoped VM set"
         return 1
     fi
     while :; do
         round=$((round + 1))
-        report=$(_cloud_full_drain_round "$cluster_name" "$runtime") && rc=0 || rc=$?
+        report=$(_cloud_full_drain_round "$cluster_name" "$runtime" "$seen") && rc=0 || rc=$?
+        seen=$(printf '%s %s\n' "$seen" "$(printf '%s\n' "$report" | sed -n 's/^listed://p')" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')
         if [ "$rc" -eq 0 ]; then
             log_info "full self-drain of '${cluster_name}' confirmed on every VM (round ${round}, $((SECONDS - start))s): $(printf '%s' "$report" | tr '\n' ';')"
             return 0
@@ -2892,8 +2929,36 @@ _cloud_await_full_drain() {
         log_info "full self-drain of '${cluster_name}' not yet confirmed (round ${round}, $((SECONDS - start))s of ${bound}s): $(printf '%s' "$report" | tr '\n' ';') — re-probing"
         sleep "${CLOUD_DRAIN_PROBE_INTERVAL_S:-5}"
     done
-    log_fail "full self-drain of '${cluster_name}' NOT confirmed after ${round} round(s) in $((SECONDS - start))s (bound ${bound}s) — refusing to reap. Blocking: $(printf '%s\n' "$report" | grep -vE '^(halted|stopped|notloaded|gone) ' | tr '\n' ';') Last round: $(printf '%s' "$report" | tr '\n' ';')"
+    log_fail "full self-drain of '${cluster_name}' NOT confirmed after ${round} round(s) in $((SECONDS - start))s (bound ${bound}s, checked between rounds) — refusing to reap. Blocking: $(printf '%s\n' "$report" | grep -vE '^(halted|stopped|notloaded|gone) |^listed:' | tr '\n' ';') Last round: $(printf '%s' "$report" | tr '\n' ';')"
     return 1
+}
+
+# THE ONLY CALLER of _cloud_full_drain_recover (#1051 round 3, CTO ruling: "unreachable
+# is not dead" governs EVERY reap or rebootstrap decision in this harness, not only
+# S20). Whatever nominated a full drain — S20's quorum-lost verdict, or
+# restart_all_nodes' 0 active cores / silent mgmt ports / stragglers / zero progress —
+# nothing is reaped until _cloud_await_full_drain confirms it from positive per-VM
+# evidence. <caller> prefixes the log lines; <bound> is the confirmation bound. rc:
+#   0 recovered;
+#   1 reap or bootstrap failed (VMs may already be gone);
+#   2 recovery refused in preflight, nothing destroyed;
+#   3 drain NOT confirmed, or CLOUD_RUNTIME unknown — nothing destroyed.
+_cloud_reap_after_confirmed_drain() {
+    local caller="$1" bound="$2"
+    local runtime="${CLOUD_RUNTIME:-}" rc
+    case "$runtime" in
+        jvm|container) ;;
+        *)
+            log_fail "${caller}: CLOUD_RUNTIME is '${runtime:-<unset>}' — cannot read VM drain state, refusing to reap or rebootstrap"
+            return 3
+            ;;
+    esac
+    if ! _cloud_await_full_drain "${BOOTSTRAP_CLUSTER_NAME:-}" "$runtime" "$bound"; then
+        log_fail "${caller}: full self-drain not positively confirmed on every VM — refusing to reap or rebootstrap"
+        return 3
+    fi
+    _cloud_full_drain_recover && rc=0 || rc=$?
+    return "$rc"
 }
 
 ## #441 S20: cluster-scoped reap + fresh bootstrap — the cloud analog of the
@@ -2920,11 +2985,17 @@ _cloud_await_full_drain() {
 ## orphan-capture post-filter keeps any aether-node-id-labeled row whose
 ## aether-cluster label is EMPTY — exactly the shape a mislabeled PG resource
 ## could take — so --strict-cluster is required here, not optional.)
+##
+## #1051 round 3: called ONLY through _cloud_reap_after_confirmed_drain, which first
+## confirms the full drain from per-VM evidence. rc 2 = refused in preflight, nothing
+## destroyed; rc 1 = the reap or the bootstrap failed. AETHER_CLOUD_REAPER overrides
+## the reaper path (test seam: test/test-chaos-harness.sh points it at a recording
+## stub; real runs leave it unset).
 _cloud_full_drain_recover() {
     local cluster_name="${BOOTSTRAP_CLUSTER_NAME:-}"
     if [ -z "$cluster_name" ]; then
         log_fail "_cloud_full_drain_recover: BOOTSTRAP_CLUSTER_NAME unset — refusing an unscoped reap (would risk resources outside this cluster, including the shared test-PG VM)"
-        return 1
+        return 2
     fi
 
     # #441 review WARNING b: prove the re-bootstrap is POSSIBLE before
@@ -2937,11 +3008,11 @@ _cloud_full_drain_recover() {
     case "${CLUSTER_ID:-}" in
         a) toml="${CLOUD_TOML_A:-}" ;;
         b) toml="${CLOUD_TOML_B:-}" ;;
-        *) log_fail "_cloud_full_drain_recover: unrecognized CLUSTER_ID='${CLUSTER_ID:-}' (expected 'a' or 'b') — cannot select a bootstrap TOML"; return 1 ;;
+        *) log_fail "_cloud_full_drain_recover: unrecognized CLUSTER_ID='${CLUSTER_ID:-}' (expected 'a' or 'b') — cannot select a bootstrap TOML; nothing destroyed"; return 2 ;;
     esac
     if [ -z "$toml" ] || [ ! -f "$toml" ]; then
         log_fail "_cloud_full_drain_recover: no readable bootstrap TOML for cluster '${cluster_name}' (CLUSTER_ID='${CLUSTER_ID:-}', resolved path='${toml}') — run-tests.sh must export CLOUD_TOML_A/CLOUD_TOML_B (not exported on --skip-deploy reruns; full-drain recovery is not possible there — refusing before destroying anything)"
-        return 1
+        return 2
     fi
 
     # Locate tools/cloud-reaper.sh relative to THIS file (lib/cluster.sh), not the
@@ -2951,12 +3022,12 @@ _cloud_full_drain_recover() {
     # as _cloud_transport_ports above. lib/ -> integration -> tests -> aether ->
     # pragmatica -> tools.
     local reaper
-    reaper="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../tools" 2>/dev/null && pwd)/cloud-reaper.sh"
+    reaper="${AETHER_CLOUD_REAPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../tools" 2>/dev/null && pwd)/cloud-reaper.sh}"
     if [ ! -x "$reaper" ]; then
-        log_fail "_cloud_full_drain_recover: tools/cloud-reaper.sh not found or not executable (resolved path: ${reaper})"
-        return 1
+        log_fail "_cloud_full_drain_recover: tools/cloud-reaper.sh not found or not executable (resolved path: ${reaper}) — nothing destroyed"
+        return 2
     fi
-    log_warn "_cloud_full_drain_recover: full self-drain confirmed (0 active cores) — reaping all VMs for cluster '${cluster_name}' (no partial-recovery path exists once every core has halted)"
+    log_warn "_cloud_full_drain_recover: full self-drain confirmed from per-VM evidence (_cloud_reap_after_confirmed_drain) — reaping all VMs for cluster '${cluster_name}' (no partial-recovery path exists once every core has halted)"
     local reap_out reap_rc
     reap_out=$("$reaper" --cluster "$cluster_name" --strict-cluster --destroy --force 2>&1)
     reap_rc=$?
@@ -3057,9 +3128,14 @@ restart_all_nodes() {
                 local topology_probe
                 topology_probe=$(api_get "/api/v1/cluster/topology" 2>/dev/null || true)
                 if [ -n "$topology_probe" ]; then
-                    log_warn "restart_all_nodes: mgmt API cleanly reports 0 active cores — confirmed full self-drain, proceeding to reap+rebootstrap"
-                    if ! _cloud_full_drain_recover; then
-                        log_fail "restart_all_nodes: cloud full-drain recovery (cluster-scoped reap + rebootstrap) failed"
+                    # #1051 round 3: none of this function's signals — 0 active
+                    # cores, silent mgmt ports, stragglers, zero progress — is
+                    # evidence of death. Each only NOMINATES a full drain, which
+                    # _cloud_reap_after_confirmed_drain confirms per VM before
+                    # anything is reaped or rebootstrapped.
+                    log_warn "restart_all_nodes: mgmt API cleanly reports 0 active cores — a CANDIDATE full self-drain; confirming from per-VM evidence before any reap"
+                    if ! _cloud_reap_after_confirmed_drain "restart_all_nodes" "${CLOUD_DRAIN_CONFIRM_BOUND_S:-120}"; then
+                        log_fail "restart_all_nodes: cloud full-drain recovery refused or failed (see above) — nothing is reaped without positive per-VM drain evidence"
                         return 1
                     fi
                 else
@@ -3156,22 +3232,22 @@ restart_all_nodes() {
                                     fi
                                 else
                                     log_warn "restart_all_nodes: bounded progress window (${progress_window}s) showed ZERO progress in active-core count (stuck at ${after_count:-0}) after re-pinning to '${ready_ip}' — straggler-skewed LIVE read, not a recoverable cluster; falling through to full-drain confirmation"
-                                    if ! _cloud_full_drain_recover; then
-                                        log_fail "restart_all_nodes: cloud full-drain recovery (cluster-scoped reap + rebootstrap) failed"
+                                    if ! _cloud_reap_after_confirmed_drain "restart_all_nodes" "${CLOUD_DRAIN_CONFIRM_BOUND_S:-120}"; then
+                                        log_fail "restart_all_nodes: cloud full-drain recovery refused or failed (see above) — nothing is reaped without positive per-VM drain evidence"
                                         return 1
                                     fi
                                 fi
                             fi
                         elif [ "$straggler_count" -gt 0 ]; then
-                            log_warn "restart_all_nodes: mgmt API unreachable, hcloud shows ${vm_count} running VM(s) for '${BOOTSTRAP_CLUSTER_NAME}'; ${straggler_count} answer /health/live but NONE report ready=true (${straggler_evidence}) — straggler evidence (e.g. a CTM replacement provisioned in-flight at quorum death, cold-boot-suppressed from self-draining, forever JOINING), not a recoverable cluster; proceeding to reap+rebootstrap (reap is cluster-scoped and includes straggler VMs)"
-                            if ! _cloud_full_drain_recover; then
-                                log_fail "restart_all_nodes: cloud full-drain recovery (cluster-scoped reap + rebootstrap) failed"
+                            log_warn "restart_all_nodes: mgmt API unreachable, hcloud shows ${vm_count} running VM(s) for '${BOOTSTRAP_CLUSTER_NAME}'; ${straggler_count} answer /health/live but NONE report ready=true (${straggler_evidence}) — straggler evidence (e.g. a CTM replacement provisioned in-flight at quorum death, cold-boot-suppressed from self-draining, forever JOINING), not a recoverable cluster; a CANDIDATE full drain — confirming from per-VM evidence before any reap (a running straggler refuses it)"
+                            if ! _cloud_reap_after_confirmed_drain "restart_all_nodes" "${CLOUD_DRAIN_CONFIRM_BOUND_S:-120}"; then
+                                log_fail "restart_all_nodes: cloud full-drain recovery refused or failed (see above) — nothing is reaped without positive per-VM drain evidence"
                                 return 1
                             fi
                         else
-                            log_warn "restart_all_nodes: mgmt API unreachable, hcloud shows ${vm_count} running VM(s) for '${BOOTSTRAP_CLUSTER_NAME}', but NONE answer their mgmt port directly (probed ${vm_count} VM(s), 0 listening) — VMs staying powered on with an exited container is the expected post-self-drain state; proceeding to reap+rebootstrap"
-                            if ! _cloud_full_drain_recover; then
-                                log_fail "restart_all_nodes: cloud full-drain recovery (cluster-scoped reap + rebootstrap) failed"
+                            log_warn "restart_all_nodes: mgmt API unreachable, hcloud shows ${vm_count} running VM(s) for '${BOOTSTRAP_CLUSTER_NAME}', but NONE answer their mgmt port directly (probed ${vm_count} VM(s), 0 listening) — VMs staying powered on with an exited container is the expected post-self-drain state, but silence is not death: a CANDIDATE full drain — confirming from per-VM evidence before any reap"
+                            if ! _cloud_reap_after_confirmed_drain "restart_all_nodes" "${CLOUD_DRAIN_CONFIRM_BOUND_S:-120}"; then
+                                log_fail "restart_all_nodes: cloud full-drain recovery refused or failed (see above) — nothing is reaped without positive per-VM drain evidence"
                                 return 1
                             fi
                         fi

@@ -851,6 +851,9 @@ wait_for() {
             0)
                 log_pass "${description} ($((SECONDS - start_seconds))s)"
                 rm -f "$errfile"
+                # A read belongs to this wait only: a later wait without a reader must
+                # never see it (#1051 round 3).
+                unset WAIT_FOR_VALUE
                 return 0
                 ;;
             2|127)
@@ -877,6 +880,7 @@ wait_for() {
     if [ -n "$value_cmd" ]; then
         read_note=" — last observed value: ${last_value:-<none: no poll ran>} (${read_failures} of ${polls} read(s) failed)"
     fi
+    unset WAIT_FOR_VALUE
     log_fail "${description} (timed out after $((SECONDS - start_seconds))s, budget ${timeout}s)${read_note}"
     rm -f "$errfile"
     return 1
@@ -1348,8 +1352,10 @@ jvm_unit_field() {
 # The designed drain-halt signature of the aether-node unit: the node's drain ends in
 # the Runtime.getRuntime().halt(2) that AetherNode.aetherNode(...) wires as
 # DrainProcedure's jvmExit, and Restart=no leaves the unit at ActiveState=failed with
-# ExecMainStatus=2. The ONE predicate both readers of the halt reason use (S19 tier 2
-# and the exit-code step in test-self-drain-quorum-loss.sh), so they cannot disagree.
+# ExecMainStatus=2. The ONE predicate both readers of the S19 halt REASON use (S19
+# tier 2 and the exit-code step in test-self-drain-quorum-loss.sh), so they cannot
+# disagree. The reap gate asks a different question — may this VM be reaped — and
+# accepts a broader positive-evidence class (_cloud_vm_node_state, lib/cluster.sh).
 jvm_unit_is_drain_halt() {
     local active_state="$1" exec_status="$2"
     [ "$active_state" = "failed" ] && [ "$exec_status" = "2" ]

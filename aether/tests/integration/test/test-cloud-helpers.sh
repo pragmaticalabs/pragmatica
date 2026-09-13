@@ -239,7 +239,8 @@ fi
 # 17) ExecMainStatus=0 (graceful shutdown, NOT a self-drain) -> FAIL, for that reason.
 STUB_SSH_RC=0 STUB_ACTIVE_STATE=failed STUB_EXEC_MAIN_STATUS=0
 out=$(jvm_unit_assert_drain_halt "$CTM_NODE" "test-node" 2>&1); rc=$?
-if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "got ActiveState='failed' ExecMainStatus='0'"; then
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "got ActiveState='failed' ExecMainStatus='0'" \
+    && [ "${out#*command not found}" = "$out" ]; then
     ok "jvm_unit_assert_drain_halt: ExecMainStatus=0 -> FAIL naming the value read"
 else
     fail "jvm_unit_assert_drain_halt: ExecMainStatus=0 should FAIL naming ExecMainStatus='0' (rc=${rc}): ${out}"
@@ -260,7 +261,8 @@ STUB_SSH_RC=0
 # share this predicate).
 STUB_SSH_RC=0 STUB_ACTIVE_STATE=active STUB_EXEC_MAIN_STATUS=2
 out=$(jvm_unit_assert_drain_halt "$CTM_NODE" "test-node" 2>&1); rc=$?
-if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "got ActiveState='active' ExecMainStatus='2'"; then
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "got ActiveState='active' ExecMainStatus='2'" \
+    && [ "${out#*command not found}" = "$out" ]; then
     ok "jvm_unit_assert_drain_halt: ActiveState=active, ExecMainStatus=2 -> FAIL naming the state read"
 else
     fail "jvm_unit_assert_drain_halt: ActiveState=active should FAIL naming ActiveState='active' (rc=${rc}): ${out}"

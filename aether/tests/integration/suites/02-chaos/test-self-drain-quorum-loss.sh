@@ -122,11 +122,12 @@ RECOVERY_BUDGET_S=60
 # the ruling, and S20 records that as a FAIL printing the measured elapsed time.
 CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S=600
 
-# Upper bound on confirming the full drain from per-VM evidence (#1051), spent inside
-# the budget above and likewise unscaled. A round is one hcloud listing (<=10s) plus
-# one SSH read per labelled VM (<=20s each; S19 deletes the 3 victims and leaves the 2
-# survivors), about 50s plus a 5s pause, so 120s allows a second round for a VM whose
-# first read failed.
+# Bound on starting another drain-confirmation round (#1051), spent inside the budget
+# above and likewise unscaled. A round is one hcloud listing (<=10s) plus one SSH read
+# per labelled VM (<=20s each; S19 deletes the 3 victims and leaves the 2 survivors),
+# about 50s plus a 5s pause, so 120s allows a second round for a VM whose first read
+# failed. It is checked BETWEEN rounds, so confirmation can overrun it by one pause
+# plus one round; the 600s budget above is the enforced ceiling.
 CLOUD_DRAIN_CONFIRM_BOUND_S=120
 
 # Files ferrying state between test functions. run_test isolates each
@@ -998,9 +999,8 @@ test_survivor_exit_codes_are_two() {
         jvm_unit_assert_drain_halt "$s2" "Survivor ${s2}"
         return
     fi
-    # SelfDrainCoordinator.performExit() invokes the configured jvmExit
-    # runnable, which the production factory wires to
-    # `Runtime.getRuntime().halt(2)` (SelfDrainCoordinator.java:104).
+    # The node's DrainProcedure ends in its jvmExit hook, which
+    # AetherNode.aetherNode(...) wires to `Runtime.getRuntime().halt(2)`.
     # Any other exit code indicates a different shutdown path:
     #   0   — graceful clean shutdown (not self-drain)
     #   137 — SIGKILL from outside (e.g. docker kill itself)
@@ -1011,8 +1011,8 @@ test_survivor_exit_codes_are_two() {
     s2=$(sed -n '2p' "$SURVIVORS_FILE")
     ec1=$(container_exit_code "$s1" || true)
     ec2=$(container_exit_code "$s2" || true)
-    assert_eq "$ec1" "2" "Survivor ${s1} exit code is 2 (Runtime.halt(2) from SelfDrainCoordinator)"
-    assert_eq "$ec2" "2" "Survivor ${s2} exit code is 2 (Runtime.halt(2) from SelfDrainCoordinator)"
+    assert_eq "$ec1" "2" "Survivor ${s1} exit code is 2 (Runtime.halt(2) via DrainProcedure)"
+    assert_eq "$ec2" "2" "Survivor ${s2} exit code is 2 (Runtime.halt(2) via DrainProcedure)"
 }
 
 test_drain_trigger_log_signature_present() {
@@ -1118,38 +1118,47 @@ test_cluster_recovers_to_five_on_duty() {
         # self-drain. restart_all_nodes' cloud path is built for a PARTIAL drain
         # (a poweron that is a no-op for a VM whose JVM exited, then a 360s probe)
         # and would spend most of any budget before reaching the reap. So: confirm
-        # the drain from per-VM evidence (_cloud_await_full_drain — an unreachable
-        # node is not a dead one, so management-API silence confirms nothing and any
-        # unreadable VM refuses the reap), reap + rebootstrap, and assert 5 healthy
-        # cores within CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S measured from the start of
-        # confirmation. The clock is SECONDS, not the scaled wait_for budget, so the
-        # figure printed is the figure enforced.
+        # the drain from per-VM evidence and reap + rebootstrap through
+        # _cloud_reap_after_confirmed_drain (an unreachable node is not a dead one, so
+        # management-API silence confirms nothing and any unreadable VM refuses the
+        # reap), then assert 5 healthy cores within CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S
+        # measured from the start of confirmation. The clock is SECONDS, not the scaled
+        # wait_for budget, so the figure printed is the figure enforced.
         _s19_require_cloud_runtime || return 1
         local cluster_name="${BOOTSTRAP_CLUSTER_NAME:-}" budget="$CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S"
-        local start=$SECONDS elapsed remaining
+        local start=$SECONDS elapsed remaining recover_rc
         log_info "S20 (cloud): confirming full self-drain of '${cluster_name}' from per-VM evidence (runtime ${CLOUD_RUNTIME}) before reap+rebootstrap — budget ${budget}s starts now"
-        if ! _cloud_await_full_drain "$cluster_name" "$CLOUD_RUNTIME" "$CLOUD_DRAIN_CONFIRM_BOUND_S"; then
-            log_fail "S20 violation (cloud): full self-drain not positively confirmed on every VM — did NOT reap (elapsed $((SECONDS - start))s, budget ${budget}s)"
-            return 1
-        fi
-        if ! _cloud_full_drain_recover; then
-            log_fail "S20 violation (cloud): full-drain recovery (reap + rebootstrap) failed (elapsed $((SECONDS - start))s, budget ${budget}s)"
-            return 1
-        fi
-        remaining=$((budget - (SECONDS - start)))
-        if [ "$remaining" -le 0 ]; then
-            log_fail "S20 violation (cloud): drain confirmation + reap + rebootstrap took $((SECONDS - start))s, over the ${budget}s budget before 5 healthy cores could be checked"
+        _cloud_reap_after_confirmed_drain "S20 (cloud)" "$CLOUD_DRAIN_CONFIRM_BOUND_S" && recover_rc=0 || recover_rc=$?
+        case "$recover_rc" in
+            0) ;;
+            3)
+                log_fail "S20 violation (cloud): full self-drain not positively confirmed on every VM — did NOT reap (elapsed $((SECONDS - start))s, budget ${budget}s)"
+                return 1
+                ;;
+            2)
+                log_fail "S20 violation (cloud): full-drain recovery refused in preflight — nothing destroyed, no reap attempted (elapsed $((SECONDS - start))s, budget ${budget}s)"
+                return 1
+                ;;
+            *)
+                log_fail "S20 violation (cloud): full-drain recovery (reap + rebootstrap) failed (elapsed $((SECONDS - start))s, budget ${budget}s)"
+                return 1
+                ;;
+        esac
+        elapsed=$((SECONDS - start))
+        remaining=$((budget - elapsed))
+        if ! _s20_within_budget "$elapsed" "$budget"; then
+            log_fail "S20 violation (cloud): drain confirmation + reap + rebootstrap took ${elapsed}s, not under the ${budget}s budget, before 5 healthy cores could be checked"
             return 1
         fi
         # TIMEOUT_SCALE=1: remaining is a slice of the unscaled budget.
-        if ! TIMEOUT_SCALE=1 wait_for "5 healthy cores after full-drain rebootstrap" \
+        if ! TIMEOUT_SCALE=1 wait_for "5 healthy cores after full-drain rebootstrap (remaining ${remaining}s of the ${budget}s S20 budget)" \
                 '[ "$WAIT_FOR_VALUE" -eq 5 ]' "$remaining" 5 "_cluster_active_core_count_checked"; then
             log_fail "S20 violation (cloud): cluster not back to 5 healthy cores (elapsed $((SECONDS - start))s, budget ${budget}s; last read in the line above)"
             return 1
         fi
         elapsed=$((SECONDS - start))
-        if [ "$elapsed" -gt "$budget" ]; then
-            log_fail "S20 violation (cloud): 5 healthy cores reached only after ${elapsed}s, over the ${budget}s budget"
+        if ! _s20_within_budget "$elapsed" "$budget"; then
+            log_fail "S20 violation (cloud): 5 healthy cores reached only after ${elapsed}s, not under the ${budget}s budget"
             return 1
         fi
         log_pass "S20 (cloud): recovered to 5 healthy cores ${elapsed}s after drain confirmation began (budget ${budget}s: confirmation + reap + rebootstrap + core-count wait)"
@@ -1232,6 +1241,13 @@ _s19_record_exit_code_step() {
         skip\ *) skip_test "$name" "${disposition#skip }" ;;
         *)       run_test "$name" _s19_require_cloud_runtime ;;
     esac
+}
+
+# Whether <elapsed> seconds is inside the S20 budget <budget>: strictly under it. The
+# one comparison both S20 budget checks use, so they cannot disagree at the boundary
+# (#1051 round 3).
+_s20_within_budget() {
+    [ "$1" -lt "$2" ]
 }
 
 # The S20 step name states the budget that the branch about to run enforces
