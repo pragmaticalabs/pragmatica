@@ -95,16 +95,22 @@ jobs:
   # as drain confirmation and reap refusal by stubbing ssh/hcloud/curl. They need no cluster, cloud or
   # docker, and before #1060 nothing ran them. The runner fails a suite that exits non-zero OR whose own
   # summary is missing, reports failures, or reports zero passes.
+  #
+  # Runaway guard: each suite runs in its own process group. The whole group is killed at 300s or 300
+  # processes, whichever comes first. Measured: the job took 7-8s with one suite (test-cloud-helpers.sh,
+  # under 1s); #1053's test-chaos-harness.sh took 21s locally and 59s at load average 34. 300s is about 5x
+  # the contended figure. The 15-minute job cap covers two suites each hitting the 300s ceiling plus
+  # setup, and it stops a runner-level hang long before GitHub's 6-hour default.
   stub-suites:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
 
       - name: Tools the suites use
-        run: bash --version | head -1 && awk --version 2>&1 | head -1 && sed --version | head -1 && command -v mktemp tee
+        run: bash --version | head -1 && awk --version 2>&1 | head -1 && sed --version | head -1 && command -v mktemp tee perl pgrep mkfifo
 
       - name: Run harness stub suites
         run: bash aether/tests/integration/test/run-stub-suites.sh
