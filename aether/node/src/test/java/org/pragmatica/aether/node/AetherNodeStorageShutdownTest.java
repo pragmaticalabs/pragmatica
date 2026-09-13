@@ -65,8 +65,12 @@ class AetherNodeStorageShutdownTest {
 
     @AfterEach
     void tearDown() {
+        // The test itself stops the node and nulls the field; this runs only when it failed before
+        // reaching that line, and a stop failure then is reported rather than swallowed.
         if (node != null) {
-            node.stop().await(timeSpan(10).seconds()).onFailure(cause -> {});
+            var stopped = node.stop().await(timeSpan(10).seconds());
+
+            stopped.onFailure(cause -> fail("stop failed in teardown: " + cause.message()));
         }
 
         var ctx = (LoggerContext) LogManager.getContext(false);
