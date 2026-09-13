@@ -57,12 +57,18 @@ CHAOS_HARNESS_DEADLINE_S="${CHAOS_HARNESS_DEADLINE_S:-480}"
 HARNESS_TICK_DIR=$(mktemp -d)
 mkfifo "${HARNESS_TICK_DIR}/tick"
 exec 8<>"${HARNESS_TICK_DIR}/tick"
+# The open descriptor outlives the name; unlink now so no exit path (guard refusals before the trap is
+# installed, a KILL that runs no trap) can leak the directory.
+rm -rf "$HARNESS_TICK_DIR"
+# "Gone" means exited, reaped or not: `kill -0` still succeeds on a zombie, and a killer that never
+# waits (a non-shell parent) would otherwise leave the group alive until the deadline.
+_harness_gone() { ! kill -0 "$1" 2>/dev/null || [ "$(ps -o stat= -p "$1" 2>/dev/null | cut -c1)" = Z ]; }
 (
     trap - EXIT
     watchdog_deadline=$((SECONDS + CHAOS_HARNESS_DEADLINE_S))
     while [ "$SECONDS" -lt "$watchdog_deadline" ]; do
         read -r -t 1 -u 8 _ || true
-        if ! kill -0 "$CHAOS_HARNESS_ACTIVE" 2>/dev/null; then
+        if _harness_gone "$CHAOS_HARNESS_ACTIVE"; then
             # The harness is gone (normal exit, or a driver that killed only the top PID). Anything
             # still in our group is a leak that outlived it — take the group with us, never just exit.
             if [ -n "$HARNESS_PGID" ] && [ "$HARNESS_PGID" = "$CHAOS_HARNESS_ACTIVE" ]; then
@@ -102,7 +108,7 @@ TEST_CLUSTER="chaos-harness-test-$$"
 STATE_DIR="${HOME}/.aether/clusters/${TEST_CLUSTER}"
 mkdir -p "$STATE_DIR"
 cp "${SCRIPT_DIR}/fixtures/bootstrap-state.json" "${STATE_DIR}/bootstrap-state.json"
-trap 'kill "$HARNESS_WATCHDOG" 2>/dev/null; rm -rf "$WORK" "$STATE_DIR" "$HARNESS_TICK_DIR"' EXIT
+trap 'kill "$HARNESS_WATCHDOG" 2>/dev/null; rm -rf "$WORK" "$STATE_DIR"' EXIT
 export BOOTSTRAP_CLUSTER_NAME="$TEST_CLUSTER"
 
 PASS=0; FAIL=0

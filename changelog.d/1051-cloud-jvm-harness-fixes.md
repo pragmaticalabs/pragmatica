@@ -43,3 +43,8 @@
   its `sleep 1` child stayed orphaned in the harness's group for up to a second, and the stub-suite runner in CI
   read that as a leaked process (a coin-flip on each run). The tick is now a fifo read with no child process.
   `[verified: G6 in test-harness-guards.sh reads the group at the instant of a normal exit — left=1 with the sleep tick, left=0 with the fifo tick]`
+- **"Gone" means exited, reaped or not.** `kill -0` still succeeds on a zombie, so a killer that KILLs the harness
+  PID and never waits for it (a non-shell parent) left the watchdog waiting for the full deadline; a zombie now
+  counts as gone. The tick fifo's directory is unlinked as soon as the descriptor is open, so no exit path — a
+  guard refusal before the trap exists, or a KILL that runs no trap — can leak it.
+  `[verified: G7 in test-harness-guards.sh kills the harness PID and does not reap it for 6s — left=3 with the kill -0 check, left=0 with the zombie-aware check; tick-fifo count in $TMPDIR unchanged across a full guards run]`

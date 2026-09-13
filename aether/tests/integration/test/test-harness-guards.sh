@@ -13,7 +13,9 @@
 #   G5 top-PID kill: a driver that kills only the harness's PID (the shape of the 2,342-
 #      process leak) still leaves nothing behind — the watchdog takes the group with it;
 #   G6 clean exit: at the instant a harness exits normally, nothing is left in its group
-#      (the watchdog's tick must not be a child that outlives it).
+#      (the watchdog's tick must not be a child that outlives it);
+#   G7 unreaped kill: a killer that KILLs the harness PID and never waits leaves a zombie
+#      that `kill -0` still accepts — the watchdog must treat it as gone and kill the group.
 # Every probe runs in its own process group under a hard timeout AND a process-count
 # ceiling (GUARD_PROBE_PROC_CEILING, default 300) that kills the whole group, so a broken
 # guard fails this test as "recursion detected (ceiling)" instead of hanging or forking
@@ -54,6 +56,7 @@ run_grouped() {
         my ($t, $out, @cmd) = @ARGV;
         my $ceiling = $ENV{GUARD_PROBE_PROC_CEILING} || 300;
         my $topkill_at = $ENV{GUARD_PROBE_TOPKILL_AT};   # G5: kill ONLY the leader at this many seconds
+        my $noreap = $ENV{GUARD_PROBE_TOPKILL_NOREAP};   # G7: after that kill, do not waitpid — leave the zombie
         my $settle = defined $ENV{GUARD_PROBE_SETTLE} ? $ENV{GUARD_PROBE_SETTLE} : 1.5;  # drain time before "left" is read; 0 = at exit
         my $start = time;
         my $pid = fork; die "fork: $!" unless defined $pid;
@@ -63,7 +66,8 @@ run_grouped() {
             exec @cmd or exit 127;
         }
         my ($rc, $peak) = (undef, 0);
-        my $members = sub { my $n = 0; for my $l (`ps -A -o pgid=`) { $l =~ s/\s//g; $n++ if $l eq "$pid" } $n };
+        # Group members other than a zombie leader: a zombie is not a running process.
+        my $members = sub { my $n = 0; for my $l (`ps -A -o pgid=,pid=,stat=`) { my ($g, $p, $st) = split " ", $l; $n++ if $g eq "$pid" && !($p eq "$pid" && $st =~ /^Z/) } $n };
         while (1) {
             my $w = waitpid($pid, WNOHANG);
             if ($w == $pid) { $rc = ($? & 127) ? 128 + ($? & 127) : $? >> 8; last }
@@ -71,11 +75,15 @@ run_grouped() {
             $peak = $n if $n > $peak;
             if ($n > $ceiling) { kill "KILL", -$pid; waitpid($pid, 0); $rc = "CEILING"; last }
             if (time - $start >= $t) { kill "KILL", -$pid; waitpid($pid, 0); $rc = "TIMEOUT"; last }
-            if (defined $topkill_at && time - $start >= $topkill_at) { kill "KILL", $pid; undef $topkill_at }
+            if (defined $topkill_at && time - $start >= $topkill_at) {
+                kill "KILL", $pid; undef $topkill_at;
+                if ($noreap) { select(undef, undef, undef, $settle); $rc = "NOREAP"; last }
+            }
             select(undef, undef, undef, 0.25);
         }
-        select(undef, undef, undef, $settle);
+        select(undef, undef, undef, $settle) unless $rc eq "NOREAP";
         my $left = $members->();
+        waitpid($pid, 0) if $rc eq "NOREAP";
         kill "KILL", -$pid;
         printf "rc=%s secs=%d left=%d peak=%d\n", $rc, time - $start, $left, $peak;
     ' "$@"
@@ -176,6 +184,16 @@ elif [ "$(field "$r" rc)" = 0 ] && [ "$(field "$r" left)" = 0 ]; then
     ok "G6 a harness that exits normally leaves nothing in its group at the instant it exits (${r})"
 else
     fail "G6 a normal exit left a process in the harness group (${r}): $(tail -3 "$WORK/g6.out" | tr '\n' '|')"
+fi
+
+# G7 — unreaped kill. The harness PID is KILLed at 3s and deliberately NOT reaped for 6s, so it sits
+# as a zombie that `kill -0` still accepts; the watchdog must still see it as gone and empty the group.
+r=$(GUARD_PROBE_TOPKILL_AT=3 GUARD_PROBE_TOPKILL_NOREAP=1 GUARD_PROBE_SETTLE=6 run_grouped 30 "$WORK/g7.out" env -u CHAOS_HARNESS_ACTIVE -u CHAOS_HARNESS_REGROUPED CHAOS_HARNESS_DEADLINE_S=60 CHAOS_HARNESS_SELFTEST=hang bash "$HARNESS")
+if ceiling_hit G7 "$r"; then :
+elif [ "$(field "$r" rc)" = NOREAP ] && [ "$(field "$r" left)" = 0 ]; then
+    ok "G7 a killer that never reaps the harness still leaves no process behind — a zombie counts as gone (${r})"
+else
+    fail "G7 an unreaped (zombie) harness left its group running (${r}): $(tail -3 "$WORK/g7.out" | tr '\n' '|')"
 fi
 
 echo ""
