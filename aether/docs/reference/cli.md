@@ -2428,6 +2428,12 @@ Seven-phase flow: Validate → Upload SSH Keys → Provision → Collect Address
 
 After provisioning, the deploy phase SSHes each cloud node (via `cloud-init status --wait` preflight) and restarts the runtime with the finalized 3-part PEERS list (`nodeId:host:port`). On default (`--keep-on-failure` not set), all tracked resources (VMs, SSH keys, firewall rules, floating IPs) are cleaned up automatically on failure.
 
+**Post-bootstrap registration (#584).** A successful bootstrap registers the cluster in
+`~/.aether/clusters.toml` with the management endpoint it actually serves (`<scheme>://<ip>:<management
+port>`) and **makes it the active context**, printing `Active cluster context: <name>`. Every
+context-routed command that follows (`cluster scale`, `cluster destroy`, `deploy`, …) targets the
+cluster just bootstrapped; switch back with `aether cluster use <name>`.
+
 ### `aether cluster destroy`
 
 Destroy the active cluster: drain and shut down all nodes, terminate its cloud resources (VMs, SSH keys), and remove the local registry entry. Symmetric counterpart to `aether cluster bootstrap`.
