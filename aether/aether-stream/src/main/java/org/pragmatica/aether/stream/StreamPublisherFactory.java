@@ -41,15 +41,27 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
         return REQUIRES_CONTEXT.promise();
     }
 
+    /// #1040: the declared stream is materialized under its ENGINE KEY, not the bare `resources.toml`
+    /// section name. Without this the publish path created `repl-failover-events` while every
+    /// management route addressed `ns:repl-failover-events:1.0.0`, so `streamConfigKey(qualified)`
+    /// could not find the config this side had committed and the catalog minted a second ring from
+    /// management defaults — one declaration, two live rings, and a declared `min-sync-replicas = 2`
+    /// durability contract silently void for everything written through the catalog.
     @Override
     public Promise<StreamPublisher> provision(StreamConfig config, ProvisioningContext context) {
-        return context.extension(StreamPartitionManager.class)
-                      .flatMap(manager -> context.extension(Serializer.class)
-                                                 .flatMap(serializer -> buildPublisher(manager,
-                                                                                       serializer,
-                                                                                       config,
-                                                                                       context)))
-                      .async();
+        return StreamAddressResolver.qualify(config, context)
+                                    .flatMap(engineConfig -> context.extension(StreamPartitionManager.class)
+                                                                    .flatMap(manager -> buildWithSerializer(manager,
+                                                                                                            engineConfig,
+                                                                                                            context)))
+                                    .async();
+    }
+
+    private static Result<StreamPublisher> buildWithSerializer(StreamPartitionManager manager,
+                                                               StreamConfig config,
+                                                               ProvisioningContext context) {
+        return context.extension(Serializer.class)
+                      .flatMap(serializer -> buildPublisher(manager, serializer, config, context));
     }
 
     @SuppressWarnings("unchecked")

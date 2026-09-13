@@ -56,6 +56,27 @@ public record StreamConfig(String name,
                                                                 StreamCompression.NONE,
                                                                 none());
 
+    /// This config under a different `name`, every other field carried over verbatim.
+    ///
+    /// The one caller shape is #1040's qualification step: the config binder derives `name` from the
+    /// `resources.toml` section suffix (`ProviderBasedConfigService.deriveNameFromSectionSuffix`), which
+    /// yields the bare local alias, and the materialization path rewrites it to the engine key the
+    /// management routes resolve to. A copy method rather than a new component, so the `@Codec` wire
+    /// form is untouched — this substitutes the name BEFORE the config is committed, and nothing
+    /// persists both spellings.
+    public StreamConfig withName(String newName) {
+        return new StreamConfig(newName,
+                                partitions,
+                                retention,
+                                autoOffsetReset,
+                                maxEventSizeBytes,
+                                consistencyMode,
+                                replicas,
+                                minSyncReplicas,
+                                compression,
+                                encryptionKeyId);
+    }
+
     public static StreamConfig streamConfig(String name) {
         return new StreamConfig(name,
                                 DEFAULT_PARTITIONS,

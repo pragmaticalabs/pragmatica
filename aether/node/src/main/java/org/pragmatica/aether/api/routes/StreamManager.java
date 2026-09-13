@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceVersion;
+import org.pragmatica.aether.slice.stream.StreamEngineKey;
 import org.pragmatica.lang.Result;
 
 
@@ -26,20 +27,18 @@ public sealed interface StreamManager {
 
     /// The engine-level key for the given catalog address: the bare stream name for `system`
     /// streams, the full catalog address otherwise.
+    ///
+    /// Delegates to [StreamEngineKey#engineKey] rather than recomputing (#1040). The reduction used
+    /// to be written out here AND in `SystemStreams.isForbiddenEngineKey`, while the slice/engine
+    /// materialization path applied neither — so a declared stream was addressable under two
+    /// spellings at once. The route handlers keep calling this method; only the body moved.
     static String engineKey(ResourceAddress address) {
-        return isSystem(address)
-               ? address.name()
-                        .value()
-               : address.asString();
+        return StreamEngineKey.engineKey(address);
     }
 
     /// The catalog address a flat, operator-created stream is minted under.
     static Result<ResourceAddress> systemAddress(String name) {
         return ResourceAddress.resourceAddress(SYSTEM_NAMESPACE, name, ResourceVersion.defaultVersion());
-    }
-
-    private static boolean isSystem(ResourceAddress address) {
-        return SYSTEM_NAMESPACE.equals(address.namespace().value());
     }
 
     record unused() implements StreamManager {}
