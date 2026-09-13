@@ -4914,17 +4914,13 @@ public interface AetherNode extends ManageableNode {
             @Override
             @Contract
             public void onPeerJoined(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerJoined({}) — link epoch + recordTransportHint(reachable)", nodeId);
-                linkEstablished.accept(nodeId);
-                swimHints.accept(new TransportObservation.PeerReachable(nodeId));
+                reportLinkEstablished("onPeerJoined", nodeId, swimHints, linkEstablished);
             }
 
             @Override
             @Contract
             public void onPeerReconnected(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerReconnected({}) — link epoch + recordTransportHint(reachable)", nodeId);
-                linkEstablished.accept(nodeId);
-                swimHints.accept(new TransportObservation.PeerReachable(nodeId));
+                reportLinkEstablished("onPeerReconnected", nodeId, swimHints, linkEstablished);
             }
 
             @Override
@@ -4934,6 +4930,17 @@ public interface AetherNode extends ManageableNode {
                 swimHints.accept(unreachableHint(QuicTransportCause.PEER_LEFT, nodeId));
             }
         };
+    }
+
+    /// A QUIC link to `nodeId` was (re)established: start a new ClusterSync missed-pong epoch, then
+    /// send SWIM `PeerReachable`.
+    private static void reportLinkEstablished(String callback,
+                                              NodeId nodeId,
+                                              Consumer<TransportObservation> swimHints,
+                                              Consumer<NodeId> linkEstablished) {
+        LOG.debug("QuicPeerState: {}({}) — link epoch + recordTransportHint(reachable)", callback, nodeId);
+        linkEstablished.accept(nodeId);
+        swimHints.accept(new TransportObservation.PeerReachable(nodeId));
     }
 
     /// ClusterSync missed-pong reporter: each report is a `PING_TIMEOUT` (`PEER_UNRESPONSIVE`) SWIM
