@@ -100,14 +100,16 @@ class DashboardAuthPostureContractTest {
         assertThat(okBranch).as("a 2xx without a credential IS the open posture: the server served the "
                                + "dashboard's data to an unauthenticated caller")
                   .isNotNegative();
-        assertThat(probe.substring(okBranch, probe.indexOf("}", okBranch))).as("open posture starts the app without any overlay")
+        assertThat(probe.substring(okBranch,
+                                   probe.indexOf("}", okBranch))).as("open posture starts the app without any overlay")
                   .contains("self.posture = 'open'")
                   .contains("aether-auth-success")
                   .doesNotContain("self.show()");
         assertThat(refusedBranch).as("only the gate's own refusal (401 missing credential, 403 refused) "
                                     + "means a key is required — `ManagementServer.resolveSecurityErrorStatus`")
                   .isGreaterThan(okBranch);
-        assertThat(probe.substring(refusedBranch, probe.indexOf("}", refusedBranch))).as("key-required posture shows the overlay exactly as before")
+        assertThat(probe.substring(refusedBranch,
+                                   probe.indexOf("}", refusedBranch))).as("key-required posture shows the overlay exactly as before")
                   .contains("self.posture = 'key'")
                   .contains("self.show()");
     }
