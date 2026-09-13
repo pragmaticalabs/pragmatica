@@ -22,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// ClusterSync missed-pong reporter and the ClusterSync pong listener. Swapping the cause at either
 /// hint site — the review's N2/N3 mutations — reddens a test here.
 class SwimHintWiringTest {
+    private static final NodeId SELF = new NodeId("node-self");
     private static final NodeId PEER = new NodeId("node-peer");
 
     private final List<TransportObservation> hints = new CopyOnWriteArrayList<>();
@@ -74,10 +75,19 @@ class SwimHintWiringTest {
 
     @Test
     void pongResponsiveReporter_sendsPeerResponsiveForPongSender() {
-        AetherNode.pongResponsiveReporter(hints::add).accept(ClusterSyncPong.clusterSyncPong(PEER, Map.of()));
+        AetherNode.pongResponsiveReporter(SELF, hints::add).accept(ClusterSyncPong.clusterSyncPong(PEER, Map.of()));
 
         assertThat(hints)
             .as("A pong retracts that sender's PEER_UNRESPONSIVE hint (R-b)")
             .containsExactly(new TransportObservation.PeerResponsive(PEER));
+    }
+
+    /// Round 3 (review NIT 2): the leader pongs itself and the collector fans every pong out, so the
+    /// reporter drops the self-pong at the source instead of relying on SWIM to discard it.
+    @Test
+    void pongResponsiveReporter_selfPong_sendsNothing() {
+        AetherNode.pongResponsiveReporter(SELF, hints::add).accept(ClusterSyncPong.clusterSyncPong(SELF, Map.of()));
+
+        assertThat(hints).as("There is no hint about self to retract").isEmpty();
     }
 }

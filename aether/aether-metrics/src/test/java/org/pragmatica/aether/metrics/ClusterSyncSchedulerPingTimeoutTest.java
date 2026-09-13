@@ -5,11 +5,16 @@
 package org.pragmatica.aether.metrics;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.metrics.fsm.ClusterSyncContext;
+import org.pragmatica.aether.metrics.fsm.ClusterSyncState;
+import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.statemachine.Fsm;
 
 import java.util.List;
 import java.util.Set;
@@ -17,6 +22,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -176,6 +182,70 @@ class ClusterSyncSchedulerPingTimeoutTest {
         assertThat(reported)
             .as("The third consecutive miss in the new link epoch reports the hung peer")
             .containsExactly(PEER_A);
+    }
+
+    /// #1061 round 3 (review S1): `ClusterSyncSchedulerAdapter.onPongReceived` starts a new missed-pong
+    /// epoch itself, before it dispatches `PongReceived`. The FSM's `handlePongReceived` also clears
+    /// the count, which masks the epoch advance in every test above; the advance is what survives
+    /// that transition losing its CAS to a concurrent tick (`transitionToOrDrop`). The FSM stays
+    /// Dormant here, so nothing but the adapter can have advanced it. The lost-CAS interleaving
+    /// itself is not reproduced.
+    @Test
+    void onPongReceived_startsNewMissedPongEpoch_beforeTheFsmTransition() {
+        var harness = adapterOverContext();
+        var before = harness.context().missedPongEpoch(PEER_A);
+
+        harness.scheduler().onPongReceived(PEER_A);
+
+        assertThat(harness.context().missedPongEpoch(PEER_A))
+            .as("A pong starts a new missed-pong epoch independently of the FSM's PongReceived transition")
+            .isGreaterThan(before);
+    }
+
+    /// #1061 round 3 (review NIT 1): a forgotten peer's epoch entry is dropped rather than retained for
+    /// the process lifetime, and its re-join draws a value never handed out before, for any peer — so
+    /// a count the FSM may still hold for it (a dropped `NodeGone` transition) was recorded against an
+    /// epoch that cannot come back.
+    @Test
+    void forgetPeer_dropsTheEpochEntry_andARejoinNeverReusesAnEpoch() {
+        var harness = adapterOverContext();
+        harness.scheduler().onLinkEstablished(PEER_A);
+        var firstLink = harness.context().missedPongEpoch(PEER_A);
+        harness.scheduler().onLinkEstablished(PEER_B);
+        var otherPeersLink = harness.context().missedPongEpoch(PEER_B);
+        assertThat(firstLink).as("Control: the first link started an epoch").isPositive();
+
+        harness.context().forgetPeer(PEER_A);
+        assertThat(harness.context().missedPongEpoch(PEER_A)).as("No entry is retained for a forgotten peer").isZero();
+
+        harness.scheduler().onLinkEstablished(PEER_A);
+        assertThat(harness.context().missedPongEpoch(PEER_A))
+            .as("The re-joined peer's epoch is later than every epoch handed out before, for any peer")
+            .isGreaterThan(firstLink)
+            .isGreaterThan(otherPeersLink);
+    }
+
+    private record AdapterHarness(ClusterSyncScheduler scheduler, ClusterSyncContext context) {}
+
+    /// The real `ClusterSyncSchedulerAdapter` over a context this test holds, so the epoch the adapter
+    /// writes can be read back. The public factory builds the same pair but returns only the adapter.
+    private static AdapterHarness adapterOverContext() {
+        var ctxRef = new AtomicReference<ClusterSyncContext>();
+        Function<Fsm<ClusterSyncState, ClusterFsmEvent>, ClusterSyncState> factory = fsm -> {
+            var ctx = new ClusterSyncContext(fsm,
+                                             SELF,
+                                             new ConnectedPeersNetwork(Set.of(PEER_A, PEER_B)),
+                                             new SwimAwareCollector(Set.of()),
+                                             TimeSpan.timeSpan(1).hours(),
+                                             () -> 7L,
+                                             3,
+                                             () -> Epoch.epoch(7L, 0L),
+                                             PeerObservationStore.peerObservationStore());
+            ctxRef.set(ctx);
+            return ctx.dormant();
+        };
+        Fsm.fsm("cluster-sync-ping-timeout-test", factory);
+        return new AdapterHarness(new ClusterSyncSchedulerAdapter(ctxRef.get()), ctxRef.get());
     }
 
     private static ClusterSyncScheduler leaderScheduler(ClusterSyncCollector collector, Set<NodeId> connected) {

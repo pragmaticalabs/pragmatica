@@ -67,7 +67,9 @@ class SwimHintLeaderChainTest {
     private static final InetSocketAddress SELF_ADDR = new InetSocketAddress("127.0.0.1", 9300);
     private static final InetSocketAddress VICTIM_ADDR = new InetSocketAddress("127.0.0.1", 9301);
     private static final InetSocketAddress GOSSIPER_ADDR = new InetSocketAddress("127.0.0.1", 9302);
-    private static final long SUSPECT_TIMEOUT_MS = 5_000L;
+    // 8s: clearly above the 3s floor even on a loaded reactor (round 3, NIT 3: at 5s the floored
+    // verdict had a 2s margin).
+    private static final long SUSPECT_TIMEOUT_MS = 8_000L;
     private static final int PING_TIMEOUT_THRESHOLD = 3;
 
     private final Set<NodeId> liveTransport = new CopyOnWriteArraySet<>();
@@ -212,7 +214,7 @@ class SwimHintLeaderChainTest {
         collector.setPeerLocallyAlive(swimTrusts);
         collector.addPongListener(pong -> scheduler.onPongReceived(pong.sender()));
         collector.setUnreachableReporter(AetherNode.pingTimeoutReporter(this::deliver));
-        collector.addPongListener(AetherNode.pongResponsiveReporter(this::deliver));
+        collector.addPongListener(AetherNode.pongResponsiveReporter(SELF, this::deliver));
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(VICTIM, List.of(SELF, VICTIM)));
         scheduler.onQuorumStateChange(ClusterStateNotification.active());
         return new Wiring(collector, scheduler, AetherNode.quicPeerStateListener(this::deliver, scheduler::onLinkEstablished));
@@ -245,7 +247,7 @@ class SwimHintLeaderChainTest {
     private long awaitVerdict(Wiring wiring, long startedAt) {
         protocol.start();
         try {
-            await().atMost(Duration.ofSeconds(12))
+            await().atMost(Duration.ofSeconds(15))
                    .until(() -> count(SwimObservation.DepartedObserved.class) > 0 || count(SwimObservation.UnknownObserved.class) > 0);
         } finally {
             protocol.stop();

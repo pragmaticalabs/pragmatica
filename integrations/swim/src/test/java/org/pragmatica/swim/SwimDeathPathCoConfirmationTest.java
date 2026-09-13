@@ -246,12 +246,13 @@ class SwimDeathPathCoConfirmationTest {
     /// state is injected.
     @Nested
     class OriginAwareTransportHints {
-        private static final long SUSPECT_TIMEOUT_MS = 5_000L;
+        private static final long SUSPECT_TIMEOUT_MS = 8_000L;
         private static final long FLOOR_MS = 3_000L;
         private static final String SWIM_LOGGER = "org.pragmatica.swim.SwimProtocol";
 
         private final Set<NodeId> liveTransport = new CopyOnWriteArraySet<>();
-        // Suspect window (5s) clearly above the 3s floor so the two are distinguishable in time;
+        // Suspect window (8s) clearly above the 3s floor so the two are distinguishable in time even
+        // on a loaded reactor (round 3, NIT 3: at 5s the floored verdict had a 2s margin);
         // fast ticks so expiry lands within ~40ms of the window; joinGrace 0.
         private final SwimConfig config = swimConfig(timeSpan(40).millis(),
                                                      timeSpan(20).millis(),
@@ -299,7 +300,7 @@ class SwimDeathPathCoConfirmationTest {
                 await().during(Duration.ofMillis(3_800))
                        .atMost(Duration.ofSeconds(5))
                        .until(() -> !listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
-                await().atMost(Duration.ofSeconds(10))
+                await().atMost(Duration.ofSeconds(15))
                        .until(() -> listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
             } finally {
                 protocol.stop();
@@ -334,7 +335,7 @@ class SwimDeathPathCoConfirmationTest {
                 await().during(Duration.ofMillis(3_800))
                        .atMost(Duration.ofSeconds(5))
                        .until(() -> !listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
-                await().atMost(Duration.ofSeconds(10))
+                await().atMost(Duration.ofSeconds(15))
                        .until(() -> listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
             } finally {
                 protocol.stop();
@@ -355,7 +356,7 @@ class SwimDeathPathCoConfirmationTest {
 
             protocol.start();
             try {
-                await().atMost(Duration.ofSeconds(5))
+                await().atMost(Duration.ofMillis(SUSPECT_TIMEOUT_MS))
                        .until(() -> !forPeer(SwimObservation.FaultyObserved.class, NODE_A).isEmpty());
             } finally {
                 protocol.stop();
@@ -385,7 +386,7 @@ class SwimDeathPathCoConfirmationTest {
 
             protocol.start();
             try {
-                await().atMost(Duration.ofSeconds(5))
+                await().atMost(Duration.ofMillis(SUSPECT_TIMEOUT_MS))
                        .until(() -> !forPeer(SwimObservation.FaultyObserved.class, NODE_A).isEmpty());
             } finally {
                 protocol.stop();
@@ -449,7 +450,7 @@ class SwimDeathPathCoConfirmationTest {
 
             protocol.start();
             try {
-                await().atMost(Duration.ofSeconds(5))
+                await().atMost(Duration.ofMillis(SUSPECT_TIMEOUT_MS))
                        .until(() -> !forPeer(SwimObservation.FaultyObserved.class, NODE_A).isEmpty());
             } finally {
                 protocol.stop();
@@ -482,7 +483,7 @@ class SwimDeathPathCoConfirmationTest {
                 await().during(Duration.ofMillis(3_800))
                        .atMost(Duration.ofSeconds(5))
                        .until(() -> !listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
-                await().atMost(Duration.ofSeconds(10))
+                await().atMost(Duration.ofSeconds(15))
                        .until(() -> listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
             } finally {
                 protocol.stop();

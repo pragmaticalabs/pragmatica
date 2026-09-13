@@ -93,8 +93,11 @@ public final class ClusterSyncContext {
     /// counts misses only within the current epoch (`Pinging.missesInEpoch`). A plain concurrent
     /// write rather than an FSM event, because an FSM transition that loses its CAS to a
     /// concurrent tick is dropped (`transitionToOrDrop`), and a dropped reset would re-admit the
-    /// stale count behind a PING_TIMEOUT hint.
+    /// stale count behind a PING_TIMEOUT hint. Values are drawn from `missedPongEpochSequence`,
+    /// one process-wide counter, so an epoch is never reused for any peer: `forgetPeer` can drop
+    /// the entry, and a peer that re-joins gets a value no earlier count was recorded against.
     private final Map<NodeId, Long> missedPongEpochs = new ConcurrentHashMap<>();
+    private final AtomicLong missedPongEpochSequence = new AtomicLong();
     private final PeriodicObservationConfig periodicConfig;
     private final ClusterSyncState dormant;
     private final ClusterSyncState stopped;
@@ -279,14 +282,16 @@ public final class ClusterSyncContext {
     @Contract
     public void forgetPeer(NodeId peer) {
         observedEpoch.remove(peer);
+        missedPongEpochs.remove(peer);
     }
 
     /// Start a new missed-pong epoch for `peer` (#1061 R-a): misses counted before this call no
-    /// longer count toward the ping-timeout threshold. The epoch value only ever grows, so a peer
-    /// that is forgotten and re-joins can never alias an old count.
+    /// longer count toward the ping-timeout threshold. Each call takes the next value of one
+    /// process-wide sequence, so a peer that is forgotten and re-joins can never alias an old count
+    /// even if the FSM's `NodeGone` transition for it was dropped.
     @Contract
     public void startMissedPongEpoch(NodeId peer) {
-        missedPongEpochs.merge(peer, 1L, Long::sum);
+        missedPongEpochs.put(peer, missedPongEpochSequence.incrementAndGet());
     }
 
     public long missedPongEpoch(NodeId peer) {

@@ -3006,7 +3006,7 @@ public interface AetherNode extends ManageableNode {
         // below and by every pong), and a pong from the peer retracts it (R-b). Neither reports life:
         // only a SWIM probe-ack ends the suspicion.
         metricsCollector.setUnreachableReporter(pingTimeoutReporter(swimHealthDetector::recordTransportHint));
-        metricsCollector.addPongListener(pongResponsiveReporter(swimHealthDetector::recordTransportHint));
+        metricsCollector.addPongListener(pongResponsiveReporter(selfId, swimHealthDetector::recordTransportHint));
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> swimHealthDetector.onLeaderChanged(change.leaderId())));
         var announceTopology = config.topology();
@@ -4951,9 +4951,16 @@ public interface AetherNode extends ManageableNode {
 
     /// ClusterSync pong listener (#1061 R-b): a pong retracts that peer's `PEER_UNRESPONSIVE` hint via
     /// `PeerResponsive` — ClusterSync withdrawing its own stale evidence on contrary evidence of the
-    /// same kind. SWIM state is untouched; SWIM probe-ack remains the sole ALIVE authority.
-    static Consumer<ClusterSyncMessage.ClusterSyncPong> pongResponsiveReporter(Consumer<TransportObservation> swimHints) {
-        return pong -> swimHints.accept(new TransportObservation.PeerResponsive(pong.sender()));
+    /// same kind. SWIM state is untouched; SWIM probe-ack remains the sole ALIVE authority. The
+    /// leader's own pong (the collector records every sender, self included) reports nothing: there
+    /// is no hint about `self` to retract, and `SwimProtocol.recordTransportHint` would drop it.
+    static Consumer<ClusterSyncMessage.ClusterSyncPong> pongResponsiveReporter(NodeId self,
+                                                                                Consumer<TransportObservation> swimHints) {
+        return pong -> {
+            if (!self.equals(pong.sender())) {
+                swimHints.accept(new TransportObservation.PeerResponsive(pong.sender()));
+            }
+        };
     }
 
     enum QuicTransportCause implements Cause {
