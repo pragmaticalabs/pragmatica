@@ -857,8 +857,9 @@ Aspects are cross-cutting concerns applied to slice method invocations via confi
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `max_attempts` | `int` | required | Maximum retry attempts (must be positive) |
+| `max_attempts` | `int` | required | Maximum attempts at the method, the first one included (must be positive; `1` means no retry) |
 | `backoff_strategy` | `BackoffStrategy` | exponential (3 attempts) | Backoff strategy between retries |
+| `retry_on` | `RetryOn` | `TRANSIENT` | Which failures are retried. `TRANSIENT`: only a cause that implements `Cause.Transient` (timeouts, refused connections, exhausted pools — what infrastructure failures classify as); an unclassified cause, which is what every business verdict is, is returned after the first attempt, so a non-idempotent method is never re-driven on its own verdict (#280). `NON_TERMINAL`: retry anything that is not `Cause.Terminal` — the behaviour before #280; opt in for a method whose failures are all infrastructural but not yet classified |
 
 `backoff_strategy` is a **discriminated sub-section**: `[retry.<name>.backoff_strategy]` with a
 `type` key selecting the shape. A **wholly absent** `[retry.<name>]` section fails loud
@@ -880,6 +881,7 @@ intent; don't conflate them
 ```toml
 [retry.payment-calls]
 max_attempts = 3
+retry_on = "TRANSIENT"
 
 [retry.payment-calls.backoff_strategy]
 type = "exponential"

@@ -99,6 +99,37 @@ class RetryConfigTomlBindingTest {
     }
 
     @Test
+    void config_retryOn_bindsFromToml() {
+        var configService = configServiceFrom("""
+                [retry.checkout]
+                max_attempts = 3
+                retry_on = "NON_TERMINAL"
+
+                [retry.checkout.backoff_strategy]
+                type = "fixed"
+                interval = "1ms"
+                """);
+        var config = configService.config("retry.checkout", RetryConfig.class).unwrap();
+
+        assertThat(config.retryOn()).isEqualTo(RetryOn.NON_TERMINAL);
+    }
+
+    @Test
+    void config_omittedRetryOn_fallsBackToTransient() {
+        var configService = configServiceFrom("""
+                [retry.checkout]
+                max_attempts = 3
+
+                [retry.checkout.backoff_strategy]
+                type = "fixed"
+                interval = "1ms"
+                """);
+        var config = configService.config("retry.checkout", RetryConfig.class).unwrap();
+
+        assertThat(config.retryOn()).isEqualTo(RetryOn.TRANSIENT);
+    }
+
+    @Test
     void retryInterceptorFactory_provisionsFromRealTomlBoundConfig_andRetriesUntilSuccess() {
         var configService = configServiceFrom("""
                 [retry.flaky]
