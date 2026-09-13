@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -29,6 +30,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -267,11 +269,14 @@ class ClusterDeploymentStateActiveTest {
             seedNodeArtifact(NODE_A, SliceState.ACTIVE, injectedClock.get());
             harness.dispatch(new Activate());
 
-            // A DIFFERENT artifact, never seeded: absent from the projection AND absent from the KV, so
-            // it is genuinely orphaned rather than merely unseen by a stale view.
+            // A DIFFERENT artifact with no SliceTarget: its NodeArtifactKey is committed (#1068 — the
+            // sweep reads the committed store, not the projection) but nothing targets it, so it is
+            // genuinely orphaned rather than merely unseen by a stale view.
             var strayArtifact = Artifact.artifact("org.example:slice-stray:1.0.0").unwrap();
             var strayKey = SliceNodeKey.sliceNodeKey(strayArtifact, NODE_A);
 
+            kvStore.put(NodeArtifactKey.nodeArtifactKey(NODE_A, strayArtifact),
+                        NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE, 0L));
             activeState().sliceStates().put(strayKey, SliceState.ACTIVE);
             cluster.commands.clear();
 
@@ -283,6 +288,209 @@ class ClusterDeploymentStateActiveTest {
             assertThat(activeState().sliceStates())
                     .as("a genuinely orphaned entry is dropped from the view")
                     .doesNotContainKey(strayKey);
+        }
+    }
+
+    /// #1068 — the orphan sweep is the leader's half of the rollback guarantee: a `NodeArtifactKey`
+    /// whose version no committed `SliceTargetKey` (or rolling-update `VersionRoutingKey`) names is
+    /// UNLOADed again on every sweep until the key is gone from the committed store. The old sweep
+    /// walked the leader's `sliceStates` projection and dropped the entry BEFORE issuing the UNLOAD,
+    /// so one consensus timeout (measured: 30s, during the rollback in CI run 34772700962) meant the
+    /// key was never looked at again. Removal is not time-bounded: it happens only while this node is
+    /// the leader with membership resolved and its consensus writes land.
+    @Nested
+    class RollbackOrphanSweep {
+        private final Artifact orphan = Artifact.artifact("org.example:slice-orphan:1.0.0").unwrap();
+        private final NodeArtifactKey orphanKey = NodeArtifactKey.nodeArtifactKey(NODE_A, orphan);
+
+        private void seedOrphanInStore(SliceState state) {
+            kvStore.put(orphanKey, NodeArtifactValue.nodeArtifactValue(state, 0L));
+        }
+
+        private List<KVCommand<AetherKey>> unloadsOf(NodeArtifactKey key) {
+            return cluster.commands.stream()
+                                   .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                      && put.key().equals(key)
+                                                      && put.value() instanceof NodeArtifactValue value
+                                                      && value.state() == SliceState.UNLOAD)
+                                   .toList();
+        }
+
+        private List<KVCommand<AetherKey>> removalsOf(NodeArtifactKey key) {
+            return cluster.commands.stream()
+                                   .filter(command -> command instanceof KVCommand.Remove<AetherKey> remove
+                                                      && remove.key().equals(key))
+                                   .toList();
+        }
+
+        @Test
+        void orphanedKeyInStore_isUnloadedOnEverySweepUntilGone() {
+            seedOrphanInStore(SliceState.ACTIVE);
+            harness.dispatch(new Activate());
+            cluster.commands.clear();
+
+            // Sweep 1 issues the UNLOAD. Nothing applies it to the store (the recording cluster
+            // commits nothing), which is exactly the timed-out rollback: the key is still there.
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            assertThat(unloadsOf(orphanKey)).as("first sweep unloads the orphan").hasSize(1);
+
+            // Sweep 2 must look at the committed store again and re-issue — the projection having
+            // forgotten the key is not evidence the key is gone.
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            assertThat(unloadsOf(orphanKey)).as("second sweep re-issues while the key is still committed").hasSize(2);
+
+            // The node acts on the UNLOAD and removes its key: only now does the sweep stop.
+            kvStore.remove(orphanKey);
+            cluster.commands.clear();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            assertThat(cluster.commands).as("an absent key is not re-issued").isEmpty();
+        }
+
+        @Test
+        void orphanedKeyAlreadyUnloading_isRemovedUntilGone() {
+            seedOrphanInStore(SliceState.UNLOADING);
+            harness.dispatch(new Activate());
+            cluster.commands.clear();
+
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(removalsOf(orphanKey)).as("an orphan already unloading is removed, and re-removed while it persists").hasSize(2);
+        }
+
+        @Test
+        void committedTargetNamesTheVersion_isNotSwept() {
+            seedNodeArtifact(NODE_A, SliceState.ACTIVE, injectedClock.get());
+            harness.dispatch(new Activate());
+            cluster.commands.clear();
+
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(cluster.commands).as("a targeted version is not an orphan").isEmpty();
+        }
+
+        @Test
+        void oldVersionNamedByRolling_updateRouting_isNotSwept() {
+            var artifactBase = ArtifactBase.artifactBase("org.example:slice-a").unwrap();
+
+            kvStore.put(SliceTargetKey.sliceTargetKey(artifactBase),
+                        SliceTargetValue.sliceTargetValue(Version.version("2.0.0").unwrap(), 1));
+            kvStore.put(AetherKey.VersionRoutingKey.versionRoutingKey(artifactBase),
+                        AetherValue.VersionRoutingValue.versionRoutingValue(Version.version("1.0.0").unwrap(),
+                                                                            Version.version("2.0.0").unwrap()));
+            kvStore.put(NodeArtifactKey.nodeArtifactKey(NODE_A, ARTIFACT),
+                        NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE, 0L));
+            harness.dispatch(new Activate());
+            cluster.commands.clear();
+
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(unloadsOf(NodeArtifactKey.nodeArtifactKey(NODE_A, ARTIFACT)))
+                    .as("the old version of a rolling update is still routed, so it is not an orphan")
+                    .isEmpty();
+        }
+
+        /// CONTROL: no resolved leader membership, no sweep. The sweep exists only inside `Active`
+        /// (this node is the leader) and refuses to act until the core membership is wired, so a
+        /// cluster without a quorate leader issues nothing — the orphan simply persists.
+        @Test
+        void membershipNotResolved_sweepIssuesNothing() {
+            var router = MessageRouter.mutable();
+            var localKv = new InMemoryKvStore(router);
+            var localCluster = new RecordingClusterNode(SELF);
+
+            localKv.put(orphanKey, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE, 0L));
+            Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
+                    fsm -> new ClusterDeploymentContext(fsm,
+                                                        SELF,
+                                                        localCluster,
+                                                        localKv,
+                                                        router,
+                                                        stubTopologyManager(SELF),
+                                                        stubSchemaOrchestrator(),
+                                                        () -> MembershipFsm.MEMBERSHIP_NOT_WIRED,
+                                                        () -> Set.of(SELF),
+                                                        Set::of,
+                                                        Set.of(SELF),
+                                                        DeploymentAtomicity.ALL_OR_NOTHING,
+                                                        3,
+                                                        timeSpan(300).seconds(),
+                                                        injectedClock::get).dormant();
+            var localHarness = FsmTestHarness.harness("orphan-unwired-" + SELF.id() + "-" + System.nanoTime(), factory);
+
+            localHarness.dispatch(new Activate());
+            ((ClusterDeploymentState.Active) localHarness.state()).staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(localCluster.commands.stream()
+                                            .filter(c -> c instanceof KVCommand.Put<AetherKey, ?> put && put.key().equals(orphanKey))
+                                            .toList())
+                    .as("without resolved leader membership the orphan is left alone")
+                    .isEmpty();
+        }
+
+        /// CONTROL: consensus not progressing. The UNLOAD write fails (no quorum to commit it); the
+        /// key stays committed and the next sweep re-issues rather than giving up — removal happens
+        /// only when a write lands, which is why no time bound is claimed.
+        @Test
+        void consensusWriteFails_keyPersistsAndNextSweepReissues() {
+            seedOrphanInStore(SliceState.ACTIVE);
+            harness.dispatch(new Activate());
+            cluster.commands.clear();
+            cluster.failApplies = true;
+
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(unloadsOf(orphanKey)).as("each sweep re-issues against a store that still holds the key").hasSize(2);
+            assertThat(kvStore.get(orphanKey).isPresent()).as("nothing landed, so the key is still committed").isTrue();
+        }
+    }
+
+    /// #1068 — the leader's half of "a rolled-back version never starts again": ACTIVATE for a LOADED
+    /// slice is substituted with UNLOAD when no committed target names that version.
+    @Nested
+    class RollbackActivateSubstitution {
+        private void dispatchLoaded(NodeId node, Artifact artifact) {
+            var key = NodeArtifactKey.nodeArtifactKey(node, artifact);
+            var value = NodeArtifactValue.nodeArtifactValue(SliceState.LOADED, 0L);
+
+            kvStore.put(key, value);
+            harness.dispatch(new NodeArtifactPutReceived(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none())));
+        }
+
+        private List<SliceState> statesWrittenFor(NodeArtifactKey key) {
+            return cluster.commands.stream()
+                                   .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put && put.key().equals(key))
+                                   .map(command -> ((NodeArtifactValue) ((KVCommand.Put<AetherKey, ?>) command).value()).state())
+                                   .toList();
+        }
+
+        @Test
+        void loadedWithNoCommittedTarget_isUnloadedNotActivated() {
+            harness.dispatch(new Activate());
+            cluster.commands.clear();
+
+            dispatchLoaded(NODE_A, ARTIFACT);
+
+            var written = statesWrittenFor(NodeArtifactKey.nodeArtifactKey(NODE_A, ARTIFACT));
+
+            assertThat(written).as("no ACTIVATE may be issued for a version nothing targets").doesNotContain(SliceState.ACTIVATE);
+            assertThat(written).as("the leader substitutes UNLOAD").contains(SliceState.UNLOAD);
+        }
+
+        /// Positive control: the same LOADED report with the target committed IS activated.
+        @Test
+        void loadedWithCommittedTarget_isActivated() {
+            seedNodeArtifact(NODE_A, SliceState.LOAD, injectedClock.get());
+            harness.dispatch(new Activate());
+            cluster.commands.clear();
+
+            dispatchLoaded(NODE_A, ARTIFACT);
+
+            var written = statesWrittenFor(NodeArtifactKey.nodeArtifactKey(NODE_A, ARTIFACT));
+
+            assertThat(written).contains(SliceState.ACTIVATE);
+            assertThat(written).doesNotContain(SliceState.UNLOAD);
         }
     }
 
@@ -623,9 +831,15 @@ class ClusterDeploymentStateActiveTest {
 
         @Override public Promise<Unit> stop() {return Promise.unitPromise();}
 
+        /// When set, every apply fails without touching anything — consensus that cannot commit.
+        volatile boolean failApplies;
+
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             commands.addAll(batch);
-            return Promise.success(Collections.emptyList());
+
+            return failApplies
+                   ? org.pragmatica.lang.utils.Causes.cause("no quorum").promise()
+                   : Promise.success(Collections.emptyList());
         }
     }
 
@@ -636,6 +850,10 @@ class ClusterDeploymentStateActiveTest {
 
         void put(AetherKey key, AetherValue value) {
             process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+        }
+
+        void remove(AetherKey key) {
+            process(createBatch(List.of(new KVCommand.Remove<>(key))));
         }
     }
 
