@@ -16,6 +16,9 @@ FIXTURE="${SCRIPT_DIR}/fixtures/bootstrap-state.json"
 export TARGET_HOST="cloud-helpers-test"
 export ENV_TYPE="cloud"
 export CLOUD_SOURCE_NAME="hetzner-eu"
+# cloud_ssh reads AETHER_SSH_KEY under `set -u`; a CI runner or container has none, so
+# the jvm_unit_* tests (ssh stubbed) must not depend on the caller's environment (#1051).
+export AETHER_SSH_KEY="${AETHER_SSH_KEY:-/nonexistent/cloud-helpers-test-key}"
 
 # Stage the fixture under a throwaway cluster name to avoid clobbering real state.
 TEST_CLUSTER="cloud-helpers-test-$$"
