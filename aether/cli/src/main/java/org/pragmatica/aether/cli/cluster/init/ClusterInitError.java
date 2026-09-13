@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster.init;
 
+import java.util.List;
+
 import org.pragmatica.lang.Cause;
 
 
@@ -36,11 +38,36 @@ public sealed interface ClusterInitError extends Cause {
     record OutputUnreadable(String path, String detail) implements ClusterInitError {
         @Override
         public String message() {
-            return "Output file exists but cannot be parsed for merging: " + path
-                 + " (" + detail
+            return "Output file " + path + " exists and the merge cannot read it (" + detail
                  + "). Fix it, or re-run with --force to overwrite.";
         }
     }
+
+    /// #311 — the existing output holds init-generated keys whose values differ from the new
+    /// answers, and batch mode has no operator to ask. Refused with the diff, file untouched:
+    /// `--merge` applies the new answers to exactly these keys, `--force` overwrites the file.
+    record OutputDiffers(String path, List<String> changes) implements ClusterInitError {
+        @Override
+        public String message() {
+            return "Output file " + path + " exists and " + changes.size()
+                 + " init-generated key(s) differ from the new answers:\n  "
+                 + String.join("\n  ", changes)
+                 + "\nRe-run with --merge to apply the new answers to these keys, or --force to "
+                 + "overwrite the whole file.";
+        }
+    }
+
+    /// #311 — a refusal from inside the merge: the line index and the parser disagree, or the merged text
+    /// does not parse. Either is a defect here, never in the operator's file — reported, and the
+    /// file is left alone.
+    record MergeError(String detail) implements ClusterInitError {
+        @Override
+        public String message() {
+            return "Merge into the existing file was not attempted (" + detail
+                 + "). Re-run with --force to overwrite, and report this.";
+        }
+    }
+
 
     record MissingField(String name) implements ClusterInitError {
         @Override

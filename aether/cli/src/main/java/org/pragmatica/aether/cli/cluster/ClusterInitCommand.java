@@ -25,14 +25,13 @@ import org.pragmatica.aether.cli.cluster.init.ClusterConfigWizard;
 import org.pragmatica.aether.cli.cluster.init.ClusterInitError;
 import org.pragmatica.aether.cli.cluster.init.FirewallPreset;
 import org.pragmatica.aether.cli.cluster.init.FirewallPresets;
+import org.pragmatica.aether.cli.cluster.init.InPlaceTomlMerge;
 import org.pragmatica.aether.cli.cluster.init.InputValidators;
 import org.pragmatica.aether.cli.cluster.init.TopologyDeriver;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.SourceType;
-import org.pragmatica.aether.config.cluster.TomlDocumentMerger;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
-import org.pragmatica.config.toml.TomlWriter;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
@@ -50,8 +49,15 @@ class ClusterInitCommand implements Callable<Integer> {
     @Option(names = "--output", description = "Output path", defaultValue = DEFAULT_OUTPUT)
     private Path output;
 
-    @Option(names = "--force", description = "Overwrite existing output file")
+    @Option(names = "--force", description = "Overwrite an existing output file wholesale")
     private boolean force;
+
+    /// #311 — consent, given up front, to rewrite init-generated keys whose value in an existing
+    /// output differs from the new answers. Without it batch mode refuses with the diff and
+    /// interactive mode asks; with it the answers are applied and nothing else in the file moves.
+    @Option(names = "--merge", description = "Apply the new answers to init-generated keys whose value differs in an "
+                                             + "existing output file (batch mode refuses without it; interactive mode asks)")
+    private boolean merge;
 
     /// P-NEW-G (2026-05-21): Forces non-interactive (batch) mode and disables all prompts.
     /// When set, `--target` defaults to `docker` if not provided, and any missing required
@@ -143,6 +149,11 @@ class ClusterInitCommand implements Callable<Integer> {
     @CommandLine.ParentCommand
     private ClusterCommand parent;
 
+    /// One reader over stdin for the whole run. The wizard and the merge question used to each
+    /// wrap `System.in` in their own buffered reader, and the first one drained a piped stdin into
+    /// its buffer, so the second always read EOF and took its default.
+    private final Prompt prompt = new Prompt();
+
     @Override
     public Integer call() {
         return collectAnswers().flatMap(this::writeOutput)
@@ -152,7 +163,7 @@ class ClusterInitCommand implements Callable<Integer> {
     private Result<ClusterConfigAnswers> collectAnswers() {
         return isBatchMode()
                ? buildFromFlags()
-               : new ClusterConfigWizard().run();
+               : new ClusterConfigWizard(prompt).run();
     }
 
     private boolean isBatchMode() {
@@ -437,59 +448,76 @@ class ClusterInitCommand implements Callable<Integer> {
             return write(generated);
         }
 
-        if (!isBatchMode() && !new Prompt().confirm("Output file " + output
-                                                   + " exists. Merge the generated config into it? (keys init does not"
-                                                   + " generate are kept; --force overwrites instead)",
-                                                    true)) {
-            return new ClusterInitError.OutputExists(output.toString()).result();
+        return readExisting().flatMap(existing -> InPlaceTomlMerge.plan(existing.text(), existing.document(), generated))
+                             .flatMap(this::consented)
+                             .flatMap(this::write);
+    }
+
+    private record Existing(String text, TomlDocument document) {}
+
+    /// #311 — an existing file the merge cannot read is refused, never clobbered: the operator's
+    /// edits are what the merge exists to keep. `--force` remains the explicit overwrite.
+    private Result<Existing> readExisting() {
+        try {
+            var text = Files.readString(output);
+
+            return TomlParser.parse(text)
+                             .map(document -> new Existing(text, document))
+                             .mapError(cause -> new ClusterInitError.OutputUnreadable(output.toString(), cause.message()));
+        } catch (IOException e) {
+            return new ClusterInitError.OutputUnreadable(output.toString(), e.getMessage()).result();
+        }
+    }
+
+    /// #311 — the merge rewrites only the lines of init-generated keys, and a key whose value the
+    /// operator changed is rewritten only with consent: `--merge`, or a yes at the prompt (default
+    /// keep). Batch mode with neither refuses, naming every `section.key: old → new`, and writes
+    /// nothing. Absent keys are appended and everything else is preserved byte-for-byte either
+    /// way; kept keys init does not generate are listed, because a merge cannot tell a hand-added
+    /// key from one init used to generate and no longer does.
+    private Result<String> consented(InPlaceTomlMerge.Plan plan) {
+        var diffs = plan.changes().stream().map(InPlaceTomlMerge.Change::toString).toList();
+
+        if (!diffs.isEmpty() && !merge && isBatchMode()) {
+            return new ClusterInitError.OutputDiffers(output.toString(), diffs).result();
         }
 
-        return mergeIntoExisting(generated).flatMap(this::write);
+        var apply = diffs.isEmpty() || merge || confirmChanges(diffs);
+
+        report(plan, apply);
+
+        return Result.success(plan.render(apply));
     }
 
-    /// #311 — a re-run against an existing file CONVERGES instead of aborting (batch) or replacing
-    /// the file wholesale. The generated document is merged INTO the existing one: every key init
-    /// generates follows the new answers; every key it does not generate survives. The survivors
-    /// are printed, because a merge cannot tell a hand-added key from one init USED to generate
-    /// and no longer does — listing them is what keeps the second kind from going silently stale.
-    /// Comments in the existing file are not preserved (the writer emits none). An existing file
-    /// that does not parse is refused, never clobbered; `--force` remains the explicit overwrite.
-    private Result<String> mergeIntoExisting(String generated) {
-        return TomlParser.parseFile(output)
-                         .mapError(cause -> new ClusterInitError.OutputUnreadable(output.toString(),
-                                                                                  cause.message()))
-                         .flatMap(existing -> TomlParser.parse(generated).map(fresh -> mergeAndReport(existing, fresh)));
+    private boolean confirmChanges(List<String> diffs) {
+        System.out.println("Output file " + output + " exists and " + diffs.size()
+                           + " init-generated key(s) differ from the new answers:");
+        diffs.forEach(diff -> System.out.println("  " + diff));
+
+        return prompt.confirm("Apply the new answers to these keys? (No keeps the existing values)", false);
     }
 
-    private String mergeAndReport(TomlDocument existing, TomlDocument fresh) {
-        var kept = keysOnlyIn(existing, fresh);
+    private void report(InPlaceTomlMerge.Plan plan, boolean applied) {
+        var parts = new java.util.ArrayList<String>();
 
-        System.out.println("Merged into " + output + (kept.isEmpty()
-                                                      ? ": every key was regenerated"
-                                                      : ": kept " + kept.size()
-                                                       + " key(s) init does not generate — " + String.join(", ", kept)));
+        if (!plan.changes().isEmpty()) {
+            parts.add((applied
+                       ? "updated "
+                       : "kept the existing value of ") + plan.changes().size() + " key(s) — "
+                      + String.join(", ", plan.changes().stream().map(InPlaceTomlMerge.Change::toString).toList()));
+        }
 
-        return TomlWriter.toToml(TomlDocumentMerger.merge(existing, fresh),
-                                 List.of("Generated by: aether cluster init (merged into an existing file)",
-                                         "Bootstrap with: aether cluster bootstrap " + output.getFileName()));
-    }
+        if (!plan.added().isEmpty()) {
+            parts.add("added " + plan.added().size() + " key(s) — " + String.join(", ", plan.added()));
+        }
 
-    private static List<String> keysOnlyIn(TomlDocument existing, TomlDocument fresh) {
-        return existing.sections()
-                       .entrySet()
-                       .stream()
-                       .flatMap(section -> section.getValue()
-                                                  .keySet()
-                                                  .stream()
-                                                  .filter(key -> !fresh.sections()
-                                                                       .getOrDefault(section.getKey(),
-                                                                                     java.util.Map.of())
-                                                                       .containsKey(key))
-                                                  .map(key -> section.getKey()
-                                                                     .isEmpty()
-                                                              ? key
-                                                              : section.getKey() + "." + key))
-                       .toList();
+        if (!plan.kept().isEmpty()) {
+            parts.add("kept " + plan.kept().size() + " key(s) init does not generate — " + String.join(", ", plan.kept()));
+        }
+
+        System.out.println("Merged into " + output + (parts.isEmpty()
+                                                      ? ": already matches the answers, nothing changed"
+                                                      : ": " + String.join("; ", parts)));
     }
 
     private Result<Path> write(String toml) {
