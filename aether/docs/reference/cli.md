@@ -1905,7 +1905,7 @@ aether cluster init --non-interactive --name test-cluster --nodes 5 --output clu
 | Option | Description |
 |--------|-------------|
 | `--output` | Output path (default `cluster-config.toml`) |
-| `--force` | Overwrite existing output file |
+| `--force` | Overwrite an existing output file wholesale. Without it, an existing file is **merged into** (#311): every key `init` generates follows the new flags/answers, every key it does not generate is kept and listed (`Merged into <path>: kept N key(s) …`), comments are not preserved, and a file that does not parse is refused rather than replaced. Interactive mode confirms the merge (default yes). |
 | `--non-interactive` | Force non-interactive mode; default `--target=docker` if absent, fail fast on missing required flags (P-NEW-G, 2026-05-21). Required for CI/integration test usage (TC-07-J3). |
 | `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
 | `--target` | Deployment target: `docker`, `ssh`, `cloud`, or `forge` |

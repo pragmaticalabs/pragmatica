@@ -36,7 +36,8 @@ public sealed interface ClusterInitError extends Cause {
     record OutputUnreadable(String path, String detail) implements ClusterInitError {
         @Override
         public String message() {
-            return "Output file exists but cannot be parsed for merging: " + path + " (" + detail
+            return "Output file exists but cannot be parsed for merging: " + path
+                 + " (" + detail
                  + "). Fix it, or re-run with --force to overwrite.";
         }
     }
