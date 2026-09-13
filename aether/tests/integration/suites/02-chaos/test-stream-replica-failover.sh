@@ -47,22 +47,39 @@ KILLED_OWNER=""             # set by the kill step; consumed by cleanup()
 # ---------------------------------------------------------------------------
 # Marker helpers
 # ---------------------------------------------------------------------------
-# A marker is a fixed-width, zero-padded, terminator-suffixed token so its Base64
-# form is distinct and never a substring of a sibling's (verified: no collisions
-# across indices). The publish path stores `data` RAW
-# (StreamRoutes.publishToPartition → request.data().getBytes(UTF_8)); the READ path
-# Base64-ENCODES it back (EventRecord.fromRawEvent). So we publish the raw marker
-# and, on read-back, grep for its Base64 — counting Base64 occurrences is the exact,
-# decode-correct completeness signal. (The CLI `streams publish` base64s its arg, so
-# we deliberately publish via the raw-HTTP stream_publish helper instead.)
+# A marker is a fixed-width, zero-padded, terminator-suffixed token so its wire form is
+# distinct and never a substring of a sibling's (verified: no collisions across indices).
+# The publish path stores `data` RAW (StreamRoutes.publishToPartition →
+# request.data().getBytes(UTF_8)) and the READ path returns it RAW — so we publish the raw
+# marker and grep for that same raw token on read-back. (The CLI `streams publish` base64s
+# its arg, so we deliberately publish via the raw-HTTP stream_publish helper instead.)
+#
+# CORRECTED 2026-09-13: this header previously asserted that "the READ path Base64-ENCODES it
+# back (EventRecord.fromRawEvent)" and that counting Base64 occurrences was "the exact,
+# decode-correct completeness signal". Measured against a live rc4 cluster, that is false at
+# both layers — see `marker_wire_for` for the evidence. The claim was load-bearing: every
+# completeness assertion in this file searched for a string that cannot appear.
 marker_for() {
     local idx="$1"
     printf '%s-%04d-Z' "$MARKER_PREFIX" "$idx"
 }
 
-marker_b64_for() {
-    # No newline in input; base64 of a ~26-byte string is one unwrapped line.
-    marker_for "$1" | base64
+# The READ path returns `data` RAW, not Base64 — measured against a live rc4 cluster
+# 2026-09-13 at BOTH layers:
+#   GET /api/v1/streams/{ns}/{stream}/{version}/read/0
+#     -> {"events":[{"offset":0,"data":"FLVR-FAILOVER-MARKER-0000-Z",...}]}
+#   aether streams read <identity> 0 --format json   -> same, raw.
+# Occurrences of the raw marker: 1; of its Base64 (`RkxWUi1GQUlMT1ZFUi1NQVJLRVItMDAwMC1a`): 0.
+#
+# This helper previously returned `marker_for "$1" | base64`, on the premise (stated in this
+# file's header) that "the READ path Base64-ENCODES it back (EventRecord.fromRawEvent)". That
+# premise does not hold, so every completeness assertion searched for a string that could not
+# appear and reported 0/N while all N markers were present, contiguous from offset 0, in publish
+# order. The defect was MASKED until 2026-09-13: before the engine-key qualification (#1040) the
+# read addressed a different ring entirely and returned no events at all, so the encoding
+# mismatch had nothing to be wrong about.
+marker_wire_for() {
+    marker_for "$1"
 }
 
 # Publish markers [start_idx .. start_idx+count-1] via the raw-HTTP publish helper.
@@ -81,16 +98,16 @@ publish_markers() {
     printf '%s' "$ok"
 }
 
-# Count how many of markers [start_idx .. start_idx+count-1] appear (by Base64) in
+# Count how many of markers [start_idx .. start_idx+count-1] appear (raw wire form) in
 # a read of the partition. Reads through the GOVERNOR read-preference (the CLI/HTTP
 # default), which routes to the partition's current HRW owner — exactly the path a
 # consumer uses, so it proves the PROMOTED owner serves the history. Echoes the hit
 # count on stdout; logs the raw body head on a short count for diagnosis.
 count_markers_present() {
     local start_idx="$1" count="$2"
-    local body i idx b64 found=0
+    local body i idx wire found=0
     # --limit must exceed the full tail (N + K) so a single read returns everything.
-    body=$(aether_failover streams read "$STREAM_NAME" "$PARTITION" \
+    body=$(aether_failover streams read "$(stream_identity "$STREAM_NAME")" "$PARTITION" \
                 --limit $(( (N_EVENTS + K_EVENTS) * 2 + 10 )) --format json 2>/dev/null) || {
         log_warn "count_markers_present: 'streams read' exited non-zero"
         printf '%s' 0
@@ -103,11 +120,11 @@ count_markers_present() {
     fi
     for ((i = 0; i < count; i++)); do
         idx=$((start_idx + i))
-        b64="$(marker_b64_for "$idx")"
+        wire="$(marker_wire_for "$idx")"
         # grep -c counts MATCHING LINES; the JSON is one line per read so a present
-        # marker contributes 1. -F = fixed string (base64 has no regex metachars but
+        # marker contributes 1. -F = fixed string (the marker has no regex metachars but
         # be explicit), so each unique token is counted independently.
-        if printf '%s' "$body" | grep -Fq -- "$b64"; then
+        if printf '%s' "$body" | grep -Fq -- "$wire"; then
             found=$((found + 1))
         fi
     done
@@ -118,14 +135,14 @@ count_markers_present() {
 }
 
 # Verify the partition is served IN ORDER: each offset O in [0 .. upto] must carry
-# marker_for(O)'s Base64 in its event object (i.e. publish order == read order, no
+# marker_for(O)'s raw wire form in its event object (i.e. publish order == read order, no
 # reordering/gap). Stronger than a presence count — proves the promoted owner's log
 # is contiguous and correctly sequenced, not just "the right set of bytes exists".
 # Echoes the number of in-order offsets matched on stdout.
 count_inorder_offsets() {
     local upto="$1"
-    local body i obj data_b64 expect matched=0
-    body=$(aether_failover streams read "$STREAM_NAME" "$PARTITION" \
+    local body i obj data_wire expect matched=0
+    body=$(aether_failover streams read "$(stream_identity "$STREAM_NAME")" "$PARTITION" \
                 --limit $(( (N_EVENTS + K_EVENTS) * 2 + 10 )) --format json 2>/dev/null) || {
         printf '%s' 0
         return 0
@@ -144,9 +161,9 @@ count_inorder_offsets() {
             | grep -oE "\\{[^{}]*\"offset\"[[:space:]]*:[[:space:]]*${i}[^0-9][^{}]*\\}" \
             | head -1)
         [ -n "$obj" ] || continue
-        data_b64=$(printf '%s' "$obj" | sed -E 's/.*"data"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
-        expect="$(marker_b64_for "$i")"
-        if [ "$data_b64" = "$expect" ]; then
+        data_wire=$(printf '%s' "$obj" | sed -E 's/.*"data"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
+        expect="$(marker_wire_for "$i")"
+        if [ "$data_wire" = "$expect" ]; then
             matched=$((matched + 1))
         fi
     done

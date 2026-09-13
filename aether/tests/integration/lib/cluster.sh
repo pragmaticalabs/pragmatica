@@ -4034,6 +4034,23 @@ stream_publish() {
     api_post "/api/v1/streams/${coord}/publish" "$body"
 }
 
+# The catalog identity in CLI form: `namespace:stream:version`.
+#
+# `stream_coordinate` emits the slash form because management ROUTES are path-shaped; the CLI takes
+# the colon form. Both descend from the same catalog lookup, so they cannot disagree.
+#
+# Callers must use this rather than a bare name. `aether streams read|status|publish|delete` document
+# a bare-name convenience that "defaults to system:name:1.0.0" — harmless while the engine also keyed
+# app streams by their bare section name, and WRONG since #1040 qualified them: the bare form now
+# resolves to the `system` namespace, which `StreamEngineKey` reduces back to a bare key that holds
+# no app stream. Measured 2026-09-12: publishing through the catalog and reading by bare name returned
+# 0 of 20 markers while the events were demonstrably present on the qualified ring.
+stream_identity() {
+    local coord
+    coord=$(stream_coordinate "$1") || return 1
+    printf '%s' "${coord//\//:}"
+}
+
 # Replica-set view for a partition (STREAM_REPLICAS). Partition defaults to 0.
 stream_replicas() {
     local name="$1" partition="${2:-0}" coord
