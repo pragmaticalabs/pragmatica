@@ -2714,17 +2714,23 @@ ensure_cloud_pg_database() {
 ## management-API silence, an empty read, or a probe that failed is never evidence
 ## of death. The VM set is exactly what the reap destroys — _cloud_full_drain_recover
 ## reaps with --strict-cluster, the exact `aether-cluster=<name>` label — so every
-## VM the reap would delete must first be shown dead:
-##   --runtime jvm        the aether-node systemd unit is not running (ActiveState
-##                        inactive|failed), with its ExecMainStatus recorded;
-##   --runtime container  the aether-node container is not running (docker inspect
-##                        State.Status exited|dead), with its ExitCode recorded;
-##   either runtime       a VM the provider reports as not found is gone.
-## Anything else leaves the drain UNCONFIRMED: an SSH error or timeout, output that
-## does not parse, a unit or container still running, a VM that can be neither read
-## nor shown gone, and an enumeration that failed or came back empty (an empty
-## enumeration cannot be told apart from a selector that matched nothing — #441
-## Defect B, see _cloud_running_vm_ips).
+## VM the reap would delete is classified from a direct read:
+##   halted     POSITIVELY drain-halted. jvm: the aether-node unit is LoadState=loaded
+##              with ActiveState=failed or ExecMainStatus=2. container: the aether-node
+##              container exited (State.Status exited|dead). Exit status recorded.
+##   stopped    jvm: unit loaded, inactive, and neither failed nor exit 2 — no running
+##              node, but not a drain halt.
+##   notloaded  jvm: unit not loaded (LoadState!=loaded, e.g. not yet installed) — no
+##              running node, and NOT proof of a drain.
+##   gone       the provider reports the VM not found.
+##   alive      the unit or container is running (or starting, or stopping).
+##   unreadable SSH error or timeout, output that does not parse, unknown runtime.
+## CTO ruling 2026-09-13: the drain is CONFIRMED only when no VM is alive, no VM is
+## unreadable, AND at least one VM is halted. stopped/notloaded/gone VMs count toward
+## the reap only beside a halted one: a set with no halted VM may be a cluster still
+## bootstrapping, and that must never be reaped. An enumeration that failed or came
+## back empty is not confirmed either (an empty enumeration cannot be told apart from
+## a selector that matched nothing — #441 Defect B, see _cloud_running_vm_ips).
 
 # VMs carrying aether-cluster=<cluster>, one "id name status ipv4" line each.
 # rc 1 when hcloud is missing, or the query failed or timed out.
@@ -2736,12 +2742,13 @@ _cloud_cluster_vms() {
 
 # One read of the node process state on a VM, over SSH to its public IP with
 # cloud_ssh's options (cloud_ssh resolves node ids; this set is VMs, not node ids).
-# Prints one line, "<dead|alive|unreadable> <evidence>"; the verdict is the output.
+# Prints one line, "<halted|stopped|notloaded|alive|unreadable> <evidence>" (see the
+# classification above); the verdict is the output.
 _cloud_vm_node_state() {
     local ip="$1" runtime="$2"
     local remote_cmd out rc errf err flat
     case "$runtime" in
-        jvm)       remote_cmd="systemctl show aether-node --property=ActiveState,ExecMainStatus" ;;
+        jvm)       remote_cmd="systemctl show aether-node --property=LoadState,ActiveState,ExecMainStatus" ;;
         container) remote_cmd="docker inspect --format '{{.State.Status}}|{{.State.ExitCode}}' aether-node" ;;
         *)         echo "unreadable unknown runtime '${runtime}'"; return 0 ;;
     esac
@@ -2763,18 +2770,33 @@ _cloud_vm_node_state() {
         return 0
     fi
     if [ "$runtime" = "jvm" ]; then
-        local active exec_status
+        local load active exec_status fields
+        load=$(jvm_unit_field "$out" "LoadState")
         active=$(jvm_unit_field "$out" "ActiveState")
         exec_status=$(jvm_unit_field "$out" "ExecMainStatus")
-        if ! [[ "$exec_status" =~ ^[0-9]+$ ]]; then
+        fields="LoadState=${load} ActiveState=${active} ExecMainStatus=${exec_status}"
+        if [ -z "$load" ] || ! [[ "$exec_status" =~ ^[0-9]+$ ]]; then
             echo "unreadable unparseable systemctl output: ${flat}"
             return 0
         fi
         case "$active" in
-            inactive|failed)                          echo "dead unit ActiveState=${active} ExecMainStatus=${exec_status}" ;;
-            active|activating|deactivating|reloading) echo "alive unit ActiveState=${active} ExecMainStatus=${exec_status}" ;;
-            *)                                        echo "unreadable unparseable systemctl output: ${flat}" ;;
+            active|activating|deactivating|reloading)
+                echo "alive unit ${fields}"
+                return 0
+                ;;
+            inactive|failed) ;;
+            *)
+                echo "unreadable unparseable systemctl output: ${flat}"
+                return 0
+                ;;
         esac
+        if [ "$load" != "loaded" ]; then
+            echo "notloaded unit ${fields}"
+        elif [ "$active" = "failed" ] || [ "$exec_status" = "2" ]; then
+            echo "halted unit ${fields}"
+        else
+            echo "stopped unit ${fields}"
+        fi
         return 0
     fi
     local line status code
@@ -2782,7 +2804,7 @@ _cloud_vm_node_state() {
     status="${line%%|*}"
     code="${line#*|}"
     case "$status" in
-        exited|dead)                               echo "dead container Status=${status} ExitCode=${code}" ;;
+        exited|dead)                               echo "halted container Status=${status} ExitCode=${code}" ;;
         running|restarting|paused|created|removing) echo "alive container Status=${status} ExitCode=${code}" ;;
         *)                                         echo "unreadable unparseable docker inspect output: ${flat}" ;;
     esac
@@ -2800,11 +2822,12 @@ _cloud_vm_reported_gone() {
 }
 
 # One confirmation round over every VM carrying aether-cluster=<cluster>. Prints one
-# verdict line per VM — "dead|alive|unreadable|gone <name> (id <id>, <ip>): <evidence>"
-# — or a single "unknown: <why>" line. rc 0 only when every VM is dead or gone.
+# verdict line per VM — "<verdict> <name> (id <id>, <ip>): <evidence>" — plus an
+# "unknown: <why>" line when the round cannot confirm for a reason no single VM
+# carries. rc 0 only when no VM is alive or unreadable and at least one is halted.
 _cloud_full_drain_round() {
     local cluster_name="$1" runtime="$2"
-    local listing id name status ip state verdict evidence unconfirmed=0
+    local listing id name status ip state verdict evidence unconfirmed=0 halted=0
     if ! listing=$(_cloud_cluster_vms "$cluster_name"); then
         echo "unknown: hcloud enumeration of aether-cluster=${cluster_name} failed or timed out"
         return 1
@@ -2819,8 +2842,12 @@ _cloud_full_drain_round() {
         verdict="${state%% *}"
         evidence="${state#* }"
         case "$verdict" in
-            dead)
-                echo "dead ${name} (id ${id}, ${ip}): ${evidence}"
+            halted)
+                echo "halted ${name} (id ${id}, ${ip}): ${evidence}"
+                halted=$((halted + 1))
+                ;;
+            stopped|notloaded)
+                echo "${verdict} ${name} (id ${id}, ${ip}): ${evidence}"
                 ;;
             alive)
                 echo "alive ${name} (id ${id}, ${ip}): ${evidence}"
@@ -2836,13 +2863,17 @@ _cloud_full_drain_round() {
                 ;;
         esac
     done <<< "$listing"
+    if [ "$unconfirmed" -eq 0 ] && [ "$halted" -eq 0 ]; then
+        echo "unknown: no VM is positively drain-halted (aether-node LoadState=loaded with ActiveState=failed or ExecMainStatus=2, or an exited container) — stopped, not-loaded or gone VMs alone may be a cluster still bootstrapping"
+        return 1
+    fi
     return "$unconfirmed"
 }
 
 # Re-probes until a round confirms the full drain, or <bound> seconds have passed.
 # <bound> is NOT scaled by TIMEOUT_SCALE: the caller's budget is already a cloud
 # wall-clock figure. rc 0 confirmed; rc 1 not confirmed, after a log_fail naming
-# every VM the last round could not show dead or gone.
+# what blocked the last round (alive or unreadable VMs, or no halted VM).
 _cloud_await_full_drain() {
     local cluster_name="$1" runtime="$2" bound="$3"
     local start=$SECONDS round=0 report rc
@@ -2861,7 +2892,7 @@ _cloud_await_full_drain() {
         log_info "full self-drain of '${cluster_name}' not yet confirmed (round ${round}, $((SECONDS - start))s of ${bound}s): $(printf '%s' "$report" | tr '\n' ';') — re-probing"
         sleep "${CLOUD_DRAIN_PROBE_INTERVAL_S:-5}"
     done
-    log_fail "full self-drain of '${cluster_name}' NOT confirmed after ${round} round(s) in $((SECONDS - start))s (bound ${bound}s) — refusing to reap. Not positively dead or gone: $(printf '%s\n' "$report" | grep -vE '^(dead|gone) ' | tr '\n' ';')"
+    log_fail "full self-drain of '${cluster_name}' NOT confirmed after ${round} round(s) in $((SECONDS - start))s (bound ${bound}s) — refusing to reap. Blocking: $(printf '%s\n' "$report" | grep -vE '^(halted|stopped|notloaded|gone) ' | tr '\n' ';') Last round: $(printf '%s' "$report" | tr '\n' ';')"
     return 1
 }
 

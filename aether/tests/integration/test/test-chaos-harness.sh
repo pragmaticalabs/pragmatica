@@ -169,9 +169,11 @@ VM_A="198.51.100.1"
 VM_B="198.51.100.2"
 LIST_AB="101 aether-cloud-x-node-a running ${VM_A}
 102 aether-cloud-x-node-b running ${VM_B}"
-UNIT_FAILED_2='ActiveState=failed\nExecMainStatus=2\n'
-UNIT_INACTIVE_0='ActiveState=inactive\nExecMainStatus=0\n'
-UNIT_ACTIVE_0='ActiveState=active\nExecMainStatus=0\n'
+UNIT_FAILED_2='LoadState=loaded\nActiveState=failed\nExecMainStatus=2\n'
+UNIT_INACTIVE_0='LoadState=loaded\nActiveState=inactive\nExecMainStatus=0\n'
+UNIT_INACTIVE_2='LoadState=loaded\nActiveState=inactive\nExecMainStatus=2\n'
+UNIT_ACTIVE_0='LoadState=loaded\nActiveState=active\nExecMainStatus=0\n'
+UNIT_NOT_LOADED='LoadState=not-found\nActiveState=inactive\nExecMainStatus=0\n'
 TOPO_5='{"coreCount":5,"coreNodes":["n1","n2","n3","n4","n5"]}'
 TOPO_3='{"coreCount":3,"coreNodes":["n1","n2","n3"]}'
 TOPO_0='{"coreCount":0,"coreNodes":[]}'
@@ -191,10 +193,10 @@ echo "== A. full self-drain confirmation (_cloud_await_full_drain, lib/cluster.s
 
 d=$(new_case); drain_vms "$d" "0|${UNIT_FAILED_2}" "0|${UNIT_INACTIVE_0}"
 run_in "$d" "$CLUSTER_LIB" _cloud_await_full_drain "$TEST_CLUSTER" jvm 0
-check "$d" "A1 jvm: every VM's unit failed/inactive -> confirmed, exit statuses recorded" \
-    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "confirmed on every VM" && has "$d" "dead aether-cloud-x-node-a (id 101, ${VM_A}): unit ActiveState=failed ExecMainStatus=2" && has "$d" "dead aether-cloud-x-node-b (id 102, ${VM_B}): unit ActiveState=inactive ExecMainStatus=0"'
+check "$d" "A1 jvm: one unit halted (failed/2), one stopped (loaded, inactive/0) -> confirmed, statuses recorded" \
+    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "confirmed on every VM" && has "$d" "halted aether-cloud-x-node-a (id 101, ${VM_A}): unit LoadState=loaded ActiveState=failed ExecMainStatus=2" && has "$d" "stopped aether-cloud-x-node-b (id 102, ${VM_B}): unit LoadState=loaded ActiveState=inactive ExecMainStatus=0"'
 check "$d" "A1b both VMs probed although the probe reads stdin (the VM list is not consumed by ssh)" \
-    eval '[ "$(lines_of "$d/ssh-calls")" = 2 ] && grep -qF "${VM_B}|systemctl show aether-node --property=ActiveState,ExecMainStatus" "$d/ssh-calls"'
+    eval '[ "$(lines_of "$d/ssh-calls")" = 2 ] && grep -qF "${VM_B}|systemctl show aether-node --property=LoadState,ActiveState,ExecMainStatus" "$d/ssh-calls"'
 check "$d" "A1c VM set is exactly the reap's --strict-cluster label" \
     grep -qxF "server list -l aether-cluster=${TEST_CLUSTER} -o columns=id,name,status,ipv4 -o noheader" "$d/hcloud-calls"
 
@@ -213,15 +215,20 @@ run_in "$d" "$CLUSTER_LIB" _cloud_await_full_drain "$TEST_CLUSTER" jvm 0
 check "$d" "A4 unparseable systemctl output -> NOT confirmed" \
     eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "unreadable aether-cloud-x-node-b" && has "$d" "unparseable systemctl output: Failed to connect to bus"'
 
-d=$(new_case); drain_vms "$d" "0|${UNIT_FAILED_2}" "0|ActiveState=failed\n"
+d=$(new_case); drain_vms "$d" "0|${UNIT_FAILED_2}" "0|LoadState=loaded\nActiveState=failed\n"
 run_in "$d" "$CLUSTER_LIB" _cloud_await_full_drain "$TEST_CLUSTER" jvm 0
 check "$d" "A4b ActiveState without an ExecMainStatus -> NOT confirmed (exit status must be recorded)" \
     eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "unparseable systemctl output"'
 
+d=$(new_case); drain_vms "$d" "0|${UNIT_FAILED_2}" "0|ActiveState=failed\nExecMainStatus=2\n"
+run_in "$d" "$CLUSTER_LIB" _cloud_await_full_drain "$TEST_CLUSTER" jvm 0
+check "$d" "A4c no LoadState in the read -> NOT confirmed (whether the unit is loaded must be read)" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "unreadable aether-cloud-x-node-b" && has "$d" "unparseable systemctl output"'
+
 d=$(new_case); drain_vms "$d" "0|${UNIT_FAILED_2}" "0|${UNIT_ACTIVE_0}"
 run_in "$d" "$CLUSTER_LIB" _cloud_await_full_drain "$TEST_CLUSTER" jvm 0
 check "$d" "A5 a unit still active -> NOT confirmed, named alive" \
-    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "alive aether-cloud-x-node-b (id 102, ${VM_B}): unit ActiveState=active ExecMainStatus=0"'
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "alive aether-cloud-x-node-b (id 102, ${VM_B}): unit LoadState=loaded ActiveState=active ExecMainStatus=0"'
 
 d=$(new_case); drain_vms "$d" "0|${UNIT_FAILED_2}" "0|${UNIT_FAILED_2}"; echo 1 > "$d/hcloud-list-rc"
 run_in "$d" "$CLUSTER_LIB" _cloud_await_full_drain "$TEST_CLUSTER" jvm 0
@@ -259,7 +266,7 @@ check "$d" "A10 persistently unreadable -> re-probes at the 5s interval until th
 d=$(new_case); drain_vms "$d" "0|exited|2\n" "0|dead|137\n"
 run_in "$d" "$CLUSTER_LIB" _cloud_await_full_drain "$TEST_CLUSTER" container 0
 check "$d" "A11 container: exited/dead containers -> confirmed, via docker inspect Status|ExitCode" \
-    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "dead aether-cloud-x-node-a (id 101, ${VM_A}): container Status=exited ExitCode=2" && grep -qF "${VM_A}|docker inspect --format '"'"'{{.State.Status}}|{{.State.ExitCode}}'"'"' aether-node" "$d/ssh-calls"'
+    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "halted aether-cloud-x-node-a (id 101, ${VM_A}): container Status=exited ExitCode=2" && grep -qF "${VM_A}|docker inspect --format '"'"'{{.State.Status}}|{{.State.ExitCode}}'"'"' aether-node" "$d/ssh-calls"'
 
 d=$(new_case); drain_vms "$d" "0|exited|2\n" "0|running|0\n"
 run_in "$d" "$CLUSTER_LIB" _cloud_await_full_drain "$TEST_CLUSTER" container 0
@@ -280,6 +287,38 @@ d=$(new_case); drain_vms "$d" "0|${UNIT_FAILED_2}" "0|${UNIT_FAILED_2}"
 run_in "$d" "$CLUSTER_LIB" _cloud_await_full_drain "" jvm 0
 check "$d" "A13 no cluster name -> refused before any enumeration" \
     eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "no cluster name" && [ "$(lines_of "$d/hcloud-calls")" = 0 ]'
+
+echo "== L. CTO ruling 2026-09-13: a not-loaded unit is no running node, not proof of a drain"
+
+d=$(new_case); drain_vms "$d" "0|${UNIT_NOT_LOADED}" "0|${UNIT_NOT_LOADED}"
+run_in "$d" "$CLUSTER_LIB" _cloud_await_full_drain "$TEST_CLUSTER" jvm 0
+check "$d" "L1 every unit not loaded (a cluster still bootstrapping) -> NOT confirmed, refused" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "notloaded aether-cloud-x-node-a (id 101, ${VM_A}): unit LoadState=not-found ActiveState=inactive ExecMainStatus=0" && has "$d" "no VM is positively drain-halted" && ! has "$d" "confirmed on every VM"'
+
+d=$(new_case); drain_vms "$d" "0|${UNIT_NOT_LOADED}" "0|${UNIT_FAILED_2}"
+run_in "$d" "$CLUSTER_LIB" _cloud_await_full_drain "$TEST_CLUSTER" jvm 0
+check "$d" "L2 a not-loaded unit beside a positively halted one -> confirmed (reapable)" \
+    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "confirmed on every VM" && has "$d" "notloaded aether-cloud-x-node-a" && has "$d" "halted aether-cloud-x-node-b"'
+
+d=$(new_case); drain_vms "$d" "0|${UNIT_NOT_LOADED}" "0|${UNIT_ACTIVE_0}"
+run_in "$d" "$CLUSTER_LIB" _cloud_await_full_drain "$TEST_CLUSTER" jvm 0
+check "$d" "L3 a not-loaded unit beside an active one -> NOT confirmed, refused" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "alive aether-cloud-x-node-b" && ! has "$d" "confirmed on every VM"'
+
+d=$(new_case); drain_vms "$d" "0|${UNIT_NOT_LOADED}" "0|${UNIT_INACTIVE_2}"
+run_in "$d" "$CLUSTER_LIB" _cloud_await_full_drain "$TEST_CLUSTER" jvm 0
+check "$d" "L4 loaded + inactive with ExecMainStatus=2 is positively halted -> confirmed beside a not-loaded unit" \
+    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "halted aether-cloud-x-node-b (id 102, ${VM_B}): unit LoadState=loaded ActiveState=inactive ExecMainStatus=2"'
+
+d=$(new_case); drain_vms "$d" "0|${UNIT_NOT_LOADED}" "0|${UNIT_INACTIVE_0}"
+run_in "$d" "$CLUSTER_LIB" _cloud_await_full_drain "$TEST_CLUSTER" jvm 0
+check "$d" "L5 not-loaded beside a stopped (loaded, inactive/0) unit: none halted -> NOT confirmed" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "stopped aether-cloud-x-node-b" && has "$d" "no VM is positively drain-halted"'
+
+d=$(new_case); drain_vms "$d" "0|${UNIT_NOT_LOADED}" none; : > "$d/gone-102"
+run_in "$d" "$CLUSTER_LIB" _cloud_await_full_drain "$TEST_CLUSTER" jvm 0
+check "$d" "L6 not-loaded beside a gone VM: none halted -> NOT confirmed" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "gone aether-cloud-x-node-b" && has "$d" "no VM is positively drain-halted"'
 
 echo "== B. cloud S20 (test_cluster_recovers_to_five_on_duty)"
 
@@ -377,6 +416,18 @@ d=$(new_case); s20_setup "$d" quorum-held; resp "$d/$TOPO_PATH_KEY" 0 "$TOPO_3";
 run_in "$d" "$SELF_DRAIN_SUITE" test_cluster_recovers_to_five_on_duty
 check "$d" "B12 quorum-held -> restart_all_nodes path, no drain probe or reap, FAIL prints the scaled 180s it enforced" \
     eval '[ "$(rc_of "$d")" = 1 ] && [ "$(lines_of "$d/restart-calls")" = 1 ] && ! grep -qF "aether-cluster=" "$d/hcloud-calls" 2>/dev/null && [ ! -f "$d/reap-calls" ] && has "$d" "budget 180s)" && has "$d" "within 180s after restart_all_nodes (RECOVERY_BUDGET_S=60 x TIMEOUT_SCALE=3"'
+
+d=$(new_case); s20_setup "$d" quorum-lost; drain_vms "$d" "0|${UNIT_NOT_LOADED}" "0|${UNIT_NOT_LOADED}"
+resp "$d/$TOPO_PATH_KEY" 0 "$TOPO_0"
+run_in "$d" "$SELF_DRAIN_SUITE" test_cluster_recovers_to_five_on_duty
+check "$d" "B15 S20 on a cluster whose units are all not loaded (bootstrapping) -> refuses, reap never called" \
+    eval '[ "$(rc_of "$d")" = 1 ] && [ ! -f "$d/reap-calls" ] && has "$d" "did NOT reap" && has "$d" "no VM is positively drain-halted"'
+
+d=$(new_case); s20_setup "$d" quorum-lost; echo docker > "$d/env"
+resp "$d/$TOPO_PATH_KEY" 0 "$TOPO_5"; echo "TIMEOUT_SCALE=2" >> "$d/setup.sh"
+run_in "$d" "$SELF_DRAIN_SUITE" test_cluster_recovers_to_five_on_duty
+check "$d" "B14 docker/remote PASS states the scaled budget enforced (remote TIMEOUT_SCALE=2 -> 120s)" \
+    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "S20: cluster recovered to 5 healthy cores within 120s of restart"'
 
 d=$(new_case); s20_setup "$d" quorum-lost; echo docker > "$d/env"
 run_in "$d" "$SELF_DRAIN_SUITE" test_cluster_recovers_to_five_on_duty
@@ -488,6 +539,16 @@ run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
 check "$d" "E5 CLOUD_RUNTIME unset -> refused, no docker inspect default" \
     eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "CLOUD_RUNTIME is '"'"'<unset>'"'"'" && [ ! -f "$d/ssh-calls" ]'
 
+d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 1 'Failed to get properties: Access denied\n'
+run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
+check "$d" "E7 SSH connected but the remote read failed with output -> S19 violation naming the runtime and rc" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "SSH connected but the remote drain-state read (jvm runtime) failed (rc=1): Failed to get properties"'
+
+d=$(new_case); tier2_setup "$d" jvm; echo 'SURVIVOR_IPS_FILE="$STUB_DIR/no-ip-cache"' >> "$d/setup.sh"
+run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
+check "$d" "E8 SSH unreachable with no output -> degrades with a warning naming the runtime, not a violation at tier 2" \
+    eval 'has "$d" "tier-2 (SSH drain-state read, jvm runtime) corroboration unavailable (rc=255" && ! has "$d" "remote drain-state read (jvm runtime) failed"'
+
 d=$(new_case); tier2_setup "$d" container; resp "$d/ssh-${SURV1_IP}" 0 '2|2026-09-13T13:07:28Z\n'
 run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
 check "$d" "E6 container path unchanged: docker inspect exit 2 -> confirmed" \
@@ -495,27 +556,27 @@ check "$d" "E6 container path unchanged: docker inspect exit 2 -> confirmed" \
 
 echo "== F. exit-code step (test_survivor_exit_codes_are_two) on cloud jvm"
 
-case_h2() { TEST_FAIL_COUNT=0; test_survivor_exit_codes_are_two; local rc=$?; echo "FAILS=${TEST_FAIL_COUNT}"; return "$rc"; }
+case_h2() { TEST_FAIL_COUNT=0; test_survivor_exit_codes_are_two; local rc=$?; echo "FAILS=${TEST_FAIL_COUNT};"; return "$rc"; }
 
 d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "$UNIT_FAILED_2"; resp "$d/ssh-${SURV2_IP}" 0 "$UNIT_FAILED_2"
 run_in "$d" "$SELF_DRAIN_SUITE" case_h2
 check "$d" "F1 both survivors failed/2 -> PASS, no FAIL latched" \
-    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "FAILS=0" && has "$d" "Survivor node-2 systemd unit ActiveState=failed ExecMainStatus=2"'
+    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "FAILS=0;" && has "$d" "Survivor node-2 systemd unit ActiveState=failed ExecMainStatus=2"'
 
 d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 'ActiveState=failed\nExecMainStatus=0\n'; resp "$d/ssh-${SURV2_IP}" 0 "$UNIT_FAILED_2"
 run_in "$d" "$SELF_DRAIN_SUITE" case_h2
 check "$d" "F2 first survivor exit 0, second fine -> the first FAIL stays latched" \
-    eval 'has "$d" "FAILS=1" && has "$d" "Survivor node-1 systemd unit is not in the drain-halt state: expected ActiveState=failed ExecMainStatus=2, got ActiveState='"'"'failed'"'"' ExecMainStatus='"'"'0'"'"'"'
+    eval 'has "$d" "FAILS=1;" && has "$d" "Survivor node-1 systemd unit is not in the drain-halt state: expected ActiveState=failed ExecMainStatus=2, got ActiveState='"'"'failed'"'"' ExecMainStatus='"'"'0'"'"'"'
 
 d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "$UNIT_FAILED_2"; resp "$d/ssh-${SURV2_IP}" 0 'ActiveState=active\nExecMainStatus=2\n'
 run_in "$d" "$SELF_DRAIN_SUITE" case_h2
 check "$d" "F3 ExecMainStatus=2 on a still-active unit -> FAIL (same predicate as S19 tier 2)" \
-    eval 'has "$d" "FAILS=1" && has "$d" "got ActiveState='"'"'active'"'"' ExecMainStatus='"'"'2'"'"'"'
+    eval 'has "$d" "FAILS=1;" && has "$d" "got ActiveState='"'"'active'"'"' ExecMainStatus='"'"'2'"'"'"'
 
 d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV2_IP}" 0 "$UNIT_FAILED_2"
 run_in "$d" "$SELF_DRAIN_SUITE" case_h2
 check "$d" "F4 SSH error on a survivor -> FAIL as unreadable" \
-    eval 'has "$d" "FAILS=1" && has "$d" "Survivor node-1 systemd unit unreadable: SSH/systemctl failed (rc=255)"'
+    eval 'has "$d" "FAILS=1;" && has "$d" "Survivor node-1 systemd unit unreadable: SSH/systemctl failed (rc=255)"'
 
 d=$(new_case); tier2_setup "$d" jvm; echo 'rm -f "$SURVIVORS_FILE"' >> "$d/setup.sh"
 run_in "$d" "$SELF_DRAIN_SUITE" case_h2
@@ -538,15 +599,15 @@ EOF
     run_in "$d" "$SELF_DRAIN_SUITE" $5
     check "$d" "$1" has "$d" "$6"
 }
-case_record() { _s19_record_exit_code_step; echo "P=${TESTS_PASSED} F=${TESTS_FAILED} S=${TESTS_SKIPPED}"; }
+case_record() { _s19_record_exit_code_step; echo "P=${TESTS_PASSED} F=${TESTS_FAILED} S=${TESTS_SKIPPED};"; }
 case_label() { echo "LABEL=[$(_s20_test_label)]"; }
 
 disp_case "G1 docker -> run" docker jvm quorum-lost _s19_exit_code_disposition "run"
-disp_case "G2 cloud container -> SKIPPED (P=0 F=0 S=1)" cloud container quorum-lost case_record "P=0 F=0 S=1"
-disp_case "G3 cloud jvm, quorum lost -> run, recorded PASS (P=1 F=0 S=0)" cloud jvm quorum-lost case_record "P=1 F=0 S=0"
-disp_case "G4 cloud jvm, quorum held -> SKIPPED, not a guaranteed FAIL (P=0 F=0 S=1)" cloud jvm quorum-held case_record "P=0 F=0 S=1"
+disp_case "G2 cloud container -> SKIPPED (P=0 F=0 S=1)" cloud container quorum-lost case_record "P=0 F=0 S=1;"
+disp_case "G3 cloud jvm, quorum lost -> run, recorded PASS (P=1 F=0 S=0)" cloud jvm quorum-lost case_record "P=1 F=0 S=0;"
+disp_case "G4 cloud jvm, quorum held -> SKIPPED, not a guaranteed FAIL (P=0 F=0 S=1)" cloud jvm quorum-held case_record "P=0 F=0 S=1;"
 disp_case "G4b quorum-held skip states why" cloud jvm quorum-held _s19_exit_code_disposition "skip S19 quorum-held"
-disp_case "G5 cloud, CLOUD_RUNTIME unset -> recorded FAIL, not SKIPPED (P=0 F=1 S=0)" cloud -unset- quorum-lost case_record "P=0 F=1 S=0"
+disp_case "G5 cloud, CLOUD_RUNTIME unset -> recorded FAIL, not SKIPPED (P=0 F=1 S=0)" cloud -unset- quorum-lost case_record "P=0 F=1 S=0;"
 disp_case "G6 docker S20 name keeps the spec's 60s" docker jvm quorum-lost case_label "LABEL=[Cluster recovers to 5 healthy cores within 60s (S20)]"
 disp_case "G7 cloud full-drain S20 name states the 600s budget" cloud jvm quorum-lost case_label "LABEL=[Cluster recovers to 5 healthy cores within 600s of drain confirmation (S20, cloud full drain)]"
 d=$(new_case); echo cloud > "$d/env"; tier2_setup "$d" jvm
@@ -554,6 +615,25 @@ printf 'VERDICT_FILE="$STUB_DIR/verdict"\necho quorum-held > "$VERDICT_FILE"\nTI
 run_in "$d" "$SELF_DRAIN_SUITE" case_label
 check "$d" "G8 cloud quorum-held S20 name states the scaled 180s that branch enforces" \
     has "$d" "LABEL=[Cluster recovers to 5 healthy cores within 180s after restart (S20, cloud quorum-held)]"
+
+# G9 runs the suite's OWN scenario section (the lines after `trap 'cleanup' EXIT`, which the
+# source guard keeps out of every other case) with run_test/skip_test/print_summary recording
+# instead of running, so the step wiring below the guard is pinned too.
+case_run_section() {
+    run_test()      { echo "RUN_TEST|$1|$2"; }
+    skip_test()     { echo "SKIP_TEST|$1|$2"; }
+    print_summary() { echo "PRINT_SUMMARY"; }
+    local section
+    section=$(sed -n "/^trap 'cleanup' EXIT\$/,\$p" "$SELF_DRAIN_SUITE" | sed '1d')
+    echo "SECTION_LINES=$(printf '%s\n' "$section" | grep -c .);"
+    eval "$section"
+}
+d=$(new_case); echo cloud > "$d/env"; tier2_setup "$d" container
+printf 'VERDICT_FILE="$STUB_DIR/verdict"\necho quorum-lost > "$VERDICT_FILE"\n' >> "$d/setup.sh"
+run_in "$d" "$SELF_DRAIN_SUITE" case_run_section
+g9_lines=$(sed -n 's/^SECTION_LINES=\([0-9]*\);$/\1/p' "$d/out")
+check "$d" "G9 the scenario section records the exit-code step through its disposition and names S20 by its enforced budget" \
+    eval '[ "${g9_lines:-0}" -ge 8 ] && has "$d" "SKIP_TEST|Survivor exit codes are 2 (Runtime.halt(2))|GAP-A (cloud --runtime container)" && ! has "$d" "RUN_TEST|Survivor exit codes are 2" && has "$d" "RUN_TEST|Cluster recovers to 5 healthy cores within 600s of drain confirmation (S20, cloud full drain)|test_cluster_recovers_to_five_on_duty" && has "$d" "PRINT_SUMMARY"'
 
 echo "== H. H4 CAUGHT_UP wait (test_identify_owner_and_caught_up_replica)"
 
@@ -568,14 +648,15 @@ case_h4() {
     OWNER_TO_KILL=""
     test_identify_owner_and_caught_up_replica
     local rc=$?
-    echo "OWNER_TO_KILL=${OWNER_TO_KILL} FAILS=${TEST_FAIL_COUNT} REPLICA_CALLS=$(grep -c 'replicas/0' "$STUB_DIR/api-calls")"
+    echo "OWNER_TO_KILL=${OWNER_TO_KILL}; FAILS=${TEST_FAIL_COUNT}; REPLICA_CALLS=$(grep -c 'replicas/0' "$STUB_DIR/api-calls");"
     return "$rc"
 }
 h4_case() { # h4_case <wait_s> <first view> <later views...>; prints the case dir
     local d n=1 v
     d=$(new_case)
     echo docker > "$d/env"
-    printf 'CAUGHT_UP_REPLICA_WAIT_S=%s\n' "$1" > "$d/setup.sh"
+    : > "$d/setup.sh"
+    [ "$1" = "-default-" ] || printf 'CAUGHT_UP_REPLICA_WAIT_S=%s\n' "$1" > "$d/setup.sh"
     resp "$d/api_api_v1_streams" 0 '[{"namespace":"ns","stream":"repl-failover-events","version":"1"}]'
     shift
     for v in "$@"; do
@@ -593,7 +674,7 @@ check "$d" "H1 no replica ever CAUGHT_UP -> FAIL after the wait" \
 
 d=$(h4_case 6 "$V_AUTH_SYNCING" "$V_AUTH_CAUGHT")
 check "$d" "H2 replica CAUGHT_UP on the next authoritative view -> PASS, owner unchanged" \
-    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "A CAUGHT_UP replica other than owner node-1 exists" && has "$d" "OWNER_TO_KILL=node-1 FAILS=0"'
+    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "A CAUGHT_UP replica other than owner node-1 exists" && has "$d" "OWNER_TO_KILL=node-1; FAILS=0;"'
 
 d=$(h4_case 6 "$V_AUTH_SYNCING" "$V_NONOWNER_CLAIM")
 check "$d" "H3 a non-owner view claiming CAUGHT_UP is never judged -> FAIL" \
@@ -601,17 +682,21 @@ check "$d" "H3 a non-owner view claiming CAUGHT_UP is never judged -> FAIL" \
 
 d=$(h4_case 6 "$V_AUTH_SYNCING" "$V_OWNER_MOVED")
 check "$d" "H4 owner moved in a refreshed view -> excluded and targeted is the new owner" \
-    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "HRW owner moved node-1 -> node-2" && has "$d" "OWNER_TO_KILL=node-2 FAILS=0"'
+    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "HRW owner moved node-1 -> node-2" && has "$d" "OWNER_TO_KILL=node-2; FAILS=0;"'
 
 d=$(h4_case 6 "$V_NONOWNER_CLAIM")
 check "$d" "H5 initial view never owner-authoritative -> fails without waiting (only the initial 10 attempts)" \
-    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "REPLICA_CALLS=10" && ! has "$d" "No CAUGHT_UP non-owner replica"'
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "REPLICA_CALLS=10;" && ! has "$d" "No CAUGHT_UP non-owner replica"'
 
 # 4s wait: a 3s pause leaves ~1s, so each refresh gets 1 retry — 2 or 3 replica calls in all
 # depending on real time spent, where uncapped refreshes make 11 or more.
 d=$(h4_case 4 "$V_AUTH_SYNCING" "$V_NONOWNER_CLAIM")
 check "$d" "H6 refresh retries are capped by the time left (~1s left after the pause -> 1 retry, not 10)" \
-    eval '[ "$(rc_of "$d")" = 1 ] && { has "$d" "REPLICA_CALLS=2" || has "$d" "REPLICA_CALLS=3"; }'
+    eval '[ "$(rc_of "$d")" = 1 ] && { has "$d" "REPLICA_CALLS=2;" || has "$d" "REPLICA_CALLS=3;"; }'
+
+d=$(h4_case -default- "$V_AUTH_SYNCING")
+check "$d" "H7 the suite's own CAUGHT_UP_REPLICA_WAIT_S (60s) bounds the wait" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "before kill within 60s"'
 
 echo ""
 echo "  ----"
