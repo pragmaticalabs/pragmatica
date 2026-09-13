@@ -201,9 +201,9 @@ case "$ENV_TYPE" in
         # Export for suite scripts (each `bash "$test_file"` is a fresh process —
         # a plain, unexported CLOUD_RUNTIME never reaches them). --runtime jvm
         # cloud VMs run the node as systemd unit `aether-node` with no docker
-        # daemon; suites that currently assume `docker inspect` over SSH
-        # (test-self-drain-quorum-loss.sh S19/S20) need this to branch (H1/H2,
-        # 2026-09-13 cloud-JVM harness fixes).
+        # daemon, and test-self-drain-quorum-loss.sh reads drain state per
+        # runtime (S19, the exit-code step, S20's drain confirmation). On cloud
+        # that suite refuses an unset CLOUD_RUNTIME instead of defaulting (#1051).
         export CLOUD_RUNTIME
         ;;
     *)

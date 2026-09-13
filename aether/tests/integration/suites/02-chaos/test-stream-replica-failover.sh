@@ -21,7 +21,9 @@
 # the owner rather than hand-mapping nodeId→port (which breaks for CTM replacement ids).
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# BASH_SOURCE, not $0: identical for a direct run, and correct when
+# test/test-chaos-harness.sh sources this file to drive its functions.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/topology.sh"
@@ -51,7 +53,7 @@ KILLED_OWNER=""             # set by the kill step; consumed by cleanup()
 # ~1s) — sufficient once the owner view was reachable, but the non-owner
 # replica's OWN backfill/catch-up is a separate, asynchronous process that
 # can still be in flight at that instant. Observed on cloud
-# (cloud-jvm-chaos-run-2026-09-13.md H4): the replica logged
+# (#1051): the replica logged
 # "self CAUGHT_UP at offset 19" ~30s after this step ran, so the one-shot
 # check scored a hard FAIL on a replica that was correctly converging, not on
 # a broken one. Scaled by TIMEOUT_SCALE like every other cross-node
@@ -448,27 +450,51 @@ test_identify_owner_and_caught_up_replica() {
     esac
     OWNER_TO_KILL="$owner"
 
+    # H4 (#1051): the view above must already be owner-authoritative with a real
+    # owner. If it is not, this step has failed, and no wait can rescue it (on cloud
+    # a wait would only burn the budget).
+    if [ "$served" != "true" ] || [ -z "$owner" ] || [ "$owner" = "none" ]; then
+        return 1
+    fi
+
     # A promotable replica MUST exist, else killing the owner cannot preserve history.
-    # H4 (2026-09-13): bounded wait, not a single check — see CAUGHT_UP_REPLICA_WAIT_S
-    # above for why (the non-owner replica's own backfill can still be catching up at
-    # this instant even though the owner view is already reachable). The wait re-fetches
-    # a fresh owner-authoritative view each round; the assertion itself is unchanged —
-    # timing out still fails the step, exactly as the old one-shot check did.
-    local caught_up_deadline caught_up="false"
-    caught_up_deadline=$((SECONDS + CAUGHT_UP_REPLICA_WAIT_S * ${TIMEOUT_SCALE:-1}))
+    # Bounded wait, not a single check (see CAUGHT_UP_REPLICA_WAIT_S). The assertion is
+    # not weakened by the wait: every view it judges is owner-authoritative
+    # (servedByOwner=true), a refreshed view that is not is never judged, and the owner
+    # it excludes — which the kill step then targets — is the hrwOwner of that same view.
+    # Each pause and each refresh's retry count are capped by the time left, so the wait
+    # overshoots its deadline by at most one replicas call.
+    local wait_s deadline left view view_served view_owner last_view="$body" caught_up="false"
+    wait_s=$((CAUGHT_UP_REPLICA_WAIT_S * ${TIMEOUT_SCALE:-1}))
+    deadline=$((SECONDS + wait_s))
+    view="$body"
     while :; do
-        if has_caught_up_replica_excluding "$body" "$owner"; then
+        if [ -n "$view" ] && has_caught_up_replica_excluding "$view" "$owner"; then
             caught_up="true"
             break
         fi
-        [ "$SECONDS" -ge "$caught_up_deadline" ] && break
-        sleep 3
-        body=$(replicas_snapshot_owner_view 10)
+        left=$((deadline - SECONDS))
+        [ "$left" -le 0 ] && break
+        sleep $((left < 3 ? left : 3))
+        left=$((deadline - SECONDS))
+        view=$(replicas_snapshot_owner_view $((left < 1 ? 1 : (left < 10 ? left : 10))))
+        [ -n "$view" ] && last_view="$view"
+        view_served=$(json_scalar "$view" servedByOwner)
+        view_owner=$(json_scalar "$view" hrwOwner)
+        if [ "$view_served" != "true" ] || [ -z "$view_owner" ] || [ "$view_owner" = "none" ]; then
+            view=""
+            continue
+        fi
+        if [ "$view_owner" != "$owner" ]; then
+            log_info "HRW owner moved ${owner} -> ${view_owner} during the CAUGHT_UP wait — excluding and targeting ${view_owner}"
+            owner="$view_owner"
+            OWNER_TO_KILL="$owner"
+        fi
     done
     if [ "$caught_up" = "true" ]; then
         log_pass "A CAUGHT_UP replica other than owner ${owner} exists (promotable)"
     else
-        log_fail "No CAUGHT_UP non-owner replica before kill within $((CAUGHT_UP_REPLICA_WAIT_S * ${TIMEOUT_SCALE:-1}))s — replication not established (body head: ${body:0:300})"
+        log_fail "No CAUGHT_UP non-owner replica in an owner-authoritative view before kill within ${wait_s}s — replication not established (last view head: ${last_view:0:300})"
         return 1
     fi
 }
@@ -595,6 +621,12 @@ cleanup() {
     # cluster fail every downstream scenario on its own subject.
     restore_cluster_baseline_or_flag
 }
+
+# Sourced (test/test-chaos-harness.sh drives the functions above against stubs):
+# stop before the trap and the scenario. A direct run (`bash "$test_file"`) goes on.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    return 0
+fi
 trap 'cleanup' EXIT
 
 run_test "Initial 5 nodes"                          test_initial_state

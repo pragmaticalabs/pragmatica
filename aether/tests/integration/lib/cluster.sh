@@ -235,12 +235,30 @@ ready_core_count() {
     echo "$n"
 }
 
+# Legacy contract: always prints a number and returns 0 — a failed or unparseable
+# topology read prints 0. Kept for its existing callers; a caller that must tell
+# "0 active cores" apart from "could not read" uses _cluster_active_core_count_checked.
 cluster_active_core_count() {
+    _cluster_active_core_count_checked || echo 0
+}
+
+# Honest-read active core count (#1051). ONE topology read, parsed once:
+#   rc 0 — prints the count taken from that read;
+#   rc 1 — the read failed (empty body): prints nothing;
+#   rc 2 — the body carries neither a numeric coreCount nor a complete coreNodes
+#          array: prints nothing.
+# A failed read never becomes a number, and there is no second read for a blip to
+# fall between (an earlier form validated one read, then parsed a second one that
+# printed 0 when it failed). For every body it accepts, the count printed is the one
+# cluster_active_core_count printed before it became a wrapper.
+_cluster_active_core_count_checked() {
     local topology core_count core_nodes_count
-    topology=$(api_get "/api/v1/cluster/topology" 2>/dev/null || true)
-    if [ -z "$topology" ]; then
-        echo 0
-        return 0
+    local count_re='"coreCount"[[:space:]]*:[[:space:]]*[0-9]'
+    local nodes_re='"coreNodes"[[:space:]]*:[[:space:]]*\[[^]]*\]'
+    topology=$(api_get "/api/v1/cluster/topology" 2>/dev/null) || topology=""
+    [ -n "$topology" ] || return 1
+    if ! [[ "$topology" =~ $count_re ]] && ! [[ "$topology" =~ $nodes_re ]]; then
+        return 2
     fi
     core_count=$(printf '%s' "$topology" \
         | grep -o '"coreCount"[[:space:]]*:[[:space:]]*[0-9]*' \
@@ -264,27 +282,6 @@ cluster_active_core_count() {
     else
         echo "$core_count"
     fi
-}
-
-# Honest-read companion to cluster_active_core_count (H5 / #441 review WARNING
-# a, 2026-09-13): the legacy contract above prints "0" with rc=0 for BOTH "the
-# topology read genuinely says 0 active cores" AND "the mgmt API was
-# unreachable" — a caller polling for `-eq 0` (e.g. "confirm a full self-drain
-# before reaping VMs") cannot tell those apart, and a merely-unreachable read
-# would look identical to a confirmed full drain. Mirrors
-# _cluster_member_count_checked's contract exactly: prints the count and
-# returns 0 on a genuine read; prints NOTHING and returns 1 when the topology
-# fetch itself failed. Never echoes 0 for a failed read — that would be the
-# exact "unreachable becomes a plausible number" mistake this function exists
-# to avoid. Callers that want the legacy always-succeeds/defaults-to-0
-# behaviour keep using cluster_active_core_count.
-_cluster_active_core_count_checked() {
-    local topology
-    topology=$(api_get "/api/v1/cluster/topology" 2>/dev/null || true)
-    if [ -z "$topology" ]; then
-        return 1
-    fi
-    cluster_active_core_count
 }
 
 # Whether the cluster currently has quorum (leader committed AND ≥ ⌈N/2⌉+1 ON_DUTY nodes).
@@ -777,7 +774,10 @@ wait_for_node_count() {
     # (log_warn + keep polling) rather than a real false — i.e. a failed read
     # SKIPS this iteration instead of being read as "count is 0, not yet
     # satisfied". A successful read behaves exactly as before.
-    wait_for "${expected} nodes" "[ \"\$(_cluster_member_count_checked)\" -eq ${expected} ]" "$timeout"
+    # #1051: passed as wait_for's value reader, so a failed read skips the poll
+    # without evaluating `[ "" -eq N ]` (which logged "integer expression expected"
+    # every poll) and the timeout message states the last count read.
+    wait_for "${expected} nodes" "[ \"\$WAIT_FOR_VALUE\" -eq ${expected} ]" "$timeout" 2 "_cluster_member_count_checked"
 }
 
 # Cloud-aware default catch-window for CTM auto-heal, in seconds (pre-TIMEOUT_SCALE).
@@ -2385,6 +2385,30 @@ _reestablish_echo_baseline() {
     return 0
 }
 
+# Post-recovery barriers for a cloud destructive recovery: a leader, a quiesced
+# generation, readiness of <ready_floor> cores, then the test-echo baseline redeploy
+# (#426: the cloud branch once returned before the redeploy). Shared by
+# restart_all_nodes' cloud branch and the S20 full-drain path in
+# suites/02-chaos/test-self-drain-quorum-loss.sh (#1051), so the two cannot drift.
+# <caller> prefixes the log lines. rc 1 when no leader is elected or the echo
+# baseline is not restored; quiescence and readiness shortfalls only warn.
+_cloud_recovery_barriers() {
+    local caller="$1" ready_floor="$2"
+    if ! wait_for_leader 120; then
+        log_fail "${caller}: no leader elected within 120s on cloud baseline restore"
+        return 1
+    fi
+    if ! await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 180; then
+        log_warn "${caller}: generation did not quiesce within 180s on cloud (proceeding — readiness barrier is authoritative)"
+    fi
+    if ! wait_for_cluster_ready 120 "${ready_floor}"; then
+        log_warn "${caller}: cloud cluster not fully ready within 120s (proceeding — downstream suite has its own readiness gate)"
+    fi
+    log_info "${caller}: cloud cluster recovered (>=${ready_floor} healthy cores, leader elected)"
+    _reestablish_echo_baseline || return 1
+    return 0
+}
+
 # #441 review v2: corroboration helper for the S20 full-drain decision. Emits
 # the public IPs of Hetzner VMs in RUNNING power state for a cluster (one per
 # line), via the hcloud CLI — a signal path completely independent of the mgmt
@@ -2685,6 +2709,162 @@ ensure_cloud_pg_database() {
     return 0
 }
 
+## #1051 (owner ruling 2026-09-13): confirm a FULL self-drain from POSITIVE per-VM
+## evidence before anything is reaped. An unreachable node is not a dead node:
+## management-API silence, an empty read, or a probe that failed is never evidence
+## of death. The VM set is exactly what the reap destroys — _cloud_full_drain_recover
+## reaps with --strict-cluster, the exact `aether-cluster=<name>` label — so every
+## VM the reap would delete must first be shown dead:
+##   --runtime jvm        the aether-node systemd unit is not running (ActiveState
+##                        inactive|failed), with its ExecMainStatus recorded;
+##   --runtime container  the aether-node container is not running (docker inspect
+##                        State.Status exited|dead), with its ExitCode recorded;
+##   either runtime       a VM the provider reports as not found is gone.
+## Anything else leaves the drain UNCONFIRMED: an SSH error or timeout, output that
+## does not parse, a unit or container still running, a VM that can be neither read
+## nor shown gone, and an enumeration that failed or came back empty (an empty
+## enumeration cannot be told apart from a selector that matched nothing — #441
+## Defect B, see _cloud_running_vm_ips).
+
+# VMs carrying aether-cluster=<cluster>, one "id name status ipv4" line each.
+# rc 1 when hcloud is missing, or the query failed or timed out.
+_cloud_cluster_vms() {
+    local cluster_name="$1"
+    command -v hcloud >/dev/null 2>&1 || return 1
+    _run_with_timeout 10 hcloud server list -l "aether-cluster=${cluster_name}" -o columns=id,name,status,ipv4 -o noheader 2>/dev/null
+}
+
+# One read of the node process state on a VM, over SSH to its public IP with
+# cloud_ssh's options (cloud_ssh resolves node ids; this set is VMs, not node ids).
+# Prints one line, "<dead|alive|unreadable> <evidence>"; the verdict is the output.
+_cloud_vm_node_state() {
+    local ip="$1" runtime="$2"
+    local remote_cmd out rc errf err flat
+    case "$runtime" in
+        jvm)       remote_cmd="systemctl show aether-node --property=ActiveState,ExecMainStatus" ;;
+        container) remote_cmd="docker inspect --format '{{.State.Status}}|{{.State.ExitCode}}' aether-node" ;;
+        *)         echo "unreadable unknown runtime '${runtime}'"; return 0 ;;
+    esac
+    if [ -z "$ip" ] || [ "$ip" = "-" ]; then
+        echo "unreadable no public IPv4 to reach it"
+        return 0
+    fi
+    errf=$(mktemp)
+    # </dev/null: ssh reads stdin, and the caller feeds its VM list on stdin.
+    out=$(_run_with_timeout "${CLOUD_DRAIN_SSH_TIMEOUT_S:-20}" ssh "${SSH_OPTS[@]}" \
+        -i "${AETHER_SSH_KEY}" "${CLOUD_SSH_USER:-root}@${ip}" "$remote_cmd" </dev/null 2>"$errf") && rc=0 || rc=$?
+    err=$(tr '\n' ' ' < "$errf" | head -c 200)
+    rm -f "$errf"
+    out=$(printf '%s' "$out" | tr -d '\r')
+    flat=$(printf '%s' "$out" | tr '\n' ' ' | head -c 200)
+    if [ "$rc" -ne 0 ]; then
+        [ "$rc" -eq 124 ] && err="(timed out after ${CLOUD_DRAIN_SSH_TIMEOUT_S:-20}s) ${err}"
+        echo "unreadable ssh rc=${rc}: ${flat} ${err}"
+        return 0
+    fi
+    if [ "$runtime" = "jvm" ]; then
+        local active exec_status
+        active=$(jvm_unit_field "$out" "ActiveState")
+        exec_status=$(jvm_unit_field "$out" "ExecMainStatus")
+        if ! [[ "$exec_status" =~ ^[0-9]+$ ]]; then
+            echo "unreadable unparseable systemctl output: ${flat}"
+            return 0
+        fi
+        case "$active" in
+            inactive|failed)                          echo "dead unit ActiveState=${active} ExecMainStatus=${exec_status}" ;;
+            active|activating|deactivating|reloading) echo "alive unit ActiveState=${active} ExecMainStatus=${exec_status}" ;;
+            *)                                        echo "unreadable unparseable systemctl output: ${flat}" ;;
+        esac
+        return 0
+    fi
+    local line status code
+    line=$(printf '%s\n' "$out" | grep -E '^[a-z]+\|-?[0-9]+$' | head -1 || true)
+    status="${line%%|*}"
+    code="${line#*|}"
+    case "$status" in
+        exited|dead)                               echo "dead container Status=${status} ExitCode=${code}" ;;
+        running|restarting|paused|created|removing) echo "alive container Status=${status} ExitCode=${code}" ;;
+        *)                                         echo "unreadable unparseable docker inspect output: ${flat}" ;;
+    esac
+    return 0
+}
+
+# Whether the provider positively reports a VM id as not found. A describe that
+# fails any other way (auth, network, timeout) is not evidence the VM is gone.
+_cloud_vm_reported_gone() {
+    local id="$1" out
+    if out=$(_run_with_timeout 10 hcloud server describe "$id" </dev/null 2>&1); then
+        return 1
+    fi
+    printf '%s' "$out" | grep -qi 'not found'
+}
+
+# One confirmation round over every VM carrying aether-cluster=<cluster>. Prints one
+# verdict line per VM — "dead|alive|unreadable|gone <name> (id <id>, <ip>): <evidence>"
+# — or a single "unknown: <why>" line. rc 0 only when every VM is dead or gone.
+_cloud_full_drain_round() {
+    local cluster_name="$1" runtime="$2"
+    local listing id name status ip state verdict evidence unconfirmed=0
+    if ! listing=$(_cloud_cluster_vms "$cluster_name"); then
+        echo "unknown: hcloud enumeration of aether-cluster=${cluster_name} failed or timed out"
+        return 1
+    fi
+    if [ -z "$(printf '%s' "$listing" | tr -d '[:space:]')" ]; then
+        echo "unknown: hcloud lists ZERO VMs with aether-cluster=${cluster_name} — an empty enumeration is not evidence of death"
+        return 1
+    fi
+    while read -r id name status ip; do
+        [ -n "$id" ] || continue
+        state=$(_cloud_vm_node_state "$ip" "$runtime")
+        verdict="${state%% *}"
+        evidence="${state#* }"
+        case "$verdict" in
+            dead)
+                echo "dead ${name} (id ${id}, ${ip}): ${evidence}"
+                ;;
+            alive)
+                echo "alive ${name} (id ${id}, ${ip}): ${evidence}"
+                unconfirmed=1
+                ;;
+            *)
+                if _cloud_vm_reported_gone "$id"; then
+                    echo "gone ${name} (id ${id}, ${ip}): hcloud reports the server not found (probe had read: ${evidence})"
+                else
+                    echo "unreadable ${name} (id ${id}, ${ip}, hcloud status=${status}): ${evidence}"
+                    unconfirmed=1
+                fi
+                ;;
+        esac
+    done <<< "$listing"
+    return "$unconfirmed"
+}
+
+# Re-probes until a round confirms the full drain, or <bound> seconds have passed.
+# <bound> is NOT scaled by TIMEOUT_SCALE: the caller's budget is already a cloud
+# wall-clock figure. rc 0 confirmed; rc 1 not confirmed, after a log_fail naming
+# every VM the last round could not show dead or gone.
+_cloud_await_full_drain() {
+    local cluster_name="$1" runtime="$2" bound="$3"
+    local start=$SECONDS round=0 report rc
+    if [ -z "$cluster_name" ]; then
+        log_fail "full self-drain confirmation: no cluster name (BOOTSTRAP_CLUSTER_NAME unset) — refusing to enumerate or reap an unscoped VM set"
+        return 1
+    fi
+    while :; do
+        round=$((round + 1))
+        report=$(_cloud_full_drain_round "$cluster_name" "$runtime") && rc=0 || rc=$?
+        if [ "$rc" -eq 0 ]; then
+            log_info "full self-drain of '${cluster_name}' confirmed on every VM (round ${round}, $((SECONDS - start))s): $(printf '%s' "$report" | tr '\n' ';')"
+            return 0
+        fi
+        [ $((SECONDS - start)) -ge "$bound" ] && break
+        log_info "full self-drain of '${cluster_name}' not yet confirmed (round ${round}, $((SECONDS - start))s of ${bound}s): $(printf '%s' "$report" | tr '\n' ';') — re-probing"
+        sleep "${CLOUD_DRAIN_PROBE_INTERVAL_S:-5}"
+    done
+    log_fail "full self-drain of '${cluster_name}' NOT confirmed after ${round} round(s) in $((SECONDS - start))s (bound ${bound}s) — refusing to reap. Not positively dead or gone: $(printf '%s\n' "$report" | grep -vE '^(dead|gone) ' | tr '\n' ';')"
+    return 1
+}
+
 ## #441 S20: cluster-scoped reap + fresh bootstrap — the cloud analog of the
 ## docker/compose branch's `docker compose down -v && up -d` full reset. This is
 ## the ONLY path capable of recovering a CONFIRMED FULL self-drain: every core
@@ -2975,21 +3155,11 @@ restart_all_nodes() {
                 fi
             fi
         fi
-        if ! wait_for_leader 120; then
-            log_fail "restart_all_nodes: no leader elected within 120s on cloud baseline restore"
-            return 1
-        fi
-        if ! await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 180; then
-            log_warn "restart_all_nodes: generation did not quiesce within 180s on cloud (proceeding — readiness barrier is authoritative)"
-        fi
-        if ! wait_for_cluster_ready 120 "${floor}"; then
-            log_warn "restart_all_nodes: cloud cluster not fully ready within 120s (proceeding — downstream suite has its own readiness gate)"
-        fi
-        log_info "restart_all_nodes: cloud cluster recovered (>=${floor} healthy cores, leader elected)"
-        # #426 review follow-up (SEVERE): this branch used to return here,
-        # before the echo-baseline redeploy — cloud never got the rebaseline
-        # even though cloud is where the motivating incident happened.
-        _reestablish_echo_baseline || return 1
+        # #426 review follow-up (SEVERE): this branch used to return before the
+        # echo-baseline redeploy — cloud never got the rebaseline even though cloud
+        # is where the motivating incident happened. The barriers, redeploy
+        # included, now live in _cloud_recovery_barriers (#1051).
+        _cloud_recovery_barriers "restart_all_nodes" "${floor}" || return 1
         return 0
     fi
     # Why: `docker start` on exited containers re-uses identical NodeIds / addresses,

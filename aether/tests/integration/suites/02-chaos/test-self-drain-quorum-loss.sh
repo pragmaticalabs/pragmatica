@@ -81,7 +81,9 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# BASH_SOURCE, not $0: identical for a direct run, and correct when
+# test/test-chaos-harness.sh sources this file to drive its functions.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/topology.sh"
@@ -97,24 +99,35 @@ SURVIVOR_EXIT_BUDGET_S=45
 # Post-restart cluster-recovery budget. 5 fresh JVMs cold-boot, SWIM
 # converges, aggregator emits its first periodic snapshot, NORMAL phase
 # is reached. Spec §16 row S20 sets 60s as the contract. Applies to
-# docker/remote (restart_all_nodes' partial-drain/CTM-auto-heal recovery) —
-# NOT to a confirmed cloud full self-drain, which uses
-# CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S below instead (H3, 2026-09-13).
+# docker/remote and to the cloud quorum-held branch (restart_all_nodes, then a
+# wait_for that scales it by TIMEOUT_SCALE) — NOT to a confirmed cloud full
+# self-drain, which uses CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S below (#1051).
 RECOVERY_BUDGET_S=60
 
-# H3 (2026-09-13, owner ruling): cloud S20 after a CONFIRMED FULL self-drain
-# (every core halted — see test_cluster_recovers_to_five_on_duty) recovers via
-# _cloud_full_drain_recover (lib/cluster.sh): reap every VM, then
-# `aether cluster bootstrap ... --timeout 600` a fresh 5-node cluster from
-# scratch. That is provisioning time, not detection time, so the 60s S20
-# contract above cannot apply here — it was never met on cloud (H3's own
-# defect report: the old cloud path burned a 360s partial-drain probe first
-# and still could not reach a 60s bar for a process that needs ~10 minutes).
-# Budget = the bootstrap call's own --timeout (600s) + 60s headroom for the
-# reap (`cloud-reaper.sh --destroy`) and mgmt-endpoint re-pin that precede/
-# follow it. 660s (~11 min) matches the owner's "~10 min" sizing-to-
-# provisioning ruling with a small margin, not a second independent guess.
-CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S=660
+# #1051 (owner ruling 2026-09-13): on cloud, S20 after a full self-drain recovers by
+# reap + fresh bootstrap (_cloud_full_drain_recover, lib/cluster.sh) within a budget
+# sized to provisioning, ~10 minutes. It is measured from the START of drain
+# confirmation to 5 healthy cores, so it covers drain confirmation, reap, bootstrap
+# and the core-count wait. Parts:
+#   - drain confirmation: at most CLOUD_DRAIN_CONFIRM_BOUND_S (120s, below);
+#   - reap + bootstrap + reaching 5 cores: the one recorded cloud full-drain S20 (the
+#     2026-09-13 --runtime jvm 02-chaos run behind #1051) took 614s, 369s of which was
+#     the partial-drain probe this path no longer runs, leaving at most 245s for the
+#     revive loop, reap, bootstrap and barriers.
+# 120 + 245 = 365s worst observed; 600s is the ruling's ~10 minutes, about 1.6x that
+# single sample. NOT scaled by TIMEOUT_SCALE: the figure is already a cloud wall-clock
+# measurement and the ruling is stated in wall-clock time, so the cloud default scale
+# of 3 would turn ~10 minutes into 30. The bootstrap's own `--timeout 600` is an inner
+# ceiling, not a part of this sum: a bootstrap needing most of it has already overrun
+# the ruling, and S20 records that as a FAIL printing the measured elapsed time.
+CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S=600
+
+# Upper bound on confirming the full drain from per-VM evidence (#1051), spent inside
+# the budget above and likewise unscaled. A round is one hcloud listing (<=10s) plus
+# one SSH read per labelled VM (<=20s each; S19 deletes the 3 victims and leaves the 2
+# survivors), about 50s plus a 5s pause, so 120s allows a second round for a VM whose
+# first read failed.
+CLOUD_DRAIN_CONFIRM_BOUND_S=120
 
 # Files ferrying state between test functions. run_test isolates each
 # function in its own shell context, so env vars don't survive.
@@ -543,6 +556,18 @@ _s19_resolve_survivor_ip() {
     return 0
 }
 
+# The cloud runtime this run provisioned, which selects how a VM's drain state is
+# read (#1051). run-tests.sh exports CLOUD_RUNTIME from --runtime. On cloud an unset
+# or unknown value is refused, never defaulted: defaulting to `container` sent a JVM
+# run's reads to docker inspect and turned its halt-reason step into a SKIP.
+_s19_require_cloud_runtime() {
+    case "${CLOUD_RUNTIME:-}" in
+        jvm|container) return 0 ;;
+    esac
+    log_fail "CLOUD_RUNTIME is '${CLOUD_RUNTIME:-<unset>}' on a cloud run — expected 'jvm' or 'container' (run-tests.sh exports it from --runtime; a standalone suite run must export it)"
+    return 1
+}
+
 # Confirm a survivor's self-drain DEPARTURE on cloud, tolerant of the
 # re-resolve-at-kill race. Tiered proof, each tier only consulted when the
 # previous one is unavailable/times out:
@@ -611,11 +636,11 @@ _confirm_survivor_departure() {
     #     daemon at all — the node runs as systemd unit `aether-node` — so the
     #     unconditional `docker inspect` here used to fail every time with
     #     "docker: command not found" (rc=127), scoring a real S19 violation
-    #     regardless of what the product did (cloud-jvm-chaos-run-2026-09-13.md
-    #     H1). Read `systemctl show` instead: ActiveState=failed +
-    #     ExecMainStatus=2 is the exact drain-halt signature — `Restart=no` is
-    #     deliberate product design (brief's verified facts), so a self-drained
-    #     unit stays ActiveState=failed rather than being relaunched.
+    #     regardless of what the product did (#1051). Read `systemctl show`
+    #     instead: ActiveState=failed + ExecMainStatus=2 is the drain-halt
+    #     signature (jvm_unit_is_drain_halt, lib/common.sh) — `Restart=no` is
+    #     deliberate product design, so a self-drained unit stays
+    #     ActiveState=failed rather than being relaunched.
     #
     # #441 run 8 (Defect C): the REMOTE command's own stderr is already
     # merged into $insp via the inline `2>&1` above (inside the quoted
@@ -629,7 +654,8 @@ _confirm_survivor_departure() {
     # was bleeding straight into the suite log. Redirect it into
     # SSH_STDERR_FILE and surface it via log_info (attributed, not a raw
     # passthrough) instead of silently discarding it.
-    local insp ssh_rc ssh_stderr remote_cmd runtime="${CLOUD_RUNTIME:-container}"
+    _s19_require_cloud_runtime || return 1
+    local insp ssh_rc ssh_stderr remote_cmd runtime="$CLOUD_RUNTIME"
     if [ "$runtime" = "jvm" ]; then
         remote_cmd="systemctl show aether-node --property=ActiveState,ExecMainStatus 2>&1"
     else
@@ -645,14 +671,13 @@ _confirm_survivor_departure() {
     if [ "$ssh_rc" -eq 0 ]; then
         if [ "$runtime" = "jvm" ]; then
             local active_state exec_status
-            # jvm_unit_field (lib/common.sh) parses the "KEY=value" lines
-            # systemctl show prints — shared with
-            # jvm_unit_exec_main_status_is_two (also lib/common.sh, used by
-            # test_survivor_exit_codes_are_two below) so both read the halt
-            # reason the same way.
+            # jvm_unit_field and jvm_unit_is_drain_halt (lib/common.sh) are
+            # shared with jvm_unit_assert_drain_halt, which
+            # test_survivor_exit_codes_are_two below uses, so both read and judge
+            # the halt reason the same way.
             active_state=$(jvm_unit_field "$insp" "ActiveState")
             exec_status=$(jvm_unit_field "$insp" "ExecMainStatus")
-            if [ "$active_state" = "failed" ] && [ "$exec_status" = "2" ]; then
+            if jvm_unit_is_drain_halt "$active_state" "$exec_status"; then
                 log_info "Survivor ${survivor} systemd unit ActiveState=failed ExecMainStatus=2 (Runtime.halt(2)) — designed drain halt confirmed via SSH systemctl-show (event/membership signal was unavailable, consistent with simultaneous last-survivor drain)"
                 return 0
             fi
@@ -952,30 +977,25 @@ test_survivors_self_drain_and_exit() {
     log_pass "S19: both survivors (${s1}, ${s2}) exited within ${elapsed}s (budget=${SURVIVOR_EXIT_BUDGET_S}s)"
 }
 
-# H2 (2026-09-13): assert the self-drain HALT REASON on a JVM-runtime cloud
-# survivor by delegating to the shared jvm_unit_exec_main_status_is_two
-# (lib/common.sh, unit-tested via test/test-cloud-helpers.sh) — the
-# JVM-runtime analog of container_exit_code's `docker inspect .State.ExitCode`.
+# H2 (#1051): on cloud --runtime jvm the HALT REASON is each survivor's systemd unit
+# state, asserted by jvm_unit_assert_drain_halt (lib/common.sh) — the JVM-runtime
+# analog of container_exit_code's `docker inspect .State.ExitCode`. Where it cannot be
+# read, _s19_record_exit_code_step records SKIPPED and never calls this function.
 
 test_survivor_exit_codes_are_two() {
-    # GAP-A (container runtime on cloud only — see the run_test/skip_test
-    # dispatch below, which routes the OTHER cloud case (container runtime) to
-    # skip_test before this function is ever called): exit-code-2 is the
-    # self-drain HALT REASON. On cloud/container there is no docker access
-    # from the test host and a VM power-off would not yield an exit code
-    # anyway, so the halt-reason is genuinely unverifiable there; the drain
-    # OUTCOME (survivors departed membership) is asserted separately in
-    # test_survivors_self_drain_and_exit.
-    #
-    # H2 (2026-09-13): cloud/jvm DOES have a verifiable halt-reason — the
-    # systemd unit's ExecMainStatus — so it gets a real assertion instead of
-    # the docker-only skip.
+    # On cloud this runs only with --runtime jvm after a quorum-lost S19 (see
+    # _s19_exit_code_disposition): cloud --runtime container has no docker access
+    # from the test host, and a quorum-held run has no drained survivor to read.
     if [ "${CLOUD_MODE:-false}" = "true" ]; then
         local s1 s2
-        s1=$(sed -n '1p' "$SURVIVORS_FILE")
-        s2=$(sed -n '2p' "$SURVIVORS_FILE")
-        jvm_unit_exec_main_status_is_two "$s1" "Survivor ${s1}"
-        jvm_unit_exec_main_status_is_two "$s2" "Survivor ${s2}"
+        s1=$(sed -n '1p' "$SURVIVORS_FILE" 2>/dev/null)
+        s2=$(sed -n '2p' "$SURVIVORS_FILE" 2>/dev/null)
+        if [ -z "$s1" ] || [ -z "$s2" ]; then
+            log_fail "Survivors file missing entries (s1='${s1}', s2='${s2}') — no survivor to read the halt reason from"
+            return 1
+        fi
+        jvm_unit_assert_drain_halt "$s1" "Survivor ${s1}"
+        jvm_unit_assert_drain_halt "$s2" "Survivor ${s2}"
         return
     fi
     # SelfDrainCoordinator.performExit() invokes the configured jvmExit
@@ -1083,50 +1103,64 @@ test_cluster_recovers_to_five_on_duty() {
                 log_fail "S20 violation (cloud, quorum-held branch): restart_all_nodes returned non-zero"
                 return 1
             fi
+            local held_budget=$((RECOVERY_BUDGET_S * ${TIMEOUT_SCALE:-1}))
             if ! wait_for "5 healthy cores after restart (cloud, quorum-held branch)" \
-                "[ \$(cluster_active_core_count) -eq 5 ]" "$RECOVERY_BUDGET_S" 2 "cluster_active_core_count"; then
-                local now_count
-                now_count=$(cluster_active_core_count)
-                log_fail "S20 violation (cloud, quorum-held branch): cluster did not return to 5 healthy cores within ${RECOVERY_BUDGET_S}s of restart (current count=${now_count})"
+                '[ "$WAIT_FOR_VALUE" -eq 5 ]' "$RECOVERY_BUDGET_S" 2 "_cluster_active_core_count_checked"; then
+                log_fail "S20 violation (cloud, quorum-held branch): cluster did not return to 5 healthy cores within ${held_budget}s after restart_all_nodes (RECOVERY_BUDGET_S=${RECOVERY_BUDGET_S} x TIMEOUT_SCALE=${TIMEOUT_SCALE:-1}; last read in the line above)"
                 return 1
             fi
-            assert_cluster_healthy "S20 (cloud, quorum-held branch): cluster recovered to 5 healthy cores within ${RECOVERY_BUDGET_S}s of restart"
+            assert_cluster_healthy "S20 (cloud, quorum-held branch): cluster recovered to 5 healthy cores within ${held_budget}s after restart_all_nodes"
             return 0
         fi
 
-        # H3 (2026-09-13, owner ruling). verdict="quorum-lost" means S19 already
-        # hard-asserted BOTH survivors departed membership — together with the
-        # 3 killed victims, that is all 5 cores down: a CONFIRMED FULL
-        # self-drain. restart_all_nodes' generic cloud path is built for a
-        # PARTIAL drain (cloud_revive_vm poweron — a no-op here, since
-        # self-drain halts the JVM, never the VM — followed by up to a 360s
-        # probe for floor+ healthy cores before even considering a full-drain
-        # reap); running it here burns that whole probe on a foregone
-        # conclusion, which is exactly why the old cloud S20 path could never
-        # meet any budget resembling 60s. Confirm the drain honestly first —
-        # an unreachable mgmt API must never be mistaken for "0 active cores"
-        # (H5's own hazard: _cluster_active_core_count_checked, not the
-        # legacy always-0-on-failure cluster_active_core_count, is what makes
-        # that distinguishable) — then go straight to _cloud_full_drain_recover.
-        log_info "S20 (cloud): confirming full self-drain (0 active cores) before reap+rebootstrap"
-        if ! wait_for "cloud full self-drain confirmed (0 active cores)" \
-                "[ \"\$(_cluster_active_core_count_checked)\" -eq 0 ]" 60 2 "_cluster_active_core_count_checked"; then
-            log_fail "S20 violation (cloud): could not confirm 0 active cores (mgmt API stayed unreachable, or a core survived) within 60s — refusing to reap a cluster that may still be live"
+        # H3 (#1051, owner ruling 2026-09-13). verdict="quorum-lost": S19 asserted
+        # both survivors departed, and the 3 victims were deleted — a full
+        # self-drain. restart_all_nodes' cloud path is built for a PARTIAL drain
+        # (a poweron that is a no-op for a VM whose JVM exited, then a 360s probe)
+        # and would spend most of any budget before reaching the reap. So: confirm
+        # the drain from per-VM evidence (_cloud_await_full_drain — an unreachable
+        # node is not a dead one, so management-API silence confirms nothing and any
+        # unreadable VM refuses the reap), reap + rebootstrap, and assert 5 healthy
+        # cores within CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S measured from the start of
+        # confirmation. The clock is SECONDS, not the scaled wait_for budget, so the
+        # figure printed is the figure enforced.
+        _s19_require_cloud_runtime || return 1
+        local cluster_name="${BOOTSTRAP_CLUSTER_NAME:-}" budget="$CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S"
+        local start=$SECONDS elapsed remaining
+        log_info "S20 (cloud): confirming full self-drain of '${cluster_name}' from per-VM evidence (runtime ${CLOUD_RUNTIME}) before reap+rebootstrap — budget ${budget}s starts now"
+        if ! _cloud_await_full_drain "$cluster_name" "$CLOUD_RUNTIME" "$CLOUD_DRAIN_CONFIRM_BOUND_S"; then
+            log_fail "S20 violation (cloud): full self-drain not positively confirmed on every VM — did NOT reap (elapsed $((SECONDS - start))s, budget ${budget}s)"
             return 1
         fi
-        log_info "S20 (cloud): full self-drain confirmed — reaping + rebootstrapping '${BOOTSTRAP_CLUSTER_NAME:-<unset>}'"
         if ! _cloud_full_drain_recover; then
-            log_fail "S20 violation (cloud): full-drain recovery (reap + rebootstrap) failed"
+            log_fail "S20 violation (cloud): full-drain recovery (reap + rebootstrap) failed (elapsed $((SECONDS - start))s, budget ${budget}s)"
             return 1
         fi
-        if ! wait_for "5 healthy cores after full-drain rebootstrap" \
-                "[ \$(cluster_active_core_count) -eq 5 ]" "$CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S" 5 "cluster_active_core_count"; then
-            local now_count
-            now_count=$(cluster_active_core_count)
-            log_fail "S20 violation (cloud): cluster did not return to 5 healthy cores within ${CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S}s of reap+rebootstrap (current count=${now_count})"
+        remaining=$((budget - (SECONDS - start)))
+        if [ "$remaining" -le 0 ]; then
+            log_fail "S20 violation (cloud): drain confirmation + reap + rebootstrap took $((SECONDS - start))s, over the ${budget}s budget before 5 healthy cores could be checked"
             return 1
         fi
-        assert_cluster_healthy "S20 (cloud): cluster recovered to 5 healthy cores within ${CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S}s of full-drain reap+rebootstrap"
+        # TIMEOUT_SCALE=1: remaining is a slice of the unscaled budget.
+        if ! TIMEOUT_SCALE=1 wait_for "5 healthy cores after full-drain rebootstrap" \
+                '[ "$WAIT_FOR_VALUE" -eq 5 ]' "$remaining" 5 "_cluster_active_core_count_checked"; then
+            log_fail "S20 violation (cloud): cluster not back to 5 healthy cores (elapsed $((SECONDS - start))s, budget ${budget}s; last read in the line above)"
+            return 1
+        fi
+        elapsed=$((SECONDS - start))
+        if [ "$elapsed" -gt "$budget" ]; then
+            log_fail "S20 violation (cloud): 5 healthy cores reached only after ${elapsed}s, over the ${budget}s budget"
+            return 1
+        fi
+        log_pass "S20 (cloud): recovered to 5 healthy cores ${elapsed}s after drain confirmation began (budget ${budget}s: confirmation + reap + rebootstrap + core-count wait)"
+        # S7 (#1051): the same post-recovery barriers restart_all_nodes' cloud branch
+        # applies, test-echo baseline redeploy included. Outside the budget: the
+        # ruling bounds recovery to 5 healthy cores.
+        if ! _cloud_recovery_barriers "S20 (cloud)" "${NODE_COUNT:-5}"; then
+            log_fail "S20 violation (cloud): post-recovery barriers (leader election / test-echo baseline) failed after full-drain recovery"
+            return 1
+        fi
+        assert_cluster_healthy "S20 (cloud): cluster healthy after full-drain recovery and post-recovery barriers"
         return 0
     fi
 
@@ -1145,13 +1179,11 @@ test_cluster_recovers_to_five_on_duty() {
     # restart_all_nodes already drove the cluster back to leader + quorum,
     # but the healthy core count is the actual S20 acceptance signal.
     if ! wait_for "5 healthy cores after self-drain recovery" \
-        "[ \$(cluster_active_core_count) -eq 5 ]" "$RECOVERY_BUDGET_S" 2 "cluster_active_core_count"; then
-        local now_count
-        now_count=$(cluster_active_core_count)
-        log_fail "S20 violation: cluster did not return to 5 healthy cores within ${RECOVERY_BUDGET_S}s of restart (current count=${now_count})"
+        '[ "$WAIT_FOR_VALUE" -eq 5 ]' "$RECOVERY_BUDGET_S" 2 "_cluster_active_core_count_checked"; then
+        log_fail "S20 violation: cluster did not return to 5 healthy cores within $((RECOVERY_BUDGET_S * ${TIMEOUT_SCALE:-1}))s of restart (last read in the line above)"
         return 1
     fi
-    assert_cluster_healthy "S20: cluster recovered to 5 healthy cores within ${RECOVERY_BUDGET_S}s of restart"
+    assert_cluster_healthy "S20: cluster recovered to 5 healthy cores within $((RECOVERY_BUDGET_S * ${TIMEOUT_SCALE:-1}))s of restart"
 
     # #426 review follow-up (item 3): the echo-baseline redeploy formerly
     # duplicated here is now centralized in restart_all_nodes itself
@@ -1160,6 +1192,59 @@ test_cluster_recovers_to_five_on_duty() {
     # above already re-pushed/redeployed the echo blueprint and gated on all
     # target instances ACTIVE before returning. Keeping a second copy here
     # risked copy-drift between the two call sites; nothing further to do.
+}
+
+# How the "Survivor exit codes are 2" step is recorded (#1051). Prints "run",
+# "skip <reason>" or "refuse". The halt reason is readable on docker/remote (docker
+# inspect) and on cloud --runtime jvm (systemd unit state). It is not readable on
+# cloud --runtime container, and there is none to read when S19's race arbitration
+# found quorum held (the survivors never drained): both are SKIPPED, never a
+# zero-assertion PASS and never a guaranteed FAIL. An unset or unknown runtime on
+# cloud is refused.
+_s19_exit_code_disposition() {
+    if [ "${CLOUD_MODE:-false}" != "true" ]; then
+        echo "run"
+        return 0
+    fi
+    case "${CLOUD_RUNTIME:-}" in
+        jvm) ;;
+        container)
+            echo "skip GAP-A (cloud --runtime container): no docker access from the test host to read the halt reason — drain OUTCOME (membership departure) is asserted in S19"
+            return 0
+            ;;
+        *)
+            echo "refuse"
+            return 0
+            ;;
+    esac
+    if [ "$(cat "$VERDICT_FILE" 2>/dev/null)" = "quorum-held" ]; then
+        echo "skip S19 quorum-held: auto-heal refilled quorum before the survivors drained, so no survivor halted and there is no halt reason to read"
+        return 0
+    fi
+    echo "run"
+}
+
+_s19_record_exit_code_step() {
+    local name="Survivor exit codes are 2 (Runtime.halt(2))" disposition
+    disposition=$(_s19_exit_code_disposition)
+    case "$disposition" in
+        run)     run_test "$name" test_survivor_exit_codes_are_two ;;
+        skip\ *) skip_test "$name" "${disposition#skip }" ;;
+        *)       run_test "$name" _s19_require_cloud_runtime ;;
+    esac
+}
+
+# The S20 step name states the budget that the branch about to run enforces
+# (#1051). Evaluated after S19 wrote VERDICT_FILE. docker/remote keep the spec's
+# 60s name.
+_s20_test_label() {
+    if [ "${CLOUD_MODE:-false}" != "true" ]; then
+        printf '%s' "Cluster recovers to 5 healthy cores within ${RECOVERY_BUDGET_S}s (S20)"
+    elif [ "$(cat "$VERDICT_FILE" 2>/dev/null)" = "quorum-held" ]; then
+        printf '%s' "Cluster recovers to 5 healthy cores within $((RECOVERY_BUDGET_S * ${TIMEOUT_SCALE:-1}))s after restart (S20, cloud quorum-held)"
+    else
+        printf '%s' "Cluster recovers to 5 healthy cores within ${CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S}s of drain confirmation (S20, cloud full drain)"
+    fi
 }
 
 cleanup() {
@@ -1179,6 +1264,12 @@ cleanup() {
     restore_cluster_baseline_or_flag
 }
 
+# Sourced (test/test-chaos-harness.sh drives the functions above against stubs):
+# stop before the trap and the scenario. A direct run (`bash "$test_file"`) goes on.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    return 0
+fi
+
 # Run cleanup on ANY exit path — including a `return 1` from inside a
 # test function that propagates up through `set -e` and aborts the
 # script. Pattern matches Step 7's test-joining-window-kill.sh and
@@ -1189,31 +1280,8 @@ run_test "Initial 5 healthy cores" test_initial_state
 run_test "Pick 3 victims and kill simultaneously" test_pick_victims_and_kill_three_simultaneously
 run_test "Confirm quorum-loss vs auto-heal race (cloud-only arbitration)" test_confirm_quorum_loss_race
 run_test "Survivors self-drain and exit within ${SURVIVOR_EXIT_BUDGET_S}s (S19)" test_survivors_self_drain_and_exit
-
-# H2 (2026-09-13): exit-code-2 is verifiable on docker/remote (docker inspect)
-# and on cloud/jvm (systemd ExecMainStatus, see
-# jvm_unit_exec_main_status_is_two in lib/common.sh) — both get a real run_test.
-# On cloud/container it is genuinely unverifiable (no docker access from the
-# test host, and a VM power-off would not even yield an exit code) — that
-# case must be recorded as SKIPPED, never as a zero-assertion PASS, so it is
-# routed to skip_test instead of run_test entirely (run_test has no "skip"
-# outcome; it only ever records PASS or FAIL — see lib/common.sh run_test).
-if [ "${CLOUD_MODE:-false}" = "true" ] && [ "${CLOUD_RUNTIME:-container}" != "jvm" ]; then
-    skip_test "Survivor exit codes are 2 (Runtime.halt(2))" "GAP-A (cloud/container runtime): no docker access from the test host to read the halt reason, and a VM power-off would not yield an exit code either way — drain OUTCOME (membership departure) is already asserted above in S19"
-else
-    run_test "Survivor exit codes are 2 (Runtime.halt(2))" test_survivor_exit_codes_are_two
-fi
-
+_s19_record_exit_code_step
 run_test "Drain-trigger log signature present on survivors" test_drain_trigger_log_signature_present
 run_test "No KV-writes after drain trigger (negative assertion)" test_no_kv_writes_after_drain_trigger
-
-# H3 (2026-09-13): the docker/remote S20 contract is genuinely "within 60s"
-# (RECOVERY_BUDGET_S); the cloud full-drain path recovers via reap + a fresh
-# 10-minute-class bootstrap (CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S) and must not
-# advertise the docker/remote number it cannot meet.
-if [ "${CLOUD_MODE:-false}" = "true" ]; then
-    run_test "Cluster recovers to 5 healthy cores within the cloud full-drain budget (${CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S}s) (S20)" test_cluster_recovers_to_five_on_duty
-else
-    run_test "Cluster recovers to 5 healthy cores within ${RECOVERY_BUDGET_S}s (S20)" test_cluster_recovers_to_five_on_duty
-fi
+run_test "$(_s20_test_label)" test_cluster_recovers_to_five_on_duty
 print_summary
