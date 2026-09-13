@@ -43,7 +43,6 @@ public enum DrainReason {
     QUORUM_LOSS,
     COMMANDED,
     CORE_ABSENCE;
-
     /// Whether this reason trims a SURPLUS — a node removed only because the cluster had more than it
     /// needed. Such a decision goes stale when the cluster later falls short, so the drain-grace
     /// backstop re-checks before reaping (#1050). `JOIN_GRACE_REAP` is deliberately NOT a surplus
