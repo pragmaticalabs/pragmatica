@@ -2468,11 +2468,7 @@ public interface AetherNode extends ManageableNode {
                                                                            .or(() -> config.topology()
                                                                                            .coreNodes()
                                                                                            .size());
-        // Pre-FSM boot window → empty set, which the backstop reads as not-quorum-safe and so KEEPS the
-        // node: fail-closed. No surplus drain can precede the FSM (the reconciler is built from it).
-        Supplier<Set<NodeId>> ctmCoreCountedMembersSupplier = () -> Option.option(membershipFsmRef.get())
-                                                                          .map(MembershipFsm::coreCountedMembers)
-                                                                          .or(Set.of());
+        var ctmCoreCountedMembersSupplier = drainGraceCoreMemberSupplier(membershipFsmRef::get);
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
@@ -4778,6 +4774,22 @@ public interface AetherNode extends ManageableNode {
         return () -> Option.option(membershipFsm.get())
                            .map(fsm -> fsm.coreObservedMembers(self))
                            .or(Set.of());
+    }
+
+    /// #1050's drain-grace membership read as a NAMED seam, the sibling of [#presenceMemberSupplier] with the
+    /// opposite projection: the CTM backstop must read the COUNTED set — the `LeaderReconciler`'s own
+    /// drain-decision input — so one authority decides both a surplus drain and its reap.
+    /// `DrainGraceCoreMemberSupplierSeamTest` pins it against a real seeded FSM. The pre-FSM boot window
+    /// yields the empty set, which the backstop reads as not-quorum-safe and so KEEPS the node (fail-closed);
+    /// no surplus drain can precede the FSM, because the reconciler is built from it.
+    static Supplier<Set<NodeId>> drainGraceCoreMemberSupplier(Supplier<MembershipFsm> membershipFsm) {
+        return () -> coreCountedMembersOrEmpty(membershipFsm.get());
+    }
+
+    private static Set<NodeId> coreCountedMembersOrEmpty(MembershipFsm membershipFsm) {
+        return Option.option(membershipFsm)
+                     .map(MembershipFsm::coreCountedMembers)
+                     .or(Set.of());
     }
 
     @Contract
