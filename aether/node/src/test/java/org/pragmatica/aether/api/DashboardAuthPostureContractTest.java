@@ -68,7 +68,7 @@ class DashboardAuthPostureContractTest {
 
     private static String method(String body, String name) {
         var start = body.indexOf(name + ": function(");
-        var end = body.indexOf("\n        },", start);
+        var end = body.indexOf("\n        }", start);
 
         assertThat(start).as("AetherAuth." + name + "() must exist").isNotNegative();
         assertThat(end).as("AetherAuth." + name + "()'s closing brace must be boundable").isGreaterThan(start);
