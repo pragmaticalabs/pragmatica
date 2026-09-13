@@ -840,10 +840,27 @@ class ManagementServerImpl implements ManagementServer {
         dispatchManagementRequest(ctx, instrumented, methodName, startTime);
     }
 
-    private void dispatchManagementRequest(HttpRequest ctx,
-                                           InstrumentedResponseWriter instrumented,
-                                           String methodName,
-                                           long startTime) {
+    /// Package-visible so the WIRING is pinnable, not merely [#answersPartitionLocally] in isolation —
+    /// the same reason [#sendForwardedResponse] is. The owner decision being correct says nothing
+    /// about this method still consulting it, and a decision that is correct and never called is
+    /// exactly the defect #1039's receive path shipped with. `ManagementServerForwardDispatchTest`
+    /// drives this entry; deleting the [#tryForwardToRouteOwner] call below must redden it.
+    ///
+    /// Not `private` purely for the test, and not a behaviour change: `handleRequest` remains the only
+    /// production caller, on both of its branches.
+    ///
+    /// The suppression is a cost of that widening, not a new exemption on new code: `void` was already
+    /// this method's shape, and JBCT-RET-01 simply does not inspect `private` methods. It is the right
+    /// shape — this is a terminal sink that writes to a `ResponseWriter`, reached from the server's
+    /// `BiConsumer<HttpRequest, ResponseWriter>` callback, so there is no caller that could act on a
+    /// returned failure. Narrow `@SuppressWarnings` rather than `@Contract`, which would exempt this
+    /// method from EVERY JBCT rule; the two neighbours on the forward path suppress the same rule the
+    /// same way.
+    @SuppressWarnings("JBCT-RET-01")
+    void dispatchManagementRequest(HttpRequest ctx,
+                                   InstrumentedResponseWriter instrumented,
+                                   String methodName,
+                                   long startTime) {
         var path = ctx.path();
 
         if (tryForwardToRouteOwner(ctx, instrumented, methodName, startTime)) {
