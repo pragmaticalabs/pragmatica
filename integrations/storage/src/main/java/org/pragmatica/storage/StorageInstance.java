@@ -3,6 +3,7 @@ package org.pragmatica.storage;
 import java.util.List;
 
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -344,14 +345,23 @@ final class DefaultStorageInstance implements StorageInstance {
 
         var tier = cacheTiers.get(index);
 
+        // The durable write has already succeeded by the time a cache tier is asked; a cache-tier
+        // failure is recovered, not propagated, or the caller is told its durably stored data
+        // failed (#910). The old chain logged "skipped" and then flatMapped the failure through.
         return tier.put(id, content)
                    .onSuccess(_ -> recordTierPresence(id,
                                                       tier.level()))
-                   .onFailure(cause -> log.debug("Cache promotion to {} skipped for {}: {}",
-                                                 tier.level(),
-                                                 id,
-                                                 cause.message()))
+                   .recover(cause -> promotionFailed(tier, id, cause))
                    .flatMap(_ -> promoteToNextCacheTier(id, content, cacheTiers, index + 1));
+    }
+
+    private static Unit promotionFailed(StorageTier tier, BlockId id, Cause cause) {
+        log.debug("Cache promotion to {} failed for {} (the block stays durable and is served from the durable tier): {}",
+                  tier.level(),
+                  id,
+                  cause.message());
+
+        return unit();
     }
 
     /// Finalizes the record that [#handlePut]'s claim already created -- an UPDATE, never a re-create.
