@@ -759,7 +759,13 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private Promise<List<Option<String>>> loadSliceDeclarations(ExpandedBlueprint expanded) {
-        return Promise.allOf(expanded.loadOrder().stream().map(this::loadSliceResourcesToml).toList()).flatMap(declarations -> Result.allOf(declarations).async());
+        return Promise.allOf(expanded.loadOrder().stream().map(this::loadSliceResourcesToml).toList()).flatMap(BlueprintServiceInstance::requireAllRead);
+    }
+
+    /// Unlike `loadAllTopologies`, which drops an unresolvable jar, a declaration that cannot be read
+    /// fails the publish: binding the remaining slices would turn the lost ones into `UnboundStreamAlias`.
+    private static Promise<List<Option<String>>> requireAllRead(List<Result<Option<String>>> declarations) {
+        return Result.allOf(declarations).async();
     }
 
     private Promise<Option<String>> loadSliceResourcesToml(ResolvedSlice slice) {
@@ -795,15 +801,19 @@ class BlueprintServiceInstance implements BlueprintService {
                                                       Collectors.toList()))
                        .entrySet()
                        .stream()
-                       .filter(entry -> entry.getValue()
-                                             .size() > 1)
-                       .map(entry -> aliasConflict(entry.getKey(),
-                                                   entry.getValue()))
+                       .filter(BlueprintServiceInstance::hasSeveralAddresses)
+                       .map(BlueprintServiceInstance::aliasConflict)
                        .toList();
     }
 
-    private static StreamValidationFailure aliasConflict(String alias, List<NamedAddress> declared) {
-        var addresses = declared.stream().map(NamedAddress::address).map(ResourceAddress::asString).toList();
+    private static boolean hasSeveralAddresses(Map.Entry<String, List<NamedAddress>> declared) {
+        return declared.getValue()
+                       .size() > 1;
+    }
+
+    private static StreamValidationFailure aliasConflict(Map.Entry<String, List<NamedAddress>> declared) {
+        var alias = declared.getKey();
+        var addresses = declared.getValue().stream().map(NamedAddress::address).map(ResourceAddress::asString).toList();
 
         return StreamValidationFailure.streamValidationFailure("[streams." + alias + "]",
                                                                RULE_CONFLICTING_STREAM_DECLARATION,
