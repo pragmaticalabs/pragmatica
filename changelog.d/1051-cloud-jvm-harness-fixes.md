@@ -11,9 +11,11 @@
   recorded as SKIPPED.
   `[mechanism: _s19_exit_code_disposition in aether/tests/integration/suites/02-chaos/test-self-drain-quorum-loss.sh; stub-tested by test/test-chaos-harness.sh]`
 - **Cloud S20 could not recover a full self-drain within the budget it stated.** It now confirms the drain from
-  positive per-VM evidence: every VM carrying the cluster's `aether-cluster` label (the set the reap deletes) must
-  show its node unit or container not running, or be reported not found by the provider. An unreadable or still
-  running VM, or a failed or empty enumeration, refuses the reap; management-API silence is never taken as death. It
+  positive per-VM evidence over every VM carrying the cluster's `aether-cluster` label (the set the reap deletes): no
+  VM may be running or unreadable, and at least one must be positively drain-halted (`aether-node` loaded with
+  `ActiveState=failed` or `ExecMainStatus=2`, or an exited container). VMs whose unit is stopped or not loaded, or
+  that the provider reports not found, count only beside a halted one, so a cluster still bootstrapping is never
+  reaped. A failed or empty enumeration refuses the reap; management-API silence is never taken as death. It
   then reaps and rebootstraps and asserts 5 healthy cores within 600s measured from the start of confirmation (not
   scaled by `TIMEOUT_SCALE`), printing the elapsed time and the budget, followed by the standard recovery path's
   leader, readiness and test-echo baseline barriers.
