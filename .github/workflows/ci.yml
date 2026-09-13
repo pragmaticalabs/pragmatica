@@ -91,6 +91,26 @@ jobs:
             aether/forge/forge-tests/target/failsafe-reports/*.xml
           retention-days: 7
 
+  # The cloud harness stub suites (aether/tests/integration/test/test-*.sh) pin harness decisions such
+  # as drain confirmation and reap refusal by stubbing ssh/hcloud/curl. They need no cluster, cloud or
+  # docker, and before #1060 nothing ran them. The runner fails a suite that exits non-zero OR whose own
+  # summary is missing, reports failures, or reports zero passes.
+  stub-suites:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Tools the suites use
+        run: bash --version | head -1 && awk --version 2>&1 | head -1 && sed --version | head -1 && command -v mktemp tee
+
+      - name: Run harness stub suites
+        run: bash aether/tests/integration/test/run-stub-suites.sh
+
+  # Heavy forge tests run in heavy-forge.yml (nightly, on demand, or on a PR labelled run-heavy).
+
   # E2E tests removed — replaced by Docker-based integration test suite
   # at aether/tests/integration/ (run manually on dedicated hardware).
   # See: aether/tests/integration/README.md
