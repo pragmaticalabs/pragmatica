@@ -43,6 +43,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageReceiver;
@@ -189,18 +190,24 @@ public interface NodeDeploymentManager {
                            .toResult(MISSING_KEY);
         }
 
+        // ConfigService exposes no numeric getters beyond getInt, so the adapter parses the string
+        // itself — through core's Result-returning parsers, not Long.parseLong inside a map, which
+        // threw NumberFormatException out of a facade whose whole contract is Result (#276 R20).
+        // A malformed value is a named failure on require*, distinct from an absent key; on the
+        // Option-returning get* it reads as absent, the same as ConfigurationProvider's own
+        // getLong/getDouble behave for the slice-api facade.
         @Override
         public Result<Long> requireLong(String section, String key) {
             return delegate.getString(section + "." + key)
-                           .map(Long::parseLong)
-                           .toResult(MISSING_KEY);
+                           .toResult(MISSING_KEY)
+                           .flatMap(Number::parseLong);
         }
 
         @Override
         public Result<Double> requireDouble(String section, String key) {
             return delegate.getString(section + "." + key)
-                           .map(Double::parseDouble)
-                           .toResult(MISSING_KEY);
+                           .toResult(MISSING_KEY)
+                           .flatMap(Number::parseDouble);
         }
 
         @Override
@@ -229,13 +236,13 @@ public interface NodeDeploymentManager {
         @Override
         public Option<Long> getLong(String section, String key) {
             return delegate.getString(section + "." + key)
-                           .map(Long::parseLong);
+                           .flatMap(value -> Number.parseLong(value).option());
         }
 
         @Override
         public Option<Double> getDouble(String section, String key) {
             return delegate.getString(section + "." + key)
-                           .map(Double::parseDouble);
+                           .flatMap(value -> Number.parseDouble(value).option());
         }
 
         @Override
