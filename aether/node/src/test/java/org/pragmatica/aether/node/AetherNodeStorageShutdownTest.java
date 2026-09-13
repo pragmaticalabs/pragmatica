@@ -13,11 +13,6 @@ import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Option;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
-
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.Filter;
@@ -29,11 +24,15 @@ import org.apache.logging.log4j.core.config.Configuration;
 import org.apache.logging.log4j.core.config.LoggerConfig;
 import org.apache.logging.log4j.core.config.Property;
 import org.apache.logging.log4j.core.layout.PatternLayout;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// #1078: `AetherNode.stop()` never called `StorageInstance.shutdown()` on the three node-owned
@@ -56,6 +55,7 @@ class AetherNodeStorageShutdownTest {
         appender = CapturingAppender.create("StorageShutdownCapture");
         appender.start();
         var ctx = (LoggerContext) LogManager.getContext(false);
+
         loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
         originalLevel = loggerConfig.getLevel();
         loggerConfig.addAppender(appender, Level.ALL, null);
@@ -66,12 +66,11 @@ class AetherNodeStorageShutdownTest {
     @AfterEach
     void tearDown() {
         if (node != null) {
-            node.stop()
-                .await(timeSpan(10).seconds())
-                .onFailure(cause -> {});
+            node.stop().await(timeSpan(10).seconds()).onFailure(cause -> {});
         }
 
         var ctx = (LoggerContext) LogManager.getContext(false);
+
         loggerConfig.removeAppender(appender.getName());
         loggerConfig.setLevel(originalLevel);
         ctx.updateLoggers();
@@ -84,32 +83,28 @@ class AetherNodeStorageShutdownTest {
     @Timeout(value = 60, unit = SECONDS)
     void stop_shutsDown_everyNodeOwnedStorageInstance() {
         node = AetherNode.aetherNode(AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(),
-                                                                                       Option.none(),
-                                                                                       ConfigurationProvider.builder().build()),
+                                                                                        Option.none(),
+                                                                                        ConfigurationProvider.builder().build()),
                                      () -> {})
-                          .onFailure(cause -> fail("boot must succeed: " + cause.message()))
-                          .unwrap();
-
+                         .onFailure(cause -> fail("boot must succeed: " + cause.message()))
+                         .unwrap();
         var names = node.storageSetups().keySet();
 
         assertThat(names).as("fixture: the node owns the three storage instances the ticket names")
-                         .containsExactlyInAnyOrder("content", "artifacts", "streams");
+                  .containsExactlyInAnyOrder("content", "artifacts", "streams");
         assertThat(shutDownNames()).as("nothing is shut down before stop()").isEmpty();
-
-        node.stop()
-            .await(timeSpan(10).seconds())
-            .onFailure(cause -> fail("stop must succeed: " + cause.message()));
+        node.stop().await(timeSpan(10).seconds()).onFailure(cause -> fail("stop must succeed: " + cause.message()));
         node = null;
-
         assertThat(shutDownNames()).as("stop() must shut down each node-owned storage instance exactly once")
-                                   .containsExactlyInAnyOrder("content", "artifacts", "streams");
+                  .containsExactlyInAnyOrder("content", "artifacts", "streams");
     }
 
     private List<String> shutDownNames() {
         return appender.events()
                        .stream()
                        .filter(message -> message.startsWith("Storage instance '") && message.endsWith("' shut down"))
-                       .map(message -> message.substring("Storage instance '".length(), message.length() - "' shut down".length()))
+                       .map(message -> message.substring("Storage instance '".length(),
+                                                         message.length() - "' shut down".length()))
                        .toList();
     }
 
