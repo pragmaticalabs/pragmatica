@@ -25,6 +25,10 @@ public sealed interface CoreError extends Cause {
 
     record Timeout(String message) implements CoreError {}
 
+    /// The waiting thread was interrupted before the awaited value arrived (#914). The interrupt
+    /// flag is left set: the interrupt addressed the thread, not this one wait.
+    record Interrupted(String message) implements CoreError {}
+
     record Fault(String message) implements CoreError {}
 
     record Exception(String message, Throwable cause) implements CoreError {
