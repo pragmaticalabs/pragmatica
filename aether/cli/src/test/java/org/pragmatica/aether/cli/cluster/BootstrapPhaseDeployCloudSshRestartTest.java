@@ -1250,6 +1250,37 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         assertTrue(commands.get("203.0.113.12").contains("'AETHER_ROLE=spot'"), commands.get("203.0.113.12"));
     }
 
+    /// #296 review SF-1: `collectSourceNodes` attributed by `startsWith(source + "-")`, so with sources
+    /// `eu` and `eu-1` the launch for `eu` also re-launched `eu-1-core-0` (base: silently, under `eu`'s
+    /// image and SSH config; the first cut of this PR: refused with a message blaming minting).
+    /// Attribution is now exact on the id's source segment.
+    @Test
+    void deployCloudSource_prefixSiblingSource_neverTouchesTheOtherSourcesNode() {
+        var config = configWithShortTimeout(cloudSource(), Map.of());
+        var nodes = List.of(ProvisionedNode.provisionedNode("eu-core-0", "100", "203.0.113.20"),
+                            ProvisionedNode.provisionedNode("eu-1-core-0", "101", "203.0.113.10"));
+        var addresses = List.of(NodeAddress.nodeAddress("eu-core-0", "203.0.113.20", Option.empty()),
+                                NodeAddress.nodeAddress("eu-1-core-0", "203.0.113.10", Option.empty()));
+        var state = BootstrapState.initialState(CLUSTER_NAME, "h", "now").withClusterSecret(CLUSTER_SECRET);
+        var ctx = BootstrapContext.bootstrapContext(config, state, nodes, addresses).withClusterSecret(CLUSTER_SECRET);
+        var hosts = new ConcurrentLinkedQueue<String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, sshConfig) -> {
+            if (command.startsWith("docker")) { hosts.add(host); }
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            cloudSource(),
+                                                            sourceNameOrDefault("eu"),
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isSuccess(), () -> "the launch for `eu` must not be poisoned by `eu-1`'s node: " + result);
+        assertEquals(List.of("203.0.113.20"), List.copyOf(hosts),
+                     "only `eu`'s own node is re-launched; `eu-1-core-0` belongs to `eu-1`");
+    }
+
     @Test
     void deployCloudSource_failsLoudly_whenANodeIdEncodesNoRole() {
         var config = configWithShortTimeout(cloudSource(), Map.of());
@@ -1271,5 +1302,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                    + "defaulting it to `core` is exactly the #296 defect, so it must refuse and say so");
         assertTrue(result.fold(Cause::message, _ -> "").contains("eu-1-mystery"),
                    () -> "the refusal must name the node: " + result);
+        assertTrue(result.fold(Cause::message, _ -> "").contains("belongs to no source"),
+                   () -> "and say why: with exact attribution such an id would otherwise be skipped by every source's launch: " + result);
     }
 }

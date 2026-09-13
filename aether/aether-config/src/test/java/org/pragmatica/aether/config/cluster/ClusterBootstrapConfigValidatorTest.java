@@ -250,6 +250,43 @@ class ClusterBootstrapConfigValidatorTest {
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-07"));
         }
 
+        /// CL-08 second half (#296 review SF-1): node ids are `<source>-<role>-<index>`, so a source
+        /// name that dash-prefixes another would let two sources claim one node. Refused at load.
+        @Test
+        void validate_sourceNameIsDashPrefixOfAnother_returnsCl08NamingBoth() {
+            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+            var eu = sourceProfile(sourceNameOrDefault("eu"), SourceType.FORGE, none(), none(), none(), none(),
+                                   none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                   none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+            var eu1 = sourceProfile(sourceNameOrDefault("eu-1"), SourceType.FORGE, none(), none(), none(), none(),
+                                    none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                    none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+                                                defaultCoreTopology(), Map.of("eu", eu, "eu-1", eu1), Map.of(),
+                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                defaultOperationsConfig());
+            validate(config)
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("CL-08")
+                                                              .contains("'eu' is a prefix of source 'eu-1'"));
+        }
+
+        @Test
+        void validate_distinctNonPrefixSourceNames_pass() {
+            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+            var eu = sourceProfile(sourceNameOrDefault("eu"), SourceType.FORGE, none(), none(), none(), none(),
+                                   none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                   none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+            var us = sourceProfile(sourceNameOrDefault("us"), SourceType.FORGE, none(), none(), none(), none(),
+                                   none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                   none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+                                                defaultCoreTopology(), Map.of("eu", eu, "us", us), Map.of(),
+                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                defaultOperationsConfig());
+            validate(config).onFailure(cause -> assertThat(cause.message()).doesNotContain("CL-08"));
+        }
+
         @Test
         void validate_portsNotDistinct_returnsError() {
             var ports = portMapping(8080, 8080, 8070, 8190);

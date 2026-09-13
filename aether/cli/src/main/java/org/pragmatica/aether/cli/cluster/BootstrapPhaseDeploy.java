@@ -154,6 +154,19 @@ sealed interface BootstrapPhaseDeploy {
                                           Fn1<String, String> envLookup,
                                           long preflightTimeoutMs,
                                           long preflightPollMs) {
+        // #296: attribution is exact on the id's source segment, so an id that does not parse would
+        // belong to NO source and be skipped silently by every source's launch. That is an invariant
+        // violation of this CLI's own minting, refused by name rather than dropped.
+        var unparseable = ctx.nodes()
+                             .stream()
+                             .filter(n -> BootstrapPhaseProvision.parseNodeId(n.nodeId()).isEmpty())
+                             .findFirst();
+
+        if (unparseable.isPresent()) {
+            return new BootstrapError.DeploymentFailed(unparseable.get().nodeId(),
+                                                       "node id does not encode <source>-<core|worker|spot>-<index>, so it belongs to no source").result();
+        }
+
         var sourceNodes = collectSourceNodes(ctx, sourceName);
 
         if (sourceNodes.isEmpty()) {
@@ -657,8 +670,7 @@ sealed interface BootstrapPhaseDeploy {
     private static List<ProvisionedNode> collectSourceNodes(BootstrapContext ctx, SourceName sourceName) {
         return ctx.nodes()
                   .stream()
-                  .filter(n -> n.nodeId()
-                                .startsWith(sourceName.value() + "-"))
+                  .filter(n -> BootstrapPhaseProvision.belongsTo(n.nodeId(), sourceName))
                   .toList();
     }
 

@@ -83,12 +83,13 @@ sealed interface BootstrapPhaseProvision {
             var providerName = resolveProviderName(source);
 
             for (var node : allNodes) {
-                if (node.nodeId().startsWith(sourceName.value() + "-")) {
+                if (belongsTo(node.nodeId(), sourceName)) {
                     state = state.withResource(CreatedResource.ProvisionedVm.provisionedVm(providerName,
                                                                                            node.serverId(),
                                                                                            sourceName.value(),
-                                                                                           extractRole(node.nodeId(),
-                                                                                                       sourceName.value())));
+                                                                                           parseNodeId(node.nodeId()).map(parsed -> parsed.role()
+                                                                                                                                          .value())
+                                                                                                                     .or("")));
                 }
             }
 
@@ -346,22 +347,45 @@ sealed interface BootstrapPhaseProvision {
                      .or(source.type().value());
     }
 
-    /// #296 — the role a node id encodes (`<source>-<role>-<index>`, minted by every provisioning
-    /// branch in this phase), as the deploy phase needs it. A failure is an invariant violation of
-    /// this CLI's own minting, not a config error: it is refused rather than defaulted to `core`,
-    /// because a silent `core` is exactly the defect this closes.
-    static Result<NodeRole> nodeRole(String nodeId, SourceName sourceName) {
-        return NodeRole.nodeRole(extractRole(nodeId, sourceName.value())).mapError(cause -> new BootstrapError.DeploymentFailed(nodeId,
-                                                                                                                                "node id encodes no role (expected <source>-<core|worker|spot>-<index>): " + cause.message()));
+    /// The one parser of the node ids this phase mints (`<source>-<role>-<index>`, every branch:
+    /// cloud, SSH, forge, docker). Role and index are anchored at the END, so a source name that
+    /// itself contains dashes — or is a dash-prefix of another source (`eu` / `eu-1`) — cannot be
+    /// mis-attributed: `eu-1-core-0` parses to source `eu-1`, never to `eu` with role `1-core`.
+    /// Every consumer that used to test `startsWith(source + "-")` goes through this instead
+    /// (#296 review SF-1): [#belongsTo], [BootstrapPhaseDeploy] and [BootstrapPhasePost].
+    Pattern NODE_ID = Pattern.compile("^(.+)-(core|worker|spot)-(\\d+)$");
+
+    record ParsedNodeId(String source, NodeRole role, int index) {}
+
+    static Option<ParsedNodeId> parseNodeId(String nodeId) {
+        var matcher = NODE_ID.matcher(nodeId);
+
+        if (!matcher.matches()) {
+            return Option.empty();
+        }
+
+        return NodeRole.nodeRole(matcher.group(2))
+                       .option()
+                       .map(role -> new ParsedNodeId(matcher.group(1), role, Integer.parseInt(matcher.group(3))));
     }
 
-    private static String extractRole(String nodeId, String sourceName) {
-        var suffix = nodeId.substring(sourceName.length() + 1);
-        var dashIndex = suffix.lastIndexOf('-');
+    /// Exact source attribution: the id's source segment equals `sourceName`, not merely starts with it.
+    static boolean belongsTo(String nodeId, SourceName sourceName) {
+        return parseNodeId(nodeId).map(parsed -> parsed.source().equals(sourceName.value())).or(false);
+    }
 
-        return dashIndex > 0
-               ? suffix.substring(0, dashIndex)
-               : suffix;
+    /// #296 — the role a node id encodes, for the source the deploy phase is working on. A failure
+    /// is an invariant violation of this CLI's own minting, not a config error: it is refused rather
+    /// than defaulted to `core`, because a silent `core` is exactly the defect this closes. The
+    /// message names the source the id was parsed against, so a mis-attributed node (a source that
+    /// dash-prefixes another) is diagnosable rather than blamed on minting.
+    static Result<NodeRole> nodeRole(String nodeId, SourceName sourceName) {
+        return parseNodeId(nodeId).filter(parsed -> parsed.source().equals(sourceName.value()))
+                                  .map(ParsedNodeId::role)
+                                  .toResult(new BootstrapError.DeploymentFailed(nodeId,
+                                                                                "node id does not encode a role for source '" + sourceName.value()
+                                                                               + "' (expected " + sourceName.value()
+                                                                               + "-<core|worker|spot>-<index>)"));
     }
 
     @SuppressWarnings("JBCT-PAT-01")
