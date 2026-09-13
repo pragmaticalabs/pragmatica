@@ -93,16 +93,22 @@ sealed interface BootstrapPhasePost {
                                                                 endpoint,
                                                                 Option.some(apiKeyEnvName)))
                        .flatMap(ClusterRegistry::save)
+                       .onSuccess(_ -> System.out.printf("Active cluster context: %s%n", clusterName))
                        .onFailure(cause -> System.err.println("Warning: failed to register cluster locally: " + cause.message()));
     }
 
-    /// Package-visible so the registry step is pinnable without writing the operator's real
-    /// `~/.aether/clusters.toml` — the same reason [#managementEndpoint] is.
+    /// #584 — the cluster just bootstrapped becomes the ACTIVE context. `ClusterRegistry.add` keeps
+    /// whatever context was current (that is its contract, pinned by `ClusterRegistryTest`), so a
+    /// fresh bootstrap used to leave `[current] context` on whatever was active before — in the live
+    /// case a cluster dead for a month — and the first context-routed command afterwards dialled the
+    /// wrong cluster with a bare `ConnectException`. Package-visible so the step is pinnable without
+    /// writing the operator's real `~/.aether/clusters.toml` — the same reason [#managementEndpoint] is.
     static Result<ClusterRegistry> registerAndActivate(ClusterRegistry registry,
                                                        String name,
                                                        String endpoint,
                                                        Option<String> apiKeyEnv) {
-        return success(registry.add(name, endpoint, apiKeyEnv));
+        return registry.add(name, endpoint, apiKeyEnv)
+                       .use(name);
     }
 
     private static String managementScheme(BootstrapContext ctx) {
