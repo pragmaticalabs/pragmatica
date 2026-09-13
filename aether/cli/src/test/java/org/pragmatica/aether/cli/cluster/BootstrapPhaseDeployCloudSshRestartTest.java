@@ -1173,4 +1173,94 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                          + "Bare 'true' returns the moment SSH accepts a session, before docker is installed.");
         }
     }
+
+    // --- #296: the re-launch must carry each node's OWN role, never a literal `core`. The docker
+    // label `aether-role` is what operators and tooling filter tiers by, and the `AETHER_ROLE` env the
+    // same argv emits is the SWIM role label — the only worker classifier — so a literal `core` would
+    // not merely mislabel a worker, it would reclassify it. The role is read from the node id the
+    // provision phase minted (`<source>-<role>-<index>`), the same convention the cleanup ledger
+    // already relies on (`BootstrapPhaseProvision.extractRole`). ---
+
+    private static BootstrapContext contextWithOneNodePerRole(SourceProfile source, Map<String, RuntimeProfile> runtimes) {
+        var config = configWithShortTimeout(source, runtimes);
+        var nodes = List.of(
+            ProvisionedNode.provisionedNode("eu-1-core-0", "100", "203.0.113.10"),
+            ProvisionedNode.provisionedNode("eu-1-worker-0", "101", "203.0.113.11"),
+            ProvisionedNode.provisionedNode("eu-1-spot-0", "102", "203.0.113.12"));
+        var addresses = List.of(
+            NodeAddress.nodeAddress("eu-1-core-0", "203.0.113.10", Option.empty()),
+            NodeAddress.nodeAddress("eu-1-worker-0", "203.0.113.11", Option.empty()),
+            NodeAddress.nodeAddress("eu-1-spot-0", "203.0.113.12", Option.empty()));
+        var state = BootstrapState.initialState(CLUSTER_NAME, "h", "now").withClusterSecret(CLUSTER_SECRET);
+        return BootstrapContext.bootstrapContext(config, state, nodes, addresses)
+                               .withClusterSecret(CLUSTER_SECRET);
+    }
+
+    private static Map<String, String> restartCommandsByHost(BootstrapContext ctx) {
+        var commands = new ConcurrentHashMap<String, String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            if (!"cloud-init status --wait".equals(command)) { commands.put(host, command); }
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            sourceNameOrDefault("eu-1"),
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isSuccess(), () -> "deploy must succeed; got: " + result);
+        assertEquals(3, commands.size(), "one restart command per node");
+        return commands;
+    }
+
+    @Test
+    void deployCloudSource_containerRestart_labelsAndEnvsEachNodeWithItsOwnRole() {
+        var commands = restartCommandsByHost(contextWithOneNodePerRole(cloudSource(), Map.of()));
+
+        assertTrue(commands.get("203.0.113.10").contains("-l aether-role=core"), commands.get("203.0.113.10"));
+        assertTrue(commands.get("203.0.113.10").contains("-e AETHER_ROLE=\"core\""), commands.get("203.0.113.10"));
+        assertTrue(commands.get("203.0.113.11").contains("-l aether-role=worker"),
+                   () -> "a worker's re-launch must carry the worker label, not `core`: " + commands.get("203.0.113.11"));
+        assertTrue(commands.get("203.0.113.11").contains("-e AETHER_ROLE=\"worker\""),
+                   () -> "AETHER_ROLE is the SWIM role label — `core` here would reclassify the worker: " + commands.get("203.0.113.11"));
+        assertTrue(commands.get("203.0.113.12").contains("-l aether-role=spot"), commands.get("203.0.113.12"));
+        assertTrue(commands.get("203.0.113.12").contains("-e AETHER_ROLE=\"spot\""), commands.get("203.0.113.12"));
+    }
+
+    @Test
+    void deployCloudSource_jvmRestart_envsEachNodeWithItsOwnRole() {
+        var runtimes = Map.of("default",
+                              RuntimeProfile.runtimeProfile("default", RuntimeType.JVM, Option.empty(), Option.empty()));
+        var commands = restartCommandsByHost(contextWithOneNodePerRole(cloudSource(), runtimes));
+
+        assertTrue(commands.get("203.0.113.10").contains("'AETHER_ROLE=core'"), commands.get("203.0.113.10"));
+        assertTrue(commands.get("203.0.113.11").contains("'AETHER_ROLE=worker'"),
+                   () -> "the JVM env file must carry the worker's own role: " + commands.get("203.0.113.11"));
+        assertTrue(commands.get("203.0.113.12").contains("'AETHER_ROLE=spot'"), commands.get("203.0.113.12"));
+    }
+
+    @Test
+    void deployCloudSource_failsLoudly_whenANodeIdEncodesNoRole() {
+        var config = configWithShortTimeout(cloudSource(), Map.of());
+        var nodes = List.of(ProvisionedNode.provisionedNode("eu-1-mystery", "100", "203.0.113.10"));
+        var addresses = List.of(NodeAddress.nodeAddress("eu-1-mystery", "203.0.113.10", Option.empty()));
+        var state = BootstrapState.initialState(CLUSTER_NAME, "h", "now").withClusterSecret(CLUSTER_SECRET);
+        var ctx = BootstrapContext.bootstrapContext(config, state, nodes, addresses).withClusterSecret(CLUSTER_SECRET);
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, sshConfig) -> Result.success("");
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            sourceNameOrDefault("eu-1"),
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isFailure(),
+                   "a node id that names no role is an invariant violation of this CLI's own minting; "
+                   + "defaulting it to `core` is exactly the #296 defect, so it must refuse and say so");
+        assertTrue(result.fold(Cause::message, _ -> "").contains("eu-1-mystery"),
+                   () -> "the refusal must name the node: " + result);
+    }
 }
