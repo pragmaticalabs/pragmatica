@@ -32,5 +32,7 @@
   and with security on a CORRECT key is still refused by the overlay's own validation (401 clears,
   then the router 404s and `r.ok` is false). That is the pre-existing dashboard-versus-versioned-API
   drift, not this ticket; against Forge — where the defect was reported — the port answers 200 and
-  the overlay no longer appears. [unverified: no live Forge run in this round — the box was over the
-  process gate; the behaviour follows from `ForgeRequestHandler` having no credential check]
+  the overlay no longer appears. [verified: live Forge run, 2026-09-14 — headless Chrome DOM dump
+  against this build shows the overlay `display:none` with the nodes rendered, and the same dump
+  against a build of the base dashboard shows `display: flex` with nothing rendered; bare
+  `GET /api/nodes/status` answered 200 on both]
