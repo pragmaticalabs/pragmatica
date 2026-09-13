@@ -257,11 +257,20 @@ class SmtpSession {
         }
     }
 
-    /// Called when an exception occurs on the channel.
+    /// Called when an exception occurs on the channel — a transport error or a malformed reply.
+    /// The channel is closed with the promise: a reply this client cannot parse is not a reason to
+    /// keep the socket (review of #1075, SF-2).
     void onException(Throwable cause) {
         if (state != State.DONE) {
-            promise.fail(new SmtpError.ConnectionFailed("Connection error: " + cause.getMessage()));
-            state = State.DONE;
+            failSession(new SmtpError.ConnectionFailed("Connection error: " + cause.getMessage()));
+        }
+    }
+
+    /// Called when the command timeout fires: fails the promise and closes the channel, so a
+    /// timed-out session does not leave its socket open until the client is closed.
+    void onTimeout(SmtpError.Timeout timeout) {
+        if (state != State.DONE) {
+            failSession(timeout);
         }
     }
 
@@ -277,8 +286,11 @@ class SmtpSession {
         option(channel).filter(Channel::isOpen).onPresent(Channel::close);
     }
 
+    /// A positive completion is 2yz. A 3yz where a completion is expected (`354` is matched
+    /// exactly where it belongs, at DATA) is a reply this client cannot act on and is refused,
+    /// not treated as success (review of #1075, NIT-1).
     private static boolean isSuccess(int code) {
-        return code >= 200 && code < 400;
+        return code >= 200 && code < 300;
     }
 
     private String extractLocalHostname() {

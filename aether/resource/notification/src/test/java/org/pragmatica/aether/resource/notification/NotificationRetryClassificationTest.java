@@ -99,6 +99,30 @@ class NotificationRetryClassificationTest {
             assertThat(smtpAttempts(new SmtpError.Timeout("no banner"))).isEqualTo(3);
         }
 
+        /// NIT-2 (review of #1075): `DeliveryFailed` carries the backend's last cause, so a caller's
+        /// own retry policy can tell a terminal refusal from an exhausted transient schedule.
+        @Test
+        void deliveryFailed_carriesTheBackendsClassification() {
+            var sender = new SmtpNotificationSender(failingClient(new AtomicInteger(), new SmtpError.Rejected(550, "no such user")),
+                                                    THREE_QUICK_ATTEMPTS);
+
+            sender.send(EMAIL)
+                  .await()
+                  .onSuccess(_ -> fail("delivery must fail"))
+                  .onFailure(cause -> {
+                      assertThat(cause.isTerminal()).as("a 550 stays terminal through DeliveryFailed").isTrue();
+                      assertThat(cause.source().isPresent()).isTrue();
+                  });
+
+            var exhausted = new SmtpNotificationSender(failingClient(new AtomicInteger(), new SmtpError.Rejected(451, "try again")),
+                                                       THREE_QUICK_ATTEMPTS);
+
+            exhausted.send(EMAIL)
+                     .await()
+                     .onSuccess(_ -> fail("delivery must fail"))
+                     .onFailure(cause -> assertThat(cause.isTransient()).as("an exhausted 4yz schedule stays transient").isTrue());
+        }
+
         @Test
         void exhaustedTransientFailure_surfacesAsDeliveryFailed() {
             var attempts = new AtomicInteger();

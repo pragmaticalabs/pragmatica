@@ -29,18 +29,20 @@ import org.pragmatica.lang.Cause;
 /// failures with no reply — a dropped connection, a timeout — are transient; a local TLS setup
 /// failure is permanent.
 public sealed interface SmtpError extends Cause {
-    /// A refusal carrying the server's reply code; the code alone decides permanence.
+    /// A refusal carrying the server's reply code; the code alone decides permanence: 4yz is
+    /// transient, everything else refused — 5yz, and a 3yz where a completion was expected (a
+    /// challenge this client cannot answer) — is terminal.
     sealed interface ReplyRefused extends SmtpError {
         int code();
 
         @Override
         default boolean isTerminal() {
-            return code() >= 500;
+            return !isTransient();
         }
 
         @Override
         default boolean isTransient() {
-            return code() < 500;
+            return code() >= 400 && code() < 500;
         }
     }
 

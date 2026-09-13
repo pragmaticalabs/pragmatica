@@ -17,6 +17,7 @@ package org.pragmatica.net.smtp;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.function.Supplier;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -60,22 +61,38 @@ public interface SmtpClient extends AsyncCloseable {
     static SmtpClient smtpClient(SmtpConfig config) {
         var eventLoop = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
 
-        return new SmtpClientImpl(config, eventLoop, true);
+        return new SmtpClientImpl(config, eventLoop, true, SmtpClientImpl::buildInsecureSslContext);
     }
 
     /// Create an SMTP client sharing the given event loop group.
     /// The event loop will NOT be shut down when the client is closed.
     static SmtpClient smtpClient(SmtpConfig config, EventLoopGroup eventLoopGroup) {
-        return new SmtpClientImpl(config, eventLoopGroup, false);
+        return new SmtpClientImpl(config, eventLoopGroup, false, SmtpClientImpl::buildInsecureSslContext);
+    }
+
+    /// Test seam: a client whose TLS context comes from the caller, so a test can make the context
+    /// FAIL to build and observe that the send fails closed. Package-private; production goes
+    /// through the two factories above.
+    static SmtpClient smtpClient(SmtpConfig config, EventLoopGroup eventLoopGroup, Supplier<Result<SslContext>> tlsContext) {
+        return new SmtpClientImpl(config, eventLoopGroup, false, tlsContext);
     }
 }
 
-record SmtpClientImpl(SmtpConfig config, EventLoopGroup eventLoopGroup, boolean ownsEventLoop) implements SmtpClient {
+record SmtpClientImpl(SmtpConfig config,
+                      EventLoopGroup eventLoopGroup,
+                      boolean ownsEventLoop,
+                      Supplier<Result<SslContext>> tlsContext) implements SmtpClient {
     private static final int MAX_LINE_LENGTH = 512;
 
+    /// A TLS mode whose context cannot be built FAILS the send, before a connection is opened. The
+    /// previous shape logged the failure, dropped it and went on WITHOUT a context — in STARTTLS
+    /// mode the session then skipped STARTTLS and sent AUTH PLAIN in cleartext, and the delivery
+    /// succeeded (review of #1075, BLOCKING-1). A TLS setup failure is terminal: the same
+    /// configuration produces the same failure.
     @Override
     public Promise<String> send(SmtpMessage message) {
-        return Promise.promise(promise -> initiateSend(message, promise));
+        return buildSslContext().fold(cause -> Promise.failure(cause),
+                                      sslContext -> Promise.promise(promise -> initiateSend(message, promise, sslContext)));
     }
 
     @Override
@@ -88,8 +105,7 @@ record SmtpClientImpl(SmtpConfig config, EventLoopGroup eventLoopGroup, boolean 
                                                         .addListener(_ -> promise.succeed(unit())));
     }
 
-    private void initiateSend(SmtpMessage message, Promise<String> promise) {
-        var sslContext = buildSslContext();
+    private void initiateSend(SmtpMessage message, Promise<String> promise, Option<SslContext> sslContext) {
         var session = new SmtpSession(config, message, promise, sslContext);
         var bootstrap = new Bootstrap().group(eventLoopGroup)
                                        .channel(NioSocketChannel.class)
@@ -102,10 +118,12 @@ record SmtpClientImpl(SmtpConfig config, EventLoopGroup eventLoopGroup, boolean 
         var address = new InetSocketAddress(config.host(), config.port());
 
         bootstrap.connect(address).addListener((ChannelFuture future) -> handleConnect(future, session));
+        // The timeout goes through the session so the channel is closed with the promise (review
+        // of #1075, SF-2): failing the promise alone left the socket open until the client closed.
         promise.async(config.commandTimeout(),
-                      pending -> pending.fail(new SmtpError.Timeout("SMTP session timed out after " + config.commandTimeout()
-                                                                                                            .millis()
-                                                                   + "ms")));
+                      _ -> session.onTimeout(new SmtpError.Timeout("SMTP session timed out after " + config.commandTimeout()
+                                                                                                        .millis()
+                                                                  + "ms")));
     }
 
     private static void handleConnect(ChannelFuture future, SmtpSession session) {
@@ -119,22 +137,22 @@ record SmtpClientImpl(SmtpConfig config, EventLoopGroup eventLoopGroup, boolean 
         session.onException(future.cause());
     }
 
-    private Option<SslContext> buildSslContext() {
+    private Result<Option<SslContext>> buildSslContext() {
         if (config.tlsMode() == SmtpTlsMode.NONE) {
-            return none();
+            return Result.success(none());
         }
 
-        return buildInsecureSslContext();
+        return tlsContext.get()
+                         .onFailure(cause -> log.warn("Failed to build SSL context; refusing to send without TLS: {}",
+                                                      cause.message()))
+                         .map(Option::some);
     }
 
-    private static Option<SslContext> buildInsecureSslContext() {
+    static Result<SslContext> buildInsecureSslContext() {
         return Result.lift(e -> new SmtpError.TlsSetupFailed(e.getMessage()),
                            () -> SslContextBuilder.forClient()
                                                   .trustManager(InsecureTrustManagerFactory.INSTANCE)
-                                                  .build())
-                     .onFailure(cause -> log.warn("Failed to build SSL context: {}",
-                                                  cause.message()))
-                     .option();
+                                                  .build());
     }
 }
 

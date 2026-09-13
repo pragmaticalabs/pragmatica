@@ -42,7 +42,7 @@ final class SmtpNotificationSender implements NotificationSender, AsyncCloseable
 
         return retry.execute(() -> client.send(message)
                                          .map(response -> notificationResult(response, "smtp")))
-                    .mapError(cause -> new NotificationError.DeliveryFailed("SMTP delivery failed: " + cause.message()));
+                    .mapError(cause -> new NotificationError.DeliveryFailed("SMTP delivery failed: " + cause.message(), cause));
     }
 
     static SmtpMessage toSmtpMessage(Notification.Email email) {
