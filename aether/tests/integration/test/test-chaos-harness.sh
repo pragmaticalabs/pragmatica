@@ -640,6 +640,16 @@ run_in "$d" "$CLUSTER_LIB" _cloud_full_drain_recover
 check "$d" "K3 reaper missing -> rc 2 (preflight), nothing destroyed" \
     eval '[ "$(rc_of "$d")" = 2 ] && [ ! -f "$d/aether-calls" ] && has "$d" "not found or not executable (resolved path: /nonexistent/cloud-reaper.sh) — nothing destroyed"'
 
+d=$(new_case); k_setup "$d"; echo 'BOOTSTRAP_CLUSTER_NAME=""' >> "$d/setup.sh"
+run_in "$d" "$CLUSTER_LIB" _cloud_full_drain_recover
+check "$d" "K4 no cluster name -> rc 2 (preflight), the reaper never runs" \
+    eval '[ "$(rc_of "$d")" = 2 ] && [ ! -f "$d/reaper-args" ] && has "$d" "BOOTSTRAP_CLUSTER_NAME unset — refusing an unscoped reap"'
+
+d=$(new_case); k_setup "$d"; echo "export CLUSTER_ID=zz" >> "$d/setup.sh"
+run_in "$d" "$CLUSTER_LIB" _cloud_full_drain_recover
+check "$d" "K5 unrecognized CLUSTER_ID -> rc 2 (preflight), the reaper never runs" \
+    eval '[ "$(rc_of "$d")" = 2 ] && [ ! -f "$d/reaper-args" ] && has "$d" "unrecognized CLUSTER_ID='"'"'zz'"'"'" && has "$d" "nothing destroyed"'
+
 echo "== W. every reap in the harness goes through positive per-VM confirmation (CTO ruling 3)"
 
 d=$(new_case)
@@ -673,7 +683,7 @@ nodeid_vms() { # the same two VMs as _cloud_running_vm_ips lists them (name stat
 d=$(new_case); r_setup "$d" -unset-; drain_vms "$d" "0|${UNIT_FAILED_2}" "0|${UNIT_FAILED_2}"
 run_in "$d" "$CLUSTER_LIB" _cloud_reap_after_confirmed_drain "W2" 0
 check "$d" "W2 the gate with CLOUD_RUNTIME unset -> rc 3, reap never called" \
-    eval '[ "$(rc_of "$d")" = 3 ] && [ ! -f "$d/reap-calls" ] && has "$d" "W2: CLOUD_RUNTIME is '"'"'<unset>'"'"' — cannot read VM drain state, refusing to reap or rebootstrap"'
+    eval '[ "$(rc_of "$d")" = 3 ] && [ ! -f "$d/reap-calls" ] && [ ! -f "$d/hcloud-calls" ] && ! has "$d" "full self-drain of" && has "$d" "W2: CLOUD_RUNTIME is '"'"'<unset>'"'"' — cannot read VM drain state, refusing to reap or rebootstrap"'
 
 d=$(new_case); r_setup "$d" jvm; drain_vms "$d" "0|${UNIT_FAILED_2}" none; nodeid_vms "$d"; resp "$d/$TOPO_PATH_KEY" 0 "$TOPO_0"
 run_in "$d" "$CLUSTER_LIB" restart_all_nodes
@@ -770,6 +780,15 @@ run_in "$d" "$CLUSTER_LIB" case_wfv_leak
 check "$d" "D7 a value read by one wait is not visible to a later wait without a reader" \
     eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "first (reader) (" && has "$d" "second (no reader) (timed out"'
 
+case_wfv_leak_on_timeout() {
+    wait_for "first (reader, times out)" '[ "$WAIT_FOR_VALUE" -eq 5 ]' 4 2 "echo 4"
+    wait_for "second (no reader)" '[ "${WAIT_FOR_VALUE:-}" = 4 ]' 4 2
+}
+d=$(new_case); echo docker > "$d/env"
+run_in "$d" "$CLUSTER_LIB" case_wfv_leak_on_timeout
+check "$d" "D8 a value read by a wait that TIMED OUT is not visible to a later wait without a reader" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "first (reader, times out) (timed out" && has "$d" "second (no reader) (timed out"'
+
 echo "== E. S19 tier 2 (_confirm_survivor_departure) on cloud"
 
 SURV1_IP="203.0.113.10"   # node-1 -> hetzner-eu-core-0 in fixtures/bootstrap-state.json
@@ -852,6 +871,13 @@ d=$(new_case); tier2_setup "$d" jvm; echo 'rm -f "$SURVIVORS_FILE"' >> "$d/setup
 run_in "$d" "$SELF_DRAIN_SUITE" case_h2
 check "$d" "F5 no survivors recorded -> FAIL, not a zero-assertion pass" \
     eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "Survivors file missing entries"'
+
+d=$(new_case); echo docker > "$d/env"
+printf 'SURVIVORS_FILE="$STUB_DIR/survivors"\nprintf "aether-b-node-4\\naether-b-node-5\\n" > "$SURVIVORS_FILE"\nexport AETHER_SSH_USER=root\n' > "$d/setup.sh"
+resp "$d/ssh-chaos-harness-test" 0 '2\n'
+run_in "$d" "$SELF_DRAIN_SUITE" case_h2
+check "$d" "F6 docker/remote: exit code 2 read by docker inspect is attributed to DrainProcedure's Runtime.halt(2)" \
+    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "FAILS=0;" && has "$d" "Survivor aether-b-node-4 exit code is 2 (Runtime.halt(2) via DrainProcedure)" && ! has "$d" "SelfDrainCoordinator"'
 
 echo "== G. exit-code step disposition and S20 step name"
 
