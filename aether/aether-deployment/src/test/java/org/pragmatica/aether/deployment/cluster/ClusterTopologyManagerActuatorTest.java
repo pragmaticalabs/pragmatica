@@ -33,10 +33,12 @@ import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 
 import java.io.Serializable;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -64,6 +66,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -99,6 +102,11 @@ class ClusterTopologyManagerActuatorTest {
     private RecordingClusterStore clusterStore;
     private ClusterTopologyManager ctm;
     private final CopyOnWriteArrayList<NodeId> drainCommandSinkCalls = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<NodeId> drainCommandClearCalls = new CopyOnWriteArrayList<>();
+    /// #1050 — the reconciler's drain-decision inputs as the CTM re-reads them at grace expiry. Mutable
+    /// so a test can move the cluster between the drain and the expiry, which is the defect's shape.
+    private final AtomicReference<Set<NodeId>> coreCountedMembers = new AtomicReference<>(Set.of());
+    private final AtomicInteger configuredCoreCount = new AtomicInteger(5);
 
     @BeforeEach
     void setUp() {
@@ -112,25 +120,35 @@ class ClusterTopologyManagerActuatorTest {
         lifecycleManager = new RecordingLifecycleManager();
         clusterStore = new RecordingClusterStore();
         clusterStore.seed(5);
+        ctm = ctmWithDrainGrace(AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT);
+    }
+
+    /// The production-wired CTM with a chosen drain grace (`provisioningTimeout` schedules the
+    /// grace-terminate backstop). Shared by `setUp` and the #1050 grace tests, which need a short grace
+    /// to reach expiry through the real `drainNode` → scheduler path rather than a direct call.
+    private ClusterTopologyManager ctmWithDrainGrace(TimeSpan drainGrace) {
         var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
                                                       timeSpan(1).millis(),
                                                       AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
                                                       AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
-                                                      AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
+                                                      drainGrace,
                                                       timeSpan(0).millis())
                                             .unwrap();
-        ctm = ClusterTopologyManager.clusterTopologyManager(observer,
-                                                            lifecycleManager,
-                                                            autoHeal,
-                                                            DeploymentMap.deploymentMap(),
-                                                            snapshotSource,
-                                                            clusterStore::current,
-                                                            clusterStore::apply,
-                                                            () -> ClusterPhase.NORMAL,
-                                                            drainCommandSinkCalls::add,
-                                                            _ -> {},
-                                                            Option::none,
-                                                            clusterStore::autoHealState);
+
+        return ClusterTopologyManager.clusterTopologyManager(observer,
+                                                             lifecycleManager,
+                                                             autoHeal,
+                                                             DeploymentMap.deploymentMap(),
+                                                             snapshotSource,
+                                                             clusterStore::current,
+                                                             clusterStore::apply,
+                                                             () -> ClusterPhase.NORMAL,
+                                                             drainCommandSinkCalls::add,
+                                                             drainCommandClearCalls::add,
+                                                             Option::none,
+                                                             clusterStore::autoHealState,
+                                                             coreCountedMembers::get,
+                                                             configuredCoreCount::get);
     }
 
     @Test
@@ -571,6 +589,133 @@ class ClusterTopologyManagerActuatorTest {
             assertThat(appender.capturedWarns())
                     .as("a failed provision created no server, so it must claim no instance id")
                     .noneMatch(msg -> msg.contains("instanceId="));
+        }
+    }
+
+    /// #1050 — a surplus drain is decided while the cluster has a surplus, but its grace-terminate reap
+    /// fires `provisioningTimeout` later, by which time nodes may have died or leadership may have moved.
+    /// Every test here drives the REAL path — `drainNode` schedules the backstop on the shared scheduler
+    /// with a short grace — and moves the cluster between the drain and the expiry, which is the defect's
+    /// shape. The DRAIN-command clear is the backstop's LAST action, so awaiting it proves the expiry ran
+    /// before a "not reaped" assertion is read; without that control a zero terminate count would equally
+    /// describe a backstop that never fired.
+    @Nested
+    class DrainGraceRecheck {
+        private static final NodeId PEER_E = nodeId("node-e").unwrap();
+        private static final Set<NodeId> SPARE_FIVE = Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_E);
+
+        private ClusterTopologyManager shortGraceCtm;
+
+        @BeforeEach
+        void activateShortGraceCtm() {
+            shortGraceCtm = ctmWithDrainGrace(timeSpan(150).millis());
+            shortGraceCtm.activate();
+        }
+
+        /// The no-regression half: on a stable cluster the drained target is DEPARTING and uncounted, and
+        /// the five members that remain still cover the configured five, so the surplus trim completes.
+        @Test
+        void surplusDrain_graceExpiry_reapsTarget_whenClusterCanStillSpareIt() {
+            coreCountedMembers.set(SPARE_FIVE);
+
+            shortGraceCtm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            awaitDrainCommandCleared(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds())
+                    .as("a surplus trim on a cluster that can still spare the node reaps it")
+                    .containsExactly(PEER_D);
+        }
+
+        /// The observed shape, quorum still held: one member dies during the grace, leaving four of five.
+        @Test
+        void surplusDrain_graceExpiry_keepsTarget_whenClusterFellIntoDeficit() {
+            coreCountedMembers.set(SPARE_FIVE);
+
+            shortGraceCtm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            coreCountedMembers.set(Set.of(SELF, PEER_A, PEER_B, PEER_C));
+            awaitDrainCommandCleared(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds())
+                    .as("a surplus decision gone stale by expiry (deficit) must not reap")
+                    .isEmpty();
+        }
+
+        /// The observed log: grace expiry fired one second after this CTM was deactivated.
+        @Test
+        void surplusDrain_graceExpiry_keepsTarget_whenIssuerNoLongerLeader() {
+            coreCountedMembers.set(SPARE_FIVE);
+
+            shortGraceCtm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            shortGraceCtm.deactivate();
+            awaitDrainCommandCleared(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds())
+                    .as("a deposed issuer's backstop must not reap, even with spare capacity")
+                    .isEmpty();
+        }
+
+        /// The observed counts: `clusterMembershipCount=2 quorumSafe=false` before expiry.
+        @Test
+        void surplusDrain_graceExpiry_keepsTarget_whenNotQuorumSafe() {
+            coreCountedMembers.set(SPARE_FIVE);
+
+            shortGraceCtm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            coreCountedMembers.set(Set.of(SELF, PEER_A));
+            awaitDrainCommandCleared(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds())
+                    .as("a surplus trim must not reap once the remaining members are below quorum")
+                    .isEmpty();
+        }
+
+        /// The scope guard: a join-grace zombie is reaped DURING the deficit its replacement was meant to
+        /// fill, and nothing else reaps it, so the re-check must not apply to it.
+        @Test
+        void joinGraceReapDrain_graceExpiry_reapsZombie_evenDuringDeficit() {
+            coreCountedMembers.set(Set.of(SELF, PEER_A, PEER_B));
+
+            shortGraceCtm.drainNode(PEER_D, DrainReason.JOIN_GRACE_REAP).await();
+            awaitDrainCommandCleared(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds())
+                    .as("a JOIN_GRACE_REAP zombie has no other reaper and must be reaped regardless of deficit")
+                    .containsExactly(PEER_D);
+        }
+
+        @Test
+        void graceReapVerdict_spareCapacity_reaps() {
+            assertThat(ClusterTopologyManagerRecord.graceReapVerdict(true, SPARE_FIVE, 5, PEER_D))
+                    .isEqualTo(ClusterTopologyManagerRecord.GraceReapVerdict.REAP);
+        }
+
+        @Test
+        void graceReapVerdict_deposedIssuer_isNotLeader_evenWithSpareCapacity() {
+            assertThat(ClusterTopologyManagerRecord.graceReapVerdict(false, SPARE_FIVE, 5, PEER_D))
+                    .isEqualTo(ClusterTopologyManagerRecord.GraceReapVerdict.NOT_LEADER);
+        }
+
+        @Test
+        void graceReapVerdict_belowQuorum_isNotQuorumSafe() {
+            assertThat(ClusterTopologyManagerRecord.graceReapVerdict(true, Set.of(SELF, PEER_A), 5, PEER_D))
+                    .isEqualTo(ClusterTopologyManagerRecord.GraceReapVerdict.NOT_QUORUM_SAFE);
+        }
+
+        @Test
+        void graceReapVerdict_quorateButShort_isDeficit() {
+            assertThat(ClusterTopologyManagerRecord.graceReapVerdict(true, Set.of(SELF, PEER_A, PEER_B, PEER_C), 5, PEER_D))
+                    .isEqualTo(ClusterTopologyManagerRecord.GraceReapVerdict.DEFICIT);
+        }
+
+        /// A target that refuted its drain is counted again; it must not count toward covering its own removal.
+        @Test
+        void graceReapVerdict_targetStillCounted_doesNotCoverItsOwnRemoval() {
+            assertThat(ClusterTopologyManagerRecord.graceReapVerdict(true, Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D), 5, PEER_D))
+                    .isEqualTo(ClusterTopologyManagerRecord.GraceReapVerdict.DEFICIT);
+        }
+
+        private void awaitDrainCommandCleared(NodeId target) {
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> drainCommandClearCalls.contains(target));
         }
     }
 

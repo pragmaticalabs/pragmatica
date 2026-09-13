@@ -32,6 +32,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -113,7 +114,9 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
                                                              _ -> {},
                                                              _ -> {},
                                                              Option::none,
-                                                             autoHealStateReader);
+                                                             autoHealStateReader,
+                                                             Set::of,
+                                                             () -> 0);
     }
 
     /// Condition 1 — a fresh/empty KV (no operator has ever touched the flag; also the state of

@@ -6,9 +6,10 @@ package org.pragmatica.aether.deployment.cluster;
 
 /// Membership v2 / E2 — drain-action reason used by both [`ClusterTopologyManager#drainNode`]
 /// (leader-pinned, operator/auto-remediation reasons) and the §8.2 unified [`DrainProcedure`]
-/// (node-local, local-trigger reasons). Observability-only at this layer: surfaces *why* a
-/// drain was started so audit/log/metrics consumers can distinguish operator-initiated from
-/// auto-remediation and local-trigger flows.
+/// (node-local, local-trigger reasons). Surfaces *why* a drain was started so audit/log/metrics
+/// consumers can distinguish operator-initiated from auto-remediation and local-trigger flows. One
+/// behavioural reading exists (#1050): [`#isSurplusTrim`] decides whether the CTM's drain-grace
+/// backstop re-checks that the cluster can still spare the node before it reaps.
 ///
 /// **Leader-pinned (drainNode) reasons**:
 /// - [`#OPERATOR_COMMAND`] — explicit operator-initiated scale-down or decommission.
@@ -41,5 +42,19 @@ public enum DrainReason {
     JOIN_GRACE_REAP,
     QUORUM_LOSS,
     COMMANDED,
-    CORE_ABSENCE
+    CORE_ABSENCE;
+
+    /// Whether this reason trims a SURPLUS — a node removed only because the cluster had more than it
+    /// needed. Such a decision goes stale when the cluster later falls short, so the drain-grace
+    /// backstop re-checks before reaping (#1050). `JOIN_GRACE_REAP` is deliberately NOT a surplus
+    /// trim: its target is a never-joined zombie that is not a member, is typically reaped DURING the
+    /// deficit it was provisioned to fill, and has no other reaper (a never-announced member emits no
+    /// `NodeRemoved`), so gating it on the deficit would orphan it. `OPERATOR_COMMAND` is an explicit
+    /// operator decision and is reaped as issued.
+    public boolean isSurplusTrim() {
+        return switch (this) {
+            case OVERPROVISION_SCALE_DOWN, OVERPROVISION_PARTITION_HEAL -> true;
+            case OPERATOR_COMMAND, JOIN_GRACE_REAP, QUORUM_LOSS, COMMANDED, CORE_ABSENCE -> false;
+        };
+    }
 }

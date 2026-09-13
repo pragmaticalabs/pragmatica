@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.IntSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -103,7 +104,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     Consumer<NodeId> drainCommandClear,
                                     Supplier<Option<TomlDocument>> resolvedLocalConfig,
                                     AtomicBoolean workerReconcileInFlight,
-                                    AtomicBoolean workerReconcilePending) implements ClusterTopologyManager {
+                                    AtomicBoolean workerReconcilePending,
+                                    Supplier<Set<NodeId>> coreCountedMembers,
+                                    IntSupplier configuredCoreCount) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
@@ -129,14 +132,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                             clock,
                                             _ -> {},
                                             _ -> {},
-                                            Option::none);
+                                            Option::none,
+                                            Set::of,
+                                            () -> 0);
     }
 
     /// Membership v2 / B5b — production factory wiring the leader's DRAIN command channel.
     /// `drainCommandSink` enqueues the target into the `DrainCommandRegistry` (so the leader's
     /// outbound ping carries the target in its global `drainNodes` set and the target self-drains via its
-    /// `DrainProcedure`); `drainCommandClear` removes the target after the grace-terminate
-    /// backstop reaps the container.
+    /// `DrainProcedure`); `drainCommandClear` removes the target when the grace-terminate
+    /// backstop fires, whether or not it reaps (#1050).
     ///
     /// #685 review round 1 NOTE 4 — `autoHealStateReader` (#685) is a REQUIRED trailing parameter,
     /// not defaulted: a production wiring site that omitted it would silently get permanently-enabled
@@ -154,7 +159,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                      LongSupplier clock,
                                                                      Consumer<NodeId> drainCommandSink,
                                                                      Consumer<NodeId> drainCommandClear,
-                                                                     Supplier<Option<AutoHealStateValue>> autoHealStateReader) {
+                                                                     Supplier<Option<AutoHealStateValue>> autoHealStateReader,
+                                                                     Supplier<Set<NodeId>> coreCountedMembers,
+                                                                     IntSupplier configuredCoreCount) {
         return clusterTopologyManagerRecord(observer,
                                             lifecycleManager,
                                             config,
@@ -167,7 +174,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                             drainCommandSink,
                                             drainCommandClear,
                                             Option::none,
-                                            autoHealStateReader);
+                                            autoHealStateReader,
+                                            coreCountedMembers,
+                                            configuredCoreCount);
     }
 
     /// Canonical factory. `autoHealStateReader` (#685) is the durable KV read backing
@@ -187,7 +196,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                      Consumer<NodeId> drainCommandSink,
                                                                      Consumer<NodeId> drainCommandClear,
                                                                      Supplier<Option<TomlDocument>> resolvedLocalConfig,
-                                                                     Supplier<Option<AutoHealStateValue>> autoHealStateReader) {
+                                                                     Supplier<Option<AutoHealStateValue>> autoHealStateReader,
+                                                                     Supplier<Set<NodeId>> coreCountedMembers,
+                                                                     IntSupplier configuredCoreCount) {
         return new ClusterTopologyManagerRecord(observer,
                                                 lifecycleManager,
                                                 config,
@@ -210,7 +221,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 Option.option(drainCommandClear).or(_ -> {}),
                                                 Option.option(resolvedLocalConfig).or((Supplier<Option<TomlDocument>>) Option::none),
                                                 new AtomicBoolean(false),
-                                                new AtomicBoolean(false));
+                                                new AtomicBoolean(false),
+                                                coreCountedMembers,
+                                                configuredCoreCount);
     }
 
     private long nowMs() {
@@ -1199,34 +1212,132 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// which self-drains (finishes in-flight requests) via its `DrainProcedure`. A grace-terminate
     /// backstop is scheduled after `autoHealConfig.provisioningTimeout()`: it calls
     /// `lifecycleManager.terminateNode(target)` to reap the container (prevents Docker
-    /// restart-loop / cloud lingering when the target never self-exits) AND clears the target from
-    /// the registry (`drainCommandClear`). `reason` is observability-only. Returns on the enqueue
-    /// (the drain itself proceeds asynchronously via the heartbeat + backstop).
+    /// restart-loop / cloud lingering when the target never self-exits) — for a surplus-trim `reason`
+    /// only when [#graceReapVerdict] still allows it (#1050) — AND clears the target from the registry
+    /// (`drainCommandClear`). Returns on the enqueue (the drain itself proceeds asynchronously via the
+    /// heartbeat + backstop).
     @Override
     public Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
         log.info("CTM v2: drainNode requested (target={}, reason={}) — enqueuing DRAIN command", targetNodeId, reason);
         drainCommandSink.accept(targetNodeId);
-        scheduleGraceTerminate(targetNodeId);
+        scheduleGraceTerminate(targetNodeId, reason);
 
         return Promise.success(unit());
     }
 
-    /// Backstop reaper: after the grace period, terminate the container and clear the DRAIN
-    /// command. Idempotent — `terminateNode` is safe to call on an already-exited node, and
-    /// `drainCommandClear` no-ops on an absent target.
+    /// Backstop reaper: after the grace period, reap the container (subject to [#graceReapVerdict] for a
+    /// surplus trim) and clear the DRAIN command. Idempotent — `terminateNode` is safe to call on an
+    /// already-exited node, and `drainCommandClear` no-ops on an absent target.
     @Contract
-    private void scheduleGraceTerminate(NodeId targetNodeId) {
-        SharedScheduler.schedule(() -> graceTerminate(targetNodeId), autoHealConfig.provisioningTimeout());
+    private void scheduleGraceTerminate(NodeId targetNodeId, DrainReason reason) {
+        SharedScheduler.schedule(() -> graceTerminate(targetNodeId, reason), autoHealConfig.provisioningTimeout());
+    }
+
+    /// Grace expiry. The membership inputs are read ONCE so the decision and its log line cannot disagree
+    /// (the #578-review Issue 9 discipline). The DRAIN command is cleared in every branch and LAST: a
+    /// deposed issuer must not re-deliver a stale DRAIN if it later regains leadership, and clearing last
+    /// makes the clear the completion signal of the whole backstop.
+    @Contract
+    private void graceTerminate(NodeId targetNodeId, DrainReason reason) {
+        var counted = coreCountedMembers.get();
+        var configured = configuredCoreCount.getAsInt();
+        var verdict = reason.isSurplusTrim()
+                      ? graceReapVerdict(active.get(), counted, configured, targetNodeId)
+                      : GraceReapVerdict.REAP;
+
+        if (verdict == GraceReapVerdict.REAP) {
+            reapDrainedNode(targetNodeId);
+        } else {
+            logReapSkipped(targetNodeId, reason, verdict, remainingCoreMembers(counted, targetNodeId), configured);
+        }
+
+        drainCommandClear.accept(targetNodeId);
     }
 
     @Contract
-    private void graceTerminate(NodeId targetNodeId) {
+    private void reapDrainedNode(NodeId targetNodeId) {
         log.info("CTM v2: drain grace expired for {} — reaping container + clearing DRAIN command", targetNodeId);
-        drainCommandClear.accept(targetNodeId);
         lifecycleManager.terminateNode(targetNodeId)
                         .onFailure(cause -> log.warn("CTM v2: grace-terminate of {} failed: {}",
                                                      targetNodeId,
                                                      cause.message()));
+    }
+
+    /// A refused surplus reap is dropped, not retried — design-out, not recovery: a target that already
+    /// exited is reaped by the departure path (`NodeRemoved` → [#reapDepartedNode] on whichever CTM is
+    /// active, the same leader-owned route every other death takes), and a target that is still alive is
+    /// exactly the node the cluster now needs, so keeping it is the outcome, not a lost action.
+    @Contract
+    private void logReapSkipped(NodeId targetNodeId,
+                                DrainReason reason,
+                                GraceReapVerdict verdict,
+                                int remaining,
+                                int configured) {
+        log.warn("CTM v2: drain grace expired for {} (reason={}) — reap SKIPPED: {} (issuerActive={}, coreCountedOtherThanTarget={}, configuredCoreCount={}); clearing DRAIN command only",
+                 targetNodeId,
+                 reason,
+                 verdict,
+                 active.get(),
+                 remaining,
+                 configured);
+    }
+
+    /// #1050 — the outcome of re-checking a surplus drain at grace expiry. Everything but [#REAP] keeps
+    /// the target.
+    enum GraceReapVerdict {
+        REAP,
+        NOT_LEADER,
+        NOT_QUORUM_SAFE,
+        DEFICIT
+    }
+
+    /// #1050 — may a SURPLUS drain's grace-expiry reap still proceed? The drain was decided when the
+    /// cluster had a surplus; by expiry nodes may have died or leadership may have moved, and the decision
+    /// cannot be withdrawn any other way. Checks, in order:
+    /// 1. **Leadership** — a deposed issuer never reaps (the same single-writer rule
+    ///    [#reapDepartedNode] follows); the target's fate belongs to the current leader.
+    /// 2. **Quorum safety** — the members that remain must still hold `configured / 2 + 1`.
+    /// 3. **Deficit** — the members that remain must still cover the configured core count.
+    ///
+    /// `remaining` counts core-counted members OTHER than the target. A drained target is normally
+    /// DEPARTING and already uncounted, but one that refuted its drain (DEPARTING→MEMBER at a higher
+    /// incarnation) is counted again and must not cover its own removal. Whenever `configured >= 1`,
+    /// failing (2) implies failing (3); (2) is kept separate so the log names the stronger condition.
+    /// Pure — the caller supplies the inputs it read once.
+    static GraceReapVerdict graceReapVerdict(boolean issuerActive,
+                                             Set<NodeId> coreCountedMembers,
+                                             int configuredCoreCount,
+                                             NodeId target) {
+        var remaining = remainingCoreMembers(coreCountedMembers, target);
+
+        if (!issuerActive) {
+            return GraceReapVerdict.NOT_LEADER;
+        }
+
+        if (remaining < quorumThreshold(configuredCoreCount)) {
+            return GraceReapVerdict.NOT_QUORUM_SAFE;
+        }
+
+        if (remaining < configuredCoreCount) {
+            return GraceReapVerdict.DEFICIT;
+        }
+
+        return GraceReapVerdict.REAP;
+    }
+
+    private static int remainingCoreMembers(Set<NodeId> coreCountedMembers, NodeId target) {
+        return (int) coreCountedMembers.stream()
+                                       .filter(id -> !id.equals(target))
+                                       .count();
+    }
+
+    /// Simple-majority quorum threshold over the configured core size — the same formula as
+    /// `LeaderReconciler.quorumThreshold` and `QuorumLossDetector` (`configured / 2 + 1`, with a
+    /// configured count `< 1` treated as `1`).
+    private static int quorumThreshold(int configuredCoreCount) {
+        return configuredCoreCount < 1
+               ? 1
+               : configuredCoreCount / 2 + 1;
     }
 
     /// Membership v2 / E2 — public reconcile. CTM no longer drives a slot loop; the

@@ -2460,6 +2460,19 @@ public interface AetherNode extends ManageableNode {
         // node boots with resolved credentials instead of crashing on placeholders. Returns none()
         // gracefully when no config path was published (forge/tests) or the file can't be parsed.
         var resolvedLocalConfig = Lazy.lazy(AetherNode::parseOwnResolvedConfig);
+        // Declared here (not beside the LeaderReconciler below) because the CTM needs it too: #1050's
+        // drain-grace backstop re-reads the reconciler's OWN drain-decision inputs — this count and the
+        // FSM's core-counted set — so one authority decides both the surplus drain and its reap.
+        IntSupplier configuredCoreCountSupplier = () -> clusterConfigReader.get()
+                                                                           .map(AetherValue.ClusterConfigValue::coreCount)
+                                                                           .or(() -> config.topology()
+                                                                                           .coreNodes()
+                                                                                           .size());
+        // Pre-FSM boot window → empty set, which the backstop reads as not-quorum-safe and so KEEPS the
+        // node: fail-closed. No surplus drain can precede the FSM (the reconciler is built from it).
+        Supplier<Set<NodeId>> ctmCoreCountedMembersSupplier = () -> Option.option(membershipFsmRef.get())
+                                                                          .map(MembershipFsm::coreCountedMembers)
+                                                                          .or(Set.of());
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
@@ -2474,7 +2487,9 @@ public interface AetherNode extends ManageableNode {
                                                                                    drainCommandRegistry::clearDrain,
                                                                                    resolvedLocalConfig::get,
                                                                                    () -> kvStore.getTyped(AetherKey.AutoHealStateKey.SINGLETON,
-                                                                                                          AutoHealStateValue.class));
+                                                                                                          AutoHealStateValue.class),
+                                                                                   ctmCoreCountedMembersSupplier,
+                                                                                   configuredCoreCountSupplier);
         // E2 Phase 2b (2026-05-28): OrphanSelfDrainChecker deleted; NTT (§6) drives departure
         // detection and the §8 unified drain handles surplus dissolution. Membership v2 finale:
         // the leader-pinned `LifecycleReconciler` (and the FSM it wrote through) are gone — the
@@ -3042,11 +3057,6 @@ public interface AetherNode extends ManageableNode {
         // constructed and listeners registered on every node. The migration-ramp
         // observation-flag and DivergenceLogger are gone.
         var membershipConfig = config.membership().or(MembershipConfig::membershipConfig);
-        IntSupplier configuredCoreCountSupplier = () -> clusterConfigReader.get()
-                                                                           .map(AetherValue.ClusterConfigValue::coreCount)
-                                                                           .or(() -> config.topology()
-                                                                                           .coreNodes()
-                                                                                           .size());
         var leaderReconcilerRef = new AtomicReference<LeaderReconciler>();
         Runnable nttReconcileTrigger = () -> onNttReconcile(quorumLossDetectorRef,
                                                             membershipFsmRef,
