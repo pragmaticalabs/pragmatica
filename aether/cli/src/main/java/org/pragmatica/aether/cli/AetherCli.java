@@ -272,7 +272,9 @@ public class AetherCli implements Runnable {
     }
 
     private void setAddressFromConfigOrDefault(Option<Path> configArg) {
-        configArg.filter(Files::exists).onPresent(this::readConfigFromPath).onEmpty(this::setAddressFromContextOrDefault);
+        configArg.filter(Files::exists)
+                 .onPresent(this::readConfigFromPath)
+                 .onEmpty(this::setAddressFromContextOrDefault);
     }
 
     /// #584 — endpoint precedence: explicit `--connect`/`--endpoint` or `--config` > the registry's
@@ -284,14 +286,13 @@ public class AetherCli implements Runnable {
     /// context is set. A registry that cannot be read is treated as no context — the same fallback
     /// as no registry — since a corrupt file must not stop `aether --connect …` from working.
     private void setAddressFromContextOrDefault() {
-        nodeAddress = activeContext().map(ClusterRegistry.ClusterEntry::endpoint)
-                                     .or(DEFAULT_ADDRESS);
+        nodeAddress = activeContext().map(ClusterRegistry.ClusterEntry::endpoint).or(DEFAULT_ADDRESS);
     }
 
     private static Option<ClusterRegistry.ClusterEntry> activeContext() {
         return ClusterRegistry.load()
-                                                                .option()
-                                                                .flatMap(ClusterRegistry::current);
+                              .option()
+                              .flatMap(ClusterRegistry::current);
     }
 
     @Contract
@@ -618,7 +619,7 @@ public class AetherCli implements Runnable {
         return option(apiKey).filter(k -> !k.isBlank())
                      .orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()))
                      .orElse(() -> activeContext().flatMap(ClusterRegistry.ClusterEntry::apiKeyEnv)
-                                                  .flatMap(envName -> option(System.getenv(envName))));
+                                                .flatMap(envName -> option(System.getenv(envName))));
     }
 
     private void attachApiKey(HttpRequest.Builder builder) {

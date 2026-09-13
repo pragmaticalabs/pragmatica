@@ -50,13 +50,19 @@ Interactive CLI for managing Aether clusters.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `-c, --connect <host:port>` | Node address to connect to | `localhost:8080` |
+| `-c, --connect <host:port>` | Node address to connect to | active cluster context, else `localhost:8080` |
 | `--config <path>` | Path to aether.toml config file | |
-| `-k, --api-key <key>` | API key for authenticated access | `AETHER_API_KEY` env |
+| `-k, --api-key <key>` | API key for authenticated access | `AETHER_API_KEY` env, else the active context's `api_key_env` |
 | `-h, --help` | Show help | |
 | `-V, --version` | Show version | |
 
-When `--config` is specified, the CLI reads the management port from the config file. The `--connect` option takes precedence if both are provided.
+**Endpoint precedence (#584).** Every command resolves its target the same way: an explicit
+`--connect`/`--endpoint` (or `--config`, which yields `localhost:<management port>`) wins; otherwise the
+**active cluster context** in `~/.aether/clusters.toml` (`[current] context`, set by `cluster bootstrap`
+and `cluster use`) is dialled with the credential its `api_key_env` names; only when no context is set
+does the built-in `localhost:8080` default apply. `cluster` subcommands that take `--cluster <name>`
+target that entry instead of the context. So with a context set, a local compose node needs
+`--connect localhost:8080` explicitly.
 
 ### Authentication
 
@@ -2430,9 +2436,10 @@ After provisioning, the deploy phase SSHes each cloud node (via `cloud-init stat
 
 **Post-bootstrap registration (#584).** A successful bootstrap registers the cluster in
 `~/.aether/clusters.toml` with the management endpoint it actually serves (`<scheme>://<ip>:<management
-port>`) and **makes it the active context**, printing `Active cluster context: <name>`. Every
-context-routed command that follows (`cluster scale`, `cluster destroy`, `deploy`, …) targets the
-cluster just bootstrapped; switch back with `aether cluster use <name>`.
+port>`) and **makes it the active context**, printing `Active cluster context: <name>`. Every command
+that follows without an explicit `--connect`/`--config` (`cluster scale`, `cluster destroy`, `deploy`,
+`status`, …) targets the cluster just bootstrapped — see *Endpoint precedence* under Options; switch
+back with `aether cluster use <name>` or pass `--connect` for a local node.
 
 ### `aether cluster destroy`
 

@@ -96,7 +96,10 @@ sealed interface BootstrapPhasePost {
         // #998: and with the PORT the management plane actually listens on — see [#managementEndpoint].
         var endpoint = managementEndpoint(ctx);
 
-        loaded.flatMap(registry -> registerAndActivate(registry, clusterName.value(), endpoint, Option.some(apiKeyEnvName)))
+        loaded.flatMap(registry -> registerAndActivate(registry,
+                                                       clusterName.value(),
+                                                       endpoint,
+                                                       Option.some(apiKeyEnvName)))
               .flatMap(ClusterRegistry::save)
               .onSuccess(_ -> System.out.printf("Active cluster context: %s%n", clusterName))
               .onFailure(cause -> System.err.println("Warning: failed to register cluster locally: " + cause.message()));

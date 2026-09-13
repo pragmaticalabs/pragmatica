@@ -11,9 +11,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import org.pragmatica.aether.config.cluster.PortMapping;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.pragmatica.aether.config.cluster.PortMapping;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -66,12 +67,13 @@ class BootstrapPhasePostContextTest {
         var out = new ByteArrayOutputStream();
         var originalOut = System.out;
 
-        Files.writeString(registryPath, "[current]\ncontext = \"old-dead\"\n\n[clusters.old-dead]\nendpoint = \"http://10.0.0.1:8080\"\n");
+        Files.writeString(registryPath,
+                          "[current]\ncontext = \"old-dead\"\n\n[clusters.old-dead]\nendpoint = \"http://10.0.0.1:8080\"\n");
         System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
         try {
             BootstrapPhasePost.registerClusterLocally(BootstrapPhasePostEndpointTest.context(true,
-                                                                                            PortMapping.defaultPortMapping(),
-                                                                                            "138.199.236.244"),
+                                                                                             PortMapping.defaultPortMapping(),
+                                                                                             "138.199.236.244"),
                                                       ClusterRegistry.load(registryPath));
         } finally {
             System.setOut(originalOut);
@@ -80,10 +82,10 @@ class BootstrapPhasePostContextTest {
         var saved = Files.readString(registryPath);
 
         assertThat(saved).as("the file the next command reads names the bootstrapped cluster as current")
-                         .contains("context = \"endpoint-probe\"")
-                         .contains("[clusters.endpoint-probe]")
-                         .contains("endpoint = \"https://138.199.236.244:8080\"")
-                         .contains("[clusters.old-dead]");
+                  .contains("context = \"endpoint-probe\"")
+                  .contains("[clusters.endpoint-probe]")
+                  .contains("endpoint = \"https://138.199.236.244:8080\"")
+                  .contains("[clusters.old-dead]");
         assertThat(out.toString(StandardCharsets.UTF_8)).contains("Active cluster context: endpoint-probe");
     }
 
