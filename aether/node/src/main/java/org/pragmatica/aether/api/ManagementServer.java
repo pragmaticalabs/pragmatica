@@ -20,6 +20,7 @@ import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.forward.HttpForwarder;
 import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.management.route.ManagementRouteError;
 import org.pragmatica.aether.management.route.MatchedRoute;
 import org.pragmatica.aether.management.route.RouteTarget;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
@@ -93,6 +94,7 @@ import org.pragmatica.aether.http.AetherVersioningMetricsSink;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
@@ -838,10 +840,27 @@ class ManagementServerImpl implements ManagementServer {
         dispatchManagementRequest(ctx, instrumented, methodName, startTime);
     }
 
-    private void dispatchManagementRequest(HttpRequest ctx,
-                                           InstrumentedResponseWriter instrumented,
-                                           String methodName,
-                                           long startTime) {
+    /// Package-visible so the WIRING is pinnable, not merely [#answersPartitionLocally] in isolation —
+    /// the same reason [#sendForwardedResponse] is. The owner decision being correct says nothing
+    /// about this method still consulting it, and a decision that is correct and never called is
+    /// exactly the defect #1039's receive path shipped with. `ManagementServerForwardDispatchTest`
+    /// drives this entry; deleting the [#tryForwardToRouteOwner] call below must redden it.
+    ///
+    /// Not `private` purely for the test, and not a behaviour change: `handleRequest` remains the only
+    /// production caller, on both of its branches.
+    ///
+    /// The suppression is a cost of that widening, not a new exemption on new code: `void` was already
+    /// this method's shape, and JBCT-RET-01 simply does not inspect `private` methods. It is the right
+    /// shape — this is a terminal sink that writes to a `ResponseWriter`, reached from the server's
+    /// `BiConsumer<HttpRequest, ResponseWriter>` callback, so there is no caller that could act on a
+    /// returned failure. Narrow `@SuppressWarnings` rather than `@Contract`, which would exempt this
+    /// method from EVERY JBCT rule; the two neighbours on the forward path suppress the same rule the
+    /// same way.
+    @SuppressWarnings("JBCT-RET-01")
+    void dispatchManagementRequest(HttpRequest ctx,
+                                   InstrumentedResponseWriter instrumented,
+                                   String methodName,
+                                   long startTime) {
         var path = ctx.path();
 
         if (tryForwardToRouteOwner(ctx, instrumented, methodName, startTime)) {
@@ -900,6 +919,12 @@ class ManagementServerImpl implements ManagementServer {
                                                                                       startTime,
                                                                                       matchedRoute,
                                                                                       paramIndex);
+            case RouteTarget.PartitionOwner(var partitionParamIndex) -> tryForwardIfNotPartitionOwner(ctx,
+                                                                                                      response,
+                                                                                                      methodName,
+                                                                                                      startTime,
+                                                                                                      matchedRoute,
+                                                                                                      partitionParamIndex);
         };
     }
 
@@ -989,6 +1014,83 @@ class ManagementServerImpl implements ManagementServer {
         return true;
     }
 
+    /// Forward unless THIS node is the partition's HRW owner (#1039). Short-circuits only the one case
+    /// that is definitively local, exactly as [#tryForwardIfNotTargetNode] does; every other case —
+    /// a different owner, an owner that cannot be resolved at all — goes to the forwarder, which
+    /// re-resolves through the SAME resolver and turns an unresolvable owner into
+    /// `ManagementRouteError.PartitionOwnerUnresolved`, surfaced as a 503 by `sendForwardError`.
+    ///
+    /// Deliberately NOT answered locally when the owner is unresolvable: a local answer would carry
+    /// `servedByOwner=false` and an empty replica ring, which reads exactly like a genuinely empty
+    /// partition. That indistinguishability IS #1039.
+    private boolean tryForwardIfNotPartitionOwner(HttpRequest ctx,
+                                                  InstrumentedResponseWriter response,
+                                                  String methodName,
+                                                  long startTime,
+                                                  MatchedRoute matched,
+                                                  int partitionParamIndex) {
+        var node = nodeSupplier.get();
+
+        if (answersPartitionLocally(resolvePartitionOwner(matched, partitionParamIndex), node.self())) {
+            return false;
+        }
+
+        forwardManagementRequest(ctx, response, methodName, startTime);
+
+        return true;
+    }
+
+    /// Package-visible pure decision behind [#tryForwardIfNotPartitionOwner] — the same convention
+    /// [#isSystemStreamWriteOverHttp] and [#resolvePermission] follow, because the dispatch decision
+    /// around it cannot be driven without a live listener.
+    ///
+    /// The `or(false)` is the load-bearing half. An UNRESOLVED owner must FORWARD, so the forwarder
+    /// re-resolves and answers `PartitionOwnerUnresolved`. Defaulting the other way would answer
+    /// locally with `servedByOwner=false` and an empty replica ring — #1039 restored, and silent,
+    /// because that response is indistinguishable from a genuinely empty partition.
+    static boolean answersPartitionLocally(Option<NodeId> owner, NodeId self) {
+        return owner.map(self::equals)
+                    .or(false);
+    }
+
+    /// The HRW owner of the partition a [RouteTarget.PartitionOwner] route addresses.
+    ///
+    /// One derivation, not two: the engine key comes from [#resolveEngineKey] (the same reduction the
+    /// pre-auth write gate uses, which is `StreamManager.engineKey` off route params), and the owner
+    /// comes from `StreamReadRouter.resolveOwner` — the very resolver `replicaSnapshot` reads to
+    /// compute `servedByOwner`. Forwarder and handler therefore agree by construction; a separately
+    /// wired resolution could send the request to a node that then answers `servedByOwner=false`,
+    /// which is the defect again, one hop further away.
+    private Option<NodeId> resolvePartitionOwner(MatchedRoute matched, int partitionParamIndex) {
+        return partitionOwner(matched,
+                              partitionParamIndex,
+                              nodeSupplier.get().streamReadRouter());
+    }
+
+    /// Package-visible and static so the WHOLE derivation is pinnable — engine key, partition param and
+    /// owner lookup composed — rather than each piece in isolation. The composition is where this can
+    /// go wrong: a correct engine key paired with a partition read out of the `version` slot resolves a
+    /// perfectly well-formed owner for the wrong partition, and no test of either half would see it.
+    /// The only line left outside the pin is the `nodeSupplier.get().streamReadRouter()` hop above.
+    static Option<NodeId> partitionOwner(MatchedRoute matched, int partitionParamIndex, StreamReadRouter router) {
+        return Option.all(resolveEngineKey(matched), partitionParam(matched, partitionParamIndex)).flatMap(router::resolveOwner);
+    }
+
+    private static Option<Integer> partitionParam(MatchedRoute matched, int partitionParamIndex) {
+        var names = matched.route().paramNames();
+
+        return partitionParamIndex < 0 || partitionParamIndex >= names.size()
+               ? Option.empty()
+               : matched.param(names.get(partitionParamIndex))
+                        .flatMap(ManagementServerImpl::parsePartition);
+    }
+
+    private static Option<Integer> parsePartition(String raw) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> Integer.valueOf(raw))
+                     .option();
+    }
+
     private void forwardManagementRequest(HttpRequest ctx,
                                           InstrumentedResponseWriter response,
                                           String methodName,
@@ -1018,7 +1120,15 @@ class ManagementServerImpl implements ManagementServer {
                                      String requestId) {
         Deadline.runWith(Deadline.startingNow(forwardingTimeouts.managementRequestBudget()),
                          () -> forwarder.forwardManagement(toManagementRequestContext(ctx, path),
-                                                           requestId))
+                                                           requestId,
+                                                           Option.none())
+                         // Option.none() is the SECURITY-RELEVANT argument, not a placeholder (#1039).
+                         // This is the client-facing entry, so the request has taken no internal hop
+                         // and the owner-forward loop guard must not treat it as one. Passing hop
+                         // state explicitly is what keeps it out of the request itself: an earlier
+                         // design carried it in an `X-Aether-Owner-Forwarded-By` header, which a
+                         // caller could set to change this node's dispatch decision.
+                        )
                 .onSuccess(responseData -> sendForwardedResponse(response, responseData))
                 .onFailure(cause -> sendForwardError(response, path, requestId, cause))
                 .onResultRun(() -> recordRequestMetrics(methodName, path, response, startTime));
@@ -1049,7 +1159,15 @@ class ManagementServerImpl implements ManagementServer {
                                               () -> coreNodeIds(node),
                                               node.taskGroupOwnerResolver(),
                                               () -> nodeSupplier.get()
-                                                                .leader());
+                                                                .leader(),
+
+        // Method reference, not a captured node: this forwarder is
+        // built once and cached, so the owner must be re-read from
+        // the CURRENT node on every dispatch. A captured `node`
+        // would pin a membership view from forwarder-construction
+        // time, which on this endpoint is the view least likely to
+        // still be right (it is queried during failover).
+        this::resolvePartitionOwner);
         var wrapped = Option.<HttpForwarder> some(fwd);
 
         return mgmtForwarderRef.compareAndSet(existing, wrapped)
@@ -1243,6 +1361,21 @@ class ManagementServerImpl implements ManagementServer {
                 return;
             }
         }
+        // #1039 receive-side owner guard. A forwarded request is dispatched by `router.handle` right
+        // below and never re-enters `dispatchManagementRequest`, so `tryForwardIfNotPartitionOwner`
+        // does NOT run on this node — without this check a receiver that disagrees with the sender
+        // about the owner answers anyway and returns 200 with `servedByOwner=false`, which is the
+        // ambiguous answer #1039 exists to remove.
+        if (checkForwardedPartitionOwner(context.method(),
+                                         context.path(),
+                                         nodeSupplier.get().self(),
+                                         request.sender(),
+                                         this::resolvePartitionOwner).onFailure(cause -> sendManagementForwardError(network,
+                                                                                                                    request,
+                                                                                                                    cause.message()))
+                                        .isFailure()) {
+            return;
+        }
 
         if (router.handle(serverCtx, responseCapture)) {
             responseCapture.completion()
@@ -1279,6 +1412,80 @@ class ManagementServerImpl implements ManagementServer {
                                             notFoundBody);
 
         sendManagementForwardSuccess(network, request, ser, notFound);
+    }
+
+    /// Does this node accept a request that reached it by owner forwarding (#1039)?
+    ///
+    /// Package-visible, static and pure for the same reason [#answersPartitionLocally] is: the
+    /// dispatch around it cannot be driven without a live listener, so the DECISION is the thing a
+    /// test can hold. Success means "dispatch it"; a failure is the cause the receiver sends back,
+    /// which [HttpForwarder#onHttpForwardResponse] hands to the sender's `sendForwardError` as a 503.
+    ///
+    /// Only [RouteTarget.PartitionOwner] routes are judged, and for those the arrival IS the evidence
+    /// of a prior hop: `forwardToPartitionOwner` is the single path that forwards them, so a
+    /// partition-owner route arriving over the cluster channel has been owner-forwarded exactly once.
+    /// Every other target is dispatched exactly as before — a leader-, core-, task-group- or
+    /// node-targeted forward is not an owner decision and must not be re-judged here.
+    ///
+    /// The refusal does NOT re-forward. A second hop is what could cycle; the sender already resolved
+    /// an owner, so a receiver that resolves a different one has observed the skew itself, and naming
+    /// it terminates the disagreement in one round instead of trading it back.
+    ///
+    /// An unmatched route yields success: `router.handle` and the legacy handlers below it own the
+    /// 404, and refusing here would turn an unknown path into a 503.
+    static Result<Unit> checkForwardedPartitionOwner(String methodName,
+                                                     String path,
+                                                     NodeId self,
+                                                     NodeId sender,
+                                                     HttpForwarder.PartitionOwnerResolver ownerResolver) {
+        var matched = parseRoutingMethod(methodName).flatMap(method -> ManagementRoute.match(method, path).option());
+
+        if (matched.isEmpty()) {
+            return Result.unitResult();
+        }
+
+        var matchedRoute = matched.unwrap();
+
+        return switch (matchedRoute.route()
+                                   .target()) {
+            case RouteTarget.PartitionOwner(var partitionParamIndex) -> checkOwnerIsSelf(matchedRoute,
+                                                                                         partitionParamIndex,
+                                                                                         path,
+                                                                                         self,
+                                                                                         sender,
+                                                                                         ownerResolver);
+            // Exhaustive by design rather than a `default`: a new RouteTarget must make this decision
+            // deliberately instead of inheriting "dispatch anyway".
+            case RouteTarget.LocalNode _, RouteTarget.AnyCoreNode _, RouteTarget.TaskGroupTarget _, RouteTarget.LeaderNode _, RouteTarget.NodeIdParam _ -> Result.unitResult();
+        };
+    }
+
+    /// The owner comparison behind [#checkForwardedPartitionOwner], split out so the switch above
+    /// stays a routing decision and this stays the ownership decision.
+    ///
+    /// An unresolvable owner fails rather than defaulting to local, for the reason spelled out on
+    /// [#answersPartitionLocally]: answering locally would emit `servedByOwner=false` with an empty
+    /// replica ring, indistinguishable from a genuinely empty partition.
+    private static Result<Unit> checkOwnerIsSelf(MatchedRoute matched,
+                                                 int partitionParamIndex,
+                                                 String path,
+                                                 NodeId self,
+                                                 NodeId sender,
+                                                 HttpForwarder.PartitionOwnerResolver ownerResolver) {
+        var routeName = matched.route().name();
+        var owner = ownerResolver.resolve(matched, partitionParamIndex);
+
+        if (owner.isEmpty()) {
+            return ManagementRouteError.partitionOwnerUnresolved(routeName, path).result();
+        }
+
+        if (owner.unwrap().equals(self)) {
+            return Result.unitResult();
+        }
+
+        return ManagementRouteError.ownerForwardLoop(routeName,
+                                                     sender.id())
+                                   .result();
     }
 
     private void sendManagementForwardSuccess(ClusterNetwork network,
@@ -1431,13 +1638,23 @@ class ManagementServerImpl implements ManagementServer {
 
     /// Mirrors [StreamManager#engineKey]'s two-shape resolution off a [MatchedRoute]'s raw params
     /// instead of an already-built [ResourceAddress].
-    private static Option<String> resolveEngineKey(MatchedRoute matched) {
+    ///
+    /// [ManagementRoute#STREAM_REPLICAS] joins the write routes here (#1039) rather than growing a
+    /// second reduction for the owner-forwarding dispatch path: it carries the same
+    /// (namespace, stream, version) identity params, and one declaration resolving to two engine keys
+    /// is the defect tracked by #1040. This method's identity is now read by BOTH the pre-auth write
+    /// gate and owner dispatch, so a change to the reduction moves them together.
+    ///
+    /// Package-visible so the identity reduction is pinnable directly against
+    /// `StreamManager.engineKey` — the same reason [#isSystemStreamWriteOverHttp] and
+    /// [#resolvePermission] are.
+    static Option<String> resolveEngineKey(MatchedRoute matched) {
         return switch (matched.route()) {
-            case STREAMS_PUBLISH, STREAMS_DELETE, STREAMS_GROUP_CREATE, STREAMS_GROUP_DELETE -> matched.param("namespace").flatMap(ns -> matched.param("stream")
-                                                                                                                                                .flatMap(stream -> matched.param("version")
-                                                                                                                                                                          .flatMap(ver -> ResourceAddress.resourceAddress(ns,
-                                                                                                                                                                                                                          stream,
-                                                                                                                                                                                                                          ver).option()))).map(StreamManager::engineKey);
+            case STREAMS_PUBLISH, STREAMS_DELETE, STREAMS_GROUP_CREATE, STREAMS_GROUP_DELETE, STREAM_REPLICAS -> matched.param("namespace").flatMap(ns -> matched.param("stream")
+                                                                                                                                                                 .flatMap(stream -> matched.param("version")
+                                                                                                                                                                                           .flatMap(ver -> ResourceAddress.resourceAddress(ns,
+                                                                                                                                                                                                                                           stream,
+                                                                                                                                                                                                                                           ver).option()))).map(StreamManager::engineKey);
             default -> Option.empty();
         };
     }
