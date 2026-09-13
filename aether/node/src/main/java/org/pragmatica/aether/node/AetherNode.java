@@ -1809,9 +1809,33 @@ public interface AetherNode extends ManageableNode {
                                                                              .or(Promise.unitPromise()))
                                                .flatMap(_ -> appHttpServer.stop())
                                                .flatMap(_ -> sliceInvoker.stop())
+                                               .map(_ -> shutdownStorage())
                                                .flatMap(_ -> clusterNode.stop())
                                                .onSuccess(_ -> log.info("Aether node {} stopped",
                                                                         self()));
+            }
+
+            /// #1078: the three node-owned storage instances (`content`, `artifacts`, `streams`)
+            /// were never shut down — `StorageInstance.shutdown()` is the path that drains a
+            /// write-behind queue, and no stop reached it. Placed after the slice invoker (the
+            /// writers are stopped) and before the cluster node (a DHT tier can still be reached
+            /// while draining). Infallible by design: `shutdown()` is a void contract, and a
+            /// storage failure here must not skip `clusterNode.stop()` behind it.
+            @Contract
+            private Unit shutdownStorage() {
+                storageSetups.forEach((name, setup) -> shutdownStorage(name, setup));
+
+                return Unit.unit();
+            }
+
+            @Contract
+            @SuppressWarnings("JBCT-EX-01")
+            private static void shutdownStorage(String name, StorageFactory.StorageSetup setup) {
+                try {
+                    setup.instance().shutdown();
+                } catch (RuntimeException e) {
+                    log.warn("Storage instance '{}' failed to shut down cleanly: {}", name, e.getMessage());
+                }
             }
 
             private Promise<Unit> startClusterAsync() {
