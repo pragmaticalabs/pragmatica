@@ -29,6 +29,7 @@ import org.pragmatica.config.toml.TomlWriter;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn3;
+import org.pragmatica.lang.Functions.Fn4;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -57,13 +58,24 @@ sealed interface BootstrapPhaseDeploy {
                                             Fn1<Result<String>, String> healthCheck,
                                             Fn3<Result<String>, String, String, SshConfig> sshExec,
                                             Fn1<String, String> envLookup) {
+        return execute(ctx, healthCheck, sshExec, RemoteCommandRunner::scp, envLookup);
+    }
+
+    /// `scpExec(localPath, host, remotePath, sshConfig)` — the SSH source's config push, injectable
+    /// like `sshExec` so `deploySshSource` is pinnable with captured commands (#1090).
+    @SuppressWarnings("JBCT-PAT-01")
+    static Result<BootstrapContext> execute(BootstrapContext ctx,
+                                            Fn1<Result<String>, String> healthCheck,
+                                            Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                            Fn4<Result<Unit>, String, String, String, SshConfig> scpExec,
+                                            Fn1<String, String> envLookup) {
         ClusterBootstrapOrchestrator.logPhase(DEPLOY_RUNTIME,
                                               "Deploying runtime to %d node(s)",
                                               ctx.addresses().size());
         for (var entry : ctx.config().sources().entrySet()) {
             var sourceName = sourceNameOrDefault(entry.getKey());
             var source = entry.getValue();
-            var deployResult = deploySource(ctx, source, sourceName, healthCheck, sshExec, envLookup);
+            var deployResult = deploySource(ctx, source, sourceName, healthCheck, sshExec, scpExec, envLookup);
 
             if (deployResult.isFailure()) {
                 return deployResult.map(_ -> ctx);
@@ -108,10 +120,11 @@ sealed interface BootstrapPhaseDeploy {
                                              SourceName sourceName,
                                              Fn1<Result<String>, String> healthCheck,
                                              Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                             Fn4<Result<Unit>, String, String, String, SshConfig> scpExec,
                                              Fn1<String, String> envLookup) {
         return switch (source.type()) {
             case CLOUD -> deployCloudSource(ctx, source, sourceName, healthCheck, sshExec, envLookup);
-            case SSH -> deploySshSource(ctx, source, sourceName);
+            case SSH -> deploySshSource(ctx, source, sourceName, sshExec, scpExec, envLookup);
             case FORGE -> deployForgeSource(sourceName);
             case DOCKER -> deployDockerSource(sourceName);
         };
@@ -741,7 +754,12 @@ sealed interface BootstrapPhaseDeploy {
     }
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
-    private static Result<Unit> deploySshSource(BootstrapContext ctx, SourceProfile source, SourceName sourceName) {
+    static Result<Unit> deploySshSource(BootstrapContext ctx,
+                                        SourceProfile source,
+                                        SourceName sourceName,
+                                        Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                        Fn4<Result<Unit>, String, String, String, SshConfig> scpExec,
+                                        Fn1<String, String> envLookup) {
         var sshConfig = buildSshConfig(source);
         var clusterName = ctx.config().cluster().name();
         var peers = buildThreePartPeers(ctx);
@@ -772,7 +790,9 @@ sealed interface BootstrapPhaseDeploy {
                                                                         clusterPort,
                                                                         managementPort,
                                                                         peersValue,
-                                                                        clusterSecret));
+                                                                        clusterSecret,
+                                                                        sshExec,
+                                                                        scpExec));
 
             if (result.isFailure()) {
                 return result;
@@ -808,11 +828,14 @@ sealed interface BootstrapPhaseDeploy {
                                               int clusterPort,
                                               int managementPort,
                                               String peers,
-                                              String clusterSecret) {
+                                              String clusterSecret,
+                                              Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                              Fn4<Result<Unit>, String, String, String, SshConfig> scpExec) {
         return writeNodeConfigToTemp(node.nodeId(),
-                                     nodeConfig).flatMap(tempPath -> scpConfigToNode(tempPath,
-                                                                                     node.publicIp(),
-                                                                                     sshConfig))
+                                     nodeConfig).flatMap(tempPath -> scpExec.apply(tempPath.toString(),
+                                                                                   node.publicIp(),
+                                                                                   "/opt/aether/config/aether.toml",
+                                                                                   sshConfig))
                                     .flatMap(_ -> startRuntimeViaSsh(node.publicIp(),
                                                                      sshConfig,
                                                                      clusterName,
@@ -820,7 +843,8 @@ sealed interface BootstrapPhaseDeploy {
                                                                      clusterPort,
                                                                      managementPort,
                                                                      peers,
-                                                                     clusterSecret));
+                                                                     clusterSecret,
+                                                                     sshExec));
     }
 
     private static Result<Path> writeNodeConfigToTemp(String nodeId, String content) {
@@ -839,10 +863,6 @@ sealed interface BootstrapPhaseDeploy {
         return new BootstrapError.DeploymentFailed(nodeId, "Failed to write temp config: " + message);
     }
 
-    private static Result<Unit> scpConfigToNode(Path localPath, String host, SshConfig sshConfig) {
-        return RemoteCommandRunner.scp(localPath.toString(), host, "/opt/aether/config/aether.toml", sshConfig);
-    }
-
     private static Result<Unit> startRuntimeViaSsh(String host,
                                                    SshConfig sshConfig,
                                                    ClusterName clusterName,
@@ -850,7 +870,8 @@ sealed interface BootstrapPhaseDeploy {
                                                    int clusterPort,
                                                    int managementPort,
                                                    String peers,
-                                                   String clusterSecret) {
+                                                   String clusterSecret,
+                                                   Fn3<Result<String>, String, String, SshConfig> sshExec) {
         var peersEnv = peers.isEmpty()
                        ? ""
                        : " -e PEERS=\"" + peers + "\"";
@@ -869,7 +890,7 @@ sealed interface BootstrapPhaseDeploy {
                          + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro"
                          + " ghcr.io/pragmaticalabs/aether-node:latest";
 
-        return RemoteCommandRunner.ssh(host, startCommand, sshConfig).mapToUnit();
+        return sshExec.apply(host, startCommand, sshConfig).mapToUnit();
     }
 
     private static SshConfig buildSshConfig(SourceProfile source) {
