@@ -18,37 +18,58 @@
 - **A refused or dropped reap no longer leaves a billed orphan.** `activate()` now runs a one-shot activation replay over
   this cluster's labelled core instances (`aether-cluster`, `aether-role=core`). It terminates an instance only when, at
   two reads `provisioningTimeout` apart, its node is neither tracked by the membership FSM, nor showing evidence of life,
-  nor a replacement in flight. A replay read acts only while its activation is current, active and quorum-safe.
+  nor a replacement in flight. A replay read, and the terminate once the second read resolves, act only while the
+  activation is current, active and quorum-safe — a listing that resolves after `deactivate()` terminates nothing.
   Terminating an instance that is already gone completes quietly.
 
   [mechanism: pinned by `ClusterTopologyManagerActuatorTest.ActivationReplay` and
   `.OrphanFreeAcrossLeadershipAndQuorum`. The latter reproduces verify-1057's two orphan probes, including a run where
-  quorum is actually lost and restored so `NodeRemoved` reaches only inactive CTMs. Both were red at `c974cb3f4`.]
+  quorum is actually lost and restored so `NodeRemoved` reaches only inactive CTMs. Both were red at `c974cb3f4`. The
+  resolution re-check is `terminateOrphans`, pinned by `replay_secondListingResolvesAfterDeactivation_terminatesNothing`
+  (terminated at `ff50a3274`) with its fixture control `replay_secondListingResolvesWhileStillActive_terminatesTheOrphan`]
 - **A departed-node reap re-checks liveness first (#1062).** `reapDepartedNode` terminates only while the node shows no
   independent evidence of life: the leader's transport link, raw SWIM, or a counted membership.
   - With such evidence the reap is deferred (WARN, with the evidence) and re-checked every `provisioningTimeout / 12`
-    (5s at defaults), for at most `provisioningTimeout` (60s).
-  - A node still live after the last re-check is never terminated.
+    (5s at defaults), for at most `provisioningTimeout` (60s). A deferral belongs to the activation that started it: one
+    that outlives a deactivate→activate drops out at its next re-check.
+  - A node still live after the last re-check is never terminated. The re-check budget bounds the TRANSPORT evidence
+    (a dead peer's link is evicted within `pingInterval × 8`); it does not bound SWIM's suspicion window, which is
+    LHM-scaled and can outlast it. A reap that runs out of re-checks while SWIM still reports the node SUSPECTED is
+    ABANDONED and parked; the SWIM FAULTY edge for that node re-arms it (`ClusterTopologyManager.onSwimFaulty`, delivered
+    by the SWIM observation listener in `AetherNode`), still through the same evidence gate. A node SWIM never declares
+    FAULTY is never terminated; a parked reap dies with its activation.
   - A genuinely departed node is reaped at once, with no added delay.
 
   [mechanism: pinned by `ClusterTopologyManagerActuatorTest.DepartedReapLivenessRecheck`, which includes #1062's
-  transport-still-connected acceptance test, red at `c974cb3f4`]
+  transport-still-connected acceptance test, red at `c974cb3f4`. The re-arm:
+  `nodeRemoved_swimSuspectedPastEveryRecheck_reapedOnceWhenSwimReportsFaulty` (billed orphan at `ff50a3274`), its control
+  `nodeRemoved_swimSuspectedForever_isNeverTerminated`, and `swimFaulty_forANodeWhoseReapWasNeverAbandoned_terminatesNothing`;
+  the routing by `SwimFaultyToCtmRoutingTest`. The epoch drop: `nodeRemoved_reactivatedDuringDeferral_staleDeferralDropped`
+  (terminated at `ff50a3274`)]
 - The membership and liveness evidence reaches the CTM through one named seam, `AetherNode.drainGraceLiveness`. It also
   supplies the configured core count that the `LeaderReconciler` and `QuorumLossDetector` use.
-  [mechanism: pinned by `DrainGraceLivenessSeamTest`; its body forcing the count to 0 reddens it]
+  [mechanism: pinned by `DrainGraceLivenessSeamTest`; its body forcing the count to 0 reddens it, and its SWIM term
+  passing `_ -> false` or counting FAULTY as alive reddens
+  `drainGraceLiveness_swimAlive_isHealthyOrSuspected_neverFaultyOrUnknown`]
 - `JOIN_GRACE_REAP` and `OPERATOR_COMMAND` drains still reap as issued, and never read membership. [mechanism:
   `DrainReason.isSurplusTrim`, every constant pinned by `DrainReasonTest`]
 - **Limits.**
   - [unverified: an orphan left by a refused or dropped reap is terminated only once some CTM activates and then holds
     leadership and quorum safety for one `provisioningTimeout`, with a successful inventory listing; an instance whose
     node-id or role label is missing is never replayed]
-  - [unverified: the in-JVM tests use one node-local FSM and a synchronous projector; no multi-node, forge or cloud run
-    was made]
+  - [unverified: the in-JVM tests use one node-local FSM and a synchronous projector, and hand-feed the SWIM evidence
+    and the FAULTY edge; no multi-node, forge or cloud run drove a real `SwimProtocol` SUSPECTED past the re-check budget
+    and then FAULTY]
+  - [unverified: the `addObservationListener` registration that hands the FAULTY edge to the CTM lives inside the node
+    assembly and has no seam; only the routing helper `AetherNode.routeSwimFaultyToCtm` is pinned. Likewise the
+    transport predicate at the `drainGraceLiveness` call site (`connectedPeers().contains`) has no seam and is unpinned]
   - [unverified: SUSPECT still counts as coverage — a peer killed during the grace and still SUSPECT at expiry keeps the
     counted set whole for the quorum-safety check until its eviction backstop fires]
-  - [unverified: a repeated terminate is recorded twice by the in-JVM recorder; only the lifecycle layer's quiet
-    completion of a not-found terminate is tested (`NodeLifecycleManagerTerminateTest`). A provider still listing a
-    server that is being deleted would receive a second terminate call]
+  - In production order a surplus target that dies is terminated twice by the same CTM — once by the `NodeRemoved`
+    path, once by the grace backstop — and the second completes quietly at the lifecycle layer
+    (`terminateNode_noMatchingInstance_completesAsDone_withoutCallingProvider`). The calls are not deduplicated on
+    purpose: a "reaped" memory would suppress the re-kill of a restart-looping phantom under the same id (#166).
+    [unverified: a provider still listing a server that is being deleted receives the second terminate call]
   - [unverified: a DRAIN that can never be delivered makes the reconciler re-drain a live target without bound (withdraw,
     re-drain, skip at every grace); this fix only guarantees the target is never reaped. The churn belongs to #1058 and
     #1055]
