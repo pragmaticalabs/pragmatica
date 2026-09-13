@@ -4,8 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
-import java.net.URL;
-import java.net.URLClassLoader;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -697,7 +695,11 @@ class BlueprintServiceInstance implements BlueprintService {
     /// FER, kept exactly as the topology-only load this replaces behaved before #1067: a slice whose jar
     /// cannot be located here is left out of both validators instead of failing the publish. Guarantee
     /// earned: none for that slice — it goes unchecked. Mechanism: `Promise.allOf` collects each locate as a
-    /// `Result`, and a failed one is dropped by [#locatedSliceJars].
+    /// `Result`, and a failed one is dropped by [#locatedSliceJars]. Reachability: `BlueprintExpander.expand`
+    /// has already located every slice on the way to `expanded.loadOrder()` and refuses the publish when one
+    /// is absent, so this branch is only reachable if the artifact leaves the repository between expansion
+    /// and this second locate — a locate-then-evict race, not a normal publish. Since a quiet skip is the
+    /// failure mode of any gate (see [#noteConfigSectionPreflightSkipIfBlind]), [#loadSliceJar] logs the drop.
     private Promise<List<SliceJar>> loadAllSliceJars(List<ResolvedSlice> slices) {
         return Promise.allOf(slices.stream().map(this::loadSliceJar).toList()).map(BlueprintServiceInstance::locatedSliceJars);
     }
@@ -712,41 +714,23 @@ class BlueprintServiceInstance implements BlueprintService {
     private Promise<SliceJar> loadSliceJar(ResolvedSlice slice) {
         return repository.locate(slice.artifact())
                          .map(location -> sliceJar(slice.artifact(),
-                                                   location));
+                                                   location))
+                         .onFailure(cause -> log.warn("Pub/sub and config-section pre-flight SKIPPED for slice {}: its jar was "
+                                                     + "located at expansion but not now ({}). The publish proceeds with this "
+                                                     + "slice unchecked — 'not checked', not 'checked and passed'.",
+                                                      slice.artifact().asString(),
+                                                      cause.message()));
     }
 
+    /// The jar's own `META-INF/resources.toml`, read by the loader's own function
+    /// ([SliceStore#readSliceResourcesToml(URL)]) over this jar alone — the same function the slice loader
+    /// reads a slice's intrinsic layer with at load, so the pre-flight and the loader agree on which file is the
+    /// slice's (#1067). A jar that cannot be opened reads as shipping no file, and the check then answers from
+    /// the node composite alone, which can only refuse more, never admit a section the loader would not see.
     private static SliceJar sliceJar(Artifact artifact, Location location) {
         return SliceJar.sliceJar(artifact,
                                  TopologyParser.parseFromJar(location.url(), artifact.asString()).or(List.of()),
-                                 readSliceResourcesToml(artifact, location.url()));
-    }
-
-    /// The jar's own `META-INF/resources.toml`, looked up by the loader's own function
-    /// ([SliceStore#readSliceResourcesToml]) through a classloader over this jar alone, so the pre-flight and
-    /// the loader agree on which entry is read and how (#1067). The platform classloader as parent keeps the
-    /// lookup inside the jar. At load the slice classloader asks its shared-library parent first, so a copy of
-    /// that entry visible to the parent would shadow the jar's own there and is not modelled here
-    /// `[unverified: whether any shared library ships one]`. A jar that cannot be opened reads as shipping no
-    /// file — the convention `SliceStore` applies at load to an entry it cannot read — so the check then answers
-    /// from the node composite alone, which can only refuse more, never admit a section the loader would not see.
-    private static Option<String> readSliceResourcesToml(Artifact artifact, URL jarUrl) {
-        var jarClassLoader = new URLClassLoader(new URL[]{jarUrl}, ClassLoader.getPlatformClassLoader());
-        var resourcesToml = SliceStore.readSliceResourcesToml(jarClassLoader);
-
-        closeJarClassLoader(artifact, jarClassLoader);
-
-        return resourcesToml;
-    }
-
-    /// FER: the entry has already been read in full, so a failing close changes nothing the check sees.
-    /// Guarantee earned: the pre-flight verdict is unaffected; what is given up is at most one jar handle held
-    /// on the leader until the classloader is collected. Mechanism: logged, then the failure is dropped.
-    private static Unit closeJarClassLoader(Artifact artifact, URLClassLoader jarClassLoader) {
-        return Result.lift(Causes::fromThrowable, jarClassLoader::close)
-                     .onFailure(cause -> log.warn("Config-section pre-flight could not close the jar classloader for {}: {}",
-                                                  artifact.asString(),
-                                                  cause.message()))
-                     .or(Unit.unit());
+                                 SliceStore.readSliceResourcesToml(location.url()));
     }
 
     private Promise<ExpandedBlueprint> storeBlueprint(ExpandedBlueprint expanded) {

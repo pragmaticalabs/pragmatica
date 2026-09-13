@@ -6,6 +6,7 @@ package org.pragmatica.aether.slice;
 
 import java.io.IOException;
 import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -30,6 +31,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
@@ -167,10 +169,17 @@ public interface SliceStore {
         return LayeredConfigProvider.layered(List.of(nodeComposite, labelledIntrinsic));
     }
 
-    /// The text of `META-INF/resources.toml` as `classLoader` resolves it — the lookup the loader makes
-    /// through the slice classloader. An entry that cannot be read reads as absent, as it does at load.
-    static Option<String> readSliceResourcesToml(ClassLoader classLoader) {
-        return sliceStore.readSliceResourcesTomlFromClassLoader(classLoader);
+    /// The text of `META-INF/resources.toml` shipped in the slice jar at `sliceJarUrl` — and in that jar
+    /// ALONE: a classloader over the one url with the platform loader as parent, closed once the entry
+    /// is read. The loader reads a slice's intrinsic layer through this at load, and the deploy-time
+    /// pre-flight through the same function, so the two cannot disagree on which file is the slice's
+    /// (#1067). The slice classloader is composed over the own jar, conflicting shared jars and every
+    /// `[slices]` dependency jar, and a lookup THROUGH it answers from the first jar that ships the entry
+    /// — which made a dependency's file this slice's layer whenever the own jar had none. A jar that
+    /// cannot be opened or an entry that cannot be read reads as absent — an empty layer, never a dropped
+    /// composite.
+    static Option<String> readSliceResourcesToml(URL sliceJarUrl) {
+        return sliceStore.readSliceResourcesTomlFromJar(sliceJarUrl);
     }
 
     interface LoadedSlice {
@@ -416,8 +425,43 @@ public interface SliceStore {
                  + "this slice's resources.toml will fail as not-configured at provision time";
         }
 
-        @SuppressWarnings("JBCT-EX-01")
+        /// A [SliceClassLoader] is asked for its OWN jar and that jar is read alone (see
+        /// [SliceStore#readSliceResourcesToml(URL)]); one without a jar has no intrinsic file. Any other
+        /// loader — the in-memory stubs `SliceStoreTest` hands in — is asked directly, since it has no
+        /// own-jar notion to separate.
         private static Option<String> readSliceResourcesTomlFromClassLoader(ClassLoader classLoader) {
+            if (classLoader instanceof SliceClassLoader sliceClassLoader) {
+                return sliceClassLoader.sliceJarUrl()
+                                       .flatMap(sliceStore::readSliceResourcesTomlFromJar);
+            }
+
+            return readSliceResourcesTomlThrough(classLoader);
+        }
+
+        private static Option<String> readSliceResourcesTomlFromJar(URL sliceJarUrl) {
+            var jarClassLoader = new URLClassLoader(new URL[]{sliceJarUrl}, ClassLoader.getPlatformClassLoader());
+            var resourcesToml = readSliceResourcesTomlThrough(jarClassLoader);
+
+            closeJarClassLoader(sliceJarUrl, jarClassLoader);
+
+            return resourcesToml;
+        }
+
+        /// FER: the entry has already been read in full, so a failing close changes nothing the reader
+        /// returns. Guarantee earned: the intrinsic layer is unaffected; what is given up is at most one
+        /// jar handle held until the classloader is collected. Mechanism: logged, then the failure is
+        /// dropped.
+        private static Unit closeJarClassLoader(URL sliceJarUrl, URLClassLoader jarClassLoader) {
+            return Result.lift(Causes::fromThrowable, jarClassLoader::close)
+                         .onFailure(cause -> log.warn("Could not close the classloader over slice jar {} after reading {}: {}",
+                                                      sliceJarUrl,
+                                                      SLICE_RESOURCES_TOML,
+                                                      cause.message()))
+                         .or(Unit.unit());
+        }
+
+        @SuppressWarnings("JBCT-EX-01")
+        private static Option<String> readSliceResourcesTomlThrough(ClassLoader classLoader) {
             try (var in = classLoader.getResourceAsStream(SLICE_RESOURCES_TOML)) {
                 if (in == null) {
                     return Option.none();

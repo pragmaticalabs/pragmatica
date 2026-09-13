@@ -8,6 +8,8 @@ import java.io.IOException;
 import java.net.URL;
 import java.net.URLClassLoader;
 
+import org.pragmatica.lang.Option;
+
 
 @SuppressWarnings("JBCT-UTIL-02")
 public class SliceClassLoader extends URLClassLoader {
@@ -83,6 +85,19 @@ public class SliceClassLoader extends URLClassLoader {
     @SuppressWarnings("JBCT-RET-01")
     public void addSliceDependencyUrl(URL url) {
         addURL(url);
+    }
+
+    /// The slice's own jar: the FIRST url, by construction at every production site
+    /// (`SharedDependencyLoader.createSliceClassLoader` puts the slice jar before the conflicting
+    /// shared jars, `DependencyResolver.createTempLoader` and `RepositoryDependencyLoader` build over
+    /// the jar alone) and because [#addSliceDependencyUrl] only ever appends. None for a loader built
+    /// without one. This is what separates the slice's own `META-INF/resources.toml` from a
+    /// dependency slice's copy: a resource lookup through the loader answers from the first jar that
+    /// ships one, whichever slice it belongs to (#1067).
+    public Option<URL> sliceJarUrl() {
+        var urls = getURLs();
+
+        return urls.length == 0 ? Option.none() : Option.some(urls[0]);
     }
 
     @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
