@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.stream.forward.StreamForwardError;
+import org.pragmatica.aether.stream.replication.ReplicationError;
 import org.pragmatica.lang.Cause;
 
 import org.junit.jupiter.api.Test;
@@ -25,6 +26,11 @@ class TransientClassificationTest {
             new StreamError.LinearizableRoundTimeout("s", 0),
             new StreamForwardError.RemotePublishRetryable("busy"),
             new StreamError.ReshufflePaced("s", 0, 1),
+            StreamForwardError.General.FORWARD_TIMEOUT,
+            StreamForwardError.General.GOVERNOR_UNAVAILABLE,
+            StreamForwardError.General.STREAM_FORWARD_UNAVAILABLE,
+            ReplicationError.General.REPLICATION_TIMEOUT,
+            ReplicationError.General.NOT_ENOUGH_REPLICAS,
         };
 
         for (var cause : transientCauses) {
@@ -39,6 +45,7 @@ class TransientClassificationTest {
             new StreamError.EventTooLarge(2, 1),
             new StreamError.StreamNotFound("s"),
             new StreamForwardError.RemotePublishFailed("no"),
+            StreamForwardError.General.READ_RESPONSE_OVERSIZED,
         };
 
         for (var cause : unclassified) {

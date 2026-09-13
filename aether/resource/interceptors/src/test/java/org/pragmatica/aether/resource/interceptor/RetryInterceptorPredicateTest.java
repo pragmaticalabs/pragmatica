@@ -116,8 +116,38 @@ class RetryInterceptorPredicateTest {
         }
     }
 
-    /// The remaining-budget guard is not what declines a budget of 1 for an UNCLASSIFIED cause —
-    /// the policy is — so a single-attempt budget and a declined cause are distinguishable.
+    /// B1 (review of #1088): the policy must hold on EVERY failure, not the first. Round 1 classified
+    /// the first failure and then handed the budget to a loop that stops only on terminal causes,
+    /// so a business verdict on attempt two was re-driven to the budget.
+    @Test
+    void defaultPolicy_transientThenBusinessFailure_stopsAtTheBusinessFailure() {
+        var attempts = new AtomicInteger();
+        Fn1<Promise<String>, String> flaky = _ -> attempts.incrementAndGet() == 1
+                                                 ? new PeerBusy("later").<String> promise()
+                                                 : new InsufficientFunds("no").<String> promise();
+        var intercepted = interceptor(RetryConfig.retryConfig(3, ONE_MS)).intercept(flaky);
+
+        intercepted.apply("x")
+                   .await()
+                   .onSuccess(_ -> fail("must fail"))
+                   .onFailure(cause -> assertThat(cause).isInstanceOf(InsufficientFunds.class));
+
+        assertThat(attempts.get()).as("one transient retry, then the business verdict stops the loop").isEqualTo(2);
+    }
+
+    @Test
+    void defaultPolicy_twoTransientThenBusinessFailure_stopsAtTheBusinessFailure_underALargerBudget() {
+        var attempts = new AtomicInteger();
+        Fn1<Promise<String>, String> flaky = _ -> attempts.incrementAndGet() <= 2
+                                                 ? new PeerBusy("later").<String> promise()
+                                                 : new InsufficientFunds("no").<String> promise();
+        var intercepted = interceptor(RetryConfig.retryConfig(5, ONE_MS)).intercept(flaky);
+
+        intercepted.apply("x").await().onSuccess(_ -> fail("must fail"));
+
+        assertThat(attempts.get()).isEqualTo(3);
+    }
+
     @Test
     void defaultPolicy_transientFailure_withBudgetOfTwo_isRetriedOnce() {
         var attempts = new AtomicInteger();

@@ -34,7 +34,7 @@ public sealed interface JpaError extends Cause {
     }
 
     /// Optimistic locking conflict - entity was modified by another transaction.
-    record OptimisticLock(String entityType, Object id) implements JpaError {
+    record OptimisticLock(String entityType, Object id) implements JpaError, Cause.Transient {
         @Override
         public String message() {
             return "Optimistic lock failure for " + entityType + " with id=" + id;

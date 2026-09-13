@@ -51,7 +51,7 @@ public sealed interface SqlError extends Cause {
 
     record ServerErrorSQLStatementNotYetComplete(ServerResponse response, String readableCode) implements ServerError {}
 
-    record ServerConnectionException(ServerResponse response, String readableCode) implements ServerError {}
+    record ServerConnectionException(ServerResponse response, String readableCode) implements ServerError, Cause.Transient {}
 
     record ServerTriggeredActionException(ServerResponse response, String readableCode) implements ServerError {}
 
@@ -103,19 +103,19 @@ public sealed interface SqlError extends Cause {
 
     record ServerErrorInvalidSchemaName(ServerResponse response, String readableCode) implements ServerError {}
 
-    record ServerErrorTransactionRollback(ServerResponse response, String readableCode) implements ServerError {}
+    record ServerErrorTransactionRollback(ServerResponse response, String readableCode) implements ServerError, Cause.Transient {}
 
     record ServerSyntaxErrorOrAccessRuleViolation(ServerResponse response, String readableCode) implements ServerError {}
 
     record ServerErrorWithCheckOptionViolation(ServerResponse response, String readableCode) implements ServerError {}
 
-    record ServerErrorInsufficientResources(ServerResponse response, String readableCode) implements ServerError {}
+    record ServerErrorInsufficientResources(ServerResponse response, String readableCode) implements ServerError, Cause.Transient {}
 
     record ServerErrorProgramLimitExceeded(ServerResponse response, String readableCode) implements ServerError {}
 
     record ServerErrorObjectNotInPrerequisiteState(ServerResponse response, String readableCode) implements ServerError {}
 
-    record ServerErrorOperatorIntervention(ServerResponse response, String readableCode) implements ServerError {}
+    record ServerErrorOperatorIntervention(ServerResponse response, String readableCode) implements ServerError, Cause.Transient {}
 
     record ServerSystemError(ServerResponse response, String readableCode) implements ServerError {}
 

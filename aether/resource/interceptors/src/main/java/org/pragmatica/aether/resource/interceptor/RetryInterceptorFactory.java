@@ -26,10 +26,8 @@ public final class RetryInterceptorFactory implements ResourceFactory<RetryMetho
     }
 
     private static RetryMethodInterceptor interceptor(RetryConfig config) {
-        // The interceptor makes the first attempt itself; Retry gets what is left of the budget.
-        var remaining = config.maxAttempts() - 1;
-        var retry = Retry.retry().attempts(remaining).strategy(config.backoffStrategy());
+        var retry = Retry.retry().attempts(config.maxAttempts()).strategy(config.backoffStrategy());
 
-        return new RetryMethodInterceptor(retry, remaining, config.retryOn());
+        return new RetryMethodInterceptor(retry, config.retryOn());
     }
 }
