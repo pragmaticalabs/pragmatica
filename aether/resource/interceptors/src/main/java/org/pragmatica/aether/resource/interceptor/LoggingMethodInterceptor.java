@@ -14,8 +14,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-public record LoggingMethodInterceptor(LogConfig config) implements MethodInterceptor {
-    private static final Logger log = LoggerFactory.getLogger(LoggingMethodInterceptor.class);
+/// One logger per injection point, named by `LogConfig.name()` — a single class-named logger
+/// shared by every intercepted method gave operators nothing to tune per method (#280 R28).
+public record LoggingMethodInterceptor(LogConfig config, Logger log) implements MethodInterceptor {
+    public LoggingMethodInterceptor(LogConfig config) {
+        this(config,
+             LoggerFactory.getLogger(config.name()));
+    }
 
     @Override
     public <R, T> Fn1<Promise<R>, T> intercept(Fn1<Promise<R>, T> method) {

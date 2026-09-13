@@ -7,19 +7,19 @@ import org.pragmatica.lang.Cause;
 public sealed interface SqlError extends Cause {
     record ConfigurationError(String message) implements SqlError {}
 
-    record ChannelClosed(String message) implements SqlError {}
+    record ChannelClosed(String message) implements SqlError, Cause.Transient {}
 
     record SimultaneousUseDetected(String message) implements SqlError {}
 
     record ConnectionPoolClosed(String message) implements SqlError {}
 
-    record PoolExhausted(String message) implements SqlError {}
+    record PoolExhausted(String message) implements SqlError, Cause.Transient {}
 
     record LogicalConnectionClosed(String message) implements SqlError {}
 
     record BadAuthenticationSequence(String message) implements SqlError {}
 
-    record CommunicationError(String message) implements SqlError {}
+    record CommunicationError(String message) implements SqlError, Cause.Transient {}
 
     record InvalidChannelName(String message) implements SqlError {}
 

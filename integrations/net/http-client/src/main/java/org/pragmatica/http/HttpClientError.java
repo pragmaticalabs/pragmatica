@@ -32,7 +32,7 @@ import static org.pragmatica.http.HttpClientError.Timeout.timeout;
 /// Maps common HTTP exceptions to domain-friendly error types.
 public sealed interface HttpClientError extends Cause {
     /// Connection to server failed (network unreachable, DNS failure, connection refused).
-    record ConnectionFailed(String message, Option<Throwable> cause) implements HttpClientError {
+    record ConnectionFailed(String message, Option<Throwable> cause) implements HttpClientError, Cause.Transient {
         public static ConnectionFailed connectionFailed(String message) {
             return new ConnectionFailed(message, Option.none());
         }
@@ -48,7 +48,7 @@ public sealed interface HttpClientError extends Cause {
     }
 
     /// Request or connection timeout exceeded.
-    record Timeout(String message, Option<Duration> duration) implements HttpClientError {
+    record Timeout(String message, Option<Duration> duration) implements HttpClientError, Cause.Transient {
         public static Timeout timeout(String message) {
             return new Timeout(message, Option.none());
         }

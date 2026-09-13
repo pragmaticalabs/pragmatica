@@ -23,7 +23,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         }
     }
 
-    record ConnectionFailed(String message, Option<Throwable> cause) implements DatabaseConnectorError {
+    record ConnectionFailed(String message, Option<Throwable> cause) implements DatabaseConnectorError, Cause.Transient {
         public static Result<ConnectionFailed> connectionFailed(String message, Option<Throwable> cause) {
             return success(new ConnectionFailed(message, cause));
         }
@@ -100,7 +100,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         return ConstraintViolation.constraintViolation("unknown", message).unwrap();
     }
 
-    record TimedOut(String operation) implements DatabaseConnectorError {
+    record TimedOut(String operation) implements DatabaseConnectorError, Cause.Transient {
         public static Result<TimedOut> timedOut(String operation) {
             return success(new TimedOut(operation));
         }
@@ -176,7 +176,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         return ConfigurationError.configurationError(reason).unwrap();
     }
 
-    enum PoolExhausted implements DatabaseConnectorError {
+    enum PoolExhausted implements DatabaseConnectorError, Cause.Transient {
         INSTANCE;
         @Override
         public String message() {
