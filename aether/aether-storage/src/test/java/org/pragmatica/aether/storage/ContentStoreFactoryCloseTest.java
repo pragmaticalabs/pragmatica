@@ -82,12 +82,13 @@ class ContentStoreFactoryCloseTest {
         logger.setLevel(Level.ALL);
         handler.setLevel(Level.ALL);
         logger.addHandler(handler);
-
         try {
-            var storage = StorageInstance.storageInstance("content", List.of(MemoryTier.memoryTier(MEMORY_BYTES)));
+            var storage = StorageInstance.storageInstance("content",
+                                                          List.of(MemoryTier.memoryTier(MEMORY_BYTES)));
             var context = ProvisioningContext.provisioningContext().withExtension(StorageInstance.class, storage);
 
-            factory.provision(ContentStoreConfig.contentStoreConfig(), context)
+            factory.provision(ContentStoreConfig.contentStoreConfig(),
+                              context)
                    .flatMap(factory::close)
                    .await()
                    .onFailure(cause -> fail("close should succeed: " + cause.message()));
@@ -97,11 +98,14 @@ class ContentStoreFactoryCloseTest {
         }
 
         var matching = captured.stream()
-                               .filter(record -> record.getMessage().contains("No close convention"))
-                               .filter(record -> record.getMessage().contains("DefaultContentStore"))
+                               .filter(record -> record.getMessage()
+                                                       .contains("No close convention"))
+                               .filter(record -> record.getMessage()
+                                                       .contains("DefaultContentStore"))
                                .toList();
 
-        assertThat(matching).as("the default dispatch names the outcome once; the old no-op override named nothing").hasSize(1);
+        assertThat(matching).as("the default dispatch names the outcome once; the old no-op override named nothing")
+                  .hasSize(1);
     }
 
     /// The reason the override is absent, pinned as a behaviour so an overcorrection ("close it
