@@ -909,8 +909,6 @@ class ClusterDestroyCommand implements Callable<Integer> {
                           ? "removed"
                           : "KEPT (cloud cleanup failed — retry 'aether cluster destroy --cluster " + clusterName
                            + " --yes')");
-        var drainShutdownOk = countSuccesses(drainResults) == drainResults.size() && countSuccesses(shutdownResults) == shutdownResults.size();
-
         if (!cleanupSucceeded) {
             System.err.println("Warning: cloud resource cleanup failed; orphan resources may remain. "
                               + "Run 'tools/cloud-reaper.sh --cluster " + clusterName
@@ -919,15 +917,33 @@ class ClusterDestroyCommand implements Callable<Integer> {
             return ExitCode.CLEANUP_FAILED;
         }
 
-        if (!drainShutdownOk) {
-            System.err.println("Warning: some drain/shutdown operations failed. Check output above.");
-
-            return ExitCode.ERROR;
-        }
-
+        warnIncomplete("drain", drainResults);
+        warnIncomplete("shutdown", shutdownResults);
         System.out.printf("Cluster '%s' destroyed successfully.%n", clusterName);
 
         return ExitCode.SUCCESS;
+    }
+
+    /// #587 — the exit code is a retry signal and must agree with the registry: non-zero means the
+    /// entry was KEPT and a re-run has work to do (#521). Cleanup is complete and the entry is gone by
+    /// the time this runs, so drain/shutdown failures are reported by name and do not change the exit
+    /// code — a script that retried on it would be retrying a cluster that no longer exists.
+    private static void warnIncomplete(String operation, List<NodeResult> results) {
+        var failed = results.stream()
+                            .filter(result -> !result.success())
+                            .map(NodeResult::nodeId)
+                            .toList();
+
+        if (failed.isEmpty()) {
+            return;
+        }
+
+        System.err.printf("Warning: %d of %d %s operations failed (%s) before the VMs were deleted;"
+                         + " cloud cleanup is complete and nothing is left to retry.%n",
+                          failed.size(),
+                          results.size(),
+                          operation,
+                          String.join(", ", failed));
     }
 
     /// #1023 — `Drains succeeded: 0/0` was the ENTIRE observable outcome of a destroy that drained nothing,
