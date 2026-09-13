@@ -11,6 +11,19 @@
   [verified: `aether/cli` `BootstrapPhaseDeployCloudSshRestartTest.deployCloudSource_containerRestart_labelsAndEnvsEachNodeWithItsOwnRole`,
   `…jvmRestart_envsEachNodeWithItsOwnRole`, `…failsLoudly_whenANodeIdEncodesNoRole` — through
   `deployCloudSource` with a captured `sshExec`, one node per role]
+- **Source attribution is now exact (review finding).** Every surface that attributed a node to its
+  source — `BootstrapPhaseDeploy.collectSourceNodes`, the #994 cleanup ledger in
+  `BootstrapPhaseProvision.buildUpdatedState`, `BootstrapPhasePost`'s first-core lookup — tested
+  `nodeId.startsWith(source + "-")`, so with sources `eu` and `eu-1` the launch for `eu` also
+  re-launched `eu-1-core-0` (silently, under `eu`'s image and SSH config; the first cut of this PR
+  turned that into a refusal blaming its own minting). One parser now anchors role and index at the
+  END of the id (`^(.+)-(core|worker|spot)-(\d+)$`) and attribution compares the source segment
+  exactly; an id that does not parse fails the deploy by name instead of being skipped by every
+  source. Belt and braces at load: **CL-08 now also refuses a source name that is a `<name>-` prefix
+  of another** (`eu`/`eu-1`, and so `eu`/`eu-west`) with one message naming both — a config that
+  used such names must rename one. `cluster-bootstrap-spec.md` §12.2 row updated.
+  [verified: `BootstrapPhaseDeployCloudSshRestartTest.deployCloudSource_prefixSiblingSource_neverTouchesTheOtherSourcesNode`
+  — `eu`'s launch re-launches only `203.0.113.20`; `ClusterBootstrapConfigValidatorTest.validate_sourceNameIsDashPrefixOfAnother_returnsCl08NamingBoth`]
 - **Scope, stated honestly:** at this tip the cloud re-launch only ever sees cores —
   `BootstrapPhaseProvision.CLOUD_BOOTSTRAP_ROLES` is `[CORE]` (RFC-0017 stage 7; workers are minted by
   the cluster's reconciler through `NodeUserDataRenderer`, which already threads the intended role,

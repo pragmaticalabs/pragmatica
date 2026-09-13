@@ -670,7 +670,8 @@ sealed interface BootstrapPhaseDeploy {
     private static List<ProvisionedNode> collectSourceNodes(BootstrapContext ctx, SourceName sourceName) {
         return ctx.nodes()
                   .stream()
-                  .filter(n -> BootstrapPhaseProvision.belongsTo(n.nodeId(), sourceName))
+                  .filter(n -> BootstrapPhaseProvision.belongsTo(n.nodeId(),
+                                                                 sourceName))
                   .toList();
     }
 

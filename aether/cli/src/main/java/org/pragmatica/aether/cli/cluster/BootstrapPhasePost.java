@@ -62,8 +62,8 @@ sealed interface BootstrapPhasePost {
         var targetNode = ctx.nodes()
                             .stream()
                             .filter(n -> BootstrapPhaseProvision.parseNodeId(n.nodeId())
-                                                                .map(parsed -> parsed.source().equals(sourceName.value())
-                                                                               && parsed.role() == NodeRole.CORE)
+                                                                .map(parsed -> parsed.source()
+                                                                                     .equals(sourceName.value()) && parsed.role() == NodeRole.CORE)
                                                                 .or(false))
                             .findFirst();
 

@@ -155,7 +155,8 @@ public final class ClusterBootstrapConfigValidator {
                   .keySet()
                   .stream()
                   .filter(other -> !other.equals(name) && other.startsWith(name + "-"))
-                  .forEach(other -> errors.add("CL-08: Source name '" + name + "' is a prefix of source '" + other
+                  .forEach(other -> errors.add("CL-08: Source name '" + name
+                                              + "' is a prefix of source '" + other
                                               + "' under the node-id form <source>-<role>-<index>; rename one of them"));
         }
     }

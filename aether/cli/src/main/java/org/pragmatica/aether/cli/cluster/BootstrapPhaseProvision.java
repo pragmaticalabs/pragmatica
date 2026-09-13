@@ -89,7 +89,7 @@ sealed interface BootstrapPhaseProvision {
                                                                                            sourceName.value(),
                                                                                            parseNodeId(node.nodeId()).map(parsed -> parsed.role()
                                                                                                                                           .value())
-                                                                                                                     .or("")));
+                                                                                                      .or("")));
                 }
             }
 
@@ -366,12 +366,16 @@ sealed interface BootstrapPhaseProvision {
 
         return NodeRole.nodeRole(matcher.group(2))
                        .option()
-                       .map(role -> new ParsedNodeId(matcher.group(1), role, Integer.parseInt(matcher.group(3))));
+                       .map(role -> new ParsedNodeId(matcher.group(1),
+                                                     role,
+                                                     Integer.parseInt(matcher.group(3))));
     }
 
     /// Exact source attribution: the id's source segment equals `sourceName`, not merely starts with it.
     static boolean belongsTo(String nodeId, SourceName sourceName) {
-        return parseNodeId(nodeId).map(parsed -> parsed.source().equals(sourceName.value())).or(false);
+        return parseNodeId(nodeId).map(parsed -> parsed.source()
+                                                       .equals(sourceName.value()))
+                          .or(false);
     }
 
     /// #296 — the role a node id encodes, for the source the deploy phase is working on. A failure
@@ -380,12 +384,13 @@ sealed interface BootstrapPhaseProvision {
     /// message names the source the id was parsed against, so a mis-attributed node (a source that
     /// dash-prefixes another) is diagnosable rather than blamed on minting.
     static Result<NodeRole> nodeRole(String nodeId, SourceName sourceName) {
-        return parseNodeId(nodeId).filter(parsed -> parsed.source().equals(sourceName.value()))
-                                  .map(ParsedNodeId::role)
-                                  .toResult(new BootstrapError.DeploymentFailed(nodeId,
-                                                                                "node id does not encode a role for source '" + sourceName.value()
-                                                                               + "' (expected " + sourceName.value()
-                                                                               + "-<core|worker|spot>-<index>)"));
+        return parseNodeId(nodeId).filter(parsed -> parsed.source()
+                                                          .equals(sourceName.value()))
+                          .map(ParsedNodeId::role)
+                          .toResult(new BootstrapError.DeploymentFailed(nodeId,
+                                                                        "node id does not encode a role for source '" + sourceName.value()
+                                                                       + "' (expected " + sourceName.value()
+                                                                       + "-<core|worker|spot>-<index>)"));
     }
 
     @SuppressWarnings("JBCT-PAT-01")
