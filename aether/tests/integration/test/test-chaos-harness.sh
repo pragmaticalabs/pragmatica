@@ -250,8 +250,11 @@ check "$d" "A9 unreadable on round 1, dead on round 2 -> keeps probing within th
 
 d=$(new_case); drain_vms "$d" "0|${UNIT_FAILED_2}" none
 run_in "$d" "$CLUSTER_LIB" _cloud_await_full_drain "$TEST_CLUSTER" jvm 12
-check "$d" "A10 persistently unreadable -> probes every 5s until the 12s bound, then refuses" \
-    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "NOT confirmed after 4 round(s) in 15s (bound 12s)"'
+# Virtual time advances only on sleep, and the real seconds a loaded box spends per round add to
+# it, so assert the shape (2-4 rounds, not the ~13 a 1s interval gives), not an exact count.
+a10_rounds=$(sed -n 's/.*NOT confirmed after \([0-9]*\) round(s) in \([0-9]*\)s (bound 12s).*/\1 \2/p' "$d/out")
+check "$d" "A10 persistently unreadable -> re-probes at the 5s interval until the 12s bound, then refuses" \
+    eval '[ "$(rc_of "$d")" = 1 ] && [ -n "$a10_rounds" ] && [ "${a10_rounds%% *}" -ge 2 ] && [ "${a10_rounds%% *}" -le 4 ] && [ "${a10_rounds##* }" -ge 12 ]'
 
 d=$(new_case); drain_vms "$d" "0|exited|2\n" "0|dead|137\n"
 run_in "$d" "$CLUSTER_LIB" _cloud_await_full_drain "$TEST_CLUSTER" container 0
@@ -315,7 +318,7 @@ d=$(new_case); s20_setup "$d" quorum-lost; drain_vms "$d" "0|${UNIT_FAILED_2}" "
 resp "$d/$TOPO_PATH_KEY" 0 "$TOPO_5"
 run_in "$d" "$SELF_DRAIN_SUITE" test_cluster_recovers_to_five_on_duty
 check "$d" "B3 confirmed drain -> one reap, PASS line prints the elapsed and the 600s budget" \
-    eval '[ "$(rc_of "$d")" = 0 ] && [ "$(lines_of "$d/reap-calls")" = 1 ] && has_re "$d" "recovered to 5 healthy cores 20[0-2]s after drain confirmation began \\(budget 600s"'
+    eval '[ "$(rc_of "$d")" = 0 ] && [ "$(lines_of "$d/reap-calls")" = 1 ] && has_re "$d" "recovered to 5 healthy cores 2[01][0-9]s after drain confirmation began \\(budget 600s"'
 check "$d" "B3b barriers run after recovery in restart_all_nodes' order, echo redeploy included" \
     eval '[ "$(tr "\n" "," < "$d/barrier-calls")" = "leader,quiesce,ready 5,echo," ]'
 
@@ -323,13 +326,13 @@ d=$(new_case); s20_setup "$d" quorum-lost; drain_vms "$d" "0|${UNIT_FAILED_2}" "
 resp "$d/$TOPO_PATH_KEY" 0 "$TOPO_5"; echo "RECOVER_TAKES_S=700" >> "$d/setup.sh"
 run_in "$d" "$SELF_DRAIN_SUITE" test_cluster_recovers_to_five_on_duty
 check "$d" "B4 reap+rebootstrap past the budget -> FAIL with the measured elapsed and the budget, no barriers" \
-    eval '[ "$(rc_of "$d")" = 1 ] && has_re "$d" "took 70[0-2]s, over the 600s budget" && [ ! -f "$d/barrier-calls" ]'
+    eval '[ "$(rc_of "$d")" = 1 ] && has_re "$d" "took 7[01][0-9]s, over the 600s budget" && [ ! -f "$d/barrier-calls" ]'
 
 d=$(new_case); s20_setup "$d" quorum-lost; drain_vms "$d" "0|${UNIT_FAILED_2}" "0|${UNIT_FAILED_2}"
-resp "$d/$TOPO_PATH_KEY" 0 "$TOPO_3"
+resp "$d/$TOPO_PATH_KEY" 0 "$TOPO_3"; echo "TIMEOUT_SCALE=3" >> "$d/setup.sh"
 run_in "$d" "$SELF_DRAIN_SUITE" test_cluster_recovers_to_five_on_duty
-check "$d" "B5 never 5 cores -> FAIL within the unscaled remaining budget, elapsed + budget + last count printed" \
-    eval '[ "$(rc_of "$d")" = 1 ] && has_re "$d" "timeout: 40[0-2]s\\)" && has "$d" "last observed value: 3" && has_re "$d" "not back to 5 healthy cores \\(elapsed 60[0-9]s, budget 600s" && ! has "$d" "recovered to 5 healthy cores"'
+check "$d" "B5 never 5 cores (cloud TIMEOUT_SCALE=3) -> FAIL within the UNSCALED remaining budget, elapsed + budget + last count printed" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has_re "$d" "timeout: (3[6-9][0-9]|40[0-2])s\\)" && has "$d" "last observed value: 3" && has_re "$d" "not back to 5 healthy cores \\(elapsed 6[0-2][0-9]s, budget 600s" && ! has "$d" "recovered to 5 healthy cores"'
 
 d=$(new_case); s20_setup "$d" quorum-lost; drain_vms "$d" "0|${UNIT_FAILED_2}" "0|${UNIT_FAILED_2}"
 run_in "$d" "$SELF_DRAIN_SUITE" test_cluster_recovers_to_five_on_duty
@@ -345,10 +348,12 @@ check "$d" "B7 CLOUD_RUNTIME unset on cloud -> refused before probing or reaping
     eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "CLOUD_RUNTIME is '"'"'<unset>'"'"' on a cloud run" && [ ! -f "$d/hcloud-calls" ] && [ ! -f "$d/reap-calls" ]'
 
 d=$(new_case); s20_setup "$d" quorum-lost; drain_vms "$d" "0|${UNIT_FAILED_2}" "0|${UNIT_FAILED_2}"
-resp "$d/$TOPO_PATH_KEY" 0 "$TOPO_5"; echo "RECOVER_TAKES_S=599" >> "$d/setup.sh"; echo 2 > "$d/${TOPO_PATH_KEY}.delay"
+# 6s of virtual budget left, and the topology read takes 8 REAL seconds: the poll starts inside
+# the budget (unless the box stalls this case for 6s) and ends past it.
+resp "$d/$TOPO_PATH_KEY" 0 "$TOPO_5"; echo "RECOVER_TAKES_S=594" >> "$d/setup.sh"; echo 8 > "$d/${TOPO_PATH_KEY}.delay"
 run_in "$d" "$SELF_DRAIN_SUITE" test_cluster_recovers_to_five_on_duty
 check "$d" "B8 5 cores read on a poll that started in budget but ended past it -> FAIL, not PASS" \
-    eval '[ "$(rc_of "$d")" = 1 ] && has_re "$d" "5 healthy cores reached only after 60[1-9]s, over the 600s budget" && ! has "$d" "S20 (cloud): recovered"'
+    eval '[ "$(rc_of "$d")" = 1 ] && has_re "$d" "5 healthy cores reached only after 6[0-2][0-9]s, over the 600s budget" && ! has "$d" "S20 (cloud): recovered"'
 
 d=$(new_case); s20_setup "$d" quorum-lost; drain_vms "$d" "0|${UNIT_FAILED_2}" "0|${UNIT_FAILED_2}"
 resp "$d/$TOPO_PATH_KEY" 0 "$TOPO_5"; echo "ECHO_RC=1" >> "$d/setup.sh"
@@ -602,9 +607,11 @@ d=$(h4_case 6 "$V_NONOWNER_CLAIM")
 check "$d" "H5 initial view never owner-authoritative -> fails without waiting (only the initial 10 attempts)" \
     eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "REPLICA_CALLS=10" && ! has "$d" "No CAUGHT_UP non-owner replica"'
 
-d=$(h4_case 2 "$V_AUTH_SYNCING" "$V_NONOWNER_CLAIM")
-check "$d" "H6 refresh retries are capped by the time left (2s left -> 1 retry, not 10)" \
-    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "REPLICA_CALLS=2"'
+# 4s wait: a 3s pause leaves ~1s, so each refresh gets 1 retry — 2 or 3 replica calls in all
+# depending on real time spent, where uncapped refreshes make 11 or more.
+d=$(h4_case 4 "$V_AUTH_SYNCING" "$V_NONOWNER_CLAIM")
+check "$d" "H6 refresh retries are capped by the time left (~1s left after the pause -> 1 retry, not 10)" \
+    eval '[ "$(rc_of "$d")" = 1 ] && { has "$d" "REPLICA_CALLS=2" || has "$d" "REPLICA_CALLS=3"; }'
 
 echo ""
 echo "  ----"
