@@ -531,16 +531,16 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// the suspicion. A `PEER_UNRESPONSIVE` hint is kept, since a reconnect says nothing about a
     /// peer that is connected but silent.
     private void retractLinkLostHint(NodeId peer) {
-        option(transportHints.get(peer)).filter(TransportHintState::linkLost)
-              .onPresent(_ -> applyLinkLostRetraction(peer));
+        option(transportHints.get(peer)).filter(TransportHintState::linkLost).onPresent(_ -> clearLinkLostFlag(peer));
     }
 
-    private void applyLinkLostRetraction(NodeId peer) {
+    private void clearLinkLostFlag(NodeId peer) {
         transportHints.computeIfPresent(peer, SwimProtocol::withoutLinkLost);
         LOG.info("SWIM transport hint: link to {} re-established — LINK_LOST death hint retracted "
                 + "(SWIM state unchanged); effective suspect window now {}ms",
                  peer.id(),
-                 effectiveSuspicionWindowMs(peer, config.suspectTimeout().millis()));
+                 effectiveSuspicionWindowMs(peer,
+                                            config.suspectTimeout().millis()));
     }
 
     @NullReturn
@@ -984,7 +984,8 @@ public final class SwimProtocol implements SwimMessageHandler {
                 + "(dogpile {}ms, min {}ms, max {}ms, LHM score {}, multiplier x{}, K={})",
                  suspect.id(),
                  accuser.id(),
-                 effectiveSuspicionWindowMs(suspect, config.suspectTimeout().millis()),
+                 effectiveSuspicionWindowMs(suspect,
+                                            config.suspectTimeout().millis()),
                  dogpileWindowMs(suspicion),
                  suspicion.minWindowMs(),
                  suspicion.maxWindowMs(),
@@ -1823,7 +1824,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         // fabricates membership evidence; there is nothing to admit it AS.
         if (update.state() == MemberState.UNKNOWN) {
             LOG.warn("SWIM refusing to admit {} at incarnation {}: the update carries a member state this node"
-                     + " cannot decode — the peer is running a newer MemberState (#964). The member is not added.",
+                    + " cannot decode — the peer is running a newer MemberState (#964). The member is not added.",
                      update.nodeId().id(),
                      update.incarnation());
 
@@ -1847,7 +1848,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             // Kept so the switch stays exhaustive and so the next MemberState constant is a compile
             // error here. NOTE for whoever reads the OBSERVED arm beside it: these arms run AFTER
             // `members.put`, so "drop" in that comment means "fire no listener", NOT "do not store".
-            case UNKNOWN -> { }
+            case UNKNOWN -> {}
         }
         // Re-broadcast based on the LOCAL stored state, NOT the raw wire update (#336/#241 wire-leak,
         // Finding B): a gossiped SUSPECT-of-unknown is birthed OBSERVED ([#applyNewSuspectMember]) and
@@ -1929,8 +1930,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         // which already drops an UNKNOWN update instead of storing it — the two paths now agree.
         if (update.state() == MemberState.UNKNOWN) {
             LOG.warn("SWIM dropping membership update for {} at incarnation {}: it carries a member state this"
-                     + " node cannot decode — the peer is running a newer MemberState (#964). The last decodable"
-                     + " state {} is kept.",
+                    + " node cannot decode — the peer is running a newer MemberState (#964). The last decodable"
+                    + " state {} is kept.",
                      update.nodeId().id(),
                      update.incarnation(),
                      existing.state());

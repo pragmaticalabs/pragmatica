@@ -296,7 +296,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     /// Option 1 (S01) — consumer that feeds a transport-unreachable HINT into SWIM on ping-timeout.
     /// Default no-op until `AetherNode` wires it to `swimHealthDetector.recordTransportHint(
-    /// QuicTransportCause.PING_TIMEOUT.unreachableHint(peer))` (a `PEER_UNRESPONSIVE` hint, #1061). Replaces the
+    /// AetherNode.unreachableHint(QuicTransportCause.PING_TIMEOUT, peer))` (a `PEER_UNRESPONSIVE` hint, #1061). Replaces the
     /// former destructive disconnect — SWIM arbitrates the hint and refutes it when pongs resume.
     private final AtomicReference<Consumer<NodeId>> unreachableReporter = new AtomicReference<>(_ -> {});
 
