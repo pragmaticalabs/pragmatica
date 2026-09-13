@@ -360,9 +360,21 @@ class AwsComputeProviderTest {
             assertThat(AwsComputeProvider.mapStatus("terminated")).isEqualTo(InstanceStatus.TERMINATED);
         }
 
+        /// #1049 — exhaustive over EC2's documented `InstanceStateName` enum (API reference, InstanceState:
+        /// pending, running, shutting-down, terminated, stopping, stopped), plus one undocumented value, which
+        /// must never read as terminated.
         @Test
-        void mapStatus_unknown_returnsTerminated() {
-            assertThat(AwsComputeProvider.mapStatus("unknown")).isEqualTo(InstanceStatus.TERMINATED);
+        void mapStatus_everyDocumentedState_andAnUnrecognisedOne_mapExhaustively() {
+            var expected = Map.ofEntries(Map.entry("pending", InstanceStatus.PROVISIONING),
+                                         Map.entry("running", InstanceStatus.RUNNING),
+                                         Map.entry("shutting-down", InstanceStatus.TERMINATED),
+                                         Map.entry("terminated", InstanceStatus.TERMINATED),
+                                         Map.entry("stopping", InstanceStatus.STOPPING),
+                                         Map.entry("stopped", InstanceStatus.STOPPING),
+                                         Map.entry("a-state-ec2-adds-later", InstanceStatus.UNKNOWN));
+
+            assertThat(expected).hasSize(7);
+            expected.forEach((state, mapped) -> assertThat(AwsComputeProvider.mapStatus(state)).as(state).isEqualTo(mapped));
         }
     }
 

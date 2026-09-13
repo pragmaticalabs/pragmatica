@@ -609,13 +609,16 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
                        .toList();
     }
 
+    /// EC2's documented `InstanceStateName` values. Any value not listed here maps to
+    /// [InstanceStatus#UNKNOWN] (#1049): reading it as terminated drops an auto-heal replacement that may
+    /// still exist.
     static InstanceStatus mapStatus(String ec2Status) {
         return switch (ec2Status) {
             case "pending" -> InstanceStatus.PROVISIONING;
             case "running" -> InstanceStatus.RUNNING;
             case "stopping", "stopped" -> InstanceStatus.STOPPING;
             case "shutting-down", "terminated" -> InstanceStatus.TERMINATED;
-            default -> InstanceStatus.TERMINATED;
+            default -> InstanceStatus.UNKNOWN;
         };
     }
 

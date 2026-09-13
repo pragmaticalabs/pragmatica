@@ -261,12 +261,15 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
                         .toList();
     }
 
+    /// Compute Engine's documented `Instance.status` values (GCP's `TERMINATED` is a stopped instance, not a
+    /// deleted one). `REPAIRING`, and any value not listed here, map to [InstanceStatus#UNKNOWN] (#1049):
+    /// reading them as terminated drops an auto-heal replacement that still exists.
     static InstanceStatus mapStatus(String gcpStatus) {
         return switch (gcpStatus) {
-            case "PROVISIONING", "STAGING" -> InstanceStatus.PROVISIONING;
+            case "PROVISIONING", "STAGING", "PENDING" -> InstanceStatus.PROVISIONING;
             case "RUNNING" -> InstanceStatus.RUNNING;
-            case "STOPPING", "TERMINATED", "SUSPENDED", "SUSPENDING" -> InstanceStatus.STOPPING;
-            default -> InstanceStatus.TERMINATED;
+            case "STOPPING", "TERMINATED", "SUSPENDED", "SUSPENDING", "PENDING_STOP", "STOPPED", "DEPROVISIONING" -> InstanceStatus.STOPPING;
+            default -> InstanceStatus.UNKNOWN;
         };
     }
 

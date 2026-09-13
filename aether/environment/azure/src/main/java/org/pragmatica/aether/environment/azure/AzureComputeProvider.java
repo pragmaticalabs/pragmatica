@@ -261,7 +261,7 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         var tags = safeTags(row);
 
         return new InstanceInfo(new InstanceId(row.name()),
-                                InstanceStatus.RUNNING,
+                                mapRowStatus(row),
                                 List.of(),
                                 InstanceType.ON_DEMAND,
                                 tags,
@@ -322,6 +322,40 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
                    .toList();
     }
 
+    /// #1049 — status of a VM as Resource Graph lists it. Previously hard-coded RUNNING, which made every
+    /// stopped, deallocated or failed VM read as present to the auto-heal tracker. Power state first, then
+    /// provisioning state, exactly as [#mapStatus] reads a VM: provisioning state reflects only the last
+    /// control-plane operation, so a running VM whose last tag update failed is still running. Neither
+    /// present → [InstanceStatus#UNKNOWN].
+    static InstanceStatus mapRowStatus(ResourceRow row) {
+        var properties = Option.<Map<?, ?>> option(row.properties()).or(Map.of());
+
+        return rowPowerStateCode(properties).map(AzureComputeProvider::powerStateToStatus)
+                                .or(() -> rowProvisioningState(properties).map(AzureComputeProvider::provisioningStateToStatus)
+                                                              .or(InstanceStatus.UNKNOWN));
+    }
+
+    /// Resource Graph carries a VM's power state at `properties.extended.instanceView.powerState.code`.
+    private static Option<String> rowPowerStateCode(Map<?, ?> properties) {
+        return nestedMap(properties, "extended").flatMap(extended -> nestedMap(extended, "instanceView"))
+                        .flatMap(instanceView -> nestedMap(instanceView, "powerState"))
+                        .flatMap(powerState -> text(powerState, "code"));
+    }
+
+    private static Option<String> rowProvisioningState(Map<?, ?> properties) {
+        return text(properties, "provisioningState");
+    }
+
+    private static Option<Map<?, ?>> nestedMap(Map<?, ?> map, String key) {
+        return option(map.get(key)).filter(Map.class::isInstance)
+                     .map(value -> (Map<?, ?>) value);
+    }
+
+    private static Option<String> text(Map<?, ?> map, String key) {
+        return option(map.get(key)).filter(String.class::isInstance)
+                     .map(String.class::cast);
+    }
+
     static InstanceStatus mapStatus(VirtualMachine vm) {
         return option(vm.properties()).flatMap(AzureComputeProvider::extractPowerState)
                      .map(AzureComputeProvider::powerStateToStatus)
@@ -348,18 +382,25 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
             case "PowerState/deallocated", "PowerState/stopped" -> InstanceStatus.STOPPING;
             case "PowerState/starting" -> InstanceStatus.PROVISIONING;
             case "PowerState/deallocating", "PowerState/stopping" -> InstanceStatus.STOPPING;
-            default -> InstanceStatus.TERMINATED;
+            default -> InstanceStatus.UNKNOWN;
         };
     }
 
     private static InstanceStatus provisioningStateToStatus(VirtualMachine vm) {
-        var state = option(vm.properties()).map(VirtualMachine.VmProperties::provisioningState).or("Unknown");
+        return option(vm.properties()).flatMap(properties -> option(properties.provisioningState()))
+                     .map(AzureComputeProvider::provisioningStateToStatus)
+                     .or(InstanceStatus.UNKNOWN);
+    }
 
+    /// Azure's documented VM provisioning states. `Failed` reads as stopping, which the auto-heal tracker
+    /// classifies as a failed replacement. Any state not listed here (e.g. `Canceled`) maps to
+    /// [InstanceStatus#UNKNOWN] (#1049).
+    private static InstanceStatus provisioningStateToStatus(String state) {
         return switch (state) {
             case "Succeeded" -> InstanceStatus.RUNNING;
             case "Creating", "Updating" -> InstanceStatus.PROVISIONING;
             case "Deleting", "Failed" -> InstanceStatus.STOPPING;
-            default -> InstanceStatus.TERMINATED;
+            default -> InstanceStatus.UNKNOWN;
         };
     }
 

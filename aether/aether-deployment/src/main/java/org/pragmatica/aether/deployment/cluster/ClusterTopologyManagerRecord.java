@@ -709,23 +709,34 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     /// Empty listing → ABSENT; any instance still provisioning or running → PRESENT (a replacement is
-    /// coming even if an earlier attempt under the same id left a stopped one behind); otherwise every
-    /// listed instance is stopping or terminated → FAILED.
+    /// coming even if an earlier attempt under the same id left a stopped one behind); otherwise any
+    /// instance whose status the provider could not state → UNKNOWN, never FAILED (#1049: FAILED drops the
+    /// replacement at once, and that instance may still exist); otherwise every listed instance is stopping
+    /// or terminated → FAILED.
     private static ReplacementInstanceState classifyReplacementInstances(List<InstanceInfo> instances) {
         if (instances.isEmpty()) {
             return ReplacementInstanceState.ABSENT;
         }
 
-        return instances.stream()
-                        .anyMatch(ClusterTopologyManagerRecord::isProvisioningOrRunning)
-               ? ReplacementInstanceState.PRESENT
+        if (anyInstanceIn(instances, ReplacementInstanceState.PRESENT)) {
+            return ReplacementInstanceState.PRESENT;
+        }
+
+        return anyInstanceIn(instances, ReplacementInstanceState.UNKNOWN)
+               ? ReplacementInstanceState.UNKNOWN
                : ReplacementInstanceState.FAILED;
     }
 
-    private static boolean isProvisioningOrRunning(InstanceInfo instance) {
+    private static boolean anyInstanceIn(List<InstanceInfo> instances, ReplacementInstanceState state) {
+        return instances.stream()
+                        .anyMatch(instance -> instanceState(instance) == state);
+    }
+
+    private static ReplacementInstanceState instanceState(InstanceInfo instance) {
         return switch (instance.status()) {
-            case InstanceStatus.Provisioning _, InstanceStatus.Running _ -> true;
-            case InstanceStatus.Stopping _, InstanceStatus.Terminated _, InstanceStatus.unused _ -> false;
+            case InstanceStatus.Provisioning _, InstanceStatus.Running _ -> ReplacementInstanceState.PRESENT;
+            case InstanceStatus.Unknown _, InstanceStatus.unused _ -> ReplacementInstanceState.UNKNOWN;
+            case InstanceStatus.Stopping _, InstanceStatus.Terminated _ -> ReplacementInstanceState.FAILED;
         };
     }
 

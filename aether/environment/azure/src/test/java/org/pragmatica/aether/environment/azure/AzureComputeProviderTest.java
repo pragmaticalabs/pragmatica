@@ -7,6 +7,7 @@ package org.pragmatica.aether.environment.azure;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
+import org.pragmatica.cloud.azure.api.ResourceRow;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
@@ -346,10 +347,85 @@ class AzureComputeProviderTest {
             assertThat(AzureComputeProvider.mapStatus(vm)).isEqualTo(InstanceStatus.STOPPING);
         }
 
+        /// #1049 — exhaustive over Azure's documented VM power states (States and billing status: starting,
+        /// running, stopping, stopped, deallocating, deallocated) and provisioning states (Creating, Updating,
+        /// Deleting, Succeeded, Failed), plus `PowerState/unknown` and `Canceled`, which must never read as
+        /// terminated.
         @Test
-        void mapStatus_unknownState_returnsTerminated() {
-            var vm = vmWithProvisioningState("Unknown");
-            assertThat(AzureComputeProvider.mapStatus(vm)).isEqualTo(InstanceStatus.TERMINATED);
+        void mapStatus_everyDocumentedPowerAndProvisioningState_andUnrecognisedOnes_mapExhaustively() {
+            var powerStates = Map.ofEntries(Map.entry("PowerState/starting", InstanceStatus.PROVISIONING),
+                                            Map.entry("PowerState/running", InstanceStatus.RUNNING),
+                                            Map.entry("PowerState/stopping", InstanceStatus.STOPPING),
+                                            Map.entry("PowerState/stopped", InstanceStatus.STOPPING),
+                                            Map.entry("PowerState/deallocating", InstanceStatus.STOPPING),
+                                            Map.entry("PowerState/deallocated", InstanceStatus.STOPPING),
+                                            Map.entry("PowerState/unknown", InstanceStatus.UNKNOWN));
+            var provisioningStates = Map.ofEntries(Map.entry("Creating", InstanceStatus.PROVISIONING),
+                                                   Map.entry("Updating", InstanceStatus.PROVISIONING),
+                                                   Map.entry("Deleting", InstanceStatus.STOPPING),
+                                                   Map.entry("Succeeded", InstanceStatus.RUNNING),
+                                                   Map.entry("Failed", InstanceStatus.STOPPING),
+                                                   Map.entry("Canceled", InstanceStatus.UNKNOWN));
+
+            assertThat(powerStates).hasSize(7);
+            assertThat(provisioningStates).hasSize(6);
+            powerStates.forEach((code, mapped) -> assertThat(AzureComputeProvider.mapStatus(vmWithPowerState(code))).as(code).isEqualTo(mapped));
+            provisioningStates.forEach((state, mapped) -> assertThat(AzureComputeProvider.mapStatus(vmWithProvisioningState(state))).as(state).isEqualTo(mapped));
+        }
+    }
+
+    /// #1049 round 3 (S3) — the auto-heal tracker lists VMs through Resource Graph, and the row's status used
+    /// to be hard-coded RUNNING, so a failed or stopped VM read as present until the ten-minute ceiling.
+    @Nested
+    class ResourceGraphRowStatusTests {
+
+        @Test
+        void listInstances_rowWithFailedProvisioningState_readsAsStopping_whichTheTrackerClassifiesFailed() {
+            testClient.queryResourcesResponse = Promise.success(List.of(vmRow("vm-1", Map.of("provisioningState", "Failed"))));
+
+            provider.listInstances(Map.of("aether.node-id", "node-7"))
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull())
+                    .onSuccess(instances -> assertThat(instances.getFirst().status()).isEqualTo(InstanceStatus.STOPPING));
+        }
+
+        @Test
+        void mapRowStatus_deallocatedPowerState_readsAsStopping() {
+            assertThat(AzureComputeProvider.mapRowStatus(vmRow("vm-1", powerStateProperties("PowerState/deallocated", "Succeeded"))))
+                .isEqualTo(InstanceStatus.STOPPING);
+        }
+
+        @Test
+        void mapRowStatus_runningPowerStateAfterAFailedUpdate_readsAsRunning() {
+            assertThat(AzureComputeProvider.mapRowStatus(vmRow("vm-1", powerStateProperties("PowerState/running", "Failed"))))
+                .isEqualTo(InstanceStatus.RUNNING);
+        }
+
+        @Test
+        void mapRowStatus_noPowerOrProvisioningState_readsAsUnknown_neverRunning() {
+            assertThat(AzureComputeProvider.mapRowStatus(vmRow("vm-1", Map.of()))).isEqualTo(InstanceStatus.UNKNOWN);
+        }
+
+        @Test
+        void mapStatus_vmWithoutProperties_readsAsUnknown_neverTerminated() {
+            var vm = new VirtualMachine("/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1",
+                                        "vm-1", "eastus", Map.of(), null);
+
+            assertThat(AzureComputeProvider.mapStatus(vm)).isEqualTo(InstanceStatus.UNKNOWN);
+        }
+
+        private static ResourceRow vmRow(String name, Map<String, Object> properties) {
+            return new ResourceRow("/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/" + name,
+                                   name,
+                                   "microsoft.compute/virtualmachines",
+                                   "eastus",
+                                   Map.of("aether-node-id", "node-7"),
+                                   properties);
+        }
+
+        private static Map<String, Object> powerStateProperties(String powerStateCode, String provisioningState) {
+            return Map.of("provisioningState", provisioningState,
+                          "extended", Map.of("instanceView", Map.of("powerState", Map.of("code", powerStateCode))));
         }
     }
 

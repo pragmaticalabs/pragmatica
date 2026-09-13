@@ -160,6 +160,31 @@ class ClusterTopologyManagerReplacementStateTest {
         assertThat(stateOf(REPLACEMENT)).isEqualTo(ReplacementInstanceState.PRESENT);
     }
 
+    /// #1049 round 3 (S2) — a status the provider could not state (Hetzner `unknown`, GCP `REPAIRING`,
+    /// anything unmapped) is UNKNOWN, never FAILED: FAILED drops the replacement at once while it may exist.
+    @Test
+    void replacementInstanceState_unknownStatusInstance_isUnknown_neverFailed() {
+        providerLists(instanceOf(REPLACEMENT, "i-1", InstanceStatus.UNKNOWN));
+
+        assertThat(stateOf(REPLACEMENT)).isEqualTo(ReplacementInstanceState.UNKNOWN);
+    }
+
+    @Test
+    void replacementInstanceState_unknownStatusBesideStoppedLeftover_isUnknown_neverFailed() {
+        providerLists(instanceOf(REPLACEMENT, "i-1", InstanceStatus.TERMINATED),
+                      instanceOf(REPLACEMENT, "i-2", InstanceStatus.UNKNOWN));
+
+        assertThat(stateOf(REPLACEMENT)).isEqualTo(ReplacementInstanceState.UNKNOWN);
+    }
+
+    @Test
+    void replacementInstanceState_unknownStatusBesideRunningInstance_isPresent() {
+        providerLists(instanceOf(REPLACEMENT, "i-1", InstanceStatus.UNKNOWN),
+                      instanceOf(REPLACEMENT, "i-2", InstanceStatus.RUNNING));
+
+        assertThat(stateOf(REPLACEMENT)).isEqualTo(ReplacementInstanceState.PRESENT);
+    }
+
     /// The listing is scoped by node id: another node's running instance must not answer for this one.
     @Test
     void replacementInstanceState_noInstanceForThisNode_isAbsent_evenWhenOtherNodesRun() {
