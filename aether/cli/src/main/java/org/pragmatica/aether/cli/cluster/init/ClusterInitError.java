@@ -31,6 +31,16 @@ public sealed interface ClusterInitError extends Cause {
         }
     }
 
+    /// #311 — the existing output cannot be merged into because it does not parse. Refused rather
+    /// than overwritten: the operator's edits are what a merge exists to keep.
+    record OutputUnreadable(String path, String detail) implements ClusterInitError {
+        @Override
+        public String message() {
+            return "Output file exists but cannot be parsed for merging: " + path + " (" + detail
+                 + "). Fix it, or re-run with --force to overwrite.";
+        }
+    }
+
     record MissingField(String name) implements ClusterInitError {
         @Override
         public String message() {
