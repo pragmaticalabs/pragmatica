@@ -89,13 +89,16 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// self-rescheduling status poll asks the provider through
 /// [`ClusterTopologyManager#replacementInstanceState`] — one listing per entry per `nttDepartureTimeout`,
 /// single-flight per entry, leader-only, never from a reconcile pass — and drops the entry on a
-/// provider-reported failure, or on the deletion of an instance it has already seen. Every entry is
-/// bounded by a hard per-source ceiling ([`ClusterTopologyManager#replacementCeiling`], ten minutes by
-/// default), which is also the only bound on an entry whose provider cannot answer. The former
-/// `nttDepartureTimeout × 3` expiry (45s at the default) is gone: cloud replacements take 50–63s from
-/// mint to membership, so it expired first and the leader minted a duplicate it then drained as
-/// surplus. A new leader inherits the prior leader's entries and asks the provider about them the same
-/// way. The map is internal — exposed only via observability accessors.
+/// provider-reported failure, or on the deletion of an instance: one it has already seen, or one it has
+/// never seen once the first-listing grace ([`#computeFirstListingGrace`], a minute at the default) has
+/// passed since dispatch. Every entry is bounded by a hard per-source ceiling
+/// ([`ClusterTopologyManager#replacementCeiling`], ten minutes by default), which is also the only bound
+/// on an entry whose provider cannot answer. The former `nttDepartureTimeout × 3` expiry (45s at the
+/// default) is gone: cloud replacements take 50–63s from mint to membership, so it expired first and
+/// the leader minted a duplicate it then drained as surplus. A new leader inherits the prior leader's
+/// entries and asks the provider about them the same way; their ceiling and grace keep running from the
+/// mint time each node id's ULID carries, so a leader change does not restart them (see
+/// [`#inheritedEntry`]). The map is internal — exposed only via observability accessors.
 ///
 /// **Reached-full-membership latch (safety-critical — Bug C).** The reconciler must NEVER
 /// provision a replacement for a configured core peer that has not yet joined (initial
@@ -152,6 +155,9 @@ public final class LeaderReconciler {
     /// timestamps below. `Long.MIN_VALUE` is unreachable by any real `timeSource.nanoTime()`
     /// observation, so a sentinel comparison can never alias a legitimate time.
     private static final long UNSET_NANOS = Long.MIN_VALUE;
+    /// First-listing grace, in status-poll intervals (#1049) — see [`#computeFirstListingGrace`] for the
+    /// derivation and why it is four.
+    private static final int FIRST_LISTING_GRACE_POLLS = 4;
 
     private final MembershipConfig membershipConfig;
     private final TimeSpan leaderActivationDelay;
@@ -172,6 +178,9 @@ public final class LeaderReconciler {
     private final TimeSpan drainSafetyGraceWindow;
     /// Status-poll cadence for in-flight replacements (#1049) — see [`#computeInFlightPollInterval`].
     private final TimeSpan inFlightPollInterval;
+    /// How long a never-listed in-flight replacement's absence is not yet a deletion (#1049) — see
+    /// [`#computeFirstListingGrace`].
+    private final TimeSpan firstListingGrace;
     private final PresenceSampler presenceSampler;
     /// Authoritative membership-count source (membership v2 cutover, #68/#94; role-scoped per
     /// cluster-topology-overhaul Wave 2 / W2). The reconciler COUNTS this FSM's
@@ -330,6 +339,7 @@ public final class LeaderReconciler {
         // (role-propagation race window; ≥ deficit debounce; single timing constant).
         this.drainSafetyGraceWindow = computeDrainSafetyGrace(membershipConfig.splitTimeout());
         this.inFlightPollInterval = computeInFlightPollInterval(membershipConfig.splitTimeout());
+        this.firstListingGrace = computeFirstListingGrace(inFlightPollInterval);
         this.presenceSampler = presenceSampler;
         this.membershipFsm = membershipFsm;
         this.configuredCoreCountSupplier = configuredCoreCountSupplier;
@@ -418,9 +428,10 @@ public final class LeaderReconciler {
     /// skipped — the provision already fulfilled.
     ///
     /// #1049 — an inherited entry is UNCONFIRMED (the prior leader's create call has returned or never
-    /// will; this leader has not yet seen the instance), stamped now with the per-source ceiling, and the
-    /// status poll is armed so this leader keeps it by what the provider reports rather than by age. The
-    /// new leader cannot know the original dispatch time, so the ceiling restarts from inheritance.
+    /// will; this leader has not yet seen the instance), carries the per-source ceiling, and the status
+    /// poll is armed so this leader keeps it by what the provider reports rather than by age. Its ceiling
+    /// and first-listing grace run from the replacement's mint time where the node id carries one, so a
+    /// leader change does not restart them — see [`#inheritedEntry`].
     @Contract
     private void seedInFlightFromRetainedDispatched() {
         var retained = retainedDispatchedSupplier.get().get();
@@ -429,9 +440,8 @@ public final class LeaderReconciler {
             return;
         }
 
-        var inherited = InFlightEntry.inFlightEntry(timeSource.nanoTime(),
-                                                    ctm.replacementCeiling(NodeRole.CORE),
-                                                    InFlightState.UNCONFIRMED);
+        var nowNanos = timeSource.nanoTime();
+        var ceiling = ctm.replacementCeiling(NodeRole.CORE);
         // Core-scoped (Wave 2 / W2): a retained dispatch is fulfilled only by a CORE member —
         // matches the fulfillment-clear in runReconcileBody, which also reads coreCountedMembers().
         var currentMembers = membershipFsm.coreCountedMembers();
@@ -441,7 +451,7 @@ public final class LeaderReconciler {
                 continue;
             }
 
-            inFlightProvisioning.putIfAbsent(id, inherited);
+            inFlightProvisioning.putIfAbsent(id, inheritedEntry(id, nowNanos, ceiling));
         }
 
         log.info("LeaderReconciler seeded in-flight provisioning from retained dispatched set (retained={}, inFlight={})",
@@ -450,6 +460,33 @@ public final class LeaderReconciler {
         if (!inFlightProvisioning.isEmpty()) {
             armInFlightSweep();
         }
+    }
+
+    /// #1049 — the in-flight entry a new leader stamps for the inherited replacement `id`, backdated on
+    /// [`#timeSource`] by how long ago the prior leader minted it. A CTM-minted id ends in a ULID
+    /// ([`IdGenerator#generate`]) whose 48-bit timestamp is the wall-clock millisecond it was minted — and
+    /// dispatched, since the reconciler mints an id only to dispatch it — so the ceiling and the
+    /// first-listing grace keep running from dispatch instead of restarting at every leader change.
+    private static InFlightEntry inheritedEntry(NodeId id, long nowNanos, TimeSpan ceiling) {
+        return InFlightEntry.inFlightEntry(nowNanos - timeSpan(mintAgeMs(id, ceiling)).millis().nanos(),
+                                           ceiling,
+                                           InFlightState.UNCONFIRMED);
+    }
+
+    /// How long ago `id` was minted, in milliseconds, read from the wall clock `ULID#ulid` stamps with (an
+    /// injected test clock here would compare a fake time against a real mint). Bounds:
+    ///   - no parseable ULID suffix (a configured `<prefix>-<ordinal>` id) → 0: nothing says when it was
+    ///     dispatched, so its ceiling and grace restart at inheritance;
+    ///   - a mint time in the future — this node's clock behind the minter's — → 0, as if minted now;
+    ///   - older than the ceiling → one millisecond past it: nothing older changes the outcome, and the cap
+    ///     keeps the nanosecond arithmetic far from overflow whatever timestamp the id encodes.
+    /// Not guarded: this node's clock running AHEAD of the minter's makes the entry look older by the skew,
+    /// so its grace and ceiling end early by that much.
+    private static long mintAgeMs(NodeId id, TimeSpan ceiling) {
+        return mintedUlid(id).map(ulid -> Math.clamp(System.currentTimeMillis() - ulid.timestamp(),
+                                                     0L,
+                                                     ceiling.millis() + 1))
+                         .or(0L);
     }
 
     /// Deactivate the leader-pinned reconciler. Idempotent. Cancels the pending one-shot
@@ -642,7 +679,8 @@ public final class LeaderReconciler {
     }
 
     /// Observability — read-only snapshot of the in-flight provisioning map: each tracked id to the
-    /// `timeSource.nanoTime()` at which it was stamped (dispatch, or inheritance from a prior leader).
+    /// `timeSource.nanoTime()` it is aged from (dispatch; for an entry inherited from a prior leader, its
+    /// mint time where the node id carries one, else inheritance — see [`#inheritedEntry`]).
     /// Stage 6 will surface this through metrics.
     public Map<NodeId, Long> inFlightProvisioningSnapshot() {
         return inFlightProvisioning.entrySet()
@@ -1209,14 +1247,20 @@ public final class LeaderReconciler {
     /// cross-layer dependency: `ULID` is the same utility `NodeId`/`IdGenerator` already use to
     /// MINT these ids.
     private boolean isEphemeral(NodeId id) {
+        return mintedUlid(id).isPresent();
+    }
+
+    /// The ULID a minted id ends in (`<prefix>-<ULID>`), or empty for any other shape — the id-shape
+    /// contract [`#isEphemeral`] describes. Its timestamp is the id's mint time ([`#mintAgeMs`]).
+    private static Option<ULID> mintedUlid(NodeId id) {
         var raw = id.id();
         var lastDash = raw.lastIndexOf('-');
 
         if (lastDash < 0 || lastDash == raw.length() - 1) {
-            return false;
+            return none();
         }
 
-        return ULID.parse(raw.substring(lastDash + 1)).isSuccess();
+        return ULID.parse(raw.substring(lastDash + 1)).option();
     }
 
     /// Whether `id`'s membership age has reached the drain-safety grace window. Unknown age
@@ -1489,8 +1533,9 @@ public final class LeaderReconciler {
     /// fulfilled by membership, evicted by the ceiling, or cleared by deactivation changes nothing.
     ///   - PRESENT → keep, and mark CONFIRMED: the instance has now been seen.
     ///   - FAILED → drop and re-trigger: the provider reports the boot failed.
-    ///   - ABSENT → drop and re-trigger only when CONFIRMED (an instance already seen is gone). A
-    ///     never-seen absence may be a listing that lags creation, so it is kept like UNKNOWN.
+    ///   - ABSENT → drop and re-trigger when CONFIRMED (an instance already seen is gone), or when never
+    ///     seen but older than the first-listing grace. A never-seen absence inside the grace may be a
+    ///     listing that lags creation, so it is kept like UNKNOWN.
     ///   - UNKNOWN → keep; the ceiling is the only bound.
     /// A dropped entry re-opens the raw deficit, which re-ages past the normal deficit debounce before the
     /// next dispatch (the anchor was reset when this replacement was dispatched).
@@ -1499,14 +1544,16 @@ public final class LeaderReconciler {
         switch (state) {
             case PRESENT -> inFlightProvisioning.replace(id, polled, polled.withState(InFlightState.CONFIRMED));
             case FAILED -> dropInFlight(id, polled, state);
-            case ABSENT -> dropInFlightIfConfirmed(id, polled);
+            case ABSENT -> dropInFlightIfDeleted(id, polled);
             case UNKNOWN -> {}
         }
     }
 
+    /// An ABSENT answer is a deletion for an instance already listed, and for a never-listed one once the
+    /// first-listing grace has passed since dispatch ([`#computeFirstListingGrace`]).
     @Contract
-    private void dropInFlightIfConfirmed(NodeId id, InFlightEntry polled) {
-        if (polled.state() == InFlightState.CONFIRMED) {
+    private void dropInFlightIfDeleted(NodeId id, InFlightEntry polled) {
+        if (polled.state() == InFlightState.CONFIRMED || polled.isOlderThan(timeSource.nanoTime(), firstListingGrace)) {
             dropInFlight(id, polled, ReplacementInstanceState.ABSENT);
         }
     }
@@ -1684,6 +1731,21 @@ public final class LeaderReconciler {
         return splitTimeout;
     }
 
+    /// First-listing grace (#1049) = the status-poll interval × [`#FIRST_LISTING_GRACE_POLLS`] (4 → 60s at
+    /// the default), measured from dispatch — for an inherited entry, from the mint time its node id
+    /// carries. Why a grace at all: a provider listing can lag the create that produced the instance (an
+    /// eventually consistent describe/list API, or a search index such as Azure Resource Graph), so inside
+    /// it an absence before the instance was ever listed is not taken as a deletion. Past it, a never-listed
+    /// absence IS one — an asynchronous provisioning failure, or a prior leader that minted an id and never
+    /// created it — and the deficit re-opens instead of leaving the cluster under capacity until the
+    /// ten-minute ceiling. Why four: a create that returns within one poll still gets about three
+    /// post-create listings of lag tolerance (≈45s at the default), while an instance lost before its first
+    /// listing costs about grace + one poll + the deficit debounce (≈90s) of missing capacity. Four is a
+    /// judgement, not a measured listing lag. A ceiling configured below the grace bounds the entry first.
+    private static TimeSpan computeFirstListingGrace(TimeSpan inFlightPollInterval) {
+        return timeSpan(inFlightPollInterval.nanos() * FIRST_LISTING_GRACE_POLLS).nanos();
+    }
+
     /// Drain-safety grace = `nttDepartureTimeout × 2` — see the [`#drainSafetyGraceWindow`]
     /// field doc for the sizing rationale (role-propagation race window; ≥ the ×1 deficit
     /// debounce; single membership timing constant).
@@ -1752,14 +1814,16 @@ public final class LeaderReconciler {
         /// asked. Bounded only by the ceiling.
         DISPATCHING,
         /// The create returned (or the entry was inherited from a prior leader) but the provider has not
-        /// yet listed the instance — an absence is not yet evidence of deletion.
+        /// yet listed the instance — an absence is evidence of deletion only once the first-listing grace
+        /// has passed since dispatch.
         UNCONFIRMED,
         /// The provider has listed the instance at least once — a later absence IS a deletion.
         CONFIRMED
     }
 
-    /// #1049 — one in-flight replacement: when it was stamped (dispatch or inheritance, on
-    /// [`#timeSource`]), the per-source ceiling that bounds it, and its [`InFlightState`].
+    /// #1049 — one in-flight replacement: the [`#timeSource`] instant it is aged from (dispatch, or for an
+    /// inherited entry its mint time — see [`#inheritedEntry`]), the per-source ceiling that bounds it, and
+    /// its [`InFlightState`].
     private record InFlightEntry(long sinceNanos, TimeSpan ceiling, InFlightState state) {
         static InFlightEntry inFlightEntry(long sinceNanos, TimeSpan ceiling, InFlightState state) {
             return new InFlightEntry(sinceNanos, ceiling, state);
@@ -1774,7 +1838,11 @@ public final class LeaderReconciler {
         }
 
         boolean isPastCeiling(long nowNanos) {
-            return nowNanos - sinceNanos > ceiling.nanos();
+            return isOlderThan(nowNanos, ceiling);
+        }
+
+        boolean isOlderThan(long nowNanos, TimeSpan span) {
+            return nowNanos - sinceNanos > span.nanos();
         }
     }
 

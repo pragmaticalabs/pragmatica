@@ -36,6 +36,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.statemachine.FsmObserver;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.SwimHealth;
+import org.pragmatica.utility.ULID;
 
 import java.net.SocketAddress;
 import java.util.ArrayList;
@@ -84,6 +85,9 @@ class LeaderReconcilerTest {
     /// test sets another.
     private static final TimeSpan EXPECTED_POLL_INTERVAL = membershipConfig().splitTimeout();
     private static final TimeSpan DEFAULT_REPLACEMENT_CEILING = timeSpan(10).minutes();
+    /// #1049 round 2 — the first-listing grace: four poll intervals (60s at the default) from dispatch, after
+    /// which a replacement the provider has never listed and does not list counts as deleted.
+    private static final TimeSpan EXPECTED_FIRST_LISTING_GRACE = timeSpan(EXPECTED_POLL_INTERVAL.nanos() * 4).nanos();
     private static final TimeSpan EXPECTED_GRACE_WINDOW =
         timeSpan(membershipConfig().splitTimeout().nanos() * 3 / 2).nanos();
     private static final TimeSpan EXPECTED_DEBOUNCE_WINDOW = membershipConfig().splitTimeout();
@@ -1028,16 +1032,32 @@ class LeaderReconcilerTest {
         /// A re-elected leader (term 2) on a 4/5 cluster inheriting one replacement the prior leader
         /// dispatched, with the provider reporting `state` for it. Returns the inherited id.
         private NodeId inheritOneReplacement(ReplacementInstanceState state) {
+            return inheritReplacement(NodeId.randomNodeId(), state);
+        }
+
+        /// As [`#inheritOneReplacement`], for a given prior-leader id — the activation pass runs at once.
+        private NodeId inheritReplacement(NodeId priorDispatch, ReplacementInstanceState state) {
             configuredCoreCount.set(5);
             leaderTerm.set(2L);
             seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
-            var priorDispatch = NodeId.randomNodeId();
             reconciler.setRetainedDispatchedSupplier(() -> Set.of(priorDispatch));
             ctm.reportInstanceState(priorDispatch, state);
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
             return priorDispatch;
+        }
+
+        /// A replacement id shaped exactly like a CTM mint (`<prefix>-<ULID>`) whose ULID timestamp is
+        /// `epochMs` — what a prior leader's dispatch carries.
+        private static NodeId mintedAt(long epochMs) {
+            var bytes = new byte[ULID.BYTE_LENGTH];
+
+            for (var i = 0; i < ULID.TIMESTAMP_LENGTH; i++) {
+                bytes[i] = (byte) (epochMs >>> (8 * (ULID.TIMESTAMP_LENGTH - 1 - i)));
+            }
+
+            return NodeId.nodeId("aether-test-cluster-node-" + ULID.fromBytes(bytes).unwrap().encoded()).unwrap();
         }
 
         /// One more poll tick, returning how many provider status queries have been issued so far — the
@@ -1076,6 +1096,9 @@ class LeaderReconcilerTest {
             assertThat(reconciler.inFlightProvisioningKeys())
                 .as("an instance the provider listed and no longer lists was deleted")
                 .isEmpty();
+            assertThat(EXPECTED_POLL_INTERVAL.millis() * 2)
+                .as("the drop came inside the first-listing grace — an absence after a listing needs no grace")
+                .isLessThan(EXPECTED_FIRST_LISTING_GRACE.millis());
             assertThat(ctm.provisionReplacementCalls())
                 .as("the re-opened deficit re-ages past the debounce before re-dispatch")
                 .hasSize(1);
@@ -1086,22 +1109,39 @@ class LeaderReconcilerTest {
             assertThat(ctm.provisionReplacementCalls()).hasSize(2);
         }
 
-        /// A listing can lag creation (or a create call may not have landed): absence before the instance
-        /// was ever listed is not a deletion, so it falls back to the ceiling like UNKNOWN.
+        /// Round 2 (b): a listing can lag creation, so inside the first-listing grace an absence before the
+        /// instance was ever listed is not a deletion.
         @Test
-        void inFlightEntry_absentBeforeEverListed_isNotDeletion_keptUntilCeiling() {
-            ctm.setReplacementCeiling(timeSpan(3).minutes());
+        void inFlightEntry_neverListedAbsent_withinFirstListingGrace_isNotReDispatched() {
             var minted = dispatchOneReplacement();
 
             ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
-            advancePollIntervals(8);
+            advancePollIntervals(4);
 
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("at the grace (60s), not past it, a never-listed absence is not a deletion")
+                .containsExactly(minted);
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
+        /// Round 2 (a): past the first-listing grace a never-listed absence IS a deletion (an asynchronous
+        /// provisioning failure) — re-dispatched after the normal debounce, not after the ten-minute ceiling.
+        @Test
+        void inFlightEntry_neverListedAbsent_pastFirstListingGrace_isReDispatchedAfterDebounce() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
+            advancePollIntervals(5);
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("past the grace (the 75s poll) a never-listed absence is a deletion")
+                .isEmpty();
             assertThat(ctm.provisionReplacementCalls())
-                .as("a never-listed absence two minutes in is not treated as a deletion")
+                .as("the re-opened deficit re-ages past the debounce before re-dispatch")
                 .hasSize(1);
 
-            // Ceiling 180s: past it at the 195s tick (drop + deficit anchor), debounced at 210s.
-            advancePollIntervals(6);
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
 
             assertThat(ctm.provisionReplacementCalls()).hasSize(2);
         }
@@ -1175,6 +1215,99 @@ class LeaderReconcilerTest {
             triggerAndFireReconcile();
 
             assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
+        /// Round 2 — the ceiling runs from the mint time in the inherited id's ULID, not from inheritance: a
+        /// replacement minted longer ago than the ceiling is dropped by the new leader's first pass and
+        /// re-dispatched one debounce later, although the provider still reports it booting.
+        @Test
+        void newLeader_inheritedEntryMintedLongerAgoThanCeiling_isReDispatchedPromptly() {
+            var inherited = inheritReplacement(mintedAt(System.currentTimeMillis() - DEFAULT_REPLACEMENT_CEILING.millis()
+                                                        - timeSpan(1).minutes().millis()),
+                                               ReplacementInstanceState.PRESENT);
+
+            advanceOnePollInterval();
+
+            assertThat(reconciler.inFlightProvisioningKeys()).doesNotContain(inherited);
+            assertThat(ctm.provisionReplacementCalls())
+                .as("eleven minutes after its mint, one debounce after inheritance, the replacement is re-dispatched")
+                .hasSize(1);
+        }
+
+        /// Round 2 — the first-listing grace also runs from the mint time: a prior leader that minted an id
+        /// and never created it leaves a never-listed absence the new leader drops at its first poll.
+        @Test
+        void newLeader_inheritedNeverListedEntryMintedLongerAgoThanGrace_isDroppedAtFirstAbsentListing() {
+            inheritReplacement(mintedAt(System.currentTimeMillis() - EXPECTED_FIRST_LISTING_GRACE.millis()
+                                        - timeSpan(30).seconds().millis()),
+                               ReplacementInstanceState.ABSENT);
+
+            advanceOnePollInterval();
+
+            assertThat(reconciler.inFlightProvisioningKeys()).isEmpty();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
+        /// Round 2 — the inherited counterpart of the within-grace test: minted inside the first-listing
+        /// grace, a never-listed absence is not yet a deletion.
+        @Test
+        void newLeader_inheritedNeverListedEntryMintedWithinGrace_isKept() {
+            var inherited = inheritReplacement(mintedAt(System.currentTimeMillis() - timeSpan(20).seconds().millis()),
+                                               ReplacementInstanceState.ABSENT);
+
+            advanceOnePollInterval();
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("35s after its mint a never-listed absence is inside the grace")
+                .containsExactly(inherited);
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+        }
+
+        /// Round 2 — a configured `<prefix>-<ordinal>` id carries no mint time, so its ceiling restarts at
+        /// inheritance: kept through the ceiling, re-dispatched past it.
+        @Test
+        void newLeader_inheritedIdWithoutUlid_restartsCeilingAtInheritance() {
+            ctm.setReplacementCeiling(timeSpan(2).minutes());
+            var inherited = inheritReplacement(NodeId.nodeId("aether-test-cluster-node-5").unwrap(),
+                                               ReplacementInstanceState.PRESENT);
+
+            advancePollIntervals(8);
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("at the ceiling (120s after inheritance), not past it, the entry is kept")
+                .containsExactly(inherited);
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+
+            // Past the ceiling at the 135s tick (drop + deficit anchor), debounced at 150s.
+            advancePollIntervals(2);
+
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
+        /// Round 2 — clock skew: a mint time in the future (this node's clock behind the minter's) counts as
+        /// now. Neither dropped at once nor kept for the skew plus the ceiling.
+        @Test
+        void newLeader_inheritedIdMintedInTheFuture_isClampedToNow() {
+            ctm.setReplacementCeiling(timeSpan(2).minutes());
+            var inherited = inheritReplacement(mintedAt(System.currentTimeMillis() + timeSpan(1).hours().millis()),
+                                               ReplacementInstanceState.PRESENT);
+
+            advancePollIntervals(8);
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("a future mint time is not an age past the ceiling")
+                .containsExactly(inherited);
+
+            advancePollIntervals(2);
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("the ceiling runs from now, not from an hour ahead")
+                .hasSize(1);
         }
 
         /// Rate limiting: the provider is asked only from the sweep tick, never from a reconcile pass,
