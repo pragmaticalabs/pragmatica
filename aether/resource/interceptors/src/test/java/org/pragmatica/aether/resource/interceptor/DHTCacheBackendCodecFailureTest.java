@@ -17,14 +17,13 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
+import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Test;
 
-import io.netty.buffer.ByteBuf;
-
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.pragmatica.lang.Unit.unit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.pragmatica.lang.Unit.unit;
 
 
 /// #279 (review of #1084, SF-1): the interceptor's fail-open recovers FAILED PROMISES, but the DHT
@@ -43,13 +42,17 @@ class DHTCacheBackendCodecFailureTest {
         var storage = new ConcurrentHashMap<String, byte[]>();
 
         storage.put("ns:k", "written-by-an-older-codec".getBytes(UTF_8));
-
-        var backend = DHTCacheBackend.dhtCacheBackend(new FakeDHTClient(storage), new ThrowingCodec(), new ThrowingCodec(), "ns");
+        var backend = DHTCacheBackend.dhtCacheBackend(new FakeDHTClient(storage),
+                                                      new ThrowingCodec(),
+                                                      new ThrowingCodec(),
+                                                      "ns");
         var calls = new AtomicInteger();
-        var intercepted = new CacheMethodInterceptor(backend, CacheStrategy.CACHE_ASIDE, IDENTITY)
-                              .intercept((String request) -> Promise.success(computed(calls, request)));
-
-        var value = intercepted.apply("k").await(TIMEOUT).fold(cause -> fail("must be fail-open, got " + cause.message()), v -> v);
+        var intercepted = new CacheMethodInterceptor(backend, CacheStrategy.CACHE_ASIDE, IDENTITY).intercept((String request) -> Promise.success(computed(calls,
+                                                                                                                                                          request)));
+        var value = intercepted.apply("k")
+                               .await(TIMEOUT)
+                               .fold(cause -> fail("must be fail-open, got " + cause.message()),
+                                     v -> v);
 
         assertThat(value).isEqualTo("result-k");
         assertThat(calls.get()).as("the business method ran; a codec throw is a miss, not a hang").isEqualTo(1);
@@ -57,12 +60,17 @@ class DHTCacheBackendCodecFailureTest {
 
     @Test
     void writeThrough_valueTheCodecCannotWrite_returnsTheMethodsValue() {
-        var backend = DHTCacheBackend.dhtCacheBackend(new FakeDHTClient(new ConcurrentHashMap<>()), new ThrowingCodec(), new ThrowingCodec(), "ns");
+        var backend = DHTCacheBackend.dhtCacheBackend(new FakeDHTClient(new ConcurrentHashMap<>()),
+                                                      new ThrowingCodec(),
+                                                      new ThrowingCodec(),
+                                                      "ns");
         var calls = new AtomicInteger();
-        var intercepted = new CacheMethodInterceptor(backend, CacheStrategy.WRITE_THROUGH, IDENTITY)
-                              .intercept((String request) -> Promise.success(computed(calls, request)));
-
-        var value = intercepted.apply("k").await(TIMEOUT).fold(cause -> fail("a codec failure on put must not fail the write, got " + cause.message()), v -> v);
+        var intercepted = new CacheMethodInterceptor(backend, CacheStrategy.WRITE_THROUGH, IDENTITY).intercept((String request) -> Promise.success(computed(calls,
+                                                                                                                                                            request)));
+        var value = intercepted.apply("k")
+                               .await(TIMEOUT)
+                               .fold(cause -> fail("a codec failure on put must not fail the write, got " + cause.message()),
+                                     v -> v);
 
         assertThat(value).isEqualTo("result-k");
     }
@@ -74,8 +82,10 @@ class DHTCacheBackendCodecFailureTest {
         var storage = new ConcurrentHashMap<String, byte[]>();
 
         storage.put("ns:k", "stale".getBytes(UTF_8));
-
-        var backend = DHTCacheBackend.dhtCacheBackend(new FakeDHTClient(storage), new ThrowingCodec(), new ThrowingCodec(), "ns");
+        var backend = DHTCacheBackend.dhtCacheBackend(new FakeDHTClient(storage),
+                                                      new ThrowingCodec(),
+                                                      new ThrowingCodec(),
+                                                      "ns");
 
         backend.get("k").await(TIMEOUT).onSuccess(_ -> fail("decode threw; the promise must fail"));
         backend.put("k", "v").await(TIMEOUT).onSuccess(_ -> fail("encode threw; the promise must fail"));
@@ -87,7 +97,9 @@ class DHTCacheBackendCodecFailureTest {
         return "result-" + request;
     }
 
-    /// A codec that knows no types — what `SliceCodec` does for a tag it has never registered.
+    /// A codec that knows no types — what `SliceCodec` does for a tag it has never registered. The
+    /// throws ARE the subject under test.
+    @SuppressWarnings("JBCT-EX-01")
     private static final class ThrowingCodec implements Serializer, Deserializer {
         @Override
         public <T> void write(ByteBuf byteBuf, T object) {

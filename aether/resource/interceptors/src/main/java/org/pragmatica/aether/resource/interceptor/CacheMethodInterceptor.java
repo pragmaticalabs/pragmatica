@@ -98,7 +98,8 @@ public record CacheMethodInterceptor(CacheBackend cache,
     private Promise<Unit> invalidateAfterFailedPut(Object key, Cause cause) {
         skippedBecause("put", key, cause);
 
-        return cache.remove(key).recover(removeCause -> skippedBecause("remove", key, removeCause));
+        return cache.remove(key)
+                    .recover(removeCause -> skippedBecause("remove", key, removeCause));
     }
 
     private Option<Object> missBecause(String operation, Object key, Cause cause) {

@@ -47,19 +47,23 @@ final class DHTCacheBackend implements CacheBackend {
     @Override
     public Promise<Option<Object>> get(Object key) {
         return dhtClient.get(namespacedKey(key))
-                        .flatMap(opt -> opt.fold(() -> Promise.success(Option.none()), this::decoded));
+                        .flatMap(opt -> opt.fold(() -> Promise.success(Option.none()),
+                                                 this::decoded));
     }
 
     @Override
     public Promise<Unit> put(Object key, Object value) {
         var keyBytes = namespacedKey(key);
 
-        return Result.lift(Causes::fromThrowable, () -> serializer.encode(value))
-                     .fold(Promise::failure, valueBytes -> dhtClient.put(keyBytes, valueBytes));
+        return Result.lift(Causes::fromThrowable,
+                           () -> serializer.encode(value))
+                     .fold(Promise::failure,
+                           valueBytes -> dhtClient.put(keyBytes, valueBytes));
     }
 
     private Promise<Option<Object>> decoded(byte[] bytes) {
-        return Result.lift(Causes::fromThrowable, () -> (Object) deserializer.decode(bytes))
+        return Result.lift(Causes::fromThrowable,
+                           () -> (Object) deserializer.decode(bytes))
                      .map(Option::some)
                      .async();
     }

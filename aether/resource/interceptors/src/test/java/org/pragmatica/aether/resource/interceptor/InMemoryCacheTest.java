@@ -162,6 +162,7 @@ class InMemoryCacheTest {
         /// `ConcurrentModificationException` from the access-ordered map every run; the older
         /// no-data-loss test below reddened only 2 runs in 3.
         @Test
+        @SuppressWarnings("JBCT-EX-01")
         void mixedOperations_underContention_neverThrow_andHonourTheCap() throws InterruptedException {
             var cache = InMemoryCache.inMemoryCache(60, 64);
             var threadCount = 16;
