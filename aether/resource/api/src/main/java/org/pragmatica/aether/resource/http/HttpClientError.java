@@ -10,6 +10,15 @@ import org.pragmatica.lang.Cause;
 public sealed interface HttpClientError extends Cause {
     record SerializationFailed(String message) implements HttpClientError {}
 
+    /// The request could not be built at all — a URI that does not parse, has no scheme, or a header
+    /// name/value the JDK refuses. Terminal: the same arguments produce the same refusal (#270 R6).
+    record InvalidRequest(String uri, String detail) implements HttpClientError, Cause.Terminal {
+        @Override
+        public String message() {
+            return "Invalid request for " + uri + ": " + detail;
+        }
+    }
+
     record DeserializationFailed(String detail, String responseBody) implements HttpClientError {
         @Override
         public String message() {
