@@ -23,7 +23,6 @@ public final class RouteAssembler {
         }
 
         var paramIndex = 0;
-
         // #725: blank is missing. Rendering "" produces two adjacent slashes that the matcher
         // round-trips without complaint, so the caller with an accidentally-empty value gets a
         // malformed request instead of an error here, at the assembly site. `/` inside a value
