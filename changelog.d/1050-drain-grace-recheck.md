@@ -7,6 +7,11 @@
   the configured core count). [mechanism: `ClusterTopologyManagerRecord.graceReapVerdict`, pinned by
   `ClusterTopologyManagerActuatorTest.DrainGraceRecheck` through the real `drainNode` → scheduler path; the membership
   read is the `AetherNode.drainGraceCoreMemberSupplier` seam, pinned by `DrainGraceCoreMemberSupplierSeamTest`]
+- A refused reap leaves no orphan. When the target later departs, the active CTM reaps it exactly once through
+  `NodeRemoved` → `reapDepartedNode`; a deposed issuer never reaps. [mechanism: pinned by
+  `ClusterTopologyManagerActuatorTest.DrainGraceWithRealMembership`, driving a real `MembershipFsm` and
+  `MembershipDeltaProjector` into the CTM. The route is quorum-gated: under `NOT_QUORUM_SAFE` the reap waits for quorum to
+  return.]
 - `JOIN_GRACE_REAP` and `OPERATOR_COMMAND` drains still reap as issued. A never-joined zombie has no other reaper and is
   normally reaped during the deficit it was provisioned to fill. [mechanism: `DrainReason.isSurplusTrim`]
 - **What this does not cover.** A DRAIN that reached its target cannot be withdrawn: `DrainProcedure.initiate` runs once
