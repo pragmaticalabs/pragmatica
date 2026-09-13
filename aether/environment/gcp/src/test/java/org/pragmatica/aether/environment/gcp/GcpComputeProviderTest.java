@@ -352,6 +352,15 @@ class GcpComputeProviderTest {
         void toLabelFilter_emptyMap_returnsEmptyString() {
             assertThat(GcpComputeProvider.toLabelFilter(Map.of())).isEmpty();
         }
+
+        /// #1049 — upper layers select a node's instance by the dotted `aether.node-id`, but this
+        /// provider stamps the `aether-node-id` label. Untranslated, the filter matches nothing and an
+        /// existing replacement reads as deleted to the auto-heal in-flight tracker.
+        @Test
+        void toLabelFilter_nodeIdTag_translatesToStampedLabelKey() {
+            assertThat(GcpComputeProvider.toLabelFilter(Map.of("aether.node-id", "node-7")))
+                .isEqualTo("labels.aether-node-id=node-7");
+        }
     }
 
     @Nested

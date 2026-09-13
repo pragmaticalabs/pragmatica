@@ -29,6 +29,7 @@ import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 
 
 @SuppressWarnings("JBCT-RET-01")
@@ -128,6 +129,21 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// Drain is delivered as a heartbeat command (spec §7.5.4) and is heartbeat-reported /
     /// leader-cached — there is no KV drain record and no node-state KV write on this path.
     Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason);
+
+    /// #1049 — what the compute provider reports about the instance behind the auto-heal replacement
+    /// minted as `nodeId`: [ReplacementInstanceState#PRESENT] while it provisions or runs,
+    /// [ReplacementInstanceState#FAILED] once every listed instance is stopping or terminated,
+    /// [ReplacementInstanceState#ABSENT] when the provider lists none, and
+    /// [ReplacementInstanceState#UNKNOWN] when it cannot answer. The returned `Promise` does not fail:
+    /// an unanswerable query IS the `UNKNOWN` answer, so the caller never has to guess what a failure
+    /// meant. One provider listing per call — the caller owns the cadence.
+    Promise<ReplacementInstanceState> replacementInstanceState(NodeId nodeId);
+
+    /// #1049 — the hard ceiling on how long an auto-heal replacement of `intendedRole` may stay in-flight
+    /// while its provider still reports it existing or booting (or cannot report at all). Resolved from
+    /// the `replacement_ceiling` of the cloud source backing the role in the persisted cluster config,
+    /// else the ten-minute `SourceProfile.DEFAULT_REPLACEMENT_CEILING`.
+    TimeSpan replacementCeiling(NodeRole intendedRole);
     /// Membership v2 / E2 — reconcile current cluster membership against configured size
     /// (spec §7.4). Derives action from the SWIM-converged member count plus the KV
     /// configured count: shortfall → `provisionReplacement` per missing slot; surplus →

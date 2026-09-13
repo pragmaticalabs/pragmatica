@@ -379,6 +379,16 @@ class AzureComputeProviderTest {
             assertThat(query).contains("tags[\"env\"] == \"prod\"");
         }
 
+        /// #1049 — upper layers select a node's VM by the dotted `aether.node-id`, but this provider
+        /// stamps the `aether-node-id` tag. Untranslated, the query matches nothing and an existing
+        /// replacement reads as deleted to the auto-heal in-flight tracker.
+        @Test
+        void buildTagFilterQuery_nodeIdTag_translatesToStampedTagKey() {
+            var query = AzureComputeProvider.buildTagFilterQuery(Map.of("aether.node-id", "node-7"));
+            assertThat(query).contains("tags[\"aether-node-id\"] == \"node-7\"");
+            assertThat(query).doesNotContain("aether.node-id");
+        }
+
         @Test
         void buildTagFilterQuery_emptyTags_returnsBaseQuery() {
             var query = AzureComputeProvider.buildTagFilterQuery(Map.of());

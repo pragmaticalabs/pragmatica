@@ -129,6 +129,7 @@ If `[cluster.core]` is absent entirely, `min`/`max` are unset (no bound) and `ma
 | `load_balancer` | string | type-dependent | no | `none` \| `external` \| `elected`. |
 | `load_balancer_ips` | string list | `[]` | no | Used with `external` mode. |
 | `load_balancer_endpoint` | string | — | no | Used with `external` mode. |
+| `replacement_ceiling` | duration string | `"10m"` | no | Cloud sources only (rejected on any other type — PF-26). The longest an auto-heal replacement from this source may stay in flight while the provider still reports it provisioning or running, or cannot report at all. Past it, the leader re-dispatches. A replacement the provider reports stopped, terminated or deleted is re-dispatched sooner, after the deficit debounce. Must be a positive duration. Read at runtime by the leader from the persisted cluster config (#1049). |
 | `databases.<name> = "url"` (inline) or `[source.<name>.databases]` (subtable) | string map | `{}` | no | Maps to composed **`[database.<name>]`** (nested), never flat `[database]` — see Trap (c). |
 | `[source.<name>.node_config.<section>]` | raw TOML overlay | — | no | Merged verbatim as `[<section>]` into the composed per-node `aether.toml`, prefix-stripped. Escape hatch for any node-level setting not otherwise modeled (used above for `[app-http]`). |
 | `[source.<name>.firewall] allow_ingress` | table array | `[]` | no | Each entry: `port` (int, required), `protocol` (default `"tcp"`, may be `"tcp+udp"`), `source_cidr` (default `"0.0.0.0/0"`), `description` (optional). **Hetzner only** — see below. |

@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment.gcp;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -280,9 +281,16 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
                          .toList();
     }
 
+    /// Provider-agnostic node-id key upper layers select by (`NodeLifecycleManager.NODE_ID_TAG`). GCP label
+    /// keys admit no `.`, and this provider STAMPS the hyphenated [#NODE_ID_LABEL], so the dotted key is
+    /// rewritten here or a node-id lookup matches nothing and an existing instance reads as ABSENT — which
+    /// the auto-heal in-flight tracker would take as a deletion (#1049). Mirrors
+    /// `HetznerComputeProvider.translateKeys`.
+    static final String UPPER_LAYER_NODE_ID_TAG = "aether.node-id";
+
     static String toLabelFilter(Map<String, String> tagFilter) {
-        return tagFilter.entrySet()
-                        .stream()
+        return translateKeys(tagFilter).entrySet()
+                                       .stream()
                         .map(GcpComputeProvider::toLabelFilterEntry)
                         .reduce(GcpComputeProvider::combineWithAnd)
                         .orElse("");
@@ -294,6 +302,19 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
 
     private static String combineWithAnd(String a, String b) {
         return a + " AND " + b;
+    }
+
+    static Map<String, String> translateKeys(Map<String, String> tagFilter) {
+        if (!tagFilter.containsKey(UPPER_LAYER_NODE_ID_TAG)) {
+            return tagFilter;
+        }
+
+        var translated = new LinkedHashMap<>(tagFilter);
+        var value = translated.remove(UPPER_LAYER_NODE_ID_TAG);
+
+        translated.put(NODE_ID_LABEL, value);
+
+        return translated;
     }
 
     /// No requested spec is available on this arity — it serves [#instanceStatus], a lookup on an

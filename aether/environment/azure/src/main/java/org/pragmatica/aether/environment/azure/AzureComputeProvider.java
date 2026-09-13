@@ -6,6 +6,7 @@ package org.pragmatica.aether.environment.azure;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -275,10 +276,17 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         return option(row.tags()).or(Map.of());
     }
 
+    /// Provider-agnostic node-id key upper layers select by (`NodeLifecycleManager.NODE_ID_TAG`). This
+    /// provider STAMPS the hyphenated [#NODE_ID_TAG], so a lookup written as `Map.of("aether.node-id", id)`
+    /// must be rewritten here or it matches nothing and an existing VM reads as ABSENT — which the
+    /// auto-heal in-flight tracker would take as a deletion (#1049). Mirrors
+    /// `HetznerComputeProvider.translateKeys`.
+    static final String UPPER_LAYER_NODE_ID_TAG = "aether.node-id";
+
     static String buildTagFilterQuery(Map<String, String> tagFilter) {
         var baseQuery = "Resources | where type == \"microsoft.compute/virtualmachines\"";
-        var tagClauses = tagFilter.entrySet()
-                                  .stream()
+        var tagClauses = translateKeys(tagFilter).entrySet()
+                                                 .stream()
                                   .map(AzureComputeProvider::toTagClause)
                                   .collect(Collectors.joining(" "));
 
@@ -287,6 +295,19 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
 
     private static String toTagClause(Map.Entry<String, String> entry) {
         return " | where tags[\"" + entry.getKey() + "\"] == \"" + entry.getValue() + "\"";
+    }
+
+    static Map<String, String> translateKeys(Map<String, String> tagFilter) {
+        if (!tagFilter.containsKey(UPPER_LAYER_NODE_ID_TAG)) {
+            return tagFilter;
+        }
+
+        var translated = new LinkedHashMap<>(tagFilter);
+        var value = translated.remove(UPPER_LAYER_NODE_ID_TAG);
+
+        translated.put(NODE_ID_TAG, value);
+
+        return translated;
     }
 
     private static List<InstanceInfo> toInstanceInfoList(List<VirtualMachine> vms) {

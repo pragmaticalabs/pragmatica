@@ -18,11 +18,13 @@ import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.Number;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.parse.TimeSpan.timeSpan;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
@@ -237,8 +239,40 @@ public final class ClusterBootstrapConfigParser {
                                                             SourceName name,
                                                             String section,
                                                             SourceType type) {
-        return parseProvider(doc, section).map(provider -> assembleSourceProfile(doc, name, section, type, provider));
+        return Result.all(parseProvider(doc, section),
+                          parseReplacementCeiling(doc, section))
+                     .map((provider, ceiling) -> assembleSourceProfile(doc, name, section, type, provider, ceiling));
     }
+
+    /// #1049 — `replacement_ceiling` is optional (absent → the runtime's ten-minute default), but a
+    /// present value that is not a positive duration must fail loudly: a typo silently falling back to the
+    /// default would leave an operator believing a ceiling is in force that is not, and a zero ceiling
+    /// would re-dispatch every replacement the moment it was minted.
+    private static Result<Option<TimeSpan>> parseReplacementCeiling(TomlDocument doc, String section) {
+        return doc.getString(section, REPLACEMENT_CEILING_KEY)
+                  .fold(() -> success(none()),
+                        raw -> resolveReplacementCeiling(section, raw));
+    }
+
+    private static Result<Option<TimeSpan>> resolveReplacementCeiling(String section, String raw) {
+        return timeSpan(raw).mapError(cause -> parseFailed(section + "." + REPLACEMENT_CEILING_KEY
+                                                          + ": " + cause.message()
+                                                          + " (was '" + raw + "')"))
+                            .map(parsed -> TimeSpan.fromDuration(parsed.duration()))
+                            .flatMap(ceiling -> requirePositiveCeiling(section, raw, ceiling))
+                            .map(Option::some);
+    }
+
+    private static Result<TimeSpan> requirePositiveCeiling(String section, String raw, TimeSpan ceiling) {
+        if (ceiling.nanos() <= 0) {
+            return parseFailed(section + "." + REPLACEMENT_CEILING_KEY
+                              + " must be a positive duration, e.g. \"10m\" (was '" + raw + "')").result();
+        }
+
+        return success(ceiling);
+    }
+
+    private static final String REPLACEMENT_CEILING_KEY = "replacement_ceiling";
 
     /// `provider` is optional (SSH / forge / docker sources have none) but must NOT be silently
     /// dropped on a typo. Absent → `Success(None)`; present + valid → `Success(Some)`; present +
@@ -264,7 +298,8 @@ public final class ClusterBootstrapConfigParser {
                                                        SourceName name,
                                                        String section,
                                                        SourceType type,
-                                                       Option<CloudProviderName> provider) {
+                                                       Option<CloudProviderName> provider,
+                                                       Option<TimeSpan> replacementCeiling) {
         var credentials = doc.getString(section, "credentials");
         var region = doc.getString(section, "region");
         var zone = doc.getString(section, "zone");
@@ -296,7 +331,8 @@ public final class ClusterBootstrapConfigParser {
                                            databases,
                                            roles,
                                            firewallRules,
-                                           nodeConfig);
+                                           nodeConfig,
+                                           replacementCeiling);
     }
 
     private static Option<TomlDocument> parseNodeConfig(TomlDocument doc, String sourceName) {

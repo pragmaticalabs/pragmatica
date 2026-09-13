@@ -279,6 +279,21 @@ class AwsComputeProviderTest {
             assertThat(testClient.lastDescribeTagKey).isEqualTo("env");
             assertThat(testClient.lastDescribeTagValue).isEqualTo("prod");
         }
+
+        /// #1049 — upper layers select a node's instance by the dotted `aether.node-id`, but this
+        /// provider stamps `aether-node-id`. Untranslated, the EC2 filter matches nothing and an existing
+        /// replacement reads as deleted to the auto-heal in-flight tracker.
+        @Test
+        void listInstances_nodeIdTag_translatesToStampedTagKey() {
+            testClient.describeResponse = Promise.success(TestAwsClient.describeResponseWith(List.of()));
+
+            provider.listInstances(Map.of("aether.node-id", "node-7"))
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastDescribeTagKey).isEqualTo("aether-node-id");
+            assertThat(testClient.lastDescribeTagValue).isEqualTo("node-7");
+        }
     }
 
     @Nested

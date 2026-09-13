@@ -257,6 +257,24 @@ public final class ClusterBootstrapConfigValidator {
         validateFirewallRules(name, source, managementPort, errors);
         validateRuntimeTypeCompatibility(name, source, runtimes, errors);
         validatePortConflictsOnSameHost(name, source, errors);
+        checkReplacementCeilingSource(name, source, errors);
+    }
+
+    /// #1049 — the runtime reads `replacement_ceiling` only from the CLOUD source backing a replacement's
+    /// role (`ClusterTopologyManagerRecord.replacementCeiling`, the same lookup that resolves its zones and
+    /// instance type). On any other source type the value would parse and never be read — the #675 shape —
+    /// so it is refused rather than accepted as a silent no-op.
+    private static void checkReplacementCeilingSource(String name, SourceProfile source, List<String> errors) {
+        if (source.replacementCeiling().isEmpty() || source.type() == SourceType.CLOUD) {
+            return;
+        }
+
+        errors.add("PF-26: Source '" + name
+                  + "' is type '" + source.type().value()
+                  + "' and sets replacement_ceiling, which only a cloud source's auto-heal replacements read"
+                  + " — the value would be silently ignored. Remove it; replacements outside a cloud source"
+                  + " use the " + SourceProfile.DEFAULT_REPLACEMENT_CEILING.duration().toMinutes()
+                  + "-minute default.");
     }
 
     private static void validateRoleConstraints(String name, SourceProfile source, List<String> errors) {
