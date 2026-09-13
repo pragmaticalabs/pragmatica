@@ -1265,8 +1265,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     /// A refused surplus reap is dropped, not retried — design-out, not recovery: a target that already
     /// exited is reaped by the departure path (`NodeRemoved` → [#reapDepartedNode] on whichever CTM is
-    /// active, the same leader-owned route every other death takes), and a target that is still alive is
-    /// exactly the node the cluster now needs, so keeping it is the outcome, not a lost action.
+    /// active, the same leader-owned route every other death takes). That route is quorum-gated — the
+    /// membership projector emits `NodeRemoved` only while quorate — so under `NOT_QUORUM_SAFE` the exited
+    /// target's container waits for quorum to return, and is not reaped at all if the cluster dissolves. A
+    /// target that is still alive is exactly the node the cluster now needs, so keeping it is the outcome.
     @Contract
     private void logReapSkipped(NodeId targetNodeId,
                                 DrainReason reason,
