@@ -1023,9 +1023,11 @@ tags = "region=eu,tier=gold"
 `LogConfig` declares no `DEFAULT` static field, so the generic config binder treats every key above
 as mandatory — there is no config-level fallback if a key is omitted from TOML. The programmatic
 factories (`LogConfig.logConfig(name[, level])`) default `log_args` and `log_result` to `false`
-(#280). Lines carry no request-id: the interceptor chain runs below `InvocationContext`
-(`aether-invoke`), so correlating an entry/exit pair with the request that caused it is not
-available here yet — tracked in #280.
+(#280). Both lines carry the request-id the invocation put in the SLF4J MDC (`requestId`, rendered
+as `[rid=…]` by the node's log4j layout): the entry line always did, and the exit line now
+re-applies the entry's MDC around itself, because the promise usually resolves on a thread whose
+MDC is empty (#280). Under the privacy defaults the exit line still names the OUTCOME — `ok`, or
+`failed <CauseType>` (the cause's type, never its message).
 
 ```toml
 [logging.payment-flow]
