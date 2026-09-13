@@ -14,6 +14,7 @@ import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
@@ -26,6 +27,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -41,16 +43,17 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// on 3 of 5 nodes, the partition owner was not one of them, and three successfully-published events
 /// were delivered to NOBODY while every node truthfully reported `attachedSubscriptions: 0`.
 ///
-/// **Deterministic by placement, not by luck.** `streams.spread-events` declares 5 partitions and this
-/// blueprint deploys `instances = 1`. HRW owns each partition independently — a pure function of the
-/// engine key, the partition and the node ids (`ReplicaPlacement.score`), all fixed by this fixture —
-/// so the owners are computable offline ([#SPREAD_OWNERS]) and no single node owns more than two of
-/// them. At least three partitions therefore have an owner that cannot run the consumer whichever
-/// node hosts it — no placement control, no owner pinning, and no arrangement in which the test
-/// silently degenerates into the already-covered co-located case. (The first version of this test
-/// argued "one host can own at most one of five" — a pigeonhole HRW never promised, which held for
-/// the bare-alias key and stopped holding for the qualified one.) Compare a 1-partition stream at
-/// `instances = 1`, which would exercise the interesting case only 4 times in 5.
+/// **Uncovered by observation, not by counting.** `streams.spread-events` declares 5 partitions and this
+/// blueprint deploys `instances = 1`. The first version argued "one host can own at most one of five,
+/// so at least four are forwarded" — a pigeonhole HRW never promised: HRW scores each partition
+/// independently, it is not a permutation of the nodes, and one node can own several (under the
+/// qualified key one owns two, which is what turned that `>= 4` red). So
+/// [PlacementShape#placement_leavesMostPartitionOwnersWithoutTheSlice] reads the owner of every
+/// partition off the cluster instead — the owner-authoritative in-JVM `replicaSnapshot`, a sensor the
+/// consumer-assignment path does not use — and requires the forwarded count to equal the partitions
+/// whose owner is not the host, plus a floor of at least one forwarded partition so a run that happened
+/// to co-locate everything fails as vacuous instead of passing for free. Compare a 1-partition stream
+/// at `instances = 1`, which would exercise the interesting case only 4 times in 5.
 ///
 /// **Non-vacuity.** Two independent arms. Structurally, `onSpreadEvent` is absent from the fixture's
 /// `routes.toml`, so nothing but the framework's delivery path can invoke it. Behaviourally,
@@ -73,7 +76,7 @@ class DeclarativeConsumerPlacementTest {
     private static final int NODES = 5;
 
     /// The whole point: ONE instance against a FIVE-partition stream, so every partition the host does
-    /// not own — at least three under [#SPREAD_OWNERS] — must be consumed by reading through its owner.
+    /// not own must be consumed by reading through its owner.
     private static final int INSTANCES = 1;
     private static final int SPREAD_PARTITIONS = 5;
 
@@ -97,15 +100,6 @@ class DeclarativeConsumerPlacementTest {
     /// reports it ([TestArtifacts#streamEngineKey]): the blueprint-qualified key, not the bare alias,
     /// which matches nothing since #1041.
     private static final String SPREAD_EVENTS_STREAM = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "spread-events");
-
-    /// HRW owner of `spread-events` partitions 0..4 under [#SPREAD_EVENTS_STREAM] with node ids
-    /// `dcp-1..5`, computed offline with the production hash (`ReplicaPlacement.score`) and matched
-    /// against the endpoint's own `ownerNode` rows. `dcp-5` owns two — which is what refuted the
-    /// original "at most one" premise once the key was qualified — and no node owns more than two.
-    /// The host is read from the endpoint rather than fixed here: it is the first element of a
-    /// `HashSet<NodeId>` (`SliceAllocationEngine.findTrulyEmptyNodes`), an iteration-order accident
-    /// this test has no business pinning.
-    private static final List<String> SPREAD_OWNERS = List.of("dcp-2", "dcp-5", "dcp-1", "dcp-5", "dcp-4");
 
     private static final Pattern COUNT_FIELD = Pattern.compile("\"count\"\\s*:\\s*(\\d+)");
     private static final Pattern ATTACHED_FIELD = Pattern.compile("\"attachedSubscriptions\"\\s*:\\s*(\\d+)");
@@ -189,14 +183,21 @@ class DeclarativeConsumerPlacementTest {
                              .hasSize(INSTANCES);
 
             var host = consumerNode();
-            var expectedForwarded = SPREAD_OWNERS.stream().filter(owner -> !owner.equals(host)).count();
+            var owners = observedOwners();
+            var expectedForwarded = owners.stream().filter(owner -> !owner.equals(host)).count();
 
             assertThat(forwardedPartitionCount())
-                    .describedAs("HRW places spread-events owners at %s and the consumer sits on %s, so exactly the "
-                                 + "partitions it does not own MUST be read through their owners — "
+                    .describedAs("the cluster places spread-events owners at %s and the consumer sits on %s, so exactly "
+                                 + "the partitions it does not own MUST be read through their owners — "
                                  + "this is the case #488 could not express and the live cluster failed",
-                                 SPREAD_OWNERS, host)
+                                 owners, host)
                     .isEqualTo(expectedForwarded);
+            // Independent of any placement function: the configuration under test is uncovered only if
+            // at least one owner is not the host. Zero here would make every Delivery assertion vacuous.
+            assertThat(expectedForwarded)
+                    .describedAs("with one host and five partitions at least one owner must lack the slice, "
+                                 + "or this test is exercising the co-located case #488 already covers")
+                    .isGreaterThanOrEqualTo(1);
         }
 
         @Test
@@ -310,6 +311,36 @@ class DeclarativeConsumerPlacementTest {
                           .map(port -> httpGet(port, "/api/v1/streams/declarative-consumers"))
                           .mapToInt(body -> firstInt(ATTACHED_FIELD, body))
                           .sum();
+    }
+
+    /// The owner of every spread-events partition as the CLUSTER reports it: the owner-authoritative
+    /// in-JVM `StreamReadRouter.replicaSnapshot` (the node answering `servedByOwner`), scanned across
+    /// all nodes as [AbstractMultiPartitionStream#ownerView] does. This is the expectation's source on
+    /// purpose — an owner list recomputed with the placement hash, or copied from its output, could
+    /// only agree with itself. The assignment rows the endpoint reports come from a different read path
+    /// (`StreamConsumerManager`'s `ownership.ownerOf`), so the two can disagree, which is what makes
+    /// the equality below a check rather than a restatement.
+    private List<String> observedOwners() {
+        var owners = IntStream.range(0, SPREAD_PARTITIONS)
+                              .mapToObj(this::observedOwner)
+                              .toList();
+
+        assertThat(owners).describedAs("every spread-events partition must have an owner-authoritative view (%s)", owners)
+                          .allSatisfy(owner -> assertThat(owner).isNotBlank());
+
+        return owners;
+    }
+
+    /// The owner named by the node that answers `servedByOwner` for the partition, or blank when no
+    /// node does (the bootstrap window, or a lookup under a spelling the ring is not keyed by).
+    private String observedOwner(int partition) {
+        return cluster.allNodes()
+                      .stream()
+                      .map(node -> node.streamReadRouter().replicaSnapshot(SPREAD_EVENTS_STREAM, partition))
+                      .filter(ReplicaSetView::servedByOwner)
+                      .findFirst()
+                      .flatMap(view -> view.ownerNodeId().toOptional())
+                      .orElse("");
     }
 
     /// The one node every spread-events partition is assigned to. With a single instance the rows all
