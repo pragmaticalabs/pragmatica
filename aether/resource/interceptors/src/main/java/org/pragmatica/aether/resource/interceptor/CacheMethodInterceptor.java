@@ -47,7 +47,7 @@ public record CacheMethodInterceptor(CacheBackend cache,
 
             return lookup(key).flatMap(opt -> opt.map(cached -> Promise.<R> success((R) cached))
                                                  .or(() -> method.apply(request)
-                                                                 .onSuccess(value -> cache.put(key, value))));
+                                                                 .onSuccess(value -> store(key, value))));
         };
     }
 
@@ -65,7 +65,7 @@ public record CacheMethodInterceptor(CacheBackend cache,
             var key = extractKey(request);
 
             return method.apply(request)
-                         .onSuccess(value -> cache.put(key, value));
+                         .onSuccess(value -> store(key, value));
         };
     }
 
@@ -84,10 +84,21 @@ public record CacheMethodInterceptor(CacheBackend cache,
                     .recover(cause -> missBecause("get", key, cause));
     }
 
-    /// A backend failure on write is absorbed; the method's result stands.
+    /// A backend failure on write is absorbed; the method's result stands. Whatever the cache held
+    /// for the key before is now stale against a write that DID happen, so a best-effort `remove`
+    /// follows the failed put — also absorbed, since a full outage fails that too (review of
+    /// #1084, N-1). Every strategy's put goes through here, so every dropped put is logged the
+    /// same way (N-2).
     private Promise<Unit> store(Object key, Object value) {
         return cache.put(key, value)
-                    .recover(cause -> skippedBecause("put", key, cause));
+                    .fold(result -> result.fold(cause -> invalidateAfterFailedPut(key, cause),
+                                                Promise::success));
+    }
+
+    private Promise<Unit> invalidateAfterFailedPut(Object key, Cause cause) {
+        skippedBecause("put", key, cause);
+
+        return cache.remove(key).recover(removeCause -> skippedBecause("remove", key, removeCause));
     }
 
     private Option<Object> missBecause(String operation, Object key, Cause cause) {
