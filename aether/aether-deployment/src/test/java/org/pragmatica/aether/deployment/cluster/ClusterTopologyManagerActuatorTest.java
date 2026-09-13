@@ -1130,19 +1130,25 @@ class ClusterTopologyManagerActuatorTest {
         private static final NodeId DEAD = nodeId("node-dead").unwrap();
         private static final NodeId BOOTING = nodeId("node-booting").unwrap();
         private static final NodeId WORKER = nodeId("node-worker").unwrap();
+        /// Quorum-safe for a configured five, and deliberately disjoint from every node that owns an instance below
+        /// except PEER_E, so each protection in `terminatesOnlyTheUnprotectedCoreInstance` is the ONLY thing guarding
+        /// its node. An overlap would let the counted set mask the tracked, SWIM, transport and self checks.
+        private static final Set<NodeId> QUORUM_THREE = Set.of(PEER_E, nodeId("node-f").unwrap(), nodeId("node-g").unwrap());
 
         @BeforeEach
         void quorumSafeNamedCluster() {
             clusterStore.seedNamed(5, CLUSTER);
-            coreCountedMembers.set(SPARE_FIVE);
+            coreCountedMembers.set(QUORUM_THREE);
         }
 
-        /// Instances of: a tracked member (A), a node alive only by raw SWIM (B), a node reachable only by the
-        /// leader's transport (C), a replacement still in flight (BOOTING), self, a worker, and a node with no
-        /// protection at all (DEAD). Only DEAD's instance is terminated, exactly once.
+        /// Each protected node carries exactly ONE protection: tracked only (A), alive only by raw SWIM (B), reachable
+        /// only by the leader's transport (C), counted only (E), in flight only (BOOTING), and self with no evidence at
+        /// all. Also present: a worker instance, and a node with no protection (DEAD). Only DEAD's instance is
+        /// terminated, exactly once. Because every protection is individually load-bearing here, dropping any one of
+        /// them reddens this test.
         @Test
         void activationReplay_terminatesOnlyTheUnprotectedCoreInstance() {
-            Set.of(SELF, PEER_A, PEER_B, PEER_C, BOOTING, DEAD).forEach(id -> lifecycleManager.addInstance(id, CLUSTER, "core"));
+            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_E, BOOTING, DEAD).forEach(id -> lifecycleManager.addInstance(id, CLUSTER, "core"));
             lifecycleManager.addInstance(WORKER, CLUSTER, "worker");
             trackedMembers.set(Set.of(PEER_A));
             swimAliveNodes.set(Set.of(PEER_B));
