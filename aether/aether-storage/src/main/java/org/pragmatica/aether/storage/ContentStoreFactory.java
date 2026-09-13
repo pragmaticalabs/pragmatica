@@ -40,9 +40,11 @@ public final class ContentStoreFactory implements ResourceFactory<ContentStore, 
     }
     // No close override, deliberately (#893). A content store owns nothing releasable: the
     // StorageInstance it writes through is the NODE's (registered by
-    // AetherNode.registerRuntimeExtensions and shut down by the node), so closing it from one
-    // slice's unload would shut the node's content storage under every other slice. The override
-    // that used to sit here returned unitPromise() — a no-op that reported success and was
-    // indistinguishable from a working close. Falling through to ResourceFactory's default
-    // dispatch names the "no close convention" outcome and logs it instead.
+    // AetherNode.registerRuntimeExtensions), never a slice's to close — closing it from one
+    // slice's unload would shut the node's content storage under every other slice. The node
+    // does not shut that instance down at stop either; that gap is #1078, not this factory's.
+    // The override that used to sit here returned unitPromise() — a no-op that reported success
+    // and was indistinguishable from a working close. Falling through to ResourceFactory's
+    // default dispatch names the outcome in code (noCloseConvention) and emits it to
+    // java.util.logging at FINE, which the node's log4j configuration does not receive (#1077).
 }
