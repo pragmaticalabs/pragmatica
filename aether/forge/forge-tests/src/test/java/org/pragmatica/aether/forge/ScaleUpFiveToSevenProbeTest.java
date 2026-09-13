@@ -38,6 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.pragmatica.lang.utils.Causes.cause;
 
 /// Diagnostic probe — does the cloud-only 5→7 scale-up stall (#336) reproduce IN-JVM with the
 /// Ember single-process provider, where there is NO DNS, NO advertise-host, NO container boot, and
@@ -73,7 +74,12 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// ## What we observe
 /// The counted-core denominator is read IN-PROCESS (no HTTP polling latency) via
 /// `aetherNode.membershipFsm().coreCountedMembers()` — the exact set the reconciler uses for its
-/// deficit math. On failure we dump, for every node Ember knows about: AetherNode present? in the
+/// deficit math — on the LEADER, the node whose own `isLeader()` holds (`EmberCluster.currentLeader()`).
+/// Never on an arbitrary node: a node created by the scale-up is seeded with the whole configured
+/// core set (`MembershipFsm.seed`) and reports 7 before a packet has moved, so a read routed to it
+/// declares the scale complete ~300 ms after `addNode()` having measured nothing (#1070 review B1).
+/// The 7 is therefore accepted only from a node that was already a member at 5, whose FSM can reach
+/// 7 through real joins alone. On failure we dump, for every node Ember knows about: AetherNode present? in the
 /// leader's SWIM membership view? counted as core? plus the leader's provisioning circuit-breaker
 /// state (`consecutiveFailures` = "provision failed N times") and the configured target. That tells
 /// us whether new nodes (a) never got provisioned, (b) provisioned but never joined the mesh, or
@@ -99,8 +105,13 @@ class ScaleUpFiveToSevenProbeTest {
 
     private static final Pattern CONFIG_VERSION = Pattern.compile("\"configVersion\"\\s*:\\s*(\\d+)");
     private static final Pattern NEW_COUNT = Pattern.compile("\"newCount\"\\s*:\\s*(\\d+)");
+    /// Read while no running node claims leadership. Never equals a target, so a leaderless tick is
+    /// "not converged" rather than a fabricated count.
+    private static final int NO_LEADER_COUNT = -1;
 
     private EmberCluster cluster;
+    /// The ids of the nodes that formed the 5-core cluster — the only nodes a 7 may be counted on.
+    private Set<String> formedNodeIds = Set.of();
     private final HttpOperations http = jdkHttpOperations();
 
     @BeforeAll
@@ -119,8 +130,9 @@ class ScaleUpFiveToSevenProbeTest {
         await().atMost(FORM_TIMEOUT)
                .pollInterval(POLL)
                .until(() -> cluster.getLeaderManagementPort().map(port -> readConfigVersion(port) >= 1).or(false));
-        log.info("SCALE-PROBE: {}-core cluster formed, leader={}, countedCores={}",
-                 INITIAL_CORES, cluster.currentLeader().or("none"), countedCores());
+        formedNodeIds = cluster.allNodes().stream().map(node -> node.self().id()).collect(Collectors.toSet());
+        log.info("SCALE-PROBE: {}-core cluster formed, leader={}, countedCores={}, formedNodes={}",
+                 INITIAL_CORES, cluster.currentLeader().or("none"), countedCores(), formedNodeIds);
     }
 
     @AfterAll
@@ -178,7 +190,9 @@ class ScaleUpFiveToSevenProbeTest {
 
     private boolean recordTick(int leaderPort, long t0, long[] latch, long[] lastLog) {
         var elapsed = (System.nanoTime() - t0) / 1_000_000L;
-        if (countedCores() >= TARGET_CORES && latch[0] < 0) {
+        var leader = leaderNode();
+        if (countedCoresOn(leader) >= TARGET_CORES && latch[0] < 0) {
+            requireCountedOnFormedNode(leader);
             latch[0] = elapsed;
         }
         maybeLog(leaderPort, elapsed, lastLog);
@@ -201,22 +215,49 @@ class ScaleUpFiveToSevenProbeTest {
     // ----- in-process membership reads -----
 
     /// The counted-core denominator the reconciler itself uses for deficit math, read off the
-    /// leader's `MembershipFsm` (falls back to any node if the leader handle is momentarily absent).
+    /// leader's `MembershipFsm`; [#NO_LEADER_COUNT] while no running node claims leadership.
     private int countedCores() {
-        return leaderOrAnyNode().map(node -> node.membershipFsm().coreCountedMembers().size()).or(0);
+        return countedCoresOn(leaderNode());
     }
 
-    private Option<AetherNode> leaderOrAnyNode() {
-        return cluster.currentLeader()
-                      .flatMap(cluster::getNode)
-                      .orElse(() -> Option.from(cluster.allNodes().stream().findFirst()));
+    private static int countedCoresOn(Option<AetherNode> node) {
+        return node.map(n -> n.membershipFsm().coreCountedMembers().size()).or(NO_LEADER_COUNT);
+    }
+
+    /// The node whose own `isLeader()` holds — `EmberCluster.currentLeader()` resolves it by that
+    /// self-claim. There is deliberately NO fallback to an arbitrary node: after `addNode()` the first
+    /// map entry is a newborn, and reading it is the vacuity #1070 review B1 found.
+    private Option<AetherNode> leaderNode() {
+        return cluster.currentLeader().flatMap(cluster::getNode);
+    }
+
+    /// A 7 counts only when read from a node that was already a member at 5 (see the class doc). A
+    /// node created by the scale-up reports the configured 7 from its seed, so the probe would pass
+    /// before the scale-up had happened; that read is a scenario failure, not a result.
+    private void requireCountedOnFormedNode(Option<AetherNode> counted) {
+        var countedOn = counted.map(node -> node.self().id()).or("none");
+        if (!formedNodeIds.contains(countedOn)) {
+            failScenario(cause("counted " + TARGET_CORES + " cores on " + countedOn + ", which is not one of the "
+                               + "nodes that formed the " + INITIAL_CORES + "-core cluster " + formedNodeIds
+                               + " — a node created by the scale-up reports its seeded configuration, "
+                               + "not observed membership, so this read measures nothing; at this instant "
+                               + claimingLeaderSummary()));
+        }
+    }
+
+    /// What the node whose own `isLeader()` holds counts right now — the reading the probe should have taken.
+    private String claimingLeaderSummary() {
+        var claimant = cluster.allNodes().stream().filter(AetherNode::isLeader).findFirst();
+        return claimant.map(leader -> "the node claiming leadership (" + leader.self().id() + ") counts "
+                                      + leader.membershipFsm().coreCountedMembers().size())
+                       .orElse("no running node claims leadership");
     }
 
     // ----- failure diagnostics -----
 
     @TerminalOperation
     private void dumpDiagnostics(int leaderPort) {
-        var leaderNode = leaderOrAnyNode();
+        var leaderNode = leaderNode();
         var countedSet = leaderNode.map(node -> node.membershipFsm().coreCountedMembers()).or(Set.of());
         var connectedPeers = leaderNode.map(AetherNode::connectedPeerIds).or(Set.of());
 
@@ -236,7 +277,7 @@ class ScaleUpFiveToSevenProbeTest {
 
     private void dumpNode(AetherNode node, Set<NodeId> countedSet, Set<NodeId> connectedPeers) {
         var id = node.self();
-        var inMesh = leaderOrAnyNode().map(leader -> leader.membershipView().isPresent(id)).or(false);
+        var inMesh = leaderNode().map(leader -> leader.membershipView().isPresent(id)).or(false);
         log.info("SCALE-PROBE DUMP: node={} started=true leader={} inLeaderSwimView={} countedAsCore={} "
                  + "leaderSeesAsPeer={}",
                  id.id(), node.isLeader(), inMesh, countedSet.contains(id), connectedPeers.contains(id));
@@ -245,9 +286,9 @@ class ScaleUpFiveToSevenProbeTest {
     /// `consecutiveFailures` here is the "provision failed N times" counter; `tripped=true` means
     /// the breaker is open and further provisioning is being deferred (a likely stall cause).
     private String breakerSummary() {
-        return leaderOrAnyNode().flatMap(AetherNode::clusterTopologyManager)
-                                .map(ctm -> formatBreaker(ctm.circuitBreakerState()))
-                                .or("no-ctm");
+        return leaderNode().flatMap(AetherNode::clusterTopologyManager)
+                           .map(ctm -> formatBreaker(ctm.circuitBreakerState()))
+                           .or("no-ctm");
     }
 
     private static String formatBreaker(CircuitBreakerState state) {
@@ -263,11 +304,14 @@ class ScaleUpFiveToSevenProbeTest {
 
     // ----- HTTP helpers (scale trigger + read-only diagnostics) -----
 
+    /// -1 when the config could not be read: `httpGet` answers `{}` on a failed GET, and 0 is the
+    /// server's CAS-bypass sentinel (`checkVersionAsync`: `expectedVersion != 0 && …`), so an
+    /// unreadable version must never be sent as one (#1070 review NIT-1).
     private int readConfigVersion(int port) {
         var matcher = CONFIG_VERSION.matcher(httpGet(port, "/api/v1/cluster/config"));
         return matcher.find()
                ? Integer.parseInt(matcher.group(1))
-               : 0;
+               : -1;
     }
 
     /// Posts the current `ManagementApiResponses.ScaleRequest` shape — `source` / `role` / `count` /
@@ -280,6 +324,10 @@ class ScaleUpFiveToSevenProbeTest {
     /// then waited out its whole budget and reported the unchanged 5 cores as a #336 stall.
     @TerminalOperation
     private String postScale(int port, int count, int expectedVersion) {
+        if (expectedVersion < 1) {
+            failScaleTrigger("was not sent: fencing version " + expectedVersion + " is unreadable or the CAS-bypass "
+                             + "sentinel, and an unfenced scale could land over another writer");
+        }
         var body = "{\"source\":\"\",\"role\":\"core\",\"count\":" + count
                    + ",\"expectedVersion\":" + expectedVersion + "}";
         var request = HttpRequest.newBuilder()
@@ -345,7 +393,7 @@ class ScaleUpFiveToSevenProbeTest {
 
 
     private static void failScenario(Cause cause) {
-        throw new AssertionError("Scenario setup failed: " + cause.message());
+        throw new AssertionError("Scenario failed: " + cause.message());
     }
 
     private enum ProbeError implements Cause {

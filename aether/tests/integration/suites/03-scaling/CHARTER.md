@@ -33,7 +33,7 @@
 | TC-03-003 | `test_reject_scale_to_1` | `test_reject_scale_to_1` in `test-01-quorum-safety.sh` | C3 | core | `assert_scale_refused` POSTs `{role:core, count:1}` via `direct_scale_response` to the leader (or per-node iteration in docker mode); requires `>= 400` AND a detail containing `Quorum safety violation` |
 | TC-03-004 | `test_reject_scale_to_2` | `test_reject_scale_to_2` in `test-01-quorum-safety.sh` | C3 | core | Same shape as TC-03-003 with `count=2` |
 | TC-03-005 | `test_reject_scale_above_max` | `test_reject_scale_above_max` in `test-01-quorum-safety.sh` | C4 | core | Same shape with `count=21`, detail `Invalid core max` (20 is even and is refused by the odd-count check before the max check) |
-| TC-03-006 | `test_cluster_unchanged` | `test-01-quorum-safety.sh:96` | C5 | regression-net | `member_count >= 3` floor (same as initial) + `assert_cluster_healthy`; name overstates — only checks floor |
+| TC-03-006 | `test_cluster_unchanged` | `test_cluster_unchanged` in `test-01-quorum-safety.sh` | C5 | regression-net | `member_count >= 3` floor (same as initial) + `assert_cluster_healthy`; name overstates — only checks floor |
 
 ### test-02-scale-up.sh
 

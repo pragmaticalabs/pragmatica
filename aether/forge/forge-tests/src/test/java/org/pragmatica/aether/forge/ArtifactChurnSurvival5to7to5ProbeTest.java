@@ -26,7 +26,9 @@ import org.slf4j.LoggerFactory;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.time.Duration;
+import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -70,6 +72,13 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// chunk's holder set changed" assertion is NOT added — per-key DHT ring holders are not exposed on
 /// the Ember/Forge surface without deep plumbing; the asserted counted-core 5→7→5 convergence is the
 /// sufficient anti-vacuous guard.)
+///
+/// Both the count and the POST target are the LEADER — the node whose own `isLeader()` holds
+/// (`EmberCluster.currentLeader()`), never an arbitrary map entry. After `addNode()` the first entry is
+/// a newborn: it reports the configured 7 from its seed (`MembershipFsm.seed`) before joining, and its
+/// management port has no leader view, so a POST routed there answers 503 `No leader elected` (#1070
+/// review B1 — the down-leg "product defect" of the first fix round was exactly that harness read).
+/// A 7 is therefore accepted only from a node that was already a member at 5.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -95,8 +104,13 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
 
     private static final Pattern CONFIG_VERSION = Pattern.compile("\"configVersion\"\\s*:\\s*(\\d+)");
     private static final Pattern NEW_COUNT = Pattern.compile("\"newCount\"\\s*:\\s*(\\d+)");
+    /// Read while no running node claims leadership. Never equals a target, so a leaderless tick is
+    /// "not converged" rather than a fabricated count.
+    private static final int NO_LEADER_COUNT = -1;
 
     private EmberCluster cluster;
+    /// The ids of the nodes that formed the 5-core cluster — the only nodes a count may be taken from.
+    private Set<String> formedNodeIds = Set.of();
     private final HttpOperations http = jdkHttpOperations();
 
     @BeforeAll
@@ -108,8 +122,9 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(this::allNodesHealthy);
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> countedCores() == INITIAL_CORES);
-        log.info("CHURN-PROBE: {}-core cluster formed, leader={}, countedCores={}",
-                 INITIAL_CORES, cluster.currentLeader().or("none"), countedCores());
+        formedNodeIds = cluster.allNodes().stream().map(node -> node.self().id()).collect(Collectors.toSet());
+        log.info("CHURN-PROBE: {}-core cluster formed, leader={}, countedCores={}, formedNodes={}",
+                 INITIAL_CORES, cluster.currentLeader().or("none"), countedCores(), formedNodeIds);
     }
 
     @AfterAll
@@ -167,7 +182,11 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
         var response = postScale(port, targetCores, version);
         log.info("CHURN-PROBE: POST /api/v1/cluster/scale {{role:core, count:{}, expectedVersion:{}}} -> {}",
                  targetCores, version, response);
-        return awaitCounted(targetCores, SCALE_TIMEOUT);
+        var latency = awaitCounted(targetCores, SCALE_TIMEOUT);
+        log.info("CHURN-PROBE RESULT: target={} reachedAtMs={} (-1=NOT within {}s) countedOn={} countedCores={}",
+                 targetCores, latency, SCALE_TIMEOUT.toSeconds(),
+                 cluster.currentLeader().or("none"), countedCores());
+        return latency;
     }
 
     private long awaitCounted(int target, Duration budget) {
@@ -183,7 +202,9 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
 
     private boolean countedTick(int target, long t0, Duration budget, long[] reached, long[] lastLog) {
         var elapsed = (System.nanoTime() - t0) / 1_000_000L;
-        if (reached[0] < 0 && countedCores() == target) {
+        var leader = leaderNode();
+        if (reached[0] < 0 && countedCoresOn(leader) == target) {
+            requireCountedOnFormedNode(leader, target);
             reached[0] = elapsed;
         }
         maybeLog(target, elapsed, lastLog);
@@ -201,18 +222,56 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
 
     // ----- in-process membership reads -----
 
+    /// The counted-core denominator the reconciler itself uses, read off the leader's `MembershipFsm`;
+    /// [#NO_LEADER_COUNT] while no running node claims leadership.
     private int countedCores() {
-        return leaderOrAnyNode().map(node -> node.membershipFsm().coreCountedMembers().size()).or(0);
+        return countedCoresOn(leaderNode());
     }
 
-    private Option<AetherNode> leaderOrAnyNode() {
-        return cluster.currentLeader()
-                      .flatMap(cluster::getNode)
-                      .orElse(() -> Option.from(cluster.allNodes().stream().findFirst()));
+    private static int countedCoresOn(Option<AetherNode> node) {
+        return node.map(n -> n.membershipFsm().coreCountedMembers().size()).or(NO_LEADER_COUNT);
     }
 
+    /// The node whose own `isLeader()` holds — `EmberCluster.currentLeader()` resolves it by that
+    /// self-claim. Deliberately NO fallback to an arbitrary node (see the class doc).
+    private Option<AetherNode> leaderNode() {
+        return cluster.currentLeader().flatMap(cluster::getNode);
+    }
+
+    /// A count is accepted only from a node that was already a member at 5. On the up-leg a node
+    /// created by the scale reports the configured 7 from its seed before it has joined, which would
+    /// pass the guard before any churn happened; on the down-leg leadership moving to a churn-created
+    /// node would mean the fixture no longer reads the cluster it formed. Either is a scenario failure.
+    private void requireCountedOnFormedNode(Option<AetherNode> counted, int target) {
+        var countedOn = counted.map(node -> node.self().id()).or("none");
+        if (!formedNodeIds.contains(countedOn)) {
+            failScenario("counted " + target + " cores on " + countedOn + ", which is not one of the nodes that "
+                         + "formed the " + INITIAL_CORES + "-core cluster " + formedNodeIds
+                         + " — a node created by the churn reports its seeded configuration, not observed "
+                         + "membership, so this read measures nothing; at this instant " + claimingLeaderSummary());
+        }
+    }
+
+    /// What the node whose own `isLeader()` holds counts right now — the reading the probe should have taken.
+    private String claimingLeaderSummary() {
+        var claimant = cluster.allNodes().stream().filter(AetherNode::isLeader).findFirst();
+        return claimant.map(leader -> "the node claiming leadership (" + leader.self().id() + ") counts "
+                                      + leader.membershipFsm().coreCountedMembers().size())
+                       .orElse("no running node claims leadership");
+    }
+
+    /// The leader's management port — the only valid target for a leader-bound route. No fallback to
+    /// the first status entry: after `addNode()` that is the newborn, whose forwarder has no leader
+    /// view and answers 503 `No leader elected`. No leader is a scenario failure, not a retry.
     private int leaderPort() {
-        return cluster.getLeaderManagementPort().or(cluster.status().nodes().getFirst().mgmtPort());
+        return cluster.getLeaderManagementPort()
+                      .onEmpty(() -> failScenario("no running node claims leadership, so there is no management "
+                                                  + "port to address"))
+                      .or(-1);
+    }
+
+    private static void failScenario(String detail) {
+        throw new AssertionError("Scenario failed: " + detail);
     }
 
     // ----- HTTP helpers (scale trigger + slice deploy/resolve) -----
@@ -227,6 +286,10 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     /// up-leg guard then waited out its whole budget and failed as "no physical churn".
     @TerminalOperation
     private String postScale(int port, int count, int expectedVersion) {
+        if (expectedVersion < 1) {
+            failScaleTrigger("was not sent: fencing version " + expectedVersion + " is unreadable or the CAS-bypass "
+                             + "sentinel, and an unfenced scale could land over another writer");
+        }
         var body = "{\"source\":\"\",\"role\":\"core\",\"count\":" + count
                    + ",\"expectedVersion\":" + expectedVersion + "}";
         var request = HttpRequest.newBuilder()
@@ -277,11 +340,14 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
         return "HTTP " + result.statusCode() + " " + result.body();
     }
 
+    /// -1 when the config could not be read: `httpGet` answers `{}` on a failed GET, and 0 is the
+    /// server's CAS-bypass sentinel (`checkVersionAsync`: `expectedVersion != 0 && …`), so an
+    /// unreadable version must never be sent as one (#1070 review NIT-1).
     private int readConfigVersion(int port) {
         var matcher = CONFIG_VERSION.matcher(httpGet(port, "/api/v1/cluster/config"));
         return matcher.find()
                ? Integer.parseInt(matcher.group(1))
-               : 0;
+               : -1;
     }
 
     @TerminalOperation

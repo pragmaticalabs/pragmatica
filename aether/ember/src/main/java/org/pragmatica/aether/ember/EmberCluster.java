@@ -981,26 +981,39 @@ public final class EmberCluster {
         return effectiveSize.get();
     }
 
+    /// The running node whose own [AetherNode#isLeader] holds — the same self-claim
+    /// (`LeaderElectionContext.isLeader`: committed leader equals `self`) every leader-bound route
+    /// answers from. Empty while no running node claims leadership.
+    ///
+    /// #1070 review B1 — this used to be `nodes.values().stream().findFirst()` → [AetherNode#leader]: the
+    /// leader VIEW of whichever node `ConcurrentHashMap` iterates first. Fixed membership hid the
+    /// defect; after [#addNode] the first entry can be the newborn, which holds no leader view yet, so
+    /// [#getLeaderManagementPort] and [#status] answered "no leader" from a node that had not joined
+    /// while the real leader was running, and probes reading membership through the same entry counted
+    /// the newborn's seeded core set as a completed scale-up.
     public Option<String> currentLeader() {
-        return Option.option(nodes.values().stream().findFirst().orElse(null))
-                     .flatMap(AetherNode::leader)
+        var claimant = nodes.values().stream().filter(AetherNode::isLeader).findFirst();
+
+        return Option.from(claimant)
+                     .map(AetherNode::self)
                      .map(NodeId::id);
     }
 
     public ClusterStatus status() {
-        var nodeStatuses = nodes.entrySet().stream().map(this::toNodeStatus).toList();
+        var leaderId = currentLeader();
+        var nodeStatuses = nodes.entrySet().stream().map(entry -> toNodeStatus(entry, leaderId)).toList();
 
-        return new ClusterStatus(nodeStatuses, currentLeader().or("none"));
+        return new ClusterStatus(nodeStatuses, leaderId.or("none"));
     }
 
-    private NodeStatus toNodeStatus(Map.Entry<String, AetherNode> entry) {
+    private NodeStatus toNodeStatus(Map.Entry<String, AetherNode> entry, Option<String> leaderId) {
         var clusterPort = nodeInfos.get(entry.getKey()).address().port();
 
         return new NodeStatus(entry.getKey(),
                               clusterPort,
                               baseMgmtPort + (clusterPort - basePort),
                               observedState(entry.getValue()),
-                              currentLeader().map(leaderId -> leaderId.equals(entry.getKey())).or(false));
+                              leaderId.map(entry.getKey()::equals).or(false));
     }
 
     /// #727 review B1 — [NodeStatus#state] used to be the string literal `"healthy"`, passed in

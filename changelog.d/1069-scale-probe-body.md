@@ -14,3 +14,21 @@
   validator refuses it as `Invalid core count` before it compares against `coreMax`.
 - `cluster-management-spec.md` documented a `{core_count, expected_version}` request and a 400 for quorum violations. It now
   shows the current request and response and the statuses the route actually returns (quorum violation is 409).
+- **`EmberCluster.currentLeader()` answered from whichever node `ConcurrentHashMap` iterated first** (its leader view),
+  and `status()` / `getLeaderManagementPort()` derive from it. After `addNode()` the first entry is the newborn, which
+  holds no leader view, so every leader accessor said "no leader" while the elected leader was running; the two probes
+  then counted membership on that newborn — which `MembershipFsm.seed` fills with the whole configured core set before a
+  packet moves — and the ScaleUp probe declared 5→7 complete ~300 ms after `addNode()` while the leader still counted 5,
+  and the churn probe's down-leg POST went to the newborn's management port and was refused 503 `No leader elected`.
+  `currentLeader()` now names the running node whose own `isLeader()` holds
+  `[verified: EmberClusterCurrentLeaderTest.currentLeader_isTheNodeClaimingLeadership_notTheFirstMapEntry — reverting to
+  findFirst() reddens it with currentLeader()=None() while the leader is running]`.
+- Both probes read the counted-core denominator from, and address the scale POST to, that leader only — no fallback to
+  the first map entry — and a 7 is accepted only from a node that was a member at 5, so a count taken from a node the
+  scale created fails the probe naming that node and what the leader counted at that instant
+  `[verified: ScaleUpFiveToSevenProbeTest, ArtifactChurnSurvival5to7to5ProbeTest — with the first-entry read restored
+  both fail "counted 7 cores on scale-7 … the node claiming leadership (scale-1) counts 5"; with that guard also removed
+  the ScaleUp probe passes 279 ms after addNode() with leader=none, which is the pass the head shipped]`. With the leader
+  read, 5→7 completes on the leader's FSM in 17.2–18.1 s in-JVM (n=2) and the churn's 7→5 down-leg is accepted (HTTP 200).
+- `readConfigVersion` returned 0 on a failed GET, which the route treats as the CAS-bypass sentinel
+  (`checkVersionAsync`); both probes now refuse to POST a fencing version below 1.
