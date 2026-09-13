@@ -1351,12 +1351,12 @@ class ManagementServerImpl implements ManagementServer {
         // ambiguous answer #1039 exists to remove.
         if (checkForwardedPartitionOwner(context.method(),
                                          context.path(),
-                                         nodeSupplier.get()
-                                                     .self(),
+                                         nodeSupplier.get().self(),
                                          request.sender(),
-                                         this::resolvePartitionOwner)
-                .onFailure(cause -> sendManagementForwardError(network, request, cause.message()))
-                .isFailure()) {
+                                         this::resolvePartitionOwner).onFailure(cause -> sendManagementForwardError(network,
+                                                                                                                    request,
+                                                                                                                    cause.message()))
+                                        .isFailure()) {
             return;
         }
 
@@ -1421,8 +1421,7 @@ class ManagementServerImpl implements ManagementServer {
                                                      NodeId self,
                                                      NodeId sender,
                                                      HttpForwarder.PartitionOwnerResolver ownerResolver) {
-        var matched = parseRoutingMethod(methodName).flatMap(method -> ManagementRoute.match(method, path)
-                                                                                      .option());
+        var matched = parseRoutingMethod(methodName).flatMap(method -> ManagementRoute.match(method, path).option());
 
         if (matched.isEmpty()) {
             return Result.unitResult();
@@ -1430,17 +1429,17 @@ class ManagementServerImpl implements ManagementServer {
 
         var matchedRoute = matched.unwrap();
 
-        return switch (matchedRoute.route().target()) {
+        return switch (matchedRoute.route()
+                                   .target()) {
             case RouteTarget.PartitionOwner(var partitionParamIndex) -> checkOwnerIsSelf(matchedRoute,
-                                                                                          partitionParamIndex,
-                                                                                          path,
-                                                                                          self,
-                                                                                          sender,
-                                                                                          ownerResolver);
+                                                                                         partitionParamIndex,
+                                                                                         path,
+                                                                                         self,
+                                                                                         sender,
+                                                                                         ownerResolver);
             // Exhaustive by design rather than a `default`: a new RouteTarget must make this decision
             // deliberately instead of inheriting "dispatch anyway".
-            case RouteTarget.LocalNode _, RouteTarget.AnyCoreNode _, RouteTarget.TaskGroupTarget _,
-                 RouteTarget.LeaderNode _, RouteTarget.NodeIdParam _ -> Result.unitResult();
+            case RouteTarget.LocalNode _, RouteTarget.AnyCoreNode _, RouteTarget.TaskGroupTarget _, RouteTarget.LeaderNode _, RouteTarget.NodeIdParam _ -> Result.unitResult();
         };
     }
 
@@ -1467,7 +1466,9 @@ class ManagementServerImpl implements ManagementServer {
             return Result.unitResult();
         }
 
-        return ManagementRouteError.ownerForwardLoop(routeName, sender.id()).result();
+        return ManagementRouteError.ownerForwardLoop(routeName,
+                                                     sender.id())
+                                   .result();
     }
 
     private void sendManagementForwardSuccess(ClusterNetwork network,
