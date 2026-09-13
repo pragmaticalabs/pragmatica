@@ -41,12 +41,16 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// on 3 of 5 nodes, the partition owner was not one of them, and three successfully-published events
 /// were delivered to NOBODY while every node truthfully reported `attachedSubscriptions: 0`.
 ///
-/// **Deterministic by counting, not by luck.** `streams.spread-events` declares 5 partitions and this
-/// blueprint deploys `instances = 1`, so the single slice-bearing node can own AT MOST one of them.
-/// At least four partitions are therefore guaranteed to have an owner that cannot run the consumer —
-/// no placement control, no owner pinning, and no arrangement in which the test silently degenerates
-/// into the already-covered co-located case. Compare a 1-partition stream at `instances = 1`, which
-/// would exercise the interesting case only 4 times in 5.
+/// **Deterministic by placement, not by luck.** `streams.spread-events` declares 5 partitions and this
+/// blueprint deploys `instances = 1`. HRW owns each partition independently — a pure function of the
+/// engine key, the partition and the node ids (`ReplicaPlacement.score`), all fixed by this fixture —
+/// so the owners are computable offline ([#SPREAD_OWNERS]) and no single node owns more than two of
+/// them. At least three partitions therefore have an owner that cannot run the consumer whichever
+/// node hosts it — no placement control, no owner pinning, and no arrangement in which the test
+/// silently degenerates into the already-covered co-located case. (The first version of this test
+/// argued "one host can own at most one of five" — a pigeonhole HRW never promised, which held for
+/// the bare-alias key and stopped holding for the qualified one.) Compare a 1-partition stream at
+/// `instances = 1`, which would exercise the interesting case only 4 times in 5.
 ///
 /// **Non-vacuity.** Two independent arms. Structurally, `onSpreadEvent` is absent from the fixture's
 /// `routes.toml`, so nothing but the framework's delivery path can invoke it. Behaviourally,
@@ -68,8 +72,8 @@ class DeclarativeConsumerPlacementTest {
     private static final int BASE_APP_HTTP_PORT = 18700;
     private static final int NODES = 5;
 
-    /// The whole point: ONE instance against a FIVE-partition stream. The single host can own at most
-    /// one partition, so at least four must be consumed by reading through their owners.
+    /// The whole point: ONE instance against a FIVE-partition stream, so every partition the host does
+    /// not own — at least three under [#SPREAD_OWNERS] — must be consumed by reading through its owner.
     private static final int INSTANCES = 1;
     private static final int SPREAD_PARTITIONS = 5;
 
@@ -81,12 +85,6 @@ class DeclarativeConsumerPlacementTest {
     private static final int EXPECTED_ATTACHMENTS = 7;
     private static final int EVENT_COUNT = 25;
 
-    /// The engine key the declarative consumer attaches under, as `/api/v1/streams/declarative-consumers`
-    /// reports it: since #1041 the blueprint-qualified `namespace:alias:version`, not the bare alias. The
-    /// bare spelling became unreachable only once #1066 made the body publish write bindings. The
-    /// namespace is this test's blueprint group and artifact ([#BLUEPRINT_ID]).
-    private static final String SPREAD_EVENTS_STREAM = "forge.test.declarative-consumer-placement:spread-events:1.0.0";
-
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration DELIVERY_TIMEOUT = Duration.ofSeconds(90);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
@@ -94,6 +92,20 @@ class DeclarativeConsumerPlacementTest {
     private static final String CONSUMER_SLICE = TestArtifacts.STREAM_CONSUMER_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:declarative-consumer-placement:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
+
+    /// The engine key the declarative consumer attaches under, as `/api/v1/streams/declarative-consumers`
+    /// reports it ([TestArtifacts#streamEngineKey]): the blueprint-qualified key, not the bare alias,
+    /// which matches nothing since #1041.
+    private static final String SPREAD_EVENTS_STREAM = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "spread-events");
+
+    /// HRW owner of `spread-events` partitions 0..4 under [#SPREAD_EVENTS_STREAM] with node ids
+    /// `dcp-1..5`, computed offline with the production hash (`ReplicaPlacement.score`) and matched
+    /// against the endpoint's own `ownerNode` rows. `dcp-5` owns two — which is what refuted the
+    /// original "at most one" premise once the key was qualified — and no node owns more than two.
+    /// The host is read from the endpoint rather than fixed here: it is the first element of a
+    /// `HashSet<NodeId>` (`SliceAllocationEngine.findTrulyEmptyNodes`), an iteration-order accident
+    /// this test has no business pinning.
+    private static final List<String> SPREAD_OWNERS = List.of("dcp-2", "dcp-5", "dcp-1", "dcp-5", "dcp-4");
 
     private static final Pattern COUNT_FIELD = Pattern.compile("\"count\"\\s*:\\s*(\\d+)");
     private static final Pattern ATTACHED_FIELD = Pattern.compile("\"attachedSubscriptions\"\\s*:\\s*(\\d+)");
@@ -173,12 +185,18 @@ class DeclarativeConsumerPlacementTest {
                                .flatMap(status -> status.instances().stream())
                                .toList();
 
-            assertThat(hosts).describedAs("the pigeonhole depends on exactly one host against five partitions")
+            assertThat(hosts).describedAs("the placement argument depends on exactly one host against five partitions")
                              .hasSize(INSTANCES);
+
+            var host = consumerNode();
+            var expectedForwarded = SPREAD_OWNERS.stream().filter(owner -> !owner.equals(host)).count();
+
             assertThat(forwardedPartitionCount())
-                    .describedAs("one host cannot own five partitions, so at least four MUST be read through their owners — "
-                                 + "this is the case #488 could not express and the live cluster failed")
-                    .isGreaterThanOrEqualTo(SPREAD_PARTITIONS - INSTANCES);
+                    .describedAs("HRW places spread-events owners at %s and the consumer sits on %s, so exactly the "
+                                 + "partitions it does not own MUST be read through their owners — "
+                                 + "this is the case #488 could not express and the live cluster failed",
+                                 SPREAD_OWNERS, host)
+                    .isEqualTo(expectedForwarded);
         }
 
         @Test
@@ -294,9 +312,24 @@ class DeclarativeConsumerPlacementTest {
                           .sum();
     }
 
+    /// The one node every spread-events partition is assigned to. With a single instance the rows all
+    /// name the same consumer; a second name would mean two assignees, which is its own failure.
+    private String consumerNode() {
+        var consumers = ASSIGNMENT_ROW.matcher(spreadFragment())
+                                      .results()
+                                      .map(match -> match.group(1))
+                                      .distinct()
+                                      .toList();
+
+        assertThat(consumers).describedAs("a single instance is assigned every partition, so exactly one consumer node")
+                             .hasSize(1);
+
+        return consumers.getFirst();
+    }
+
     /// Partitions of spread-events whose assigned consumer is NOT the owner — i.e. whose reads are
     /// forwarded. Counted off the endpoint's own assignment map rather than a log line, so the
-    /// pigeonhole is asserted structurally.
+    /// placement is asserted structurally.
     private long forwardedPartitionCount() {
         return ASSIGNMENT_ROW.matcher(spreadFragment())
                              .results()

@@ -81,17 +81,6 @@ class DeclarativeStreamConsumerTest {
     private static final int EVENT_COUNT = 30;
     private static final int ORDER_COUNT = 10;
 
-    /// The engine keys the declarative consumers register and attach under — and so the `stream` field
-    /// `/api/v1/streams/declarative-consumers` reports. Since #1041 that is the blueprint-qualified
-    /// `namespace:alias:version` resolved from the deploy-time bindings, not the bare `[streams.X]` alias.
-    /// The bare spelling matched nothing from then on; it went unnoticed only because, until #1066, the
-    /// body publish wrote no bindings and no consumer registered at all. The namespace is this test's
-    /// blueprint group and artifact ([#BLUEPRINT_ID]).
-    private static final String STREAM_NAMESPACE = "forge.test.declarative-consumer";
-    private static final String CONSUMER_EVENTS_STREAM = STREAM_NAMESPACE + ":consumer-events:1.0.0";
-    private static final String ORDER_EVENTS_STREAM = STREAM_NAMESPACE + ":order-events:1.0.0";
-    private static final String SPREAD_EVENTS_STREAM = STREAM_NAMESPACE + ":spread-events:1.0.0";
-
     /// Attachments expected cluster-wide once settled: one partition each for consumer-events and
     /// order-events, plus the five of spread-events. With the slice on EVERY node each partition's own
     /// owner is a candidate, so owner-preference assigns every partition to its owner and the total is
@@ -105,6 +94,13 @@ class DeclarativeStreamConsumerTest {
     private static final String CONSUMER_SLICE = TestArtifacts.STREAM_CONSUMER_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:declarative-consumer:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
+
+    /// The engine keys the declarative consumers register and attach under — and so the `stream` field
+    /// `/api/v1/streams/declarative-consumers` reports ([TestArtifacts#streamEngineKey]): the
+    /// blueprint-qualified key, not the bare `[streams.X]` alias, which matches nothing since #1041.
+    private static final String CONSUMER_EVENTS_STREAM = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "consumer-events");
+    private static final String ORDER_EVENTS_STREAM = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "order-events");
+    private static final String SPREAD_EVENTS_STREAM = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "spread-events");
 
     private static final Pattern COUNT_FIELD = Pattern.compile("\"count\"\\s*:\\s*(\\d+)");
     private static final Pattern ATTACHED_FIELD = Pattern.compile("\"attachedSubscriptions\"\\s*:\\s*(\\d+)");

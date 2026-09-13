@@ -43,8 +43,8 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// ZERO loss of acked events. It complements `StreamFanoutConsumerTest` (which locks the in-memory
 /// fan-out semantics with the WAL OFF) by turning the WAL ON: the cluster is built with a writable,
 /// restart-stable per-node data dir (`EmberCluster.withDataBaseDir(@TempDir)`), so each node's disk
-/// tier and per-partition WAL (`<baseDir>/<nodeId>/stream-segments/<nodeId>/wal/test-events/0.wal`)
-/// are live.
+/// tier and per-partition WAL (`<baseDir>/<nodeId>/stream-segments/<nodeId>/wal/<engine key>/0.wal`,
+/// the engine key being [#STREAM_NAME]) are live.
 ///
 /// The proof hinges on a deliberately small batch: N=50 events with the `test-events` resource's
 /// count retention (100000) keeps every event in the volatile hot ring — nothing is ever sealed or
@@ -105,9 +105,12 @@ class StreamCrashDurabilityTest {
     private static final long POLL_GAP_NANOS = Duration.ofMillis(20).toNanos();
 
     private static final String STREAM_SLICE = TestArtifacts.STREAM_SLICE;
-    private static final String STREAM_NAME = "test-events";
     private static final int PARTITION = 0;
     private static final String BLUEPRINT_ID = "forge.test:stream-crash-durability:1.0.0";
+    /// The engine key of the blueprint's `[streams.test-events]` ring ([TestArtifacts#streamEngineKey]):
+    /// what `replicaSnapshot` keys by AND the name of the partition's WAL directory
+    /// (`StreamPartitionManager` opens `<walBaseDir>/<config.name()>/<partition>.wal`).
+    private static final String STREAM_NAME = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "test-events");
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
     private static final Pattern EVENT_OBJECT = Pattern.compile("\\{[^{}]*\"offset\"[^{}]*}");
@@ -260,7 +263,7 @@ class StreamCrashDurabilityTest {
     private static boolean isTestEventsWal(Path walFile) {
         var parent = walFile.getParent();
 
-        return parent != null && parent.getFileName().toString().equals("test-events");
+        return parent != null && parent.getFileName().toString().equals(STREAM_NAME);
     }
 
     private static List<Path> walFiles(Path base) throws IOException {
