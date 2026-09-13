@@ -41,17 +41,40 @@ class NotificationRetryClassificationTest {
     class Smtp {
         @Test
         void authFailed_isPermanent_soOneAttempt() {
-            assertThat(smtpAttempts(new SmtpError.AuthFailed("535 bad credentials"))).isEqualTo(1);
+            assertThat(smtpAttempts(new SmtpError.AuthFailed(535, "535 bad credentials"))).isEqualTo(1);
         }
 
         @Test
         void tlsFailed_isPermanent_soOneAttempt() {
-            assertThat(smtpAttempts(new SmtpError.TlsFailed("STARTTLS rejected"))).isEqualTo(1);
+            assertThat(smtpAttempts(new SmtpError.TlsFailed(554, "STARTTLS rejected"))).isEqualTo(1);
         }
 
         @Test
         void protocolError_isPermanent_soOneAttempt() {
-            assertThat(smtpAttempts(new SmtpError.ProtocolError("EHLO rejected"))).isEqualTo(1);
+            assertThat(smtpAttempts(new SmtpError.ProtocolError(502, "EHLO rejected"))).isEqualTo(1);
+        }
+
+        /// RFC 5321 §4.2.1 applies to EVERY command: a 4yz at AUTH (RFC 4954 `454`), STARTTLS (RFC
+        /// 3207 `454`) or EHLO (`421`) is transient like a 4yz at MAIL FROM. Review of #1075 found
+        /// the three records unconditionally terminal — classified by command site, not by code.
+        @Test
+        void auth4yz_isTransient_soAllAttempts() {
+            assertThat(smtpAttempts(new SmtpError.AuthFailed(454, "454 4.7.0 Temporary authentication failure"))).isEqualTo(3);
+        }
+
+        @Test
+        void startTls4yz_isTransient_soAllAttempts() {
+            assertThat(smtpAttempts(new SmtpError.TlsFailed(454, "454 TLS not available due to temporary reason"))).isEqualTo(3);
+        }
+
+        @Test
+        void ehlo4yz_isTransient_soAllAttempts() {
+            assertThat(smtpAttempts(new SmtpError.ProtocolError(421, "421 4.3.2 Service not available"))).isEqualTo(3);
+        }
+
+        @Test
+        void localTlsSetupFailure_isPermanent_soOneAttempt() {
+            assertThat(smtpAttempts(new SmtpError.TlsSetupFailed("no trust store"))).isEqualTo(1);
         }
 
         /// RFC 5321 §4.2.1: 5yz is a permanent negative completion. `Rejected` carries the reply code

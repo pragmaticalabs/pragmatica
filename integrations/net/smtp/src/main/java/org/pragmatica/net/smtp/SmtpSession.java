@@ -91,7 +91,7 @@ class SmtpSession {
 
     private void handleGreeting(int code, String text) {
         if (!isSuccess(code)) {
-            failSession(new SmtpError.ConnectionFailed("Server rejected connection: " + code + " " + text));
+            failSession(new SmtpError.Rejected(code, "Server rejected connection: " + code + " " + text));
 
             return;
         }
@@ -102,7 +102,7 @@ class SmtpSession {
 
     private void handleEhlo(int code, String text) {
         if (!isSuccess(code)) {
-            failSession(new SmtpError.ProtocolError("EHLO rejected: " + code + " " + text));
+            failSession(new SmtpError.ProtocolError(code, "EHLO rejected: " + code + " " + text));
 
             return;
         }
@@ -123,7 +123,7 @@ class SmtpSession {
 
     private void handleStartTls(int code, String text) {
         if (code != 220) {
-            failSession(new SmtpError.TlsFailed("STARTTLS rejected: " + code + " " + text));
+            failSession(new SmtpError.TlsFailed(code, "STARTTLS rejected: " + code + " " + text));
 
             return;
         }
@@ -153,7 +153,7 @@ class SmtpSession {
 
     private void handleAuth(int code, String text) {
         if (code != 235) {
-            failSession(new SmtpError.AuthFailed("Authentication failed: " + code + " " + text));
+            failSession(new SmtpError.AuthFailed(code, "Authentication failed: " + code + " " + text));
 
             return;
         }

@@ -128,7 +128,7 @@ record SmtpClientImpl(SmtpConfig config, EventLoopGroup eventLoopGroup, boolean 
     }
 
     private static Option<SslContext> buildInsecureSslContext() {
-        return Result.lift(e -> new SmtpError.TlsFailed(e.getMessage()),
+        return Result.lift(e -> new SmtpError.TlsSetupFailed(e.getMessage()),
                            () -> SslContextBuilder.forClient()
                                                   .trustManager(InsecureTrustManagerFactory.INSTANCE)
                                                   .build())

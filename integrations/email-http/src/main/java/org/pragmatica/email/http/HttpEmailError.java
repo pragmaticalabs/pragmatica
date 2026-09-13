@@ -32,6 +32,12 @@ public sealed interface HttpEmailError extends Cause {
                    && statusCode != 408
                    && statusCode != 429;
         }
+
+        /// Only failures are constructed here, so what is not permanent is worth retrying.
+        @Override
+        public boolean isTransient() {
+            return !isTerminal();
+        }
     }
 
     /// Authentication with the email vendor API failed. Same credentials, same answer: permanent.
