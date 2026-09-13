@@ -398,6 +398,23 @@ class SwimDeathPathCoConfirmationTest {
         }
 
         @Test
+        void bothOriginsRecorded_thenLinkReconnected_retractsOnlyLinkLost() {
+            seenHealthy(protocol, NODE_A, ADDR_A);
+            // A hung peer is reported by missed pongs AND its stalled link is evicted: both origins land.
+            protocol.recordTransportHint(NODE_A, peerUnresponsive(NODE_A));
+            protocol.recordTransportHint(NODE_A, linkLost(NODE_A));
+            assertThat(windowOf(NODE_A)).isEqualTo(FLOOR_MS);
+
+            // The re-dial succeeds: that disproves the link loss, not the missed pongs.
+            liveTransport.add(NODE_A);
+            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
+
+            assertThat(windowOf(NODE_A))
+                .as("A later LINK_LOST hint must not overwrite a PEER_UNRESPONSIVE one, and its retraction must keep it")
+                .isEqualTo(FLOOR_MS);
+        }
+
+        @Test
         void linkLostHint_reachableWithoutTransportView_retractsFloorAndReappliesOnNextLoss() {
             // No transport view (id -> false): only the PeerReachable retraction can lift the floor.
             var noViewProtocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR, () -> false)
