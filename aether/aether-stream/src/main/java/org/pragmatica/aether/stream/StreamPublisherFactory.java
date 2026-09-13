@@ -49,15 +49,19 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
     /// durability contract silently void for everything written through the catalog.
     @Override
     public Promise<StreamPublisher> provision(StreamConfig config, ProvisioningContext context) {
-        var engineConfig = StreamAddressResolver.qualify(config, context);
+        return StreamAddressResolver.qualify(config, context)
+                                    .flatMap(engineConfig -> context.extension(StreamPartitionManager.class)
+                                                                    .flatMap(manager -> buildWithSerializer(manager,
+                                                                                                            engineConfig,
+                                                                                                            context)))
+                                    .async();
+    }
 
-        return context.extension(StreamPartitionManager.class)
-                      .flatMap(manager -> context.extension(Serializer.class)
-                                                 .flatMap(serializer -> buildPublisher(manager,
-                                                                                       serializer,
-                                                                                       engineConfig,
-                                                                                       context)))
-                      .async();
+    private static Result<StreamPublisher> buildWithSerializer(StreamPartitionManager manager,
+                                                               StreamConfig config,
+                                                               ProvisioningContext context) {
+        return context.extension(Serializer.class)
+                      .flatMap(serializer -> buildPublisher(manager, serializer, config, context));
     }
 
     @SuppressWarnings("unchecked")

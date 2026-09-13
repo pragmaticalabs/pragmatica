@@ -12,7 +12,11 @@ import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
@@ -40,6 +44,8 @@ class StreamEngineKeyQualificationTest {
     private static final String ALIAS = "repl-failover-events";
     private static final String SLICE_ID = "org.pragmatica.aether.test:test-stream-repl:1.0.0";
     private static final String QUALIFIED = "org.pragmatica.aether.test.test-stream-repl:repl-failover-events:1.0.0";
+    private static final Fn1<Cause, String> UNBOUND =
+            Causes.forOneValue("Stream alias '%s' has no address binding in blueprint");
 
     /// EVENTUAL (DROP_OLDEST) so the manager does not require AHSE, and a budget large enough to admit
     /// the partition floor — the create must SUCCEED here, unlike its exhaustion-propagation sibling.
@@ -57,8 +63,14 @@ class StreamEngineKeyQualificationTest {
     /// silently taking the fallback.
     private static StreamAddressResolver bindingResolver() {
         return (sliceId, alias) -> SLICE_ID.equals(sliceId) && ALIAS.equals(alias)
-                                   ? QUALIFIED
-                                   : alias;
+                                   ? Result.success(QUALIFIED)
+                                   : Result.success(alias);
+    }
+
+    /// Stands in for a deployed slice whose alias has no binding — the `latest`-spec and
+    /// validation-failed-bindings shapes. The node-side resolver refuses rather than returning a key.
+    private static StreamAddressResolver refusingResolver() {
+        return (_, alias) -> UNBOUND.apply(alias).result();
     }
 
     private static ProvisioningContext publisherContext(StreamPartitionManager manager) {
@@ -166,7 +178,72 @@ class StreamEngineKeyQualificationTest {
             var context = ProvisioningContext.provisioningContext()
                                              .withExtension(StreamAddressResolver.class, bindingResolver());
 
-            assertThat(StreamAddressResolver.qualify(declaredConfig(), context).name()).isEqualTo(ALIAS);
+            assertThat(StreamAddressResolver.qualify(declaredConfig(), context).unwrap().name()).isEqualTo(ALIAS);
+        }
+    }
+
+    @Nested
+    class RefusedQualification {
+        /// #1040 traded a SILENT MERGE for a SILENT SPLIT unless this path fails. A deployed slice whose
+        /// alias resolves to no catalog address must not quietly fall back to the bare key — that is the
+        /// consumer polling a ring no producer writes to, forever, with no error anywhere.
+        @Test
+        void qualify_propagatesFailure_whenResolverRefusesAlias() {
+            var context = ProvisioningContext.provisioningContext()
+                                             .withExtension(StreamAddressResolver.class, refusingResolver())
+                                             .withExtension(String.class, SLICE_ID);
+
+            StreamAddressResolver.qualify(declaredConfig(), context)
+                                 .onSuccess(cfg -> fail("Expected refusal, got a config named " + cfg.name()))
+                                 .onFailure(cause -> assertThat(cause.message()).contains(ALIAS));
+        }
+
+        /// The failure must reach the provisioning `Promise`, because that is what
+        /// `SpiResourceProvider.classifyProvisionFailure` turns into a FAILED deployment. A refusal that
+        /// only failed the pure `qualify` call would still deploy a dead slice.
+        @Test
+        void streamPublisherFactory_provision_fails_whenResolverRefusesAlias() {
+            var manager = manager();
+
+            try {
+                new StreamPublisherFactory().provision(declaredConfig(), refusing(publisherContext(manager)))
+                                            .await()
+                                            .onSuccess(_ -> fail("Expected provisioning to fail for an unbound alias"))
+                                            .onFailure(cause -> assertThat(cause.message()).contains(ALIAS));
+
+                assertNothingMaterialized(manager);
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void streamAccessFactory_provision_fails_whenResolverRefusesAlias() {
+            var manager = manager();
+
+            try {
+                new StreamAccessFactory().provision(declaredConfig(), refusing(accessContext(manager)))
+                                         .await()
+                                         .onSuccess(_ -> fail("Expected provisioning to fail for an unbound alias"))
+                                         .onFailure(cause -> assertThat(cause.message()).contains(ALIAS));
+
+                assertNothingMaterialized(manager);
+            } finally {
+                manager.close();
+            }
+        }
+
+        /// A refusal must abort BEFORE `createStream`. Failing the promise while still having
+        /// materialized the bare ring would leave exactly the orphan the fix exists to prevent, and the
+        /// failure message alone would not reveal it.
+        private void assertNothingMaterialized(StreamPartitionManager manager) {
+            assertThat(manager.streamInfo(ALIAS).isPresent()).as("no ring under the bare alias").isFalse();
+            assertThat(manager.streamInfo(QUALIFIED).isPresent()).as("no ring under the qualified key").isFalse();
+        }
+
+        private ProvisioningContext refusing(ProvisioningContext context) {
+            return context.withExtension(StreamAddressResolver.class, refusingResolver())
+                          .withExtension(String.class, SLICE_ID);
         }
     }
 
@@ -185,12 +262,12 @@ class StreamEngineKeyQualificationTest {
                                                          1024 * 1024L,
                                                          ConsistencyMode.EVENTUAL,
                                                          0);
-            StreamAddressResolver systemResolver = (_, alias) -> alias;
+            StreamAddressResolver systemResolver = (_, alias) -> Result.success(alias);
             var context = ProvisioningContext.provisioningContext()
                                              .withExtension(StreamAddressResolver.class, systemResolver)
                                              .withExtension(String.class, SLICE_ID);
 
-            assertThat(StreamAddressResolver.qualify(systemConfig, context).name()).isEqualTo("cluster-events");
+            assertThat(StreamAddressResolver.qualify(systemConfig, context).unwrap().name()).isEqualTo("cluster-events");
         }
     }
 

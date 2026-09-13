@@ -15,6 +15,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+
+import static org.pragmatica.lang.Result.success;
 
 
 /// Resolves a slice's local stream alias to the engine key its declaration was deployed under (#1040).
@@ -43,29 +46,48 @@ import org.pragmatica.lang.Option;
 /// The two-hop lookup (artifact → owning blueprint → bindings) mirrors
 /// `NodeDeploymentState.lookupStreamBindings`, which already consumes this map for stream refcounting.
 public sealed interface BlueprintStreamAddresses {
-    /// The engine key for `alias` as declared by the blueprint owning `artifact`, falling back to the
-    /// bare alias when no binding resolves.
+    /// The engine key for `alias` as declared by the blueprint owning `artifact`.
     ///
-    /// THE FALLBACK IS NOT A SAFETY NET, AND THE TWO STATES IT COVERS ARE NOT THE SAME. It is correct
-    /// for a runtime with no deployment behind it — unit tests, Forge/Ember, programmatic streams —
-    /// where there is no catalog entry to diverge from and the bare name is the only identity in play.
-    /// It is a genuine gap for one deployed shape: a consumer declaring `version = "latest"` has no
-    /// binding, because `BlueprintService.resolveOwnedAddress` omits `Latest` specs (they have no
-    /// concrete address until resolved against the live registry), so such a declaration still
-    /// materializes bare. Qualification is therefore complete for exact-versioned and `External`
-    /// declarations and open for `latest` consumers; see #1040.
-    static String engineKeyFor(KVStore<AetherKey, AetherValue> kvStore, Artifact artifact, String alias) {
-        return addressFor(kvStore, artifact, alias).map(StreamEngineKey::engineKey)
-                         .or(alias);
+    /// EXACTLY ONE STATE FALLS BACK TO THE BARE ALIAS, and the rest fail. The distinction is whether a
+    /// catalog spelling exists for this slice at all:
+    ///
+    ///  - **no owning blueprint** — a unit test, Forge/Ember, a programmatic stream, or a slice not
+    ///    deployed under a blueprint. There is no second spelling to disagree with and the bare name is
+    ///    the only identity in play, so this returns it and says nothing.
+    ///  - **owning blueprint present, alias unresolvable** — [StreamAddressError], which fails
+    ///    provisioning. Falling back here would hand the caller the bare key while every management
+    ///    route addressed the qualified one: a consumer polling a ring no producer writes to, forever,
+    ///    with no error. That is the silent failure #1040 exists to remove, re-created on a new path,
+    ///    so it is refused instead. See [StreamAddressError] for why this is fatal and not retried.
+    static Result<String> engineKeyFor(KVStore<AetherKey, AetherValue> kvStore, Artifact artifact, String alias) {
+        return owningBlueprint(kvStore, artifact).fold(() -> success(alias),
+                                                       blueprintId -> resolveWithinBlueprint(kvStore, blueprintId, alias));
     }
 
     /// The catalog address `alias` was deployed under, or [Option#none] when the owning blueprint or
-    /// its bindings are not (yet) visible in the local KV snapshot.
+    /// its bindings are not visible in the local KV snapshot. Absence-tolerant counterpart to
+    /// [#engineKeyFor], for callers that are asking whether a binding exists rather than acting on it.
     static Option<ResourceAddress> addressFor(KVStore<AetherKey, AetherValue> kvStore,
                                               Artifact artifact,
                                               String alias) {
         return owningBlueprint(kvStore, artifact).flatMap(blueprintId -> bindings(kvStore, blueprintId))
-                              .flatMap(value -> value.addressFor(alias));
+                                                 .flatMap(value -> value.addressFor(alias));
+    }
+
+    private static Result<String> resolveWithinBlueprint(KVStore<AetherKey, AetherValue> kvStore,
+                                                         BlueprintId blueprintId,
+                                                         String alias) {
+        return bindings(kvStore, blueprintId).toResult(StreamAddressError.UnresolvedStreamBindings.FACTORY.apply(alias,
+                                                                                                                 blueprintId))
+                                             .flatMap(value -> addressWithin(value, blueprintId, alias))
+                                             .map(StreamEngineKey::engineKey);
+    }
+
+    private static Result<ResourceAddress> addressWithin(BlueprintStreamBindingsValue value,
+                                                         BlueprintId blueprintId,
+                                                         String alias) {
+        return value.addressFor(alias)
+                    .toResult(StreamAddressError.UnboundStreamAlias.FACTORY.apply(alias, blueprintId));
     }
 
     private static Option<BlueprintId> owningBlueprint(KVStore<AetherKey, AetherValue> kvStore, Artifact artifact) {

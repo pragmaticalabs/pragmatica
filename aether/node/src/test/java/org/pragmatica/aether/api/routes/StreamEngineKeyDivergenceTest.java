@@ -21,6 +21,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsVa
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.BlueprintStreamAddresses;
+import org.pragmatica.aether.slice.stream.StreamAddressError;
 import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -30,6 +31,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 
 /// #1040's invariant, pinned: FOR A DECLARED STREAM, THE KEY USED TO COMMIT ITS `StreamConfig` AND THE
@@ -86,12 +88,23 @@ class StreamEngineKeyDivergenceTest {
                                                                                                                                         address)))));
     }
 
+    /// The slice-target without the bindings entry — a blueprint deployed before stream bindings existed.
+    private void seedSliceTargetOnly() {
+        applyToKvStore(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
+                                           new SliceTargetValue(artifact.version(),
+                                                                1,
+                                                                1,
+                                                                Option.some(BlueprintId.blueprintId(artifact)),
+                                                                "CORE_ONLY",
+                                                                0L)));
+    }
+
     private void applyToKvStore(KVCommand<AetherKey> command) {
         kvStore.process(kvStore.createBatch(List.of(command)));
     }
 
     private String sliceSideKey() {
-        return BlueprintStreamAddresses.engineKeyFor(kvStore, artifact, ALIAS);
+        return BlueprintStreamAddresses.engineKeyFor(kvStore, artifact, ALIAS).unwrap();
     }
 
     @Nested
@@ -168,19 +181,60 @@ class StreamEngineKeyDivergenceTest {
         /// not replicated yet. The alias passes through unchanged; there is no catalog entry to agree
         /// with, and guessing an address would invent one.
         @Test
-        void engineKeyFor_fallsBackToBareAlias_whenNoBindingsPublished() {
+        void engineKeyFor_fallsBackToBareAlias_whenSliceHasNoOwningBlueprint() {
             assertThat(sliceSideKey()).isEqualTo(ALIAS);
             assertThat(BlueprintStreamAddresses.addressFor(kvStore, artifact, ALIAS).isPresent()).isFalse();
         }
 
-        /// Bindings exist for the blueprint but carry no entry for this alias — the shape a
-        /// `version = "latest"` consumer produces, since `BlueprintService.resolveOwnedAddress` omits
-        /// `Latest` specs. Documented as an open gap on #1040 rather than silently guessed at.
+        /// THE ONLY FALLBACK THAT REMAINS, stated as a boundary rather than assumed: absence of an owning
+        /// blueprint. Everything past this point in the deployment is refused instead, so this test and
+        /// [DeployedButUnbound] together enumerate the two sides of the line.
         @Test
-        void engineKeyFor_fallsBackToBareAlias_whenAliasMissingFromBindings() {
+        void engineKeyFor_succeeds_whenSliceHasNoOwningBlueprint() {
+            BlueprintStreamAddresses.engineKeyFor(kvStore, artifact, ALIAS)
+                                    .onFailure(cause -> fail(cause.message()));
+        }
+    }
+
+    @Nested
+    class DeployedButUnbound {
+        /// The shape a `version = "latest"` consumer produces — `BlueprintService.resolveOwnedAddress`
+        /// omits `Latest` specs, so the alias is absent from an otherwise-populated bindings map. Also
+        /// the shape of a `StreamResourceValidator` failure, after which an EMPTY bindings entry is
+        /// published by design.
+        ///
+        /// This must FAIL, not fall back. A bare fallback here is a consumer reading a ring no producer
+        /// writes to — the same silent class #1040 removes, re-created one path over.
+        @Test
+        void engineKeyFor_fails_whenAliasMissingFromPublishedBindings() {
             seedDeployment(declaredAddress);
 
-            assertThat(BlueprintStreamAddresses.engineKeyFor(kvStore, artifact, "unbound-alias")).isEqualTo("unbound-alias");
+            BlueprintStreamAddresses.engineKeyFor(kvStore, artifact, "unbound-alias")
+                                    .onSuccess(key -> fail("Expected refusal, got engine key " + key))
+                                    .onFailure(cause -> assertThat(cause).isInstanceOf(StreamAddressError.UnboundStreamAlias.class));
+        }
+
+        /// The message has to carry the alias and the blueprint, because the operator's next action is to
+        /// add `source = ...` to one specific section of one specific blueprint. A refusal that says only
+        /// "unresolved" is loud without being useful.
+        @Test
+        void unboundAliasFailure_namesTheAliasAndTheBlueprint() {
+            seedDeployment(declaredAddress);
+
+            BlueprintStreamAddresses.engineKeyFor(kvStore, artifact, "unbound-alias")
+                                    .onFailure(cause -> assertThat(cause.message()).contains("unbound-alias")
+                                                                                   .contains(SLICE_COORDS)
+                                                                                   .contains("source"));
+        }
+
+        /// Distinct from the alias case and distinct in diagnosis: the blueprint published nothing at all.
+        @Test
+        void engineKeyFor_fails_whenBlueprintPublishedNoBindings() {
+            seedSliceTargetOnly();
+
+            BlueprintStreamAddresses.engineKeyFor(kvStore, artifact, ALIAS)
+                                    .onSuccess(key -> fail("Expected refusal, got engine key " + key))
+                                    .onFailure(cause -> assertThat(cause).isInstanceOf(StreamAddressError.UnresolvedStreamBindings.class));
         }
     }
 

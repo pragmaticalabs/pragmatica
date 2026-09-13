@@ -6,6 +6,8 @@ package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 
 /// Provisioning extension that maps a slice's local stream alias to the engine key its blueprint
@@ -22,11 +24,22 @@ import org.pragmatica.aether.slice.StreamConfig;
 @FunctionalInterface
 public interface StreamAddressResolver {
     /// The engine key for `alias` as declared by the slice deployed under `sliceId`
-    /// (`groupId:artifactId:version`), or `alias` itself when no binding resolves.
-    String engineKeyFor(String sliceId, String alias);
+    /// (`groupId:artifactId:version`).
+    ///
+    /// Fails when the slice IS deployed under a blueprint but the alias resolves to no catalog
+    /// address; succeeds with the bare `alias` only when there is no owning blueprint at all. The
+    /// distinction, and why the failing case must not fall back, is stated on
+    /// `BlueprintStreamAddresses#engineKeyFor`.
+    Result<String> engineKeyFor(String sliceId, String alias);
 
     /// `config` with its name rewritten to the engine key, or `config` unchanged when the context
     /// carries no resolver or no slice identity.
+    ///
+    /// FAILS the provisioning when the resolver refuses the alias. That failure reaches
+    /// `SpiResourceProvider.classifyProvisionFailure` as a non-capacity cause, so it becomes
+    /// `SliceLoadingFailure.Fatal.ResourceCreationFailed` and the deployment surfaces as FAILED —
+    /// visibly broken rather than deployed-and-reading-nothing. A missing resolver or missing slice id
+    /// is a different state entirely (no deployment behind this runtime) and passes through silently.
     ///
     /// The config binder derives `StreamConfig.name()` from the `resources.toml` section suffix
     /// (`ProviderBasedConfigService.deriveNameFromSectionSuffix`), so what arrives here is the bare
@@ -39,12 +52,22 @@ public interface StreamAddressResolver {
     /// This mirrors what the durable-topic path has always done: `DurableTopicNames.topicStream`
     /// embeds the fully-qualified address into the engine's name (`topic:<ns:topic:version>`) instead
     /// of passing the declared alias through. Streams were the one declared resource that did not.
-    static StreamConfig qualify(StreamConfig config, ProvisioningContext context) {
+    static Result<StreamConfig> qualify(StreamConfig config, ProvisioningContext context) {
+        return resolvedKey(config, context).map(key -> key.map(config::withName))
+                                           .or(Result.success(config));
+    }
+
+    /// The resolver's verdict, or [Option#none] when this runtime carries no deployment context.
+    ///
+    /// Two absences are folded here deliberately — no resolver (test/Forge/minimal runtime) and no
+    /// slice id (a resolver with nothing to resolve against) — because neither can name a blueprint
+    /// and so neither may guess at one. A verdict that IS present is honoured including its failure;
+    /// that is the difference between "nothing to qualify" and "qualification refused".
+    private static Option<Result<String>> resolvedKey(StreamConfig config, ProvisioningContext context) {
         return context.extension(StreamAddressResolver.class)
+                      .option()
                       .flatMap(resolver -> context.extension(String.class)
-                                                  .map(sliceId -> resolver.engineKeyFor(sliceId,
-                                                                                        config.name())))
-                      .map(config::withName)
-                      .or(config);
+                                                  .option()
+                                                  .map(sliceId -> resolver.engineKeyFor(sliceId, config.name())));
     }
 }

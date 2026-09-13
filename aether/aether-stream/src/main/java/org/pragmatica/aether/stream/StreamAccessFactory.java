@@ -54,17 +54,24 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
     /// one function so they cannot be fixed apart.
     @Override
     public Promise<StreamAccess> provision(StreamConfig config, ProvisioningContext context) {
-        var engineConfig = StreamAddressResolver.qualify(config, context);
+        return StreamAddressResolver.qualify(config, context)
+                                    .flatMap(engineConfig -> context.extension(StreamPartitionManager.class)
+                                                                    .flatMap(manager -> buildWithCodec(manager,
+                                                                                                       engineConfig,
+                                                                                                       context)))
+                                    .async();
+    }
 
-        return context.extension(StreamPartitionManager.class)
-                      .flatMap(manager -> context.extension(Serializer.class)
-                                                 .flatMap(serializer -> context.extension(Deserializer.class)
-                                                                               .flatMap(deserializer -> buildAccess(manager,
-                                                                                                                    serializer,
-                                                                                                                    deserializer,
-                                                                                                                    engineConfig,
-                                                                                                                    context))))
-                      .async();
+    private static Result<StreamAccess> buildWithCodec(StreamPartitionManager manager,
+                                                       StreamConfig config,
+                                                       ProvisioningContext context) {
+        return context.extension(Serializer.class)
+                      .flatMap(serializer -> context.extension(Deserializer.class)
+                                                    .flatMap(deserializer -> buildAccess(manager,
+                                                                                          serializer,
+                                                                                          deserializer,
+                                                                                          config,
+                                                                                          context)));
     }
 
     @SuppressWarnings("unchecked")

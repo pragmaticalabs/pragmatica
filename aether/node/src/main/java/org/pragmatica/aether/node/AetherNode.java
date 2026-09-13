@@ -6168,10 +6168,9 @@ public interface AetherNode extends ManageableNode {
         // always be present or a declared stream silently falls back to the bare spelling again.
         spi.registerExtension(StreamAddressResolver.class,
                               (sliceId, alias) -> Artifact.artifact(sliceId)
-                                                          .map(artifact -> BlueprintStreamAddresses.engineKeyFor(kvStore,
-                                                                                                                 artifact,
-                                                                                                                 alias))
-                                                          .or(alias));
+                                                          .flatMap(artifact -> BlueprintStreamAddresses.engineKeyFor(kvStore,
+                                                                                                                     artifact,
+                                                                                                                     alias)));
     }
 
     /// A6 cold-boot convergence window: how long after THIS node's `start()` the SWIM cold-boot
