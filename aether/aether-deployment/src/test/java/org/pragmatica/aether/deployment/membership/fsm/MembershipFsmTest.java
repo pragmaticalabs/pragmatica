@@ -221,7 +221,7 @@ class MembershipFsmTest {
         }
 
         /// #1054 — THE acceptance pin. The DRAIN was issued (target DEPARTING on the issuer's FSM) but
-        /// never reached the target: no acknowledgement source reports it draining and no death
+        /// never reached the target: the leader never recorded it reporting DRAINING and no death
         /// evidence arrived, so the target is a live, serving node. Expiry must withdraw the drain
         /// from the membership view — back to MEMBER, still counted — and must emit NO REMOVED edge,
         /// because REMOVED is what becomes `NodeRemoved` and the active CTM's container reap.
@@ -256,16 +256,89 @@ class MembershipFsmTest {
             var manager = departureTimeoutManager(FIRING_TIMEOUT);
             var deltas = new ArrayList<MembershipDeltaEdge>();
             manager.onMembershipDelta(deltas::add);
-            manager.drainAcknowledgementSource(A::equals);
 
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
+            manager.onDrainAcknowledged(A);
 
             awaitDead(manager, A);
             manager.onSwimFaulty(A, 1L);
             manager.onSwimDeparted(A, 1L);
 
             assertThat(removedEdges(deltas)).as("an acknowledged drain is reaped exactly once").hasSize(1);
+        }
+
+        /// H2 spec pin, restored (#1054 round 2, review S6): "a node that started draining but went silent still
+        /// terminalizes". The drainee acknowledged the DRAIN once and then went silent — no further pong, no
+        /// liveness loss, no SWIM verdict, exactly what a halted drainee looks like to the leader before death
+        /// evidence lands. The latched acknowledgement is what separates it from a DRAIN that never arrived.
+        @Test
+        void acknowledgedThenSilentDrainer_pastTimeout_terminalizesToDeadWithSingleRemovedDelta() {
+            var manager = departureTimeoutManager(FIRING_TIMEOUT);
+            var deltas = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(deltas::add);
+
+            promoteToMember(manager, A);
+            manager.onDrainRequested(A);
+            manager.onDrainAcknowledged(A);
+
+            awaitDead(manager, A);
+            assertThat(removedEdges(deltas)).as("an acknowledged, silent drainer is removed exactly once").hasSize(1);
+        }
+
+        /// Latch reset rule, new incarnation: the acknowledgement belongs to ONE drain episode. A drainee that
+        /// acknowledged, then refuted the drain at a newer incarnation (DEPARTING → MEMBER ends the episode), and
+        /// is drained again with no fresh acknowledgement must be withdrawn — not reaped on the old episode's latch.
+        @Test
+        void drainAcknowledgement_afterNewerIncarnationRecovery_doesNotCarryIntoNextEpisode() {
+            var manager = departureTimeoutManager(FIRING_TIMEOUT);
+            var deltas = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(deltas::add);
+
+            promoteToMember(manager, A);
+            manager.onDrainRequested(A);
+            manager.onDrainAcknowledged(A);
+            manager.onSwimHealthy(A, 2L);
+            assertThat(manager.memberStates()).as("arming: the newer incarnation ended the first episode")
+                                              .containsEntry(A, "Member");
+
+            manager.onDrainRequested(A);
+
+            await().pollDelay(FIRING_TIMEOUT.millis() * 3, TimeUnit.MILLISECONDS)
+                   .atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(manager.memberStates())
+                           .as("the second, unacknowledged episode is withdrawn")
+                           .containsEntry(A, "Member"));
+            assertThat(removedEdges(deltas)).isEmpty();
+        }
+
+        /// Latch reset rule, new episode: an acknowledgement observed BEFORE the drain (a target already
+        /// reporting DRAINING for another reason, or a stale report) cannot pre-arm the episode that follows.
+        @Test
+        void drainAcknowledgement_observedBeforeTheDrain_doesNotPreArmTheEpisode() {
+            var manager = departureTimeoutManager(FIRING_TIMEOUT);
+            var deltas = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(deltas::add);
+
+            promoteToMember(manager, A);
+            manager.onDrainAcknowledged(A);
+            manager.onDrainRequested(A);
+
+            await().pollDelay(FIRING_TIMEOUT.millis() * 3, TimeUnit.MILLISECONDS)
+                   .atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
+            assertThat(removedEdges(deltas)).isEmpty();
+        }
+
+        /// A `DRAINING` pong alone is not membership evidence: acknowledging an id this FSM never observed must
+        /// not create tracking for it (which would arm a join-grace reaper for a node nobody saw).
+        @Test
+        void onDrainAcknowledged_untrackedId_createsNoTracking() {
+            var manager = departureTimeoutManager(FIRING_TIMEOUT);
+
+            manager.onDrainAcknowledged(B);
+
+            assertThat(manager.memberStates()).doesNotContainKey(B);
         }
 
         /// #1054 — a withdrawn drain whose DRAIN is delivered LATER (the link recovered): the target
