@@ -28,7 +28,7 @@ import org.pragmatica.lang.Option;
 /// Typed error causes for JOOQ operations.
 public sealed interface JooqError extends Cause {
     /// Connection to database failed.
-    record ConnectionFailed(String message, Option<Throwable> cause) implements JooqError {
+    record ConnectionFailed(String message, Option<Throwable> cause) implements JooqError, Cause.Transient {
         public static ConnectionFailed connectionFailed(String message) {
             return new ConnectionFailed(message, Option.none());
         }
@@ -80,7 +80,7 @@ public sealed interface JooqError extends Cause {
     }
 
     /// Operation timeout exceeded.
-    record Timeout(String operation) implements JooqError {
+    record Timeout(String operation) implements JooqError, Cause.Transient {
         @Override
         public String message() {
             return "Timeout: " + operation;

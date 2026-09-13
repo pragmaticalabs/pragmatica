@@ -23,7 +23,7 @@ import org.pragmatica.lang.Cause;
 public sealed interface CoreError extends Cause {
     record Cancelled(String message) implements CoreError {}
 
-    record Timeout(String message) implements CoreError {}
+    record Timeout(String message) implements CoreError, Cause.Transient {}
 
     record Fault(String message) implements CoreError {}
 

@@ -33,7 +33,7 @@ import static org.pragmatica.jdbc.JdbcError.DatabaseFailure.databaseFailure;
 /// Maps common SQL exceptions to domain-friendly error types.
 public sealed interface JdbcError extends Cause {
     /// Connection to database failed.
-    record ConnectionFailed(String message, Option<Throwable> cause) implements JdbcError {
+    record ConnectionFailed(String message, Option<Throwable> cause) implements JdbcError, Cause.Transient {
         public static ConnectionFailed connectionFailed(String message) {
             return new ConnectionFailed(message, Option.none());
         }
@@ -69,7 +69,7 @@ public sealed interface JdbcError extends Cause {
     }
 
     /// Operation timeout exceeded.
-    record Timeout(String operation) implements JdbcError {
+    record Timeout(String operation) implements JdbcError, Cause.Transient {
         @Override
         public String message() {
             return "Timeout: " + operation;

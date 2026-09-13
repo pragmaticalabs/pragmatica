@@ -37,7 +37,7 @@ public sealed interface StreamForwardError extends Cause {
     /// forwarder ({@link org.pragmatica.aether.stream.StreamWriteRouter}) discriminates on this exact type
     /// via {@link #isRetryablePublish(org.pragmatica.lang.Cause)}; every other publish failure is permanent
     /// and never retried.
-    record RemotePublishRetryable(String detail) implements StreamForwardError {
+    record RemotePublishRetryable(String detail) implements StreamForwardError, Cause.Transient {
         @Override
         public String message() {
             return "Remote publish retryable: " + detail;
