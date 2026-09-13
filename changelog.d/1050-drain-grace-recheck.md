@@ -5,7 +5,8 @@
   configured core count. If any check fails the reap is skipped and logged with the reason; the DRAIN command is cleared
   either way. The inputs are the `LeaderReconciler`'s own drain-decision inputs (`MembershipFsm.coreCountedMembers()` and
   the configured core count). [mechanism: `ClusterTopologyManagerRecord.graceReapVerdict`, pinned by
-  `ClusterTopologyManagerActuatorTest.DrainGraceRecheck` through the real `drainNode` → scheduler path]
+  `ClusterTopologyManagerActuatorTest.DrainGraceRecheck` through the real `drainNode` → scheduler path; the membership
+  read is the `AetherNode.drainGraceCoreMemberSupplier` seam, pinned by `DrainGraceCoreMemberSupplierSeamTest`]
 - `JOIN_GRACE_REAP` and `OPERATOR_COMMAND` drains still reap as issued. A never-joined zombie has no other reaper and is
   normally reaped during the deficit it was provisioned to fill. [mechanism: `DrainReason.isSurplusTrim`]
 - **What this does not cover.** A DRAIN that reached its target cannot be withdrawn: `DrainProcedure.initiate` runs once
