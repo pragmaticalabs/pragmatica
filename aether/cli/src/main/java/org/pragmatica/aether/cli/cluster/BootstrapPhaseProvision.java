@@ -12,6 +12,7 @@ import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
+import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.NodeRole;
@@ -82,12 +83,13 @@ sealed interface BootstrapPhaseProvision {
             var providerName = resolveProviderName(source);
 
             for (var node : allNodes) {
-                if (node.nodeId().startsWith(sourceName.value() + "-")) {
+                if (belongsTo(node.nodeId(), sourceName)) {
                     state = state.withResource(CreatedResource.ProvisionedVm.provisionedVm(providerName,
                                                                                            node.serverId(),
                                                                                            sourceName.value(),
-                                                                                           extractRole(node.nodeId(),
-                                                                                                       sourceName.value())));
+                                                                                           parseNodeId(node.nodeId()).map(parsed -> parsed.role()
+                                                                                                                                          .value())
+                                                                                                      .or("")));
                 }
             }
 
@@ -171,7 +173,7 @@ sealed interface BootstrapPhaseProvision {
     /// #994 — appends the VM to the persisted cleanup ledger as soon as the provider reports it created,
     /// so a refusal on a LATER node of the same role group still leaves every already-paid server
     /// nameable by teardown. The role is passed in rather than parsed back out of the node id by
-    /// [#extractRole], because here it is known exactly.
+    /// [#parseNodeId], because here it is known exactly.
     ///
     /// Duplicate-free on the success path: [#buildUpdatedState] rebuilds the resource list from the
     /// pre-phase in-memory state and [ClusterBootstrapOrchestrator] saves THAT, replacing these
@@ -190,26 +192,14 @@ sealed interface BootstrapPhaseProvision {
                                     SourceName sourceName,
                                     NodeRole role,
                                     ProvisionedNode node) {
-        var _ = BootstrapStatePersistence.read(clusterName)
+        var _ = BootstrapStatePersistence.appendResource(clusterName,
+                                                         CreatedResource.ProvisionedVm.provisionedVm(providerName,
+                                                                                                     node.serverId(),
+                                                                                                     sourceName.value(),
+                                                                                                     role.value()))
                                          .onFailure(cause -> warnVmNotRecorded(node,
                                                                                clusterName,
-                                                                               "the persisted ledger is unreadable: " + cause.message()))
-                                         .or(Option.empty())
-                                         .onEmpty(() -> warnVmNotRecorded(node,
-                                                                          clusterName,
-                                                                          "no bootstrap state is persisted for this cluster"))
-                                         .map(state -> state.withResource(CreatedResource.ProvisionedVm.provisionedVm(providerName,
-                                                                                                                      node.serverId(),
-                                                                                                                      sourceName.value(),
-                                                                                                                      role.value())))
-                                         .onPresent(state -> saveOrWarnVm(state, node, clusterName));
-    }
-
-    @Contract
-    private static void saveOrWarnVm(BootstrapState state, ProvisionedNode node, ClusterName clusterName) {
-        var _ = BootstrapStatePersistence.save(state).onFailure(cause -> warnVmNotRecorded(node,
-                                                                                           clusterName,
-                                                                                           "the ledger write failed: " + cause.message()));
+                                                                               cause.message()));
     }
 
     /// The id is the whole point of this message. With the ledger broken it is the only place the server
@@ -357,13 +347,50 @@ sealed interface BootstrapPhaseProvision {
                      .or(source.type().value());
     }
 
-    private static String extractRole(String nodeId, String sourceName) {
-        var suffix = nodeId.substring(sourceName.length() + 1);
-        var dashIndex = suffix.lastIndexOf('-');
+    /// The one parser of the node ids this phase mints (`<source>-<role>-<index>`, every branch:
+    /// cloud, SSH, forge, docker). Role and index are anchored at the END, so a source name that
+    /// itself contains dashes — or is a dash-prefix of another source (`eu` / `eu-1`) — cannot be
+    /// mis-attributed: `eu-1-core-0` parses to source `eu-1`, never to `eu` with role `1-core`.
+    /// Every consumer that used to test `startsWith(source + "-")` goes through this instead
+    /// (#296 review SF-1): [#belongsTo], [BootstrapPhaseDeploy] and [BootstrapPhasePost].
+    Pattern NODE_ID = Pattern.compile("^(.+)-(core|worker|spot)-(\\d+)$");
 
-        return dashIndex > 0
-               ? suffix.substring(0, dashIndex)
-               : suffix;
+    record ParsedNodeId(String source, NodeRole role, int index) {}
+
+    static Option<ParsedNodeId> parseNodeId(String nodeId) {
+        var matcher = NODE_ID.matcher(nodeId);
+
+        if (!matcher.matches()) {
+            return Option.empty();
+        }
+
+        return NodeRole.nodeRole(matcher.group(2))
+                       .option()
+                       .map(role -> new ParsedNodeId(matcher.group(1),
+                                                     role,
+                                                     Integer.parseInt(matcher.group(3))));
+    }
+
+    /// Exact source attribution: the id's source segment equals `sourceName`, not merely starts with it.
+    static boolean belongsTo(String nodeId, SourceName sourceName) {
+        return parseNodeId(nodeId).map(parsed -> parsed.source()
+                                                       .equals(sourceName.value()))
+                          .or(false);
+    }
+
+    /// #296 — the role a node id encodes, for the source the deploy phase is working on. A failure
+    /// is an invariant violation of this CLI's own minting, not a config error: it is refused rather
+    /// than defaulted to `core`, because a silent `core` is exactly the defect this closes. The
+    /// message names the source the id was parsed against, so a mis-attributed node (a source that
+    /// dash-prefixes another) is diagnosable rather than blamed on minting.
+    static Result<NodeRole> nodeRole(String nodeId, SourceName sourceName) {
+        return parseNodeId(nodeId).filter(parsed -> parsed.source()
+                                                          .equals(sourceName.value()))
+                          .map(ParsedNodeId::role)
+                          .toResult(new BootstrapError.DeploymentFailed(nodeId,
+                                                                        "node id does not encode a role for source '" + sourceName.value()
+                                                                       + "' (expected " + sourceName.value()
+                                                                       + "-<core|worker|spot>-<index>)"));
     }
 
     @SuppressWarnings("JBCT-PAT-01")

@@ -220,6 +220,22 @@ ssh $TARGET_HOST 'docker logs aether-b-node-1 2>&1 | grep -iE "ERROR|WARN" | tai
 ./aether/tests/integration/run-tests.sh --env remote --skip-build --suites 00
 ```
 
+## Harness stub suites
+
+`test/test-*.sh` are not cluster suites. They source the harness libraries and suites with `ssh`,
+`hcloud`, `curl` and the management transport stubbed, and assert harness decisions offline. CI's
+`stub-suites` job runs all of them through `test/run-stub-suites.sh` on every pull request and push.
+A new `test/test-<name>.sh` is picked up with no workflow edit, provided it ends with the same
+`  passed: N` / `  failed: M` summary and a non-zero exit on failure, because the runner fails a
+suite whose summary is missing. Each suite runs in its own process group. The runner kills the whole
+group, and fails the suite by name, once it has run for `STUB_SUITE_TIMEOUT_SECONDS` (default 300) or
+holds more than `STUB_SUITE_MAX_PROCS` processes (default 300). A stub that recurses cannot fork-bomb
+the machine it runs on. The runner needs `perl` and `pgrep`.
+
+```bash
+bash aether/tests/integration/test/run-stub-suites.sh
+```
+
 ## Adding New Tests
 
 1. Pick the suite directory that matches the feature area (or create `suites/NN-my-area/` and add a `suite.conf`).

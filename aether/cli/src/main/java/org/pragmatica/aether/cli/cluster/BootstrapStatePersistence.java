@@ -9,9 +9,11 @@ import java.nio.file.Path;
 
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -75,6 +77,44 @@ sealed interface BootstrapStatePersistence {
                            () -> Files.readString(path))
                      .flatMap(BootstrapState::fromJson)
                      .map(Option::some);
+    }
+
+    /// #1022 — the ONE read-modify-write append onto the persisted cleanup ledger, so every party that
+    /// learns of a billable resource writes it through the same path rather than each growing its own.
+    /// Two callers today: [BootstrapPhaseProvision#recordProvisionedVm] (the bootstrap recorder, #994)
+    /// and [BootstrapCleanup#recordSweptVms] (the label sweep, which is the only channel by which an
+    /// operator ever learns of a CTM auto-heal replacement — see that method for why).
+    ///
+    /// **It never CREATES a ledger.** An absent state file means this cluster was not bootstrapped from
+    /// this machine, and fabricating a state for it would invent a cluster record with no secret, no
+    /// source handle and no credential mapping — a file that reads as authoritative and can reap
+    /// nothing. Absent is therefore a FAILURE the caller reports, not a file it writes.
+    ///
+    /// The three ways it can decline are distinct facts and each keeps its own wording, because a caller
+    /// renders `cause.message()` verbatim into the operator's transcript and "unreadable" (the bytes are
+    /// the only surviving trace of paid VMs), "absent" (nothing to append to) and "write failed" (a full
+    /// disk) call for three different operator actions.
+    static Result<Unit> appendResource(ClusterName clusterName, CreatedResource resource) {
+        return read(clusterName).mapError(BootstrapStatePersistence::unreadable)
+                   .flatMap(state -> state.toResult(LEDGER_ABSENT))
+                   .map(state -> state.withResource(resource))
+                   .flatMap(BootstrapStatePersistence::saveAppended);
+    }
+
+    Fn1<Cause, String> LEDGER_UNREADABLE = Causes.forOneValue("the persisted ledger is unreadable: %s");
+    Cause LEDGER_ABSENT = Causes.cause("no bootstrap state is persisted for this cluster");
+    Fn1<Cause, String> LEDGER_WRITE_FAILED = Causes.forOneValue("the ledger write failed: %s");
+
+    private static Cause unreadable(Cause cause) {
+        return LEDGER_UNREADABLE.apply(cause.message());
+    }
+
+    private static Result<Unit> saveAppended(BootstrapState state) {
+        return save(state).mapError(BootstrapStatePersistence::writeFailed);
+    }
+
+    private static Cause writeFailed(Cause cause) {
+        return LEDGER_WRITE_FAILED.apply(cause.message());
     }
 
     static Result<Unit> delete(ClusterName clusterName) {

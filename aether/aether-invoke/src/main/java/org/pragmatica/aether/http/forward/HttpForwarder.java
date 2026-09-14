@@ -22,6 +22,7 @@ import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.management.route.ManagementRouteError;
+import org.pragmatica.aether.management.route.MatchedRoute;
 import org.pragmatica.aether.management.route.RouteTarget;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.consensus.NodeId;
@@ -58,7 +59,32 @@ public interface HttpForwarder {
                                       String requestId);
 
     Promise<HttpResponseData> forwardToAnyNode(HttpRequestContext requestContext, String requestId);
-    Promise<HttpResponseData> forwardManagement(HttpRequestContext requestContext, String requestId);
+
+    /// Entry for a CLIENT-originated management request: by definition there is no previous hop.
+    default Promise<HttpResponseData> forwardManagement(HttpRequestContext requestContext, String requestId) {
+        return forwardManagement(requestContext, requestId, Option.none());
+    }
+
+    /// Entry carrying the hop this request already took, for owner-forwarded routes (#1039).
+    ///
+    /// `previousHop` is deliberately a PARAMETER and not a header. The earlier design stamped
+    /// `X-Aether-Owner-Forwarded-By` onto the forwarded request and read it back, which put the loop
+    /// guard's only input inside data a client controls: nothing in this repo strips inbound headers
+    /// (`headers().remove` / `removeHeader`: zero sites), so any caller could set it and change the
+    /// dispatch decision on a first hop. Hop state now travels where a client cannot reach it.
+    ///
+    /// Supply `Option.none()` for anything arriving over HTTP.
+    ///
+    /// NO PRODUCTION CALLER SUPPLIES A PRESENT VALUE, and none is expected to: a forwarded management
+    /// request is dispatched by `router.handle` on the receiving node and never re-enters this
+    /// forwarder, so the loop guard below cannot fire in production. The reachable skew guard is
+    /// `ManagementServerImpl.checkForwardedPartitionOwner`, which re-resolves the owner on the
+    /// RECEIVING node and refuses there — strictly stronger, because it fires on a disagreement
+    /// regardless of hop count. This parameter is retained pending a decision to retire it, not
+    /// because anything depends on it; the only present value it ever sees is a test's.
+    Promise<HttpResponseData> forwardManagement(HttpRequestContext requestContext,
+                                                String requestId,
+                                                Option<NodeId> previousHop);
 
     @MessageReceiver
     void onHttpForwardResponse(HttpForwardResponse response);
@@ -82,6 +108,23 @@ public interface HttpForwarder {
     /// node's view on forwarded endpoints (e.g. /api/cluster/status) — the "hall of mirrors"
     /// diagnostic gap surfaced during the zero-leader wedge investigation.
     String SERVED_BY_HEADER = "X-Aether-Served-By";
+
+    /// Resolves the HRW owner a [RouteTarget.PartitionOwner] route must be forwarded to (#1039).
+    ///
+    /// Injected rather than computed here: the destination is `hrw(engineKey, partition)`, and the
+    /// engine key comes from `StreamManager.engineKey`'s two-shape reduction (bare name for `system`
+    /// streams, `ns:stream:version` otherwise), which lives in module `node`. Re-implementing that
+    /// reduction in this module would give one declaration two engine keys — the defect tracked by
+    /// #1040 — so the node supplies the whole resolution, owner included, reading the SAME resolver
+    /// the replica-snapshot handler reads.
+    interface PartitionOwnerResolver {
+        Option<NodeId> resolve(MatchedRoute matched, int partitionParamIndex);
+    }
+
+    /// Default for forwarders built without a node to ask (tests, app-pipeline-only wiring): no owner
+    /// is resolvable, so an owner-targeted route fails with `PartitionOwnerUnresolved` rather than
+    /// guessing a destination.
+    PartitionOwnerResolver NO_PARTITION_OWNER_RESOLVER = (_, _) -> Option.none();
 
     static HttpForwarder httpForwarder(NodeId selfNodeId,
                                        HttpRouteRegistry routeRegistry,
@@ -228,6 +271,61 @@ public interface HttpForwarder {
                                        Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver,
                                        Supplier<Option<NodeId>> leaderResolver,
                                        AccessibilityFilter accessibilityFilter) {
+        return httpForwarder(selfNodeId,
+                             routeRegistry,
+                             clusterNetwork,
+                             serializer,
+                             deserializer,
+                             forwardTimeout,
+                             retryDelayMs,
+                             maxForwardRetries,
+                             coreNodeSupplier,
+                             taskGroupOwnerResolver,
+                             leaderResolver,
+                             accessibilityFilter,
+                             NO_PARTITION_OWNER_RESOLVER);
+    }
+
+    static HttpForwarder httpForwarder(NodeId selfNodeId,
+                                       HttpRouteRegistry routeRegistry,
+                                       ClusterNetwork clusterNetwork,
+                                       Serializer serializer,
+                                       Deserializer deserializer,
+                                       TimeSpan forwardTimeout,
+                                       long retryDelayMs,
+                                       int maxForwardRetries,
+                                       Supplier<Set<NodeId>> coreNodeSupplier,
+                                       Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver,
+                                       Supplier<Option<NodeId>> leaderResolver,
+                                       PartitionOwnerResolver partitionOwnerResolver) {
+        return httpForwarder(selfNodeId,
+                             routeRegistry,
+                             clusterNetwork,
+                             serializer,
+                             deserializer,
+                             forwardTimeout,
+                             retryDelayMs,
+                             maxForwardRetries,
+                             coreNodeSupplier,
+                             taskGroupOwnerResolver,
+                             leaderResolver,
+                             AccessibilityFilter.IDENTITY,
+                             partitionOwnerResolver);
+    }
+
+    static HttpForwarder httpForwarder(NodeId selfNodeId,
+                                       HttpRouteRegistry routeRegistry,
+                                       ClusterNetwork clusterNetwork,
+                                       Serializer serializer,
+                                       Deserializer deserializer,
+                                       TimeSpan forwardTimeout,
+                                       long retryDelayMs,
+                                       int maxForwardRetries,
+                                       Supplier<Set<NodeId>> coreNodeSupplier,
+                                       Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver,
+                                       Supplier<Option<NodeId>> leaderResolver,
+                                       AccessibilityFilter accessibilityFilter,
+                                       PartitionOwnerResolver partitionOwnerResolver) {
         @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
         record httpForwarder(NodeId selfNodeId,
                              HttpRouteRegistry routeRegistry,
@@ -243,7 +341,8 @@ public interface HttpForwarder {
                              Supplier<Set<NodeId>> coreNodeSupplier,
                              Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver,
                              Supplier<Option<NodeId>> leaderResolver,
-                             AccessibilityFilter accessibilityFilter) implements HttpForwarder {
+                             AccessibilityFilter accessibilityFilter,
+                             PartitionOwnerResolver partitionOwnerResolver) implements HttpForwarder {
             private static final Logger log = LoggerFactory.getLogger(HttpForwarder.class);
             private static final int MAX_PENDING_FORWARDS = 10_000;
             /// Below this much remaining budget the hunt stops: another hop cannot answer before the
@@ -319,7 +418,9 @@ public interface HttpForwarder {
             }
 
             @Override
-            public Promise<HttpResponseData> forwardManagement(HttpRequestContext requestContext, String requestId) {
+            public Promise<HttpResponseData> forwardManagement(HttpRequestContext requestContext,
+                                                               String requestId,
+                                                               Option<NodeId> previousHop) {
                 var methodOpt = parseHttpMethod(requestContext.method());
 
                 if (methodOpt.isEmpty()) {
@@ -344,13 +445,15 @@ public interface HttpForwarder {
 
                                                 return forwardToAnyCoreNode(requestContext, requestId, deadline);
                                             },
-                                            matched -> dispatchByTarget(matched.route(),
+                                            matched -> dispatchByTarget(previousHop,
+                                                                        matched.route(),
                                                                         requestContext,
                                                                         requestId,
                                                                         deadline));
             }
 
-            private Promise<HttpResponseData> dispatchByTarget(ManagementRoute route,
+            private Promise<HttpResponseData> dispatchByTarget(Option<NodeId> previousHop,
+                                                               ManagementRoute route,
                                                                HttpRequestContext requestContext,
                                                                String requestId,
                                                                Deadline deadline) {
@@ -367,6 +470,12 @@ public interface HttpForwarder {
                                                                                         paramIndex,
                                                                                         requestId,
                                                                                         deadline);
+                    case RouteTarget.PartitionOwner(var partitionParamIndex) -> forwardToPartitionOwner(previousHop,
+                                                                                                        route,
+                                                                                                        requestContext,
+                                                                                                        partitionParamIndex,
+                                                                                                        requestId,
+                                                                                                        deadline);
                 };
             }
 
@@ -635,6 +744,85 @@ public interface HttpForwarder {
                 }
 
                 return forwardToSpecificNode(requestContext, target, requestId, deadline, 1);
+            }
+
+            /// Forward to the deterministic HRW owner of the stream partition this request names
+            /// (#1039). Parallel to [#forwardToTargetNode] in every signal it returns — `notLocalTarget`
+            /// means "handle locally", `targetDisconnected` means the owner is unreachable — and differs
+            /// in only one way: the destination is COMPUTED by `partitionOwnerResolver` rather than read
+            /// out of a path param, because no param carries it.
+            ///
+            /// The loop guard runs FIRST, before any resolution: a request already marked as
+            /// owner-forwarded must not be forwarded again whatever this node's membership view says,
+            /// since disagreeing views are exactly what produces the cycle.
+            private Promise<HttpResponseData> forwardToPartitionOwner(Option<NodeId> previousHop,
+                                                                      ManagementRoute route,
+                                                                      HttpRequestContext requestContext,
+                                                                      int partitionParamIndex,
+                                                                      String requestId,
+                                                                      Deadline deadline) {
+                if (previousHop.isPresent()) {
+                    var hopId = previousHop.map(NodeId::id).or("");
+
+                    log.warn("Owner-forward loop on {} [{}]: already forwarded by {}", route.name(), requestId, hopId);
+
+                    return ManagementRouteError.ownerForwardLoop(route.name(),
+                                                                 hopId)
+                                               .<HttpResponseData> promise();
+                }
+
+                return rematchManagementRoute(requestContext).fold(cause -> cause.<HttpResponseData> promise(),
+                                                                   matched -> forwardToResolvedOwner(route,
+                                                                                                     requestContext,
+                                                                                                     matched,
+                                                                                                     partitionParamIndex,
+                                                                                                     requestId,
+                                                                                                     deadline));
+            }
+
+            private Promise<HttpResponseData> forwardToResolvedOwner(ManagementRoute route,
+                                                                     HttpRequestContext requestContext,
+                                                                     MatchedRoute matched,
+                                                                     int partitionParamIndex,
+                                                                     String requestId,
+                                                                     Deadline deadline) {
+                var ownerOpt = partitionOwnerResolver.resolve(matched, partitionParamIndex);
+
+                if (ownerOpt.isEmpty()) {
+                    log.warn("No partition owner resolvable for {} {} [{}]",
+                             route.name(),
+                             requestContext.path(),
+                             requestId);
+
+                    return ManagementRouteError.partitionOwnerUnresolved(route.name(),
+                                                                         requestContext.path())
+                                               .<HttpResponseData> promise();
+                }
+
+                var owner = ownerOpt.unwrap();
+
+                if (owner.equals(selfNodeId)) {
+                    log.debug("Partition owner {} is local; signalling local handling [{}]", owner, requestId);
+
+                    return ManagementRouteError.notLocalTarget(owner.id()).<HttpResponseData> promise();
+                }
+
+                if (!clusterNetwork.connectedPeers().contains(owner)) {
+                    log.warn("Partition owner {} not connected for [{}]", owner, requestId);
+
+                    return ManagementRouteError.targetDisconnected(owner.id()).<HttpResponseData> promise();
+                }
+                // Stamped for the same reason the leader path stamps it: the body describes the OWNER's
+                // registry, and without the header a caller cannot tell that view from the receiving
+                // node's own — the distinction #1039 exists to restore.
+                return forwardToSpecificNode(requestContext, owner, requestId, deadline, 1).map(response -> withServedBy(response,
+                                                                                                                         owner));
+            }
+
+            private static Result<MatchedRoute> rematchManagementRoute(HttpRequestContext requestContext) {
+                return parseHttpMethod(requestContext.method()).toResult(Causes.cause("Unparseable HTTP method on owner forward: " + requestContext.method()))
+                                      .flatMap(method -> ManagementRoute.match(method,
+                                                                               requestContext.path()));
             }
 
             private static Option<HttpMethod> parseHttpMethod(String raw) {
@@ -1053,6 +1241,7 @@ public interface HttpForwarder {
                                  coreNodeSupplier,
                                  taskGroupOwnerResolver,
                                  leaderResolver,
-                                 accessibilityFilter);
+                                 accessibilityFilter,
+                                 partitionOwnerResolver);
     }
 }

@@ -631,4 +631,81 @@ class ClusterBootstrapConfigParserTest {
                     .isEqualTo(Option.empty()));
         }
     }
+
+    /// #1049 — `replacement_ceiling` bounds how long an auto-heal replacement may stay in-flight while
+    /// its provider still reports it booting. Absent → the ten-minute default; a present value that is
+    /// not a positive duration fails loudly rather than silently falling back.
+    @Nested
+    class ReplacementCeiling {
+        private static final String CLOUD_WITH_CEILING = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "production"
+            version = "1.0.0"
+
+            [source.hetzner-eu]
+            type = "cloud"
+            provider = "hetzner"
+            region = "eu-central"
+            %s
+
+            [source.hetzner-eu.core]
+            count = 3
+            instance_type = "cx41"
+            runtime = "prod-container"
+
+            [runtime.prod-container]
+            type = "container"
+            image = "ghcr.io/pragmaticalabs/aether-node:1.0.0"
+            """;
+
+        @Test
+        void parse_replacementCeiling_parsesDuration() {
+            ClusterBootstrapConfigParser.parse(CLOUD_WITH_CEILING.formatted("replacement_ceiling = \"7m\""))
+                .onFailure(cause -> Assertions.fail(cause.message()))
+                .onSuccess(config -> assertThat(config.sources().get("hetzner-eu").effectiveReplacementCeiling().millis())
+                    .isEqualTo(7 * 60 * 1000L));
+        }
+
+        @Test
+        void parse_absentReplacementCeiling_usesTenMinuteDefault() {
+            ClusterBootstrapConfigParser.parse(CLOUD_WITH_CEILING.formatted(""))
+                .onFailure(cause -> Assertions.fail(cause.message()))
+                .onSuccess(config -> assertThat(config.sources().get("hetzner-eu").effectiveReplacementCeiling().millis())
+                    .isEqualTo(10 * 60 * 1000L));
+        }
+
+        @Test
+        void parse_invalidReplacementCeiling_failsNamingBadValue() {
+            ClusterBootstrapConfigParser.parse(CLOUD_WITH_CEILING.formatted("replacement_ceiling = \"ten minutes\""))
+                .onSuccess(config -> Assertions.fail("Expected a parse failure, not a silent fallback to the default"))
+                .onFailure(cause -> assertThat(cause.message())
+                    .contains("replacement_ceiling")
+                    .contains("ten minutes"));
+        }
+
+        @Test
+        void parse_zeroReplacementCeiling_failsAsNonPositive() {
+            ClusterBootstrapConfigParser.parse(CLOUD_WITH_CEILING.formatted("replacement_ceiling = \"0s\""))
+                .onSuccess(config -> Assertions.fail("A zero ceiling would re-dispatch every replacement at once"))
+                .onFailure(cause -> assertThat(cause.message())
+                    .contains("replacement_ceiling")
+                    .contains("positive"));
+        }
+
+        /// #1049 round 3 (S4) — a ceiling that cannot exceed the 3m first-listing floor plus the 2m join
+        /// allowance is refused at load, not clamped: `30s` is below the measured 50–63s mint-to-join, and the
+        /// leader evicts past the ceiling whatever the provider reports. Five minutes exactly cannot exceed it.
+        @Test
+        void parse_replacementCeilingNotAboveFloorPlusJoinAllowance_failsNamingTheMinimum() {
+            List.of("30s", "4m", "5m")
+                .forEach(value -> ClusterBootstrapConfigParser.parse(CLOUD_WITH_CEILING.formatted("replacement_ceiling = \"" + value + "\""))
+                                                              .onSuccess(config -> Assertions.fail("Expected " + value + " to be refused, not accepted"))
+                                                              .onFailure(cause -> assertThat(cause.message())
+                                                                  .contains("replacement_ceiling")
+                                                                  .contains("must exceed 5m")
+                                                                  .contains(value)));
+        }
+    }
 }

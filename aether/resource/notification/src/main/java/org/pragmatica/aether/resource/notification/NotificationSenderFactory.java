@@ -7,7 +7,6 @@ package org.pragmatica.aether.resource.notification;
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.email.http.HttpEmailSender;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.net.smtp.SmtpClient;
 
 
@@ -31,11 +30,11 @@ public final class NotificationSenderFactory implements ResourceFactory<Notifica
         };
     }
 
-    @Override
-    public Promise<Unit> close(NotificationSender resource) {
-        return Promise.unitPromise();
-    }
-
+    // No close override, deliberately (#271 R8). The one that sat here returned unitPromise(): a
+    // no-op that reported success while the SMTP client's Netty event loop stayed alive after every
+    // unload. ResourceFactory's default dispatch closes the SMTP sender through AsyncCloseable and
+    // names the HTTP sender's lack of a close convention — the JDK-backed HttpEmailSender exposes
+    // nothing to close — instead of hiding both behind one silent success.
     private static Promise<NotificationSender> provisionSmtp(NotificationConfig config) {
         return config.smtpConfig()
                      .map(smtpConfig -> {

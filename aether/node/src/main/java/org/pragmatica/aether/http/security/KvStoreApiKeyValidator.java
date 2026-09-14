@@ -131,10 +131,17 @@ class KvStoreApiKeyValidator implements SecurityValidator {
                : buildContext(matched);
     }
 
+    /// #1024 — the stored `keyId` is passed BARE. The `securityContext(String, Set, AuthorizationRole)`
+    /// factory is already typed to an api-key subject: it runs the name through
+    /// `Principal.principal(name, PrincipalType.API_KEY)`, which applies the `api-key:` prefix itself.
+    /// Prepending it here too produced `api-key:api-key:ak_09e4c3ad` on `GET /api/v1/whoami` — the
+    /// prefix came from the FACTORY, not from the keyId, so the doubling was this call site's alone.
+    /// [ApiKeySecurityValidator#toSecurityContext] passes its bare `entry.name()` through the same
+    /// factory and has always been correct; this now matches it.
     private static Result<SecurityContext> buildContext(ApiKeyValue keyValue) {
         var role = parseAuthorizationRole(keyValue.authorizationRole());
 
-        return SecurityContext.securityContext("api-key:" + keyValue.keyId(), Set.of(Role.ADMIN), role);
+        return SecurityContext.securityContext(keyValue.keyId(), Set.of(Role.ADMIN), role);
     }
 
     // RET-06: `raw` is a stored ApiKeyValue field (null on legacy keys); the null/blank coalesce to a

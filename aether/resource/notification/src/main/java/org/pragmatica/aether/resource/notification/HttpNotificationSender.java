@@ -4,25 +4,22 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.notification;
 
-import java.util.concurrent.TimeUnit;
-
 import org.pragmatica.email.http.EmailBody;
 import org.pragmatica.email.http.EmailMessage;
 import org.pragmatica.email.http.HttpEmailSender;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Retry;
 
 import static org.pragmatica.aether.resource.notification.NotificationResult.notificationResult;
-import static org.pragmatica.lang.Unit.unit;
 
 
 final class HttpNotificationSender implements NotificationSender {
     private final HttpEmailSender sender;
-    private final RetryConfig retryConfig;
+    private final Retry retry;
 
     HttpNotificationSender(HttpEmailSender sender, RetryConfig retryConfig) {
         this.sender = sender;
-        this.retryConfig = retryConfig;
+        this.retry = retryConfig.retry();
     }
 
     @Override
@@ -35,44 +32,10 @@ final class HttpNotificationSender implements NotificationSender {
     private Promise<NotificationResult> sendEmail(Notification.Email email) {
         var message = toEmailMessage(email);
 
-        return sendWithRetry(message,
-                             1,
-                             retryConfig.initialDelay().millis());
-    }
-
-    private Promise<NotificationResult> sendWithRetry(EmailMessage message, int attempt, long delayMs) {
-        return sender.send(message)
-                     .map(response -> notificationResult(response, "http"))
-                     .fold(result -> result.fold(cause -> {
-                                                     if (attempt >= retryConfig.maxAttempts()) {
-                                                     return new NotificationError.DeliveryFailed("HTTP delivery failed after " + attempt
-                                                                                                + " attempts: " + cause.message()).<NotificationResult> promise();
-                                                 }
-
-                                                     return delayThen(delayMs).flatMap(_ -> sendWithRetry(message,
-                                                                                                          attempt + 1,
-                                                                                                          nextDelay(delayMs)));
-                                                 },
-                                                 Promise::success));
-    }
-
-    private long nextDelay(long currentDelayMs) {
-        return Math.min((long)(currentDelayMs * retryConfig.backoffMultiplier()),
-                        retryConfig.maxDelay().millis());
-    }
-
-    private static Promise<Unit> delayThen(long delayMs) {
-        return Promise.promise(promise -> {
-            Thread.ofVirtual().start(() -> {
-                try {
-                    TimeUnit.MILLISECONDS.sleep(delayMs);
-                    promise.succeed(unit());
-                } catch (InterruptedException _) {
-                    Thread.currentThread().interrupt();
-                    promise.succeed(unit());
-                }
-            });
-        });
+        return retry.execute(() -> sender.send(message)
+                                         .map(response -> notificationResult(response, "http")))
+                    .mapError(cause -> new NotificationError.DeliveryFailed("HTTP delivery failed: " + cause.message(),
+                                                                            cause));
     }
 
     static EmailMessage toEmailMessage(Notification.Email email) {

@@ -50,13 +50,24 @@ Interactive CLI for managing Aether clusters.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `-c, --connect <host:port>` | Node address to connect to | `localhost:8080` |
+| `-c, --connect <host:port>` | Node address to connect to | active cluster context, else `localhost:8080` |
 | `--config <path>` | Path to aether.toml config file | |
-| `-k, --api-key <key>` | API key for authenticated access | `AETHER_API_KEY` env |
+| `-k, --api-key <key>` | API key for authenticated access | `AETHER_API_KEY` env, else the active context's `api_key_env` |
 | `-h, --help` | Show help | |
 | `-V, --version` | Show version | |
 
-When `--config` is specified, the CLI reads the management port from the config file. The `--connect` option takes precedence if both are provided.
+**Endpoint precedence (#584).** Every command resolves its target the same way: an explicit
+`--connect`/`--endpoint` (or `--config`, which yields `localhost:<management port>`) wins; otherwise the
+**active cluster context** in `~/.aether/clusters.toml` (`[current] context`, set by `cluster bootstrap`
+and `cluster use`) is dialled with the credential its `api_key_env` names; only when no context is set
+does the built-in `localhost:8080` default apply. `cluster` subcommands that take `--cluster <name>`
+target that entry instead of the context. So with a context set, a local compose node needs
+`--connect localhost:8080` explicitly. **The credential follows the endpoint's source:** the
+context's `api_key_env` is sent only when the context supplied the endpoint; `--connect` sends only
+`--api-key`/`AETHER_API_KEY`; `--cluster X` sends X's stored key or nothing. A `--config` path that
+does not exist warns and uses the localhost default, never the context. A registry that cannot be
+read, a context naming no entry, or an entry without an endpoint each warn on stderr and fall back
+to the localhost default; `--cluster` on an entry without an endpoint is refused by name.
 
 ### Authentication
 
@@ -1586,7 +1597,11 @@ aether schema baseline orders_db -v 3
 
 > **`status`/`publish`/`read`/`delete` take an address, not just a name.** These now dispatch to
 > catalog-form `(namespace, stream, version)` routes (management-api-versioning-spec.md §3.2, #742).
-> A bare name (no colon) defaults to `system:<name>:1.0.0`, preserving the original single-name UX;
+> A stream address must be the full `namespace:stream:version`. A bare name is REFUSED (#1044): it
+> names no namespace, and silently assuming `system:` returned an empty result for every application
+> stream once engine keys were qualified (#1040) — a well-formed empty answer indistinguishable from a
+> stream with no events. The error names the form to retype, including the `system:<name>:1.0.0`
+> spelling for a system stream. `aether streams list` shows the catalog address of every stream;
 > a `namespace:stream:version` triple addresses any stream. `list`, `consumers`, and `create` are
 > unaffected and remain on their existing flat addressing.
 
@@ -1767,7 +1782,11 @@ Show per-node replica state for a stream partition — the replication/backfill-
 - **Without `--local`** (default): `<stream>` must be a full `namespace:stream:version` catalog address — there is no bare-name-defaults-to-`system` convenience here (unlike `streams status/publish/read/delete`), because the raw engine key a `--local` query needs and the catalog address this path needs are two different shapes for a non-`system` stream, and silently guessing between them is worse than requiring the caller to say which one. Dispatches to the catalog-form `STREAM_REPLICAS` route.
 - **With `--local`**: `<stream>` is the partition manager's raw *engine key* (`StreamManager#engineKey` — bare name for `system`-namespace streams, e.g. `cluster-events`; the full `namespace:stream:version` triple for any other namespace), passed through unparsed. Dispatches to `STREAM_REPLICAS_LOCAL`, keyed on that engine key rather than the catalog address.
 
-**Owner authority:** the answering node's `ReplicaRegistry` holds the complete per-peer watermark view only when that node IS the partition's HRW owner (`servedByOwner: true`). By default the query is served from an arbitrary STREAMING-capable delegate and is owner-aware but **not** owner-forwarded — and because of that delegation, re-querying another port still lands on a delegate. Pass **`--local`** (#490) to make the ADDRESSED node answer from its OWN registry: point the CLI at the `hrwOwner` node's management port with `--local` to get the authoritative full set (`servedByOwner: true`), or sweep each node's port with `--local` to compare per-node views during failover diagnosis. Wraps `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` (default) or `GET /api/v1/streams/{name}/{partition}/replicas-local` (`--local`).
+**Owner authority:** the answering node's `ReplicaRegistry` holds the complete per-peer watermark view only when that node IS the partition's HRW owner (`servedByOwner: true`). Since #1039 the default query is **owner-forwarded**: whichever node you address resolves the partition's HRW owner and forwards there, so a successful answer is the authoritative set (`servedByOwner: true`) from any management port. Before #1039 it was served by an arbitrary STREAMING-capable delegate, which reported `servedByOwner: false` with an empty replica table on every port — indistinguishable from a partition that holds nothing.
+
+Two conditions are reported as errors rather than as an empty table: no HRW owner resolvable at all (empty member view / pre-reconcile bootstrap), and an owner-forward loop — the node the request was forwarded to re-resolves the owner from its own membership view, disagrees, and refuses by name rather than answering from a non-owner's registry. The second is expected during failover, which is when this command is most used; the trade is an explicit `503` you can act on instead of a `200` carrying `servedByOwner: false` that reads like an empty partition.
+
+Pass **`--local`** (#490) for the different question — what does THIS node see: the ADDRESSED node answers from its OWN registry, never forwarded, so sweeping every node's port with `--local` compares per-node views during failover diagnosis. Wraps `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` (default) or `GET /api/v1/streams/{name}/{partition}/replicas-local` (`--local`).
 
 ```bash
 aether stream replicas system:cluster-events:1.0.0 0
@@ -1775,7 +1794,7 @@ aether stream replicas system:cluster-events:1.0.0 0
 # Machine-readable (includes hrwOwner / servedByOwner / ownerHeadOffset)
 aether stream replicas system:cluster-events:1.0.0 0 --format json
 
-# Owner-authoritative view: address the hrwOwner node's management port + --local, engine key form (#490)
+# Per-node view: what THIS node's registry holds, never forwarded, engine key form (#490)
 aether stream replicas cluster-events 0 --local
 aether stream replicas orders:order-events:1.0.0 0 --local
 ```
@@ -2421,6 +2440,13 @@ Seven-phase flow: Validate → Upload SSH Keys → Provision → Collect Address
 
 After provisioning, the deploy phase SSHes each cloud node (via `cloud-init status --wait` preflight) and restarts the runtime with the finalized 3-part PEERS list (`nodeId:host:port`). On default (`--keep-on-failure` not set), all tracked resources (VMs, SSH keys, firewall rules, floating IPs) are cleaned up automatically on failure.
 
+**Post-bootstrap registration (#584).** A successful bootstrap registers the cluster in
+`~/.aether/clusters.toml` with the management endpoint it actually serves (`<scheme>://<ip>:<management
+port>`) and **makes it the active context**, printing `Active cluster context: <name>`. Every command
+that follows without an explicit `--connect`/`--config` (`cluster scale`, `cluster destroy`, `deploy`,
+`status`, …) targets the cluster just bootstrapped — see *Endpoint precedence* under Options; switch
+back with `aether cluster use <name>` or pass `--connect` for a local node.
+
 ### `aether cluster destroy`
 
 Destroy the active cluster: drain and shut down all nodes, terminate its cloud resources (VMs, SSH keys), and remove the local registry entry. Symmetric counterpart to `aether cluster bootstrap`.
@@ -2442,6 +2468,16 @@ aether cluster destroy --cluster=my-cluster --yes
 > addressable while its VMs may still be billing. Just re-run the command. From a repo
 > checkout, `tools/cloud-reaper.sh --cluster <name>` (dry-run; add `--destroy` to delete)
 > is the label-driven safety net that finds resources no local state knows about.
+>
+> **The exit code is a retry signal (#587).** Non-zero means the registry entry was **kept** and a
+> re-run has work to do — and if the VMs were already deleted when it failed (the registry save
+> after cleanup), that re-run needs `--force-undrained`, because enumeration finds no nodes. When
+> cloud cleanup completes, `destroy` exits `0` even if some drains or shutdowns failed first: the
+> VMs are gone, the entry is removed, and a retry would find nothing — the failures are reported by
+> node with their reason on stderr (`Warning: 2 of 3 drain operations failed (core-2: refused with
+> HTTP 409; core-3: timed out after 120s waiting for DECOMMISSIONED) … nothing is left to retry`).
+> The drain phase prints each node's start and outcome as it happens. Draining a whole cluster necessarily hits the disruption budget below the quorum
+> floor; that refusal is tracked as #1032 and is not overridden by `destroy`.
 
 ### `aether cluster apply`
 

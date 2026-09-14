@@ -263,11 +263,13 @@ Build-time resource config validation (above) checks a blueprint against its own
 `resources.toml` — the defaults the publishing team shipped. It cannot know what the *target
 cluster* actually has configured, so a second, independent check runs at deploy time against the
 live cluster: `ConfigSectionPreflightValidator` re-checks every `@ResourceQualifier(config = "X")`
-dependency against the leader's composite configuration view (KV-Store operator overlay layered
-over the leader's own `aether.toml`), once up front for the whole blueprint, before any node starts
-activating slices (#547). A blueprint that passed build-time validation can still fail (correctly)
-here if the target cluster's real configuration omits a section the blueprint depends on — that is
-the check doing its job, not a regression.
+dependency over the layers the slice loader consults for that slice — the leader's composite
+configuration view (KV-Store operator overlay layered over the leader's own `aether.toml`) and, beneath
+it, the slice jar's own `META-INF/resources.toml` — once up front for the whole blueprint, before any
+node starts activating slices (#547, #1067). A section a slice ships in its own jar therefore passes,
+exactly as it resolves at load. The deploy is refused only when a section is in none of those layers;
+then the target cluster must configure it or the slice must ship it, and the refusal is the check doing
+its job, not a regression.
 
 Scope is deliberately narrower than the build-time check: only generic resources
 (`SliceTopology.resources()`) are covered. Pub-sub topics (`publishes()`/`subscribes()`) are exempt

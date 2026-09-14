@@ -157,8 +157,21 @@ public final class StreamReadRouter {
     /// [#selfRowOverride]. The registry can never advance a node's own entry (acks come from peers,
     /// and a node does not ack to itself), so without the substitution an owner reports itself
     /// permanently `SYNCING` at `-1` while serving a complete partition.
+    /// The deterministic HRW owner of `(streamName, partition)` under this node's membership view —
+    /// the SAME `ownerResolver` call [#replicaSnapshot] makes to compute `hrwOwner`/`servedByOwner`.
+    ///
+    /// Exposed for #1039: the management dispatch path must forward `STREAM_REPLICAS` to the owner,
+    /// and it has to reach the owner the ANSWERING code will agree with. Reading the field the
+    /// snapshot reads makes that agreement structural — a separately-wired resolver could send the
+    /// request to a node that then reports `servedByOwner=false`, which is the defect again, one hop
+    /// further away. Empty for the same reason the snapshot reports no owner: no placement is
+    /// computable (empty member view / pre-reconcile bootstrap window).
+    public Option<NodeId> resolveOwner(String streamName, int partition) {
+        return ownerResolver.resolve(streamName, partition);
+    }
+
     public ReplicaSetView replicaSnapshot(String streamName, int partition) {
-        var owner = ownerResolver.resolve(streamName, partition);
+        var owner = resolveOwner(streamName, partition);
         var descriptors = replicaRegistry.map(registry -> registry.replicasFor(streamName, partition)).or(List.of());
         var replicas = descriptors.stream()
                                   .map(descriptor -> toReplicaView(descriptor,

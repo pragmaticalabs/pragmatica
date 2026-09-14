@@ -284,7 +284,8 @@ No authentication required.
   "components": [
     {"name": "consensus", "status": "UP", "detail": "Cluster active"},
     {"name": "routes", "status": "UP", "detail": "Route sync received"},
-    {"name": "quorum", "status": "UP", "detail": "Reachable core members: 3 / required: 2"}
+    {"name": "quorum", "status": "UP", "detail": "Reachable core members: 3 / required: 2"},
+    {"name": "dht-admission", "status": "UP", "detail": "No DHT-backed storage instance awaiting its encryption-marker check"}
   ]
 }
 ```
@@ -295,6 +296,10 @@ Components checked:
 - **quorum** — Does the node hold quorum? True iff its counted strict core-member set meets the
   consensus simple-majority threshold (`coreCount / 2 + 1`), sourced from the same per-node
   quorum-loss signal the minority self-drain uses. A minority partition (e.g. 2 of 5) reports DOWN.
+- **dht-admission** — Has every DHT-backed storage instance passed its post-formation
+  encryption-marker check? DOWN names the instances still pending (`#1052`). The check retries while
+  the DHT cannot answer, for example while the ring is still converging after a join. The node stays
+  `JOINING` until it completes, so the overall status is DOWN (503) for as long as this is DOWN.
 
 ### GET /health/ready/{id}
 
@@ -3483,6 +3488,14 @@ List all API keys with status.
 (`ACTIVE`, `REVOKED`, or `EXPIRED`) — clients must read the per-record field rather than matching
 a status token against the whole document.
 
+The listing covers **every credential the node accepts**, from both sources, and `source` says
+which:
+
+| `source` | Where the key lives | Revocable via this API |
+|---|---|---|
+| `cluster` | The replicated cluster key store, created by `POST /api/v1/cluster/keys` or minted at formation as the bootstrap admin key | **Yes** |
+| `config` | The node's `[app-http.api-keys.<key>]` table or the `AETHER_API_KEYS` environment variable | **No** — see below |
+
 ```json
 [
   {
@@ -3492,16 +3505,45 @@ a status token against the whole document.
     "expiresAt": -1,
     "revokedAt": -1,
     "gracePeriodMs": 300000,
-    "authorizationRole": "ADMIN"
+    "authorizationRole": "ADMIN",
+    "source": "cluster"
+  },
+  {
+    "keyId": "config:ops-preprovisioned",
+    "status": "ACTIVE",
+    "createdAt": -1,
+    "expiresAt": -1,
+    "revokedAt": -1,
+    "gracePeriodMs": 0,
+    "authorizationRole": "ADMIN",
+    "source": "config"
   }
 ]
 ```
+
+A `config` record's `keyId` is synthetic (`config:<declared name>`) and never the key value; its
+timestamps are `-1` because a file declaration has no creation, expiry or revocation event. It is
+reported `ACTIVE` because the node does accept it.
+
+**Clients that act on this listing must filter on `source`.** `aether cluster rotate-key` does:
+it considers only `cluster` records, because a `config` record cannot be retired here. A record
+with no `source` field comes from an older node and is treated as `cluster`.
 
 ### POST /api/v1/cluster/keys/revoke/{id}
 
 Revoke an API key. The key remains valid during its grace period.
 
 **RBAC:** ADMIN
+
+**Only `source: "cluster"` keys can be revoked here.** Revocation commits a `REVOKED` record
+through consensus, which works because the cluster key store is that key's authority. A key
+declared in a node's configuration file is refused, with a message naming the file: the file is its
+authority, the node cannot rewrite an operator's file, and the config validator is consulted before
+the cluster key store — so a tombstone would sit in the store while the key kept authenticating.
+Reporting success there would tell an operator a live credential was dead.
+
+To retire a `config` key, remove its `[app-http.api-keys.<key>]` table (or its `AETHER_API_KEYS`
+entry) and restart the node.
 
 **Request:**
 ```json
@@ -4949,11 +4991,21 @@ GET /api/v1/streams/{namespace}/{stream}/{version}/partitions/{partition}
 GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}
 ```
 
-**Auth:** ALL_AUTHENTICATED · **Routing:** STREAMING task group
+**Auth:** ALL_AUTHENTICATED · **Routing:** partition HRW owner (forwarded)
 
 Replication/backfill-health sensor for the stream-replication class (#260/#261/#333). Returns the partition's replica set as seen by the answering node's `ReplicaRegistry`, with the deterministic HRW owner resolved via the read path's owner resolver. Each replica entry carries its replication `state` (`SYNCING` / `CAUGHT_UP` / `LAGGING`), its acked `confirmedOffset`, and whether it `isHrwOwner`. To detect the #333 write-idle residual, compare a `CAUGHT_UP` replica's `confirmedOffset` against the response's `ownerHeadOffset`.
 
-**Owner authority (read this):** the per-peer confirmed-watermark view is advanced by the owner's `DefaultReplicationManager.handleAck`, so the `ReplicaRegistry` is **authoritative only on the partition's HRW owner** — a non-owner mostly knows only itself. The response is therefore **owner-aware, not owner-forwarded**: per-partition-owner forwarding is not a management `RouteTarget` variant (the owner is computed from `(namespace, stream, version)`+`partition`, not a single path param), and the stream forward transport carries only event reads. `servedByOwner` is `true` when the answering node IS the resolved owner (then `replicas` is the complete, authoritative set). **Routing caveat (#490):** this route is delegate-routed (STREAMING task group), so the answering node is an arbitrary streaming-capable delegate — re-querying a different management port still lands on a delegate, and `servedByOwner=true` is generally unobservable here. To reach the owner's authoritative view over HTTP, query the **local variant below** against the `hrwOwner` node's own management port.
+**Owner authority (read this):** the per-peer confirmed-watermark view is advanced by the owner's `DefaultReplicationManager.handleAck`, so the `ReplicaRegistry` is **authoritative only on the partition's HRW owner** — a non-owner mostly knows only itself. Since #1039 this route is therefore **owner-forwarded**: whichever node receives the request resolves the partition's HRW owner and forwards there, so a successful response carries `servedByOwner: true` and the complete replica set no matter which management port you ask. The answering node is named in the `X-Aether-Served-By` response header.
+
+Before #1039 the route was delegate-routed (`STREAMING` task group), which landed it on an arbitrary streaming-capable node and discarded whether that node was the owner — so it answered `servedByOwner: false` with an empty `replicas` ring, indistinguishable from a genuinely empty partition. Measured on a live 5-node cluster: `servedByOwner: false` from 5 of 5 ports, the owner's own included, for a partition holding 20 events. [mechanism: the dispatch is pinned at three points, each as a DECISION and as an INVOCATION — the sending node's forwarder (`HttpForwarderPartitionOwnerTest`, which drives the public `forwardManagement` entry and asserts the resulting cluster send), the sending node's dispatch entry (`ManagementServerPartitionOwnerTest` for the decision, `ManagementServerForwardDispatchTest` for the fact that `dispatchManagementRequest` consults it), and the receiving node's owner re-check (`ForwardedOwnerGuardTest` for the decision, `ManagementForwardOwnerGuardWiringTest` for the fact that the receive path consults it). The decision/invocation split is stated because both invocation pins were absent until 2026-09-13, and a correct decision that is never called was this route's original defect. NO live-path confirmation exists yet — no multi-node run has observed `servedByOwner: true` from every port since the change, so treat the claim above as design intent until one does]
+
+**The answer is checked twice, on both sides of the hop.** The node you address resolves the owner and forwards; the node that receives the forward re-resolves the owner from its OWN membership view and dispatches only if it resolves itself. So a `200` on this route comes from a node that considers itself the owner — `servedByOwner: false` is not reachable on the forwarded path. Skew between the two views produces a named `503`, never a confident wrong answer.
+
+**Two failure modes are reported rather than faked:**
+- `503` naming *no partition owner resolvable* — no HRW placement is computable at all (empty member view, or the bootstrap window before the first reconcile). Raised at either hop, since either node's view can be empty. The alternative, answering locally, would look exactly like an empty partition.
+- `503` naming an *owner-forward loop* — two nodes' membership views disagree on the owner (A forwards to B while B resolves A, or resolves some third node C). B refuses instead of answering, and does **not** forward again: a second hop is what could cycle, and the sender has already made an owner decision, so B's disagreement IS the answer. Skew therefore terminates on a named cause in one round rather than decaying into a request-budget deadline. This endpoint is queried during failover, so skew is the normal case here. The previous hop named in the message is the peer identity the cluster transport already carries (`HttpForwardRequest.sender`), never a request header: no client-supplied header affects this endpoint's routing, and setting one has no effect.
+
+For "what does *this* node see" — a per-node sweep during failover diagnosis — use the local variant below, which is unchanged and deliberately never forwarded.
 
 ### Partition Replica State (per-node local view)
 
@@ -5555,7 +5607,9 @@ management security is disabled. The check runs ahead of the role/auth pipeline 
 `ManagementServer`, so it short-circuits before role evaluation.
 
 Each identity-bearing write route — the catalog-form
-`STREAMS_PUBLISH`/`STREAMS_DELETE`/`STREAMS_GROUP_CREATE`/`STREAMS_GROUP_DELETE` —
+`STREAMS_PUBLISH`/`STREAMS_PUBLISH_BATCH`/`STREAMS_DELETE`/`STREAMS_GROUP_CREATE`/`STREAMS_GROUP_DELETE`
+(`STREAMS_PUBLISH_BATCH` joined the set with #742; until then the batch form wrote where the single
+form was refused) —
 resolves its target through the same `ManagementRoute` route-match the real dispatch path uses
 (never a raw path-segment scan), reduces the match to an engine key, and rejects when that key
 names one of `SystemStreams.ALL`. A route match whose params fail to resolve to a valid identity
@@ -5576,11 +5630,16 @@ body is rejected the same as anyone else), but it is not the same short-circuit-
 guarantee the path-based gate above gives the other write routes.
 
 `CONSUMER_GROUP_JOIN`/`CONSUMER_GROUP_LEAVE` carry their target
-stream name in the request body rather than the path — a known, currently open gap this path-only
-gate cannot see, closed once these routes gain path-resolvable identity via the catalog-form
-reshape (management-api-versioning-spec.md §3.3). Tracked as its own ticket (rc4 provisional,
-cross-referencing #300), pending an evidence-based answer to whether joining/leaving a consumer
-group on a framework stream actually mutates state or is merely untidy.
+stream name in the request body rather than the path, so this path-only gate cannot see them. Since
+#742 they are protected the same way `STREAM_CREATE` is: a post-auth, handler-level guard in
+`StreamRoutes#joinGroup`/`#leaveGroup` that refuses a reserved system stream name before the
+coordinator is called (`405 Cannot join or leave a consumer group on a reserved system stream` — the
+same status this gate answers with). The body name is canonicalized the way this gate canonicalizes
+a path — the catalog spelling `system:cluster-events:1.0.0` reduces to the engine key
+`cluster-events` before the predicate — so both spellings are refused; a missing name is
+`Missing stream name`. The evidence question that ticket was filed on was answered: joining/leaving
+does mutate state — both call `rebalance`, which proposes replicated KV assignment records under the
+named stream.
 
 Reads of `system:*` streams (e.g. `system:cluster-events`) are unaffected; only writes are gated.
 The compile-time SPI split already blocks application code from producing into system streams;

@@ -26,14 +26,17 @@ public final class SystemStreams {
     public static final List<ResourceAddress> ALL = List.of(CLUSTER_EVENTS);
 
     /// Whether `engineKey` names one of [#ALL] — what the management-api write-gate (`ManagementServer`)
-    /// checks a resolved stream identity against. Every member of `ALL` lives in the `system`
-    /// namespace by construction, so its engine key is just its bare stream name (mirrors
-    /// `StreamManager#engineKey`'s reduction for the `system` namespace; recomputed locally here
-    /// since this module cannot depend on `aether-node`, where `StreamManager` lives).
+    /// checks a resolved stream identity against.
+    ///
+    /// This used to recompute `address.name().value()` locally, on the reasoning that every member of
+    /// `ALL` is in the `system` namespace so its engine key is just its bare name. That reasoning was
+    /// correct and the duplication was still the hazard: the gate's spelling and the reduction it
+    /// mirrors were free to drift apart, silently, in the direction that lets a `system:*` write past
+    /// a security gate. Since #1040 both sides call [StreamEngineKey#engineKey], so the gate cannot
+    /// disagree with the identity the routes resolve — including for any future `ALL` member that is
+    /// somehow not in the `system` namespace, where the old local reduction would have been wrong.
     public static boolean isForbiddenEngineKey(String engineKey) {
-        return ALL.stream().anyMatch(address -> address.name()
-                                                       .value()
-                                                       .equals(engineKey));
+        return ALL.stream().anyMatch(address -> StreamEngineKey.engineKey(address).equals(engineKey));
     }
 
     private SystemStreams() {}

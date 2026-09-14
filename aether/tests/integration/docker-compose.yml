@@ -27,6 +27,17 @@ x-node-common: &node-common
     JAVA_OPTS: "-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
     AETHER_CLUSTER_SECRET: "aether-integration-test-cluster-secret"
     AETHER_CLUSTER_NAME: "it"
+    # The suite's OWN ADMIN credential, supplied here rather than baked into the image.
+    # `ConfigLoader.resolveApiKeys` reads AETHER_API_KEYS (plural — the keys the node
+    # ACCEPTS) ahead of any TOML, so this needs no second config file and no
+    # `--build-arg CONFIG_PATH`: the published image stays fail-closed and the suite
+    # still authenticates. Format is `<key>:<name>:<roles>:<ROLE>`, `;`-separated.
+    # ADMIN because formation POSTs hit /api/v1/cluster/config, /api/v1/cluster/keys and
+    # /api/v1/cluster/await-quiesced, all default-gated to ADMIN by RoutePermissionRegistry's
+    # catch-all for non-OPERATOR-listed mutations; the simple `api_keys` list form maps to
+    # VIEWER (`ApiKeyEntry.DEFAULT_ROLE`) and 403s on every one of them.
+    # Value tracks lib/common.sh's API_KEY default.
+    AETHER_API_KEYS: "${AETHER_API_KEY:-aether-integration-test-key}:integration-test:service:ADMIN"
   healthcheck:
     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
     interval: 10s

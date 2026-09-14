@@ -91,6 +91,52 @@ jobs:
             aether/forge/forge-tests/target/failsafe-reports/*.xml
           retention-days: 7
 
+  # The cloud harness stub suites (aether/tests/integration/test/test-*.sh) pin harness decisions such
+  # as drain confirmation and reap refusal by stubbing ssh/hcloud/curl. They need no cluster, cloud or
+  # docker, and before #1060 nothing ran them. The runner fails a suite that exits non-zero OR whose own
+  # summary is missing, reports failures, or reports zero passes.
+  #
+  # Runaway guard: each suite runs in its own process group. The whole group is killed at 300s or 300
+  # processes, whichever comes first. Measured: the job took 7-8s with one suite (test-cloud-helpers.sh,
+  # under 1s); #1053's test-chaos-harness.sh took 21s locally and 59s at load average 34. 300s is about 5x
+  # the contended figure. A wedged suite costs ~307s (300s wait + 2s TERM grace + up to 5s for the KILL),
+  # so three suites all wedged are ~15.4 min; the 25-minute job cap covers that plus setup, holds a fourth
+  # suite, and still stops a runner-level hang long before GitHub's 6-hour default.
+  stub-suites:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Tools the suites use
+        run: bash --version | head -1 && awk --version 2>&1 | head -1 && sed --version | head -1 && command -v mktemp tee perl pgrep mkfifo
+
+      - name: Run harness stub suites
+        env:
+          STUB_SUITE_PGID_FILE: ${{ runner.temp }}/stub-suite-pgids.txt
+        run: bash aether/tests/integration/test/run-stub-suites.sh
+
+      # An independent check of the runner's own "none left" claim: a ps snapshot written to a file,
+      # matched against the process group of every suite the runner recorded.
+      - name: No stub-suite process survives
+        if: always()
+        run: |
+          pgids="${RUNNER_TEMP}/stub-suite-pgids.txt"
+          snap="${RUNNER_TEMP}/ps-after-stub-suites.txt"
+          ps -eo pid=,pgid=,etime=,args= > "$snap"
+          if [ ! -s "$pgids" ]; then
+            echo "no suite process groups were recorded, so this check examined nothing" >&2
+            exit 1
+          fi
+          echo "recorded suites: $(wc -l < "$pgids"); processes in snapshot: $(wc -l < "$snap")"
+          awk 'NR == FNR { suite[$2] = $1; next }
+               ($2 in suite) { print "SURVIVOR of " suite[$2] ": " $0; n++ }
+               END { print (n + 0) " processes survive in recorded suite groups"; exit (n > 0) }' "$pgids" "$snap"
+
+  # Heavy forge tests run in heavy-forge.yml (nightly, on demand, or on a PR labelled run-heavy).
+
   # E2E tests removed — replaced by Docker-based integration test suite
   # at aether/tests/integration/ (run manually on dedicated hardware).
   # See: aether/tests/integration/README.md

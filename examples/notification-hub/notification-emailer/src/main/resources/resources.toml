@@ -1,4 +1,23 @@
+# CONSUMER-SIDE REFERENCE, NOT A SECOND DECLARATION (#1040).
+#
+# This blueprint reads the stream `notification-service` owns. `source` names it by its full
+# `namespace:stream:version` address, where the namespace is the producing blueprint's Maven
+# coordinates joined as `groupId.artifactId` (BlueprintNamespace.deriveNamespace) and the version is
+# the stream's declared version, which defaults to 1.0.0 — NOT the artifact's `1.0.0-rc4`.
+#
+# WHY THIS IS NOW REQUIRED. Until #1040 all three notification-hub blueprints declared a bare
+# `[streams.notifications]` and the engine keyed every one of them by the section name alone, so they
+# happened to meet on one ring. That collision WAS the bug: a bare key cannot distinguish this stream
+# from an unrelated blueprint's identically-named one, which is why the engine now keys by the
+# qualified address. Three sibling declarations would now yield three separate rings — a producer
+# writing to one and two consumers polling two empty ones. `source` states the sharing explicitly,
+# which is what StreamResource.External exists for.
+#
+# The config fields below are inert for an external reference (the producing blueprint owns the
+# authoritative config) and are retained only so a consumer that happens to materialize the ring
+# first creates it with the same shape the producer declares.
 [streams.notifications]
+source = "org.pragmatica.aether.example.notification-hub-notification-service:notifications:1.0.0"
 partitions = 4
 retention = "time"
 retention-value = "5m"
@@ -7,31 +26,31 @@ max-event-size = "64KB"
 # `@Notify NotificationSender` is provisioned from this section.
 # Backend can be "smtp" or "http". Below is a Mailpit/MailHog-friendly local
 # SMTP setup; real deployments would point at a production SMTP relay or vendor
-# (SendGrid, Mailgun, Postmark) via the [notification.http] backend.
+# (SendGrid, Mailgun, Postmark) via the [notification.http_config] backend.
+#
+# The section names are the binder's snake_case of NotificationConfig's fields:
+# `smtp_config` / `http_config` / `retry_config`. A `[notification.smtp]` section
+# is NOT an error — it binds nothing, and the "smtp" backend then fails at
+# provisioning with "no SMTP configuration provided" (#271 R10, #671).
 #
 # Fields mirror SmtpConfig (integrations/net/smtp): host, port, tls_mode
 # (NONE | STARTTLS | IMPLICIT), connect_timeout, command_timeout. Credentials,
-# when a relay requires them, go in a nested [notification.smtp.auth] section
-# with `username` and `password` (SmtpAuth); omit the section for no auth —
-# an empty-credential AUTH PLAIN is not "no auth". Local sinks need none:
+# when a relay requires them, go in a nested [notification.smtp_config.auth]
+# section with `username` and `password` (SmtpAuth); omit the section for no
+# auth — an empty-credential AUTH PLAIN is not "no auth". Local sinks need none:
 #
-#   [notification.smtp.auth]
+#   [notification.smtp_config.auth]
 #   username = "noreply@example.com"
 #   password = "${secrets:smtp/password}"
 #
-# NOTE: binding this section from TOML is currently gated on #671 — the config
-# binder does not yet recurse Option<Record> components (NotificationConfig
-# declares the SMTP block as Option<SmtpConfig>), so the SMTP backend cannot
-# be provisioned from TOML until that lands. Shape below is the documented
-# target shape (aether/docs/slice-developers/resource-reference.md).
+# Reference: aether/docs/slice-developers/resource-reference.md.
 #
 # TODO(example-coverage, #672): add a Mailpit/MailHog container to the parent
 # example so `./run-forge.sh` actually delivers and captures these emails.
-# Gated on #671 (see NOTE above).
 [notification]
 backend = "smtp"
 
-[notification.smtp]
+[notification.smtp_config]
 host = "localhost"
 port = 1025
 tls_mode = "NONE"

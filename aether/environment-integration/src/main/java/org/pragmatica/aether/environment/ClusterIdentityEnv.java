@@ -30,10 +30,20 @@ public sealed interface ClusterIdentityEnv {
     /// worker-community grouping reads it — but both provisioning paths iterate THIS allow-list, so a
     /// provisioned node never received the variable and every node came up zoneless. Fixing the grouping
     /// alone would have left the whole chain inert.
+    /// `AETHER_API_KEYS` (PLURAL) is the node's SERVER-side credential set — the keys it ACCEPTS,
+    /// parsed by `ConfigLoader.resolveApiKeys` ahead of any TOML. `AETHER_API_KEY` (SINGULAR, above)
+    /// is the CLIENT credential the CLI SENDS. They are different variables read by different code,
+    /// and only the singular one was propagated. That was invisible for as long as the published
+    /// image baked a server-side key into `docker/aether-node/aether.toml`: a minted node inherited
+    /// no key set but did not need one, because its image already carried a matching ADMIN key.
+    /// With that baked credential removed the omission becomes load-bearing — a CTM-minted or
+    /// auto-healed node would accept NOTHING its compose-fixed siblings accept, which is this
+    /// allow-list's stated "replacements miss what seeds get" class arriving one variable over.
     List<String> IDENTITY_VARS = List.of("AETHER_CLUSTER_NAME",
                                          "AETHER_CLUSTER_SECRET",
                                          "AETHER_PROVISIONED_BY",
                                          "AETHER_API_KEY",
+                                         "AETHER_API_KEYS",
                                          "AETHER_SOURCE",
                                          "AETHER_ROLE",
                                          "AETHER_ZONE");

@@ -29,12 +29,12 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
+import org.pragmatica.aether.cli.cluster.ClusterRegistry;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
-import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.http.HttpOperations;
@@ -65,6 +65,11 @@ public class AetherCli implements Runnable {
 
     @CommandLine.Option(names = {"-c", "--connect", "--endpoint"}, description = "Node address to connect to (host:port)")
     private String nodeAddress;
+
+    /// #584 — true only when [#setAddressFromContextOrDefault] took the endpoint from the active
+    /// context; the context's `api_key_env` is consulted only then (the credential follows the
+    /// endpoint's source, never the other way round).
+    private boolean endpointFromContext;
 
     @CommandLine.Option(names = {"--config"}, description = "Path to aether.toml config file")
     private Path configPath;
@@ -110,7 +115,12 @@ public class AetherCli implements Runnable {
         cli.lookupConnection(args);
         cli.tlsSkipVerify = containsTlsSkipVerify(args);
         cli.httpOps = cli.buildHttpOperations();
-        org.pragmatica.aether.cli.cluster.ClusterHttpClient.setEndpointOverride(cli.resolveEndpointUrl());
+        if (cli.endpointFromContext) {
+            org.pragmatica.aether.cli.cluster.ClusterHttpClient.setContextEndpoint(cli.resolveEndpointUrl());
+        } else {
+            org.pragmatica.aether.cli.cluster.ClusterHttpClient.setEndpointOverride(cli.resolveEndpointUrl());
+        }
+
         extractApiKeyArg(args).orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()))
                         .onPresent(org.pragmatica.aether.cli.cluster.ClusterHttpClient::setApiKeyOverride);
         org.pragmatica.aether.cli.cluster.ClusterHttpClient.setRequestTimeout(resolveRequestTimeoutDuration(args));
@@ -272,7 +282,62 @@ public class AetherCli implements Runnable {
     }
 
     private void setAddressFromConfigOrDefault(Option<Path> configArg) {
-        configArg.filter(Files::exists).onPresent(this::readConfigFromPath).onEmpty(() -> nodeAddress = DEFAULT_ADDRESS);
+        configArg.onPresent(this::readConfigIfPresent).onEmpty(this::setAddressFromContextOrDefault);
+    }
+
+    /// A `--config` the operator named is an explicit, LOCAL choice: a path that does not exist takes
+    /// the config-failure branch (warn, localhost default) — never the active context, or a mistyped
+    /// local file would run the command against the cloud (#584 review SF-3).
+    private void readConfigIfPresent(Path path) {
+        if (Files.exists(path)) {
+            readConfigFromPath(path);
+
+            return;
+        }
+
+        System.err.println("Warning: config file not found: " + path + " — using " + DEFAULT_ADDRESS);
+        nodeAddress = DEFAULT_ADDRESS;
+    }
+
+    /// #584 — endpoint precedence: explicit `--connect`/`--endpoint` or `--config` > the registry's
+    /// active cluster context > the built-in localhost default. This used to install the default
+    /// unconditionally, so `ClusterHttpClient.resolveEndpoint` never reached `registry.current()`
+    /// and a freshly bootstrapped cluster's context routed nothing but `destroy`/`rotate-key`
+    /// (which install their own override): `cluster scale` after bootstrap dialled `localhost:8080`
+    /// and reported the ticket's bare `ConnectException`. The default now applies only when no
+    /// context is set. A registry that cannot be read is treated as no context — the same fallback
+    /// as no registry — since a corrupt file must not stop `aether --connect …` from working.
+    private void setAddressFromContextOrDefault() {
+        var context = activeContext();
+
+        endpointFromContext = context.isPresent();
+        nodeAddress = context.map(ClusterRegistry.ClusterEntry::endpoint).or(DEFAULT_ADDRESS);
+    }
+
+    /// The active context, if it is usable. Each way it can be unusable is said on stderr rather
+    /// than silently becoming the localhost default: a registry that does not parse, a
+    /// `[current] context` naming no entry, an entry with a blank `endpoint` (a hand-edited or
+    /// legacy line — the product never writes one).
+    private static Option<ClusterRegistry.ClusterEntry> activeContext() {
+        var registry = ClusterRegistry.load()
+                                      .onFailure(cause -> System.err.println("Warning: cannot read ~/.aether/clusters.toml (" + cause.message()
+                                                                            + ") — using " + DEFAULT_ADDRESS))
+                                      .option();
+        var current = registry.flatMap(ClusterRegistry::current);
+
+        registry.filter(r -> r.currentContext()
+                              .isPresent() && current.isEmpty())
+                .onPresent(r -> System.err.println("Warning: active cluster context '" + r.currentContext()
+                                                                                          .or("")
+                                                  + "' names no registered cluster — using " + DEFAULT_ADDRESS));
+        current.filter(entry -> entry.endpoint() == null || entry.endpoint()
+                                                                 .isBlank())
+               .onPresent(entry -> System.err.println("Warning: active cluster context '" + entry.name()
+                                                     + "' has no endpoint — using " + DEFAULT_ADDRESS
+                                                     + "; fix ~/.aether/clusters.toml or pass --connect"));
+
+        return current.filter(entry -> entry.endpoint() != null && !entry.endpoint()
+                                                                         .isBlank());
     }
 
     @Contract
@@ -592,9 +657,20 @@ public class AetherCli implements Runnable {
                             AetherCli::extractResponseBody);
     }
 
+    /// `--api-key` > `AETHER_API_KEY` > the active context's `api_key_env` (#584: the same fallback
+    /// `ClusterHttpClient.resolveApiKey` makes, so a context-routed top-level command carries the
+    /// credential the registry recorded for that cluster rather than dialling it unauthenticated).
     private Option<String> resolveApiKey() {
         return option(apiKey).filter(k -> !k.isBlank())
-                     .orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()));
+                     .orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()))
+                     .orElse(this::contextApiKey);
+    }
+
+    private Option<String> contextApiKey() {
+        return endpointFromContext
+               ? activeContext().flatMap(ClusterRegistry.ClusterEntry::apiKeyEnv)
+                              .flatMap(envName -> option(System.getenv(envName)))
+               : Option.empty();
     }
 
     private void attachApiKey(HttpRequest.Builder builder) {
@@ -4229,17 +4305,38 @@ public class AetherCli implements Runnable {
             CommandLine.usage(this, System.out);
         }
 
-        /// Bare name (no colon) defaults to the system-namespace catalog address at the default
-        /// version, preserving `status`/`publish`/`read`/`delete`'s original single-name UX; anything
-        /// containing a colon is parsed as a full `namespace:stream:version` address via the canonical
-        /// [ResourceAddress#resourceAddress] parser. Needed because those four commands now address the
-        /// catalog-form routes (`STREAM_GET`/`STREAMS_PUBLISH`/`STREAM_READ`/`STREAMS_DELETE` —
-        /// management-api-versioning-spec.md hard cutover) instead of the old flat bare-name routes, so
-        /// a non-`system` namespace needs a way in that a bare name alone can't express.
+        /// A stream address must be the full `namespace:stream:version`. A bare name is REFUSED (#1044).
+        ///
+        /// It previously defaulted to the system-namespace catalog address, preserving the original
+        /// single-name UX for `status`/`publish`/`read`/`delete`. That convenience became a silent wrong
+        /// answer when #1040 qualified application streams: a bare name resolves to `system:<name>:1.0.0`,
+        /// which `StreamEngineKey` reduces back to a bare engine key, while the application stream now
+        /// lives under `<blueprint-ns>:<stream>:<version>`. The command then succeeded and returned an
+        /// EMPTY result — indistinguishable from a stream with no events. Measured on a live 5-node
+        /// cluster 2026-09-13 with 20 events present: the bare name returned 0 of 20, the full identity
+        /// returned 20 of 20, same instant.
+        ///
+        /// This file already made the argument for the neighbouring replicas route: "a stream identity
+        /// that could silently mean two different engine keys is worse than requiring the caller to say
+        /// which one". The same now holds for these four commands, so they refuse rather than guess.
+        /// `system` streams are unaffected in substance — they are still reachable, spelled in full.
         private static Result<ResourceAddress> resolveStreamAddress(String raw) {
             return raw.contains(":")
                    ? ResourceAddress.resourceAddress(raw)
-                   : ResourceAddress.systemResource(raw, ResourceVersion.defaultVersion());
+                   : bareStreamNameRefused(raw);
+        }
+
+        /// Names the exact form to retype, including the `system:` spelling for the case the bare name
+        /// used to mean — a refusal that does not say what to write instead just relocates the problem.
+        private static Result<ResourceAddress> bareStreamNameRefused(String raw) {
+            return Causes.cause("'" + raw
+                               + "' is a bare stream name, which is ambiguous: it names no "
+                               + "namespace. Use the full namespace:stream:version — e.g. "
+                               + "'<your-namespace>:" + raw
+                               + ":1.0.0', or 'system:" + raw
+                               + ":1.0.0' for a "
+                               + "system stream. 'aether streams list' shows the catalog address of every "
+                               + "stream.").result();
         }
 
         private static int handleAddressError(Cause cause) {

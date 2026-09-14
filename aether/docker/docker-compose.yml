@@ -17,7 +17,7 @@ version: "3.9"
 # the same identity; crash recovery is a brand-new node with a new ULID NodeId minted
 # by auto-heal. Auto-restarting a crashed node under the same identity resurrects a
 # terminally-removed NodeId and corrupts membership. These services rely on Compose's
-# default (`restart: "no"`); keep it that way. See aether/docs/operator/deployment-recovery.md
+# default (`restart: "no"`); keep it that way. See aether/docs/operators/deployment-recovery.md
 
 services:
   # Three-node Aether cluster

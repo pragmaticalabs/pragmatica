@@ -24,17 +24,39 @@ repositories = ["builtin"]
 [app-http]
 enabled = true
 
-# Rich-syntax key entry — ADMIN role to match cloud's formation-time test key
-# (cloud-hetzner-b.toml uses ADMIN since formation POSTs hit /api/cluster/config,
-# /api/cluster/keys, /api/cluster/await-quiesced — all default-gated to ADMIN by
-# RoutePermissionRegistry's catch-all for non-OPERATOR-listed mutations). Simple
-# `api_keys = ["..."]` defaults to VIEWER per `ApiKeyEntry.DEFAULT_ROLE`, which
-# 403s on every mutation endpoint. Cloud bootstrap composes its own runtime TOML
-# via BootstrapOverlayGenerator and is unaffected by this file; this default is
-# consumed only by docker-compose / Forge / direct-image deployments where
-# there's no bootstrap-time composition.
-[app-http.api-keys.aether-integration-test-key]
-authorization_role = "ADMIN"
+# NO `[app-http.api-keys.*]` STANZA HERE, DELIBERATELY, AND NOTHING MAY ADD ONE.
+#
+# This file is COPYed into the published `ghcr.io/pragmaticalabs/aether-node` image by
+# `docker/aether-node/Dockerfile` and is the config every docker-compose, Forge and
+# direct-image deployment boots with. A key written here is a constant in a public
+# repository, so it is not a credential — it is a published one, identical on every
+# install, and it would be the node's only ADMIN credential out of the box.
+#
+# The node is therefore FAIL-CLOSED by default: `ConfigLoader` leaves `security_mode`
+# at its `API_KEY` default (#290), `AetherNode` installs the config validator over an
+# EMPTY key map, and `KvStoreApiKeyValidator` falls through to the cluster's KV-held
+# keys. With no key configured and none registered, every non-public management route
+# is refused. Public routes (`/health/live`, `/health/ready`) still answer, which is
+# what the container health check probes.
+#
+# HOW AN OPERATOR GETS A CREDENTIAL — two supported paths, neither baked into an image:
+#
+#   1. The cluster bootstrap admin key. At first leadership the leader derives an ADMIN
+#      key from the cluster secret (`BootstrapAdminKeyLeg`, #980) and commits its hash
+#      through consensus. It is printed ONCE at formation, and — unlike a key declared
+#      in this file — it is enumerable via `GET /api/v1/cluster/keys`, revocable, and
+#      audited. This is the default path and needs no configuration at all.
+#   2. `AETHER_API_KEYS`, read by `ConfigLoader.resolveApiKeys` ahead of ANY TOML, as
+#      `<key>:<name>:<roles>:<ROLE>` segments separated by `;`. This is how the
+#      integration suite supplies its own credential (see
+#      `aether/tests/integration/docker-compose.yml`) without a second image or a
+#      second config file to drift out of sync with this one.
+#
+# Declaring keys here is still valid for an operator-authored config, and such keys are
+# honoured. Note the asymmetry before choosing that path: a key declared in a FILE
+# cannot be revoked through the cluster-keys API, because the file is its authority and
+# the node cannot rewrite an operator's file. `GET /api/v1/cluster/keys` lists it with
+# `"source": "config"` so the gap is visible rather than silent.
 
 [messaging.click-events]
 topic_name = "click-events"
@@ -52,7 +74,12 @@ network_name = "aether-network"
 # then applies its own numeric defaults (5150 / 8070).
 management_port_base = "${env:AETHER_MGMT_PORT_BASE}"
 app_port_base = "${env:AETHER_APP_PORT_BASE}"
-api_key = "aether-integration-test-key"
+# CLIENT credential the provider hands each container it mints as AETHER_API_KEY (what
+# the CLI SENDS; `AETHER_API_KEYS` plural is what the node ACCEPTS). Env-resolved, not a
+# literal: it used to be the same constant this file baked in as a server-side key, so
+# the two agreed only because the image shipped the credential. Unset resolves to the
+# literal placeholder, which authenticates nothing — fail-closed, not fail-open.
+api_key = "${env:AETHER_API_KEY}"
 docker_gid = "${env:DOCKER_GID}"
 cluster_port = "6000"
 socket_path = "/var/run/docker.sock"
