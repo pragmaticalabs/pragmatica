@@ -123,12 +123,19 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
     /// Creates a configuration from explicit values, with defaults for unspecified parameters.
     /// Intended for wiring from external configuration (e.g., TOML).
     public static ProtocolConfig consensusConfig(TimeSpan cleanupInterval, TimeSpan syncRetryInterval) {
+        return consensusConfig(cleanupInterval, syncRetryInterval, Option.none());
+    }
+
+    /// #1212 — as above, carrying this node's durable first-boot marker.
+    public static ProtocolConfig consensusConfig(TimeSpan cleanupInterval,
+                                                 TimeSpan syncRetryInterval,
+                                                 Option<ParticipationMarker> participationMarker) {
         return new ProtocolConfig(cleanupInterval,
                                   syncRetryInterval,
                                   DEFAULT_REMOVE_OLDER_THAN_PHASES,
                                   DEFAULT_MAX_PENDING_BATCHES,
                                   DEFAULT_APPLY_TIMEOUT,
-                                  Option.none());
+                                  participationMarker);
     }
 
     /// Creates a test configuration with faster intervals.
