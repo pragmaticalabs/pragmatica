@@ -1947,7 +1947,7 @@ keys, sections and `[[…]]` tables — is left byte-for-byte. Concretely:
   the list and exits non-zero unless `--merge` is given; interactive mode prints the list and asks
   (`[y/N]`, default keeps your values). With consent, only the value on that line changes — the
   key's spelling and any trailing `# comment` stay.
-- **A generated key or section the file lacks** (a new answer, e.g. `--nodes 5` adding
+- **A generated key or section the file lacks** (a new answer, e.g. `--worker-nodes 2` adding
   `[source.primary.worker]`) is appended into its section, or inserted as a new section after the
   nearest preceding generated section the file has. No consent is needed: nothing existing moves.
 - **Generated `[[source.primary.firewall.allow_ingress]]` rules** are matched by port, protocol and

@@ -65,13 +65,17 @@ class ClusterInitCommandRerunTest {
         System.setIn(originalIn);
     }
 
-    private static int init(Path output, String nodes, String... extra) {
+    /// #1037 (#1019): the topology is asked for per tier — `--core-nodes` (5/7/9) and
+    /// `--worker-nodes` — never inferred from a total. #1087 assumes that shape.
+    private static int init(Path output, String workerNodes, String... extra) {
         var args = new ArrayList<>(List.of("init",
                                            "--non-interactive",
                                            "--name",
                                            "test-cluster",
-                                           "--nodes",
-                                           nodes,
+                                           "--core-nodes",
+                                           "5",
+                                           "--worker-nodes",
+                                           workerNodes,
                                            "--output",
                                            output.toString()));
 
@@ -98,8 +102,8 @@ class ClusterInitCommandRerunTest {
                                            "~/.ssh/id_ed25519.pub",
                                            "--admin-cidr",
                                            "203.0.113.0/24",
-                                           "--nodes",
-                                           "3",
+                                           "--core-nodes",
+                                           "5",
                                            "--output",
                                            output.toString()));
 
@@ -108,12 +112,13 @@ class ClusterInitCommandRerunTest {
         return new CommandLine(new ClusterCommand()).execute(args.toArray(String[]::new));
     }
 
-    /// The interactive wizard, answered for a 3-node docker cluster, followed by whatever the merge
+    /// The interactive wizard, answered for a 5-core docker cluster, followed by whatever the merge
     /// prompt is given. `System.in` is what both the wizard and the merge prompt read.
     private static int initInteractive(Path output, String mergeAnswer) {
         var input = "test-cluster\n" +    // cluster name
                     "\n" +                // deployment target: default = DOCKER
-                    "3\n" +               // total node count
+                    "5\n" +               // core (consensus) node count
+                    "0\n" +               // worker node count
                     "n\n" +               // configure database? no
                     "\n" +                // generate config? default yes
                     mergeAnswer;
@@ -191,14 +196,14 @@ class ClusterInitCommandRerunTest {
     void rerun_sameAnswers_isByteIdentical_keepingEveryCommentAndSectionInOrder(@TempDir Path tmp) {
         var output = tmp.resolve("cluster-config.toml");
 
-        assertThat(init(output, "3")).isEqualTo(0);
+        assertThat(init(output, "0")).isEqualTo(0);
         var first = read(output);
 
         assertThat(commentLines(first)).as("positive control: the generated scaffold carries its commented templates")
                   .isGreaterThan(30);
 
         for (int run = 2; run <= 4; run++) {
-            assertThat(init(output, "3")).as("re-run " + run + " with the same answers is not an error: " + stderr())
+            assertThat(init(output, "0")).as("re-run " + run + " with the same answers is not an error: " + stderr())
                       .isEqualTo(0);
             assertThat(read(output)).as("re-run " + run + ": same answers, same bytes — comments, order, formatting")
                       .isEqualTo(first);
@@ -214,10 +219,10 @@ class ClusterInitCommandRerunTest {
     void rerun_batch_refusesToRevertAHandTunedValue_namingOldAndNew(@TempDir Path tmp) {
         var output = tmp.resolve("cluster-config.toml");
 
-        assertThat(init(output, "3")).isEqualTo(0);
+        assertThat(init(output, "0")).isEqualTo(0);
         var edited = handTuned(output);
 
-        assertThat(init(output, "3")).as("batch mode refuses to apply a differing answer without --merge")
+        assertThat(init(output, "0")).as("batch mode refuses to apply a differing answer without --merge")
                   .isNotEqualTo(0);
         assertThat(read(output)).as("the refused file is untouched, byte for byte").isEqualTo(edited);
         assertThat(stderr()).as("the operator is told WHICH key differs, old → new, and how to proceed")
@@ -231,10 +236,10 @@ class ClusterInitCommandRerunTest {
     void rerun_batch_withMerge_appliesTheNewAnswer_andRewritesOnlyThatLine(@TempDir Path tmp) {
         var output = tmp.resolve("cluster-config.toml");
 
-        assertThat(init(output, "3")).isEqualTo(0);
+        assertThat(init(output, "0")).isEqualTo(0);
         var edited = handTuned(output);
 
-        assertThat(init(output, "3", "--merge")).as(stderr()).isEqualTo(0);
+        assertThat(init(output, "0", "--merge")).as(stderr()).isEqualTo(0);
         var merged = read(output);
 
         assertThat(merged.lines().count()).as("no line added or removed").isEqualTo(edited.lines().count());
@@ -248,10 +253,10 @@ class ClusterInitCommandRerunTest {
     void rerun_withMerge_appliesAChangeAndAnAdditionTogether_eachAtItsOwnLine(@TempDir Path tmp) {
         var output = tmp.resolve("cluster-config.toml");
 
-        assertThat(init(output, "3")).isEqualTo(0);
+        assertThat(init(output, "0")).isEqualTo(0);
         var edited = handTuned(output);
 
-        assertThat(init(output, "5", "--merge")).as(stderr()).isEqualTo(0);
+        assertThat(init(output, "2", "--merge")).as(stderr()).isEqualTo(0);
         var merged = read(output);
         var mergedLines = merged.lines().toList();
         var expected = new ArrayList<>(edited.lines().toList());
@@ -270,20 +275,20 @@ class ClusterInitCommandRerunTest {
     void rerun_newAnswers_appendMissingSectionInPlace_keepingHandAddedSection(@TempDir Path tmp) {
         var output = tmp.resolve("cluster-config.toml");
 
-        assertThat(init(output, "3")).isEqualTo(0);
+        assertThat(init(output, "0")).isEqualTo(0);
         var edited = read(output) + "\n[app-http.api-keys.ops]\nrole = \"admin\"\nkey = \"${env:OPS_KEY}\"\n";
 
         write(output, edited);
-        assertThat(init(output, "5")).as("only additions: no consent needed, no --merge needed: " + stderr())
+        assertThat(init(output, "2")).as("only additions: no consent needed, no --merge needed: " + stderr())
                   .isEqualTo(0);
         var merged = read(output);
         var mergedLines = merged.lines().toList();
 
         assertThat(mergedLines).as("insert-only: every original line survives, in order")
                   .containsSubsequence(edited.lines().toList());
-        assertThat(mergedLines).as("5 nodes derive a worker tier (3 core + 2 worker) the 3-node file did not have")
+        assertThat(mergedLines).as("--worker-nodes 2 adds a worker tier the core-only file did not have")
                   .containsSubsequence("[source.primary.core]",
-                                       "count = 3",
+                                       "count = 5",
                                        "[source.primary.worker]",
                                        "count = 2",
                                        "[runtime.default]");
@@ -325,7 +330,7 @@ class ClusterInitCommandRerunTest {
     void rerun_interactive_defaultKeepsTheHandTunedValue(@TempDir Path tmp) {
         var output = tmp.resolve("cluster-config.toml");
 
-        assertThat(init(output, "3")).isEqualTo(0);
+        assertThat(init(output, "0")).isEqualTo(0);
         var edited = handTuned(output);
 
         assertThat(initInteractive(output, "\n")).as(stderr()).isEqualTo(0);
@@ -337,7 +342,7 @@ class ClusterInitCommandRerunTest {
     void rerun_interactive_yesAppliesTheNewAnswer(@TempDir Path tmp) {
         var output = tmp.resolve("cluster-config.toml");
 
-        assertThat(init(output, "3")).isEqualTo(0);
+        assertThat(init(output, "0")).isEqualTo(0);
         var edited = handTuned(output);
 
         assertThat(initInteractive(output, "y\n")).as(stderr()).isEqualTo(0);
@@ -350,9 +355,9 @@ class ClusterInitCommandRerunTest {
     void rerun_withForce_overwrites_droppingHandAddedSection(@TempDir Path tmp) {
         var output = tmp.resolve("cluster-config.toml");
 
-        assertThat(init(output, "3")).isEqualTo(0);
+        assertThat(init(output, "0")).isEqualTo(0);
         write(output, read(output) + "\n[app-http.api-keys.ops]\nrole = \"admin\"\n");
-        assertThat(init(output, "3", "--force")).isEqualTo(0);
+        assertThat(init(output, "0", "--force")).isEqualTo(0);
         assertThat(read(output)).as("--force keeps its meaning: the file is replaced wholesale")
                   .doesNotContain("api-keys");
     }
@@ -362,7 +367,7 @@ class ClusterInitCommandRerunTest {
         var output = tmp.resolve("cluster-config.toml");
 
         write(output, "[cluster\nname = broken\n");
-        assertThat(init(output, "3")).isNotEqualTo(0);
+        assertThat(init(output, "0")).isNotEqualTo(0);
         assertThat(read(output)).as("the operator's file is untouched").isEqualTo("[cluster\nname = broken\n");
         assertThat(stderr()).contains(output.toString()).contains("--force");
     }
@@ -373,7 +378,7 @@ class ClusterInitCommandRerunTest {
         var content = "[cluster]\nname = \"a\"\nname = \"b\"\n";
 
         write(output, content);
-        assertThat(init(output, "3")).isNotEqualTo(0);
+        assertThat(init(output, "0")).isNotEqualTo(0);
         assertThat(read(output)).isEqualTo(content);
         assertThat(stderr()).contains("line 3");
     }
@@ -382,11 +387,11 @@ class ClusterInitCommandRerunTest {
     void rerun_refusesAFeatureTheMergeCannotRead_namingTheReason(@TempDir Path tmp) {
         var output = tmp.resolve("cluster-config.toml");
 
-        assertThat(init(output, "3")).isEqualTo(0);
+        assertThat(init(output, "0")).isEqualTo(0);
         var edited = read(output) + "\n[ops]\nrotated_at = 2026-09-01\n";
 
         write(output, edited);
-        assertThat(init(output, "3")).isNotEqualTo(0);
+        assertThat(init(output, "0")).isNotEqualTo(0);
         assertThat(read(output)).isEqualTo(edited);
         assertThat(stderr()).as("the reason is the reader's limit, not the file's validity")
                   .contains("dates and times")

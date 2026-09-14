@@ -46,6 +46,8 @@
   [verified: `rerun_refusesAnUnparseableExistingFile_ratherThanClobberingIt`,
   `rerun_refusesADuplicateKey_namingTheLine`,
   `rerun_refusesAFeatureTheMergeCannotRead_namingTheReason`]
+- Assumes #1037 (#1019): the topology is given per tier (`--core-nodes` / `--worker-nodes`); the
+  re-run pins add a worker tier with `--worker-nodes 2` against a core-only file.
 - The line index mirrors `TomlParser`'s line rules (multi-line `"""`/`'''`/`[` values, quoted and
   dotted keys, `[[…]]` sub-tables) so a rewrite lands on the right line past them.
   [verified: `InPlaceTomlMergeTest`, four cases]
