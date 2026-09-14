@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.rabia.ParticipationMarker.Participation;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestClusterNetwork;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestCommand;
@@ -33,6 +34,7 @@ import org.pragmatica.consensus.rabia.RabiaEngineTest.TestStateMachine;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestTopologyManager;
 import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound2;
@@ -68,6 +70,8 @@ class RabiaSyncAdoptionFirstBootMarkerTest {
     private static final long STAYS_INACTIVE_WINDOW_MILLIS = 300;
     private static final byte[] LIVE_SNAPSHOT = "live".getBytes(StandardCharsets.UTF_8);
     private static final String MARKER = ".aether-participation";
+    private static final org.pragmatica.serialization.SliceCodec SERIALIZER =
+        TestSerializers.stringCommandSerializer(TestCommand.class, TestCommand::value, TestCommand::new);
 
     private final List<RabiaEngine<TestCommand>> engines = new CopyOnWriteArrayList<>();
 
@@ -178,26 +182,47 @@ class RabiaSyncAdoptionFirstBootMarkerTest {
         void anEngineThatNeverActivatesNeverVotes(@TempDir Path dir) throws InterruptedException {
             var wiped = startEngine(3, ParticipationMarker.fileBacked(dir.resolve("wiped"), false));
 
-            wiped.engine().processSyncResponse(live(NODE_2, Phase.phase(10), LIVE_SNAPSHOT));
+            wiped.engine().processSyncResponse(live(NODE_2, Phase.ZERO, LIVE_SNAPSHOT));
+            driveTowardsAVote(wiped);
 
             assertThat(staysInactive(wiped.engine()))
-                .as("precondition: this engine must still be Syncing")
+                .as("precondition: the wiped engine must still be Syncing")
                 .isTrue();
             assertThat(voteCount(wiped.network()))
-                .as("an engine that never left Syncing must never have voted")
+                .as("given the very inputs that make the control vote, an engine that never left "
+                    + "Syncing must still never have voted")
                 .isZero();
 
-            var active = startEngine(1, ParticipationMarker.fileBacked(dir.resolve("active"), true));
+            var active = startEngine(3, ParticipationMarker.fileBacked(dir.resolve("active"), true));
+
+            active.engine().processSyncResponse(live(NODE_2, Phase.ZERO, LIVE_SNAPSHOT));
 
             assertThat(awaitActive(active.engine()))
-                .as("positive control: a single-node cluster activates on its own")
+                .as("the control must actually activate, or it controls for nothing")
                 .isTrue();
+
+            driveTowardsAVote(active);
+
             assertThat(awaitCondition(() -> voteCount(active.network()) > 0))
-                .as("POSITIVE CONTROL for the zero above — the same filter over the same network "
-                    + "type must be able to SEE a vote. If this fails the zero proves nothing.")
+                .as("POSITIVE CONTROL for the zero above — same network type, same filter, same "
+                    + "inputs, differing ONLY in whether the engine activated. If this fails the "
+                    + "zero proves nothing and this test is vacuous.")
                 .isTrue();
         }
-    }
+
+        /// A Rabia node votes only once it holds a QUORUM of proposals for the phase — at n=3 that is
+        /// its own plus one peer's. Activating alone produces no vote, which is why an earlier version
+        /// of this control sat at zero and correctly failed itself.
+        private void driveTowardsAVote(StartedEngine started) throws InterruptedException {
+            started.engine().handleSubmit(new RabiaEngineIO.SubmitCommands<>(List.of(new TestCommand("own"))));
+
+            Thread.sleep(50);
+
+            started.engine()
+                   .processPropose(new Propose<>(NODE_2,
+                                                 Phase.ZERO,
+                                                 Batch.create(SERIALIZER, List.of(new TestCommand("peer")))));
+        }
 
     private static long voteCount(TestClusterNetwork network) {
         return network.getMessages()
