@@ -2,6 +2,7 @@ package org.pragmatica.lang.utils;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -66,6 +67,49 @@ class RetryTest {
         assertTrue(result.isFailure());
         assertEquals(1, attempts.get(), "a terminal cause must stop retrying after the FIRST attempt");
         result.onFailure(cause -> assertTrue(cause.isTerminal()));
+    }
+
+    /// #280: a retry POLICY is a predicate evaluated on EVERY failure. The first failure is
+    /// admitted, the second is refused — the loop must stop at the second, not run to the budget.
+    @Test
+    void shouldStopWhenThePredicateRefusesALaterFailure() {
+        var attempts = new AtomicInteger(0);
+        var admitted = Causes.transientCause("peer busy");
+        var refused = Causes.cause("business verdict");
+
+        var result = Retry.retry()
+                          .attempts(5)
+                          .strategy(BackoffStrategy.fixed()
+                                                   .interval(timeSpan(1).millis()))
+                          .execute(() -> attempts.incrementAndGet() == 1
+                                         ? admitted.promise()
+                                         : refused.promise(),
+                                   Cause::isTransient)
+                          .await();
+
+        assertTrue(result.isFailure());
+        assertEquals(2, attempts.get(), "the policy must be consulted on the second failure too");
+        result.onFailure(cause -> assertSame(refused, cause));
+    }
+
+    @Test
+    void shouldRetryWhileThePredicateAdmits() {
+        var attempts = new AtomicInteger(0);
+
+        var result = Retry.retry()
+                          .attempts(3)
+                          .strategy(BackoffStrategy.fixed()
+                                                   .interval(timeSpan(1).millis()))
+                          .execute(() -> {
+                              attempts.incrementAndGet();
+
+                              return Causes.transientCause("peer busy").promise();
+                          },
+                                   Cause::isTransient)
+                          .await();
+
+        assertTrue(result.isFailure());
+        assertEquals(3, attempts.get());
     }
 
     @Test

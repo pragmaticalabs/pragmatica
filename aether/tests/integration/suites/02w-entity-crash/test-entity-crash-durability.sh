@@ -123,7 +123,7 @@ create_entity() {
     # connection reset). Counting that as failure UNDER-counts acks, which is what made the first
     # run report 4/40. The durability assertion re-reads the value, so a wrong guess here cannot
     # manufacture a pass.
-    if body=$(entity_post_any "/api/v1/entity/create" "$payload" \
+    if body=$(entity_post_any "/api/entity/create" "$payload" \
                               '"outcome"[[:space:]]*:[[:space:]]*"created"|"failureType"[[:space:]]*:[[:space:]]*"EntityAlreadyExists"'); then
         return 0
     fi
@@ -173,7 +173,7 @@ read_amount() {
     #
     # Every log helper writes to STDOUT and this function's stdout IS the parsed amount, so
     # diagnostics must be redirected or they silently corrupt the compared value.
-    if body=$(entity_post_any "/api/v1/entity/get" "{\"orderId\":\"${key}\"}" \
+    if body=$(entity_post_any "/api/entity/get" "{\"orderId\":\"${key}\"}" \
                               '"outcome"[[:space:]]*:[[:space:]]*"(found|absent)"'); then
         if printf '%s' "$body" | grep -qE '"outcome"[[:space:]]*:[[:space:]]*"found"'; then
             printf '%s' "$body" | sed -E 's/.*"amount"[[:space:]]*:[[:space:]]*(-?[0-9]+).*/\1/'
@@ -218,7 +218,7 @@ test_deploy_entity_blueprint() {
     # Probe every node: the slice need not be placed on all of them, so ANY node answering is
     # readiness. `__probe__` does not exist, and a "not found" answer still proves the route is wired.
     if ! wait_for "entity slice answering on some node" \
-        'refresh_app_endpoints >/dev/null 2>&1; entity_post_any "/api/v1/entity/get" "{\"orderId\":\"__probe__\"}" "\"outcome\"" >/dev/null' 240; then
+        'refresh_app_endpoints >/dev/null 2>&1; entity_post_any "/api/entity/get" "{\"orderId\":\"__probe__\"}" "\"outcome\"" >/dev/null' 240; then
         log_fail "entity slice never became reachable on any node"
         return 1
     fi

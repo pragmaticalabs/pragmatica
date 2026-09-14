@@ -16,8 +16,10 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -342,6 +344,11 @@ class NodeDeploymentFsmTest {
             recordingStore = new RecordingSliceStore();
             var router = MessageRouter.mutable();
             var kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
+            // #1068: a wiped node under a LIVE blueprint has a committed SliceTarget naming this
+            // version; an ACTIVE claim without one is a rollback leftover and is refused, not healed.
+            kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(ARTIFACT.base()),
+                                                                          SliceTargetValue.sliceTargetValue(ARTIFACT.version(),
+                                                                                                            1)))));
             ClusterNode<KVCommand<AetherKey>> cluster = stubClusterNode(SELF);
             var ctxHolder = new AtomicReference<NodeDeploymentContext>();
             Function<Fsm<NodeDeploymentState, ClusterFsmEvent>, NodeDeploymentState> factory =

@@ -82,6 +82,15 @@ sealed interface BootstrapPhasePost {
 
     @Contract
     private static void registerClusterLocally(BootstrapContext ctx) {
+        registerClusterLocally(ctx, ClusterRegistry.load());
+    }
+
+    /// Package-visible seam over the loaded registry so the whole step — register, activate, save,
+    /// announce — is pinnable against a scratch file (`BootstrapPhasePostContextTest`) without
+    /// writing the operator's `~/.aether/clusters.toml`. The one-arg form above is the only
+    /// production caller and only supplies the default registry.
+    @Contract
+    static void registerClusterLocally(BootstrapContext ctx, Result<ClusterRegistry> loaded) {
         var clusterName = ctx.config().cluster().name();
         var apiKeyEnvName = ClusterBootstrapOrchestrator.deriveApiKeyEnvName(clusterName);
         // #209: register the endpoint with the scheme the cluster actually serves. When TLS is
@@ -90,12 +99,27 @@ sealed interface BootstrapPhasePost {
         // #998: and with the PORT the management plane actually listens on — see [#managementEndpoint].
         var endpoint = managementEndpoint(ctx);
 
-        ClusterRegistry.load()
-                       .map(registry -> registry.add(clusterName.value(),
-                                                     endpoint,
-                                                     Option.some(apiKeyEnvName)))
-                       .flatMap(ClusterRegistry::save)
-                       .onFailure(cause -> System.err.println("Warning: failed to register cluster locally: " + cause.message()));
+        loaded.flatMap(registry -> registerAndActivate(registry,
+                                                       clusterName.value(),
+                                                       endpoint,
+                                                       Option.some(apiKeyEnvName)))
+              .flatMap(ClusterRegistry::save)
+              .onSuccess(_ -> System.out.printf("Active cluster context: %s%n", clusterName))
+              .onFailure(cause -> System.err.println("Warning: failed to register cluster locally: " + cause.message()));
+    }
+
+    /// #584 — the cluster just bootstrapped becomes the ACTIVE context. `ClusterRegistry.add` keeps
+    /// whatever context was current (that is its contract, pinned by `ClusterRegistryTest`), so a
+    /// fresh bootstrap used to leave `[current] context` on whatever was active before — in the live
+    /// case a cluster dead for a month — and the first context-routed command afterwards dialled the
+    /// wrong cluster with a bare `ConnectException`. Package-visible so the step is pinnable without
+    /// writing the operator's real `~/.aether/clusters.toml` — the same reason [#managementEndpoint] is.
+    static Result<ClusterRegistry> registerAndActivate(ClusterRegistry registry,
+                                                       String name,
+                                                       String endpoint,
+                                                       Option<String> apiKeyEnv) {
+        return registry.add(name, endpoint, apiKeyEnv)
+                       .use(name);
     }
 
     private static String managementScheme(BootstrapContext ctx) {

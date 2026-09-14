@@ -183,7 +183,7 @@ public sealed interface EntityError extends Cause {
     /// through that window would reopen exactly the hole the owner check closes — and at the check the
     /// window is indistinguishable from an arc that will never have an owner, so admitting on absence
     /// admits both. The caller retries; a fixture waits for ownership to converge rather than sleeping.
-    record OwnershipNotYetCommitted(String key, String keyspace, int partition) implements EntityError {
+    record OwnershipNotYetCommitted(String key, String keyspace, int partition) implements EntityError, Cause.Transient {
         @Override
         public String message() {
             return "Durable entity write for key '" + key
@@ -217,7 +217,7 @@ public sealed interface EntityError extends Cause {
     /// those report that an OPERATION was refused, this reports that a requested GUARANTEE is
     /// unavailable on this node. [ReadConsistency#BOUNDED_STALE] reads of the same key are unaffected,
     /// so the caller either accepts bounded staleness or retries where the barrier is wired.
-    record LinearizableUnavailable(String key) implements EntityError {
+    record LinearizableUnavailable(String key) implements EntityError, Cause.Transient {
         @Override
         public String message() {
             return "Linearizable read for durable entity key '" + key
