@@ -201,6 +201,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// flood incarnation churn (over-bumping would break anti-oscillation). `0` = never bumped.
     private final AtomicLong lastAtRiskBumpAt = new AtomicLong(0L);
     private final AtomicReference<Option<ScheduledFuture<?>>> tickFuture = new AtomicReference<>(none());
+
+    /// #501: the join-announce loop's handle, retained so [#stop] can cancel it. Before this it was
+    /// local to [#announceJoin] and a stopped protocol kept announcing for up to 30 s.
+    private final AtomicReference<Option<ScheduledFuture<?>>> announceFuture = new AtomicReference<>(none());
+
     /// Per-member last-probe ORDINAL (a strictly-monotonic `probeOrdinal` value), keyed by
     /// `NodeId` so probe scheduling is identity-stable under churn. Stamped in [#probeTarget]
     /// the moment a probe is sent. [#selectNextProbeTarget] always picks the least-recently-
@@ -419,6 +424,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             }
 
             tickFuture.getAndSet(none()).onPresent(f -> f.cancel(false));
+            announceFuture.getAndSet(none()).onPresent(f -> f.cancel(false));
             LOG.info("SWIM protocol stopped for node {}", selfId.id());
 
             return Result.success(this);
@@ -1682,6 +1688,8 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                        TimeSpan.timeSpan(500).millis());
 
         future.set(task);
+        // A re-announce supersedes the previous loop; stop() cancels whichever is current.
+        announceFuture.getAndSet(option(task)).onPresent(f -> f.cancel(false));
     }
 
     /// Per-peer health view used by transport-side gates (e.g. `swimHealthGate`
