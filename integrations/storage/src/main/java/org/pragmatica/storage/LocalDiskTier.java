@@ -90,11 +90,11 @@ public final class LocalDiskTier implements StorageTier {
                                                   maxBytes)
                                         .promise();
         }
-
         // A write that failed after reserveCapacity keeps no reservation: the tier would otherwise
         // over-count by the whole block until restart (review of #1095, SF-2 — reproduced under a
         // real ENOSPC). Released here, once, whatever stage failed; the partial file is writeBlock's.
-        return Promise.lift(WRITE_ERROR, () -> writeBlock(id, content))
+        return Promise.lift(WRITE_ERROR,
+                            () -> writeBlock(id, content))
                       .flatMap(Promise::resolved)
                       .onFailure(_ -> usedBytes.addAndGet(-content.length));
     }
@@ -173,7 +173,9 @@ public final class LocalDiskTier implements StorageTier {
             return;
         }
 
-        FileOps.delete(path).onFailure(cause -> log.warn("Partial block at {} could not be removed after a failed write: {}", path, cause.message()));
+        FileOps.delete(path).onFailure(cause -> log.warn("Partial block at {} could not be removed after a failed write: {}",
+                                                         path,
+                                                         cause.message()));
         correctUsedBytes(previousSize);
     }
 

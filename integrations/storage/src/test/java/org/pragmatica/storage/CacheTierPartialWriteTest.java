@@ -17,11 +17,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.Filter;
@@ -33,10 +28,14 @@ import org.apache.logging.log4j.core.config.Configuration;
 import org.apache.logging.log4j.core.config.LoggerConfig;
 import org.apache.logging.log4j.core.config.Property;
 import org.apache.logging.log4j.core.layout.PatternLayout;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import static org.pragmatica.lang.Unit.unit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.pragmatica.lang.Unit.unit;
 
 
 /// #910 (review of #1095): a cache tier that fails MID-WRITE keeps a truncated copy, and the read
@@ -60,6 +59,7 @@ class CacheTierPartialWriteTest {
         appender = CapturingAppender.create("PartialWriteCapture");
         appender.start();
         var ctx = (LoggerContext) LogManager.getContext(false);
+
         loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
         originalLevel = loggerConfig.getLevel();
         loggerConfig.addAppender(appender, Level.ALL, null);
@@ -70,6 +70,7 @@ class CacheTierPartialWriteTest {
     @AfterEach
     void tearDown() {
         var ctx = (LoggerContext) LogManager.getContext(false);
+
         loggerConfig.removeAppender(appender.getName());
         loggerConfig.setLevel(originalLevel);
         ctx.updateLoggers();
@@ -83,13 +84,17 @@ class CacheTierPartialWriteTest {
         var partial = new PartialWriteTier();
         var durable = MemoryTier.memoryTier(1024 * 1024, TierLevel.REMOTE);
         var instance = StorageInstance.storageInstance("partial", List.of(partial, durable));
-
-        var id = instance.put(content).await().fold(cause -> fail("the durable write succeeded; the put must succeed: " + cause.message()), v -> v);
+        var id = instance.put(content)
+                         .await()
+                         .fold(cause -> fail("the durable write succeeded; the put must succeed: " + cause.message()),
+                               v -> v);
 
         assertThat(partial.entries).as("the truncated copy must not survive the failed promotion").doesNotContainKey(id);
         assertThat(partial.deletes.get()).isEqualTo(1);
-
-        var read = instance.get(id).await().fold(cause -> fail("the read must reach the durable copy: " + cause.message()), v -> v);
+        var read = instance.get(id)
+                           .await()
+                           .fold(cause -> fail("the read must reach the durable copy: " + cause.message()),
+                                 v -> v);
 
         assertThat(read.isPresent()).isTrue();
         assertThat(read.unwrap()).isEqualTo(content);
@@ -105,10 +110,11 @@ class CacheTierPartialWriteTest {
         var id = BlockId.blockId(content).unwrap();
         var hex = id.hexString();
 
-        Files.createDirectories(tempDir.resolve("blocks").resolve(hex.substring(0, 2)).resolve(hex.substring(2, 4)).resolve(hex));
-
+        Files.createDirectories(tempDir.resolve("blocks")
+                                       .resolve(hex.substring(0, 2))
+                                       .resolve(hex.substring(2, 4))
+                                       .resolve(hex));
         tier.put(id, content).await().onSuccess(_ -> fail("writing over a directory must fail"));
-
         assertThat(tier.usedBytes()).as("a failed write keeps no reservation").isZero();
     }
 
@@ -124,15 +130,19 @@ class CacheTierPartialWriteTest {
             instance.put(block(64 + i)).await().onFailure(cause -> fail("puts must succeed: " + cause.message()));
         }
 
-        assertThat(appender.warnsMentioning("Cache promotion to LOCAL_DISK FAILED")).as("first failure at WARN, then DEBUG").hasSize(1);
+        assertThat(appender.warnsMentioning("Cache promotion to LOCAL_DISK FAILED")).as("first failure at WARN, then DEBUG")
+                  .hasSize(1);
         assertThat(appender.debugsMentioning("Cache promotion to LOCAL_DISK failed")).hasSize(4);
-
         var full = MemoryTier.memoryTier(32);
-        var fullInstance = StorageInstance.storageInstance("full", List.of(full, MemoryTier.memoryTier(1024 * 1024, TierLevel.REMOTE)));
+        var fullInstance = StorageInstance.storageInstance("full",
+                                                           List.of(full,
+                                                                   MemoryTier.memoryTier(1024 * 1024, TierLevel.REMOTE)));
 
-        fullInstance.put(block(64)).await().onFailure(cause -> fail("a full cache tier must not fail the put: " + cause.message()));
-
-        assertThat(appender.warnsMentioning("Cache promotion to MEMORY")).as("TierFull is steady state, never WARN").isEmpty();
+        fullInstance.put(block(64))
+                    .await()
+                    .onFailure(cause -> fail("a full cache tier must not fail the put: " + cause.message()));
+        assertThat(appender.warnsMentioning("Cache promotion to MEMORY")).as("TierFull is steady state, never WARN")
+                  .isEmpty();
     }
 
     private static byte[] block(int size) {
@@ -180,7 +190,10 @@ class CacheTierPartialWriteTest {
 
         @Override
         public long usedBytes() {
-            return entries.values().stream().mapToLong(bytes -> bytes.length).sum();
+            return entries.values()
+                          .stream()
+                          .mapToLong(bytes -> bytes.length)
+                          .sum();
         }
 
         @Override
@@ -256,15 +269,22 @@ class CacheTierPartialWriteTest {
 
         @Override
         public void append(LogEvent event) {
-            events.add(new Captured(event.getLevel(), event.getMessage().getFormattedMessage()));
+            events.add(new Captured(event.getLevel(),
+                                    event.getMessage().getFormattedMessage()));
         }
 
         List<Captured> warnsMentioning(String fragment) {
-            return events.stream().filter(e -> e.level() == Level.WARN && e.message().contains(fragment)).toList();
+            return events.stream()
+                         .filter(e -> e.level() == Level.WARN && e.message()
+                                                                  .contains(fragment))
+                         .toList();
         }
 
         List<Captured> debugsMentioning(String fragment) {
-            return events.stream().filter(e -> e.level() == Level.DEBUG && e.message().contains(fragment)).toList();
+            return events.stream()
+                         .filter(e -> e.level() == Level.DEBUG && e.message()
+                                                                   .contains(fragment))
+                         .toList();
         }
     }
 }

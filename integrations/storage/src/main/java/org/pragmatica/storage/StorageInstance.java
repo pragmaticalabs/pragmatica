@@ -350,7 +350,6 @@ final class DefaultStorageInstance implements StorageInstance {
         }
 
         var tier = cacheTiers.get(index);
-
         // The durable write has already succeeded by the time a cache tier is asked; a cache-tier
         // failure is recovered, not propagated, or the caller is told its durably stored data
         // failed (#910). The old chain logged "skipped" and then flatMapped the failure through.
@@ -405,7 +404,11 @@ final class DefaultStorageInstance implements StorageInstance {
                      failures + PROMOTION_FAILURE_WARN_EVERY - failures % PROMOTION_FAILURE_WARN_EVERY,
                      cause.message());
         } else {
-            log.debug("Cache promotion to {} failed for {} (failure #{}): {}", tier.level(), id, failures, cause.message());
+            log.debug("Cache promotion to {} failed for {} (failure #{}): {}",
+                      tier.level(),
+                      id,
+                      failures,
+                      cause.message());
         }
     }
 
