@@ -11,7 +11,7 @@ Cross-refs: #226 (blueprint endpoint consolidation), #198 (slice HTTP API versio
 1. **No version prefix.** All 181 `ManagementRoute` entries (`aether/aether-management-api/.../route/ManagementRoute.java:30-249`) mount at bare `/api/...`. Once RC freezes the wire, every rename post-GA is a breaking change for CLI, dashboards, harnesses, and third-party tooling. Pre-GA, a rename is free (no-backward-compat policy). This is the last window.
 2. **Dual overlapping surfaces**, resolved only by a *double route-resolution path* in `ManagementRouter.dispatch` (`aether/node/.../routes/ManagementRouter.java:66-92`): first the `ManagementRoute` enum table, then a fallback to the `RequestRouter` trie. Concrete duplicates:
    - **Streams:** `StreamRoutes.java` (flat engine surface: `STREAM_*`, `CONSUMER_GROUP_*`, name/partition-addressed) and `StreamApiRoutes.java` (namespaced catalog surface: `STREAMS_*`, `(namespace, stream, version)`-addressed) both mount under `/api/streams`. Collisions are disambiguated only by param *count*: `POST /api/streams/publish/{name}` (`STREAM_PUBLISH`, ManagementRoute.java:144) vs `POST /api/streams/publish/{ns}/{stream}/{ver}` (`STREAMS_PUBLISH`, :165); `GET /api/streams/groups/{id}` (:157) vs `GET /api/streams/groups/{ns}/{stream}/{ver}` (:164).
-   - **Backups CLI:** `aether backups` (`AetherCli.java:3429`, subcommands trigger/list/restore) and `aether backup` (`AetherCli.java:3503`, create/restore/list) — a documented singular alias over the same three REST routes.
+   - **Backups CLI:** `aether backups` (`AetherCli.java:3429`, subcommands trigger/list/restore) and `aether backup` (`AetherCli.java:3503`, create/restore/list) — a documented singular alias over the same three REST routes. *(Superseded: both trees and the routes were removed in #676 — the only `BackupService` implementation was `disabled()`.)*
 3. **Doc drift:** `management-api.md` documents bare `/api` (matches code); `architecture/12-management.md` claims `/api/v1` routes that were never implemented (#310). Two documents, two answers.
 
 ## 2. Design
@@ -56,7 +56,7 @@ The `RequestRouter` fallback in `ManagementRouter.dispatch` (ManagementRouter.ja
 | Dual surface | Rule (winner) |
 |---|---|
 | `StreamApiRoutes` vs `StreamRoutes` under `/api/streams` | **Full merge into the namespaced catalog (owner decision, 2026-07-04 — pre-GA, no compat constraints: "build what we planned in one shot").** One surface: `/api/v1/streams/**`, catalog-addressed `(namespace, stream, version)`. The flat engine surface is DELETED; raw/system streams surface under the reserved **`system` namespace**; engine diagnostics (partitions, replicas, raw read, consumers) become **sub-resources of the catalog identity** (§3.2). Param-count disambiguation disappears; `StreamRoutes.java` is retired. |
-| `aether backups` vs `aether backup` CLI | Plural `aether backups` wins (matches `scheduled-tasks` etc.); absorbs the singular's verb set as `create` / `list` / `restore` (`trigger` renamed `create`); singular command deleted. REST surface unchanged (POST/GET on one collection is not a duplicate). |
+| `aether backups` vs `aether backup` CLI | *Moot since #676 — both removed with the routes.* Was: plural `aether backups` wins (matches `scheduled-tasks` etc.); absorbs the singular's verb set as `create` / `list` / `restore` (`trigger` renamed `create`); singular command deleted. REST surface unchanged (POST/GET on one collection is not a duplicate). |
 | `POST /api/blueprints` vs `/api/blueprints/publish` vs `/api/blueprints/deploy` | Owned by #226; not respecified here. This spec only (a) reserves `/api/v1/blueprints/**`, (b) converts #226's migration to hard-cutover (§2.3). |
 | Enum table vs `RequestRouter` trie | Enum wins; trie fallback deleted (§2.4). |
 
@@ -86,8 +86,8 @@ Covers all 181 enum entries. HTTP methods and path parameters are unchanged unle
 | `/api/alerts/history` | `/api/v1/alerts/history` |
 | `/api/alerts/inject` | `/api/v1/alerts/inject` |
 | `/api/artifacts/metrics` | `/api/v1/artifacts/metrics` |
-| `/api/backups` | `/api/v1/backups` |
-| `/api/backups/restore` | `/api/v1/backups/restore` |
+| `/api/backups` | *(removed in #676)* |
+| `/api/backups/restore` | *(removed in #676)* |
 | `/api/blueprints` | `/api/v1/blueprints` |
 | `/api/blueprints/deploy` | `/api/v1/blueprints/deploy` (shape owned by #226) |
 | `/api/blueprints/publish` | `/api/v1/blueprints/publish` |

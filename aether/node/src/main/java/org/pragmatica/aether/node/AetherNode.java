@@ -41,7 +41,6 @@ import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.api.routes.RetentionRoutes;
 import org.pragmatica.aether.api.DynamicConfigManager;
-import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.DynamicConfigurationProvider;
@@ -390,7 +389,6 @@ public interface AetherNode extends ManageableNode {
     ArtifactMetricsCollector artifactMetricsCollector();
     DeploymentMap deploymentMap();
     ClusterEventAggregator eventAggregator();
-    BackupService backupService();
     StreamPartitionManager streamPartitionManager();
     StreamReadRouter streamReadRouter();
     ConsumerGroupCoordinator consumerGroupCoordinator();
@@ -1596,7 +1594,6 @@ public interface AetherNode extends ManageableNode {
                           ArtifactMetricsCollector artifactMetricsCollector,
                           DeploymentMap deploymentMap,
                           ClusterEventAggregator eventAggregator,
-                          BackupService backupService,
                           StreamPartitionManager streamPartitionManager,
                           SegmentIndex streamSegmentIndex,
                           StreamReadRouter streamReadRouter,
@@ -4337,7 +4334,6 @@ public interface AetherNode extends ManageableNode {
                                   artifactMetricsCollector,
                                   deploymentMap,
                                   eventAggregator,
-                                  BackupService.disabled(),
                                   streamPartitionManager,
                                   streamSegmentIndex,
                                   streamReadRouter,
@@ -4553,7 +4549,6 @@ public interface AetherNode extends ManageableNode {
                                                                         artifactMetricsCollector,
                                                                         deploymentMap,
                                                                         eventAggregator,
-                                                                        BackupService.disabled(),
                                                                         streamPartitionManager,
                                                                         streamSegmentIndex,
                                                                         streamReadRouter,
@@ -6110,8 +6105,6 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(OperationalEvent.NodeLifecycleChanged.class,
                                               eventAggregator::onNodeLifecycleChanged));
         entries.add(MessageRouter.Entry.route(OperationalEvent.ConfigChanged.class, eventAggregator::onConfigChanged));
-        entries.add(MessageRouter.Entry.route(OperationalEvent.BackupCreated.class, eventAggregator::onBackupCreated));
-        entries.add(MessageRouter.Entry.route(OperationalEvent.BackupRestored.class, eventAggregator::onBackupRestored));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeployed.class,
                                               eventAggregator::onBlueprintDeployed));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeleted.class,
