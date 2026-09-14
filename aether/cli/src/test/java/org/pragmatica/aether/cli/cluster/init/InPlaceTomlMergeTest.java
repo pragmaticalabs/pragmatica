@@ -33,6 +33,9 @@ class InPlaceTomlMergeTest {
                          .fold(cause -> fail("plan refused: " + cause.message()), plan -> plan);
     }
 
+    /// The decoy `jvm_args = "not me"` sits INSIDE a multi-line string AFTER the real key, so an
+    /// index that reads continuation lines as key lines would overwrite the real key's line with the
+    /// decoy's and rewrite inside the string (mutation M10 of the r2 fix report).
     @Test
     void rewrite_landsOnTheKeyLine_pastMultiLineValues_keepingItsTrailingComment() {
         var existing = """
@@ -40,6 +43,8 @@ class InPlaceTomlMergeTest {
 
             [runtime.default]
             type = "docker"
+            image = "ghcr.io/pragmaticalabs/aether-node:1.0.0"
+            "jvm_args" = 'old'   # trailing comment stays
             extra = [
               1,
               2, # ]
@@ -47,8 +52,6 @@ class InPlaceTomlMergeTest {
             note = \"""
             jvm_args = "not me"
             \"""
-            image = "ghcr.io/pragmaticalabs/aether-node:1.0.0"
-            "jvm_args" = 'old'   # trailing comment stays
             """;
         var plan = plan(existing);
 

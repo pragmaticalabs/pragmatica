@@ -26,13 +26,6 @@ public sealed interface ClusterInitError extends Cause {
         }
     }
 
-    record OutputExists(String path) implements ClusterInitError {
-        @Override
-        public String message() {
-            return "Output file already exists: " + path + ". Re-run with --force to overwrite.";
-        }
-    }
-
     /// #311 — the existing output cannot be merged into because it does not parse. Refused rather
     /// than overwritten: the operator's edits are what a merge exists to keep.
     record OutputUnreadable(String path, String detail) implements ClusterInitError {
