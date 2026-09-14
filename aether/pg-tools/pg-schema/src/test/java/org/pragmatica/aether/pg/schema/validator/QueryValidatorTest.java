@@ -609,6 +609,16 @@ class QueryValidatorTest {
                                        .containsExactly("Table or alias not found: orders");
         }
 
+        // A RECURSIVE body sees the WITH names — its own self-reference among them.
+        @Test void validate_recursiveCteBody_seesItsOwnName() {
+            var result = validate(
+                "WITH RECURSIVE t AS (SELECT id FROM users UNION ALL SELECT t.id FROM t WHERE t.id < 10) "
+                + "SELECT t.id FROM t"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
         // A derived table without LATERAL does not see the enclosing FROM list.
         @Test void validate_nonLateralDerivedTable_doesNotSeeOuterScope() {
             var result = validate(
