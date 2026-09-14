@@ -784,28 +784,31 @@ sealed interface BootstrapPhaseDeploy {
             }
 
             var index = nodeIndex;
-            var result = BootstrapPhaseProvision.nodeRole(node.nodeId(), sourceName)
-                                                .flatMap(role -> sshContainerImage(ctx, source, role, node.nodeId())
-                                                                    .flatMap(image -> NodeConfigBuilder.compose(ctx,
-                                                                                                                source,
-                                                                                                                index,
-                                                                                                                role,
-                                                                                                                Option.empty(),
-                                                                                                                Option.some(clusterSecret))
-                                                                                                       .flatMap(doc -> deploySshNode(node,
-                                                                                                                                     TomlWriter.toToml(doc),
-                                                                                                                                     sshConfig,
-                                                                                                                                     buildSshStartCommand(image,
-                                                                                                                                                          clusterName,
-                                                                                                                                                          node.nodeId(),
-                                                                                                                                                          role,
-                                                                                                                                                          clusterPort,
-                                                                                                                                                          managementPort,
-                                                                                                                                                          peersValue,
-                                                                                                                                                          clusterSecret,
-                                                                                                                                                          envLookup),
-                                                                                                                                     sshExec,
-                                                                                                                                     scpExec))));
+            var result = BootstrapPhaseProvision.nodeRole(node.nodeId(),
+                                                          sourceName)
+                                                .flatMap(role -> sshContainerImage(ctx,
+                                                                                   source,
+                                                                                   role,
+                                                                                   node.nodeId()).flatMap(image -> NodeConfigBuilder.compose(ctx,
+                                                                                                                                             source,
+                                                                                                                                             index,
+                                                                                                                                             role,
+                                                                                                                                             Option.empty(),
+                                                                                                                                             Option.some(clusterSecret))
+                                                                                                                                    .flatMap(doc -> deploySshNode(node,
+                                                                                                                                                                  TomlWriter.toToml(doc),
+                                                                                                                                                                  sshConfig,
+                                                                                                                                                                  buildSshStartCommand(image,
+                                                                                                                                                                                       clusterName,
+                                                                                                                                                                                       node.nodeId(),
+                                                                                                                                                                                       role,
+                                                                                                                                                                                       clusterPort,
+                                                                                                                                                                                       managementPort,
+                                                                                                                                                                                       peersValue,
+                                                                                                                                                                                       clusterSecret,
+                                                                                                                                                                                       envLookup),
+                                                                                                                                                                  sshExec,
+                                                                                                                                                                  scpExec))));
 
             if (result.isFailure()) {
                 return result;
@@ -821,7 +824,10 @@ sealed interface BootstrapPhaseDeploy {
 
     /// The image for THIS role's runtime profile — the same resolution the cloud path makes, per
     /// role rather than for CORE only, and refusing a non-container runtime instead of ignoring it.
-    private static Result<String> sshContainerImage(BootstrapContext ctx, SourceProfile source, NodeRole role, String nodeId) {
+    private static Result<String> sshContainerImage(BootstrapContext ctx,
+                                                    SourceProfile source,
+                                                    NodeRole role,
+                                                    String nodeId) {
         var profile = Option.option(source.roles().get(role))
                             .map(RoleSubTable::runtimeRef)
                             .flatMap(ref -> Option.option(ctx.config().runtimes().get(ref)));
@@ -830,7 +836,8 @@ sealed interface BootstrapPhaseDeploy {
         if (type != RuntimeType.CONTAINER) {
             return new BootstrapError.DeploymentFailed(nodeId,
                                                        "SSH source '" + sourceNameOf(source)
-                                                      + "' declares runtime '" + profile.map(RuntimeProfile::name).or("?")
+                                                      + "' declares runtime '" + profile.map(RuntimeProfile::name)
+                                                                                        .or("?")
                                                       + "' of type " + type
                                                       + "; only CONTAINER can be launched over SSH in this release (#1090)").result();
         }
@@ -839,7 +846,8 @@ sealed interface BootstrapPhaseDeploy {
     }
 
     private static String sourceNameOf(SourceProfile source) {
-        return source.name().value();
+        return source.name()
+                     .value();
     }
 
     /// One launch line, built from the SAME builder the cloud re-launch uses ([#buildRestartCommand]),
@@ -856,7 +864,15 @@ sealed interface BootstrapPhaseDeploy {
                                        String clusterSecret,
                                        Fn1<String, String> envLookup) {
         return "mkdir -p /opt/aether/config && docker pull " + image
-             + " && " + buildRestartCommand(image, clusterName, nodeId, role, clusterPort, managementPort, peers, clusterSecret, envLookup);
+             + " && " + buildRestartCommand(image,
+                                            clusterName,
+                                            nodeId,
+                                            role,
+                                            clusterPort,
+                                            managementPort,
+                                            peers,
+                                            clusterSecret,
+                                            envLookup);
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -867,13 +883,18 @@ sealed interface BootstrapPhaseDeploy {
                                               Fn3<Result<String>, String, String, SshConfig> sshExec,
                                               Fn4<Result<Unit>, String, String, String, SshConfig> scpExec) {
         // The config dir must exist before the scp lands in it; the launch line recreates it harmlessly.
-        return sshExec.apply(node.publicIp(), "mkdir -p /opt/aether/config", sshConfig)
-                      .flatMap(_ -> writeNodeConfigToTemp(node.nodeId(), nodeConfig))
+        return sshExec.apply(node.publicIp(),
+                             "mkdir -p /opt/aether/config",
+                             sshConfig)
+                      .flatMap(_ -> writeNodeConfigToTemp(node.nodeId(),
+                                                          nodeConfig))
                       .flatMap(tempPath -> scpExec.apply(tempPath.toString(),
                                                          node.publicIp(),
                                                          "/opt/aether/config/aether.toml",
                                                          sshConfig))
-                      .flatMap(_ -> sshExec.apply(node.publicIp(), startCommand, sshConfig))
+                      .flatMap(_ -> sshExec.apply(node.publicIp(),
+                                                  startCommand,
+                                                  sshConfig))
                       .mapToUnit();
     }
 
