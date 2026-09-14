@@ -20,6 +20,7 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.MembershipDecisionReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeDrainingReported;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -110,6 +111,43 @@ class ClusterDeploymentStateDrainEvictionTest {
 
         assertThat(replacementLoads()).as("#688: the periodic reconcile must resume the drain eviction — a replacement "
                                           + "LOAD for the other node — instead of skipping the blueprint forever")
+                                      .hasSize(1);
+    }
+
+    /// Finding 1: the DRAINING report the leader really receives starts the eviction — and starts it
+    /// ONCE per drain episode, because the pong repeats every ping interval and the reconcile tick
+    /// repeats every interval; each repeat must find the loop already running.
+    @Test
+    void drainingReport_startsTheEvictionOnce_andRepeatsDoNotDoubleIssue() {
+        draining.set(Set.of(NODE_D));
+
+        harness.dispatch(new NodeDrainingReported(NODE_D));
+        harness.dispatch(new NodeDrainingReported(NODE_D));
+        activeState().reconcile();
+
+        assertThat(replacementLoads()).as("#688: one replacement LOAD for one drain, however many times the report "
+                                          + "and the tick repeat while the loop is running")
+                                      .hasSize(1);
+    }
+
+    /// The guard is per drain EPISODE: once the node is no longer reported draining (halted or
+    /// withdrawn), a later drain of the same node starts a fresh loop.
+    @Test
+    void drainWithdrawn_thenReported_again_startsAFreshEviction() {
+        draining.set(Set.of(NODE_D));
+        harness.dispatch(new NodeDrainingReported(NODE_D));
+        assertThat(replacementLoads()).hasSize(1);
+
+        draining.set(Set.of());
+        activeState().reconcile();
+        seedActiveSliceOn(NODE_D);
+        activeState().sliceStates().put(org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey.sliceNodeKey(ARTIFACT, NODE_D), SliceState.ACTIVE);
+        cluster.commands.clear();
+        draining.set(Set.of(NODE_D));
+
+        harness.dispatch(new NodeDrainingReported(NODE_D));
+
+        assertThat(replacementLoads()).as("a new drain episode must not be swallowed by the previous episode's guard")
                                       .hasSize(1);
     }
 

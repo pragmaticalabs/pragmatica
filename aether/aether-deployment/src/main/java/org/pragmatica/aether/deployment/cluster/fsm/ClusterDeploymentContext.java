@@ -259,6 +259,7 @@ public final class ClusterDeploymentContext {
                                                  new ConcurrentHashMap<>(),
                                                  new ConcurrentHashMap<>(),
                                                  new ConcurrentHashMap<>(),
+                                                 ConcurrentHashMap.newKeySet(),
                                                  new AtomicInteger(0),
                                                  new AtomicBoolean(false),
                                                  CancellableTask.cancellableTask());

@@ -3133,7 +3133,7 @@ public interface AetherNode extends ManageableNode {
         // member's drain episode. It is latched as the pong lands because the readiness sweep forgets a halted
         // drainee within three pings, long before the DEPARTING timeout. An acknowledged drain terminalizes at
         // expiry; an undelivered DRAIN to a live target is withdrawn to MEMBER instead of reaped.
-        pongSignalFan.onDrainingReported(membershipFsm::onDrainAcknowledged);
+        pongSignalFan.onDrainingReported(drainReportListener(membershipFsm, clusterDeploymentManager));
         // Wave-1 Enrichment A (cluster-topology-overhaul spec): per-node TRANSITION JOURNAL —
         // bounded per-layer ring buffer recording EVERY MembershipFsm transition and EVERY
         // PeerState transition, dumpable via GET /api/cluster/journal. Diagnostic-only and
@@ -4907,6 +4907,18 @@ public interface AetherNode extends ManageableNode {
     /// (the minority measures `T` from its own local-quorum-loss observation). The read-path
     /// quiesce (`AppHttpServer::onQuorumStateChange`) stays IMMEDIATE on PASSIVE — read-path
     /// protection is cheap to undo on regain; only the process-exit drain gets the window.
+    /// #688: one DRAINING report feeds both halves of a drain — the membership FSM's acknowledgement
+    /// (#1054) and the leader-side eviction loop. The CDM's `MembershipDecision.NodeDraining` arm is
+    /// never emitted (membership-v2 finale), so this listener is the ONLY production entry to
+    /// `startDrainEviction`. Package-private so the composition is pinned without booting a node.
+    static Consumer<NodeId> drainReportListener(MembershipFsm membershipFsm,
+                                                ClusterDeploymentManager clusterDeploymentManager) {
+        return drainingNode -> {
+            membershipFsm.onDrainAcknowledged(drainingNode);
+            clusterDeploymentManager.onNodeDraining(drainingNode);
+        };
+    }
+
     @Contract
     private static void routeQuorumDisappearedToDrain(ClusterStateNotification notification,
                                                       AtomicReference<QuorumLossDetector> quorumLossDetectorRef) {
