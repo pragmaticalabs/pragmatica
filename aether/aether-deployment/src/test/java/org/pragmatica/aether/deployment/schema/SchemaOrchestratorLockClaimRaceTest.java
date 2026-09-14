@@ -69,9 +69,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// migration and duplicate-key `aether_schema_history`.
 ///
 /// The probe forces exactly that order: two orchestrators (two nodes) share one real [KVStore], the
-/// cluster stub parks every lock write, both dispatch — both read the lock free — and only then are
-/// the two writes committed back-to-back in log order and their promises resolved. Exactly one
-/// `migrate()` must run.
+/// cluster stub parks every lock write, both dispatch — both read the lock free — and only then is
+/// the first write committed and its submitter let through into a migration that never completes,
+/// after which the second write is committed and its submitter let through. Exactly one `migrate()`
+/// must run. Committing the second write while the first holder is still migrating is what makes
+/// the applier fence load-bearing: with both commits before either confirm, a last-writer-wins
+/// store plus the re-read alone would also yield one winner.
 @SuppressWarnings("JBCT-EX-01")
 class SchemaOrchestratorLockClaimRaceTest {
     private static final NodeId NODE_1 = new NodeId("node-1");
@@ -134,17 +137,20 @@ class SchemaOrchestratorLockClaimRaceTest {
         // Both dispatches read the lock free and are now parked inside their own lock write.
         assertThat(cluster.parkedLockWrites()).hasSize(2);
         assertThat(schemaManager.invocations).isEmpty();
-        // Commit both writes in log order, then let each submitter see its result.
-        cluster.commitParkedLockWrites();
+        // First claim commits and its submitter runs into a migration that never completes: the
+        // lock is held for the rest of the test.
+        cluster.commitParkedLockWrite(0);
 
-        var outcomes = List.of(first.await(timeSpan(5).seconds()), second.await(timeSpan(5).seconds()));
+        assertThat(schemaManager.invocations).as("first claimant migrates").containsExactly(NODE_1.id());
+        assertThat(first.isResolved()).as("first claimant still migrating").isFalse();
+        // Second claim commits against the held lock, then its submitter sees the result.
+        cluster.commitParkedLockWrite(1);
+
+        var outcome = second.await(timeSpan(5).seconds());
 
         assertThat(schemaManager.invocations).as("exactly one node may run the migration").hasSize(1);
-        assertThat(outcomes.stream().filter(r -> r.isSuccess()).count()).as("one winner").isEqualTo(1);
-        outcomes.stream()
-                .filter(r -> r.isFailure())
-                .forEach(r -> r.onFailure(cause -> assertThat(cause).isInstanceOf(SchemaError.LockAcquisitionFailed.class))
-                               .onSuccess(_ -> Assertions.fail("unreachable")));
+        outcome.onSuccess(_ -> Assertions.fail("second claimant must not acquire a held lock"))
+               .onFailure(cause -> assertThat(cause).isInstanceOf(SchemaError.LockAcquisitionFailed.class));
     }
 
     private void seedPendingSchema() {
@@ -166,8 +172,8 @@ class SchemaOrchestratorLockClaimRaceTest {
 
     /// Parks every batch carrying a lock write (the `Put` of a [SchemaMigrationLockValue]) and
     /// commits the rest immediately, so a test can hold two nodes' lock claims until both have
-    /// passed their free-lock read. `commitParkedLockWrites` applies the parked batches in arrival
-    /// order — as the consensus log would — and only then resolves their promises in the same order.
+    /// passed their free-lock read. `commitParkedLockWrite` applies one parked batch through the real
+    /// applier — as the consensus log would — and then resolves that submitter's promise.
     private static final class LockDeferringClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         private record Parked(List<KVCommand<AetherKey>> batch, Promise<List<Object>> promise) {}
 
@@ -208,12 +214,11 @@ class SchemaOrchestratorLockClaimRaceTest {
             return parked.stream().map(Parked::batch).toList();
         }
 
-        void commitParkedLockWrites() {
-            var snapshot = List.copyOf(parked);
+        void commitParkedLockWrite(int index) {
+            var p = parked.get(index);
 
-            parked.clear();
-            snapshot.forEach(p -> kvStore.apply(p.batch()));
-            snapshot.forEach(p -> p.promise().succeed(List.of()));
+            kvStore.apply(p.batch());
+            p.promise().succeed(List.of());
         }
 
         private static boolean isLockWrite(KVCommand<AetherKey> command) {
@@ -232,7 +237,7 @@ class SchemaOrchestratorLockClaimRaceTest {
                                              BlueprintId owner) {
             invocations.add(nodeId);
 
-            return Promise.success(SchemaResult.schemaResult(scripts.size(), 3, 1L));
+            return Promise.promise();
         }
 
         @Override
