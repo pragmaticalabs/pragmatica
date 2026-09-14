@@ -95,7 +95,6 @@ public sealed interface ClusterHttpClient {
     AtomicReference<String> ENDPOINT_OVERRIDE = new AtomicReference<>();
     AtomicReference<String> API_KEY_OVERRIDE = new AtomicReference<>();
     AtomicReference<Duration> REQUEST_TIMEOUT = new AtomicReference<>(DEFAULT_REQUEST_TIMEOUT);
-
     /// #584 — the credential follows the endpoint's SOURCE. `true` only while the endpoint in force
     /// was supplied by the registry's active context (set by `AetherCli.main` through
     /// [#setContextEndpoint]); every other override — `--connect`, `--cluster`, destroy's fallback

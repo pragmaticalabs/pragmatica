@@ -62,7 +62,12 @@ Interactive CLI for managing Aether clusters.
 and `cluster use`) is dialled with the credential its `api_key_env` names; only when no context is set
 does the built-in `localhost:8080` default apply. `cluster` subcommands that take `--cluster <name>`
 target that entry instead of the context. So with a context set, a local compose node needs
-`--connect localhost:8080` explicitly.
+`--connect localhost:8080` explicitly. **The credential follows the endpoint's source:** the
+context's `api_key_env` is sent only when the context supplied the endpoint; `--connect` sends only
+`--api-key`/`AETHER_API_KEY`; `--cluster X` sends X's stored key or nothing. A `--config` path that
+does not exist warns and uses the localhost default, never the context. A registry that cannot be
+read, a context naming no entry, or an entry without an endpoint each warn on stderr and fall back
+to the localhost default; `--cluster` on an entry without an endpoint is refused by name.
 
 ### Authentication
 

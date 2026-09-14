@@ -127,7 +127,8 @@ public class ClusterTargetMixin {
         record BlankEndpoint(String name) implements ClusterTargetError {
             @Override
             public String message() {
-                return "Cluster '" + name + "' is registered without an endpoint; fix its entry in ~/.aether/clusters.toml or pass --connect";
+                return "Cluster '" + name
+                     + "' is registered without an endpoint; fix its entry in ~/.aether/clusters.toml or pass --connect";
             }
         }
 

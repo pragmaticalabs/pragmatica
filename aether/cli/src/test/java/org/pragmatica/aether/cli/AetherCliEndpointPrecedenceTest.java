@@ -62,8 +62,11 @@ class AetherCliEndpointPrecedenceTest {
 
         server.createContext("/",
                              exchange -> {
-                                 requests.add(exchange.getRequestMethod() + " " + exchange.getRequestURI().getPath()
-                                              + " key=" + exchange.getRequestHeaders().getFirst("X-API-Key"));
+                                 requests.add(exchange.getRequestMethod()
+                                             + " " + exchange.getRequestURI()
+                                                             .getPath()
+                                             + " key=" + exchange.getRequestHeaders()
+                                                                 .getFirst("X-API-Key"));
                                  var body = "{}".getBytes(StandardCharsets.UTF_8);
 
                                  exchange.sendResponseHeaders(200, body.length);
@@ -110,13 +113,11 @@ class AetherCliEndpointPrecedenceTest {
         // reading the pipe before waiting made the 60 s guard unreachable (a child hung on the network
         // or on stdin hung the whole surefire fork — review of #1079, SF-4).
         var output = Files.createTempFile(home, "cli-", ".out");
-        var builder = new ProcessBuilder(command).redirectErrorStream(true)
-                                                 .redirectOutput(output.toFile());
+        var builder = new ProcessBuilder(command).redirectErrorStream(true).redirectOutput(output.toFile());
+
         builder.environment().put("PROBE_FRESH_KEY", "fresh-secret-123");
         builder.environment().remove("AETHER_API_KEY");
-        var process = builder
-                                                 .redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")))
-                                                 .start();
+        var process = builder.redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null"))).start();
 
         if (!process.waitFor(60, TimeUnit.SECONDS)) {
             process.destroyForcibly();
@@ -135,7 +136,7 @@ class AetherCliEndpointPrecedenceTest {
                   .isNotEmpty();
         assertThat(contextRequests.getFirst()).startsWith("GET /api/v1/cluster/config");
         assertThat(contextRequests.getFirst()).as("the context supplied the endpoint, so the context's credential travels with it")
-                                              .endsWith("key=fresh-secret-123");
+                  .endsWith("key=fresh-secret-123");
         assertThat(explicitRequests).isEmpty();
     }
 
@@ -155,8 +156,8 @@ class AetherCliEndpointPrecedenceTest {
         runCli("--connect", endpointOf(explicit), "cluster", "scale", "--count", "3", "--yes");
         assertThat(explicitRequests).isNotEmpty();
         assertThat(explicitRequests.getFirst()).as("an explicit endpoint gets NO credential from the context — a typo'd "
-                                                   + "or hostile --connect must not receive the active cluster's key")
-                                               .endsWith("key=null");
+                                                  + "or hostile --connect must not receive the active cluster's key")
+                  .endsWith("key=null");
         assertThat(contextRequests).as("an explicit endpoint is the operator's word; the context must not be consulted")
                   .isEmpty();
     }
@@ -164,21 +165,17 @@ class AetherCliEndpointPrecedenceTest {
     @Test
     void explicitConnect_withExplicitKey_sendsThatKey() throws Exception {
         writeRegistry("fresh");
-
         runCli("--connect", endpointOf(explicit), "--api-key", "explicit-key", "status");
-
         assertThat(explicitRequests.getFirst()).endsWith("key=explicit-key");
     }
 
     @Test
     void topLevelCommand_explicitConnect_sendsNoContextKey() throws Exception {
         writeRegistry("fresh");
-
         runCli("--connect", endpointOf(explicit), "status");
-
         assertThat(explicitRequests).isNotEmpty();
         assertThat(explicitRequests.getFirst()).as("the top-level family follows the same rule as the cluster family")
-                                               .endsWith("key=null");
+                  .endsWith("key=null");
     }
 
     /// SF-3: a `--config` path that does not exist used to fall through to the context, so an operator
@@ -187,8 +184,9 @@ class AetherCliEndpointPrecedenceTest {
     @Test
     void missingConfigPath_warnsAndNeverRoutesToTheContext() throws Exception {
         writeRegistry("fresh");
-
-        var output = runCli("--config", home.resolve("does-not-exist.toml").toString(), "status");
+        var output = runCli("--config",
+                            home.resolve("does-not-exist.toml").toString(),
+                            "status");
 
         assertThat(contextRequests).as("a mistyped local config must not become a cloud request").isEmpty();
         assertThat(output).contains("does-not-exist.toml");
@@ -204,7 +202,7 @@ class AetherCliEndpointPrecedenceTest {
         runCli("cluster", "scale", "--cluster", "other", "--count", "3", "--yes");
         assertThat(explicitRequests).isNotEmpty();
         assertThat(explicitRequests.getFirst()).as("--cluster X carries X's key or nothing — never the context's")
-                                               .endsWith("key=null");
+                  .endsWith("key=null");
         assertThat(contextRequests).isEmpty();
     }
 }

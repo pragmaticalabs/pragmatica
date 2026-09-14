@@ -120,6 +120,7 @@ public class AetherCli implements Runnable {
         } else {
             org.pragmatica.aether.cli.cluster.ClusterHttpClient.setEndpointOverride(cli.resolveEndpointUrl());
         }
+
         extractApiKeyArg(args).orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()))
                         .onPresent(org.pragmatica.aether.cli.cluster.ClusterHttpClient::setApiKeyOverride);
         org.pragmatica.aether.cli.cluster.ClusterHttpClient.setRequestTimeout(resolveRequestTimeoutDuration(args));
@@ -320,19 +321,23 @@ public class AetherCli implements Runnable {
     private static Option<ClusterRegistry.ClusterEntry> activeContext() {
         var registry = ClusterRegistry.load()
                                       .onFailure(cause -> System.err.println("Warning: cannot read ~/.aether/clusters.toml (" + cause.message()
-                                                                              + ") — using " + DEFAULT_ADDRESS))
+                                                                            + ") — using " + DEFAULT_ADDRESS))
                                       .option();
         var current = registry.flatMap(ClusterRegistry::current);
 
-        registry.filter(r -> r.currentContext().isPresent() && current.isEmpty())
-                .onPresent(r -> System.err.println("Warning: active cluster context '" + r.currentContext().or("")
-                                                   + "' names no registered cluster — using " + DEFAULT_ADDRESS));
-        current.filter(entry -> entry.endpoint() == null || entry.endpoint().isBlank())
+        registry.filter(r -> r.currentContext()
+                              .isPresent() && current.isEmpty())
+                .onPresent(r -> System.err.println("Warning: active cluster context '" + r.currentContext()
+                                                                                          .or("")
+                                                  + "' names no registered cluster — using " + DEFAULT_ADDRESS));
+        current.filter(entry -> entry.endpoint() == null || entry.endpoint()
+                                                                 .isBlank())
                .onPresent(entry -> System.err.println("Warning: active cluster context '" + entry.name()
-                                                      + "' has no endpoint — using " + DEFAULT_ADDRESS
-                                                      + "; fix ~/.aether/clusters.toml or pass --connect"));
+                                                     + "' has no endpoint — using " + DEFAULT_ADDRESS
+                                                     + "; fix ~/.aether/clusters.toml or pass --connect"));
 
-        return current.filter(entry -> entry.endpoint() != null && !entry.endpoint().isBlank());
+        return current.filter(entry -> entry.endpoint() != null && !entry.endpoint()
+                                                                         .isBlank());
     }
 
     @Contract
@@ -664,7 +669,7 @@ public class AetherCli implements Runnable {
     private Option<String> contextApiKey() {
         return endpointFromContext
                ? activeContext().flatMap(ClusterRegistry.ClusterEntry::apiKeyEnv)
-                                .flatMap(envName -> option(System.getenv(envName)))
+                              .flatMap(envName -> option(System.getenv(envName)))
                : Option.empty();
     }
 
