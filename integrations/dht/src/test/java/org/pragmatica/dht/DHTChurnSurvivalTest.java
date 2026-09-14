@@ -19,6 +19,7 @@ package org.pragmatica.dht;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.lang.Option;
 
@@ -32,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.dht.DHTAntiEntropy.dhtAntiEntropy;
 import static org.pragmatica.dht.DHTNode.dhtNode;
 import static org.pragmatica.dht.DHTRebalancer.dhtRebalancer;
+import static org.pragmatica.dht.DHTTopologyListener.dhtTopologyListener;
 import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine;
 
 /// In-JVM churn-survival coverage for the graceful-departure push (issue #427). Runs a small
@@ -106,6 +108,80 @@ class DHTChurnSurvivalTest {
         seeded.forEach(k -> assertThat(cluster.resolve(k)).as("seeded key survives 5->7->5 churn").isTrue());
     }
 
+    /// Issue #420 — join-time backfill. After a join the ring says RF=3 while only the two pre-join
+    /// holders that stayed in the responsible set actually hold the key; the joiner counts toward
+    /// the factor and holds nothing until the next periodic anti-entropy round (30s). A crash of
+    /// those two holders inside that window leaves the responsible set with ZERO copies. The fix
+    /// runs one anti-entropy round on the joiner at join time, so it holds its partitions before
+    /// the window opens. No periodic round runs in this harness (anti-entropy is never started), so
+    /// the only pull is the join-time one.
+    @Test
+    void joinerHoldsItsPartitions_beforeTheFirstPeriodicRound_soTwoCrashesInsideTheWindowKeepTheReplicaSetStocked() {
+        var cluster = fiveNodeCluster();
+        var joiner = new NodeId("node-5");
+        var key = cluster.findKeyGainedByJoiner(joiner, "join");
+        var preJoinHolders = cluster.responsibleFor(key);
+        preJoinHolders.forEach(holder -> cluster.seedOnly(holder, key, value("payload")));
+
+        cluster.join(joiner);
+
+        assertThat(cluster.holds(joiner, key)).as("the joiner pulled its partition at join time").isTrue();
+        assertThat(cluster.inSetCopies(key)).as("the responsible set is fully stocked right after the join").isEqualTo(3);
+
+        var inSetOldHolders = cluster.responsibleFor(key).stream().filter(preJoinHolders::contains).toList();
+        assertThat(inSetOldHolders).as("two pre-join holders remain in the post-join set").hasSize(2);
+        inSetOldHolders.forEach(cluster::remove);  // crash: no departure push
+
+        assertThat(cluster.inSetCopies(key)).as("the responsible set still holds the key").isGreaterThanOrEqualTo(1);
+    }
+
+    /// The control for the test above: the same join without the join-time round. The joiner is
+    /// empty, the two crashes leave the responsible set with zero copies — the pre-fix window.
+    @Test
+    void withoutTheJoinTimeRound_twoCrashesInsideTheWindowEmptyTheReplicaSet() {
+        var cluster = fiveNodeCluster();
+        var joiner = new NodeId("node-5");
+        var key = cluster.findKeyGainedByJoiner(joiner, "control");
+        var preJoinHolders = cluster.responsibleFor(key);
+        preJoinHolders.forEach(holder -> cluster.seedOnly(holder, key, value("payload")));
+
+        cluster.add(joiner);  // ring updated, no listener, no pull
+
+        assertThat(cluster.holds(joiner, key)).isFalse();
+        assertThat(cluster.inSetCopies(key)).as("pre-fix: the set claims RF=3 and holds RF-1 copies").isEqualTo(2);
+
+        cluster.responsibleFor(key).stream().filter(preJoinHolders::contains).toList().forEach(cluster::remove);
+
+        assertThat(cluster.holds(joiner, key)).as("the joiner never received the key").isFalse();
+        assertThat(cluster.resolve(key)).as("only the third pre-join holder's stranded copy is left").isTrue();
+    }
+
+    /// A drain that races the joiner's pull: the departure push excludes every CURRENT member of
+    /// the responsible set, joiner included, so a not-yet-backfilled joiner is not pushed to. The
+    /// key still survives on the push's newcomer target, and the joiner's own round (here run late)
+    /// completes the set from that holder — which is why membership, not holding, remains the
+    /// push's exclusion criterion (a per-key holding query would need a new wire message).
+    @Test
+    void drainRacingTheJoinersPull_keepsTheKeyOnTheNewcomer_andTheLateRoundCompletesTheJoiner() {
+        var cluster = fiveNodeCluster();
+        var joiner = new NodeId("node-5");
+        var key = cluster.findKeyGainedByJoiner(joiner, "race");
+        var preJoinHolders = cluster.responsibleFor(key);
+        preJoinHolders.forEach(holder -> cluster.seedOnly(holder, key, value("payload")));
+
+        cluster.add(joiner);  // pull not yet run
+
+        var departing = cluster.responsibleFor(key).stream().filter(preJoinHolders::contains).toList();
+        departing.forEach(node -> departWithPush(cluster, node));
+
+        assertThat(cluster.holds(joiner, key)).as("the push skipped the joiner (a current member)").isFalse();
+        assertThat(cluster.inSetCopies(key)).as("the push stocked the newcomers").isGreaterThanOrEqualTo(1);
+
+        cluster.member(joiner).antiEntropy().synchronizeNow();
+
+        assertThat(cluster.holds(joiner, key)).as("the joiner's round pulls from the stocked newcomer").isTrue();
+    }
+
     private void seedUniqueKeys(DhtCluster cluster, NodeId holder, String prefix, List<byte[]> seeded) {
         for (int i = 0; i < 3; i++) {
             var k = cluster.findUniquelyHeldKeyWithNewcomer(holder, prefix + "-" + i);
@@ -133,6 +209,7 @@ class DHTChurnSurvivalTest {
                           DHTNode node,
                           DHTRebalancer rebalancer,
                           DHTAntiEntropy antiEntropy,
+                          DHTTopologyListener topologyListener,
                           MemoryStorageEngine storage,
                           ConsistentHashRing<NodeId> ring) {}
 
@@ -147,13 +224,55 @@ class DHTChurnSurvivalTest {
             var storage = memoryStorageEngine();
             var node = dhtNode(id, storage, ring, CONFIG);
             DHTNetwork network = this::deliver;
+            var rebalancer = dhtRebalancer(node, network, CONFIG);
+            var antiEntropy = dhtAntiEntropy(node, network, CONFIG);
             var member = new Member(id,
                                     node,
-                                    dhtRebalancer(node, network, CONFIG),
-                                    dhtAntiEntropy(node, network, CONFIG),
+                                    rebalancer,
+                                    antiEntropy,
+                                    dhtTopologyListener(node, rebalancer, antiEntropy),
                                     storage,
                                     ring);
             members.put(id, member);
+        }
+
+        /// A consensus-committed join: every member (the joiner included) receives `NodeJoined`
+        /// through its topology listener, as `AetherNode` routes `MembershipDecision.NodeJoined`.
+        void join(NodeId id) {
+            add(id);
+            var view = List.copyOf(members.keySet());
+            var decision = MembershipDecision.nodeJoined(id, view);
+            members.values().forEach(member -> member.topologyListener().onNodeJoined(decision));
+        }
+
+        List<NodeId> responsibleFor(byte[] key) {
+            var any = members.values().iterator().next();
+            return any.ring().nodesFor(key, CONFIG.effectiveReplicationFactor(members.size()));
+        }
+
+        long inSetCopies(byte[] key) {
+            return responsibleFor(key).stream().filter(id -> members.containsKey(id) && holds(id, key)).count();
+        }
+
+        boolean holds(NodeId id, byte[] key) {
+            return holds(members.get(id), key);
+        }
+
+        /// A key held by exactly three pre-join members whose responsible set gains the joiner.
+        byte[] findKeyGainedByJoiner(NodeId joiner, String prefix) {
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            members.keySet().forEach(ring::addNode);
+            var rf = CONFIG.effectiveReplicationFactor(members.size());
+            var after = ConsistentHashRing.<NodeId>consistentHashRing();
+            members.keySet().forEach(after::addNode);
+            after.addNode(joiner);
+            for (int i = 0; i < 20_000; i++) {
+                var candidate = key(prefix + "-probe-" + i);
+                if (ring.nodesFor(candidate, rf).size() == rf && after.nodesFor(candidate, rf).contains(joiner)) {
+                    return candidate;
+                }
+            }
+            throw new AssertionError("no key whose responsible set gains the joiner found");
         }
 
         void remove(NodeId id) {
@@ -214,6 +333,11 @@ class DHTChurnSurvivalTest {
 
         private void route(Member member, ProtocolMessage message) {
             switch (message) {
+                case DHTMessage.DigestRequest request ->
+                    member.node().handleDigestRequest(request, response -> deliver(request.sender(), response));
+                case DHTMessage.DigestResponse response -> member.antiEntropy().onDigestResponse(response);
+                case DHTMessage.MigrationDataRequest request ->
+                    member.node().handleMigrationDataRequest(request, response -> deliver(request.sender(), response));
                 case DHTMessage.MigrationDataResponse response -> member.antiEntropy().onMigrationDataResponse(response);
                 case DHTMessage.MigrationDataAck ack -> member.rebalancer().onMigrationDataAck(ack);
                 default -> { }

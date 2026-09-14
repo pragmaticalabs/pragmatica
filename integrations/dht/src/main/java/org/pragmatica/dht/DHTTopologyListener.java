@@ -37,17 +37,19 @@ public final class DHTTopologyListener {
 
     private final DHTNode node;
     private final Option<DHTRebalancer> rebalancer;
+    private final Option<DHTAntiEntropy> antiEntropy;
 
-    private DHTTopologyListener(DHTNode node, Option<DHTRebalancer> rebalancer) {
+    private DHTTopologyListener(DHTNode node, Option<DHTRebalancer> rebalancer, Option<DHTAntiEntropy> antiEntropy) {
         this.node = node;
         this.rebalancer = rebalancer;
+        this.antiEntropy = antiEntropy;
     }
 
     /// Create a topology listener for the given DHT node without rebalancer.
     ///
     /// @param node the local DHT node whose ring will be updated
     public static DHTTopologyListener dhtTopologyListener(DHTNode node) {
-        return new DHTTopologyListener(node, Option.none());
+        return new DHTTopologyListener(node, Option.none(), Option.none());
     }
 
     /// Create a topology listener for the given DHT node with rebalancer.
@@ -55,7 +57,17 @@ public final class DHTTopologyListener {
     /// @param node       the local DHT node whose ring will be updated
     /// @param rebalancer rebalancer to trigger re-replication on node departure
     public static DHTTopologyListener dhtTopologyListener(DHTNode node, DHTRebalancer rebalancer) {
-        return new DHTTopologyListener(node, Option.some(rebalancer));
+        return new DHTTopologyListener(node, Option.some(rebalancer), Option.none());
+    }
+
+    /// Create a topology listener with rebalancer and anti-entropy: a join triggers an immediate
+    /// anti-entropy round (issue #420).
+    ///
+    /// @param node        the local DHT node whose ring will be updated
+    /// @param rebalancer  rebalancer to trigger re-replication on node departure
+    /// @param antiEntropy anti-entropy process to run once when a node joins the ring
+    public static DHTTopologyListener dhtTopologyListener(DHTNode node, DHTRebalancer rebalancer, DHTAntiEntropy antiEntropy) {
+        return new DHTTopologyListener(node, Option.some(rebalancer), Option.some(antiEntropy));
     }
 
     /// Handle a node-joined decision by adding the node to the consistent hash ring.

@@ -107,6 +107,16 @@ public final class DHTAntiEntropy {
         log.info("DHT anti-entropy stopped");
     }
 
+    /// One synchronization round now, outside the periodic schedule: every partition this node is
+    /// responsible for has its digest compared with the other responsible peers and the diff
+    /// pulled. Idempotent with the scheduled rounds — the same pull, earlier. Issue #420: run by
+    /// [DHTTopologyListener] when a node joins the ring, so a joiner holds its partitions before
+    /// the first 30s cycle instead of counting toward the replication factor while empty.
+    @Contract
+    public void synchronizeNow() {
+        runAntiEntropy();
+    }
+
     private void runAntiEntropy() {
         if (config.isFullReplication()) {
             return;
