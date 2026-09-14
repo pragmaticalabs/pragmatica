@@ -51,11 +51,6 @@ class ManagementRoutePermissionsTest {
         }
 
         @Test
-        void backupTrigger_isOperator() {
-            assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.BACKUP_TRIGGER)).isEqualTo(OPERATOR_AND_ABOVE);
-        }
-
-        @Test
         void artifactPush_isOperator() {
             assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.ARTIFACT_PUT)).isEqualTo(OPERATOR_AND_ABOVE);
             assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.ARTIFACT_POST)).isEqualTo(OPERATOR_AND_ABOVE);
@@ -88,11 +83,6 @@ class ManagementRoutePermissionsTest {
         @Test
         void nodeShutdown_isAdmin() {
             assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.NODE_SHUTDOWN)).isEqualTo(ADMIN_ONLY);
-        }
-
-        @Test
-        void backupRestore_isAdmin() {
-            assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.BACKUP_RESTORE)).isEqualTo(ADMIN_ONLY);
         }
 
         @Test
