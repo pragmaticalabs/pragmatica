@@ -1254,9 +1254,11 @@ public final class KVStoreSerializer {
                                                                                                                                                  .asString() + PIPE + v.attemptCount() + PIPE + v.updatedAt();
     }
 
-    private static String serializeSchemaMigrationLock(SchemaMigrationLockValue v) {
+    /// Package-visible for direct round-trip testing (the `schema-lock` section is ephemeral, so it
+    /// never flows through `toToml`).
+    static String serializeSchemaMigrationLock(SchemaMigrationLockValue v) {
         return v.datasourceName() + PIPE + v.heldBy()
-                                            .id() + PIPE + v.acquiredAt() + PIPE + v.expiresAt();
+                                            .id() + PIPE + v.acquiredAt() + PIPE + v.expiresAt() + PIPE + v.lockVersion();
     }
 
     /// `datasourceName|currentVersion|lastMigration|status|artifactCoords|owningBlueprint|attemptCount|updatedAt`.
@@ -1280,19 +1282,21 @@ public final class KVStoreSerializer {
                                                                                                                                                                                 Long.parseLong(parts[7])))));
     }
 
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaMigrationLockEntry(String identity,
-                                                                                           String raw) {
+    /// `datasourceName|heldBy|acquiredAt|expiresAt|lockVersion` — package-visible for direct round-trip
+    /// testing (the `schema-lock` section is ephemeral).
+    static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaMigrationLockEntry(String identity, String raw) {
         var parts = raw.split("\\|", -1);
 
-        if (parts.length != 4) {
-            return parseFailure("schema-lock value requires 4 fields, got " + parts.length);
+        if (parts.length != 5) {
+            return parseFailure("schema-lock value requires 5 fields, got " + parts.length);
         }
 
         return SchemaMigrationLockKey.schemaMigrationLockKey("schema-lock/" + identity, true).flatMap(key -> NodeId.nodeId(parts[1]).map(nodeId -> entry(key,
                                                                                                                                                          new SchemaMigrationLockValue(parts[0],
                                                                                                                                                                                       nodeId,
                                                                                                                                                                                       Long.parseLong(parts[2]),
-                                                                                                                                                                                      Long.parseLong(parts[3])))));
+                                                                                                                                                                                      Long.parseLong(parts[3]),
+                                                                                                                                                                                      Long.parseLong(parts[4])))));
     }
 
     private static String serializeAbTest(AbTestValue v) {

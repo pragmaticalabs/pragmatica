@@ -106,7 +106,7 @@ public record AppHttpConfig(boolean enabled,
                              DEFAULT_APP_HTTP_PORT,
                              Map.of(),
                              DEFAULT_MAX_REQUEST_SIZE,
-                             SecurityMode.NONE,
+                             SecurityMode.API_KEY,
                              Option.empty(),
                              HttpProtocol.H1).unwrap();
     }
@@ -116,7 +116,7 @@ public record AppHttpConfig(boolean enabled,
                              DEFAULT_APP_HTTP_PORT,
                              Map.of(),
                              DEFAULT_MAX_REQUEST_SIZE,
-                             SecurityMode.NONE,
+                             SecurityMode.API_KEY,
                              Option.empty(),
                              HttpProtocol.H1).unwrap();
     }
@@ -126,7 +126,7 @@ public record AppHttpConfig(boolean enabled,
                              port,
                              Map.of(),
                              DEFAULT_MAX_REQUEST_SIZE,
-                             SecurityMode.NONE,
+                             SecurityMode.API_KEY,
                              Option.empty(),
                              HttpProtocol.H1).unwrap();
     }
@@ -145,7 +145,7 @@ public record AppHttpConfig(boolean enabled,
                              port,
                              Map.of(),
                              DEFAULT_MAX_REQUEST_SIZE,
-                             SecurityMode.NONE,
+                             SecurityMode.API_KEY,
                              Option.empty(),
                              HttpProtocol.H1,
                              apiVersioningDetection,
@@ -153,15 +153,27 @@ public record AppHttpConfig(boolean enabled,
     }
 
     public static AppHttpConfig appHttpConfig(int port, Set<String> apiKeys) {
-        var mode = apiKeys.isEmpty()
-                   ? SecurityMode.NONE
-                   : SecurityMode.API_KEY;
-
         return appHttpConfig(true,
                              port,
                              wrapSimpleKeys(apiKeys),
                              DEFAULT_MAX_REQUEST_SIZE,
-                             mode,
+                             SecurityMode.API_KEY,
+                             Option.empty(),
+                             HttpProtocol.H1).unwrap();
+    }
+
+    /// The explicit opt-out (#665, owner ruling 2026-08-27: insecurity is explicit, never a
+    /// default). Every other builder that does not take a [SecurityMode] yields
+    /// [SecurityMode#API_KEY] -- with no keys that is fail-closed, nothing can authenticate until a
+    /// key exists -- so an in-JVM harness or a unit test that wants an OPEN listener must say so by
+    /// name. `NONE` serves routes with an unspecified policy as public and refuses auth-requiring
+    /// ones outright; it is never appropriate for anything reachable over a network.
+    public static AppHttpConfig insecureAppHttpConfig(int port) {
+        return appHttpConfig(true,
+                             port,
+                             Map.of(),
+                             DEFAULT_MAX_REQUEST_SIZE,
+                             SecurityMode.NONE,
                              Option.empty(),
                              HttpProtocol.H1).unwrap();
     }

@@ -125,7 +125,8 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                                             () -> AetherValue.ClusterPhase.NORMAL,
                                                             _ -> {},
                                                             _ -> {},
-                                                            Option::none);
+                                                            Option::none,
+                                                            MembershipLiveness.UNWIRED);
     }
 
     private static Promise<List<Object>> applyNoop(List<KVCommand<AetherKey>> commands) {

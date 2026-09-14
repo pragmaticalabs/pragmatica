@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
@@ -62,6 +63,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.security.CertificateProvider;
 import org.pragmatica.net.tcp.security.SelfSignedCertificateProvider;
 import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.storage.EncryptionError;
 import org.pragmatica.swim.NettySwimTransport;
 
 import com.sun.management.HotSpotDiagnosticMXBean;
@@ -701,9 +703,23 @@ public record Main(String[] args) {
     private void startNodeAndWait(AetherNode node, NodeId nodeId) {
         node.start()
             .onSuccess(_ -> log.info("Node {} is running. Press Ctrl+C to stop.", nodeId))
-            .onFailure(cause -> exitWithError(cause.message()))
+            .onFailure(cause -> onStartFailure(cause, this::exitWithError))
             .await();
         waitForInterrupt();
+    }
+
+    /// #1052 fix round 2 (N-2): a stop requested while the DHT encryption-marker check is still retrying
+    /// ends `start()` with [EncryptionError.DhtMarkerCheckAbandoned]. That is the operator's own stop
+    /// (SIGTERM -> [#registerShutdownHook] -> `node.stop()`), not a boot failure, so it is logged at INFO
+    /// and the hook that issued the stop keeps ownership of the process exit. Every other start failure
+    /// is fatal as before (`exit(1)` via [#exitWithError]). Package-private with the exit injected so
+    /// `MainShutdownTest` can pin both branches without a `System.exit`.
+    static void onStartFailure(Cause cause, Consumer<String> exitWithError) {
+        switch (cause) {
+            case EncryptionError.DhtMarkerCheckAbandoned stopped -> log.info("Stop requested before start completed; not a boot failure: {}",
+                                                                             stopped.message());
+            default -> exitWithError.accept(cause.message());
+        }
     }
 
     private void exitWithError(String message) {

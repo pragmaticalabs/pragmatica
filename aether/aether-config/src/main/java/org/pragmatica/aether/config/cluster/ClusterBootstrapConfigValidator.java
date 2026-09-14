@@ -141,9 +141,23 @@ public final class ClusterBootstrapConfigValidator {
         }
     }
 
+    /// CL-08, second half (#296 review SF-1): node ids are minted as `<source>-<role>-<index>`,
+    /// and every surface that attributes a node to its source parses that id. A source whose name
+    /// is a dash-prefix of another (`eu` / `eu-1`) is refused up front, so two sources can never
+    /// disagree about which of them a node belongs to.
     private static void validateSourceNamesNonEmpty(ClusterBootstrapConfig config, List<String> errors) {
         if (config.sources().containsKey("")) {
             errors.add("CL-08: Source names must not be empty");
+        }
+
+        for (var name : config.sources().keySet()) {
+            config.sources()
+                  .keySet()
+                  .stream()
+                  .filter(other -> !other.equals(name) && other.startsWith(name + "-"))
+                  .forEach(other -> errors.add("CL-08: Source name '" + name
+                                              + "' is a prefix of source '" + other
+                                              + "' under the node-id form <source>-<role>-<index>; rename one of them"));
         }
     }
 
@@ -257,6 +271,24 @@ public final class ClusterBootstrapConfigValidator {
         validateFirewallRules(name, source, managementPort, errors);
         validateRuntimeTypeCompatibility(name, source, runtimes, errors);
         validatePortConflictsOnSameHost(name, source, errors);
+        rejectReplacementCeilingOffCloud(name, source, errors);
+    }
+
+    /// #1049 — the runtime reads `replacement_ceiling` only from the CLOUD source backing a replacement's
+    /// role (`ClusterTopologyManagerRecord.replacementCeiling`, the same lookup that resolves its zones and
+    /// instance type). On any other source type the value would parse and never be read — the #675 shape —
+    /// so it is refused rather than accepted as a silent no-op.
+    private static void rejectReplacementCeilingOffCloud(String name, SourceProfile source, List<String> errors) {
+        if (source.replacementCeiling().isEmpty() || source.type() == SourceType.CLOUD) {
+            return;
+        }
+
+        errors.add("PF-26: Source '" + name
+                  + "' is type '" + source.type().value()
+                  + "' and sets replacement_ceiling, which only a cloud source's auto-heal replacements read"
+                  + " — the value would be silently ignored. Remove it; replacements outside a cloud source"
+                  + " use the " + SourceProfile.DEFAULT_REPLACEMENT_CEILING.duration().toMinutes()
+                  + "-minute default.");
     }
 
     private static void validateRoleConstraints(String name, SourceProfile source, List<String> errors) {

@@ -50,13 +50,24 @@ Interactive CLI for managing Aether clusters.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `-c, --connect <host:port>` | Node address to connect to | `localhost:8080` |
+| `-c, --connect <host:port>` | Node address to connect to | active cluster context, else `localhost:8080` |
 | `--config <path>` | Path to aether.toml config file | |
-| `-k, --api-key <key>` | API key for authenticated access | `AETHER_API_KEY` env |
+| `-k, --api-key <key>` | API key for authenticated access | `AETHER_API_KEY` env, else the active context's `api_key_env` |
 | `-h, --help` | Show help | |
 | `-V, --version` | Show version | |
 
-When `--config` is specified, the CLI reads the management port from the config file. The `--connect` option takes precedence if both are provided.
+**Endpoint precedence (#584).** Every command resolves its target the same way: an explicit
+`--connect`/`--endpoint` (or `--config`, which yields `localhost:<management port>`) wins; otherwise the
+**active cluster context** in `~/.aether/clusters.toml` (`[current] context`, set by `cluster bootstrap`
+and `cluster use`) is dialled with the credential its `api_key_env` names; only when no context is set
+does the built-in `localhost:8080` default apply. `cluster` subcommands that take `--cluster <name>`
+target that entry instead of the context. So with a context set, a local compose node needs
+`--connect localhost:8080` explicitly. **The credential follows the endpoint's source:** the
+context's `api_key_env` is sent only when the context supplied the endpoint; `--connect` sends only
+`--api-key`/`AETHER_API_KEY`; `--cluster X` sends X's stored key or nothing. A `--config` path that
+does not exist warns and uses the localhost default, never the context. A registry that cannot be
+read, a context naming no entry, or an entry without an endpoint each warn on stderr and fall back
+to the localhost default; `--cluster` on an entry without an endpoint is refused by name.
 
 ### Authentication
 
@@ -2458,6 +2469,13 @@ Seven-phase flow: Validate → Upload SSH Keys → Provision → Collect Address
 
 After provisioning, the deploy phase SSHes each cloud node (via `cloud-init status --wait` preflight) and restarts the runtime with the finalized 3-part PEERS list (`nodeId:host:port`). On default (`--keep-on-failure` not set), all tracked resources (VMs, SSH keys, firewall rules, floating IPs) are cleaned up automatically on failure.
 
+**Post-bootstrap registration (#584).** A successful bootstrap registers the cluster in
+`~/.aether/clusters.toml` with the management endpoint it actually serves (`<scheme>://<ip>:<management
+port>`) and **makes it the active context**, printing `Active cluster context: <name>`. Every command
+that follows without an explicit `--connect`/`--config` (`cluster scale`, `cluster destroy`, `deploy`,
+`status`, …) targets the cluster just bootstrapped — see *Endpoint precedence* under Options; switch
+back with `aether cluster use <name>` or pass `--connect` for a local node.
+
 ### `aether cluster destroy`
 
 Destroy the active cluster: drain and shut down all nodes, terminate its cloud resources (VMs, SSH keys), and remove the local registry entry. Symmetric counterpart to `aether cluster bootstrap`.
@@ -2479,6 +2497,16 @@ aether cluster destroy --cluster=my-cluster --yes
 > addressable while its VMs may still be billing. Just re-run the command. From a repo
 > checkout, `tools/cloud-reaper.sh --cluster <name>` (dry-run; add `--destroy` to delete)
 > is the label-driven safety net that finds resources no local state knows about.
+>
+> **The exit code is a retry signal (#587).** Non-zero means the registry entry was **kept** and a
+> re-run has work to do — and if the VMs were already deleted when it failed (the registry save
+> after cleanup), that re-run needs `--force-undrained`, because enumeration finds no nodes. When
+> cloud cleanup completes, `destroy` exits `0` even if some drains or shutdowns failed first: the
+> VMs are gone, the entry is removed, and a retry would find nothing — the failures are reported by
+> node with their reason on stderr (`Warning: 2 of 3 drain operations failed (core-2: refused with
+> HTTP 409; core-3: timed out after 120s waiting for DECOMMISSIONED) … nothing is left to retry`).
+> The drain phase prints each node's start and outcome as it happens. Draining a whole cluster necessarily hits the disruption budget below the quorum
+> floor; that refusal is tracked as #1032 and is not overridden by `destroy`.
 
 ### `aether cluster apply`
 

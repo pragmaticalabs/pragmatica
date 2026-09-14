@@ -38,6 +38,13 @@ public interface NodeLifecycleManager {
         return EnvironmentError.operationNotSupported("listInstances: no ComputeProvider").promise();
     }
 
+    /// #1049 — the instances the provider lists for `nodeId` (selected by the node-id tag every provider
+    /// stamps at create). Default refusal for the same reason as [#listInstances]: a fake that answered
+    /// an empty list would read as "the replacement was deleted" and trigger a duplicate mint.
+    default Promise<List<InstanceInfo>> instancesForNode(NodeId nodeId) {
+        return EnvironmentError.operationNotSupported("instancesForNode: no ComputeProvider").promise();
+    }
+
     @Contract
     default void resetProvisionerState(Option<ClusterName> clusterName) {}
 
@@ -166,6 +173,12 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
     }
 
     @Override
+    public Promise<List<InstanceInfo>> instancesForNode(NodeId nodeId) {
+        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("instancesForNode: no ComputeProvider").promise(),
+                                    provider -> provider.listInstances(Map.of(NODE_ID_TAG, nodeId.id())));
+    }
+
+    @Override
     public Promise<Unit> terminateNode(NodeId nodeId) {
         return computeProvider.fold(() -> EnvironmentError.operationNotSupported("terminateNode: no ComputeProvider").promise(),
                                     provider -> lookupAndTerminate(provider, nodeId));
@@ -217,6 +230,17 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
             return provider.terminate(instanceId)
                            .onSuccess(_ -> log.info("Cloud instance {} terminated successfully",
                                                     instanceId.value()));
+        }
+
+        if (instances.isEmpty()) {
+            // Terminate is idempotent (#1050 R4 / S1): an instance that is already gone is the requested end
+            // state, so a repeat reap, or a replay racing a departure reap, completes quietly.
+            log.debug("terminate of {}: no cloud instance with tag {}={} — already gone, treated as done",
+                      nodeId.id(),
+                      NODE_ID_TAG,
+                      nodeId.id());
+
+            return Promise.unitPromise();
         }
 
         return logMismatch("terminate", nodeId, instances.size());

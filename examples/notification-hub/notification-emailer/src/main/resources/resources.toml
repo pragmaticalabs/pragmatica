@@ -26,31 +26,31 @@ max-event-size = "64KB"
 # `@Notify NotificationSender` is provisioned from this section.
 # Backend can be "smtp" or "http". Below is a Mailpit/MailHog-friendly local
 # SMTP setup; real deployments would point at a production SMTP relay or vendor
-# (SendGrid, Mailgun, Postmark) via the [notification.http] backend.
+# (SendGrid, Mailgun, Postmark) via the [notification.http_config] backend.
+#
+# The section names are the binder's snake_case of NotificationConfig's fields:
+# `smtp_config` / `http_config` / `retry_config`. A `[notification.smtp]` section
+# is NOT an error — it binds nothing, and the "smtp" backend then fails at
+# provisioning with "no SMTP configuration provided" (#271 R10, #671).
 #
 # Fields mirror SmtpConfig (integrations/net/smtp): host, port, tls_mode
 # (NONE | STARTTLS | IMPLICIT), connect_timeout, command_timeout. Credentials,
-# when a relay requires them, go in a nested [notification.smtp.auth] section
-# with `username` and `password` (SmtpAuth); omit the section for no auth —
-# an empty-credential AUTH PLAIN is not "no auth". Local sinks need none:
+# when a relay requires them, go in a nested [notification.smtp_config.auth]
+# section with `username` and `password` (SmtpAuth); omit the section for no
+# auth — an empty-credential AUTH PLAIN is not "no auth". Local sinks need none:
 #
-#   [notification.smtp.auth]
+#   [notification.smtp_config.auth]
 #   username = "noreply@example.com"
 #   password = "${secrets:smtp/password}"
 #
-# NOTE: binding this section from TOML is currently gated on #671 — the config
-# binder does not yet recurse Option<Record> components (NotificationConfig
-# declares the SMTP block as Option<SmtpConfig>), so the SMTP backend cannot
-# be provisioned from TOML until that lands. Shape below is the documented
-# target shape (aether/docs/slice-developers/resource-reference.md).
+# Reference: aether/docs/slice-developers/resource-reference.md.
 #
 # TODO(example-coverage, #672): add a Mailpit/MailHog container to the parent
 # example so `./run-forge.sh` actually delivers and captures these emails.
-# Gated on #671 (see NOTE above).
 [notification]
 backend = "smtp"
 
-[notification.smtp]
+[notification.smtp_config]
 host = "localhost"
 port = 1025
 tls_mode = "NONE"

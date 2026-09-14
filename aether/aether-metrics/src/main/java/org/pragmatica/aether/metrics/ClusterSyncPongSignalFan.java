@@ -77,6 +77,10 @@ public interface ClusterSyncPongSignalFan {
 
         @Override
         @Contract
+        public void onDrainingReported(Consumer<NodeId> callback) {}
+
+        @Override
+        @Contract
         public void warmedUp(BooleanSupplier guard) {}
     };
 
@@ -98,6 +102,15 @@ public interface ClusterSyncPongSignalFan {
     /// Wire the callback invoked when a stuck-SYNCING entry is reaped. Default is a no-op.
     @Contract
     void onStuckSyncing(Consumer<NodeId> callback);
+
+    /// #1054 — wire the callback invoked on every pong that records its sender as `DRAINING` in the readiness
+    /// view: leader only, and incarnation-fenced, so a stale lower-incarnation pong is neither recorded nor
+    /// reported. This is the drain ACKNOWLEDGEMENT — a target reports `DRAINING` only after its local drain handler
+    /// ran. Fired on every such pong rather than only on the edge, so the consumer must be idempotent. It fires as
+    /// the pong lands, which is what lets the consumer latch an acknowledgement this view forgets within
+    /// three pings of the target halting ([`#sweepStale`]). Default is a no-op; `null` resets to it.
+    @Contract
+    void onDrainingReported(Consumer<NodeId> callback);
 
     /// Wire the guard that gates the stuck-SYNCING reaper — the reaper only fires once the
     /// cluster is warmed up. Default is always-`false` (never warmed up), which disables the
@@ -140,6 +153,8 @@ public interface ClusterSyncPongSignalFan {
         private final ConcurrentHashMap<NodeId, ReadinessEntry> readiness = new ConcurrentHashMap<>();
 
         private volatile Consumer<NodeId> onStuckSyncing = _ -> {};
+
+        private volatile Consumer<NodeId> onDrainingReported = _ -> {};
 
         private volatile BooleanSupplier warmedUp = () -> false;
 
@@ -193,6 +208,14 @@ public interface ClusterSyncPongSignalFan {
 
         @Override
         @Contract
+        public void onDrainingReported(Consumer<NodeId> callback) {
+            this.onDrainingReported = callback == null
+                                      ? _ -> {}
+                                      : callback;
+        }
+
+        @Override
+        @Contract
         public void warmedUp(BooleanSupplier guard) {
             this.warmedUp = guard == null
                             ? () -> false
@@ -209,6 +232,7 @@ public interface ClusterSyncPongSignalFan {
                                          (existing, incoming) -> reconcile(existing, incoming, now));
 
             maybeReap(sender, merged);
+            maybeReportDraining(sender, merged, incarnation);
         }
 
         /// Epoch-fenced reconciliation: a strictly-higher incarnation installs a fresh entry, an
@@ -243,6 +267,15 @@ public interface ClusterSyncPongSignalFan {
         private void maybeReap(NodeId sender, ReadinessEntry entry) {
             if (entry.state() == NodeReportedState.SYNCING && entry.syncCountdown() <= 0 && warmedUp.getAsBoolean()) {
                 reap(sender);
+            }
+        }
+
+        /// Report a drain acknowledgement only when THIS pong is what the view now holds: the merged entry is
+        /// `DRAINING` at this pong's incarnation. A lower-incarnation pong leaves the existing entry in place and
+        /// must not speak for it.
+        private void maybeReportDraining(NodeId sender, ReadinessEntry entry, long incarnation) {
+            if (entry.state() == NodeReportedState.DRAINING && entry.incarnation() == incarnation) {
+                onDrainingReported.accept(sender);
             }
         }
 

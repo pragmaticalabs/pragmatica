@@ -525,6 +525,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var cmd = BootstrapPhaseDeploy.buildRestartCommand("ghcr.io/pragmaticalabs/aether-node:" + CLUSTER_VERSION,
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
+                                                           NodeRole.CORE,
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8091",
@@ -557,6 +558,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
+                                                           NodeRole.CORE,
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
@@ -571,6 +573,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
+                                                           NodeRole.CORE,
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
@@ -585,6 +588,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
+                                                           NodeRole.CORE,
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
@@ -605,6 +609,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
+                                                           NodeRole.CORE,
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
@@ -626,6 +631,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
+                                                           NodeRole.CORE,
                                                            8090,
                                                            8091,
                                                            "eu-1-core-0:1.2.3.4:8090",
@@ -640,6 +646,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     @Test
     void buildJvmRestartCommand_inlinesInsecureDevMode_whenPresentInInjectedEnv_secretOnce() {
         var cmd = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-1-core-0",
+                                                             NodeRole.CORE,
                                                              8090,
                                                              8091,
                                                              "eu-1-core-0:1.2.3.4:8090",
@@ -661,6 +668,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     @Test
     void buildJvmRestartCommand_omitsIdentityVars_whenInjectedEnvEmpty() {
         var cmd = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-1-core-0",
+                                                             NodeRole.CORE,
                                                              8090,
                                                              8091,
                                                              "eu-1-core-0:1.2.3.4:8090",
@@ -1102,6 +1110,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     void buildJvmRestartCommand_includesAllRequiredCliFlagsAndEnv_inExpectedOrder() {
         // Mutation guard: any future refactor that drops/renames a CLI flag should fail here.
         var cmd = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-1-core-0",
+                                                              NodeRole.CORE,
                                                               8090,
                                                               8091,
                                                               "eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8090",
@@ -1172,5 +1181,128 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                          "SSH preflight probe MUST be 'cloud-init status --wait' (Bug 17), not '" + cmd + "'. "
                          + "Bare 'true' returns the moment SSH accepts a session, before docker is installed.");
         }
+    }
+
+    // --- #296: the re-launch must carry each node's OWN role, never a literal `core`. The docker
+    // label `aether-role` is what operators and tooling filter tiers by, and the `AETHER_ROLE` env the
+    // same argv emits is the SWIM role label — the only worker classifier — so a literal `core` would
+    // not merely mislabel a worker, it would reclassify it. The role is read from the node id the
+    // provision phase minted (`<source>-<role>-<index>`), the same convention the cleanup ledger
+    // already relies on (`BootstrapPhaseProvision.parseNodeId`). ---
+
+    private static BootstrapContext contextWithOneNodePerRole(SourceProfile source, Map<String, RuntimeProfile> runtimes) {
+        var config = configWithShortTimeout(source, runtimes);
+        var nodes = List.of(
+            ProvisionedNode.provisionedNode("eu-1-core-0", "100", "203.0.113.10"),
+            ProvisionedNode.provisionedNode("eu-1-worker-0", "101", "203.0.113.11"),
+            ProvisionedNode.provisionedNode("eu-1-spot-0", "102", "203.0.113.12"));
+        var addresses = List.of(
+            NodeAddress.nodeAddress("eu-1-core-0", "203.0.113.10", Option.empty()),
+            NodeAddress.nodeAddress("eu-1-worker-0", "203.0.113.11", Option.empty()),
+            NodeAddress.nodeAddress("eu-1-spot-0", "203.0.113.12", Option.empty()));
+        var state = BootstrapState.initialState(CLUSTER_NAME, "h", "now").withClusterSecret(CLUSTER_SECRET);
+        return BootstrapContext.bootstrapContext(config, state, nodes, addresses)
+                               .withClusterSecret(CLUSTER_SECRET);
+    }
+
+    private static Map<String, String> restartCommandsByHost(BootstrapContext ctx) {
+        var commands = new ConcurrentHashMap<String, String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            if (!"cloud-init status --wait".equals(command)) { commands.put(host, command); }
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            sourceNameOrDefault("eu-1"),
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isSuccess(), () -> "deploy must succeed; got: " + result);
+        assertEquals(3, commands.size(), "one restart command per node");
+        return commands;
+    }
+
+    @Test
+    void deployCloudSource_containerRestart_labelsAndEnvsEachNodeWithItsOwnRole() {
+        var commands = restartCommandsByHost(contextWithOneNodePerRole(cloudSource(), Map.of()));
+
+        assertTrue(commands.get("203.0.113.10").contains("-l aether-role=core"), commands.get("203.0.113.10"));
+        assertTrue(commands.get("203.0.113.10").contains("-e AETHER_ROLE=\"core\""), commands.get("203.0.113.10"));
+        assertTrue(commands.get("203.0.113.11").contains("-l aether-role=worker"),
+                   () -> "a worker's re-launch must carry the worker label, not `core`: " + commands.get("203.0.113.11"));
+        assertTrue(commands.get("203.0.113.11").contains("-e AETHER_ROLE=\"worker\""),
+                   () -> "AETHER_ROLE is the SWIM role label — `core` here would reclassify the worker: " + commands.get("203.0.113.11"));
+        assertTrue(commands.get("203.0.113.12").contains("-l aether-role=spot"), commands.get("203.0.113.12"));
+        assertTrue(commands.get("203.0.113.12").contains("-e AETHER_ROLE=\"spot\""), commands.get("203.0.113.12"));
+    }
+
+    @Test
+    void deployCloudSource_jvmRestart_envsEachNodeWithItsOwnRole() {
+        var runtimes = Map.of("default",
+                              RuntimeProfile.runtimeProfile("default", RuntimeType.JVM, Option.empty(), Option.empty()));
+        var commands = restartCommandsByHost(contextWithOneNodePerRole(cloudSource(), runtimes));
+
+        assertTrue(commands.get("203.0.113.10").contains("'AETHER_ROLE=core'"), commands.get("203.0.113.10"));
+        assertTrue(commands.get("203.0.113.11").contains("'AETHER_ROLE=worker'"),
+                   () -> "the JVM env file must carry the worker's own role: " + commands.get("203.0.113.11"));
+        assertTrue(commands.get("203.0.113.12").contains("'AETHER_ROLE=spot'"), commands.get("203.0.113.12"));
+    }
+
+    /// #296 review SF-1: `collectSourceNodes` attributed by `startsWith(source + "-")`, so with sources
+    /// `eu` and `eu-1` the launch for `eu` also re-launched `eu-1-core-0` (base: silently, under `eu`'s
+    /// image and SSH config; the first cut of this PR: refused with a message blaming minting).
+    /// Attribution is now exact on the id's source segment.
+    @Test
+    void deployCloudSource_prefixSiblingSource_neverTouchesTheOtherSourcesNode() {
+        var config = configWithShortTimeout(cloudSource(), Map.of());
+        var nodes = List.of(ProvisionedNode.provisionedNode("eu-core-0", "100", "203.0.113.20"),
+                            ProvisionedNode.provisionedNode("eu-1-core-0", "101", "203.0.113.10"));
+        var addresses = List.of(NodeAddress.nodeAddress("eu-core-0", "203.0.113.20", Option.empty()),
+                                NodeAddress.nodeAddress("eu-1-core-0", "203.0.113.10", Option.empty()));
+        var state = BootstrapState.initialState(CLUSTER_NAME, "h", "now").withClusterSecret(CLUSTER_SECRET);
+        var ctx = BootstrapContext.bootstrapContext(config, state, nodes, addresses).withClusterSecret(CLUSTER_SECRET);
+        var hosts = new ConcurrentLinkedQueue<String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, sshConfig) -> {
+            if (command.startsWith("docker")) { hosts.add(host); }
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            cloudSource(),
+                                                            sourceNameOrDefault("eu"),
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isSuccess(), () -> "the launch for `eu` must not be poisoned by `eu-1`'s node: " + result);
+        assertEquals(List.of("203.0.113.20"), List.copyOf(hosts),
+                     "only `eu`'s own node is re-launched; `eu-1-core-0` belongs to `eu-1`");
+    }
+
+    @Test
+    void deployCloudSource_failsLoudly_whenANodeIdEncodesNoRole() {
+        var config = configWithShortTimeout(cloudSource(), Map.of());
+        var nodes = List.of(ProvisionedNode.provisionedNode("eu-1-mystery", "100", "203.0.113.10"));
+        var addresses = List.of(NodeAddress.nodeAddress("eu-1-mystery", "203.0.113.10", Option.empty()));
+        var state = BootstrapState.initialState(CLUSTER_NAME, "h", "now").withClusterSecret(CLUSTER_SECRET);
+        var ctx = BootstrapContext.bootstrapContext(config, state, nodes, addresses).withClusterSecret(CLUSTER_SECRET);
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, sshConfig) -> Result.success("");
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            sourceNameOrDefault("eu-1"),
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isFailure(),
+                   "a node id that names no role is an invariant violation of this CLI's own minting; "
+                   + "defaulting it to `core` is exactly the #296 defect, so it must refuse and say so");
+        assertTrue(result.fold(Cause::message, _ -> "").contains("eu-1-mystery"),
+                   () -> "the refusal must name the node: " + result);
+        assertTrue(result.fold(Cause::message, _ -> "").contains("belongs to no source"),
+                   () -> "and say why: with exact attribution such an id would otherwise be skipped by every source's launch: " + result);
     }
 }

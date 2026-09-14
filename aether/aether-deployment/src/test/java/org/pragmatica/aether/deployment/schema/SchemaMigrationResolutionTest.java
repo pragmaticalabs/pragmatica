@@ -108,8 +108,8 @@ class SchemaMigrationResolutionTest {
 
     @BeforeEach
     void setUp() {
-        cluster = new RecordingClusterNode(SELF);
         kvStore = new InMemoryKvStore(MessageRouter.mutable());
+        cluster = new RecordingClusterNode(SELF, kvStore);
         schemaManager = new RecordingSchemaManager();
     }
 
@@ -413,11 +413,19 @@ class SchemaMigrationResolutionTest {
         }
     }
 
+    /// #766: `apply()` commits the batch to `kvStore` before resolving, as production consensus does
+    /// (the same read-your-write parity `SchemaOrchestratorRetrySingleFlightTest` restored for
+    /// #760). `acquireLock` now confirms its claim by re-reading the committed lock after the apply
+    /// resolves, so a stub that records without committing turns every claim into a refusal.
     private static final class RecordingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         final NodeId self;
+        final InMemoryKvStore kvStore;
         final List<KVCommand<AetherKey>> commands = Collections.synchronizedList(new ArrayList<>());
 
-        RecordingClusterNode(NodeId self) {this.self = self;}
+        RecordingClusterNode(NodeId self, InMemoryKvStore kvStore) {
+            this.self = self;
+            this.kvStore = kvStore;
+        }
 
         @Override public NodeId self() {return self;}
 
@@ -429,6 +437,7 @@ class SchemaMigrationResolutionTest {
 
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             commands.addAll(batch);
+            kvStore.apply(batch);
 
             return Promise.success(Collections.emptyList());
         }
@@ -456,6 +465,10 @@ class SchemaMigrationResolutionTest {
 
         void put(AetherKey key, AetherValue value) {
             process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+        }
+
+        void apply(List<KVCommand<AetherKey>> batch) {
+            process(createBatch(batch));
         }
     }
 
