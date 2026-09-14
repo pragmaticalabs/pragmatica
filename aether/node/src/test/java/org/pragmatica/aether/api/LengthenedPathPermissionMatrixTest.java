@@ -4,17 +4,19 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
-import org.junit.jupiter.api.Test;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.IntStream;
+
 import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.RoutePermission;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.http.HttpMethod;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.stream.IntStream;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #1101 — privilege escalation by appending a path segment. `resolvePermission` looks up the exact
 /// route table and, on no exact match, falls back to the prefix registry — which for
@@ -26,22 +28,30 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// A single `lengthened < own` cell is the escalation.
 class LengthenedPathPermissionMatrixTest {
     private static boolean isMutation(ManagementRoute route) {
-        return route.method() != HttpMethod.GET && route.method() != HttpMethod.HEAD && route.method() != HttpMethod.OPTIONS;
+        return route.method() != HttpMethod.GET
+               && route.method() != HttpMethod.HEAD
+               && route.method() != HttpMethod.OPTIONS;
     }
 
     private static List<String> values(ManagementRoute route) {
-        return IntStream.range(0, route.paramCount()).mapToObj(i -> "v" + i).toList();
+        return IntStream.range(0,
+                               route.paramCount())
+                        .mapToObj(i -> "v" + i)
+                        .toList();
     }
 
     private static boolean weaker(RoutePermission lengthened, RoutePermission own) {
         // ADMIN(0) outranks OPERATOR(1) outranks VIEWER(2): a larger ordinal is a weaker requirement.
-        return lengthened.minimumRole().ordinal() > own.minimumRole().ordinal();
+        return lengthened.minimumRole()
+                         .ordinal() > own.minimumRole()
+                                         .ordinal();
     }
 
     private static List<String> lengthenings(String path) {
         var lastSlash = path.lastIndexOf('/');
 
-        return List.of(path + "/junk", path.substring(0, lastSlash) + "/junk" + path.substring(lastSlash));
+        return List.of(path + "/junk",
+                       path.substring(0, lastSlash) + "/junk" + path.substring(lastSlash));
     }
 
     @Test
@@ -57,16 +67,20 @@ class LengthenedPathPermissionMatrixTest {
             var path = route.assemble(values(route)).unwrap();
 
             for (var lengthened : lengthenings(path)) {
-                var resolved = ManagementServerImpl.resolvePermission(route.method().name(), lengthened);
+                var resolved = ManagementServerImpl.resolvePermission(route.method().name(),
+                                                                      lengthened);
 
                 if (weaker(resolved, own)) {
-                    escalations.add(route.name() + " own=" + own.minimumRole() + " lengthened=" + resolved.minimumRole() + " via " + lengthened);
+                    escalations.add(route.name()
+                                   + " own=" + own.minimumRole()
+                                   + " lengthened=" + resolved.minimumRole()
+                                   + " via " + lengthened);
                 }
             }
         }
 
         assertThat(escalations).as("every cell where a lengthened path authorises WEAKER than the route it extends")
-                               .isEmpty();
+                  .isEmpty();
     }
 
     /// The ticket's own reproduction, kept as a named cell so the matrix failure has a face.

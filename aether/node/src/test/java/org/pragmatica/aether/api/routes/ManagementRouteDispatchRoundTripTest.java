@@ -166,13 +166,14 @@ class ManagementRouteDispatchRoundTripTest {
 
         var wrongLiteral = path.substring(0, lastSlash + 1) + "not-" + lastSegment;
 
-        requestRouter.findRoute(route.method(), wrongLiteral)
+        requestRouter.findRoute(route.method(),
+                                wrongLiteral)
                      .onPresent(found -> assertThat(found.name()).as("%s registered its trailing literal \"%s\" as a "
-                                                                     + "positional param: \"%s\" still dispatched to it",
+                                                                    + "positional param: \"%s\" still dispatched to it",
                                                                      route.name(),
                                                                      lastSegment,
                                                                      wrongLiteral)
-                                                    .isNotEqualTo(route.name()));
+                                                   .isNotEqualTo(route.name()));
     }
 
     /// True when the assembled path's last segment is a literal the enum declares (a trailing

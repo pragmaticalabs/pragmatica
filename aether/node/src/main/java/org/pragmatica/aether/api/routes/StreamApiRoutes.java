@@ -501,7 +501,10 @@ public final class StreamApiRoutes implements RouteSource {
         };
     }
 
-    private Result<GroupListResponse> listGroups(String namespace, String stream, String version, String groupsLiteral) {
+    private Result<GroupListResponse> listGroups(String namespace,
+                                                 String stream,
+                                                 String version,
+                                                 String groupsLiteral) {
         return ResourceAddress.resourceAddress(namespace, stream, version).map(addr -> new GroupListResponse(addr.asString(),
                                                                                                              List.of()));
     }
@@ -510,7 +513,10 @@ public final class StreamApiRoutes implements RouteSource {
     /// protocol layer requires chunked encoding, keep-alive, and fan-out infrastructure beyond the
     /// scope of RC1. Operators polling for new events should use GET `/events?fromOffset=…` (which
     /// is the always-available polling fallback that the `aether stream tail` CLI now drives).
-    private Result<StreamMetadataResponse> tailDeferred(String namespace, String stream, String version, String tailLiteral) {
+    private Result<StreamMetadataResponse> tailDeferred(String namespace,
+                                                        String stream,
+                                                        String version,
+                                                        String tailLiteral) {
         return Causes.cause("Tail subscription via SSE/WebSocket is deferred to issue #212. "
                            + "For polling-based tail, use GET /api/streams/" + namespace
                            + "/" + stream
@@ -728,7 +734,11 @@ public final class StreamApiRoutes implements RouteSource {
                                                       "created"));
     }
 
-    private Result<GroupResponse> deleteGroup(String namespace, String stream, String version, String groupsLiteral, String group) {
+    private Result<GroupResponse> deleteGroup(String namespace,
+                                              String stream,
+                                              String version,
+                                              String groupsLiteral,
+                                              String group) {
         return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> leaveGroupAtAddress(addr,
                                                                                                                group));
     }

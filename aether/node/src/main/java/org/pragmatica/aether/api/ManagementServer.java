@@ -1721,7 +1721,9 @@ class ManagementServerImpl implements ManagementServer {
 
         var fallback = RoutePermissionRegistry.resolve(methodName, path);
 
-        return method.map(m -> strictestOf(fallback, extendedExactRoutes(m, path))).or(fallback);
+        return method.map(m -> strictestOf(fallback,
+                                           extendedExactRoutes(m, path)))
+                     .or(fallback);
     }
 
     /// Exact routes of the same method in the request's resource family — every route an unmatched
@@ -1739,16 +1741,24 @@ class ManagementServerImpl implements ManagementServer {
     /// else → its first segment.
     private static String resourceFamily(String path) {
         var segments = path.split("/");
-        var depth = path.startsWith("/api/v1/") ? 4 : 2;
+        var depth = path.startsWith("/api/v1/")
+                    ? 4
+                    : 2;
 
-        return String.join("/", Arrays.copyOfRange(segments, 0, Math.min(depth, segments.length)));
+        return String.join("/",
+                           Arrays.copyOfRange(segments, 0, Math.min(depth, segments.length)));
     }
 
     /// ADMIN(0) outranks OPERATOR(1) outranks VIEWER(2): the smallest ordinal is the strictest.
     private static RoutePermission strictestOf(RoutePermission fallback, List<ManagementRoute> extended) {
         return extended.stream()
                        .map(ManagementRoutePermissions::permissionFor)
-                       .reduce(fallback, (a, b) -> a.minimumRole().ordinal() <= b.minimumRole().ordinal() ? a : b);
+                       .reduce(fallback,
+                               (a, b) -> a.minimumRole()
+                                          .ordinal() <= b.minimumRole()
+                                                         .ordinal()
+                                         ? a
+                                         : b);
     }
 
     private Result<SecurityContext> enforceAndAuditDenial(SecurityContext sc,

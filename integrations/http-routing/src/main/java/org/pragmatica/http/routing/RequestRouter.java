@@ -104,7 +104,9 @@ public final class RequestRouter {
         // tolerance: `StaticFileRouteSource` registers `route(GET, urlPrefix, …)` and consumes the
         // remainder itself, and an arity-0 handler binds nothing positional.
         var viable = candidates.stream()
-                               .filter(route -> arityAdmits(route, trailingSegmentCount(route.path(), inputPath)))
+                               .filter(route -> arityAdmits(route,
+                                                            trailingSegmentCount(route.path(),
+                                                                                 inputPath)))
                                .filter(route -> route.spacers()
                                                      .isEmpty() || routeMatchesPath(route, inputPath))
                                .toList();
