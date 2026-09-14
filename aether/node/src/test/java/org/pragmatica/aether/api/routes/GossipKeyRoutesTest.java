@@ -150,6 +150,50 @@ class GossipKeyRoutesTest {
                                     .noneMatch(line -> line.contains(value.currentKey()));
     }
 
+    /// S3 (#683 round 2). Two ADMIN rotations racing from the same base — or one CLI retry after a
+    /// client-side timeout, realistic on an emergency path — both derive `currentKeyId = N+1` from
+    /// the same read, with DIFFERENT key bytes. Unfenced, the second silently overwrites the first
+    /// and a peer holding key A under id N+1 receives a datagram encrypted with key B under the
+    /// same id: `resolveKey` succeeds and GCM tag verification then fails.
+    ///
+    /// The competitor commits between this route's read and its apply, which is exactly the window
+    /// the fence exists to close. The applier refuses the non-successor write; the route must
+    /// REPORT that rather than return a success for a rotation that did nothing.
+    @Test
+    void concurrentRotation_isFencedOut_andReportedRatherThanSilentlyLost() {
+        var competitorKey = Base64.getEncoder().encodeToString(new byte[32]);
+        var competitor = GossipKeyRotationValue.gossipKeyRotationValue(1, competitorKey);
+
+        when(node.<Object> apply(anyList())).thenAnswer(invocation -> {
+            List<KVCommand<AetherKey>> commands = invocation.getArgument(0);
+
+            applied.addAll(commands);
+            kvStore.process(kvStore.createBatch(List.of(putOf(competitor))));
+            kvStore.process(kvStore.createBatch(commands));
+
+            return org.pragmatica.lang.Promise.success(List.of());
+        });
+
+        var result = GossipKeyRoutes.gossipKeyRoutes(() -> node).rotate().await(timeSpan(5).seconds());
+
+        assertThat(result.isFailure()).as("#683 S3: a fenced-out rotation must not report success")
+                                      .isTrue();
+        assertThat(committedKey()).as("first writer wins — the competitor's key is what the cluster holds")
+                                  .isEqualTo(competitorKey);
+        assertThat(result.toString()).as("the refusal names the id and never the key material")
+                                     .doesNotContain(committedKey());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static KVCommand<AetherKey> putOf(GossipKeyRotationValue value) {
+        return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(GossipKeyRotationKey.gossipKeyRotationKey(),
+                                                                        value);
+    }
+
+    private String committedKey() {
+        return ((GossipKeyRotationValue) kvStore.get(GossipKeyRotationKey.gossipKeyRotationKey()).unwrap()).currentKey();
+    }
+
     private static GossipKeyRotationValue rotationValueOf(KVCommand<AetherKey> command) {
         assertThat(command).isInstanceOf(KVCommand.Put.class);
         var put = (KVCommand.Put<AetherKey, ?>) command;

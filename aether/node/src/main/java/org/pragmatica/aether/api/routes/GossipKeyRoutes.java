@@ -20,6 +20,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.GossipKeyRotationValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
@@ -60,24 +61,67 @@ public final class GossipKeyRoutes implements RouteSource {
     }
 
     /// One consensus Put: `currentKeyId = previous + 1`, fresh key, previous key and id carried.
+    ///
+    /// The Put is fenced ([GossipKeyRotationValue] is `VersionFenced`) and CONFIRMED. Both halves
+    /// are needed: the fence makes a second concurrent rotation a refused write rather than a
+    /// silent overwrite, and the confirmation is what lets this route tell the operator which
+    /// happened — a fenced-out rejection is invisible in the apply result, because under batch
+    /// merging every submitter receives the full merged result list. Reporting success for a
+    /// rotation that did nothing would be worse than the race it closes, on the one path where the
+    /// operator is responding to a suspected leak.
+    ///
+    /// The confirmation is SEMANTIC — "is the committed record the one I wrote" — not version
+    /// arithmetic: two writers racing from the same base both derive the same `currentKeyId`, so
+    /// the id cannot distinguish them. Only the key bytes can.
     @SuppressWarnings("unchecked")
     Promise<GossipKeyRotationResponse> rotate() {
         var node = nodeSupplier.get();
-        var previous = node.kvStore()
-                           .get(GossipKeyRotationKey.gossipKeyRotationKey())
-                           .filter(value -> value instanceof GossipKeyRotationValue)
-                           .map(value -> (GossipKeyRotationValue) value);
-        var value = nextRotation(previous);
+        var value = nextRotation(committedRotation(node));
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(GossipKeyRotationKey.gossipKeyRotationKey(),
                                                                                value);
 
         log.info("Rotating gossip key: keyId={} (previous keyId={})", value.currentKeyId(), value.previousKeyId());
 
         return node.<Object> apply(List.of(command))
-                   .map(_ -> new GossipKeyRotationResponse(value.currentKeyId(),
-                                                           value.previousKeyId(),
-                                                           value.rotatedAt()));
+                   .flatMap(_ -> confirmLanded(node, value));
     }
+
+    /// The engine runs the local `process` before resolving the apply promise, so a local re-read
+    /// afterwards is authoritative for this batch.
+    private static Promise<GossipKeyRotationResponse> confirmLanded(ManageableNode node,
+                                                                    GossipKeyRotationValue intended) {
+        return committedRotation(node).filter(committed -> committed.currentKey()
+                                                                    .equals(intended.currentKey()))
+                                      .map(GossipKeyRoutes::rotationResponse)
+                                      .map(Promise::success)
+                                      .or(() -> new GossipKeyRotationError.Superseded(intended.currentKeyId()).promise());
+    }
+
+    private static GossipKeyRotationResponse rotationResponse(GossipKeyRotationValue value) {
+        return new GossipKeyRotationResponse(value.currentKeyId(),
+                                             value.previousKeyId(),
+                                             value.rotatedAt());
+    }
+
+    private static Option<GossipKeyRotationValue> committedRotation(ManageableNode node) {
+        return node.kvStore()
+                   .get(GossipKeyRotationKey.gossipKeyRotationKey())
+                   .filter(value -> value instanceof GossipKeyRotationValue)
+                   .map(value -> (GossipKeyRotationValue) value);
+    }
+
+    /// Carries the refused rotation's id ONLY — never key material, which must not reach an error
+    /// message any more than a log line.
+    sealed interface GossipKeyRotationError extends Cause {
+        record Superseded(int attemptedKeyId) implements GossipKeyRotationError {
+            @Override
+            public String message() {
+                return "Gossip key rotation " + attemptedKeyId
+                       + " was superseded by a concurrent rotation and did not land; re-read the current key id and retry";
+            }
+        }
+    }
+
 
     private static GossipKeyRotationValue nextRotation(Option<GossipKeyRotationValue> previous) {
         var key = new byte[KEY_BYTES];
