@@ -198,6 +198,12 @@ by prefix length, not by deployment or publication order. Two slices declaring t
 prefix are a collision the runtime does not reject at publish time; resolution between them is stable
 (lexically smaller artifact coordinate) but not something to rely on — give them distinct prefixes.
 
+The slice that **serves** a request is the slice whose **security policy admitted** it: both are the
+same lookup, so a nested pair may safely declare different policies. `/api/v1/pricing` with
+`api_key` and `/api/v1/pricing/analytics` with `public` means exactly what it reads as — requests
+under `/analytics/` are public and answered by the analytics slice, everything else under
+`/pricing/` needs the key and is answered by the catalog slice.
+
 ## Service Slices (Dependencies on Other Slices)
 
 Slices can depend on other slices. Add the dependency's API JAR as a `provided` dependency,
