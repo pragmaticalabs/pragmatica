@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodHandle;
@@ -56,8 +57,13 @@ class HttpRoutePublisherRouteAgreementTest {
     private static final String OUTER_PREFIX = "/api/agree/";
     private static final String INNER_PREFIX = "/api/agree/inner/";
 
-    private static final Artifact DUP_LOW = Artifact.artifact("org.example:aaa-dup:1.0.0").unwrap();
-    private static final Artifact DUP_HIGH = Artifact.artifact("org.example:zzz-dup:1.0.0").unwrap();
+    /// The duplicate-prefix pair is chosen so the map's iteration order is the OPPOSITE of the
+    /// coordinate order -- see [#theDuplicatePair_iteratesHighCoordinateFirst]. With any other pair
+    /// a first-match router lookup agrees with the tie-break by accident and the tests below cannot
+    /// tell a fix from a coincidence. (Measured: a plain `aaa-dup`/`zzz-dup` pair does exactly
+    /// that, and left the `findLocalRouter` mutation entirely green.)
+    private static final Artifact DUP_LOW = Artifact.artifact("org.example:aaa-dup-0:1.0.0").unwrap();
+    private static final Artifact DUP_HIGH = Artifact.artifact("org.example:zzz-dup-9:1.0.0").unwrap();
     private static final String DUP_PREFIX = "/api/dup/";
 
     @Test
@@ -83,6 +89,37 @@ class HttpRoutePublisherRouteAgreementTest {
         var publisher = publish(List.of(entry(OUTER, OUTER_PREFIX), entry(INNER, INNER_PREFIX)));
 
         assertPolicyAndServingRouterAgree(publisher, "/api/agree/items/42", OUTER);
+    }
+
+    /// Instrument check for the two duplicate-prefix tests: `publishedRoutes` is a
+    /// `ConcurrentHashMap`, whose iteration order follows the keys' hashes and not insertion
+    /// order, so "publish in both orders" alone witnesses nothing. These two coordinates iterate
+    /// with the LEXICALLY LARGER one first, in either insertion order -- the losing order for a
+    /// first-match scan, which is what makes the assertions below discriminating. `Artifact`
+    /// hashing is `String`-derived and therefore stable across JVMs, unlike the `SALT` that drove
+    /// the dispatch half of this defect.
+    @Test
+    void theDuplicatePair_iteratesHighCoordinateFirst() {
+        assertThat(DUP_LOW.asString()).as("DUP_LOW must be the lexically smaller coordinate")
+                                      .isLessThan(DUP_HIGH.asString());
+
+        var lowFirst = new ConcurrentHashMap<Artifact, String>();
+
+        lowFirst.put(DUP_LOW, "low");
+        lowFirst.put(DUP_HIGH, "high");
+
+        var highFirst = new ConcurrentHashMap<Artifact, String>();
+
+        highFirst.put(DUP_HIGH, "high");
+        highFirst.put(DUP_LOW, "low");
+
+        assertThat(lowFirst.keySet()
+                           .iterator()
+                           .next()).as("the map must iterate the LARGER coordinate first, or a first-match lookup passes by luck")
+                                   .isEqualTo(DUP_HIGH);
+        assertThat(highFirst.keySet()
+                            .iterator()
+                            .next()).isEqualTo(DUP_HIGH);
     }
 
     /// #884 SF-1: the identical-prefix tie-break, which nothing pinned. Two artifacts publishing
