@@ -26,11 +26,13 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -485,8 +487,10 @@ class ClusterDeploymentStateWorkerRemovalTest {
             sliceKey = SliceNodeKey.sliceNodeKey(ARTIFACT, WORKER_1);
             var artifactValue = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
 
-            // The blueprint keeps `cleanupOrphanedSliceEntries` out of the picture: without an owning
-            // blueprint the rows would be removed as orphans, which is a different sweep.
+            // The committed slice target is what `cleanupOrphanedSliceEntries` confirms against (#1068:
+            // the authority is the KV `SliceTargetValue`, not the blueprint projection), so it is committed
+            // here exactly as a real deploy commits it; the blueprint projection drives reconcile.
+            kvStore.put(SliceTargetKey.sliceTargetKey(ARTIFACT.base()), SliceTargetValue.sliceTargetValue(ARTIFACT.version(), 1, Option.empty()));
             activeState().blueprints().put(ARTIFACT, Blueprint.blueprint(ARTIFACT, 1, 1, Option.empty(), true));
             kvStore.put(artifactKey, artifactValue);
             kvStore.put(routesKey, NodeRoutesValue.empty());
@@ -563,6 +567,30 @@ class ClusterDeploymentStateWorkerRemovalTest {
                                                             && nak.artifact().equals(ARTIFACT)
                                                             && nak.nodeId().equals(SELF)))
                     .as("#850: a DEPARTED worker's instance must be replaced on the remaining core")
+                    .isTrue();
+        }
+
+        /// Reviewer probe (verify-1127 r2): with the stale sweeps keeping a live worker's rows, the orphan
+        /// sweep must include the worker too, or a worker-hosted slice whose committed target is gone is
+        /// never unloaded — the core-only inclusion filter it had from #1068 plus the kept rows left it
+        /// serving forever. The committed target is removed (an undeploy), the worker stays live.
+        @Test
+        void orphanSweep_workerHostedSliceWithNoCommittedTarget_isUnloaded() {
+            kvStore.commit(List.of(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(ARTIFACT.base()))));
+            cluster.commands.clear();
+
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(activeState().sliceStates())
+                    .as("#850: a worker-hosted orphan leaves the CDM slice-state view")
+                    .doesNotContainKey(sliceKey);
+            assertThat(cluster.commands.stream()
+                                       .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                            && put.key() instanceof NodeArtifactKey nak
+                                                            && nak.nodeId().equals(WORKER_1)
+                                                            && put.value() instanceof NodeArtifactValue nav
+                                                            && nav.state() == SliceState.UNLOAD))
+                    .as("#850: the orphan sweep must issue UNLOAD to the live worker exactly as it does to a core")
                     .isTrue();
         }
 
