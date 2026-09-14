@@ -800,17 +800,17 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// deferrals the committed store still shows at the deferred state; the rest are dropped here on
         /// entry, before the LOAD rescan.
         private void dropStaleDeferredStarts() {
-            deferredStarts.entrySet().removeIf(entry -> !committedStateIs(entry.getKey(), entry.getValue()));
+            deferredStarts.entrySet().removeIf(this::deferralIsStale);
         }
 
-        private boolean committedStateIs(SliceNodeKey sliceKey, SliceState state) {
+        private boolean deferralIsStale(Map.Entry<SliceNodeKey, SliceState> deferred) {
+            var key = NodeArtifactKey.nodeArtifactKey(ctx.self(),
+                                                      deferred.getKey().artifact());
+
             return ctx.kvStore()
-                      .get(NodeArtifactKey.nodeArtifactKey(ctx.self(),
-                                                           sliceKey.artifact()))
-                      .filter(NodeArtifactValue.class::isInstance)
-                      .map(NodeArtifactValue.class::cast)
-                      .map(value -> value.state() == state)
-                      .or(false);
+                      .getTyped(key, NodeArtifactValue.class)
+                      .map(value -> value.state() != deferred.getValue())
+                      .or(true);
         }
 
         /// #1068 — a committed `SliceTargetKey` or `VersionRoutingKey` for `base` just arrived: every
