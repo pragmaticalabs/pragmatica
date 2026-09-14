@@ -20,8 +20,8 @@ import static org.pragmatica.config.ProviderBasedConfigService.providerBasedConf
 /// it cannot bind: (a) X a nested generic (`Option<List<String>>`) — the component was handed the
 /// raw `Option<String>` unchecked, a live type error; (b) X a class that is neither primitive,
 /// enum nor record — `handleOptionalRecord` answered `none()`, indistinguishable from an absent
-/// key. Both are now a `ConfigError.TypeMismatch` naming the key and the inner type, whether or
-/// not the key is present. The enumeration that licensed this (every `Option<X>` reachable from
+/// key. Both are now a `ConfigError.UnsupportedType` naming the key and the declared type, whether
+/// or not the key is present, and it survives the binder's derived-name and `DEFAULT` fallbacks. The enumeration that licensed this (every `Option<X>` reachable from
 /// every record the binder is handed) found NO instance of either case, so nothing that binds
 /// today changes; `OptionBindingSupportGateTest` in `aether/dead-surface-gate` keeps it so.
 class ProviderBasedConfigServiceUnsupportedOptionTest {
@@ -30,6 +30,11 @@ class ProviderBasedConfigServiceUnsupportedOptionTest {
     record UnsupportedClassOption(String name, Option<URI> endpoint) {}
 
     record SupportedOption(String name, Option<String> description) {}
+
+    /// The fallback the refusal must NOT be swallowed by: a record carrying a `DEFAULT` instance.
+    record DefaultedUnsupportedOption(String name, Option<URI> endpoint) {
+        public static final DefaultedUnsupportedOption DEFAULT = new DefaultedUnsupportedOption("d", Option.none());
+    }
 
     @Test
     void optionOfNestedGeneric_isRefusedAsTypeMismatch_notHandedAnOptionString() {
@@ -40,7 +45,7 @@ class ProviderBasedConfigServiceUnsupportedOptionTest {
         assertThat(result.isFailure()).as("#761 case (a): Option<List<String>> must not bind to an Option<String>")
                                       .isTrue();
         result.onFailure(cause -> {
-            assertThat(cause).isInstanceOf(ConfigError.TypeMismatch.class);
+            assertThat(cause).isInstanceOf(ConfigError.UnsupportedType.class);
             assertThat(cause.message()).contains("svc.hosts")
                                        .contains("List");
         });
@@ -55,7 +60,7 @@ class ProviderBasedConfigServiceUnsupportedOptionTest {
         assertThat(result.isFailure()).as("#761 case (b): an unbindable inner type is a declaration error, not an absent key")
                                       .isTrue();
         result.onFailure(cause -> {
-            assertThat(cause).isInstanceOf(ConfigError.TypeMismatch.class);
+            assertThat(cause).isInstanceOf(ConfigError.UnsupportedType.class);
             assertThat(cause.message()).contains("svc.endpoint")
                                        .contains("URI");
         });
@@ -66,6 +71,15 @@ class ProviderBasedConfigServiceUnsupportedOptionTest {
         var service = serviceWith(Map.of("svc.name", "x", "svc.endpoint", "http://example"));
 
         assertThat(service.config("svc", UnsupportedClassOption.class).isFailure()).isTrue();
+    }
+
+    @Test
+    void optionOfUnsupportedClass_isNotSatisfiedByTheRecordsDefault() {
+        var result = serviceWith(Map.of("svc.name", "x")).config("svc", DefaultedUnsupportedOption.class);
+
+        assertThat(result.isFailure()).as("#761: a DEFAULT instance would turn 'cannot be configured' into a silent default")
+                                      .isTrue();
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(ConfigError.UnsupportedType.class));
     }
 
     /// Controls: a supported inner type keeps its meaning — absent is `none()`, present is `some`.

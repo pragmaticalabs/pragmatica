@@ -285,7 +285,9 @@ public final class ProviderBasedConfigService implements ConfigService {
                                                     Class<?> configClass) {
         var extracted = extractValue(section, component);
 
-        if (extracted.isSuccess()) {
+        if (extracted.isSuccess() || isUnsupportedType(extracted)) {
+            // #761: a declaration error is not satisfiable by a derived name or a DEFAULT instance;
+            // letting it fall through would turn "cannot be configured" into a silent default.
             return extracted.flatMap(v -> IndexedValue.indexedValue(index, v));
         }
         // Convention: derive `name` (String) from the section suffix when it's absent from TOML.
@@ -662,6 +664,10 @@ public final class ProviderBasedConfigService implements ConfigService {
         return isStaticFinal && type.isAssignableFrom(field.getType());
     }
 
+    private static boolean isUnsupportedType(Result<Object> extracted) {
+        return extracted.fold(cause -> cause instanceof ConfigError.UnsupportedType, _ -> false);
+    }
+
     private static Result<IndexedValue> getDefaultComponentValue(Class<?> configClass,
                                                                  RecordComponent component,
                                                                  int index) {
@@ -680,21 +686,34 @@ public final class ProviderBasedConfigService implements ConfigService {
     }
 
     // --- Option value extraction ---
-    @SuppressWarnings("unchecked")
+    /// #761 — an `Option<X>` this binder cannot bind is a [ConfigError.UnsupportedType], never a
+    /// silent `none()` and never a mistyped value. Two arms used to be silent: a raw `Option` or a
+    /// nested generic (`Option<List<String>>`) was handed `provider.getString(fullKey)` — an
+    /// `Option<String>` in a slot declared as something else, a type error that surfaces at first
+    /// use; and an inner class that is neither primitive, enum nor record bound to `none()`,
+    /// indistinguishable from an absent key. The enumeration over every record the binder is
+    /// handed found no instance of either, so this changes nothing that binds today; it makes the
+    /// next unsupported declaration fail at bind time with its key and type named.
     private Result<Object> extractOptionValue(String section, String tomlKey, Type genericType) {
         var fullKey = section + "." + tomlKey;
 
         if (! (genericType instanceof ParameterizedType paramType)) {
-            return success(provider.getString(fullKey));
+            return unsupportedOptionError(fullKey, genericType);
         }
 
         var typeArgs = paramType.getActualTypeArguments();
 
         if (typeArgs.length != 1 || !(typeArgs[0] instanceof Class<?> innerClass)) {
-            return success(provider.getString(fullKey));
+            return unsupportedOptionError(fullKey, typeArgs.length == 1
+                                                   ? typeArgs[0]
+                                                   : genericType);
         }
 
         return extractOptionalPrimitive(fullKey, innerClass);
+    }
+
+    private static Result<Object> unsupportedOptionError(String fullKey, Type innerType) {
+        return ConfigError.unsupportedType(fullKey, "Option<" + innerType.getTypeName() + ">").result();
     }
 
     private Result<Object> extractOptionalPrimitive(String fullKey, Class<?> innerClass) {
@@ -735,7 +754,11 @@ public final class ProviderBasedConfigService implements ConfigService {
     /// it is why this deliberately does NOT use `findDefaultOrError`, which [#lookupNestedRecord]
     /// applies to a bare (non-Option) record component to make a missing section an error.
     private Result<Object> handleOptionalRecord(String fullKey, Class<?> innerClass) {
-        if (!innerClass.isRecord() || !hasSection(fullKey)) {
+        if (!innerClass.isRecord()) {
+            return unsupportedOptionError(fullKey, innerClass);
+        }
+
+        if (!hasSection(fullKey)) {
             return success(none());
         }
 
