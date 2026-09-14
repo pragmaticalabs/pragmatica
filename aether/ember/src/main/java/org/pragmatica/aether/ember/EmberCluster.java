@@ -667,17 +667,24 @@ public final class EmberCluster {
                                                  .recover(_ -> Unit.unit()))
                                 .toList();
 
-        return clearThenSettle(Promise.allOf(stopPromises).mapToUnit(), this::clearClusterStateOnFailure, cause::promise);
+        return clearThenSettle(Promise.allOf(stopPromises).mapToUnit(),
+                               this::clearClusterStateOnFailure,
+                               cause::promise);
     }
 
     /// The registry clear between the stops settling and the outcome the caller sees (#913 contract:
     /// a start failure empties the registry BEFORE the failure reaches the caller; [#stop] likewise
     /// before its own resolution). One chain for all three paths, package-visible so the ordering is
     /// pinned on the exact chain the product runs (`EmberClusterClearBeforeOutcomeTest`).
+    ///
+    /// #1112: the clear is a `map`, not an `onSuccess`. `onSuccess` is dispatched to a virtual
+    /// thread, so it raced the caller's own `onResult` continuation and the caller could still read
+    /// the aborted nodes as `inactive` (34–83 of 20,000 iterations). `map` runs on the resolving
+    /// thread before any dependent completion is scheduled, so the outcome cannot resolve first.
     static Promise<Unit> clearThenSettle(Promise<Unit> stopsSettled,
                                          Functions.Fn1<Unit, Unit> clear,
                                          Functions.Fn0<Promise<Unit>> outcome) {
-        return stopsSettled.onSuccess(clear::apply)
+        return stopsSettled.map(clear)
                            .flatMap(_ -> outcome.apply());
     }
 
@@ -810,7 +817,9 @@ public final class EmberCluster {
         rollingRestartActive.set(false);
         var stopPromises = nodes.values().stream().map(EmberCluster::submitStop).toList();
 
-        return clearThenSettle(Promise.allOf(stopPromises).mapToUnit(), this::clearClusterState, Promise::unitPromise);
+        return clearThenSettle(Promise.allOf(stopPromises).mapToUnit(),
+                               this::clearClusterState,
+                               Promise::unitPromise);
     }
 
     /// Run one node's stop OFF the caller's thread so [`#NODE_TIMEOUT`] can actually see it (#929).

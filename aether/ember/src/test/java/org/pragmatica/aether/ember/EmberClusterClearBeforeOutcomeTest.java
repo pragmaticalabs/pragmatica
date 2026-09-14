@@ -13,8 +13,9 @@ import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Unit.unit;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #1112: the registry clear must be ordered BEFORE the outcome the caller awaits (#913 contract).
 /// `onSuccess` is dispatched to a virtual thread and races the caller's own `onResult` continuation;
@@ -44,12 +45,10 @@ class EmberClusterClearBeforeOutcomeTest {
         registry.put("la-sf-1", "inactive");
         registry.put("la-sf-2", "inactive");
         registry.put("la-sf-3", "inactive");
-
         var stopsSettled = Promise.<Unit> promise();
         var outcome = Promise.<Unit> promise();
 
-        EmberCluster.clearThenSettle(stopsSettled, u -> clear(registry, u), START_FAILED::promise)
-                    .onResult(outcome::resolve);
+        EmberCluster.clearThenSettle(stopsSettled, u -> clear(registry, u), START_FAILED::promise).onResult(outcome::resolve);
         Thread.startVirtualThread(() -> stopsSettled.succeed(unit()));
         outcome.await();
 
