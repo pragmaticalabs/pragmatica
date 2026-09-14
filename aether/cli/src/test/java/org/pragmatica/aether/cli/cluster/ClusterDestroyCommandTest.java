@@ -709,6 +709,21 @@ class ClusterDestroyCommandTest {
                               + "are indistinguishable; got:\n" + stdout());
         }
 
+        /// #587 review NIT-1: the per-node OUTCOME line had no pin (only the start line did). With
+        /// the stubbed transport every POST fails, so the outcome is the refusal — on stderr, naming
+        /// the node and the cause — and the result carries the reason the summary warning prints.
+        @Test
+        void drainAllNodes_reportsEachNodesOutcome_andCarriesTheReasonIntoTheResult() {
+            var results = new ClusterDestroyCommand().drainAllNodes(List.of("core-0"));
+
+            assertTrue(stderr().contains("Failed to drain core-0: "),
+                       () -> "the outcome must be stated per node, on stderr; got:\n" + stderr());
+            assertTrue(results.getFirst().reason().startsWith("error: "),
+                       () -> "a transport failure is an error, not a refusal; got: " + results.getFirst().reason());
+            assertTrue(results.getFirst().reason().contains("connection timed out"),
+                       () -> "the reason names the cause; got: " + results.getFirst().reason());
+        }
+
         @Test
         void shutdownAllNodes_announcesTheShutdownPhase() {
             new ClusterDestroyCommand().shutdownAllNodes(List.of());

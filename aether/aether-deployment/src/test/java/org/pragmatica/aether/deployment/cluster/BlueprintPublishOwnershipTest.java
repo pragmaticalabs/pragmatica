@@ -26,6 +26,7 @@ import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.schema.SchemaError;
+import org.pragmatica.aether.deployment.validation.MissingConfigSection;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.slice.SliceManifest;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -44,6 +45,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.LayeredConfigProvider;
+import org.pragmatica.config.NamedConfigProvider;
 import org.pragmatica.config.source.MapConfigSource;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine.Batch;
@@ -807,6 +810,19 @@ class BlueprintPublishOwnershipTest {
         private static final String PREFLIGHT_COORDS = "org.example:preflight-app:1.0.0";
         private static final String BLUEPRINT_SERVICE_LOGGER_NAME =
                 "org.pragmatica.aether.deployment.cluster.BlueprintServiceInstance";
+        private static final String PAYMENTS_SECTION_TOML = """
+                [payments]
+                base_url = "https://payments.example"
+                """;
+        private static final String UNRELATED_SECTION_TOML = """
+                [shipping]
+                base_url = "https://shipping.example"
+                """;
+        // An unterminated array is a parse error by TomlParser's own contract, as in SliceStoreTest.
+        private static final String MALFORMED_PAYMENTS_TOML = """
+                [payments]
+                base_url = [
+                """;
 
         private FailOpenLogCapture failOpenLogCapture;
 
@@ -882,16 +898,108 @@ class BlueprintPublishOwnershipTest {
                                                                   .doesNotContain("order-placed"));
         }
 
+        /// #1067: the `POST /api/v1/blueprints` path (`SliceRoutes.handleBlueprint` → `publish(String)`)
+        /// for a slice that declares its section ONLY in its own jar's `META-INF/resources.toml`. The
+        /// loader layers that file under the node composite (`SliceStore.assembleSliceComposite`), so the
+        /// runtime resolves the section; a pre-flight that consulted the node composite alone refused the
+        /// deploy with HTTP 500 — the shape that failed `DurableEntityForgeTest` in the Heavy job.
+        @Test
+        void publish_succeeds_whenDeclaredSectionShipsOnlyInTheSliceJar() throws IOException {
+            var jar = writeSliceJarWithResource("http", "payments", Option.some(PAYMENTS_SECTION_TOML));
+            var result = publishDslWithComposite(jar, Option.some(providerWithSections()));
+
+            result.onFailure(cause -> Assertions.fail("The loader resolves [payments] from the slice jar, so the pre-flight must accept it: "
+                                                      + cause.message()));
+        }
+
+        /// #1067, same property through the artifact path, which shares `validatePubSub` with the DSL path.
+        @Test
+        void publishFromArtifact_succeeds_whenDeclaredSectionShipsOnlyInTheSliceJar() throws IOException {
+            var jar = writeSliceJarWithResource("http", "payments", Option.some(PAYMENTS_SECTION_TOML));
+            var result = publishWithComposite(jar, Option.some(providerWithSections()));
+
+            result.onFailure(cause -> Assertions.fail("The loader resolves [payments] from the slice jar, so the pre-flight must accept it: "
+                                                      + cause.message()));
+        }
+
+        /// #1067 guarantee, refusal half: the slice jar DOES ship a `resources.toml` and the node composite
+        /// does carry a section, but neither is `[payments]`. Absent from every layer the loader would
+        /// consult, so the deploy is still refused — and refused with [MissingConfigSection] specifically.
+        @Test
+        void publish_failsWithMissingConfigSection_whenSectionIsAbsentFromEveryLayer() throws IOException {
+            var jar = writeSliceJarWithResource("http", "payments", Option.some(UNRELATED_SECTION_TOML));
+            var result = publishDslWithComposite(jar, Option.some(providerWithSections("inventory")));
+
+            result.onSuccess(_ -> Assertions.fail("[payments] is in neither the node composite nor the slice jar — the deploy must be refused"))
+                  .onFailure(ConfigPreflight::assertOnlyPaymentsSectionMissing);
+        }
+
+        /// #1067: a malformed slice `resources.toml` makes the loader drop the slice composite whole
+        /// (`SliceStoreTest.buildSliceCompositeFromClassLoader_dropsWholeComposite_whenResourcesTomlIsMalformed`),
+        /// and provisioning then falls back to the node-wide `ConfigService` — the node composite alone. A
+        /// section that appears only in the malformed file is not available at runtime, so the pre-flight
+        /// must not count it.
+        @Test
+        void publish_failsWithMissingConfigSection_whenSectionShipsOnlyInAMalformedSliceToml() throws IOException {
+            var jar = writeSliceJarWithResource("http", "payments", Option.some(MALFORMED_PAYMENTS_TOML));
+            var result = publishDslWithComposite(jar, Option.some(providerWithSections()));
+
+            result.onSuccess(_ -> Assertions.fail("A malformed slice resources.toml contributes no layer at runtime — the deploy must be refused"))
+                  .onFailure(ConfigPreflight::assertOnlyPaymentsSectionMissing);
+        }
+
+        /// #1067 no-regression: a section configured only in the node's `node.toml` layer is accepted.
+        @Test
+        void publish_succeeds_whenSectionIsConfiguredOnlyInNodeToml() throws IOException {
+            var jar = writeSliceJarWithResource("http", "payments");
+            var result = publishDslWithComposite(jar, Option.some(nodeComposite(providerWithSections(), providerWithSections("payments"))));
+
+            result.onFailure(cause -> Assertions.fail("[payments] is configured in node.toml: " + cause.message()));
+        }
+
+        /// #1067 no-regression: a section configured only in the operator KV overlay is accepted.
+        @Test
+        void publish_succeeds_whenSectionIsConfiguredOnlyInKvOverlay() throws IOException {
+            var jar = writeSliceJarWithResource("http", "payments");
+            var result = publishDslWithComposite(jar, Option.some(nodeComposite(providerWithSections("payments"), providerWithSections())));
+
+            result.onFailure(cause -> Assertions.fail("[payments] is configured in the KV overlay: " + cause.message()));
+        }
+
+        private static void assertOnlyPaymentsSectionMissing(Cause cause) {
+            assertThat(cause.stream().toList()).as("every aggregated failure is a MissingConfigSection")
+                                               .isNotEmpty()
+                                               .allMatch(MissingConfigSection.class::isInstance);
+            assertThat(cause.message()).contains("[payments]")
+                                       .contains("orders-api");
+        }
+
         private Result<ExpandedBlueprint> publishWithComposite(Path jar, Option<ConfigurationProvider> nodeComposite) {
+            return preflightService(jar, nodeComposite).publishFromArtifact(PREFLIGHT_COORDS + ":blueprint")
+                                                       .await();
+        }
+
+        /// The DSL path `SliceRoutes.handleBlueprint` serves for `POST /api/v1/blueprints`.
+        private Result<ExpandedBlueprint> publishDslWithComposite(Path jar, Option<ConfigurationProvider> nodeComposite) {
+            return preflightService(jar, nodeComposite).publish("id = \"" + PREFLIGHT_COORDS + "\"\n" + SLICE_STANZA)
+                                                       .await();
+        }
+
+        private BlueprintService preflightService(Path jar, Option<ConfigurationProvider> nodeComposite) {
             Repository repository = artifact -> SLICE.equals(artifact)
                                                  ? Result.lift(Causes::fromThrowable, () -> jar.toUri().toURL())
                                                          .flatMap(url -> Location.location(artifact, url))
                                                          .async()
                                                  : NOT_IN_REPOSITORY.promise();
 
-            return BlueprintService.blueprintService(cluster, store, repository, artifactStore(withoutMigrations(PREFLIGHT_COORDS)), nodeComposite)
-                                   .publishFromArtifact(PREFLIGHT_COORDS + ":blueprint")
-                                   .await();
+            return BlueprintService.blueprintService(cluster, store, repository, artifactStore(withoutMigrations(PREFLIGHT_COORDS)), nodeComposite);
+        }
+
+        /// The node composite exactly as `AetherNode.createResourceProviderFacade` layers it: the operator KV
+        /// overlay first, the node's own `node.toml` beneath.
+        private ConfigurationProvider nodeComposite(ConfigurationProvider kvOverlay, ConfigurationProvider nodeToml) {
+            return LayeredConfigProvider.layered(List.of(NamedConfigProvider.namedConfigProvider("KV", kvOverlay),
+                                                         NamedConfigProvider.namedConfigProvider("node.toml", nodeToml)));
         }
 
         private ConfigurationProvider providerWithSections(String... sections) {
@@ -910,6 +1018,15 @@ class BlueprintPublishOwnershipTest {
         /// `META-INF/slice/*.manifest` properties entry declaring a single generic resource
         /// dependency, in the exact key format `TopologyParser.parseFromJar` expects.
         private Path writeSliceJarWithResource(String resourceType, String resourceSection) throws IOException {
+            return writeSliceJarWithResource(resourceType, resourceSection, Option.none());
+        }
+
+        /// Same as [#writeSliceJarWithResource(String, String)] plus, when given, the slice's own
+        /// `META-INF/resources.toml` — the entry the loader reads through the slice classloader and layers
+        /// under the node composite (#1067).
+        private Path writeSliceJarWithResource(String resourceType,
+                                               String resourceSection,
+                                               Option<String> resourcesToml) throws IOException {
             var manifest = new Manifest();
             var attributes = manifest.getMainAttributes();
 
@@ -934,6 +1051,10 @@ class BlueprintPublishOwnershipTest {
                 out.putNextEntry(new ZipEntry("org/example/orders/"));
                 out.closeEntry();
                 writeEntry(out, "META-INF/slice/OrdersApi.manifest", topology);
+
+                if (resourcesToml.isPresent()) {
+                    writeEntry(out, "META-INF/resources.toml", resourcesToml.unwrap());
+                }
             }
 
             return target;

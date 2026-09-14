@@ -8,19 +8,27 @@ import org.pragmatica.lang.Cause;
 
 
 public sealed interface StreamForwardError extends Cause {
+    /// Timeouts, a missing governor and an unavailable forwarder are passing conditions a retry may
+    /// outlive (#280); an oversized response is not.
     enum General implements StreamForwardError {
-        FORWARD_TIMEOUT("Stream publish forward timed out"),
-        GOVERNOR_UNAVAILABLE("No governor available for STREAMING task group"),
-        READ_FORWARD_TIMEOUT("Stream read forward timed out"),
-        READ_RESPONSE_OVERSIZED("Read forward response exceeded maximum size and could not be returned"),
-        STREAM_FORWARD_UNAVAILABLE("Stream forwarding is not available on this node");
+        FORWARD_TIMEOUT("Stream publish forward timed out", true),
+        GOVERNOR_UNAVAILABLE("No governor available for STREAMING task group", true),
+        READ_FORWARD_TIMEOUT("Stream read forward timed out", true),
+        READ_RESPONSE_OVERSIZED("Read forward response exceeded maximum size and could not be returned", false),
+        STREAM_FORWARD_UNAVAILABLE("Stream forwarding is not available on this node", true);
         private final String message;
-        General(String message) {
+        private final boolean transientCondition;
+        General(String message, boolean transientCondition) {
             this.message = message;
+            this.transientCondition = transientCondition;
         }
         @Override
         public String message() {
             return message;
+        }
+        @Override
+        public boolean isTransient() {
+            return transientCondition;
         }
     }
 
@@ -37,7 +45,7 @@ public sealed interface StreamForwardError extends Cause {
     /// forwarder ({@link org.pragmatica.aether.stream.StreamWriteRouter}) discriminates on this exact type
     /// via {@link #isRetryablePublish(org.pragmatica.lang.Cause)}; every other publish failure is permanent
     /// and never retried.
-    record RemotePublishRetryable(String detail) implements StreamForwardError {
+    record RemotePublishRetryable(String detail) implements StreamForwardError, Cause.Transient {
         @Override
         public String message() {
             return "Remote publish retryable: " + detail;

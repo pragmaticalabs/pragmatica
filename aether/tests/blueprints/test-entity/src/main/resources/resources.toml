@@ -1,8 +1,10 @@
 # Application-level (blueprint) resources for test-entity (#345 increments I0/I1).
 #
-# Packaged into the blueprint JAR as META-INF/resources.toml by the JBCT maven-plugin. At deploy
-# time BlueprintService stores this content in the KV-Store; each node's slice loader resolves the
-# @OrderEntity qualifier's `config = "entities.orders"` lookup against it.
+# Packaged into the slice JAR as META-INF/resources.toml by the JBCT maven-plugin. It is NOT
+# published to the KV-Store at deploy (BlueprintService.publish): each node's slice loader reads it
+# from this jar alone as the slice-intrinsic config layer beneath the node composite, and resolves the
+# @OrderEntity qualifier's `config = "entities.orders"` lookup against that layering (SliceStore).
+# The deploy-time config-section pre-flight reads the same jar the same way (#1067).
 #
 # THIS IS THE FIRST DurableEntity RESOURCE DECLARATION IN THE REPOSITORY. Before it, nothing
 # anywhere named a durable entity, so `resource/durable-entity` was unreachable from any running

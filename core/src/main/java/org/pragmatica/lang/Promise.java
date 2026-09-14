@@ -673,13 +673,17 @@ public sealed interface Promise<T> permits PromiseImpl {
     }
 
     /// **[Unsafe Extraction]**
-    /// Await the resolution of the promise.
+    /// Await the resolution of the promise. If the calling thread is interrupted before the promise
+    /// resolves, the wait ends with a [CoreError.Interrupted] failure, the interrupt flag is left
+    /// set, and the promise itself stays unresolved (#914).
     ///
     /// @return Result of the promise resolution.
     Result<T> await();
 
     /// **[Unsafe Extraction]**
-    /// Await the resolution of the promise with the provided timeout.
+    /// Await the resolution of the promise with the provided timeout. Interruption ends the wait
+    /// early with a [CoreError.Interrupted] failure, flag preserved; expiry ends it with
+    /// [CoreError.Timeout]. In both cases the promise stays unresolved.
     ///
     /// @param timeout Timeout to wait for the resolution.
     ///
@@ -3299,6 +3303,12 @@ final class PromiseImpl<T> implements Promise<T> {
 
         push(new CompletionJoin<>(thread));
         while (result == null) {
+            // #914: park() returns at once, flag intact, on an interrupted thread -- without this
+            // check the loop re-parked forever at 100% CPU and no supervisor could end the wait.
+            if (thread.isInterrupted()) {
+                return interruptedUnlessResolved();
+            }
+
             LockSupport.park();
         }
 
@@ -3334,6 +3344,10 @@ final class PromiseImpl<T> implements Promise<T> {
         var deadline = System.nanoTime() + timeout.nanos();
 
         while (result == null && System.nanoTime() < deadline) {
+            if (thread.isInterrupted()) {
+                return interruptedUnlessResolved();
+            }
+
             LockSupport.parkNanos(deadline - System.nanoTime());
         }
 
@@ -3342,6 +3356,24 @@ final class PromiseImpl<T> implements Promise<T> {
         }
 
         return result;
+    }
+
+    /// #914 policy: interruption ENDS the wait with this failure and PRESERVES the flag (the
+    /// interrupt addressed the thread, not this wait, so an outer loop that checks it stops too);
+    /// the promise itself stays unresolved, exactly as on a timeout. Chosen over
+    /// "uninterruptible but non-spinning" because every test backstop and executor shutdown in
+    /// the codebase relies on interrupt actually ending a wait, and every `await()` caller already
+    /// handles a failed `Result`.
+    private static final CoreError.Interrupted AWAIT_INTERRUPTED = new CoreError.Interrupted("Thread interrupted while awaiting Promise resolution");
+
+    /// A resolution that landed between the loop condition and the interrupt check still wins —
+    /// the same re-read the timed variant does after its loop.
+    private Result<T> interruptedUnlessResolved() {
+        var resolved = result;
+
+        return resolved != null
+               ? resolved
+               : AWAIT_INTERRUPTED.result();
     }
 
     @Override

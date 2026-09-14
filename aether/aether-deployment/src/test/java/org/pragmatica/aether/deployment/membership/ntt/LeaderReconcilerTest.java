@@ -12,6 +12,7 @@ import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.cluster.NodeReconcilerState;
 import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
+import org.pragmatica.aether.deployment.cluster.ReplacementInstanceState;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.SourceName;
@@ -35,6 +36,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.statemachine.FsmObserver;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.SwimHealth;
+import org.pragmatica.utility.ULID;
 
 import java.net.SocketAddress;
 import java.util.ArrayList;
@@ -42,6 +44,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.ScheduledFuture;
@@ -77,8 +80,15 @@ class LeaderReconcilerTest {
     private static final NodeId PEER_D = NodeId.randomNodeId();
     private static final TimeSpan EXPECTED_ACTIVATION_DELAY =
         timeSpan(membershipConfig().splitTimeout().nanos() * 3 / 2).nanos();
-    private static final TimeSpan EXPECTED_INFLIGHT_EXPIRY =
-        timeSpan(membershipConfig().splitTimeout().nanos() * 3).nanos();
+    /// #1049 — the in-flight sweep's provider-status poll cadence (= nttDepartureTimeout), and the
+    /// production ten-minute default per-source replacement ceiling the fake CTM answers with unless a
+    /// test sets another.
+    private static final TimeSpan EXPECTED_POLL_INTERVAL = membershipConfig().splitTimeout();
+    private static final TimeSpan DEFAULT_REPLACEMENT_CEILING = timeSpan(10).minutes();
+    /// #1049 round 3 — a never-listed replacement counts as deleted only after twelve consecutive successful
+    /// listings omit it AND three minutes have passed since it became pollable (its create call resolved).
+    private static final TimeSpan EXPECTED_FIRST_LISTING_FLOOR = timeSpan(3).minutes();
+    private static final int EXPECTED_ABSENT_LISTINGS = 12;
     private static final TimeSpan EXPECTED_GRACE_WINDOW =
         timeSpan(membershipConfig().splitTimeout().nanos() * 3 / 2).nanos();
     private static final TimeSpan EXPECTED_DEBOUNCE_WINDOW = membershipConfig().splitTimeout();
@@ -260,6 +270,38 @@ class LeaderReconcilerTest {
     private void triggerAndFireReconcile() {
         reconciler.onTopologyUnhealthy();
         fireDebouncedReconcile();
+    }
+
+    /// #1049 — advance the clock one in-flight poll interval, fire every live in-flight sweep (which
+    /// evicts entries past their ceiling and polls the provider through the CTM), then run one observing
+    /// reconcile pass — the real path the production sweep drives, one tick at a time.
+    @Contract
+    private void advanceOnePollInterval() {
+        timeSource.advanceTimeMillis(EXPECTED_POLL_INTERVAL.millis());
+        scheduler.tasksByDelay(EXPECTED_POLL_INTERVAL).forEach(ManualTask::runIfLive);
+        triggerAndFireReconcile();
+    }
+
+    @Contract
+    private void advancePollIntervals(int count) {
+        for (var i = 0; i < count; i++) {
+            advanceOnePollInterval();
+        }
+    }
+
+    /// #1049 round 3 — as [`#advanceOnePollInterval`], for any advance: the manual scheduler runs the live
+    /// sweep whenever the test says, so a test can place listings off the 15s grid.
+    @Contract
+    private void advanceAndTick(long millis) {
+        advanceAndRunSweepOnly(millis);
+        triggerAndFireReconcile();
+    }
+
+    /// #1049 round 3 — advance the clock and fire the live in-flight sweep, with no reconcile pass after it.
+    @Contract
+    private void advanceAndRunSweepOnly(long millis) {
+        timeSource.advanceTimeMillis(millis);
+        scheduler.tasksByDelay(EXPECTED_POLL_INTERVAL).forEach(ManualTask::runIfLive);
     }
 
     @Nested
@@ -975,53 +1017,511 @@ class LeaderReconcilerTest {
         }
     }
 
+    /// #1049 — an in-flight replacement is tracked by what the compute provider reports about its instance,
+    /// not by a timer. Every scenario drives the real reconcile path: the dispatching pass, the armed
+    /// in-flight sweep (which polls the provider through the CTM), and the reconcile passes it triggers.
+    /// The `splitTimeout × 3` (45s) expiry these scenarios run past is the one #1049 deleted: cloud
+    /// replacements take 50–63s to join, so it expired first and the leader minted a duplicate.
+    ///
+    /// These replace `InFlightExpiry`, whose two tests specified the deleted timer (evict past × 3,
+    /// keep below it) — the owner ruling on #1049 withdrew that behaviour, so the specification changed,
+    /// not the code under an unchanged one.
     @Nested
-    class InFlightExpiry {
-        @Test
-        void staleInFlightEntryPastExpiryWindow_isEvictedOnNextReconcile() {
-            // Arm at full membership (5), drop two peers to provision two (in-flight=2),
-            // then advance PAST the (×3) expiry window and reconcile — the stale entries evict.
+    class InFlightInstanceState {
+        /// Arm at full membership (5), drop PEER_D, run one anchoring pass, advance past the gates and run
+        /// the dispatching pass — exactly one replacement in flight. Returns its minted id.
+        private NodeId dispatchOneReplacement() {
             configuredCoreCount.set(5);
             seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
-            removePeers(PEER_C, PEER_D);
+            removePeers(PEER_D);
             triggerAndFireReconcile();
             advancePastProvisioningGates();
             triggerAndFireReconcile();
-            assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(2);
-            listener.clear();
-            seedClusterWithPeers(NodeId.randomNodeId(), NodeId.randomNodeId());
-            timeSource.advanceTimeMillis(EXPECTED_INFLIGHT_EXPIRY.millis() + 1);
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+            assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
 
-            reconciler.onTopologyUnhealthy();
-            fireDebouncedReconcile();
+            return ctm.provisionReplacementCalls().getFirst();
+        }
 
-            assertThat(listener.events()).hasSize(1);
-            assertThat(listener.events().getFirst().inFlightProvisioningCount()).isZero();
-            assertThat(reconciler.inFlightProvisioningCount()).isZero();
+        /// A re-elected leader (term 2) on a 4/5 cluster inheriting one replacement the prior leader
+        /// dispatched, with the provider reporting `state` for it. Returns the inherited id.
+        private NodeId inheritOneReplacement(ReplacementInstanceState state) {
+            return inheritReplacement(NodeId.randomNodeId(), state);
+        }
+
+        /// As [`#inheritOneReplacement`], for a given prior-leader id — the activation pass runs at once.
+        private NodeId inheritReplacement(NodeId priorDispatch, ReplacementInstanceState state) {
+            configuredCoreCount.set(5);
+            leaderTerm.set(2L);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+            reconciler.setRetainedDispatchedSupplier(() -> Set.of(priorDispatch));
+            ctm.reportInstanceState(priorDispatch, state);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            return priorDispatch;
+        }
+
+        /// A replacement id shaped exactly like a CTM mint (`<prefix>-<ULID>`) whose ULID timestamp is
+        /// `epochMs` — what a prior leader's dispatch carries.
+        private static NodeId mintedAt(long epochMs) {
+            var bytes = new byte[ULID.BYTE_LENGTH];
+
+            for (var i = 0; i < ULID.TIMESTAMP_LENGTH; i++) {
+                bytes[i] = (byte) (epochMs >>> (8 * (ULID.TIMESTAMP_LENGTH - 1 - i)));
+            }
+
+            return NodeId.nodeId("aether-test-cluster-node-" + ULID.fromBytes(bytes).unwrap().encoded()).unwrap();
+        }
+
+        /// One more poll tick, returning how many provider status queries have been issued so far — the
+        /// probe for the two scenarios whose answer arrives on a promise resolved after the tick.
+        private int tickAndCountQueries() {
+            advanceOnePollInterval();
+
+            return ctm.instanceStateQueries().size();
+        }
+
+        /// Fire the live sweep without moving the clock, returning the provider status queries issued so far —
+        /// waits for an asynchronously resolved create to make its entry pollable, at a fixed instant.
+        private int tickInPlaceAndCountQueries() {
+            advanceAndTick(0);
+
+            return ctm.instanceStateQueries().size();
         }
 
         @Test
-        void freshInFlightEntryWithinExpiryWindow_isNotEvicted() {
-            // Arm at full membership (5), drop two peers to provision two (in-flight=2),
-            // then advance LESS than the (×3) expiry window and reconcile — entries survive.
-            configuredCoreCount.set(5);
-            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+        void inFlightEntry_providerReportsBooting_isNotReDispatched_pastSplitTimeoutTimesThree() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advancePollIntervals(12);
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("three minutes in (4x the old 45s expiry) a replacement the provider reports booting is not minted twice")
+                .hasSize(1);
+            assertThat(reconciler.inFlightProvisioningKeys()).containsExactly(minted);
+            assertThat(ctm.instanceStateQueries())
+                .as("the leader asked the provider rather than ageing the entry out")
+                .contains(minted);
+        }
+
+        @Test
+        void inFlightEntry_providerReportsDeletionOfSeenInstance_isDroppedAndReDispatchedAfterDebounce() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advanceOnePollInterval();
+            ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
+            advanceOnePollInterval();
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("an instance the provider listed and no longer lists was deleted")
+                .isEmpty();
+            assertThat(EXPECTED_POLL_INTERVAL.millis() * 2)
+                .as("the drop came one absence and 30s in — an absence after a listing needs no count and no floor")
+                .isLessThan(EXPECTED_FIRST_LISTING_FLOOR.millis());
+            assertThat(ctm.provisionReplacementCalls())
+                .as("the re-opened deficit re-ages past the debounce before re-dispatch")
+                .hasSize(1);
+
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+        }
+
+        /// Round 3 (S1, ruling test a) — a create call that resolves 55s after dispatch, followed by one listing
+        /// that lags and omits the instance, mints exactly once. Round 2's grace ran from dispatch and had
+        /// expired by then, so that one lagged listing minted a duplicate while the instance existed.
+        @Test
+        void inFlightEntry_createResolvesAt55s_oneLaggedListing_mintsExactlyOnce() {
+            var pendingProvision = Promise.<ProvisionDisposition> promise();
+
+            ctm.holdNextProvision(pendingProvision);
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
+            advancePollIntervals(3);
+            timeSource.advanceTimeMillis(10_000);
+            pendingProvision.succeed(ProvisionDisposition.dispatched());
+            await().atMost(2, TimeUnit.SECONDS).until(() -> tickAndCountQueries() >= 1);
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advancePollIntervals(EXPECTED_ABSENT_LISTINGS + 2);
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("one lagged listing after a slow create is not a deletion")
+                .hasSize(1);
+            assertThat(reconciler.inFlightProvisioningKeys()).containsExactly(minted);
+        }
+
+        /// Round 3 (S1, ruling test b) — listings that fail (the CTM answers them UNKNOWN) never count toward the
+        /// absences: after twenty failed listings and five minutes, eleven successful absences are still not a
+        /// deletion; the twelfth is.
+        @Test
+        void inFlightEntry_neverListed_failedListingsDoNotCountTowardAbsences() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.UNKNOWN);
+            advancePollIntervals(20);
+            ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
+            advancePollIntervals(EXPECTED_ABSENT_LISTINGS - 1);
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("eleven successful absences after twenty failed listings, long past the floor, are not twelve")
+                .containsExactly(minted);
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+
+            advanceOnePollInterval();
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("the twelfth successful absence past the floor is a deletion")
+                .isEmpty();
+
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+        }
+
+        /// Round 3 (S1, ruling test c) — twelve consecutive successful listings omitting a never-listed replacement,
+        /// the last of them three minutes after its create resolved, re-dispatch it after the normal debounce;
+        /// eleven do not.
+        @Test
+        void inFlightEntry_neverListed_twelveConsecutiveAbsencesReachingTheFloor_reDispatchAfterDebounce() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
+            advancePollIntervals(EXPECTED_ABSENT_LISTINGS - 1);
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("eleven absences, 165s after the create resolved: neither the count nor the floor is met")
+                .containsExactly(minted);
+
+            advanceOnePollInterval();
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("the twelfth absence, at the 180s floor, is a deletion")
+                .isEmpty();
+            assertThat(ctm.provisionReplacementCalls())
+                .as("the re-opened deficit re-ages past the debounce before re-dispatch")
+                .hasSize(1);
+
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+        }
+
+        /// Round 3 (S1) — the floor binds when listings land off the poll grid: twelve absences, the last 175s
+        /// after the create resolved, are not yet a deletion; the thirteenth, at 190s, is.
+        @Test
+        void inFlightEntry_neverListed_twelveAbsencesInsideTheFloor_areNotYetADeletion() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
+            advanceAndTick(10_000);
+            for (var i = 1; i < EXPECTED_ABSENT_LISTINGS; i++) {
+                advanceAndTick(EXPECTED_POLL_INTERVAL.millis());
+            }
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("twelve absences, the last 175s after the create resolved, are inside the 3-minute floor")
+                .containsExactly(minted);
+
+            advanceAndTick(EXPECTED_POLL_INTERVAL.millis());
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("past the floor, with the count already met, the absence is a deletion")
+                .isEmpty();
+        }
+
+        /// Round 3 (S1) — the floor runs from when the create call resolved, never from dispatch: after a create
+        /// that resolves 55s after dispatch, twelve absences whose last is 165s after it resolved (220s after
+        /// dispatch) are not yet a deletion; the thirteenth, 180s after it resolved, is.
+        @Test
+        void inFlightEntry_slowCreate_floorRunsFromCreateResolution_notFromDispatch() {
+            var pendingProvision = Promise.<ProvisionDisposition> promise();
+
+            ctm.holdNextProvision(pendingProvision);
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
+            timeSource.advanceTimeMillis(55_000);
+            pendingProvision.succeed(ProvisionDisposition.dispatched());
+            await().atMost(2, TimeUnit.SECONDS).until(() -> tickInPlaceAndCountQueries() >= 1);
+            for (var i = 1; i < EXPECTED_ABSENT_LISTINGS; i++) {
+                advanceAndTick(EXPECTED_POLL_INTERVAL.millis());
+            }
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("twelve absences 165s after the create resolved, though 220s after dispatch, are inside the floor")
+                .containsExactly(minted);
+
+            advanceAndTick(EXPECTED_POLL_INTERVAL.millis());
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("180s after the create resolved, with the count met, the absence is a deletion")
+                .isEmpty();
+        }
+
+        @Test
+        void inFlightEntry_pastHardCeiling_isReDispatched_evenWhileProviderReportsBooting() {
+            ctm.setReplacementCeiling(timeSpan(2).minutes());
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advancePollIntervals(8);
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("at the ceiling (120s), not past it, a booting replacement is kept")
+                .hasSize(1);
+
+            // Past the ceiling at the 135s tick (drop + deficit anchor), debounced at 150s.
+            advancePollIntervals(2);
+
+            assertThat(reconciler.inFlightProvisioningKeys()).doesNotContain(minted);
+            assertThat(ctm.provisionReplacementCalls())
+                .as("the per-source ceiling re-dispatches although the provider still reports booting")
+                .hasSize(2);
+        }
+
+        @Test
+        void inFlightEntry_providerCannotAnswer_fallsBackToDefaultCeiling_notImmediatelyAndNotForever() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.UNKNOWN);
+            advancePollIntervals(20);
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("five minutes of UNKNOWN is not a failure — no re-dispatch before the ceiling")
+                .hasSize(1);
+
+            // Default ceiling 600s: past it at the 615s tick (drop + deficit anchor), debounced at 630s.
+            advancePollIntervals(22);
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("UNKNOWN is not forever — the ten-minute default ceiling re-dispatches")
+                .hasSize(2);
+            assertThat(DEFAULT_REPLACEMENT_CEILING.millis()).isEqualTo(600_000L);
+        }
+
+        @Test
+        void newLeader_inheritedEntryProviderReportsBooting_isNotReDispatched() {
+            var inherited = inheritOneReplacement(ReplacementInstanceState.PRESENT);
+
+            advancePollIntervals(12);
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("a new leader keeps an inherited replacement the provider reports booting — no duplicate mint")
+                .isEmpty();
+            assertThat(reconciler.inFlightProvisioningKeys()).containsExactly(inherited);
+            assertThat(ctm.instanceStateQueries())
+                .as("the new leader asks the provider about the inherited replacement")
+                .contains(inherited);
+        }
+
+        @Test
+        void newLeader_inheritedEntryProviderReportsFailed_isReDispatchedAfterDebounce() {
+            inheritOneReplacement(ReplacementInstanceState.FAILED);
+
+            advanceOnePollInterval();
+
+            assertThat(reconciler.inFlightProvisioningKeys()).isEmpty();
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
+        /// Round 2 — the ceiling runs from the mint time in the inherited id's ULID, not from inheritance: a
+        /// replacement minted longer ago than the ceiling is dropped by the new leader's first pass and
+        /// re-dispatched one debounce later, although the provider still reports it booting.
+        @Test
+        void newLeader_inheritedEntryMintedLongerAgoThanCeiling_isReDispatchedPromptly() {
+            var inherited = inheritReplacement(mintedAt(System.currentTimeMillis() - DEFAULT_REPLACEMENT_CEILING.millis()
+                                                        - timeSpan(1).minutes().millis()),
+                                               ReplacementInstanceState.PRESENT);
+
+            advanceOnePollInterval();
+
+            assertThat(reconciler.inFlightProvisioningKeys()).doesNotContain(inherited);
+            assertThat(ctm.provisionReplacementCalls())
+                .as("eleven minutes after its mint, one debounce after inheritance, the replacement is re-dispatched")
+                .hasSize(1);
+        }
+
+        /// Round 3 (S1) — an inherited never-listed replacement counts absences, and its floor, from inheritance,
+        /// not from its mint: minted five minutes ago, twelve absences spanning 175s since inheritance are not a
+        /// deletion; the thirteenth, at 190s, is.
+        @Test
+        void newLeader_inheritedNeverListedEntry_countsAbsencesFromInheritance_notFromMint() {
+            var inherited = inheritReplacement(mintedAt(System.currentTimeMillis() - timeSpan(5).minutes().millis()),
+                                               ReplacementInstanceState.ABSENT);
+
+            advanceAndTick(10_000);
+            for (var i = 1; i < EXPECTED_ABSENT_LISTINGS; i++) {
+                advanceAndTick(EXPECTED_POLL_INTERVAL.millis());
+            }
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("minted five minutes ago, but its twelve listings span only 175s since this leader inherited it")
+                .containsExactly(inherited);
+
+            advanceAndTick(EXPECTED_POLL_INTERVAL.millis());
+
+            assertThat(reconciler.inFlightProvisioningKeys()).isEmpty();
+        }
+
+        /// Round 3 (V13) — the inherited age needs no cap: `nanoTime` may have any origin, including a negative
+        /// one, and an id minted at the epoch still reads as past the ceiling, because the ceiling check subtracts
+        /// modulo 2^64.
+        @Test
+        void newLeader_inheritedIdMintedAtTheEpoch_onANegativeNanoTimeOrigin_isEvictedAndReDispatched() {
+            timeSource.advanceTimeMillis(-8_000_000_000_000L);
+            var inherited = inheritReplacement(mintedAt(0L), ReplacementInstanceState.PRESENT);
+
+            advanceOnePollInterval();
+
+            assertThat(reconciler.inFlightProvisioningKeys()).doesNotContain(inherited);
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
+        /// Round 3 (V20, N2) — a query from the prior leadership term that never settles does not hold the
+        /// single-flight slot into the next term: `deactivate` clears the outstanding set. The cost N2 names is
+        /// that a flap can briefly have two queries out for one id; their answers are applied through
+        /// value-guarded `replace`/`remove`, so the second changes nothing once the first has.
+        @Test
+        void leadershipFlap_queryLeftUnsettledByThePriorTerm_doesNotBlockPollingInTheNextTerm() {
+            var inherited = inheritOneReplacement(ReplacementInstanceState.PRESENT);
+
+            ctm.holdInstanceStateAnswers(Promise.<ReplacementInstanceState> promise());
+            advanceOnePollInterval();
+
+            assertThat(ctm.instanceStateQueries()).containsExactly(inherited);
+
+            reconciler.deactivate();
+            ctm.releaseInstanceStateAnswers();
+            leaderTerm.set(3L);
             reconciler.activate();
-            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
-            removePeers(PEER_C, PEER_D);
-            triggerAndFireReconcile();
-            advancePastProvisioningGates();
-            triggerAndFireReconcile();
-            assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(2);
-            listener.clear();
-            timeSource.advanceTimeMillis(EXPECTED_INFLIGHT_EXPIRY.millis() - 1);
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getLast().runIfLive();
+            advanceOnePollInterval();
 
-            reconciler.onTopologyUnhealthy();
-            fireDebouncedReconcile();
+            assertThat(ctm.instanceStateQueries())
+                .as("the next term asks again rather than waiting on a query that will never answer")
+                .hasSize(2);
+        }
 
-            assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(2);
+        /// Round 3 (V07) — the sweep tick evicts an entry past its ceiling by itself, with no reconcile pass
+        /// between ticks: the eviction does not wait for some other trigger to run a pass.
+        @Test
+        void inFlightSweep_alone_evictsAnEntryPastItsCeiling() {
+            ctm.setReplacementCeiling(timeSpan(2).minutes());
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            for (var i = 0; i < 9; i++) {
+                advanceAndRunSweepOnly(EXPECTED_POLL_INTERVAL.millis());
+            }
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("at 135s, past the 120s ceiling, the sweep alone evicted it")
+                .isEmpty();
+        }
+
+        /// Round 2 — a configured `<prefix>-<ordinal>` id carries no mint time, so its ceiling restarts at
+        /// inheritance: kept through the ceiling, re-dispatched past it.
+        @Test
+        void newLeader_inheritedIdWithoutUlid_restartsCeilingAtInheritance() {
+            ctm.setReplacementCeiling(timeSpan(2).minutes());
+            var inherited = inheritReplacement(NodeId.nodeId("aether-test-cluster-node-5").unwrap(),
+                                               ReplacementInstanceState.PRESENT);
+
+            advancePollIntervals(8);
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("at the ceiling (120s after inheritance), not past it, the entry is kept")
+                .containsExactly(inherited);
+            assertThat(ctm.provisionReplacementCalls()).isEmpty();
+
+            // Past the ceiling at the 135s tick (drop + deficit anchor), debounced at 150s.
+            advancePollIntervals(2);
+
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+        }
+
+        /// Round 2 — clock skew: a mint time in the future (this node's clock behind the minter's) counts as
+        /// now. Neither dropped at once nor kept for the skew plus the ceiling.
+        @Test
+        void newLeader_inheritedIdMintedInTheFuture_isClampedToNow() {
+            ctm.setReplacementCeiling(timeSpan(2).minutes());
+            var inherited = inheritReplacement(mintedAt(System.currentTimeMillis() + timeSpan(1).hours().millis()),
+                                               ReplacementInstanceState.PRESENT);
+
+            advancePollIntervals(8);
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("a future mint time is not an age past the ceiling")
+                .containsExactly(inherited);
+
+            advancePollIntervals(2);
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("the ceiling runs from now, not from an hour ahead")
+                .hasSize(1);
+        }
+
+        /// Rate limiting: the provider is asked only from the sweep tick, never from a reconcile pass,
+        /// however many passes the triggers produce. (A guard, not a red-before test: the pre-#1049
+        /// reconciler never asked the provider at all.)
+        @Test
+        void reconcilePasses_neverQueryTheProvider() {
+            dispatchOneReplacement();
+
+            for (var i = 0; i < 10; i++) {
+                triggerAndFireReconcile();
+            }
+
+            assertThat(ctm.instanceStateQueries()).isEmpty();
+        }
+
+        /// Rate limiting: a slow provider never accumulates stacked queries for one replacement.
+        @Test
+        void statusQuery_isSingleFlightPerEntry_whileProviderIsSlow() {
+            var minted = dispatchOneReplacement();
+            var slowAnswer = Promise.<ReplacementInstanceState> promise();
+
+            ctm.holdInstanceStateAnswers(slowAnswer);
+            advancePollIntervals(3);
+
+            assertThat(ctm.instanceStateQueries())
+                .as("one outstanding query per entry, however many ticks pass")
+                .containsExactly(minted);
+
+            slowAnswer.succeed(ReplacementInstanceState.PRESENT);
+
+            await().atMost(2, TimeUnit.SECONDS).until(() -> tickAndCountQueries() >= 2);
+        }
+
+        /// A DISPATCHING entry's create call may not have happened, so an empty listing would say nothing:
+        /// the provider is not asked until the provision call resolves.
+        @Test
+        void dispatchingEntry_isNotPolled_untilItsProvisionCallResolves() {
+            var pendingProvision = Promise.<ProvisionDisposition> promise();
+
+            ctm.holdNextProvision(pendingProvision);
+            dispatchOneReplacement();
+            advancePollIntervals(2);
+
+            assertThat(ctm.instanceStateQueries()).isEmpty();
+
+            pendingProvision.succeed(ProvisionDisposition.dispatched());
+
+            await().atMost(2, TimeUnit.SECONDS).until(() -> tickAndCountQueries() >= 1);
         }
     }
 
@@ -1090,11 +1590,12 @@ class LeaderReconcilerTest {
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
             assertThat(ctm.provisionReplacementCalls()).hasSize(1);
 
-            // Recover to full membership and let the in-flight entry expire (past ×3 window). The
-            // recovery pass clears the deficit anchor (effective >= configured).
-            seedClusterWithPeers(PEER_D);
-            timeSource.advanceTimeMillis(EXPECTED_INFLIGHT_EXPIRY.millis() + 1);
-            reconciler.onSwimMemberHealthy(PEER_D, 1L);
+            // Recover to full membership: the replacement joins under its minted id, so the recovery
+            // pass clears its in-flight entry (identity-match fulfilment) and the deficit anchor
+            // (effective >= configured). #1049: an in-flight entry no longer expires on a timer, so
+            // fulfilment — not the old × 3 expiry — is what empties the map here.
+            seedClusterWithPeers(ctm.provisionReplacementCalls().getFirst());
+            reconciler.onSwimMemberHealthy(ctm.provisionReplacementCalls().getFirst(), 1L);
             fireDebouncedReconcile();
             assertThat(reconciler.inFlightProvisioningCount()).isZero();
 
@@ -1722,12 +2223,15 @@ class LeaderReconcilerTest {
     class InFlightDeathSweep {
         /// Boot-then-die replacement: a provisioned node never reaches READY and its SWIM/QUIC
         /// churn stops, so the event-triggered reconcile is never re-entered. The self-rescheduling
-        /// sweep (armed at provision-dispatch) must purge the expired placeholder and re-evaluate
-        /// the still-present deficit — re-provisioning a fresh replacement — without any external
-        /// event. This is the bug fix: previously the deficit was never re-seen and the cluster
-        /// stuck at 4/5 forever.
+        /// sweep (armed at provision-dispatch) must ask the provider, drop the placeholder on the
+        /// provider-reported failure, and re-evaluate the still-present deficit — re-provisioning a
+        /// fresh replacement — without any external event. Previously the deficit was never re-seen
+        /// and the cluster stuck at 4/5 forever.
+        ///
+        /// #1049 acceptance: a provider-reported failure DOES re-dispatch, after the normal deficit
+        /// debounce — and the drop no longer waits on the deleted `splitTimeout × 3` (45s) expiry.
         @Test
-        void deadReplacement_sweepPurgesPlaceholder_andReProvisions() {
+        void deadReplacement_providerReportsFailed_sweepDropsPlaceholder_andReProvisionsAfterDebounce() {
             configuredCoreCount.set(5);
             seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
             reconciler.activate();
@@ -1742,15 +2246,16 @@ class LeaderReconcilerTest {
             triggerAndFireReconcile();
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
             assertThat(ctm.provisionReplacementCalls()).hasSize(1);
-            assertThat(scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY)).hasSize(1);
+            assertThat(scheduler.tasksByDelay(EXPECTED_POLL_INTERVAL)).hasSize(1);
             listener.clear();
 
             // The replacement boots then dies (never re-joins presence sampler). No further events arrive.
-            // Advance past the expiry window and fire the armed sweep runnable directly. The purge
-            // drops effective to 4 (< 5), re-opening the deficit — but the new deficit run must
-            // re-age past the debounce window before the re-provision fires.
-            timeSource.advanceTimeMillis(EXPECTED_INFLIGHT_EXPIRY.millis() + 1);
-            scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY).getFirst().runIfLive();
+            // The provider reports the boot failed; one poll interval later the armed sweep asks, and
+            // the FAILED answer drops the placeholder (15s — inside the 45s the old expiry needed). The
+            // drop re-opens the deficit, which must re-age past the debounce before re-provisioning.
+            ctm.reportInstanceState(ctm.provisionReplacementCalls().getFirst(), ReplacementInstanceState.FAILED);
+            timeSource.advanceTimeMillis(EXPECTED_POLL_INTERVAL.millis());
+            scheduler.tasksByDelay(EXPECTED_POLL_INTERVAL).getFirst().runIfLive();
             // Sweep re-triggered reconcile (NTT_FIRE) on the debounce delay — fire it (anchors the
             // re-opened deficit, still suppressed), then advance past debounce and reconcile again.
             fireDebouncedReconcile();
@@ -1763,11 +2268,12 @@ class LeaderReconcilerTest {
             assertThat(ctm.provisionReplacementCalls()).hasSize(2);
         }
 
-        /// No-double-provision: if the real node joins before the sweep fires, the sweep purges the
-        /// stale placeholder but the over-count guard suppresses a second provision (effective ==
-        /// configured). Confirms the re-trigger cannot double-provision a node that joined meanwhile.
+        /// No-double-provision: if the real node joins under its minted id before the sweep fires, the
+        /// reconcile pass clears the placeholder (identity-match fulfilment) and the sweep that fires
+        /// afterwards provisions nothing (effective == configured). Confirms a sweep tick cannot
+        /// double-provision a node that joined meanwhile.
         @Test
-        void replacementJoinedBeforeSweep_purgesPlaceholder_noSecondProvision() {
+        void replacementJoinedUnderMintedId_clearsPlaceholder_sweepProvisionsNothing() {
             configuredCoreCount.set(5);
             seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
             reconciler.activate();
@@ -1781,13 +2287,14 @@ class LeaderReconcilerTest {
             assertThat(ctm.provisionReplacementCalls()).hasSize(1);
             listener.clear();
 
-            // The real node joins (back to confirmed=5) before the sweep fires.
-            seedClusterWithPeers(NodeId.randomNodeId());
-            timeSource.advanceTimeMillis(EXPECTED_INFLIGHT_EXPIRY.millis() + 1);
-            scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY).getFirst().runIfLive();
-            fireDebouncedReconcile();
+            // The real node joins under its minted id (back to confirmed=5) before the sweep fires.
+            seedClusterWithPeers(ctm.provisionReplacementCalls().getFirst());
+            triggerAndFireReconcile();
+            timeSource.advanceTimeMillis(EXPECTED_POLL_INTERVAL.millis());
+            scheduler.tasksByDelay(EXPECTED_POLL_INTERVAL).getFirst().runIfLive();
+            triggerAndFireReconcile();
 
-            // Placeholder purged; no second provision — effective == configured.
+            // Placeholder cleared by fulfilment; no second provision — effective == configured.
             assertThat(reconciler.inFlightProvisioningCount()).isZero();
             assertThat(ctm.provisionReplacementCalls()).hasSize(1);
         }
@@ -1806,17 +2313,17 @@ class LeaderReconcilerTest {
             advancePastProvisioningGates();
             triggerAndFireReconcile();
             assertThat(reconciler.inFlightProvisioningCount()).isEqualTo(1);
-            var armedSweeps = scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY).size();
+            var armedSweeps = scheduler.tasksByDelay(EXPECTED_POLL_INTERVAL).size();
 
-            // The real node joins so the deficit is gone; purge the placeholder via the sweep.
-            seedClusterWithPeers(NodeId.randomNodeId());
-            timeSource.advanceTimeMillis(EXPECTED_INFLIGHT_EXPIRY.millis() + 1);
-            scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY).getFirst().runIfLive();
-            fireDebouncedReconcile();
+            // The real node joins under its minted id so the deficit is gone; fulfilment empties the map.
+            seedClusterWithPeers(ctm.provisionReplacementCalls().getFirst());
+            triggerAndFireReconcile();
             assertThat(reconciler.inFlightProvisioningCount()).isZero();
+            timeSource.advanceTimeMillis(EXPECTED_POLL_INTERVAL.millis());
+            scheduler.tasksByDelay(EXPECTED_POLL_INTERVAL).getFirst().runIfLive();
 
-            // Map empty → no new sweep future scheduled beyond the ones already created.
-            assertThat(scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY)).hasSize(armedSweeps);
+            // Map empty → the sweep does not re-arm: no new sweep future beyond the ones already created.
+            assertThat(scheduler.tasksByDelay(EXPECTED_POLL_INTERVAL)).hasSize(armedSweeps);
         }
 
         /// Deactivation cancels the armed sweep so a deposed leader's timer does not fire.
@@ -1831,7 +2338,7 @@ class LeaderReconcilerTest {
             triggerAndFireReconcile();
             advancePastProvisioningGates();
             triggerAndFireReconcile();
-            var sweep = scheduler.tasksByDelay(EXPECTED_INFLIGHT_EXPIRY).getFirst();
+            var sweep = scheduler.tasksByDelay(EXPECTED_POLL_INTERVAL).getFirst();
 
             reconciler.deactivate();
 
@@ -1867,7 +2374,7 @@ class LeaderReconcilerTest {
             listener.clear();
 
             // The replacement joins (back to confirmed=5) while the in-flight placeholder is
-            // STILL tracked (within the ×3 expiry window). effective = 5 confirmed + 1 stale
+            // STILL tracked (the fake provider reports nothing, so it is not dropped). effective = 5 confirmed + 1 stale
             // placeholder. A naive sum would think there is a surplus of 1 and drain a core.
             seedClusterWithPeers(PEER_D);
             reconciler.onSwimMemberHealthy(PEER_D, 1L);
@@ -2225,6 +2732,44 @@ class LeaderReconcilerTest {
         // a failure (genuine boot failure → placeholder REMOVED) to exercise the three outcomes.
         private final AtomicReference<Promise<ProvisionDisposition>> nextProvisionResult =
             new AtomicReference<>(Promise.success(ProvisionDisposition.dispatched()));
+        // #1049 — what the fake provider reports about each replacement's instance: UNKNOWN unless a test
+        // says otherwise (a fake that cannot answer must read neither as "exists" nor as "gone"); every
+        // status query the reconciler issued; an optional held answer (a slow provider); and the
+        // per-source replacement ceiling the reconciler reads.
+        private final Map<NodeId, ReplacementInstanceState> instanceStates = new ConcurrentHashMap<>();
+        private final List<NodeId> instanceStateQueries = new CopyOnWriteArrayList<>();
+        private final AtomicReference<Option<Promise<ReplacementInstanceState>>> heldInstanceStateAnswer =
+            new AtomicReference<>(Option.none());
+        private final AtomicReference<TimeSpan> replacementCeiling = new AtomicReference<>(DEFAULT_REPLACEMENT_CEILING);
+
+        @Contract
+        void reportInstanceState(NodeId nodeId, ReplacementInstanceState state) {
+            instanceStates.put(nodeId, state);
+        }
+
+        @Contract
+        void holdInstanceStateAnswers(Promise<ReplacementInstanceState> answer) {
+            heldInstanceStateAnswer.set(Option.some(answer));
+        }
+
+        @Contract
+        void releaseInstanceStateAnswers() {
+            heldInstanceStateAnswer.set(Option.none());
+        }
+
+        @Contract
+        void holdNextProvision(Promise<ProvisionDisposition> result) {
+            nextProvisionResult.set(result);
+        }
+
+        @Contract
+        void setReplacementCeiling(TimeSpan ceiling) {
+            replacementCeiling.set(ceiling);
+        }
+
+        List<NodeId> instanceStateQueries() {
+            return List.copyOf(instanceStateQueries);
+        }
 
         List<NodeId> drainNodeCalls() {
             return List.copyOf(drainNodeCalls);
@@ -2279,6 +2824,19 @@ class LeaderReconcilerTest {
             drainNodeCalls.add(targetNodeId);
             drainReasons.add(reason);
             return Promise.success(unit());
+        }
+
+        @Override
+        public Promise<ReplacementInstanceState> replacementInstanceState(NodeId nodeId) {
+            instanceStateQueries.add(nodeId);
+            return heldInstanceStateAnswer.get()
+                                          .or(() -> Promise.success(instanceStates.getOrDefault(nodeId,
+                                                                                                ReplacementInstanceState.UNKNOWN)));
+        }
+
+        @Override
+        public TimeSpan replacementCeiling(NodeRole intendedRole) {
+            return replacementCeiling.get();
         }
 
         @Override

@@ -6,17 +6,18 @@ package org.pragmatica.aether.resource.interceptor;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
 import org.pragmatica.config.source.TomlConfigSource;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 
+import org.junit.jupiter.api.Test;
+
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// #278 end-to-end proof that the REAL [RetryConfig] (not [ProviderBasedConfigServiceTest]'s
@@ -36,7 +37,6 @@ class RetryConfigTomlBindingTest {
                 type = "fixed"
                 interval = "250ms"
                 """);
-
         var config = configService.config("retry.checkout", RetryConfig.class).unwrap();
 
         assertThat(config.maxAttempts()).isEqualTo(5);
@@ -55,13 +55,12 @@ class RetryConfigTomlBindingTest {
                 increment = "2s"
                 max_delay = "30s"
                 """);
-
         var config = configService.config("retry.checkout", RetryConfig.class).unwrap();
 
         assertThat(config.backoffStrategy()).isEqualTo(BackoffStrategy.linear()
-                                                                       .initialDelay(timeSpan(1).seconds())
-                                                                       .increment(timeSpan(2).seconds())
-                                                                       .maxDelay(timeSpan(30).seconds()));
+                                                                      .initialDelay(timeSpan(1).seconds())
+                                                                      .increment(timeSpan(2).seconds())
+                                                                      .maxDelay(timeSpan(30).seconds()));
     }
 
     /// A *present* `[retry.checkout]` section that omits `backoff_strategy` entirely falls back to
@@ -75,7 +74,6 @@ class RetryConfigTomlBindingTest {
                 [retry.checkout]
                 max_attempts = 5
                 """);
-
         var result = configService.config("retry.checkout", RetryConfig.class);
 
         assertThat(result.isSuccess()).isTrue();
@@ -92,10 +90,40 @@ class RetryConfigTomlBindingTest {
                 [other]
                 key = "value"
                 """);
-
         var result = configService.config("retry.checkout", RetryConfig.class);
 
         assertThat(result.isFailure()).isTrue();
+    }
+
+    @Test
+    void config_retryOn_bindsFromToml() {
+        var configService = configServiceFrom("""
+                [retry.checkout]
+                max_attempts = 3
+                retry_on = "NON_TERMINAL"
+
+                [retry.checkout.backoff_strategy]
+                type = "fixed"
+                interval = "1ms"
+                """);
+        var config = configService.config("retry.checkout", RetryConfig.class).unwrap();
+
+        assertThat(config.retryOn()).isEqualTo(RetryOn.NON_TERMINAL);
+    }
+
+    @Test
+    void config_omittedRetryOn_fallsBackToTransient() {
+        var configService = configServiceFrom("""
+                [retry.checkout]
+                max_attempts = 3
+
+                [retry.checkout.backoff_strategy]
+                type = "fixed"
+                interval = "1ms"
+                """);
+        var config = configService.config("retry.checkout", RetryConfig.class).unwrap();
+
+        assertThat(config.retryOn()).isEqualTo(RetryOn.TRANSIENT);
     }
 
     @Test
@@ -113,10 +141,8 @@ class RetryConfigTomlBindingTest {
                                                        .await()
                                                        .onFailureRun(() -> fail("Expected interceptor provisioning to succeed"))
                                                        .unwrap();
-
         var attempts = new AtomicInteger();
         var intercepted = interceptor.intercept((Integer request) -> attemptOperation(attempts));
-
         var outcome = intercepted.apply(1).await();
 
         assertThat(outcome.isSuccess()).isTrue();
@@ -124,11 +150,16 @@ class RetryConfigTomlBindingTest {
         assertThat(attempts.get()).isEqualTo(3);
     }
 
+    // The failure said "transient" in its message and nothing in its type, so under #280's
+    // default policy (retry only Cause.Transient) it stopped being retried; the fixture now
+    // classifies it the way the prose always claimed.
+    private record TransientFailure(String message) implements Cause.Transient {}
+
     private static Promise<String> attemptOperation(AtomicInteger attempts) {
         var attempt = attempts.incrementAndGet();
 
         return attempt < 3
-               ? Promise.failure(Causes.cause("transient failure #" + attempt))
+               ? Promise.failure(new TransientFailure("transient failure #" + attempt))
                : Promise.success("ok after " + attempt + " attempts");
     }
 
