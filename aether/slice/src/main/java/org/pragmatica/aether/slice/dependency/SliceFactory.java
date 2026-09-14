@@ -7,6 +7,8 @@ package org.pragmatica.aether.slice.dependency;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
@@ -32,6 +34,8 @@ import static org.pragmatica.lang.utils.Causes.cause;
 @SuppressWarnings({"JBCT-LAM-01", "JBCT-LAM-02", "JBCT-SEQ-01", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"})
 public interface SliceFactory {
     Logger log = LoggerFactory.getLogger(SliceFactory.class);
+    /// The namespace every runtime class the slice can lose to an upgrade lives in (#758).
+    String RUNTIME_NAMESPACE = "org.pragmatica.";
 
     static Promise<Slice> createSlice(Class<?> sliceClass,
                                       SliceCreationContext creationContext,
@@ -45,7 +49,7 @@ public interface SliceFactory {
         } catch (Throwable t) {
             log.error("Exception in findFactoryMethod for {}: {}", sliceClass.getName(), t.getMessage(), t);
 
-            return classLoadFailure(sliceClass.getName(), t).promise();
+            return classLoadFailure(sliceClass, sliceClass.getName(), t).promise();
         }
 
         var verifiedResult = factoryMethodResult.onFailure(cause -> log.error("Failed to find factory method for {}: {}",
@@ -87,7 +91,7 @@ public interface SliceFactory {
         } catch (Throwable t) {
             log.error("findFactoryMethod: getDeclaredMethods FAILED for {}: {}", sliceClass.getName(), t.getMessage(), t);
 
-            return classLoadFailure(sliceClass.getName(), t).result();
+            return classLoadFailure(sliceClass, sliceClass.getName(), t).result();
         }
 
         return Arrays.stream(methods)
@@ -128,7 +132,7 @@ public interface SliceFactory {
         } catch (Throwable t) {
             log.error("Failed to inspect factory parameters for {}: {}", method.getName(), t.getMessage(), t);
 
-            return incompatibleRuntime(method.getName(), t).result();
+            return classLoadFailure(sliceClass, method.getName(), t).result();
         }
 
         if (parameterTypes.length != 1) {
@@ -203,22 +207,55 @@ public interface SliceFactory {
                                                               + " — slice was compiled against an older runtime; rebuild against this runtime version");
     }
 
-    private static Cause incompatibleRuntime(String context, Throwable t) {
+    private static Cause incompatibleRuntime(String context, String missingClass) {
         return new SliceLoadingFailure.Fatal.ParameterMismatch(context,
                                                                "slice was compiled against an older runtime"
-                                                              + " (references removed class " + missingClassName(t)
+                                                              + " (references removed class " + missingClass
                                                               + ");"
                                                               + " rebuild against this runtime version");
     }
 
-    /// Reflective factory resolution that dies on a removed class (an rc1-built slice referencing the
-    /// deleted Aspect type) surfaces a class-resolution Throwable — as a NoClassDefFoundError from
-    /// getDeclaredMethods on eager JVMs, or a ClassNotFoundException from parameter inspection on lazy
-    /// ones. Map those to the actionable "rebuild" cause; keep the generic ClassLoadFailed otherwise.
-    private static Cause classLoadFailure(String className, Throwable t) {
-        return isMissingClass(t)
-               ? incompatibleRuntime(className, t)
-               : new SliceLoadingFailure.Fatal.ClassLoadFailed(className, Causes.fromThrowable(t));
+    /// Reflective factory resolution that dies on an unresolvable class surfaces a class-resolution
+    /// Throwable — a NoClassDefFoundError from getDeclaredMethods on eager JVMs, or a
+    /// ClassNotFoundException from parameter inspection on lazy ones. The Throwable says WHICH class,
+    /// never WHY, and the two causes need opposite remedies (#758):
+    ///
+    ///   - a RUNTIME class (`org.pragmatica.` namespace) unresolvable from a slice loader whose parent
+    ///     is the runtime itself was removed by a runtime upgrade — an rc1 slice referencing the
+    ///     deleted Aspect type — so the remedy is a rebuild, and the message says so;
+    ///   - anything else is an APPLICATION type that never reached this slice's classloader — another
+    ///     slice's class whose jar was not resolved or added — and a rebuild cannot help. Before #758
+    ///     this case carried the rebuild message too, and seven investigations followed it.
+    ///
+    /// Only the FIRST unresolvable class is named: `getDeclaredMethods` fails once for the whole
+    /// class, so the others are not enumerable from this failure. Anything that is not a resolution
+    /// error stays the generic ClassLoadFailed.
+    private static Cause classLoadFailure(Class<?> sliceClass, String context, Throwable t) {
+        if (!isMissingClass(t)) {
+            return new SliceLoadingFailure.Fatal.ClassLoadFailed(context, Causes.fromThrowable(t));
+        }
+
+        var missingClass = missingClassName(t);
+
+        return isRuntimeClass(missingClass)
+               ? incompatibleRuntime(context, missingClass)
+               : new SliceLoadingFailure.Fatal.DependencyClassNotOnClasspath(context,
+                                                                             missingClass,
+                                                                             classpathOf(sliceClass.getClassLoader()));
+    }
+
+    private static boolean isRuntimeClass(String className) {
+        return className.startsWith(RUNTIME_NAMESPACE);
+    }
+
+    /// What the slice's own loader holds, for the message; a loader without URLs (a test loader, the
+    /// app loader) is named by its class so the reader still learns which loader was asked.
+    private static List<String> classpathOf(ClassLoader loader) {
+        return loader instanceof URLClassLoader urlLoader
+               ? Arrays.stream(urlLoader.getURLs())
+                       .map(URL::toString)
+                       .toList()
+               : List.of("<" + loader.getClass().getName() + ", no URLs>");
     }
 
     private static boolean isMissingClass(Throwable t) {
@@ -229,11 +266,16 @@ public interface SliceFactory {
         return t instanceof NoClassDefFoundError || t instanceof ClassNotFoundException || t instanceof TypeNotPresentException;
     }
 
+    /// Normalised to a binary name: NoClassDefFoundError carries `a/b/C`, TypeNotPresentException
+    /// carries `Type a.b.C not present`, ClassNotFoundException carries `a.b.C`.
     private static String missingClassName(Throwable t) {
         return causeChain(t).filter(SliceFactory::isResolutionError)
                          .findFirst()
                          .map(SliceFactory::throwableLabel)
-                         .orElseGet(() -> throwableLabel(t));
+                         .orElseGet(() -> throwableLabel(t))
+                         .replace('/', '.')
+                         .replaceFirst("^Type (.*) not present$",
+                                       "$1");
     }
 
     private static String throwableLabel(Throwable t) {

@@ -182,7 +182,8 @@ class SliceFactoryTest {
             assertThat(cause.message()).contains("GhostProviderType")
                                        .contains("not on this slice's classloader")
                                        .contains("[slices]")
-                                       .doesNotContain("rebuild")
+                                       .contains("a rebuild will not help")
+                                       .doesNotContain("rebuild against this runtime version")
                                        .doesNotContain("removed class");
         });
     }

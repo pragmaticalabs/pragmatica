@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
+import java.util.List;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.CoreError;
@@ -98,6 +100,24 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
             @Override
             public Option<Cause> source() {
                 return some(causeSource);
+            }
+        }
+
+        /// #758 — a class the slice references is unresolvable and it is NOT a runtime class: an
+        /// application type, normally provided by another slice, that never reached this slice's
+        /// classloader. The remedy is dependency wiring, never a rebuild; the loader's contents
+        /// are listed so the gap can be seen rather than inferred.
+        record DependencyClassNotOnClasspath(String context, String className, List<String> classpath) implements Fatal {
+            @Override
+            public String message() {
+                return "Class " + className
+                     + " referenced by " + context
+                     + " is not on this slice's classloader"
+                     + " (it is not a runtime class, so it was not removed by a runtime upgrade and a rebuild will"
+                     + " not help). The slice's classloader holds: " + classpath
+                     + ". Check the slice's declared dependencies — the [slices] section of"
+                     + " META-INF/dependencies/<FactoryClass> — and that every dependency jar was resolved"
+                     + " and added to the slice's classloader (#758).";
             }
         }
 
