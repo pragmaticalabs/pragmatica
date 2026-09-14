@@ -196,20 +196,35 @@ class RabiaSyncAdoptionResponseQuorumTest {
             assertThat(awaitActive(engine)).isTrue();
         }
 
-        /// An UNKNOWN responder counts as a RESPONSE toward the quorum while never counting as LIVE:
-        /// n=3, one LIVE peer and one UNKNOWN peer reach the quorum and adopt the LIVE state.
+        /// An UNKNOWN responder counts as a RESPONSE toward the quorum and never toward the live
+        /// majority — i.e. exactly as COLD, which is the one part of #667 that survived every revision
+        /// of the rule. Asserted as an EQUIVALENCE: the same scenario twice, changing only the flag.
+        ///
+        /// I first wrote this asserting that UNKNOWN is "never the adoption source". That is stronger
+        /// than COLD semantics and the rule never said it: when LIVE responders are a minority of the
+        /// quorum the source is every response, COLD ones included, and an UNKNOWN is one of those. The
+        /// expectation was wrong, not the code — confirmed by running the COLD arm and getting the same
+        /// bytes.
         @Test
-        void n3_unknownCountsAsAResponse_butNeverAsTheSource() {
+        void n3_unknownIsIndistinguishableFromCold() {
+            assertThat(adoptedWithSecondResponder(ResponderState.UNKNOWN))
+                .as("UNKNOWN must behave exactly as COLD in the adoption decision")
+                .isEqualTo(adoptedWithSecondResponder(ResponderState.COLD));
+        }
+
+        /// n=3, one LIVE peer at phase 10 and a second responder ahead at 500 carrying `flag`.
+        private byte[] adoptedWithSecondResponder(ResponderState flag) {
             var stateMachine = new RecordingStateMachine();
             var engine = coldStarted(3, stateMachine, RabiaPersistence.inMemory());
 
             engine.processSyncResponse(live(NODE_2, Phase.phase(10), LIVE_SNAPSHOT));
-            engine.processSyncResponse(unknown(NODE_3, Phase.phase(500)));
+            engine.processSyncResponse(new SyncResponse<>(NODE_3,
+                                                         SavedState.savedState(COLD_SNAPSHOT, Phase.phase(500), List.of()),
+                                                         flag));
 
             assertThat(awaitActive(engine)).isTrue();
-            assertThat(stateMachine.lastRestored())
-                .as("an unreadable flag never becomes the adoption source, however advanced it claims to be")
-                .isEqualTo(LIVE_SNAPSHOT);
+
+            return stateMachine.lastRestored();
         }
     }
 

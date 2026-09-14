@@ -54,13 +54,18 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// the floor cannot refuse them — a committed phase held only by the two peers that had not
 /// answered yet is silently discarded.
 ///
-/// The rule now, per response (re-evaluated on every arrival, never on a timer):
-/// - LIVE responders ≥ ⌊n/2⌋+1: adopt the most advanced LIVE state. A live majority intersects every
-///   majority that could have committed anything, so its maximum is at or past every commit.
+/// Round 2 amended the threshold. It is on RESPONSES, not on LIVE responders — thresholding on the
+/// live count deadlocked a half-started cluster, because the only nodes that could raise that count
+/// were the ones it blocked (see `RabiaSyncAdoptionResponseQuorumTest`). The rule now, re-evaluated on
+/// every arrival, never on a timer:
+/// - any LIVE responder and `clusterSize / 2 + 1` RESPONSES of any mix: adopt. The response quorum
+///   carries the safety argument — responders ALONE are a majority, so they intersect every majority
+///   that could have committed anything, without leaning on self's history.
+/// - within that quorum the source is the LIVE maximum only when LIVE responders are themselves a
+///   majority; otherwise the maximum over every response. Filtering to LIVE inside a mere response
+///   quorum is unsafe: the member that intersects the commit quorum may be the COLD one.
 /// - no LIVE responder at all: #660's cold rule, unchanged — `clusterSize / 2` responses, self as floor.
-/// - some LIVE responders but fewer than a majority: keep collecting. A node rejoining a cluster that
-///   has no live majority WAITS by design — that cluster has no quorum either.
-/// UNKNOWN (an ordinal this node cannot name) counts as COLD, so an unreadable flag never loosens the bound.
+/// UNKNOWN (an ordinal this node cannot name) counts as COLD — exactly as COLD, in every arm.
 class RabiaSyncAdoptionLiveResponderTest {
     private static final NodeId NODE_1 = nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
@@ -80,13 +85,15 @@ class RabiaSyncAdoptionLiveResponderTest {
     }
 
     @Nested
-    class LiveMinorityMustWait {
-        /// (i) THE #667 RESIDUAL. n=5, self restarted with in-memory persistence (floor 0). Two LIVE
-        /// peers answer, both behind the cluster's latest commit. Before #667 this was `clusterSize / 2`
-        /// responses and the floor could not refuse — adopted, commit lost. Two live peers plus a
-        /// history-less self are not a majority that witnessed anything.
+    class AResponseQuorumDecides {
+        /// (i) THE #667 RESIDUAL, and the arm that survived the round-2 amendment unchanged. n=5, self
+        /// restarted with in-memory persistence (floor 0). Two LIVE peers answer, both behind the
+        /// cluster's latest commit. Before #667 this was `clusterSize / 2` responses and the floor could
+        /// not refuse — adopted, commit lost. Two responders plus a history-less self are not a majority
+        /// that witnessed anything. Round 2 still refuses it, now because two responses are not a
+        /// response quorum rather than because two LIVE are not a live majority.
         @Test
-        void twoLiveResponsesOfFive_isALiveMinority_andMustNotAdopt() throws InterruptedException {
+        void twoResponsesOfFive_isNotAResponseQuorum_andMustNotAdopt() throws InterruptedException {
             var stateMachine = new RecordingStateMachine();
             var engine = coldStarted(5, stateMachine, RabiaPersistence.inMemory());
 
@@ -99,36 +106,62 @@ class RabiaSyncAdoptionLiveResponderTest {
             assertThat(stateMachine.lastRestored()).as("nothing installed while waiting").isNull();
         }
 
-        /// A COLD response does not count toward the live majority: two LIVE plus one COLD is still a
-        /// live minority even though three responses would have satisfied the old count.
+        /// SUPERSEDED BEHAVIOUR, kept as the pin for what replaced it. Round 1 made this wait: two LIVE
+        /// plus one COLD is a live MINORITY. Round 2 adopts, because three responses at n=5 are a
+        /// response QUORUM and the quorum is the threshold. The round-1 assertion was the defect —
+        /// waiting here is what wedged a half-started cluster — so the test changed, not the code.
+        ///
+        /// The source is the whole quorum, not the LIVE pair: with LIVE a minority of the quorum, the
+        /// responder that intersects a commit quorum may be the COLD one, and filtering it out is how a
+        /// joiner adopts a state behind a commit sitting in its own response set.
         @Test
-        void twoLivePlusOneCold_isStillALiveMinority() throws InterruptedException {
-            var engine = coldStarted(5, new RecordingStateMachine(), RabiaPersistence.inMemory());
+        void twoLivePlusOneCold_isAResponseQuorum_andAdoptsOverTheWholeQuorum() {
+            var stateMachine = new RecordingStateMachine();
+            var engine = coldStarted(5, stateMachine, RabiaPersistence.inMemory());
 
             engine.processSyncResponse(live(NODE_2, Phase.phase(10), BEHIND_SNAPSHOT));
             engine.processSyncResponse(live(NODE_3, Phase.phase(10), BEHIND_SNAPSHOT));
-            engine.processSyncResponse(new SyncResponse<>(NODE_4, SavedState.empty(), ResponderState.COLD));
+            engine.processSyncResponse(new SyncResponse<>(NODE_4,
+                                                         SavedState.savedState(AHEAD_SNAPSHOT, Phase.phase(500), List.of()),
+                                                         ResponderState.COLD));
 
-            assertThat(staysInactive(engine))
-                .as("a COLD responder carries no live history and cannot complete a LIVE majority")
-                .isTrue();
+            assertThat(awaitActive(engine)).as("3 of 5 responses is a response quorum").isTrue();
+            assertThat(stateMachine.lastRestored())
+                .as("LIVE is a minority of this quorum, so the source is every response — the COLD one is ahead")
+                .isEqualTo(AHEAD_SNAPSHOT);
         }
 
-        /// UNKNOWN is COLD for adoption: two LIVE plus one UNKNOWN must wait like two LIVE plus one COLD.
+        /// UNKNOWN is COLD — and this asserts it as an EQUIVALENCE rather than as one consequence of it,
+        /// because "counts as COLD" is the part of #667 that has survived all three versions of the rule.
+        /// The same scenario is run twice, changing only the flag; identical outcomes are the claim.
+        /// Asserting instead that UNKNOWN "is never adopted from" would be stronger than COLD semantics
+        /// and would fail for the same reason a COLD response would.
         @Test
-        void unknownResponderState_countsAsCold() throws InterruptedException {
-            var engine = coldStarted(5, new RecordingStateMachine(), RabiaPersistence.inMemory());
+        void unknownResponderState_behavesExactlyAsCold() {
+            assertThat(adoptedWithThirdResponder(ResponderState.UNKNOWN))
+                .as("UNKNOWN must be indistinguishable from COLD in the adoption decision")
+                .isEqualTo(adoptedWithThirdResponder(ResponderState.COLD));
+        }
+
+        /// n=5, two LIVE behind plus a third responder ahead carrying `flag`; returns what was installed.
+        private byte[] adoptedWithThirdResponder(ResponderState flag) {
+            var stateMachine = new RecordingStateMachine();
+            var engine = coldStarted(5, stateMachine, RabiaPersistence.inMemory());
 
             engine.processSyncResponse(live(NODE_2, Phase.phase(10), BEHIND_SNAPSHOT));
             engine.processSyncResponse(live(NODE_3, Phase.phase(10), BEHIND_SNAPSHOT));
-            engine.processSyncResponse(new SyncResponse<>(NODE_4, SavedState.empty(), ResponderState.UNKNOWN));
+            engine.processSyncResponse(new SyncResponse<>(NODE_4,
+                                                         SavedState.savedState(AHEAD_SNAPSHOT, Phase.phase(500), List.of()),
+                                                         flag));
 
-            assertThat(staysInactive(engine)).as("an unreadable flag must never loosen the bound").isTrue();
+            assertThat(awaitActive(engine)).isTrue();
+
+            return stateMachine.lastRestored();
         }
     }
 
     @Nested
-    class LiveMajorityAdoptsItsMaximum {
+    class AnAllLiveQuorumAdoptsTheLiveMaximum {
         /// (ii) The third LIVE response completes the live majority (3 of 5); the engine adopts the most
         /// advanced LIVE state — the one at phase 99 — not the first two it heard.
         @Test
@@ -146,20 +179,41 @@ class RabiaSyncAdoptionLiveResponderTest {
                 .isEqualTo(AHEAD_SNAPSHOT);
         }
 
-        /// A COLD response cannot outrank the live majority's maximum, even if its snapshot claims a
-        /// higher phase: cold state is a persisted picture of unknown age, live state is the cluster.
+        /// A COLD response arriving AFTER the quorum has already decided changes nothing — the engine is
+        /// active and ignores it. That is all this case can assert now, and the reason is worth stating
+        /// because it retires a claim #667 made.
+        ///
+        /// **The LIVE filter is currently unreachable AS A FILTER on the arrival path.** Adoption fires
+        /// at exactly `clusterSize / 2 + 1` responses, and the LIVE-majority branch needs
+        /// `clusterSize / 2 + 1` LIVE among precisely that many responses — so it is taken if and only
+        /// if every response in the quorum is already LIVE, where filtering removes nothing. Measured at
+        /// n=5 over all four arrival orders of {3 LIVE, 1 COLD}: the decision fired at 3 responses every
+        /// time; with the COLD among them the source was the whole quorum.
+        ///
+        /// So "a COLD snapshot cannot outrank what the live cluster holds" has no implementation here,
+        /// and cannot have one without a bounded collection window that re-evaluates on later responses.
+        /// The filter is kept because it becomes load-bearing the moment such a window exists.
         @Test
-        void coldResponseAhead_isNotAdoptedOverTheLiveMajority() {
+        void aColdResponseArrivingAfterTheQuorumDecided_isIgnored() {
             var stateMachine = new RecordingStateMachine();
             var engine = coldStarted(5, stateMachine, RabiaPersistence.inMemory());
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_1, SavedState.savedState(BEHIND_SNAPSHOT, Phase.phase(500), List.of()), ResponderState.COLD));
             engine.processSyncResponse(live(NODE_2, Phase.phase(10), BEHIND_SNAPSHOT));
             engine.processSyncResponse(live(NODE_3, Phase.phase(10), BEHIND_SNAPSHOT));
             engine.processSyncResponse(live(NODE_4, Phase.phase(99), AHEAD_SNAPSHOT));
 
-            assertThat(awaitActive(engine)).isTrue();
-            assertThat(stateMachine.lastRestored()).isEqualTo(AHEAD_SNAPSHOT);
+            assertThat(awaitActive(engine)).as("three LIVE responses are the quorum at n=5").isTrue();
+            assertThat(stateMachine.lastRestored())
+                .as("an all-LIVE quorum adopts its maximum")
+                .isEqualTo(AHEAD_SNAPSHOT);
+
+            engine.processSyncResponse(new SyncResponse<>(NODE_1,
+                                                         SavedState.savedState(SELF_SNAPSHOT, Phase.phase(500), List.of()),
+                                                         ResponderState.COLD));
+
+            assertThat(stateMachine.lastRestored())
+                .as("a response delivered to an active engine installs nothing")
+                .isEqualTo(AHEAD_SNAPSHOT);
         }
     }
 

@@ -1025,6 +1025,7 @@ public class RabiaEngine<C extends Command> {
             // Processed immediately instead of clearing
             return;
         }
+
         warnIfSyncStuck();
         // Only clear and restart if we don't have enough responses
         syncResponses.clear();
@@ -1170,7 +1171,6 @@ public class RabiaEngine<C extends Command> {
         }
 
         syncResponses.put(response.sender(), response);
-
         if (!adoptIfThresholdMet()) {
             log.trace("Node {} received {} responses {}, not enough to proceed (live responders = {})",
                       self,
@@ -1571,7 +1571,6 @@ public class RabiaEngine<C extends Command> {
     /// between the two could pass the gate on one rule and build the candidate set under the other.
     private Option<List<SyncResponse<C>>> adoptionCandidates() {
         var clusterSize = topologyManager.clusterSize();
-
         // `clusterSize()` is a derived cell fed from the KV `coreCount`; at 0 the cold requirement
         // would be `0 / 2 == 0` and a node would meet its own threshold with ZERO responses and
         // activate alone. Refused on purpose, with the periodic WARN reporting `clusterSize=0`.
@@ -1580,19 +1579,25 @@ public class RabiaEngine<C extends Command> {
         }
 
         var responses = List.copyOf(syncResponses.values());
-        var liveResponses = responses.stream()
-                                     .filter(response -> response.responder() == ResponderState.LIVE)
-                                     .toList();
+        var liveResponses = responses.stream().filter(response -> response.responder() == ResponderState.LIVE).toList();
 
-        if (!liveResponses.isEmpty()) {
-            return responses.size() >= clusterSize / 2 + 1
-                   ? Option.some(liveResponses)
+        if (liveResponses.isEmpty()) {
+            return responses.size() >= clusterSize / 2
+                   ? Option.some(responses)
                    : Option.none();
         }
 
-        return responses.size() >= clusterSize / 2
-               ? Option.some(responses)
-               : Option.none();
+        if (responses.size() < clusterSize / 2 + 1) {
+            return Option.none();
+        }
+        // The LIVE filter is licensed by the intersection argument only when the LIVE responders are
+        // THEMSELVES a majority. A response quorum intersects every commit quorum, but the intersecting
+        // member may be COLD, and filtering it out is how a joiner adopts a state behind a commit that
+        // was sitting in its own response set. So: the live maximum when live is a majority, otherwise
+        // the maximum over everything that answered.
+        return Option.some(liveResponses.size() >= clusterSize / 2 + 1
+                           ? liveResponses
+                           : responses);
     }
 
     /// Adopts when the collected responses already satisfy the rule, reporting whether it did so the
