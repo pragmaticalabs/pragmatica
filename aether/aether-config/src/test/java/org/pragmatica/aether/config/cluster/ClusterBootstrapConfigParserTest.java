@@ -509,6 +509,42 @@ class ClusterBootstrapConfigParserTest {
             }
         }
 
+        /// Round 2: a file with N stale keys is reported in ONE bootstrap attempt, and each key that named
+        /// a timing the runtime reads is pointed at the node-config key that sets it now.
+        @Test
+        void parse_autoHealTunables_areAllNamed_withTheirNodeKeys() {
+            var toml = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "tunables"
+                version = "1.0.0"
+
+                [source.local]
+                type = "forge"
+
+                [source.local.core]
+                count = 3
+
+                [operations.auto_heal]
+                enabled = true
+                swim_hints_ttl = "15s"
+                provisioning_timeout = "60s"
+                retry_interval = "60s"
+                """;
+
+            ClusterBootstrapConfigParser.parse(toml)
+                .onSuccess(_ -> Assertions.fail("stale tunables must be refused"))
+                .onFailure(cause -> assertThat(cause.message())
+                    .contains("PF-26")
+                    .contains("swim_hints_ttl", "provisioning_timeout", "retry_interval")
+                    .contains("never took effect")
+                    .contains("provisioning_timeout -> [timeouts.scaling] auto_heal_provisioning_timeout")
+                    .contains("swim_hints_ttl -> [timeouts.scaling] auto_heal_swim_hints_ttl")
+                    .contains("node_config.timeouts.scaling")
+                    .doesNotContain("retry_interval ->"));
+        }
+
         @Test
         void parse_autoHealEnabledOnly_stillParses() {
             var toml = """
