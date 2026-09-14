@@ -43,6 +43,12 @@
   The `bootDecision_*` cases pin the factory's entry point; this one pins that `assembleNode` uses it.
   [verified: `AetherNodeStreamsRefusalMarkerBootTest.aetherNode_leavesNoArtifactsMarker_whenTheStreamsArmRefusesTheBoot`
   — red when `AetherNode.java` is reverted to the two-call ordering, with the factory fix left in place]
+- **Read this before adding another `StorageFactoryEncryptionTest` case and calling the boot path covered.**
+  Reverting `AetherNode.java` alone to the two-call ordering — leaving the factory fix in place — reddens
+  that ONE real-boot test and **all 29 tests in `StorageFactoryEncryptionTest` stay green**. Twenty-nine
+  tests that exercise the factory cannot see which calls `assembleNode` makes against it. A factory test
+  proves a property of the factory and nothing whatever about the wiring; if the claim is about the boot,
+  the test has to go through `AetherNode.aetherNode(...)`.
 - A marker write that itself fails (an I/O error on the marker file), or a crash part-way through the
   commit pass, still fails the boot and leaves the markers already written in that pass. Re-running
   the same config completes the set — the guards of the instances already stamped short-circuit on
@@ -52,6 +58,15 @@
   admitted `createAll` wrote — the DHT check needs a routable `DHTClient`, which does not exist at
   construction time, so it cannot join this decision. Filed separately. `#849` still tracks the
   missing DHT-side marker for the `streams` namespace.
+- **Two claims about settling, which must not be read as one.** (a) No arm of the boot decision can wedge:
+  the construction path contains **zero** `.await(` — every `Promise` in `StorageFactory` is on the
+  post-formation DHT path — so `createAll` either returns a `Result` or does not return at all.
+  (b) The post-formation DHT arm **is** unbounded, deliberately: `verifyDhtMarker` retries
+  `Integer.MAX_VALUE` times with no attempt budget and ends only on a `Cause.Terminal` cause or the node's
+  stop signal (#1052). A persistent `QuorumNotReached` therefore leaves the node not-ready indefinitely with
+  disk markers already on disk. (a) is about this ticket's decision; it does not extend to (b), and (b) is
+  not a regression introduced here. [mechanism: `Retry.retry().attempts(Integer.MAX_VALUE)` in
+  `StorageFactory.verifyDhtMarker`]
 - Marker writes are `Files.write(CREATE, TRUNCATE_EXISTING)` with no `fsync`, so a crash can lose a
   marker whose write had already returned. That is a durability property of `FileOps.writeBytes`
   shared by every marker, not an ordering question, and is out of this ticket's scope; it is not the
