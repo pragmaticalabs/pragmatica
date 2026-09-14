@@ -81,16 +81,28 @@ Two consequences follow directly:
     **owner decision tracked as #1200**. Until that lands, the out-of-band re-provisioning described
     above is the supported answer.
 
-    **Exposure introduced by the boot refusal, stated as capability:** an attacker who can send UDP to
-    a **booting** node's SWIM port can cause that node to abort its boot, by repeating datagrams
-    carrying one gossip key id the node does not hold. The refusal counts same-id-consecutive
-    unknown-key datagrams, and an unencrypted datagram cannot be distinguished from a rotated peer's
-    by that signal alone — anything at least as long as the 16-byte header has its first four bytes
-    read as a key id. It **cannot** be done to a running node: one successful decrypt disarms the
-    check permanently, so a node that has ever joined is immune. An attacker with this reach could
-    already prevent the join by other means (dropping or flooding the same port), so the capability
-    gained is a faster, louder failure rather than a new denial — but it is a remote-input-triggered
-    process exit and it did not exist before #683.
+    **Exposure introduced by the boot refusal, stated as capability.** The refusal counts
+    same-key-id-consecutive undecryptable datagrams, and an unencrypted datagram is **not**
+    distinguishable from a rotated peer's by that signal alone — anything at least as long as the
+    16-byte header has its first four bytes read as a key id. So an attacker who can send UDP to a
+    node's SWIM port, while that node has gone a full minute without decrypting a single gossip
+    datagram, can end that node's process. This needs **no privileged position**: the SWIM listener
+    decrypts datagrams from any sender with no source check, and the default firewall preset opens
+    SWIM UDP to `0.0.0.0/0`, so the packets are off-path and spoofable, and a restart supervisor will
+    crash-loop the node.
+
+    Two bounds contain it, and neither is an argument that the capability is unimportant:
+    - **It cannot be done to a node that is communicating.** One successful decrypt disarms the check
+      permanently, so a node that has ever exchanged gossip is immune for the life of the process. A
+      healthy node in a healthy cluster decrypts within seconds of SWIM starting.
+    - **The attacker must SUSTAIN the condition, not send a burst.** The check arms only after 60
+      seconds with no successful decrypt, and disarms again once the boot window has passed, so there
+      is a bounded interval — and only for a node that is already failing to communicate.
+
+    Do not read the pre-existing alternatives as making this free: dropping traffic requires being
+    on-path and flooding requires sustained bandwidth, whereas this requires a handful of spoofable
+    packets aimed at a node in a state an attacker can wait for. It is a remote-input-triggered
+    process exit that did not exist before #683.
 - **The runtime/slice boundary is an accident boundary, not a security sandbox.** Each slice loads
   in its own `SliceClassLoader` [mechanism: `aether/slice/src/main/java/org/pragmatica/aether/slice/SliceClassLoader.java`],
   which isolates classpaths across slices/versions. This is **not** a hardened security boundary:

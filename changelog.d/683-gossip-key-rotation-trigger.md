@@ -74,12 +74,24 @@
   `[unverified: the probe's hook stops the TRANSPORT; production's stops the whole node, a larger
   surface. What is established is that the Netty-thread exit does not self-deadlock and that hook
   machinery runs to completion; the 30s bound plus halt(3) is what caps the untested remainder]`.
-  **Exposure this introduces, stated as capability:** an attacker who can send UDP to a BOOTING node's
-  SWIM port can abort its boot by repeating datagrams under one unheld key id — an unencrypted datagram
-  is not distinguishable from a rotated peer by this signal alone. It cannot be done to a running node
-  (one successful decrypt disarms the check permanently), and such an attacker could already prevent
-  the join by other means, but it is a remote-input-triggered process exit that did not exist before.
-  Disclosed in SECURITY.md.
+  **Exposure this introduces, and the arming window that bounds it.** The refusal counts
+  same-key-id-consecutive undecryptable datagrams, and an unencrypted datagram is NOT distinguishable
+  from a rotated peer's by that signal alone. A delta review demonstrated the consequence: **eight
+  16-byte junk UDP datagrams carrying one repeated arbitrary key id ended a booting process** —
+  off-path and spoofable, since the SWIM listener decrypts from any sender with no source check and
+  the default firewall preset opens SWIM UDP to `0.0.0.0/0`, and crash-looping under a restart
+  supervisor. The gate is therefore ARMED only inside a window: it requires **60 seconds with no
+  successful decrypt** before it will count anything (so an attacker must sustain the condition rather
+  than send a burst, while a healthy node decrypts within seconds and is immune for the life of the
+  process), and the window **closes** afterwards — without an upper bound a node that never decrypts
+  would stay armed for life, which is exactly the auto-heal replacement described above, making the
+  most exposed node the one that stays killable longest. Out-of-window datagrams reset the run, so a
+  burst cannot be banked up to the moment the window opens
+  [verified: `GossipKeyDivergenceGuardTest` — 10 tests covering both bounds, the banking attack, the
+  permanent disarm on one successful decrypt, varied-junk, differing-id reset, fire-once and
+  encrypt-passthrough; plus an out-of-tree end-to-end probe over real UDP against a real
+  `NettySwimTransport`: the burst that previously killed the process at +3.7s now **survives**, while
+  the same datagrams delivered after the window opens still **refuse** with exit code 1].
   **Detection is partial by construction, and the operator instruction that follows from it is the
   most important line here: IF A NODE WILL NOT JOIN AFTER A ROTATION, CHECK THE SEED NODES' LOGS, NOT
   THE NEW NODE'S** — `Failed to decrypt gossip from <id>`, already logged by `NettySwimTransport`.
