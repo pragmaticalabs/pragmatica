@@ -126,7 +126,7 @@ public class RabiaEngine<C extends Command> {
                                                                     new ThreadPoolExecutor.DiscardPolicy());
 
     private final ConcurrentNavigableMap<Id, Batch<C>> pendingBatches = new ConcurrentSkipListMap<>();
-    private final Map<NodeId, SavedState<C>> syncResponses = new ConcurrentHashMap<>();
+    private final Map<NodeId, SyncResponse<C>> syncResponses = new ConcurrentHashMap<>();
     private final RabiaPersistence<C> persistence;
 
     /// Consecutive sync rounds that failed to reach the response threshold, driving the periodic
@@ -1107,6 +1107,7 @@ public class RabiaEngine<C extends Command> {
         var persisted = persistence.load();
         var responses = syncResponses.values()
                                      .stream()
+                                     .map(SyncResponse::state)
                                      .sorted(Comparator.comparing(SavedState::lastCommittedPhase))
                                      .toList();
 
@@ -1167,7 +1168,7 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        syncResponses.put(response.sender(), response.state());
+        syncResponses.put(response.sender(), response);
         if (!adoptionThresholdMet()) {
             log.trace("Node {} received {} responses {}, not enough to proceed (required = {})",
                       self,
@@ -1491,14 +1492,16 @@ public class RabiaEngine<C extends Command> {
                         .map(snapshot -> new SyncResponse<>(self,
                                                             savedState(snapshot,
                                                                        currentPhase.get(),
-                                                                       pendingBatches.values())))
+                                                                       pendingBatches.values()),
+                                                            ResponderState.LIVE))
                         .onSuccess(response -> network.send(request.sender(),
                                                             response))
                         .onFailure(cause -> log.error("Node {} failed to create snapshot: {}", self, cause));
         } else {
             log.trace("Node {} is inactive, trying to share saved (or empty) state for request: {}", self, request);
             var response = new SyncResponse<>(self,
-                                              persistence.load().or(SavedState.empty()));
+                                              persistence.load().or(SavedState.empty()),
+                                              ResponderState.COLD);
 
             network.send(request.sender(), response);
         }

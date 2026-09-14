@@ -514,7 +514,7 @@ class RabiaConsensusIntegrationTest {
             // Send sync responses from other nodes to trigger activation
             for (var otherId : nodeIds) {
                 if (!nodeId.equals(otherId)) {
-                    engine.processSyncResponse(new SyncResponse<>(otherId, SavedState.empty()));
+                    engine.processSyncResponse(new SyncResponse<>(otherId, SavedState.empty(), ResponderState.COLD));
                 }
             }
             Thread.sleep(50); // Allow activation to complete
@@ -530,7 +530,7 @@ class RabiaConsensusIntegrationTest {
             for (var nodeId : nodeIds) {
                 for (var otherId : nodeIds) {
                     if (!nodeId.equals(otherId)) {
-                        engines.get(nodeId).processSyncResponse(new SyncResponse<>(otherId, SavedState.empty()));
+                        engines.get(nodeId).processSyncResponse(new SyncResponse<>(otherId, SavedState.empty(), ResponderState.COLD));
                     }
                 }
             }
