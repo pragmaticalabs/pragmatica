@@ -202,7 +202,8 @@ public final class StreamApiRoutes implements RouteSource {
                                          .asJson(),
                          ManagementRoutes.<StreamMetadataResponse> route(ManagementRoute.STREAMS_LATEST)
                                          .withPath(PathParameter.aString(),
-                                                   PathParameter.aString())
+                                                   PathParameter.aString(),
+                                                   PathParameter.spacer("latest"))
                                          .toResult(this::resolveLatest)
                                          .asJson(),
                          ManagementRoutes.<StreamMetadataResponse> route(ManagementRoute.STREAMS_METADATA)
@@ -274,7 +275,8 @@ public final class StreamApiRoutes implements RouteSource {
                          ManagementRoutes.<GroupListResponse> route(ManagementRoute.STREAMS_GROUPS_LIST)
                                          .withPath(PathParameter.aString(),
                                                    PathParameter.aString(),
-                                                   PathParameter.aString())
+                                                   PathParameter.aString(),
+                                                   PathParameter.spacer("groups"))
                                          .toResult(this::listGroups)
                                          .asJson(),
 
@@ -282,7 +284,8 @@ public final class StreamApiRoutes implements RouteSource {
         ManagementRoutes.<StreamMetadataResponse> route(ManagementRoute.STREAMS_TAIL)
                         .withPath(PathParameter.aString(),
                                   PathParameter.aString(),
-                                  PathParameter.aString())
+                                  PathParameter.aString(),
+                                  PathParameter.spacer("tail"))
                         .toResult(this::tailDeferred)
                         .asJson(),
 
@@ -290,7 +293,8 @@ public final class StreamApiRoutes implements RouteSource {
         ManagementRoutes.<StreamEventsResponse> route(ManagementRoute.STREAMS_EVENTS)
                         .withPath(PathParameter.aString(),
                                   PathParameter.aString(),
-                                  PathParameter.aString())
+                                  PathParameter.aString(),
+                                  PathParameter.spacer("events"))
                         .withQuery(QueryParameter.aLong("fromOffset"),
                                    QueryParameter.aInteger("maxEvents"))
                         .to(this::streamEvents)
@@ -300,21 +304,24 @@ public final class StreamApiRoutes implements RouteSource {
         ManagementRoutes.<PublishResponse> route(ManagementRoute.STREAMS_PUBLISH)
                         .withPath(PathParameter.aString(),
                                   PathParameter.aString(),
-                                  PathParameter.aString())
+                                  PathParameter.aString(),
+                                  PathParameter.spacer("publish"))
                         .withBody(PublishRequest.class)
-                        .to(this::publishEvent)
+                        .to((ns, stream, version, _, request) -> publishEvent(ns, stream, version, request))
                         .asJson(),
                          ManagementRoutes.<PublishBatchResponse> route(ManagementRoute.STREAMS_PUBLISH_BATCH)
                                          .withPath(PathParameter.aString(),
                                                    PathParameter.aString(),
-                                                   PathParameter.aString())
+                                                   PathParameter.aString(),
+                                                   PathParameter.spacer("publish-batch"))
                                          .withBody(PublishRequest[].class)
                                          .to(this::publishBatch)
                                          .asJson(),
                          ManagementRoutes.<GroupResponse> route(ManagementRoute.STREAMS_GROUP_CREATE)
                                          .withPath(PathParameter.aString(),
                                                    PathParameter.aString(),
-                                                   PathParameter.aString())
+                                                   PathParameter.aString(),
+                                                   PathParameter.spacer("groups"))
                                          .withBody(GroupCreateRequest.class)
                                          .toResult(this::createGroup)
                                          .asJson(),
@@ -322,6 +329,7 @@ public final class StreamApiRoutes implements RouteSource {
                                          .withPath(PathParameter.aString(),
                                                    PathParameter.aString(),
                                                    PathParameter.aString(),
+                                                   PathParameter.spacer("groups"),
                                                    PathParameter.aString())
                                          .toResult(this::deleteGroup)
                                          .asJson(),
@@ -377,7 +385,7 @@ public final class StreamApiRoutes implements RouteSource {
         return Result.success(new VersionsListResponse(namespace, stream, versions));
     }
 
-    private Result<StreamMetadataResponse> resolveLatest(String namespace, String stream) {
+    private Result<StreamMetadataResponse> resolveLatest(String namespace, String stream, String latestLiteral) {
         return namespacesService.resolve(namespace,
                                          stream,
                                          StreamVersionSpec.latest())
@@ -493,7 +501,10 @@ public final class StreamApiRoutes implements RouteSource {
         };
     }
 
-    private Result<GroupListResponse> listGroups(String namespace, String stream, String version) {
+    private Result<GroupListResponse> listGroups(String namespace,
+                                                 String stream,
+                                                 String version,
+                                                 String groupsLiteral) {
         return ResourceAddress.resourceAddress(namespace, stream, version).map(addr -> new GroupListResponse(addr.asString(),
                                                                                                              List.of()));
     }
@@ -502,7 +513,10 @@ public final class StreamApiRoutes implements RouteSource {
     /// protocol layer requires chunked encoding, keep-alive, and fan-out infrastructure beyond the
     /// scope of RC1. Operators polling for new events should use GET `/events?fromOffset=…` (which
     /// is the always-available polling fallback that the `aether stream tail` CLI now drives).
-    private Result<StreamMetadataResponse> tailDeferred(String namespace, String stream, String version) {
+    private Result<StreamMetadataResponse> tailDeferred(String namespace,
+                                                        String stream,
+                                                        String version,
+                                                        String tailLiteral) {
         return Causes.cause("Tail subscription via SSE/WebSocket is deferred to issue #212. "
                            + "For polling-based tail, use GET /api/streams/" + namespace
                            + "/" + stream
@@ -520,6 +534,7 @@ public final class StreamApiRoutes implements RouteSource {
     private Promise<StreamEventsResponse> streamEvents(String namespace,
                                                        String stream,
                                                        String version,
+                                                       String eventsLiteral,
                                                        Option<Long> fromOffset,
                                                        Option<Integer> maxEvents) {
         var offset = fromOffset.or(0L);
@@ -592,6 +607,7 @@ public final class StreamApiRoutes implements RouteSource {
     private Promise<PublishBatchResponse> publishBatch(String namespace,
                                                        String stream,
                                                        String version,
+                                                       String publishBatchLiteral,
                                                        PublishRequest[] requests) {
         return ResourceAddress.resourceAddress(namespace, stream, version)
                               .async()
@@ -698,6 +714,7 @@ public final class StreamApiRoutes implements RouteSource {
     private Result<GroupResponse> createGroup(String namespace,
                                               String stream,
                                               String version,
+                                              String groupsLiteral,
                                               GroupCreateRequest request) {
         return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> joinGroupAtAddress(addr,
                                                                                                               request));
@@ -717,7 +734,11 @@ public final class StreamApiRoutes implements RouteSource {
                                                       "created"));
     }
 
-    private Result<GroupResponse> deleteGroup(String namespace, String stream, String version, String group) {
+    private Result<GroupResponse> deleteGroup(String namespace,
+                                              String stream,
+                                              String version,
+                                              String groupsLiteral,
+                                              String group) {
         return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> leaveGroupAtAddress(addr,
                                                                                                                group));
     }
