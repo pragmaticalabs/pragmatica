@@ -868,12 +868,15 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                       .toList();
     }
 
+    /// Hetzner's documented `server.status` values. `unknown`, and any value not listed here, map to
+    /// [InstanceStatus#UNKNOWN] (#1049): reading them as terminated drops an auto-heal replacement that
+    /// still exists.
     static InstanceStatus mapStatus(String hetznerStatus) {
         return switch (hetznerStatus) {
             case "initializing", "starting", "rebuilding", "migrating" -> InstanceStatus.PROVISIONING;
             case "running" -> InstanceStatus.RUNNING;
             case "stopping", "off", "deleting" -> InstanceStatus.STOPPING;
-            default -> InstanceStatus.TERMINATED;
+            default -> InstanceStatus.UNKNOWN;
         };
     }
 
