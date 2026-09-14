@@ -17,11 +17,10 @@
   window in which an independent `SharedScheduler` control task is observed firing, so an empty read
   from a stalled scheduler cannot pass as a cancelled loop]
 - Cancelling the handle is not by itself enough, so `announceStopped` (set by `stop()`, cleared by
-  `start()`) is the code that **refuses** an announce from a stopped protocol, at three points:
-  `announceJoin` arms nothing, and `runAnnounceAttempt` sends nothing — checked at its head and again
-  **per seed**, because `cancel(false)` does not interrupt an attempt already inside its sends.
-  `announceJoin` now also takes `lifecycleLock`, so arming is serialized against `start()`/`stop()`
-  instead of racing them.
+  `start()`) is the code that **refuses** an announce from a stopped protocol: `announceJoin` arms
+  nothing while it is set, and `runAnnounceAttempt` re-reads it **before each seed**, because
+  `cancel(false)` does not interrupt an attempt already inside its sends. `announceJoin` now also
+  takes `lifecycleLock`, so arming is serialized against `start()`/`stop()` instead of racing them.
   [verified: `.announceJoinAfterStop_armsNothing` (an `announceJoin` landing after `stop()` arms no
   loop, and a later `stop()` is not needed to silence it) and
   `.stopDuringAnAttempt_doesNotAnnounceToTheRemainingSeeds` (the transport parks inside the send to
@@ -38,6 +37,10 @@
 - Not changed: `DHTAntiEntropy.start()/stop()` retain and cancel correctly but have no production
   caller (the task is never armed on a real node) — noted, not this ticket's defect.
   [design intent — unverified]
+- [unverified: unpinned — `announceJoin`'s `lifecycleLock` is the one hunk no test reddens (removing
+  it leaves all 8 tests of the nested class green). It closes an interleaving no deterministic test
+  can force; it is also what makes a stop-check at the head of `runAnnounceAttempt` unreachable, so
+  that guard is not shipped rather than shipped unpinned]
 - [unverified: the residual in-flight window — an attempt that has passed the per-seed check may still
   complete that one seed's send after `stop()` returns. Bounded to a single datagram to a single seed,
   and it cannot re-arm: `runAnnounceAttempt` never reschedules itself, and the executor's re-arm is
