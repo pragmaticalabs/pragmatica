@@ -94,6 +94,18 @@ class ManagementRouteDispatchRoundTripTest {
             pin(requestRouter, ManagementRoute.STREAM_READ, List.of("myns", "mystream", "1.0.0", "3"));
             pin(requestRouter, ManagementRoute.STREAMS_PUBLISH, List.of("myns", "mystream", "1.0.0"));
             pin(requestRouter, ManagementRoute.STREAMS_DELETE, List.of("myns", "mystream", "1.0.0"));
+            // #1101: once the router requires exact arity, a registration one spacer short of its
+            // token declaration no longer dispatches by over-length tolerance — it falls to whatever
+            // arity-0 sibling shares the bucket (STREAM_CREATE). Every catalog registration is
+            // therefore pinned here, not only the #742 fold's six.
+            pin(requestRouter, ManagementRoute.STREAMS_LATEST, List.of("myns", "mystream"));
+            pin(requestRouter, ManagementRoute.STREAMS_METADATA, List.of("myns", "mystream", "1.0.0"));
+            pin(requestRouter, ManagementRoute.STREAMS_TAIL, List.of("myns", "mystream", "1.0.0"));
+            pin(requestRouter, ManagementRoute.STREAMS_EVENTS, List.of("myns", "mystream", "1.0.0"));
+            pin(requestRouter, ManagementRoute.STREAMS_GROUPS_LIST, List.of("myns", "mystream", "1.0.0"));
+            pin(requestRouter, ManagementRoute.STREAMS_PUBLISH_BATCH, List.of("myns", "mystream", "1.0.0"));
+            pin(requestRouter, ManagementRoute.STREAMS_GROUP_CREATE, List.of("myns", "mystream", "1.0.0"));
+            pin(requestRouter, ManagementRoute.STREAMS_GROUP_DELETE, List.of("myns", "mystream", "1.0.0", "g1"));
         } finally {
             manager.close();
         }
