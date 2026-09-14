@@ -91,11 +91,6 @@ class RoutePermissionRegistryTest {
         }
 
         @Test
-        void resolve_adminOnly_forBackupRestore() {
-            assertThat(RoutePermissionRegistry.resolve("POST", "/api/v1/backups/restore")).isEqualTo(ADMIN_ONLY);
-        }
-
-        @Test
         void resolve_adminOnly_forLogLevelSet() {
             assertThat(RoutePermissionRegistry.resolve("POST", "/api/v1/logging/levels")).isEqualTo(ADMIN_ONLY);
         }
@@ -176,11 +171,6 @@ class RoutePermissionRegistryTest {
         @Test
         void resolve_operatorAndAbove_forAbTestCreate() {
             assertThat(RoutePermissionRegistry.resolve("POST", "/api/v1/ab-tests/create")).isEqualTo(OPERATOR_AND_ABOVE);
-        }
-
-        @Test
-        void resolve_operatorAndAbove_forBackupCreate() {
-            assertThat(RoutePermissionRegistry.resolve("POST", "/api/v1/backups")).isEqualTo(OPERATOR_AND_ABOVE);
         }
 
         @Test

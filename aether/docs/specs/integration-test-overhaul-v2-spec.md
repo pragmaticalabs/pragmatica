@@ -125,8 +125,6 @@ swim = 6100
 
 [operations.auto_heal]
 enabled = true
-retry_interval = "30s"
-startup_cooldown = "15s"
 
 [runtime.default]
 type = "docker"
