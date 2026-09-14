@@ -39,10 +39,12 @@ class AppHttpServerSecurityModeTest {
         }
 
         @Test
-        void securityModeNone_isDefault() {
+        void securityModeApiKey_isDefault() {
+            // #665: the bare builder is fail-closed; NONE is reachable only by name.
             var config = AppHttpConfig.appHttpConfig(19090);
-            assertThat(config.securityMode()).isEqualTo(SecurityMode.NONE);
-            assertThat(config.securityEnabled()).isFalse();
+            assertThat(config.securityMode()).isEqualTo(SecurityMode.API_KEY);
+            assertThat(AppHttpConfig.insecureAppHttpConfig(19090).securityMode()).isEqualTo(SecurityMode.NONE);
+            assertThat(config.securityEnabled()).isTrue();
         }
 
         @Test
@@ -215,7 +217,7 @@ class AppHttpServerSecurityModeTest {
             httpClient = HttpClient.newBuilder()
                                    .connectTimeout(Duration.ofSeconds(5))
                                    .build();
-            var config = AppHttpConfig.appHttpConfig(OPEN_PORT);
+            var config = AppHttpConfig.insecureAppHttpConfig(OPEN_PORT);
             server = AppHttpServer.appHttpServer(config,
                                                  ForwardingTimeouts.forwardingTimeouts(),
                                                  SELF_NODE,

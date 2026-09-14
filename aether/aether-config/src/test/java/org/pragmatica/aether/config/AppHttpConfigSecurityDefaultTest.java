@@ -42,4 +42,14 @@ class AppHttpConfigSecurityDefaultTest {
                 .isEqualTo(SecurityMode.API_KEY);
         assertThat(config.securityEnabled()).isTrue();
     }
+
+    @Test
+    void insecureBuilder_isTheOnlyUnnamedRouteToNone() {
+        var config = AppHttpConfig.insecureAppHttpConfig(8070);
+
+        assertThat(config.securityMode()).isEqualTo(SecurityMode.NONE);
+        assertThat(config.enabled()).isTrue();
+        assertThat(config.port()).isEqualTo(8070);
+        assertThat(config.apiKeys()).isEmpty();
+    }
 }
