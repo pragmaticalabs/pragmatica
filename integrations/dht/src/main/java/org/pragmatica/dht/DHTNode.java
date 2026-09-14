@@ -302,7 +302,8 @@ public final class DHTNode {
     /// Whether `candidate` is one of the partition's replicas in THIS node's ring — the same single
     /// placement function every other caller uses (issue #420).
     private boolean isReplicaOf(NodeId candidate, Partition partition) {
-        return ring.nodesFor(partition, config.effectiveReplicationFactor(ring.nodeCount()))
+        return ring.nodesFor(partition,
+                             config.effectiveReplicationFactor(ring.nodeCount()))
                    .contains(candidate);
     }
 

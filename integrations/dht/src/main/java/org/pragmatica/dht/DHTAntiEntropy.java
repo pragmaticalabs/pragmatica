@@ -132,7 +132,6 @@ public final class DHTAntiEntropy {
 
     private void synchronizePartitions() {
         expireStalePendingDigests();
-
         var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
         var owned = 0;
 
@@ -175,8 +174,7 @@ public final class DHTAntiEntropy {
 
             var correlationId = IdGenerator.generate();
 
-            pendingDigests.put(correlationId,
-                               new PendingDigest(peer, partitionIndex, localDigest, System.nanoTime()));
+            pendingDigests.put(correlationId, new PendingDigest(peer, partitionIndex, localDigest, System.nanoTime()));
             sendLoudly(peer,
                        new DHTMessage.DigestRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex),
                        "digest request",
@@ -193,21 +191,21 @@ public final class DHTAntiEntropy {
     private void sendLoudly(NodeId peer, ProtocolMessage message, String what, Runnable onNotSent) {
         network.sendOutcome(peer, message)
                .onSuccess(outcome -> {
-                   if (!outcome.isSent()) {
-                       log.warn("DHT anti-entropy {} to {} not sent ({}); the next round repeats it",
-                                what,
-                                peer.id(),
-                                outcome);
-                       onNotSent.run();
-                   }
-               })
+                              if (!outcome.isSent()) {
+                              log.warn("DHT anti-entropy {} to {} not sent ({}); the next round repeats it",
+                                       what,
+                                       peer.id(),
+                                       outcome);
+                              onNotSent.run();
+                          }
+                          })
                .onFailure(cause -> {
-                   log.warn("DHT anti-entropy {} to {} failed ({}); the next round repeats it",
-                            what,
-                            peer.id(),
-                            cause.message());
-                   onNotSent.run();
-               });
+                              log.warn("DHT anti-entropy {} to {} failed ({}); the next round repeats it",
+                                       what,
+                                       peer.id(),
+                                       cause.message());
+                              onNotSent.run();
+                          });
     }
 
     /// Drop correlations whose response never came. One interval after a digest was sent the peer is
@@ -259,7 +257,8 @@ public final class DHTAntiEntropy {
         var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
 
         return node.ring()
-                   .nodesFor(Partition.at(partitionIndex), replicationFactor)
+                   .nodesFor(Partition.at(partitionIndex),
+                             replicationFactor)
                    .contains(node.nodeId());
     }
 
