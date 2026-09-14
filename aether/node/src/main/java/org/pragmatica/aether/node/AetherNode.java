@@ -3456,6 +3456,20 @@ public interface AetherNode extends ManageableNode {
         // via the reconciler's isLeader gate (same idiom as the other leader-only actuations).
         // ADDITIVE — onConfirmedDeparture above still fires for ALL DEAD paths.
         membershipFsm.onJoinGraceReap(leaderReconciler::onJoinGraceReap);
+        // #588: the two rosters the cluster-status routes read admit a peer BEFORE the FSM promotes
+        // it — `topologyObserver` on the SWIM discovery edge, `metricsCollector` on the first ping or
+        // pong carrying it — so a member that dies without ever reaching MEMBER (the join-grace reap
+        // above, or any other OBSERVED→DEAD path) emits no REMOVED delta and stayed in both forever
+        // as an UNKNOWN ghost. Prune on the never-joined death edge exactly as the projector's
+        // REMOVED arm prunes on the joined one — same two calls, both idempotent on an absent node.
+        // This does NOT touch the join-grace window itself: the window exists to protect a booted-
+        // but-not-yet-healthy joiner from being reaped mid-join (`joinGraceReapDeferred` re-arms
+        // while the transport link is live), and shortening or bypassing it would trade this ghost
+        // for killed legitimate joiners. The reap's TIMING is unchanged; only its fan-out grows.
+        membershipFsm.onNeverJoinedDeath(departed -> {
+            topologyObserver.pruneDeparted(departed);
+            metricsCollector.removeNode(departed);
+        });
         // seed-500 part 2: prune the DHT ring at the DEPARTING edge. A scale-down drain reaches the
         // FSM as DrainRequested → DEPARTING ~1s after the leader ping; without this the drained
         // node lingers in the consistent-hash ring until the SWIM-driven NodeRemoved DEAD-edge

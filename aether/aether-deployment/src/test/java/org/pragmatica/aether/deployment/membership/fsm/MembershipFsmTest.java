@@ -963,6 +963,99 @@ class MembershipFsmTest {
         }
     }
 
+    /// #588 — the NEVER-JOINED death arm ([`MembershipFsm#onNeverJoinedDeath`]): the complement of
+    /// the REMOVED delta edge, which `everJoined` confines to members that reached MEMBER. Both
+    /// cluster-status rosters admit a peer on the SWIM discovery edge, BEFORE promotion, so a member
+    /// that dies still OBSERVED (join-grace reap, or any other pre-promotion death) left a row in
+    /// each that no edge removed. The two arms are mutually exclusive by construction: exactly one
+    /// of them fires per fresh DEAD edge.
+    @Nested
+    class NeverJoinedDeath {
+        private static final TimeSpan FIRING_GRACE = TimeSpan.timeSpan(80).millis();
+        private static final TimeSpan LONG_WINDOW = TimeSpan.timeSpan(30).seconds();
+
+        private static MembershipFsm joinGraceManager(TimeSpan joinGrace) {
+            return MembershipFsm.membershipFsm(FsmObserver.noop(),
+                                               System::currentTimeMillis,
+                                               NO_HINT_DECAY,
+                                               SHORT_BACKSTOP,
+                                               LONG_WINDOW,
+                                               joinGrace);
+        }
+
+        /// THE PIN. A disconnected never-healthy joiner is reaped OBSERVED→DEAD by the join-grace
+        /// reaper; the rosters that admitted it must be told, and the delta contract must not move.
+        @Test
+        void neverHealthyReap_firesTheRosterPruneOnceAndStillEmitsNoDelta() {
+            var manager = joinGraceManager(FIRING_GRACE);
+            var pruned = new ArrayList<NodeId>();
+            var deltas = new ArrayList<MembershipDeltaEdge>();
+            manager.onNeverJoinedDeath(pruned::add);
+            manager.onMembershipDelta(deltas::add);
+
+            manager.onPeerDisconnected(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Observed");
+
+            awaitDead(manager, A);
+            assertThat(pruned).as("the rosters admitted A before promotion, so its pre-promotion death must prune them")
+                              .containsExactly(A);
+            assertThat(deltas).as("still no REMOVED delta — the never-joined arm is the complement, not a widening")
+                              .isEmpty();
+        }
+
+        /// Role-blind, as both rosters are: `TopologyObserver.addNode` has no role filter and
+        /// `ClusterSyncCollector.remoteMetrics` is keyed by node alone. #588's own subject is a worker.
+        @Test
+        void neverHealthyReapOfAWorker_firesTheRosterPrune() {
+            var manager = joinGraceManager(FIRING_GRACE);
+            var pruned = new ArrayList<NodeId>();
+            manager.onNeverJoinedDeath(pruned::add);
+
+            manager.onMemberDescriptor(labeledInfo(A, "host-a", 6001, Map.of(NodeInfo.LABEL_ROLE, "worker")));
+            manager.onPeerDisconnected(A);
+
+            awaitDead(manager, A);
+            assertThat(pruned).containsExactly(A);
+        }
+
+        /// MUTUAL EXCLUSION, the half that keeps this arm from silently taking over the joined path:
+        /// a member that DID reach MEMBER emits the REMOVED delta on death and must NOT fire this arm
+        /// — otherwise the projector's prune would be dead code and its mutation would stay green.
+        @Test
+        void joinedMemberDeath_emitsTheRemovedDeltaAndNotTheNeverJoinedArm() {
+            var manager = joinGraceManager(FIRING_GRACE);
+            var pruned = new ArrayList<NodeId>();
+            var deltas = new ArrayList<MembershipDeltaEdge>();
+            manager.onNeverJoinedDeath(pruned::add);
+            manager.onMembershipDelta(deltas::add);
+
+            promoteToMember(manager, A);
+            manager.onSwimDeparted(A, 5L);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+            assertThat(deltas).extracting(MembershipDeltaEdge::kind)
+                              .as("a joined member's death still rides the REMOVED delta")
+                              .containsExactly(MembershipDeltaEdge.Kind.JOINED, MembershipDeltaEdge.Kind.REMOVED);
+            assertThat(pruned).as("and must not also fire the never-joined arm — the two are exclusive")
+                              .isEmpty();
+        }
+
+        /// Passing `null` resets the listener to the no-op — a later never-joined death neither throws
+        /// nor reaches a stale listener.
+        @Test
+        void onNeverJoinedDeath_nullResetsToNoop() {
+            var manager = joinGraceManager(FIRING_GRACE);
+            var pruned = new ArrayList<NodeId>();
+            manager.onNeverJoinedDeath(pruned::add);
+            manager.onNeverJoinedDeath(null);
+
+            manager.onPeerDisconnected(A);
+
+            awaitDead(manager, A);
+            assertThat(pruned).isEmpty();
+        }
+    }
+
     @Nested
     class ConfirmedDeparture {
         /// Co-confirmed death (SWIM-FAULTY ∧ liveness-gone) is a fresh edge into DEAD — the listener
