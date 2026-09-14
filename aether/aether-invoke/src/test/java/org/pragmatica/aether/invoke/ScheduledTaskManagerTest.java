@@ -8,7 +8,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
-import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -35,7 +34,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.SharedScheduler;
-import org.pragmatica.consensus.topology.MembershipDecision;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -159,30 +157,72 @@ class ScheduledTaskManagerTest {
             assertThat(invocations).allMatch(record -> record.message() instanceof Unit);
         }
 
-        /// #273 item 1, both edges: this node's own `NodeDraining` cancels its ALL-mode timers and no fire
-        /// or state write happens over ≥2 intervals; its `NodeFailedDrain` restarts them and fires resume.
-        /// Another node's drain is not this node's business.
+        /// #273 item 1: this node's own drain cancels its ALL-mode timers and no fire or state write
+        /// happens over >=2 intervals. Driven through [ScheduledTaskManager#onDrainInitiated] — the
+        /// method `DrainProcedure.initiate` invokes via `AetherNode`'s `drainInitiatedEmitter`. That the
+        /// real drain reaches this method is pinned separately, in `aether/node`, by
+        /// `ScheduledTaskDrainWiringBootTest`; this test owns only the manager's behaviour once it does.
         @Test
-        void allMode_drainingSelf_stopsFiring_andFailedDrainResumes() {
+        void allMode_drainingSelf_stopsFiring() {
             putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
             establishQuorum();
             assertThat(manager.activeTimerCount()).isEqualTo(1);
-            manager.onMembershipDecision(MembershipDecision.nodeDraining(new NodeId("node-other"), List.of(self)));
-            assertThat(manager.activeTimerCount()).as("another node's drain leaves this node's timers alone")
-                      .isEqualTo(1);
-            manager.onMembershipDecision(MembershipDecision.nodeDraining(self, List.of(self)));
-            assertThat(manager.activeTimerCount()).as("#273: NodeDraining(self) cancels the ALL-mode timer").isZero();
+            manager.onDrainInitiated();
+            assertThat(manager.activeTimerCount()).as("#273: the drain cancels this node's ALL-mode timer").isZero();
             var firesBefore = invocations.size();
             var writesBefore = stateWrites.size();
 
             settle(2_500);
-            assertThat(invocations).as("no fire while draining over ≥2 intervals").hasSize(firesBefore);
-            assertThat(stateWrites).as("no state write while draining over ≥2 intervals").hasSize(writesBefore);
-            manager.onMembershipDecision(MembershipDecision.nodeFailedDrain(self, List.of(self)));
-            assertThat(manager.activeTimerCount()).as("#273: NodeFailedDrain(self) restarts the ALL-mode timer")
+            assertThat(invocations).as("no fire while draining over >=2 intervals").hasSize(firesBefore);
+            assertThat(stateWrites).as("no state write while draining over >=2 intervals").hasSize(writesBefore);
+        }
+
+        /// #273 item 1, the `!draining` term of `hostingAndNotDraining` rather than the cancel: a drained
+        /// node must not RE-register an ALL-mode timer. `startEligibleTasks` runs again on every
+        /// Following/Leading re-entry and on any registry change, both of which outlive the drain's start
+        /// (the grace window is 30s by default). Round 1 left this unpinned — dropping the `!draining`
+        /// term reddened nothing, because the only drain test asserted the cancel, which
+        /// `cancelAllModeTimers` performs on its own.
+        @Test
+        void allMode_drainingSelf_doesNotReRegisterOnQuorumReEntryOrRegistryChange() {
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            assertThat(manager.activeTimerCount()).isEqualTo(1);
+            manager.onDrainInitiated();
+            assertThat(manager.activeTimerCount()).isZero();
+
+            loseQuorum();
+            establishQuorum();
+            assertThat(manager.activeTimerCount()).as("a Following re-entry must not re-register while draining")
+                      .isZero();
+
+            putTask("cache", artifact, MethodName.methodName("refresh").unwrap(), self, "1s", ExecutionMode.ALL);
+            assertThat(manager.activeTimerCount()).as("a registry change must not register a new timer while draining")
+                      .isZero();
+
+            var firesBefore = invocations.size();
+
+            settle(2_500);
+            assertThat(invocations).as("no fire after re-entry while draining over >=2 intervals").hasSize(firesBefore);
+        }
+
+        /// The opposite direction of the same gate, and the reason it is not simply "exclude everyone":
+        /// a hosting node that is NOT draining keeps firing after the very same re-entry the test above
+        /// drives. Without this control, a predicate that returned `false` unconditionally would satisfy
+        /// every drain assertion above while silently stopping the feature on every node.
+        @Test
+        void allMode_notDraining_stillFiresAfterQuorumReEntry() {
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            loseQuorum();
+            establishQuorum();
+            assertThat(manager.activeTimerCount()).as("a hosting, non-draining node re-registers on re-entry")
                       .isEqualTo(1);
-            awaitTrue(() -> invocations.size() >= firesBefore + 1, 4_000);
-            assertThat(invocations.size()).as("fires resume after the failed drain").isGreaterThan(firesBefore);
+
+            var firesBefore = invocations.size();
+
+            awaitTrue(() -> invocations.size() >= firesBefore + 2, 6_000);
+            assertThat(invocations.size()).as("and keeps firing").isGreaterThan(firesBefore);
         }
 
         /// Fire-time guard: hosting can end without a registry change (the slice unloaded here while

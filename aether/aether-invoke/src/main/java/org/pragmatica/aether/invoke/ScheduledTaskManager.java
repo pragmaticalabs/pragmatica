@@ -28,7 +28,6 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
-import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions;
@@ -57,13 +56,18 @@ public interface ScheduledTaskManager {
     @MessageReceiver
     void onQuorumStateChange(ClusterStateNotification notification);
 
-    /// #273 item 1: ALL-mode eligibility is hosting AND not draining. `NodeDraining(self)` cancels this
-    /// node's ALL-mode timers (a draining node must not keep firing), `NodeFailedDrain(self)` restarts
-    /// them. SINGLE-mode is leader-owned and untouched. Other nodes' edges are ignored here. Default
-    /// no-op so the route-test stubs that implement this interface stay compilable; the production
-    /// adapter overrides it.
-    @MessageReceiver
-    default void onMembershipDecision(MembershipDecision decision) {}
+    /// #273 item 1: ALL-mode eligibility is hosting AND not draining. This node's own drain cancels its
+    /// ALL-mode timers — a draining node must not keep firing — and nothing re-registers them, because
+    /// `DrainProcedure` is single-shot and irreversible (`INACTIVE -> DRAINING -> EXITED`): the node
+    /// halts, it never returns to service. SINGLE-mode is leader-owned and untouched.
+    ///
+    /// Not a `@MessageReceiver`: the producer is `DrainProcedure.initiate`, which invokes its
+    /// `drainInitiatedEmitter` once inside the CAS to DRAINING. `AetherNode` composes this call into
+    /// that emitter, so every drain trigger (QUORUM_LOSS, CORE_ABSENCE, COMMANDED) funnels through it.
+    /// An earlier revision keyed this on `MembershipDecision.NodeDraining`, which no producer emits —
+    /// the per-node lifecycle-projection layer was removed in the membership-v2 finale. Default no-op
+    /// so the route-test stubs that implement this interface stay compilable.
+    default void onDrainInitiated() {}
 
     int activeTimerCount();
     void stop();
@@ -126,7 +130,8 @@ public interface ScheduledTaskManager {
         final Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers = new ConcurrentHashMap<>();
         final Set<ScheduledTaskKey> inFlight = ConcurrentHashMap.newKeySet();
         final AtomicLong quorumSequence = new AtomicLong(0);
-        /// #273: set on `NodeDraining(self)`, cleared on `NodeFailedDrain(self)`; gates ALL-mode only.
+        /// #273: set once by [ScheduledTaskManager#onDrainInitiated], never cleared — the drain is
+        /// irreversible. Gates ALL-mode only.
         final AtomicBoolean draining = new AtomicBoolean(false);
         final Dormant dormant;
         final Following following;
@@ -534,15 +539,25 @@ public interface ScheduledTaskManager {
             ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
         }
 
-        /// #273: drop this node's ALL-mode timers (SINGLE-mode timers, leader-owned, stay).
+        /// #273: drop this node's ALL-mode timers (SINGLE-mode timers, leader-owned, stay). The count is
+        /// logged rather than returned: it is the node's only operator-visible evidence that the drain
+        /// reached the scheduler, and `ScheduledTaskDrainWiringBootTest` reads this line to pin that the
+        /// real `DrainProcedure.initiate` gets here.
         static void cancelAllModeTimers(Context ctx) {
-            ctx.registry.allTasks()
-                        .stream()
-                        .filter(task -> task.executionMode() == ExecutionMode.ALL)
-                        .map(task -> ScheduledTaskKey.scheduledTaskKey(task.configSection(),
-                                                                       task.artifact(),
-                                                                       task.methodName()))
-                        .forEach(key -> cancelTimer(ctx, key));
+            // Materialised, not `peek`-counted: `count()` is permitted to skip a pipeline whose size it
+            // can derive, which would cancel nothing while still reporting a plausible number.
+            var keys = ctx.registry.allTasks()
+                                   .stream()
+                                   .filter(task -> task.executionMode() == ExecutionMode.ALL)
+                                   .map(task -> ScheduledTaskKey.scheduledTaskKey(task.configSection(),
+                                                                                  task.artifact(),
+                                                                                  task.methodName()))
+                                   .toList();
+
+            keys.forEach(key -> cancelTimer(ctx, key));
+            log.info("Drain initiated on {} — cancelled {} ALL-mode scheduled timer(s); ALL-mode fires stop here",
+                     ctx.self.id(),
+                     keys.size());
         }
 
         static void cancelTimer(Context ctx, ScheduledTaskKey key) {
@@ -592,23 +607,9 @@ public interface ScheduledTaskManager {
         }
 
         @Override
-        public void onMembershipDecision(MembershipDecision decision) {
-            switch (decision) {
-                case MembershipDecision.NodeDraining(var node, _, _, _) when node.equals(ctx.self) -> enterDraining();
-                case MembershipDecision.NodeFailedDrain(var node, _, _, _) when node.equals(ctx.self) -> leaveDraining();
-                default -> {}
-            }
-        }
-
-        private void enterDraining() {
+        public void onDrainInitiated() {
             if (ctx.draining.compareAndSet(false, true)) {
                 TaskOps.cancelAllModeTimers(ctx);
-            }
-        }
-
-        private void leaveDraining() {
-            if (ctx.draining.compareAndSet(true, false) && (fsm.current() instanceof Following || fsm.current() instanceof Leading)) {
-                TaskOps.startEligibleTasks(ctx, fsm.current() instanceof Leading);
             }
         }
 
