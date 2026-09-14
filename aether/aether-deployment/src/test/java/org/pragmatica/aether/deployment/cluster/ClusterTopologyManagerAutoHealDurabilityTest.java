@@ -113,7 +113,8 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
                                                              _ -> {},
                                                              _ -> {},
                                                              Option::none,
-                                                             autoHealStateReader);
+                                                             autoHealStateReader,
+                                                             MembershipLiveness.UNWIRED);
     }
 
     /// Condition 1 — a fresh/empty KV (no operator has ever touched the flag; also the state of

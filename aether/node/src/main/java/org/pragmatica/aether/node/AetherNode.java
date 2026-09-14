@@ -61,6 +61,7 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.aether.deployment.cluster.MembershipLiveness;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery;
@@ -2479,6 +2480,23 @@ public interface AetherNode extends ManageableNode {
         // node boots with resolved credentials instead of crashing on placeholders. Returns none()
         // gracefully when no config path was published (forge/tests) or the file can't be parsed.
         var resolvedLocalConfig = Lazy.lazy(AetherNode::parseOwnResolvedConfig);
+        // #1050 / #1062 — the CTM consults membership and liveness evidence before every irreversible reap. The
+        // SWIM detector and the LeaderReconciler are built further below, so both are reached through holders
+        // declared HERE (read per call; empty until published, which every reap gate treats as fail-closed).
+        // The configured core count comes out of the same seam and is handed to the LeaderReconciler and the
+        // QuorumLossDetector below, so the drain decision and its reap read ONE count supplier.
+        var swimHealthDetectorHolder = new AtomicReference<CoreSwimHealthDetector>();
+        var leaderReconcilerRef = new AtomicReference<LeaderReconciler>();
+        var ctmLiveness = drainGraceLiveness(membershipFsmRef::get,
+                                             clusterConfigReader,
+                                             config.topology().coreNodes().size(),
+                                             swimHealthDetectorHolder::get,
+                                             peer -> clusterNode.network()
+                                                                .connectedPeers()
+                                                                .contains(peer),
+                                             leaderReconcilerRef::get,
+                                             metricsCollector::retainedDispatchedNodes);
+        IntSupplier configuredCoreCountSupplier = ctmLiveness.configuredCoreCount();
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
@@ -2493,7 +2511,8 @@ public interface AetherNode extends ManageableNode {
                                                                                    drainCommandRegistry::clearDrain,
                                                                                    resolvedLocalConfig::get,
                                                                                    () -> kvStore.getTyped(AetherKey.AutoHealStateKey.SINGLETON,
-                                                                                                          AutoHealStateValue.class));
+                                                                                                          AutoHealStateValue.class),
+                                                                                   ctmLiveness);
         // E2 Phase 2b (2026-05-28): OrphanSelfDrainChecker deleted; NTT (§6) drives departure
         // detection and the §8 unified drain handles surplus dissolution. Membership v2 finale:
         // the leader-pinned `LifecycleReconciler` (and the FSM it wrote through) are gone — the
@@ -2896,7 +2915,7 @@ public interface AetherNode extends ManageableNode {
         // ValuePut handler only fires long after seeding, so the holder is always populated by
         // read time. A holder (not a reorder) keeps the router-build / replay-burst ordering
         // documented below intact.
-        var swimHealthDetectorHolder = new AtomicReference<CoreSwimHealthDetector>();
+        // (`swimHealthDetectorHolder` is declared earlier, beside the CTM wiring that also reads it.)
         // #642: worker-mode subsystems are created lazily, when a WORKER activation directive arrives —
         // long after assembly — so the announcer cannot be a plain local. The holder is how stop()
         // reaches it to cancel the re-announce tick; empty on a node that never became a worker.
@@ -3062,12 +3081,6 @@ public interface AetherNode extends ManageableNode {
         // constructed and listeners registered on every node. The migration-ramp
         // observation-flag and DivergenceLogger are gone.
         var membershipConfig = config.membership().or(MembershipConfig::membershipConfig);
-        IntSupplier configuredCoreCountSupplier = () -> clusterConfigReader.get()
-                                                                           .map(AetherValue.ClusterConfigValue::coreCount)
-                                                                           .or(() -> config.topology()
-                                                                                           .coreNodes()
-                                                                                           .size());
-        var leaderReconcilerRef = new AtomicReference<LeaderReconciler>();
         Runnable nttReconcileTrigger = () -> onNttReconcile(quorumLossDetectorRef,
                                                             membershipFsmRef,
                                                             leaderReconcilerRef,
@@ -3218,6 +3231,9 @@ public interface AetherNode extends ManageableNode {
         // SUSPECT / FAULTY / DEPARTED / UNKNOWN map to the matching onSwim* ingress; the FSM drives the
         // per-member lifecycle and evicts on the DEAD edge. Leader-gating happens inside the FSM.
         swimHealthDetector.addObservationListener(obs -> routeSwimEdgeToMembershipFsm(obs, membershipFsm));
+        // #1050 (verify-1057-r2 S1): the FAULTY edge is the death evidence that re-arms a departed-node reap the CTM
+        // abandoned while SWIM still reported the node SUSPECTED. Pinned by `SwimFaultyToCtmRoutingTest`.
+        swimHealthDetector.addObservationListener(obs -> routeSwimFaultyToCtm(obs, clusterTopologyManager));
         // P3 (membership unification): quorum-loss is detected by QuorumLossDetector from the
         // unified tracker's stable membership (armed after first quorum; grace =
         // quorumLossDrainThreshold) and drives the §8.2 unified `DrainProcedure` directly.
@@ -4814,6 +4830,65 @@ public interface AetherNode extends ManageableNode {
                            .or(Set.of());
     }
 
+    /// #1050 / #1062 — the CTM's membership and liveness evidence as ONE named seam, the sibling of
+    /// [#presenceMemberSupplier]. Every projection is read live, per call:
+    /// - counted — the FSM's role-scoped MEMBER + SUSPECT set, the `LeaderReconciler`'s own drain denominator;
+    /// - tracked — the FSM's not-DEAD set (OBSERVED + MEMBER + SUSPECT + DEPARTING);
+    /// - swimAlive — raw SWIM HEALTHY/SUSPECTED;
+    /// - transportConnected — the leader's own cluster-transport view;
+    /// - in-flight — this leader's reconciler in-flight keys plus the set retained from the previous leader's
+    ///   pings;
+    /// - configured — the committed `ClusterConfigValue.coreCount`, else the bootstrap topology size.
+    ///
+    /// Before the FSM, detector or reconciler is published, its projection reads empty or false, which every
+    /// reap gate treats as not quorum-safe (fail-closed). `DrainGraceLivenessSeamTest` pins this method.
+    static MembershipLiveness drainGraceLiveness(Supplier<MembershipFsm> membershipFsm,
+                                                 Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader,
+                                                 int topologyCoreNodes,
+                                                 Supplier<CoreSwimHealthDetector> swimHealthDetector,
+                                                 Predicate<NodeId> transportConnected,
+                                                 Supplier<LeaderReconciler> leaderReconciler,
+                                                 Supplier<Set<NodeId>> retainedDispatched) {
+        return MembershipLiveness.membershipLiveness(() -> fsmProjection(membershipFsm.get(),
+                                                                         MembershipFsm::coreCountedMembers),
+                                                     () -> fsmProjection(membershipFsm.get(),
+                                                                         MembershipFsm::broadcastEligibleMembers),
+                                                     nodeId -> swimAliveIfPublished(swimHealthDetector.get(), nodeId),
+                                                     transportConnected,
+                                                     () -> inFlightProvisioning(leaderReconciler.get(),
+                                                                                retainedDispatched.get()),
+                                                     () -> configuredCoreCount(clusterConfigReader.get(),
+                                                                               topologyCoreNodes));
+    }
+
+    private static Set<NodeId> fsmProjection(MembershipFsm membershipFsm,
+                                             Function<MembershipFsm, Set<NodeId>> projection) {
+        return Option.option(membershipFsm)
+                     .map(projection::apply)
+                     .or(Set.of());
+    }
+
+    private static boolean swimAliveIfPublished(CoreSwimHealthDetector swimHealthDetector, NodeId nodeId) {
+        return Option.option(swimHealthDetector)
+                     .map(detector -> swimAliveForCoConfirmation(detector, nodeId))
+                     .or(false);
+    }
+
+    private static Set<NodeId> inFlightProvisioning(LeaderReconciler leaderReconciler, Set<NodeId> retainedDispatched) {
+        return Stream.concat(retainedDispatched.stream(),
+                             Option.option(leaderReconciler)
+                                   .map(LeaderReconciler::inFlightProvisioningKeys)
+                                   .or(Set.of())
+                                   .stream())
+                     .collect(Collectors.toUnmodifiableSet());
+    }
+
+    private static int configuredCoreCount(Option<AetherValue.ClusterConfigValue> clusterConfig,
+                                           int topologyCoreNodes) {
+        return clusterConfig.map(AetherValue.ClusterConfigValue::coreCount)
+                            .or(topologyCoreNodes);
+    }
+
     @Contract
     private static void commandedDrain(DrainProcedure drainProcedure, NodeReportedStateHolder holder) {
         drainProcedure.initiate(DrainReason.COMMANDED);
@@ -5102,6 +5177,16 @@ public interface AetherNode extends ManageableNode {
         };
 
         quicNetwork.setFollowerObservationWiring(isLeaderSupplier, reporter, epochAdapter);
+    }
+
+    /// #1050 — only the FAULTY edge reaches [`ClusterTopologyManager#onSwimFaulty`]; every other observation
+    /// (including `DepartedObserved`, which SWIM emits as the second half of the same FAULTY-edge pair) is
+    /// dropped here. The CTM acts on it only for a reap it has abandoned.
+    @Contract
+    static void routeSwimFaultyToCtm(SwimObservation observation, ClusterTopologyManager clusterTopologyManager) {
+        if (observation instanceof SwimObservation.FaultyObserved faulty) {
+            clusterTopologyManager.onSwimFaulty(faulty.peer());
+        }
     }
 
     /// Route a SWIM observation edge into the authoritative [`MembershipFsm`]. HEALTHY / SUSPECT /
