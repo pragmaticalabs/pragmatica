@@ -673,19 +673,24 @@ class StorageFactoryEncryptionTest {
     /// #852 symptom one call later. Both directions of the `streams` guard are reachable from the
     /// `[storage.encryption] streams_encrypted` flag alone, with no code defect involved.
     ///
-    /// [#bootDecision] is that decision, in `assembleNode`'s order and with its abort semantics.
-    /// An orphaned marker is only observable across a boot, so each case asserts on the DIRECTORY
-    /// after the refusal and then drives the back-out boot the operator actually performs.
+    /// [#bootDecision] is that decision as `assembleNode` makes it. Against the two-call ordering it
+    /// was written for, both refusal cases below failed on the marker assertion; it is now the ONE
+    /// `createAll` call that replaced them, and the assertions are unchanged -- the production
+    /// ordering was what was wrong, not the property. An orphaned marker is only observable across a
+    /// boot, so each case asserts on the DIRECTORY after the refusal and then drives the back-out
+    /// boot the operator actually performs.
     private static Result<Map<String, StorageFactory.StorageSetup>> bootDecision(Map<String, StorageConfig> configs,
                                                                                  Option<EncryptionKeyring> keyring,
                                                                                  Path streamDataDir,
                                                                                  Option<EncryptionKeyring> streamsKeyring) {
-        return StorageFactory.createAll(configs, NODE_ID, Option.none(), keyring)
-                              .flatMap(setups -> StorageFactory.defaultStreamStorage(Option.none(),
-                                                                                     streamDataDir,
-                                                                                     NODE_ID,
-                                                                                     streamsKeyring)
-                                                                .map(_ -> setups));
+        return StorageFactory.createAll(configs,
+                                         NODE_ID,
+                                         Option.none(),
+                                         keyring,
+                                         new StorageFactory.StreamSetupRequest(Option.none(),
+                                                                               streamDataDir,
+                                                                               NODE_ID,
+                                                                               streamsKeyring));
     }
 
     private Map<String, StorageConfig> configsWithDefaults(Path instanceDir,
