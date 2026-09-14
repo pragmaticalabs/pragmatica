@@ -133,6 +133,9 @@ public final class DHTTopologyListener {
     public void onNodeRecovered(NodeId recoveredNodeId) {
         log.info("DHT: Node {} recovered from DEPARTING, re-adding to ring", recoveredNodeId.id());
         node.ring().addNode(recoveredNodeId);
+        // Same shape as a join: the re-added node counts toward RF again; a round settles what it
+        // missed while pruned (issue #420).
+        antiEntropy.onPresent(DHTAntiEntropy::synchronizeNow);
     }
 
     /// Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown

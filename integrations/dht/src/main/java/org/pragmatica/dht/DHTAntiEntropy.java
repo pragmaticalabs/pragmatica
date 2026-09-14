@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -130,6 +131,7 @@ public final class DHTAntiEntropy {
 
     private void synchronizePartitions() {
         var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
+        var owned = 0;
 
         for (int p = 0; p < Partition.MAX_PARTITIONS; p++) {
             var nodes = node.ring().nodesFor(Partition.at(p), replicationFactor);
@@ -138,8 +140,11 @@ public final class DHTAntiEntropy {
                 continue;
             }
 
+            owned++;
             sendDigestRequests(p, nodes);
         }
+
+        log.debug("DHT anti-entropy round: {} partitions owned, digests sent to their replicas", owned);
     }
 
     private void sendDigestRequests(int partitionIndex, List<NodeId> nodes) {
@@ -168,9 +173,29 @@ public final class DHTAntiEntropy {
             var correlationId = IdGenerator.generate();
 
             pendingDigests.put(correlationId, new PendingDigest(peer, partitionIndex, localDigest));
-            network.send(peer,
-                         new DHTMessage.DigestRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex));
+            sendLoudly(peer,
+                       new DHTMessage.DigestRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex),
+                       "digest request");
         }
+    }
+
+    /// A refused send is never silent (issue #420): the transport's refusal is logged at WARN and
+    /// the round is not retried — the next scheduled round repeats the exchange, which is the
+    /// guarantee: a joiner is backfilled at join time or within one interval of it.
+    private void sendLoudly(NodeId peer, ProtocolMessage message, String what) {
+        network.sendOutcome(peer, message)
+               .onSuccess(outcome -> {
+                              if (!outcome.isSent()) {
+                              log.warn("DHT anti-entropy {} to {} not sent ({}); the next round repeats it",
+                                       what,
+                                       peer.id(),
+                                       outcome);
+                          }
+                          })
+               .onFailure(cause -> log.warn("DHT anti-entropy {} to {} failed ({}); the next round repeats it",
+                                            what,
+                                            peer.id(),
+                                            cause.message()));
     }
 
     /// Handle a digest response from a remote peer.
@@ -222,8 +247,9 @@ public final class DHTAntiEntropy {
     private void requestMigrationData(NodeId peer, int partitionIndex) {
         var correlationId = IdGenerator.generate();
 
-        network.send(peer,
-                     new DHTMessage.MigrationDataRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex));
+        sendLoudly(peer,
+                   new DHTMessage.MigrationDataRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex),
+                   "migration request");
     }
 
     /// Get the count of pending digest comparisons (for testing).

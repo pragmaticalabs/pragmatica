@@ -182,6 +182,26 @@ class DHTChurnSurvivalTest {
         assertThat(cluster.holds(joiner, key)).as("the joiner's round pulls from the stocked newcomer").isTrue();
     }
 
+    /// The DEPARTING→MEMBER recovery edge re-adds a pruned node to the ring — the same shape as a
+    /// join: it counts toward RF again while holding whatever it missed while pruned, so it pulls.
+    @Test
+    void recoveredNode_pullsWhatItMissedWhilePruned() {
+        var cluster = fiveNodeCluster();
+        var recovering = new NodeId("node-4");
+
+        cluster.members().forEach(m -> m.topologyListener().onNodeDeparting(recovering));
+
+        var key = cluster.findKeyGainedByRejoin(recovering, "recover");
+        cluster.responsibleFor(key).forEach(holder -> cluster.seedOnly(holder, key, value("payload")));
+
+        assertThat(cluster.holds(recovering, key)).as("pruned while the key was written").isFalse();
+
+        cluster.members().forEach(m -> m.topologyListener().onNodeRecovered(recovering));
+
+        assertThat(cluster.holds(recovering, key)).as("the recovery edge runs a round").isTrue();
+        assertThat(cluster.responsibleFor(key)).contains(recovering);
+    }
+
     private void seedUniqueKeys(DhtCluster cluster, NodeId holder, String prefix, List<byte[]> seeded) {
         for (int i = 0; i < 3; i++) {
             var k = cluster.findUniquelyHeldKeyWithNewcomer(holder, prefix + "-" + i);
@@ -256,6 +276,26 @@ class DHTChurnSurvivalTest {
 
         boolean holds(NodeId id, byte[] key) {
             return holds(members.get(id), key);
+        }
+
+        java.util.Collection<Member> members() {
+            return members.values();
+        }
+
+        /// A key whose responsible set on the current (pruned) rings excludes `node` and includes it
+        /// once `node` is back in the ring.
+        byte[] findKeyGainedByRejoin(NodeId node, String prefix) {
+            var pruned = members.values().iterator().next().ring();
+            var rf = CONFIG.effectiveReplicationFactor(members.size());
+            var whole = ConsistentHashRing.<NodeId>consistentHashRing();
+            members.keySet().forEach(whole::addNode);
+            for (int i = 0; i < 20_000; i++) {
+                var candidate = key(prefix + "-probe-" + i);
+                if (!pruned.nodesFor(candidate, rf).contains(node) && whole.nodesFor(candidate, rf).contains(node)) {
+                    return candidate;
+                }
+            }
+            throw new AssertionError("no key gained by the rejoin found");
         }
 
         /// A key held by exactly three pre-join members whose responsible set gains the joiner.
