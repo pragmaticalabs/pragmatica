@@ -841,6 +841,30 @@ class SwimProtocolTest {
                 .isEqualTo(afterStop);
         }
 
+        /// #501: the stop-latch is per stop/start cycle, not a permanent kill switch — a restarted
+        /// protocol must be able to announce again, or a node that stops and restarts SWIM would
+        /// silently never rejoin.
+        @Test
+        void restartedProtocol_announcesAgain() throws InterruptedException {
+            protocol.start();
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+            protocol.stop();
+            Thread.sleep(200L);
+
+            var afterStop = announceCount(transport);
+
+            protocol.start();
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) > afterStop, 3_000L);
+
+            assertThat(announceCount(transport))
+                .as("start() clears the stop-latch — a restarted protocol announces again")
+                .isGreaterThan(afterStop);
+        }
+
         /// #501 (review 2026-09-14, SHOULD-FIX-2): "a re-announce supersedes (cancels) the previous
         /// loop" was unpinned — dropping the cancel left the whole module green. Discriminated by
         /// SEED SET rather than by rate: the superseded loop targets ADDR_A and the current one
