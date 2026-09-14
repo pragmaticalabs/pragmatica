@@ -1059,17 +1059,19 @@ public class RabiaEngine<C extends Command> {
         }
 
         log.warn("Node {} still SYNCING after {} rounds: {} responses of which {} live, from {} "
-                + "(clusterSize={}). Adoption needs {} responses while any responder is live (a response "
-                + "quorum, whatever mix of live and cold), or {} responses when none is live (self "
-                + "completes the majority). This node has no leader and runs no reconciler while this "
-                + "persists.",
+                + "(clusterSize={}). Adoption needs {} responses while any responder is live — self {} "
+                + "toward that majority — or {} responses when none is live. This node has no leader "
+                + "and runs no reconciler while this persists.",
                  self,
                  round,
                  syncResponses.size(),
                  liveResponseCount(),
                  syncResponses.keySet(),
                  topologyManager.clusterSize(),
-                 responseQuorumRequired(),
+                 responsesRequiredWithALiveResponder(topologyManager.clusterSize()),
+                 selfCanVouchForItsOwnHistory()
+                 ? "counts (it holds durable state)"
+                 : "does NOT count (no durable state)",
                  syncPeerResponsesRequired());
     }
 
@@ -1587,7 +1589,7 @@ public class RabiaEngine<C extends Command> {
                    : Option.none();
         }
 
-        if (responses.size() < clusterSize / 2 + 1) {
+        if (responses.size() < responsesRequiredWithALiveResponder(clusterSize)) {
             return Option.none();
         }
         // The LIVE filter is licensed by the intersection argument only when the LIVE responders are
@@ -1595,9 +1597,53 @@ public class RabiaEngine<C extends Command> {
         // member may be COLD, and filtering it out is how a joiner adopts a state behind a commit that
         // was sitting in its own response set. So: the live maximum when live is a majority, otherwise
         // the maximum over everything that answered.
+        //
+        // This branch is NOT dead, but it is narrow, and saying so is the point (#667 round 2).
+        // Adoption normally fires on the arrival that first meets the requirement, so the collected set
+        // is exactly the requirement and "a live majority among them" reduces to "all of them are
+        // LIVE", where filtering removes nothing. The filter only SELECTS when the collected set is
+        // LARGER than the requirement, which happens when `clusterSize()` falls mid-round: the
+        // KV-derived cell shrinks, the requirement drops below what is already collected, and the next
+        // evaluation chooses from a set that still holds COLD responses. Pinned by
+        // `RabiaSyncAdoptionResponseQuorumTest.AShrinkingClusterExercisesTheLiveFilter`.
         return Option.some(liveResponses.size() >= clusterSize / 2 + 1
                            ? liveResponses
                            : responses);
+    }
+
+    /// Responses required once any responder is live.
+    ///
+    /// The set that must intersect every commit quorum is `{responders} ∪ {self}`, so self may be
+    /// counted — but ONLY when it brings history of its own. An amnesiac self (in-memory persistence,
+    /// or a wiped disk) sits inside that majority contributing nothing, and that is #667's hole
+    /// exactly: its floor is `Phase.ZERO`, it can refuse nothing, and two responders that never
+    /// witnessed the latest commit are enough to pull it forward. Excluded from its own count, the
+    /// responders must be a majority alone.
+    ///
+    /// **Owner ruling, session 20.** At n=3 with one node down at most ONE responder exists, and one is
+    /// never a majority of three — so in a degraded 3-node cluster #667's safety property and joiner
+    /// liveness are incompatible, and the owner chose liveness. The property being spent is one the
+    /// system does not in fact hold: #660's cold rule, shipping today and untouched by #667, already
+    /// activates a self whose durable snapshot is STALE relative to a commit it witnessed — verified
+    /// against rc4 `4af02125c`, where 2 of 5 minority responses activate and install the stale state
+    /// while a 1-of-5 control stays inactive. This makes the live arm consistent with the cold arm
+    /// rather than introducing a new exposure.
+    ///
+    /// The residual risk, stated precisely because it is narrower than "self is stale": adoption can
+    /// discard a commit only when self was in a commit quorum whose every OTHER member is currently
+    /// unreachable AND self lost its own record of it. A genuinely new node was never in a prior
+    /// quorum, so for it that branch is unreachable.
+    private int responsesRequiredWithALiveResponder(int clusterSize) {
+        return selfCanVouchForItsOwnHistory()
+               ? clusterSize / 2
+               : clusterSize / 2 + 1;
+    }
+
+    /// Whether self brings history of its own to the adoption majority — the same quantity
+    /// [#ownStateFloor] uses to refuse a response set that is behind this node, so the two cannot
+    /// disagree about what self knows.
+    private boolean selfCanVouchForItsOwnHistory() {
+        return ownStateFloor(persistence.load()).compareTo(Phase.ZERO) > 0;
     }
 
     /// Adopts when the collected responses already satisfy the rule, reporting whether it did so the
@@ -1615,12 +1661,6 @@ public class RabiaEngine<C extends Command> {
                             .stream()
                             .filter(response -> response.responder() == ResponderState.LIVE)
                             .count();
-    }
-
-    /// Responses required while any responder is live: a majority of the CLUSTER, `⌊n/2⌋+1`, counted
-    /// over responders alone. Diagnostics only — [#adoptionCandidates] owns the decision.
-    private int responseQuorumRequired() {
-        return topologyManager.clusterSize() / 2 + 1;
     }
 
     /// Cleans up old phase data to prevent memory leaks.

@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestClusterNetwork;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestCommand;
 import org.pragmatica.consensus.rabia.RabiaEngineTest.TestStateMachine;
@@ -28,11 +29,13 @@ import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.Unit;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BooleanSupplier;
@@ -70,6 +73,7 @@ class RabiaSyncAdoptionResponseQuorumTest {
     private static final long STAYS_INACTIVE_WINDOW_MILLIS = 300;
     private static final byte[] LIVE_SNAPSHOT = "live".getBytes(StandardCharsets.UTF_8);
     private static final byte[] COLD_SNAPSHOT = "cold".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] LIVE_AHEAD_SNAPSHOT = "live-ahead".getBytes(StandardCharsets.UTF_8);
 
     private final List<RabiaEngine<TestCommand>> engines = new CopyOnWriteArrayList<>();
 
@@ -284,6 +288,154 @@ class RabiaSyncAdoptionResponseQuorumTest {
         }
     }
 
+    @Nested
+    class SelfVouchesForItsOwnHistory {
+        /// OWNER RULING (c). n=3 with one node permanently down and the survivor LIVE: only one peer can
+        /// ever answer. A self that holds durable state counts toward the adoption majority, so
+        /// `clusterSize / 2` = 1 response admits it and the cluster regains a quorum.
+        ///
+        /// This is the case that kept `NodeLifecyclePeriodicArmingForgeTest` red: `emberCluster(3, …)`
+        /// holds the third node back, so once one node activates the joiner sees a LIVE responder and
+        /// can never collect a second response.
+        @Test
+        void n3_oneLiveSurvivor_selfDurable_activates() {
+            var stateMachine = new RecordingStateMachine();
+            var engine = coldStarted(3, stateMachine, durableAt(Phase.phase(5)));
+
+            engine.processSyncResponse(live(NODE_2, Phase.phase(10), LIVE_SNAPSHOT));
+
+            assertThat(awaitActive(engine))
+                .as("self holds durable state, so self + one responder is a majority of three")
+                .isTrue();
+            assertThat(stateMachine.lastRestored()).isEqualTo(LIVE_SNAPSHOT);
+        }
+
+        /// The control that keeps #667 shut: the SAME topology with an amnesiac self must still wait.
+        /// Its floor is `Phase.ZERO`, so it contributes nothing to the majority it would be counted in.
+        @Test
+        void n3_oneLiveSurvivor_selfAmnesiac_stillWaits() throws InterruptedException {
+            var stateMachine = new RecordingStateMachine();
+            var engine = coldStarted(3, stateMachine, RabiaPersistence.inMemory());
+
+            engine.processSyncResponse(live(NODE_2, Phase.phase(10), LIVE_SNAPSHOT));
+
+            assertThat(staysInactive(engine))
+                .as("an amnesiac self cannot vouch, so one responder of three is a minority view")
+                .isTrue();
+            assertThat(stateMachine.lastRestored()).isNull();
+        }
+
+        /// n=5: a vouching self needs `clusterSize / 2` = 2 responses …
+        @Test
+        void n5_selfDurable_twoResponsesSuffice() {
+            var engine = coldStarted(5, new RecordingStateMachine(), durableAt(Phase.phase(5)));
+
+            engine.processSyncResponse(live(NODE_2, Phase.phase(10), LIVE_SNAPSHOT));
+            engine.processSyncResponse(cold(NODE_3, Phase.phase(4), COLD_SNAPSHOT));
+
+            assertThat(awaitActive(engine)).isTrue();
+        }
+
+        /// … and an amnesiac self still needs three. This is the #667 residual, preserved verbatim.
+        @Test
+        void n5_selfAmnesiac_twoResponsesAreStillAMinority() throws InterruptedException {
+            var engine = coldStarted(5, new RecordingStateMachine(), RabiaPersistence.inMemory());
+
+            engine.processSyncResponse(live(NODE_2, Phase.phase(10), LIVE_SNAPSHOT));
+            engine.processSyncResponse(cold(NODE_3, Phase.phase(4), COLD_SNAPSHOT));
+
+            assertThat(staysInactive(engine)).isTrue();
+        }
+    }
+
+    @Nested
+    class AShrinkingClusterExercisesTheLiveFilter {
+        /// The LIVE filter SELECTS only when the collected set is larger than the requirement, and on
+        /// the arrival path the set is normally exactly the requirement — so "a live majority among
+        /// them" reduces to "all of them are LIVE", where filtering removes nothing. The one way the
+        /// set outgrows the requirement is `clusterSize()` falling mid-round.
+        ///
+        /// n=5, amnesiac self: two LIVE responses are short of the requirement of three, so nothing
+        /// happens. The cluster then shrinks to three — requirement two, live majority two — and a COLD
+        /// response arrives carrying a far higher phase. LIVE is now a majority of the collected set,
+        /// so the COLD response must NOT be the source.
+        @Test
+        void aClusterShrinkingMidRound_letsTheLiveMajorityFilterSelect() {
+            var stateMachine = new RecordingStateMachine();
+            var topology = new ShrinkingTopology(NODE_1, 5);
+            var engine = coldStarted(topology, stateMachine, RabiaPersistence.inMemory());
+
+            engine.processSyncResponse(live(NODE_2, Phase.phase(10), LIVE_SNAPSHOT));
+            engine.processSyncResponse(live(NODE_3, Phase.phase(20), LIVE_AHEAD_SNAPSHOT));
+
+            topology.shrinkTo(3);
+            engine.processSyncResponse(cold(NODE_4, Phase.phase(500), COLD_SNAPSHOT));
+
+            assertThat(awaitActive(engine)).isTrue();
+            assertThat(stateMachine.lastRestored())
+                .as("two LIVE of three collected is a live majority — the COLD response is filtered out")
+                .isEqualTo(LIVE_AHEAD_SNAPSHOT);
+        }
+
+        /// The control, and the whole point of the pair: WITHOUT the shrink the identical three
+        /// responses are exactly the requirement at n=5, LIVE is 2 of 3 and not a majority of five, so
+        /// the source is every response and the COLD one at phase 500 wins. Same inputs, opposite
+        /// outcome — which is what makes the filter observable rather than inert.
+        @Test
+        void withoutTheShrink_theSameThreeResponsesAdoptTheColdOne() {
+            var stateMachine = new RecordingStateMachine();
+            var engine = coldStarted(5, stateMachine, RabiaPersistence.inMemory());
+
+            engine.processSyncResponse(live(NODE_2, Phase.phase(10), LIVE_SNAPSHOT));
+            engine.processSyncResponse(live(NODE_3, Phase.phase(20), LIVE_AHEAD_SNAPSHOT));
+            engine.processSyncResponse(cold(NODE_4, Phase.phase(500), COLD_SNAPSHOT));
+
+            assertThat(awaitActive(engine)).isTrue();
+            assertThat(stateMachine.lastRestored())
+                .as("LIVE is a minority of five, so the source is the whole quorum")
+                .isEqualTo(COLD_SNAPSHOT);
+        }
+    }
+
+    /// Persistence reporting a fixed durable snapshot: a node that restarted from disk.
+    private static RabiaPersistence<TestCommand> durableAt(Phase phase) {
+        record durable(Phase phase) implements RabiaPersistence<TestCommand> {
+            @Override
+            public Result<Unit> save(StateMachine<TestCommand> stateMachine,
+                                     Phase lastCommittedPhase,
+                                     Collection<Batch<TestCommand>> pendingBatches) {
+                return Result.success(Unit.unit());
+            }
+
+            @Override
+            public Option<SavedState<TestCommand>> load() {
+                return Option.some(SavedState.savedState(COLD_SNAPSHOT, phase, List.of()));
+            }
+        }
+
+        return new durable(phase);
+    }
+
+    /// `clusterSize()` is a derived cell fed from the KV `coreCount`; it can fall while a sync round is
+    /// collecting.
+    private static final class ShrinkingTopology extends TestTopologyManager {
+        private volatile int size;
+
+        ShrinkingTopology(NodeId self, int size) {
+            super(self, size);
+            this.size = size;
+        }
+
+        @Override
+        public int clusterSize() {
+            return size;
+        }
+
+        void shrinkTo(int newSize) {
+            size = newSize;
+        }
+    }
+
     private static SyncResponse<TestCommand> live(NodeId sender, Phase phase, byte[] snapshot) {
         return new SyncResponse<>(sender, SavedState.savedState(snapshot, phase, List.of()), ResponderState.LIVE);
     }
@@ -304,12 +456,30 @@ class RabiaSyncAdoptionResponseQuorumTest {
         return coldStarted(clusterSize, stateMachine, persistence, timeSpan(60).seconds());
     }
 
+    private RabiaEngine<TestCommand> coldStarted(TestTopologyManager topology,
+                                                 StateMachine<TestCommand> stateMachine,
+                                                 RabiaPersistence<TestCommand> persistence) {
+        return coldStarted(topology, stateMachine, persistence, timeSpan(60).seconds(), true);
+    }
+
     private RabiaEngine<TestCommand> coldStarted(int clusterSize,
                                                  StateMachine<TestCommand> stateMachine,
                                                  RabiaPersistence<TestCommand> persistence,
                                                  TimeSpan syncRetryInterval) {
+        return coldStarted(new TestTopologyManager(NODE_1, clusterSize),
+                           stateMachine,
+                           persistence,
+                           syncRetryInterval,
+                           clusterSize > 1);
+    }
+
+    private RabiaEngine<TestCommand> coldStarted(TestTopologyManager topology,
+                                                 StateMachine<TestCommand> stateMachine,
+                                                 RabiaPersistence<TestCommand> persistence,
+                                                 TimeSpan syncRetryInterval,
+                                                 boolean awaitSyncRequest) {
         var network = new TestClusterNetwork();
-        var engine = new RabiaEngine<>(new TestTopologyManager(NODE_1, clusterSize),
+        var engine = new RabiaEngine<>(topology,
                                        network,
                                        stateMachine,
                                        ProtocolConfig.consensusConfig(timeSpan(60).seconds(), syncRetryInterval),
@@ -321,7 +491,7 @@ class RabiaSyncAdoptionResponseQuorumTest {
         engines.add(engine);
         engine.clusterState(ClusterStateNotification.active());
 
-        if (clusterSize > 1) {
+        if (awaitSyncRequest) {
             assertThat(awaitCondition(() -> network.getMessages()
                                                    .stream()
                                                    .anyMatch(SyncRequest.class::isInstance)))
