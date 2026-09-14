@@ -18,6 +18,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -103,6 +104,69 @@ class DHTAntiEntropySendOutcomeTest {
         dhtAntiEntropy(node, network, CONFIG).synchronizeNow();
 
         assertThat(appender.warns()).isEmpty();
+    }
+
+    /// #420 round 2 — a refused send leaves no correlation behind. The entry is registered before the
+    /// send (the response can race it), so a transport that refuses must drop it again: without this
+    /// every round adds one entry per owned partition per peer and nothing ever removes them, on the
+    /// exact cadence — sustained backpressure — that refuses them.
+    @Test
+    void refusedDigestSend_leavesNoPendingCorrelation() {
+        var antiEntropy = dhtAntiEntropy(twoNodeNode(), refusingNetwork(new AtomicInteger()), CONFIG);
+
+        antiEntropy.synchronizeNow();
+
+        assertThat(antiEntropy.pendingDigestCount()).as("a refused round leaves nothing pending").isZero();
+    }
+
+    /// And a digest that is accepted but never answered — the peer crashed mid-round — is expired
+    /// rather than kept forever: each round drops what the previous interval left behind.
+    @Test
+    void unansweredDigests_areExpiredByTheFollowingRound() {
+        var interval = TimeSpan.timeSpan(1).millis();
+        var antiEntropy = dhtAntiEntropy(twoNodeNode(), (target, message) -> {}, CONFIG, interval);
+
+        antiEntropy.synchronizeNow();
+
+        var afterFirstRound = antiEntropy.pendingDigestCount();
+
+        assertThat(afterFirstRound).as("control: the first round did leave digests outstanding").isPositive();
+
+        try {
+            Thread.sleep(20L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        antiEntropy.synchronizeNow();
+
+        assertThat(antiEntropy.pendingDigestCount()).as("the second round carries its own digests, not the first round's")
+                                                    .isEqualTo(afterFirstRound);
+    }
+
+    private static DHTNode twoNodeNode() {
+        var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+
+        ring.addNode(new NodeId("node-0"));
+        ring.addNode(new NodeId("node-1"));
+
+        return dhtNode(new NodeId("node-0"), memoryStorageEngine(), ring, CONFIG);
+    }
+
+    private static DHTNetwork refusingNetwork(AtomicInteger sends) {
+        return new DHTNetwork() {
+            @Override
+            public void send(NodeId target, ProtocolMessage message) {
+                sends.incrementAndGet();
+            }
+
+            @Override
+            public Promise<WriteOutcome> sendOutcome(NodeId target, ProtocolMessage message) {
+                sends.incrementAndGet();
+
+                return Promise.success(new WriteOutcome.BackpressureRefused(target));
+            }
+        };
     }
 
     private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
