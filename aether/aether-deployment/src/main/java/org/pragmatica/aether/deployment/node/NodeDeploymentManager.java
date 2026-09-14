@@ -47,8 +47,10 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageReceiver;
@@ -205,19 +207,35 @@ public interface NodeDeploymentManager {
                            .toResult(MISSING_KEY);
         }
 
+        // ConfigService exposes no numeric getters beyond getInt, so the adapter parses the string
+        // itself — through core's Result-returning parsers, not Long.parseLong inside a map, which
+        // threw NumberFormatException out of a facade whose whole contract is Result (#276 R20).
+        // A malformed value is a named failure on require*, distinct from an absent key; on the
+        // Option-returning get* it reads as absent, the same as ConfigurationProvider's own
+        // getLong/getDouble behave for the slice-api facade.
         @Override
         public Result<Long> requireLong(String section, String key) {
             return delegate.getString(section + "." + key)
-                           .map(Long::parseLong)
-                           .toResult(MISSING_KEY);
+                           .toResult(MISSING_KEY)
+                           .flatMap(value -> Number.parseLong(value).mapError(_ -> NOT_A_LONG.apply(section + "." + key,
+                                                                                                    value)));
         }
 
         @Override
         public Result<Double> requireDouble(String section, String key) {
             return delegate.getString(section + "." + key)
-                           .map(Double::parseDouble)
-                           .toResult(MISSING_KEY);
+                           .toResult(MISSING_KEY)
+                           .flatMap(value -> Number.parseDouble(value).mapError(_ -> NOT_A_DOUBLE.apply(section
+                                                                                                       + "." + key,
+                                                                                                        value)));
         }
+
+        // The parse failure is mapped at the Result boundary to a cause that NAMES the key and the
+        // value; Number.parseX's own cause is a Causes.fromThrowable, whose message is the whole
+        // stack trace with the key nowhere in it (review of #1092, SF-2).
+        private static final Fn2<Cause, String, String> NOT_A_LONG = Causes.forTwoValues("Config key %s is not a long: \"%s\"");
+
+        private static final Fn2<Cause, String, String> NOT_A_DOUBLE = Causes.forTwoValues("Config key %s is not a double: \"%s\"");
 
         @Override
         public Result<Boolean> requireBoolean(String section, String key) {
@@ -245,13 +263,13 @@ public interface NodeDeploymentManager {
         @Override
         public Option<Long> getLong(String section, String key) {
             return delegate.getString(section + "." + key)
-                           .map(Long::parseLong);
+                           .flatMap(value -> Number.parseLong(value).option());
         }
 
         @Override
         public Option<Double> getDouble(String section, String key) {
             return delegate.getString(section + "." + key)
-                           .map(Double::parseDouble);
+                           .flatMap(value -> Number.parseDouble(value).option());
         }
 
         @Override

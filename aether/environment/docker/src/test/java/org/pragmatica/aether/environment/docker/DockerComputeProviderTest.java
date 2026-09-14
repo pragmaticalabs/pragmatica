@@ -607,9 +607,22 @@ class DockerComputeProviderTest {
             assertThat(DockerComputeProvider.mapDockerState("dead")).isEqualTo(InstanceStatus.TERMINATED);
         }
 
+        /// #1049 — exhaustive over Docker Engine's documented `ContainerState.Status` enum (API reference:
+        /// created, running, paused, restarting, removing, exited, dead), plus one undocumented value, which
+        /// must never read as terminated.
         @Test
-        void mapDockerState_unknown_returnsTerminated() {
-            assertThat(DockerComputeProvider.mapDockerState("garbage")).isEqualTo(InstanceStatus.TERMINATED);
+        void mapDockerState_everyDocumentedState_andAnUnrecognisedOne_mapExhaustively() {
+            var expected = Map.ofEntries(Map.entry("created", InstanceStatus.PROVISIONING),
+                                                   Map.entry("running", InstanceStatus.RUNNING),
+                                                   Map.entry("paused", InstanceStatus.STOPPING),
+                                                   Map.entry("restarting", InstanceStatus.PROVISIONING),
+                                                   Map.entry("removing", InstanceStatus.STOPPING),
+                                                   Map.entry("exited", InstanceStatus.STOPPING),
+                                                   Map.entry("dead", InstanceStatus.TERMINATED),
+                                                   Map.entry("garbage", InstanceStatus.UNKNOWN));
+
+            assertThat(expected).hasSize(8);
+            expected.forEach((state, mapped) -> assertThat(DockerComputeProvider.mapDockerState(state)).as(state).isEqualTo(mapped));
         }
     }
 

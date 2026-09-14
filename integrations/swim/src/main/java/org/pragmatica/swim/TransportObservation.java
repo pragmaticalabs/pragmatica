@@ -30,14 +30,37 @@ import org.pragmatica.lang.Cause;
 ///
 /// Variants:
 /// - [`PeerReachable`] — local transport reports the peer's connection
-///   established or recovered.
-/// - [`PeerUnreachable`] — local transport reports the peer's connection
-///   lost / failed; SWIM may shorten its suspect window for this peer
-///   from the default toward a configured floor.
+///   established or recovered. It retracts the transport's own
+///   [`HintOrigin#LINK_LOST`] hint for that peer while the link is connected, and never reports
+///   the peer alive.
+/// - [`PeerResponsive`] — ClusterSync received a pong from the peer. It retracts ClusterSync's own
+///   [`HintOrigin#PEER_UNRESPONSIVE`] hint for that peer, and never reports the peer alive (#1061).
+/// - [`PeerUnreachable`] — local transport reports death evidence for the peer;
+///   SWIM may shorten its suspect window for this peer from the default toward a
+///   configured floor. Its [`HintOrigin`] decides how long SWIM believes it (#1061).
 public sealed interface TransportObservation {
     NodeId peer();
 
+    /// Where a [`PeerUnreachable`] hint's evidence comes from (#1061).
+    enum HintOrigin {
+        /// The local transport lost its link to the peer (eviction, channel close). The
+        /// evidence describes that link only, so SWIM disregards it while the link is
+        /// connected and drops it when the transport reconnects.
+        LINK_LOST,
+        /// The link is up but the peer stopped answering a liveness exchange carried over it
+        /// (a hung process). A connected link does not contradict it, so it survives
+        /// reconnects. The producer counts only misses on the current link since the last answer,
+        /// and a later answer from the peer ([`PeerResponsive`]) or SWIM's own HEALTHY evidence
+        /// clears it.
+        PEER_UNRESPONSIVE
+    }
+
     record PeerReachable(NodeId peer) implements TransportObservation {}
 
-    record PeerUnreachable(NodeId peer, Cause cause) implements TransportObservation {}
+    /// ClusterSync received a pong from the peer (#1061 R-b). A pong is contrary evidence of the
+    /// same kind as the missed pongs behind a [`HintOrigin#PEER_UNRESPONSIVE`] hint, so it retracts
+    /// that hint. It never reports the peer alive: SWIM probe-ack remains the sole ALIVE authority.
+    record PeerResponsive(NodeId peer) implements TransportObservation {}
+
+    record PeerUnreachable(NodeId peer, Cause cause, HintOrigin origin) implements TransportObservation {}
 }

@@ -279,6 +279,21 @@ class AwsComputeProviderTest {
             assertThat(testClient.lastDescribeTagKey).isEqualTo("env");
             assertThat(testClient.lastDescribeTagValue).isEqualTo("prod");
         }
+
+        /// #1049 — upper layers select a node's instance by the dotted `aether.node-id`, but this
+        /// provider stamps `aether-node-id`. Untranslated, the EC2 filter matches nothing and an existing
+        /// replacement reads as deleted to the auto-heal in-flight tracker.
+        @Test
+        void listInstances_nodeIdTag_translatesToStampedTagKey() {
+            testClient.describeResponse = Promise.success(TestAwsClient.describeResponseWith(List.of()));
+
+            provider.listInstances(Map.of("aether.node-id", "node-7"))
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastDescribeTagKey).isEqualTo("aether-node-id");
+            assertThat(testClient.lastDescribeTagValue).isEqualTo("node-7");
+        }
     }
 
     @Nested
@@ -345,9 +360,21 @@ class AwsComputeProviderTest {
             assertThat(AwsComputeProvider.mapStatus("terminated")).isEqualTo(InstanceStatus.TERMINATED);
         }
 
+        /// #1049 — exhaustive over EC2's documented `InstanceStateName` enum (API reference, InstanceState:
+        /// pending, running, shutting-down, terminated, stopping, stopped), plus one undocumented value, which
+        /// must never read as terminated.
         @Test
-        void mapStatus_unknown_returnsTerminated() {
-            assertThat(AwsComputeProvider.mapStatus("unknown")).isEqualTo(InstanceStatus.TERMINATED);
+        void mapStatus_everyDocumentedState_andAnUnrecognisedOne_mapExhaustively() {
+            var expected = Map.ofEntries(Map.entry("pending", InstanceStatus.PROVISIONING),
+                                         Map.entry("running", InstanceStatus.RUNNING),
+                                         Map.entry("shutting-down", InstanceStatus.TERMINATED),
+                                         Map.entry("terminated", InstanceStatus.TERMINATED),
+                                         Map.entry("stopping", InstanceStatus.STOPPING),
+                                         Map.entry("stopped", InstanceStatus.STOPPING),
+                                         Map.entry("a-state-ec2-adds-later", InstanceStatus.UNKNOWN));
+
+            assertThat(expected).hasSize(7);
+            expected.forEach((state, mapped) -> assertThat(AwsComputeProvider.mapStatus(state)).as(state).isEqualTo(mapped));
         }
     }
 

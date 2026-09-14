@@ -314,9 +314,32 @@ traffic, including the Maven protocol handler's writes, while this check is in f
 blocks during that window is every DHT-tier operation on the pending namespace — `get`, `put`,
 `delete` and `exists` all gate on the same internal check (not observable as a separate config knob),
 so a write cannot land ahead of the check and persist plaintext into a namespace the check later finds
-already encrypted. A boot that fails this later DHT check stops the node the same way any other `start()` failure does: exit code `1`, the
-generic "fatal startup failure" path (`Main#exitWithError`) — see
-[`node-operations.md`](node-operations.md#exit-codes) for the full table.
+already encrypted.
+**Only a definite refusal is fatal (`#1052`).** If the DHT check reads a marker and no keyring is
+configured, it fails with `EncryptedTierRequiresKeyring`. That stops the node the same way any other
+`start()` failure does: exit code `1`, the generic "fatal startup failure" path (`Main#exitWithError`).
+See [`node-operations.md`](node-operations.md#exit-codes) for the full table. If the check cannot
+complete (a marker get/put timing out after 30 s, or no DHT quorum while the ring is still converging),
+that is not an answer. The node stays in the cluster and retries with exponential backoff: 1 s,
+doubling to a 30 s cap, jittered, with no give-up bound. Each attempt that fails logs one WARN line
+naming the instance and the attempt number (`DHT encryption-marker check attempt 3 for instance
+'content' did not complete: ...`). [mechanism: only `EncryptedTierRequiresKeyring` is a `Cause.Terminal`, and the retry loop stops only on
+a terminal cause.] Until the check completes:
+- every operation on that instance's DHT tier stays gated and is refused with `TierNotAdmitted` after
+  30 s;
+- the node stays in lifecycle state `JOINING` (never `ACTIVE`), so `/health/ready` answers 503;
+- the `dht-admission` readiness component names the instances still pending.
+
+[mechanism: the tier gate and the self-ready signal wait on the same per-instance gate, which only the
+check's final outcome resolves.]
+
+The node does not exit on a timeout. [design intent — unverified on a multi-node cluster under churn:
+that such a node then verifies and becomes ready once the ring converges.]
+**Recovery:** a pending check clears on its own once the DHT answers. If `dht-admission` stays DOWN,
+the DHT cannot reach quorum for that namespace. Check cluster membership (`/api/v1/nodes`) and the
+node's WARN attempt lines. A refusal clears only as described above: restore the keyring, or migrate.
+A stop (SIGTERM) while the check is still retrying is logged at INFO as a stop, not as a start failure,
+and the shutdown hook owns the exit.
 
 **Nonce bound.** Each block's 12-byte (96-bit) nonce is drawn from `SecureRandom`, not a counter.
 NIST SP 800-38D caps random-96-bit-nonce AES-GCM at 2³² encryptions under one key before nonce

@@ -7,6 +7,8 @@ package org.pragmatica.aether.config.cluster;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.List;
 import java.util.Map;
@@ -25,6 +27,7 @@ import static org.pragmatica.aether.config.cluster.SourceProfile.sourceProfile;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class ClusterBootstrapConfigDiffTest {
 
@@ -229,6 +232,28 @@ class ClusterBootstrapConfigDiffTest {
             var change = (DiffAction.SourceFieldChange) plan.modifications().getFirst();
             assertThat(change.sourceName().value()).isEqualTo("forge");
             assertThat(change.field()).isEqualTo("credentials");
+        }
+
+        /// #1049 — a ceiling change on an applied config is a real modification, not a no-op plan.
+        @Test
+        void diff_replacementCeilingChange_producesModification() {
+            var stored = configWithSources(Map.of("forge", ceilingSource(none())));
+            var desired = configWithSources(Map.of("forge", ceilingSource(some(timeSpan(7).minutes()))));
+            var plan = diff(stored, desired);
+
+            assertThat(plan.modifications()).hasSize(1);
+            assertThat(plan.modifications().getFirst()).isInstanceOf(DiffAction.SourceFieldChange.class);
+            assertThat(((DiffAction.SourceFieldChange) plan.modifications().getFirst()).field()).isEqualTo("replacementCeiling");
+        }
+
+        private static SourceProfile ceilingSource(Option<TimeSpan> ceiling) {
+            return sourceProfile(
+                sourceNameOrDefault("forge"), SourceType.FORGE, none(), none(), none(), none(), List.of(),
+                none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
+                Map.of(),
+                Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(3), none(), none(), RUNTIME_REF)),
+                List.of(), none(), ceiling
+            );
         }
 
         @Test

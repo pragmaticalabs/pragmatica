@@ -1182,7 +1182,7 @@ The `CloudProvider` SPI in §11.1 is a **new, higher-level** interface specifica
 | CL-04  | Derived core count odd and >= 3                                       | Error    |
 | CL-06  | All referenced profiles exist                                         | Error    |
 | CL-07  | At least one `[source.X.core]` sub-table across all sources           | Error    |
-| CL-08  | All source names unique                                               | Error    |
+| CL-08  | All source names unique, and none a `<name>-` prefix of another (node ids are `<source>-<role>-<index>`; #296) | Error    |
 | CL-09  | Template inheritance has no cycles; depth <= 16                       | Error    |
 | CL-11  | All ports distinct and in range 1-65535                               | Error    |
 | CL-13  | WARN if a single source holds a majority of cores                     | Warning  |

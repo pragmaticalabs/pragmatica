@@ -63,6 +63,12 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
     @Contract
     void onPongReceived(NodeId nodeId);
 
+    /// #1061 R-a — the transport link to `nodeId` was (re)established. Misses counted against the
+    /// previous link are discarded: the next ping tick counts this peer from zero. `AetherNode` wires
+    /// it from the QUIC peer-state listener's join and reconnect callbacks.
+    @Contract
+    void onLinkEstablished(NodeId nodeId);
+
     @Contract
     void sendPingsNow();
 
@@ -357,7 +363,14 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
     @Override
     @Contract
     public void onPongReceived(NodeId nodeId) {
+        context.startMissedPongEpoch(nodeId);
         context.dispatch(new ClusterSyncEvents.PongReceived(nodeId));
+    }
+
+    @Override
+    @Contract
+    public void onLinkEstablished(NodeId nodeId) {
+        context.startMissedPongEpoch(nodeId);
     }
 
     @Override

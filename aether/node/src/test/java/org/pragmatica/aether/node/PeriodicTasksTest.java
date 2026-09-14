@@ -67,6 +67,20 @@ class PeriodicTasksTest {
         assertThat(tasks.armedCount()).isEqualTo(1);
     }
 
+    /// #1052: `isCancelled` is the stop signal the DHT encryption-marker retry loop reads before every
+    /// attempt. It must read `true` from `cancel()` onwards, and never before, or a live node's check
+    /// would abandon itself.
+    @Test
+    void isCancelled_readsFalseWhileAssemblingAndArmed_thenTrueAfterCancel() {
+        var tasks = PeriodicTasks.periodicTasks();
+
+        assertThat(tasks.isCancelled()).isFalse();
+        tasks.arm();
+        assertThat(tasks.isCancelled()).as("an armed, running node must not read as stopped").isFalse();
+        tasks.cancel();
+        assertThat(tasks.isCancelled()).isTrue();
+    }
+
     /// The stop-races-start window: cluster formation resolves AFTER stop() already tore the node
     /// down. The late arm() must schedule nothing — this is the edge that makes the deferral safe
     /// rather than merely late.
