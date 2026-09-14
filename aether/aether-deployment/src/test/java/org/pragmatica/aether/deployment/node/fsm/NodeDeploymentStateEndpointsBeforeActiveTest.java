@@ -6,12 +6,15 @@ package org.pragmatica.aether.deployment.node.fsm;
 
 import java.net.SocketAddress;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
@@ -25,6 +28,7 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
@@ -70,8 +74,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// activation (`SliceInvoker.verifyEndpointExists`) is visible anywhere, and the ordering is a race
 /// the retry path (#771's mitigation) merely papers over.
 ///
-/// The probe drives the real activation chain through the FSM harness with a slice that has one
-/// method and records every command the node submits to consensus, in order.
+/// Two writers reach ACTIVE, and each is pinned by its own test: the activation chain
+/// (`transitionToActiveWithStreamRefs` → `updateSliceStateWithExtraCommandsAndRetry`) and
+/// `transitionTo(ACTIVE)` (`updateSliceStateWithRetry`) — the writer the ROUTING-ack fast path and
+/// both stuck remediations use, i.e. the path an HTTP-routed slice takes. Both drive the real code
+/// through the FSM harness with a slice that has one method and record every command the node
+/// submits to consensus, in order.
 @SuppressWarnings("JBCT-RET-03")
 class NodeDeploymentStateEndpointsBeforeActiveTest {
     private static final NodeId SELF = NodeId.nodeId("self").unwrap();
@@ -79,6 +87,10 @@ class NodeDeploymentStateEndpointsBeforeActiveTest {
     private static final MethodName EXECUTE = MethodName.methodName("execute").unwrap();
 
     private RecordingClusterNode cluster;
+    private OneMethodSliceStore store;
+    /// Artifacts the stub `InvocationHandler` reports as registered for invocation — the gate
+    /// `remediateStuckActivating` forces ACTIVE on.
+    private final Set<Artifact> serving = ConcurrentHashMap.newKeySet();
     private FsmTestHarness<NodeDeploymentState, ClusterFsmEvent> harness;
 
     @BeforeEach
@@ -92,6 +104,7 @@ class NodeDeploymentStateEndpointsBeforeActiveTest {
                                                                       SliceTargetValue.sliceTargetValue(ARTIFACT.version(), 1)))));
 
         cluster = new RecordingClusterNode(SELF);
+        store = new OneMethodSliceStore();
 
         Function<Fsm<NodeDeploymentState, ClusterFsmEvent>, NodeDeploymentState> factory = fsm -> buildContext(fsm,
                                                                                                              ctxHolder,
@@ -113,6 +126,41 @@ class NodeDeploymentStateEndpointsBeforeActiveTest {
                                                       .containsExactly("execute");
     }
 
+    /// The other ACTIVE writer. An HTTP-routed slice reaches ACTIVE first through the ROUTING-ack
+    /// fast path, and both stuck remediations force it the same way — all three are
+    /// `transitionTo(ACTIVE)` → `updateSliceStateWithRetry`, never the chain's writer above. The
+    /// stuck-ACTIVATING remediation is the entry that needs no cross-node ack: seed ACTIVATING with
+    /// the slice loaded and registered for invocation (the remediation's gate), and the forced ACTIVE
+    /// it writes must be the endpoint-bearing value.
+    @Test
+    void forcedActivatingToActive_viaUpdateSliceStateWithRetry_carriesTheEndpoints() {
+        harness.dispatch(new QuorumEstablished());
+        store.loadSlice(ARTIFACT);
+        serving.add(ARTIFACT);
+        var key = SliceNodeKey.sliceNodeKey(ARTIFACT, SELF);
+        seedDeploymentState(key, SliceState.ACTIVATING);
+
+        activeState().remediateStuckActivating(key);
+
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(activePuts()).as("the forced ACTIVE was written").isNotEmpty());
+
+        assertThat(activePuts().getFirst().methods()).as("the transitionTo(ACTIVE) writer must carry the endpoints")
+                                                      .containsExactly("execute");
+    }
+
+    private NodeDeploymentState.Active activeState() {
+        assertThat(harness.state()).isInstanceOf(NodeDeploymentState.Active.class);
+
+        return (NodeDeploymentState.Active) harness.state();
+    }
+
+    /// Seed the live `Active.deployments` map so the remediation arm observes the slice in `state`
+    /// without driving the load/activate chain (which would reach ACTIVE through the other writer).
+    private void seedDeploymentState(SliceNodeKey key, SliceState state) {
+        activeState().deployments()
+                     .put(key, NodeDeploymentManager.SliceDeployment.sliceDeployment(key, state, 0L));
+    }
+
     private List<NodeArtifactValue> activePuts() {
         return cluster.nodeArtifactPuts()
                       .stream()
@@ -127,7 +175,7 @@ class NodeDeploymentStateEndpointsBeforeActiveTest {
         var context = new NodeDeploymentContext(fsm,
                                                 SELF,
                                                 new NodeAddress("localhost", 9000),
-                                                new OneMethodSliceStore(),
+                                                store,
                                                 SliceActionConfig.sliceActionConfig(),
                                                 SliceCodec.sliceCodec(List.of()),
                                                 cluster,
@@ -280,7 +328,7 @@ class NodeDeploymentStateEndpointsBeforeActiveTest {
         };
     }
 
-    private static InvocationHandler stubInvocationHandler() {
+    private InvocationHandler stubInvocationHandler() {
         return new InvocationHandler() {
             @Override public void onInvokeRequest(InvokeRequest request) {}
 
@@ -289,7 +337,9 @@ class NodeDeploymentStateEndpointsBeforeActiveTest {
             @Override public void unregisterSlice(Artifact artifact) {}
 
             @Override public Option<SliceBridge> localSlice(Artifact artifact) {
-                return Option.none();
+                return serving.contains(artifact)
+                       ? Option.some(stubBridge())
+                       : Option.none();
             }
 
             @Override public Option<SliceBridge> findBridgeByClassLoader(ClassLoader classLoader) {
@@ -298,6 +348,30 @@ class NodeDeploymentStateEndpointsBeforeActiveTest {
 
             @Override public Option<InvocationMetricsCollector> metricsCollector() {
                 return Option.none();
+            }
+        };
+    }
+
+    private static SliceBridge stubBridge() {
+        return new SliceBridge() {
+            @Override public Promise<byte[]> invoke(String methodName, byte[] input) {
+                return Promise.success(new byte[0]);
+            }
+
+            @Override public Promise<Unit> start() {
+                return Promise.unitPromise();
+            }
+
+            @Override public Promise<Unit> stop() {
+                return Promise.unitPromise();
+            }
+
+            @Override public ClassLoader classLoader() {
+                return getClass().getClassLoader();
+            }
+
+            @Override public List<String> methodNames() {
+                return List.of(EXECUTE.name());
             }
         };
     }
