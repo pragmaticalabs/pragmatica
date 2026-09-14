@@ -25,8 +25,8 @@ import org.pragmatica.lang.Contract;
 /// these to keep stability windows aligned with the transport's view, even when membership
 /// notifications are debounced.
 ///
-/// Distinct from [`QuicDisconnectListener`] — that listener fires on teardown only, never on
-/// join/reconnect, and currently has no consumer installed. This listener fires on every QUIC
+/// Distinct from the [`PeerConnectivityReporter`] path — that reports teardown/attach as
+/// connectivity observations for the leader's fold. This listener fires on every QUIC
 /// peer-state change so CTM-style stability bookkeeping can remain consistent with the
 /// transport.
 @Contract

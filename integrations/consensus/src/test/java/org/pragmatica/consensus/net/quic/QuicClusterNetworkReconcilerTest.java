@@ -707,7 +707,7 @@ class QuicClusterNetworkReconcilerTest {
                                               MessageRouter router,
                                               TopologyObserver topology) {
         var network = new QuicClusterNetwork(topology, codec, codec, router, serverSsl, clientSsl,
-                                              ClusterFormationConfig.defaults(), QuicDisconnectListener.noop());
+                                              ClusterFormationConfig.defaults());
         networks.add(network);
         network.startOnPort(0).await(AWAIT_TIMEOUT).onFailure(cause -> fail("start failed: " + cause.message()));
         return network;
