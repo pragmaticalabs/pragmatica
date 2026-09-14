@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -560,8 +561,10 @@ class StorageFactoryEncryptionTest {
         // says about `createAll` generally: it is NOT atomic with respect to disk markers -- an
         // instance built before the failing one keeps its stamp. That hazard predates #783 (it
         // applies to the synthesized 'artifacts' default whenever no explicit section is configured);
-        // #783 only widens the population it applies to. Tracked in this ticket's changelog fragment,
-        // not fixed here.
+        // #783 only widens the population it applies to. Closed by #852 (markers are written only
+        // after every instance's guard has passed -- see
+        // `createAll_leavesNoDiskMarkerOnASibling_whenALaterInstanceRefusesTheBoot`); the explicit
+        // entries stay so this test keeps pinning the DHT invariant alone.
         var contentDir = tempDir.resolve("content-disk");
         var dhtClient = new InMemoryDHTClient();
         var firstBoot = StorageFactory.createAll(Map.of(INSTANCE, storageConfigAt(diskDir, true),
@@ -600,6 +603,65 @@ class StorageFactoryEncryptionTest {
                                              + "marker; the check now runs later, post-formation, in "
                                              + "AetherNode.start()")
                                           .isTrue();
+    }
+
+    /// #852: the disk-side counterpart of the DHT invariant above. `createAll` used to evaluate every
+    /// instance's `createOne` eagerly, and `wrapLocalDisk` writes the `.encryption-enabled` marker
+    /// at boot, so an instance built BEFORE the one whose guard refused kept its stamp although the
+    /// node never started; backing that sibling out to `encrypted = false` then tripped its own
+    /// reverse guard on a marker no ciphertext ever justified. Order is forced with a `LinkedHashMap`:
+    /// the healthy encrypted instance is built first, the refusing one second.
+    @Test
+    void createAll_leavesNoDiskMarkerOnASibling_whenALaterInstanceRefusesTheBoot() {
+        var healthyDir = tempDir.resolve("healthy-disk");
+        var legacyDir = tempDir.resolve("legacy-disk");
+        var artifactsDir = tempDir.resolve("artifacts-disk");
+        var contentDir = tempDir.resolve("content-disk");
+
+        seedRawPlaintextBlock(legacyDir);
+
+        var configs = new LinkedHashMap<String, StorageConfig>();
+
+        configs.put("healthy", storageConfigAt(healthyDir, true));
+        configs.put("legacy", storageConfigAt(legacyDir, true));
+        configs.put(ARTIFACTS, storageConfigAt(artifactsDir, false));
+        configs.put(CONTENT, storageConfigAt(contentDir, false));
+
+        var refused = StorageFactory.createAll(configs, NODE_ID, Option.none(), Option.some(singleKeyRing("key-1")));
+
+        assertThat(refused.isFailure()).as("the legacy instance's guard refuses the boot").isTrue();
+        refused.onFailure(cause -> assertThat(cause.source().unwrap()).isInstanceOf(EncryptionError.EnablingOverExistingPlaintext.class));
+        assertThat(Files.exists(healthyDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME)))
+                .as("a refused boot must leave no marker behind on a sibling that was built before the refusing instance")
+                .isFalse();
+
+        var backedOut = StorageFactory.createAll(Map.of("healthy", storageConfigAt(healthyDir, false),
+                                                        ARTIFACTS, storageConfigAt(artifactsDir, false),
+                                                        CONTENT, storageConfigAt(contentDir, false)),
+                                                 NODE_ID,
+                                                 Option.none(),
+                                                 Option.none());
+
+        assertThat(backedOut.isSuccess()).as("the sibling, backed out to encrypted = false after the refused boot, must start")
+                                         .isTrue();
+    }
+
+    /// The other half of the same guarantee: a boot that is NOT refused still writes the marker.
+    @Test
+    void createAll_writesDiskMarker_whenEveryInstancePasses() {
+        var healthyDir = tempDir.resolve("healthy-disk-2");
+        var artifactsDir = tempDir.resolve("artifacts-disk-2");
+        var contentDir = tempDir.resolve("content-disk-2");
+
+        createAllOrFail(Map.of("healthy", storageConfigAt(healthyDir, true),
+                               ARTIFACTS, storageConfigAt(artifactsDir, false),
+                               CONTENT, storageConfigAt(contentDir, false)),
+                        Option.none(),
+                        Option.some(singleKeyRing("key-1")));
+
+        assertThat(Files.exists(healthyDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME)))
+                .as("an admitted boot stamps the encrypted instance's directory")
+                .isTrue();
     }
 
     /// #253 BLOCKING #3 (2026-09-04 ruling): the reverse direction of the test above, through
