@@ -15,15 +15,21 @@
   from the loaded slice's methods. The readiness the leader acts on IS the publication — one put,
   one event, in every path that reaches `ACTIVE`. The activation chain's trailing `publishEndpoints`
   step is gone (it would re-put identical content); the reactivation-after-suspend path keeps it,
-  since no state transition occurs there.
+  because that path performs no `ACTIVE` transition of its own — an HTTP-routed slice re-enters
+  through ROUTING (`publishRoutesIfPresent`), whose put carries no methods, and any ack-driven
+  ACTIVE that follows carries them again.
   [verified: `aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/node/fsm/NodeDeploymentStateEndpointsBeforeActiveTest.java`
-  — drives the real activation chain through the FSM harness with a one-method slice and records
-  every command the node submits; the first `ACTIVE` put must carry `["execute"]`]
+  — drives the real code through the FSM harness with a one-method slice and records every command
+  the node submits; `firstActivePutSeenByTheCluster_carriesTheEndpoints` pins the activation chain's
+  writer (`updateSliceStateWithExtraCommandsAndRetry`), and
+  `forcedActivatingToActive_viaUpdateSliceStateWithRetry_carriesTheEndpoints` pins the
+  `transitionTo(ACTIVE)` writer (`updateSliceStateWithRetry`) that the ROUTING-ack fast path and
+  both stuck remediations use; each goes red on its own writer alone, and the first `ACTIVE` put
+  must carry `["execute"]` in both]
 - A slice with no methods, or no longer in the store at transition time, writes the plain `ACTIVE`
-  value as before; `EndpointRegistry` ignores empty-method puts, so the later ref-bearing state put
-  cannot erase what the first one published. [mechanism: `EndpointRegistry.registerEndpointsFromNodeArtifact`
+  value as before; `EndpointRegistry` ignores empty-method puts, so such a put never erases
+  endpoints an earlier put published. [mechanism: `EndpointRegistry.registerEndpointsFromNodeArtifact`
   returns on empty `methods`]
 - Residual, cited not fixed: a leader-issued ACTIVATE can still be applied on a follower before that
   follower's KV apply has reached the endpoint-bearing put — #1109. `WorkerDeploymentManager` keeps
-  its own state-then-endpoints order; it is unwired (#1125). The ROUTING-ack fast path is covered by
-  construction (same helper) but not by a test of its own. [design intent — unverified]
+  its own state-then-endpoints order; it is unwired (#1125).
