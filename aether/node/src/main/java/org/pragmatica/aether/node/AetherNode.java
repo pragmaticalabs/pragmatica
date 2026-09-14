@@ -6032,6 +6032,11 @@ public interface AetherNode extends ManageableNode {
                                               metricsCollector::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                               metricsCollector::onMembershipDecision));
+        // #588: the pong roster (`allMetrics()`, the node list `/api/v1/cluster/status` serves) forgets a
+        // core node on NodeRemoved above; a worker's death travels on WorkerLeaveDecision instead, and
+        // without this route its last pong stayed in the roster forever as an UNKNOWN ghost.
+        entries.add(MessageRouter.Entry.route(WorkerLeaveDecision.class,
+                                              decision -> metricsCollector.removeNode(decision.nodeId())));
         entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPing.class,
                                               metricsCollector::onClusterSyncPing));
         entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPong.class,
