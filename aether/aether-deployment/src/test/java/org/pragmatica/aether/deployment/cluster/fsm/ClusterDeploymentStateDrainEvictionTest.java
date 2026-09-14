@@ -68,6 +68,9 @@ class ClusterDeploymentStateDrainEvictionTest {
     private static final NodeId NODE_A = new NodeId("node-a");
     private static final NodeId NODE_D = new NodeId("node-drain");
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:slice-a:1.0.0").unwrap();
+    /// `deployReplacementForDrain` parks `checkReplacementAndUnload` 3s out on the real
+    /// `SharedScheduler`; 8s is ~2.7x that, and overshooting only costs wall time.
+    private static final long PARKED_CHECK_WINDOW_MS = 8_000L;
 
     private InMemoryKvStore kvStore;
     private RecordingClusterNode cluster;
@@ -148,6 +151,42 @@ class ClusterDeploymentStateDrainEvictionTest {
         harness.dispatch(new NodeDrainingReported(NODE_D));
 
         assertThat(replacementLoads()).as("a new drain episode must not be swallowed by the previous episode's guard")
+                                      .hasSize(1);
+    }
+
+    /// #688 round 2, SF-1 — the guard leaked from the OTHER abandon path. The loop parks for 3s in
+    /// `checkReplacementAndUnload` waiting for the replacement to go ACTIVE; if the drain is withdrawn
+    /// while it is parked, that early return used to leave `drainEvictionsInProgress` holding the node.
+    /// Nothing then cleared it before the node drained again, so `startDrainEviction`'s `add` refused
+    /// the whole SECOND episode — permanently, since only a reconcile tick that observes the node
+    /// ABSENT from the draining set clears it.
+    ///
+    /// The test therefore calls `reconcile()` NOWHERE: `resumeDrainEvictions`' `retainAll(draining)`
+    /// is the masking path, and `drainWithdrawn_thenReported_again_startsAFreshEviction` above passes
+    /// through it — which is exactly why that test stayed green with this defect present.
+    ///
+    /// A too-short withdrawal window fails RED (the parked check has not fired, the loop legitimately
+    /// still holds the guard), never green: with no ACTIVE replacement in `sliceStates` a late-firing
+    /// check only reschedules itself, so it cannot manufacture the replacement LOAD asserted below.
+    @Test
+    void drainWithdrawnWhileTheReplacementCheckIsParked_thenRedrained_startsAFreshEviction() throws InterruptedException {
+        draining.set(Set.of(NODE_D));
+        harness.dispatch(new NodeDrainingReported(NODE_D));
+        assertThat(replacementLoads()).as("arming: episode one issued its replacement and parked the 3s check")
+                                      .hasSize(1);
+
+        draining.set(Set.of());
+        Thread.sleep(PARKED_CHECK_WINDOW_MS);
+
+        seedActiveSliceOn(NODE_D);
+        activeState().sliceStates().put(org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey.sliceNodeKey(ARTIFACT, NODE_D), SliceState.ACTIVE);
+        cluster.commands.clear();
+        draining.set(Set.of(NODE_D));
+
+        harness.dispatch(new NodeDrainingReported(NODE_D));
+
+        assertThat(replacementLoads()).as("a drain withdrawn while the replacement check was parked must not leave a "
+                                          + "guard that swallows the node's next drain episode")
                                       .hasSize(1);
     }
 

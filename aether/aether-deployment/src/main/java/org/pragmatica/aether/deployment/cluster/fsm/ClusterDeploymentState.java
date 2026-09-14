@@ -1255,11 +1255,18 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             evictNextSliceFromNode(drainingNode);
         }
 
+        /// #688 round 2 — the guard is held for exactly as long as a loop step is scheduled, so EVERY
+        /// step that abandons the loop must release it. Both abandon paths (the head of the loop and
+        /// the parked replacement check) reach it here: a drain that ends between two steps — halted,
+        /// or withdrawn — leaves nothing scheduled, and a guard nobody will clear would swallow the
+        /// node's NEXT drain episode whole (`startDrainEviction`'s `add` is what refuses it).
+        private void abandonDrainEviction(NodeId drainingNode) {
+            drainEvictionsInProgress.remove(drainingNode);
+        }
+
         private void evictNextSliceFromNode(NodeId drainingNode) {
             if (deactivated.get() || !drainingNodes().contains(drainingNode)) {
-                // The drain ended (halt, or withdrawn) without our completing it: release the guard
-                // so a later drain of the same node starts a fresh loop.
-                drainEvictionsInProgress.remove(drainingNode);
+                abandonDrainEviction(drainingNode);
 
                 return;
             }
@@ -1303,6 +1310,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void checkReplacementAndUnload(SliceNodeKey originalKey) {
             if (deactivated.get() || !drainingNodes().contains(originalKey.nodeId())) {
+                abandonDrainEviction(originalKey.nodeId());
+
                 return;
             }
 
