@@ -1059,13 +1059,17 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        log.warn("Node {} still SYNCING after {} rounds: {} of {} required peer responses, from {} "
-                 + "(clusterSize={}). Adoption needs clusterSize/2 peers to answer — self completes the "
-                 + "majority. This node has no leader and runs no reconciler while this persists.",
+        log.warn("Node {} still SYNCING after {} rounds: {} of {} required peer responses ({} live of {} needed "
+                 + "for a live majority), from {} (clusterSize={}). Adoption needs clusterSize/2 peers to answer "
+                 + "when none is live (self completes the majority), or a live majority of clusterSize/2+1 "
+                 + "live peers otherwise; a live minority waits. This node has no leader and runs no "
+                 + "reconciler while this persists.",
                  self,
                  round,
                  syncResponses.size(),
                  syncPeerResponsesRequired(),
+                 liveResponseCount(),
+                 liveResponsesRequired(),
                  syncResponses.keySet(),
                  topologyManager.clusterSize());
     }
@@ -1105,8 +1109,12 @@ public class RabiaEngine<C extends Command> {
     /// unfireable and silently retire the §6.4 mixed-wipe detector.
     private void adoptCollectedState() {
         var persisted = persistence.load();
+        // #667: with a live majority the candidate is the LIVE maximum — a COLD snapshot is a picture
+        // of unknown age and cannot outrank what the live cluster holds; with none, every response counts.
+        var liveMajority = liveResponseCount() >= liveResponsesRequired();
         var responses = syncResponses.values()
                                      .stream()
+                                     .filter(response -> !liveMajority || response.responder() == ResponderState.LIVE)
                                      .map(SyncResponse::state)
                                      .sorted(Comparator.comparing(SavedState::lastCommittedPhase))
                                      .toList();
@@ -1547,9 +1555,45 @@ public class RabiaEngine<C extends Command> {
     /// adoption threshold with ZERO responses and activate alone. The previous `clusterSize <= 1 ? 1`
     /// made that unsatisfiable by accident; here it is refused on purpose, and the periodic WARN reports
     /// `clusterSize=0` so the real fault is visible rather than masked by a node that quietly came up.
+    /// #667: which of the three adoption cases the collected responses are in, re-evaluated on every
+    /// arriving response (and on the retry tick), never on a timer of its own.
+    ///
+    /// - LIVE responders form a cluster majority (`⌊n/2⌋+1`): adopt the most advanced LIVE state. A
+    ///   live majority intersects every majority that could have committed anything, so its maximum is
+    ///   at or past every commit — this is the intersection argument the old `clusterSize/2+1`
+    ///   PEER bound got by accident, and it holds without leaning on self's floor.
+    /// - no LIVE responder: #660's cold rule, unchanged — `clusterSize/2` responses with self as the
+    ///   floor. Nothing durable answered live, so this is the full-cluster cold bootstrap.
+    /// - some LIVE responders but fewer than a majority: keep collecting. A node rejoining a cluster
+    ///   that has no live majority waits by design: that cluster has no quorum either, and adopting
+    ///   from a live minority is exactly how a single restarted node discarded a commit held only by
+    ///   the peers that had not answered yet (#667).
+    /// `UNKNOWN` (an ordinal this node cannot name, #964) counts as COLD: an unreadable flag can loosen
+    /// nothing.
     private boolean adoptionThresholdMet() {
-        return topologyManager.clusterSize() >= 1
-               && syncResponses.size() >= syncPeerResponsesRequired();
+        if (topologyManager.clusterSize() < 1) {
+            return false;
+        }
+
+        var live = liveResponseCount();
+
+        if (live > 0) {
+            return live >= liveResponsesRequired();
+        }
+
+        return syncResponses.size() >= syncPeerResponsesRequired();
+    }
+
+    private long liveResponseCount() {
+        return syncResponses.values()
+                            .stream()
+                            .filter(response -> response.responder() == ResponderState.LIVE)
+                            .count();
+    }
+
+    /// LIVE responders needed for the live-majority case: a majority of the CLUSTER, `⌊n/2⌋+1`.
+    private int liveResponsesRequired() {
+        return topologyManager.clusterSize() / 2 + 1;
     }
 
     /// Cleans up old phase data to prevent memory leaks.
