@@ -106,12 +106,8 @@ class ClusterTopologyManagerRoleMismatchTest {
                                         timeSpan(1).seconds(),
                                         List.of(INFO_SELF, INFO_A, INFO_B));
         observer = TopologyObserver.topologyObserver(config, quietRouter(), snapshotSource).unwrap();
-        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
-                                                     timeSpan(1).millis(),
-                                                     AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
-                                                     AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
-                                                     AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
-                                                     timeSpan(0).millis())
+        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(1).millis(),
+                                                     AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT)
                                      .unwrap();
         var liveness = MembershipLiveness.membershipLiveness(Set::of,
                                                              () -> Set.copyOf(tracked),
