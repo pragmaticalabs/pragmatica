@@ -659,7 +659,7 @@ public final class EmberCluster {
     /// failsafe's 30-minute fork wall ended it — with no failing test named. Whichever path settles
     /// `outcome` first wins (`resolve` is compare-and-set); the other's stops are bounded, recovered,
     /// and idempotent on an already-stopped node.
-    private Promise<Unit> abortStart(Cause cause, Map<String, String> startFailures) {
+    Promise<Unit> abortStart(Cause cause, Map<String, String> startFailures) {
         log.error("Cluster startup aborted on first node failure: {}", cause.message());
         // #727 review B2: BEFORE the stops and the clear that follows them, while `nodes` and
         // `nodeInfos` still hold the attempt. Moving this below the stops empties the snapshot.
@@ -671,10 +671,50 @@ public final class EmberCluster {
                                                  .recover(_ -> Unit.unit()))
                                 .toList();
 
-        return Promise.allOf(stopPromises)
-                      .mapToUnit()
-                      .onSuccess(this::clearClusterStateOnFailure)
-                      .flatMap(_ -> cause.promise());
+        return clearThenSettle(Promise.allOf(stopPromises).mapToUnit(),
+                               this::clearClusterStateOnFailure,
+                               cause::promise);
+    }
+
+    /// The registry clear between the stops settling and the outcome the caller sees (#913 contract:
+    /// a start failure empties the registry BEFORE the failure reaches the caller; [#stop] likewise
+    /// before its own resolution). One chain for all three paths, package-visible so the ordering is
+    /// pinned on the exact chain the product runs (`EmberClusterClearBeforeOutcomeTest`), and the
+    /// wiring of each call site through it on the real paths (`EmberClusterTeardownWiringTest`).
+    ///
+    /// #1112: the clear is a `flatMap`, not an `onSuccess`. `onSuccess` is dispatched to a virtual
+    /// thread, so it raced the caller's own `onResult` continuation and the caller could still read
+    /// the aborted nodes as `inactive` (34–83 of 20,000 iterations). The ordering is structural, not
+    /// a thread property: `CompletionFold.complete` (`core/.../Promise.java`) applies the transformer
+    /// and only then resolves the derived promise, on whichever thread resolved `stopsSettled`, and
+    /// no path dispatches it — so the clear has RETURNED before the outcome can resolve.
+    ///
+    /// The clear runs under [Result#lift]: a throw inside a plain mapper never resolves the derived
+    /// promise (core's total-mapper contract), which would leave the caller's `await()` hanging
+    /// forever. Lifted, a throwing clear settles the outcome as a FAILURE carrying the throwable's
+    /// cause instead (`EmberClusterClearBeforeOutcomeTest.aThrowingClear_settlesAFailure_neverAHang`).
+    static Promise<Unit> clearThenSettle(Promise<Unit> stopsSettled,
+                                         Functions.Fn1<Unit, Unit> clear,
+                                         Functions.Fn0<Promise<Unit>> outcome) {
+        return stopsSettled.flatMap(_ -> Result.lift(() -> clear.apply(Unit.unit())).async())
+                           .flatMap(_ -> outcome.apply());
+    }
+
+    /// TEST SEAM (#1112 wiring pin) — put a node into the RUNNING-node registry exactly as [#start]
+    /// does, without booting one, so `EmberClusterTeardownWiringTest` can drive the real
+    /// [#abortStart], [#handleStartResults] and [#stop] paths over fakes whose `stop()` it controls.
+    void adoptNode(NodeInfo info, AetherNode node) {
+        nodes.put(info.id().id(),
+                  node);
+        nodeInfos.put(info.id().id(),
+                      info);
+    }
+
+    /// TEST SEAM (#1112 wiring pin) — the live [#nodes] map. A `computeIfAbsent` in flight on it
+    /// blocks the `clear()` every teardown path starts with, which is how the test HOLDS the clear
+    /// and proves the outcome cannot reach the caller until it returns. Never read by product code.
+    Map<String, AetherNode> nodeRegistry() {
+        return nodes;
     }
 
     private void captureStartFailure(Map<String, String> startFailures) {
@@ -730,7 +770,7 @@ public final class EmberCluster {
                      .async();
     }
 
-    private record NodeStartResult(String nodeId, int port, int mgmtPort, Option<Cause> failure) {
+    record NodeStartResult(String nodeId, int port, int mgmtPort, Option<Cause> failure) {
         static NodeStartResult nodeStartResult(String nodeId, int port, int mgmtPort, Option<Cause> failure) {
             return new NodeStartResult(nodeId, port, mgmtPort, failure);
         }
@@ -740,7 +780,7 @@ public final class EmberCluster {
         }
     }
 
-    private Promise<Unit> handleStartResults(List<Result<NodeStartResult>> results, Map<String, String> startFailures) {
+    Promise<Unit> handleStartResults(List<Result<NodeStartResult>> results, Map<String, String> startFailures) {
         var nodeResults = results.stream().flatMap(Result::stream).toList();
         var failed = nodeResults.stream().filter(r -> !r.succeeded()).toList();
         var succeeded = nodeResults.stream().filter(NodeStartResult::succeeded).toList();
@@ -779,16 +819,15 @@ public final class EmberCluster {
                                                     .or(Promise.success(Unit.unit())))
                                     .toList();
 
-        return Promise.allOf(stopPromises)
-                      .mapToUnit()
-                      .onSuccess(this::clearClusterStateOnFailure)
-                      .flatMap(_ -> failed.getFirst()
-                                          .failure()
-                                          .<Promise<Unit>> map(Cause::promise)
-                                          .or(Promise.success(Unit.unit())));
+        return clearThenSettle(Promise.allOf(stopPromises).mapToUnit(),
+                               this::clearClusterStateOnFailure,
+                               () -> failed.getFirst()
+                                           .failure()
+                                           .<Promise<Unit>> map(Cause::promise)
+                                           .or(Promise.success(Unit.unit())));
     }
 
-    private void clearClusterStateOnFailure(Unit unit) {
+    private Unit clearClusterStateOnFailure(Unit unit) {
         nodes.clear();
         // Held-back instances were never started, so dropping the references disposes them fully.
         heldBackNodes.clear();
@@ -797,6 +836,8 @@ public final class EmberCluster {
         slotsByNodeId.clear();
         availableSlots.clear();
         nodeCounter.set(0);
+
+        return unit;
     }
 
     public Promise<Unit> stop() {
@@ -805,9 +846,9 @@ public final class EmberCluster {
         rollingRestartActive.set(false);
         var stopPromises = nodes.values().stream().map(EmberCluster::submitStop).toList();
 
-        return Promise.allOf(stopPromises)
-                      .map(_ -> Unit.unit())
-                      .onSuccess(this::clearClusterState);
+        return clearThenSettle(Promise.allOf(stopPromises).mapToUnit(),
+                               this::clearClusterState,
+                               Promise::unitPromise);
     }
 
     /// Run one node's stop OFF the caller's thread so [`#NODE_TIMEOUT`] can actually see it (#929).
@@ -829,7 +870,7 @@ public final class EmberCluster {
                                                      .onResult(promise::resolve)).timeout(NODE_TIMEOUT);
     }
 
-    private void clearClusterState(Unit unit) {
+    private Unit clearClusterState(Unit unit) {
         nodes.clear();
         // Still-held instances were never started — nothing to stop, dropping them disposes them.
         heldBackNodes.clear();
@@ -838,6 +879,8 @@ public final class EmberCluster {
         slotsByNodeId.clear();
         availableSlots.clear();
         log.info("Ember cluster stopped");
+
+        return unit;
     }
 
     /// Adds a node with NO role label — production-default shape, and byte-identical to the behaviour
