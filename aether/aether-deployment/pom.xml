@@ -35,10 +35,11 @@
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
         </dependency>
-        <!-- @Codec processor: generates the system-level codec registry for this module's
-             @Codec types (CommandLifecycleEvent). Aggregated into the node serializer via
-             NodeCodecs so the audit StreamPublisher can serialize the events (WorkerCodecs was
-             removed in #503: it composed five message types nothing ever routed). -->
+        <!-- @Codec processor, retained while this module declares NO @Codec type: the audit
+             CommandLifecycleEvent it once generated a registry for was deleted with the
+             audit-of-lifecycle-commands stack (8ee6da68a), and NodeCodecs composes nothing from
+             this module (WorkerCodecs, removed in #503, never did either). Declaring a @Codec
+             type here again would need its registry re-composed into NodeCodecs by hand. -->
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>serialization-codec-processor</artifactId>
