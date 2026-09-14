@@ -250,6 +250,37 @@ membership_int_field() {
 # strict-core before a kill-detection race was decided.
 # Usage: membership_live_member_ids "$membership_json"
 # ---------------------------------------------------------------------------
+# Arm D — auto-heal suppression (#W3)
+# ---------------------------------------------------------------------------
+# arm_d_requested — is the Arm D (auto-heal disabled) variant explicitly requested?
+#
+# DEFAULT IS OFF, and that matters structurally: the S19 file is SYMLINKED into both 02-chaos and
+# 02s-selfdrain, so an ungated hook would silently change 02-chaos — the suite the acceptance
+# record rests on. Only the literal string "true" turns it on; anything else, including a typo'd
+# value, leaves the stock path untouched. A gate that fails open is not a gate.
+arm_d_requested() {
+    [ "${S19_ARM_D_DISABLE_AUTOHEAL:-false}" = "true" ]
+}
+
+# autoheal_enabled_field <json> — parse `{"enabled":true|false}` from the auto-heal status body.
+# Echoes "true"/"false", or nothing when the body carries no usable field.
+autoheal_enabled_field() {
+    printf '%s' "$1" \
+        | grep -oE '"enabled"[[:space:]]*:[[:space:]]*(true|false)' \
+        | head -1 \
+        | sed -E 's/.*:[[:space:]]*(true|false)/\1/'
+}
+
+# GET /api/v1/cluster/topology/auto-heal is LEADER-scoped (ManagementRoute
+# .CLUSTER_AUTO_HEAL_STATUS), so it forwards to the leader and CANNOT be answered while quorum is
+# lost. That is a property of the route, not a flake — and it is why Arm D can never confirm its
+# own precondition during the window it measures. Contrast CLUSTER_MEMBERSHIP_GET, which is
+# deliberately LOCAL precisely so it can be read by a node whose isolation is in question.
+AUTOHEAL_STATUS_PATH="/api/v1/cluster/topology/auto-heal"
+AUTOHEAL_DISABLE_PATH="/api/v1/cluster/topology/auto-heal/disable"
+AUTOHEAL_ENABLE_PATH="/api/v1/cluster/topology/auto-heal/enable"
+
+# ---------------------------------------------------------------------------
 # Answering-node identity (#W5)
 # ---------------------------------------------------------------------------
 # membership_self_node_id <json> — the id of the node that ANSWERED, from the body.

@@ -1333,12 +1333,81 @@ fi
 # Step 8's test-partition-quorum-gate.sh.
 trap 'cleanup' EXIT
 
+# --- Arm D (#W3): auto-heal suppression, OFF unless explicitly requested -------------------
+#
+# The stock S19 path leaves auto-heal ON. Arm D exists because the quorum-loss branch is what
+# #1053's JVM drain code needs exercised, and auto-heal refilling quorum prevents it. Auto-heal
+# cannot be declared off in the cluster TOML — PF-25 (#575) REFUSES `[operations.auto_heal]
+# enabled = false` precisely because the runtime never read it, and an operator who set it "gets
+# silent no-op". The only real mechanism is the imperative toggle (#603), durable in the
+# consensus KV (#685).
+test_arm_d_disable_autoheal() {
+    if ! arm_d_requested; then
+        log_info "Arm D not requested (S19_ARM_D_DISABLE_AUTOHEAL unset/false) — auto-heal stays ON, stock S19 path unchanged"
+        return 0
+    fi
+
+    if ! api_post "$AUTOHEAL_DISABLE_PATH" '{"reason":"Arm D: S19 quorum-loss branch"}' >/dev/null 2>&1; then
+        log_fail "Arm D: POST ${AUTOHEAL_DISABLE_PATH} failed — the arm's independent variable was never set, so this run is NOT Arm D"
+        return 1
+    fi
+
+    # CONTROL: prove it took, before the kill, while a leader still exists to answer.
+    local state
+    state=$(autoheal_enabled_field "$(api_get "$AUTOHEAL_STATUS_PATH" 2>/dev/null)")
+    if [ "$state" = "false" ]; then
+        log_pass "Arm D: auto-heal read back DISABLED before the kill (independent variable confirmed set)"
+        return 0
+    fi
+    log_fail "Arm D: auto-heal read back '${state:-<unreadable>}' before the kill, expected 'false' — the arm is not set up; this round is VOID, not a result"
+    return 1
+}
+
+# Attempted DURING quorum loss. Expected to be unreadable, and that expectation is the finding:
+# the status route is LEADER-scoped, and S19 destroys the quorum that elects a leader. Setting the
+# flag is not the same as the flag HOLDING through the window it is relied upon — so this records
+# which of the three outcomes actually occurred rather than assuming persistence.
+test_arm_d_autoheal_state_in_window() {
+    if ! arm_d_requested; then
+        return 0
+    fi
+    local state
+    state=$(autoheal_enabled_field "$(api_get "$AUTOHEAL_STATUS_PATH" 2>/dev/null)")
+    case "$state" in
+        false) log_pass "Arm D: auto-heal still reads DISABLED during the quorum-loss window — precondition VERIFIED to have held" ;;
+        true)  log_fail "Arm D: auto-heal reads ENABLED during the window — it re-armed mid-run and THIS ARM WAS ARM R ALL ALONG; do not report it as Arm D" ;;
+        *)     log_warn "Arm D: auto-heal status UNREADABLE during the quorum-loss window (LEADER-scoped route, no leader without quorum). The flag's state across the window is UNVERIFIED — 'we set it' is not 'it held'. Expected outcome; bounds Arm D's conclusions (see plan S18/S19)." ;;
+    esac
+    return 0
+}
+
+# After S20 recovery a leader exists again, so the durable fact is readable. This cannot prove the
+# flag held DURING the window, only that it survived to the other side — weaker, and stated as such.
+test_arm_d_autoheal_state_after_recovery() {
+    if ! arm_d_requested; then
+        return 0
+    fi
+    local state
+    state=$(autoheal_enabled_field "$(api_get "$AUTOHEAL_STATUS_PATH" 2>/dev/null)")
+    case "$state" in
+        false) log_pass "Arm D: auto-heal reads DISABLED after recovery — the durable fact survived the window (does NOT prove it held throughout)" ;;
+        true)  log_fail "Arm D: auto-heal reads ENABLED after recovery — the disable did not survive; the arm's variable was not held" ;;
+        *)     log_warn "Arm D: auto-heal status still unreadable after recovery — cannot assess persistence at all" ;;
+    esac
+    # Restore for whatever runs next; best-effort, never fails the suite.
+    api_post "$AUTOHEAL_ENABLE_PATH" '{"reason":"Arm D teardown"}' >/dev/null 2>&1 || true
+    return 0
+}
+
 run_test "Initial 5 healthy cores" test_initial_state
+run_test "Arm D: disable auto-heal (skipped unless requested)" test_arm_d_disable_autoheal
 run_test "Pick 3 victims and kill simultaneously" test_pick_victims_and_kill_three_simultaneously
 run_test "Confirm quorum-loss vs auto-heal race (cloud-only arbitration)" test_confirm_quorum_loss_race
 run_test "Survivors self-drain and exit within ${SURVIVOR_EXIT_BUDGET_S}s (S19)" test_survivors_self_drain_and_exit
+run_test "Arm D: auto-heal state during the quorum-loss window" test_arm_d_autoheal_state_in_window
 _s19_record_exit_code_step
 run_test "Drain-trigger log signature present on survivors" test_drain_trigger_log_signature_present
 run_test "No KV-writes after drain trigger (negative assertion)" test_no_kv_writes_after_drain_trigger
 run_test "$(_s20_test_label)" test_cluster_recovers_to_five_on_duty
+run_test "Arm D: auto-heal state after recovery" test_arm_d_autoheal_state_after_recovery
 print_summary
