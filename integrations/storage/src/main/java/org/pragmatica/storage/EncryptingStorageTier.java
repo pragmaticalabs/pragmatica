@@ -100,16 +100,38 @@ public final class EncryptingStorageTier implements StorageTier {
     /// keeps the hot write path free of marker-file coordination and avoids an ambiguous on-disk
     /// state if the node crashes after "enabling" but before any block is ever written.
     public static Result<StorageTier> wrapLocalDisk(LocalDiskTier delegate, Path basePath, EncryptionKeyring keyring) {
+        return armLocalDisk(delegate, basePath, keyring).flatMap(armed -> armed.commitMarker()
+                                                                               .map(_ -> armed.tier()));
+    }
+
+    /// #852: [#wrapLocalDisk]'s guard and its marker write, separated. The guard is a pure refusal;
+    /// the write is a permanent side effect a later boot's reverse guard keys on. A caller assembling
+    /// SEVERAL tiers under one boot decision arms each first and commits only once every guard has
+    /// passed, so a refused boot stamps no directory. `pendingKeyId` is empty when the marker is
+    /// already there (nothing to commit).
+    public record ArmedLocalDisk(StorageTier tier, Path markerPath, Option<String> pendingKeyId) {
+        public Result<Unit> commitMarker() {
+            return pendingKeyId.map(keyId -> writeMarker(markerPath, keyId))
+                               .or(Result.success(unit()));
+        }
+    }
+
+    /// The guard half of [#wrapLocalDisk]: refuses over pre-existing plaintext, otherwise returns the
+    /// wrapped tier with its marker write still pending — see [ArmedLocalDisk].
+    public static Result<ArmedLocalDisk> armLocalDisk(LocalDiskTier delegate,
+                                                      Path basePath,
+                                                      EncryptionKeyring keyring) {
         var markerPath = basePath.resolve(MARKER_FILE_NAME);
+        var tier = wrap(delegate, keyring);
 
         if (FileOps.exists(markerPath)) {
-            return Result.success(wrap(delegate, keyring));
+            return Result.success(new ArmedLocalDisk(tier, markerPath, Option.none()));
         }
 
         return FileOps.walk(basePath, EncryptingStorageTier::isBlockFile).flatMap(existing -> existing.isEmpty()
-                                                                                              ? writeMarker(markerPath,
-                                                                                                            keyring.activeKeyId()).map(_ -> wrap(delegate,
-                                                                                                                                                 keyring))
+                                                                                              ? Result.success(new ArmedLocalDisk(tier,
+                                                                                                                                  markerPath,
+                                                                                                                                  Option.some(keyring.activeKeyId())))
                                                                                               : new EncryptionError.EnablingOverExistingPlaintext(basePath.toString(),
                                                                                                                                                   existing.size()).result());
     }

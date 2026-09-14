@@ -305,6 +305,13 @@ framed `AEC1...` bytes as if they were plaintext content on every read. Recovery
 to a fresh, unmarked directory or DHT namespace (`#831`). This marker/refusal pair covers the
 per-instance disk/DHT path above; the built-in `streams` segment tiers' DHT namespace
 (`stream-segments`) has neither yet — only its disk side does — and is tracked separately as `#849`.
+**A refused boot leaves no disk marker behind (`#852`).** Storage construction is two-phase: every
+configured instance's guards run first, and only when all of them pass are the `.encryption-enabled`
+disk markers written. So a boot refused by one instance (legacy plaintext under an `encrypted = true`
+instance, or the reverse-direction refusal) does not stamp a sibling's directory — backing that
+sibling out to `encrypted = false` afterwards starts, because there is no marker for its reverse
+guard to trip on. The DHT marker was already outside this window (see next paragraph); the
+`streams` segment tiers are built by a separate call and are not covered by it.
 **Timing differs by tier (`#858`/`#874`):** the local-disk marker is checked synchronously during
 storage construction, before the node object exists — a disk read needs no cluster. The DHT marker
 cannot be: its `DHTClient` can only route once cluster formation resolves, so that check runs from
