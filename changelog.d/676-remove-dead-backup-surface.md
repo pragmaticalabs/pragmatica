@@ -1,7 +1,8 @@
 ### Removed (2026-09-14 — #676: the backup API/CLI could never be enabled; git-backed persistence is the backup)
-- **Decision: delete, not wire.** `BackupService` has had exactly one implementation since the day it was
-  introduced — `disabled()` (`git log -S'implements BackupService' --all` returns only `1dc452bf0`, whose sole
-  implementor is the disabled record) — and both node-construction sites passed it unconditionally, so
+- **Decision: delete, not wire.** `BackupService` has only ever had stubs for implementations — `disabled()`
+  from its introduction in `1dc452bf0`, plus a `NoOpBackupService` in `aether/lb` that lived one day on an
+  archived branch (`6dcfa57e3`..`00a5c0f91`, reachable only from the 2026-09-10 archive bundle) — and both
+  node-construction sites passed `disabled()` unconditionally, so
   `POST|GET /api/v1/backups`, `POST /api/v1/backups/restore`, `aether backup create|restore|list` and
   `aether backups trigger|list|restore` answered `backup-disabled` in every configuration that has ever shipped.
   The ticket's open question (feature flag awaiting cutover, or regression?) is answered by the history: neither —
@@ -22,13 +23,23 @@
   written in place with `TRUNCATE_EXISTING`; a save that failed after the open left a truncated file, and
   `load()` decoded the half base64 line into an EMPTY snapshot — a node restarted after a mid-save crash would
   have loaded nothing and said so to no one. The snapshot is now written to `state.toml.partial`, fsynced
-  (`FileChannel.force(true)`) and renamed over `state.toml` (`FileOps.moveReplace`, a same-directory rename), so
-  the state file only ever holds a complete snapshot; a failed save deletes its partial. [verified:
+  (`FileChannel.force(true)`) and renamed over `state.toml` in one `rename(2)` (new `FileOps.moveAtomic` =
+  `REPLACE_EXISTING` + `ATOMIC_MOVE`; the partial is a sibling of `state.toml` in `[backup] path`, so the rename
+  never crosses a filesystem), so the state file only ever holds a complete snapshot; a failed save deletes its
+  partial. `FileOps.moveReplace` (no `ATOMIC_MOVE`, which the first round used) is NOT that: the JDK unlinks the
+  target before the rename, so a crash between the two left no `state.toml` at all and a failed rename plus the
+  partial cleanup destroyed both copies. [verified:
   `GitBackedPersistenceTest#save_interruptedMidWrite_keepsThePreviousSnapshotLoadable` — a write seam that
   stores half the new content and fails: red at the base with `expected: [1, 2, 3] but was: []`, green after;
   `load()` returns the previous snapshot at its phase, only `state.toml` and `.git` remain, one commit]
-  [unverified: the fsync itself — the seam replaces the production writer, so the `force(true)` call is
-  exercised only by the healthy-write tests, never by a power-loss probe]
+  [verified: `FileOpsTest#moveAtomic_renameFails_targetSurvives` — source and target in sibling directories,
+  the source's directory read-only so the rename fails while an unlink of the target would succeed: the target
+  survives; red without `ATOMIC_MOVE` (`target GONE`)] [unverified: that the `GitBackedPersistence` call site
+  itself is atomic — established by reading `UnixFileSystem.move` (single `rename` under `ATOMIC_MOVE`, `unlink`
+  then `rename` without it), not by a test: the partial and `state.toml` share a directory, so no non-root
+  fault injection makes the rename fail while the unlink succeeds] [unverified: the fsync itself — the seam
+  replaces the production writer, so the `force(true)` call is exercised only by the healthy-write tests,
+  never by a power-loss probe; no directory fsync follows the rename, matching the `PartitionWal` precedent]
 - **Docs corrected to the real mechanism** (`backup-recovery.md`, `configuration.md`, `management-api.md`,
   `cli.md`, `feature-catalog.md` row 206, `guarantees.md` §1a, `management-api-versioning-spec.md`): saves
   happen on lifecycle transitions only (quorum-loss pause, reconfigure, graceful stop) and never on commit or
@@ -39,4 +50,6 @@
   `AetherNode::snapshotToBase64`/`::base64ToSnapshot`]
 - Out of scope, noted for the CTO: `BackupConfig.interval` is a dead config key (#675's class); retiring wire
   tags 258/259; `GitBackedPersistence.load()` still turns a parse failure into "no saved state" (`.option()`),
-  so a corrupted `state.toml` from any other cause boots empty rather than refusing.
+  so a corrupted `state.toml` from any other cause boots empty rather than refusing; `LocalDiskTier.writeThenRename`
+  (`integrations/storage`) renames its partial over the block with the same non-atomic `moveReplace` this round
+  replaced here — same hazard, separate module.

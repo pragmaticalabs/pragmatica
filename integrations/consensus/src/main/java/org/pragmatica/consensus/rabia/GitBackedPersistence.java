@@ -36,7 +36,7 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.io.FileOps.deleteIfExists;
 import static org.pragmatica.lang.io.FileOps.exists;
-import static org.pragmatica.lang.io.FileOps.moveReplace;
+import static org.pragmatica.lang.io.FileOps.moveAtomic;
 import static org.pragmatica.lang.io.FileOps.readString;
 import static org.pragmatica.lang.io.FileOps.writeString;
 import static org.pragmatica.consensus.rabia.RabiaPersistence.SavedState.savedState;
@@ -46,8 +46,10 @@ import static org.pragmatica.consensus.rabia.RabiaPersistence.SavedState.savedSt
 /// Writes state snapshots as TOML files in a local git repository.
 class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     private static final String STATE_FILE = "state.toml";
-    /// The snapshot is written here, fsynced and renamed over [#STATE_FILE], so the state file only
-    /// ever holds a complete snapshot — an interrupted save leaves the previous one intact (#676).
+    /// The snapshot is written here, fsynced and renamed over [#STATE_FILE] in ONE rename
+    /// (`FileOps.moveAtomic` — the two are siblings in `backupDir`, so the rename never crosses a
+    /// filesystem), so the state file only ever holds a complete snapshot: an interrupted write, a
+    /// crash during the rename or a failed rename all leave the previous one in place (#676).
     private static final String PARTIAL_FILE = "state.toml.partial";
     private static final Pattern PHASE_PATTERN = Pattern.compile("^# Phase: (\\d+)$", Pattern.MULTILINE);
     /// Default git operation timeout.
@@ -145,8 +147,8 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
         var partial = backupDir.resolve(PARTIAL_FILE);
 
         return fileWriter.apply(partial, toml)
-                         .flatMap(_ -> moveReplace(partial,
-                                                   backupDir.resolve(STATE_FILE)))
+                         .flatMap(_ -> moveAtomic(partial,
+                                                  backupDir.resolve(STATE_FILE)))
                          .onFailure(_ -> deleteIfExists(partial))
                          .mapToUnit()
                          .mapError(e -> PersistenceError.ioFailure(new RuntimeException(e.message())));

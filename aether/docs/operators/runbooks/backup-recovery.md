@@ -20,9 +20,12 @@ snapshot; the last one on disk is from the last lifecycle event. `[backup] inter
 read by nothing — there is no periodic save.
 
 **How the file is written (#676):** to `state.toml.partial`, fsynced, then renamed over
-`state.toml`, so an interrupted save leaves the previous snapshot intact and loadable
-(`GitBackedPersistenceTest#save_interruptedMidWrite_keepsThePreviousSnapshotLoadable`). Before
-#676 the write truncated `state.toml` in place and a half-written file loaded as an EMPTY state.
+`state.toml` in a single atomic rename (`FileOps.moveAtomic`, `ATOMIC_MOVE`), so an interrupted
+write, a crash during the rename or a failed rename all leave the previous snapshot intact and
+loadable (`GitBackedPersistenceTest#save_interruptedMidWrite_keepsThePreviousSnapshotLoadable` for
+the interrupted write; `FileOpsTest#moveAtomic_renameFails_targetSurvives` for the failed rename;
+the crash window is established by reading the JDK, not by a test). Before #676 the write truncated
+`state.toml` in place and a half-written file loaded as an EMPTY state.
 
 ## Enabling Backups
 
