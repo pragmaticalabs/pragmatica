@@ -6,6 +6,54 @@ source "${LIB_DIR}/common.sh"
 source "${LIB_DIR}/generation.sh"
 
 # ---------------------------------------------------------------------------
+# Cluster naming
+# ---------------------------------------------------------------------------
+# resolve_cluster_name <a|b> <container|jvm> — echo the cluster name for one slot.
+#
+# Precedence: an explicit CLUSTER_A_NAME / CLUSTER_B_NAME taken from the environment
+# ALWAYS wins, including over the --runtime jvm rename. Without one, container keeps
+# test-a/test-b and jvm keeps cloud-test-{a,b}-jvm — the historical defaults, byte for
+# byte, so a run that sets neither behaves exactly as before.
+#
+# Why an override has to exist at all: the names were plain assignments, and the jvm
+# branch overwrote them unconditionally. Two concurrent same-runtime arms therefore
+# shared one cluster name, one ~/.aether/clusters/<name>/ state dir and one
+# aether-cluster label — so arm 1's teardown (`cloud-reaper.sh --cluster <name>
+# --destroy`) reaped arm 2's LIVE cluster. That surfaces as nodes vanishing mid-run,
+# which reads as a runtime fault rather than a harness one.
+#
+# The caller is expected to have captured CLUSTER_{A,B}_NAME_EXPLICIT before assigning
+# any default over them; this function never reads CLUSTER_{A,B}_NAME itself, precisely
+# so it cannot mistake a default it already set for a user's choice.
+#
+# Names become Hetzner label values, so they are validated here and rejected fast: an
+# invalid name would otherwise surface as an opaque provisioning error AFTER VMs are
+# already being billed.
+resolve_cluster_name() {
+    local slot="${1:-}" runtime="${2:-container}" explicit default
+
+    case "${slot}:${runtime}" in
+        a:jvm) explicit="${CLUSTER_A_NAME_EXPLICIT:-}"; default="cloud-test-a-jvm" ;;
+        b:jvm) explicit="${CLUSTER_B_NAME_EXPLICIT:-}"; default="cloud-test-b-jvm" ;;
+        a:*)   explicit="${CLUSTER_A_NAME_EXPLICIT:-}"; default="test-a" ;;
+        b:*)   explicit="${CLUSTER_B_NAME_EXPLICIT:-}"; default="test-b" ;;
+        *)     echo "resolve_cluster_name: slot must be 'a' or 'b', got: ${slot}" >&2
+               return 2 ;;
+    esac
+
+    local name="${explicit:-$default}"
+
+    # Hetzner label values: alphanumeric start/end, [A-Za-z0-9._-] within, <=63 chars.
+    if ! printf '%s' "$name" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$'; then
+        echo "resolve_cluster_name: invalid cluster name '${name}' — must match" \
+             "^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?\$ (Hetzner label value)" >&2
+        return 2
+    fi
+
+    printf '%s\n' "$name"
+}
+
+# ---------------------------------------------------------------------------
 # Cluster queries (CLI-based)
 # ---------------------------------------------------------------------------
 # cluster_member_count — generation snapshot member count (includes JOINING).
