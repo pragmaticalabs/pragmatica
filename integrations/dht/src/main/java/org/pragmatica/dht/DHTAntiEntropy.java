@@ -15,7 +15,6 @@
  */
 package org.pragmatica.dht;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
@@ -133,8 +132,7 @@ public final class DHTAntiEntropy {
         var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
 
         for (int p = 0; p < Partition.MAX_PARTITIONS; p++) {
-            var partitionKey = ("partition:" + p).getBytes(StandardCharsets.UTF_8);
-            var nodes = node.ring().nodesFor(partitionKey, replicationFactor);
+            var nodes = node.ring().nodesFor(Partition.at(p), replicationFactor);
 
             if (!nodes.contains(node.nodeId())) {
                 continue;

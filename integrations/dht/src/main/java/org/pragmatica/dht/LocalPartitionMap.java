@@ -45,11 +45,7 @@ public final class LocalPartitionMap<N extends Comparable<N>> implements Partiti
 
     @Override
     public Promise<List<N>> nodesFor(Partition partition, int replicaCount) {
-        // Use partition value as key for consistent node selection
-        String partitionKey = "partition:" + partition.value();
-        List<N> nodes = ring.nodesFor(partitionKey, replicaCount);
-
-        return Promise.success(nodes);
+        return Promise.success(ring.nodesFor(partition, replicaCount));
     }
 
     @Override
@@ -58,9 +54,8 @@ public final class LocalPartitionMap<N extends Comparable<N>> implements Partiti
 
         for (int i = 0; i < Partition.MAX_PARTITIONS; i++) {
             Partition partition = Partition.at(i);
-            String partitionKey = "partition:" + i;
 
-            ring.primaryFor(partitionKey).onPresent(primary -> {
+            ring.primaryFor(partition).onPresent(primary -> {
                 if (primary.equals(node)) {
                     partitions.add(partition);
                 }
@@ -76,8 +71,7 @@ public final class LocalPartitionMap<N extends Comparable<N>> implements Partiti
 
         for (int i = 0; i < Partition.MAX_PARTITIONS; i++) {
             Partition partition = Partition.at(i);
-            String partitionKey = "partition:" + i;
-            List<N> nodes = ring.nodesFor(partitionKey, replicaCount);
+            List<N> nodes = ring.nodesFor(partition, replicaCount);
 
             if (nodes.contains(node)) {
                 partitions.add(partition);

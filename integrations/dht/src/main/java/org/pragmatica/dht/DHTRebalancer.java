@@ -15,7 +15,6 @@
  */
 package org.pragmatica.dht;
 
-import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
@@ -253,8 +252,8 @@ public final class DHTRebalancer {
     }
 
     private void rebalancePartition(int partitionIndex, int replicationFactor) {
-        var partitionKey = ("partition:" + partitionIndex).getBytes(StandardCharsets.UTF_8);
-        var replicaNodes = node.ring().nodesFor(partitionKey, replicationFactor);
+        var partition = Partition.at(partitionIndex);
+        var replicaNodes = node.ring().nodesFor(partition, replicationFactor);
 
         if (!replicaNodes.contains(node.nodeId())) {
             return;
@@ -263,8 +262,6 @@ public final class DHTRebalancer {
         if (!isPrimary(replicaNodes)) {
             return;
         }
-
-        var partition = Partition.at(partitionIndex);
 
         node.storage()
             .entriesForPartition(node.ring(),

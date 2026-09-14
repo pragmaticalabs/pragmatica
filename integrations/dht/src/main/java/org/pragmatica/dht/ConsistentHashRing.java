@@ -28,7 +28,12 @@ import org.pragmatica.lang.Option;
 /// Consistent hash ring for distributing data across nodes.
 /// Uses virtual nodes for even distribution and MurmurHash3-like hashing.
 ///
-/// The ring maps keys to partitions (0-1023), and partitions to nodes.
+/// The ring maps keys to partitions (0-1023), and partitions to nodes — and that is the ONLY
+/// placement: a key's nodes are its partition's nodes ([#nodesFor(byte[], int)] resolves through
+/// [#nodesFor(Partition, int)]). Until #420 a key was placed at its own hash position while
+/// anti-entropy and the rebalancer placed its partition at `hash("partition:<p>")`, so the repair
+/// machinery moved data among nodes that owned the partition but not the key (measured: the two
+/// owner sets agreed for ~10% of keys on a 5-node ring — chance level).
 /// Each physical node has multiple virtual nodes spread across the ring
 /// for better load distribution.
 ///
@@ -103,18 +108,22 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
         return partitionFor(key.getBytes(StandardCharsets.UTF_8));
     }
 
-    /// Get the primary node for a given key.
+    /// Get the primary node for a given key: the primary of the key's partition.
     /// Returns empty if no nodes are in the ring.
     public Option<N> primaryFor(byte[] key) {
+        return primaryFor(partitionFor(key));
+    }
+
+    /// Get the primary node for a partition.
+    /// Returns empty if no nodes are in the ring.
+    public Option<N> primaryFor(Partition partition) {
         lock.readLock().lock();
         try {
             if (ring.isEmpty()) {
                 return Option.none();
             }
 
-            int hash = hash(key);
-
-            return Option.some(getNodeForHash(hash));
+            return Option.some(getNodeForHash(positionOf(partition)));
         } finally {
             lock.readLock().unlock();
         }
@@ -125,9 +134,15 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
         return primaryFor(key.getBytes(StandardCharsets.UTF_8));
     }
 
-    /// Get the primary and replica nodes for a given key.
+    /// Get the primary and replica nodes for a given key: the nodes of the key's partition.
     /// Returns up to replicaCount nodes, starting with primary.
     public List<N> nodesFor(byte[] key, int replicaCount) {
+        return nodesFor(partitionFor(key), replicaCount);
+    }
+
+    /// Get the primary and replica nodes for a partition.
+    /// Returns up to replicaCount nodes, starting with primary.
+    public List<N> nodesFor(Partition partition, int replicaCount) {
         lock.readLock().lock();
         try {
             if (ring.isEmpty()) {
@@ -138,7 +153,7 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
                 return List.of();
             }
 
-            int hash = hash(key);
+            int hash = positionOf(partition);
             Set<N> seen = new LinkedHashSet<>();
             // Start from the hash position and walk clockwise
             int current = Option.option(ring.ceilingKey(hash)).or(ring::firstKey);
@@ -157,19 +172,25 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     }
 
     /// Get the primary and replica nodes for a given key, excluding filtered nodes.
-    /// Returns up to replicaCount nodes that pass the filter, starting with primary.
+    /// Returns up to replicaCount nodes of the key's partition that pass the filter, starting
+    /// with primary.
     ///
     /// @param key          the key to look up
     /// @param replicaCount maximum number of nodes to return
     /// @param filter       predicate that must return true for a node to be included
     public List<N> nodesFor(byte[] key, int replicaCount, Predicate<N> filter) {
+        return nodesFor(partitionFor(key), replicaCount, filter);
+    }
+
+    /// Returns up to replicaCount nodes of the partition that pass the filter, starting with primary.
+    public List<N> nodesFor(Partition partition, int replicaCount, Predicate<N> filter) {
         lock.readLock().lock();
         try {
             if (ring.isEmpty() || replicaCount <= 0) {
                 return List.of();
             }
 
-            int hash = hash(key);
+            int hash = positionOf(partition);
             Set<N> seen = new LinkedHashSet<>();
             Set<N> visited = new HashSet<>();
             int current = Option.option(ring.ceilingKey(hash)).or(ring::firstKey);
@@ -233,6 +254,11 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
 
     /// MurmurHash3-like hash function.
     /// Provides good distribution for consistent hashing.
+    /// The ring position of a partition — the one place the partition-to-position mapping lives.
+    private static int positionOf(Partition partition) {
+        return hash("partition:" + partition.value());
+    }
+
     private static int hash(byte[] data) {
         int h = 0x811c9dc5;
 

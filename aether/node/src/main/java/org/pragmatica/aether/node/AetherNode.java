@@ -1543,8 +1543,8 @@ public interface AetherNode extends ManageableNode {
                                                // slice that deploys and then fails at load.
                                               );
         var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, dhtNetwork, config.artifactRepo());
-        var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer);
         var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode, dhtNetwork, config.artifactRepo());
+        var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer, dhtAntiEntropy);
         var switchableCluster = SwitchableClusterNode.switchableClusterNode(clusterNode);
         var corePeerIds = config.topology()
                                 .coreNodes()

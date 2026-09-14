@@ -70,13 +70,18 @@ public final class DHTTopologyListener {
         return new DHTTopologyListener(node, Option.some(rebalancer), Option.some(antiEntropy));
     }
 
-    /// Handle a node-joined decision by adding the node to the consistent hash ring.
+    /// Handle a node-joined decision by adding the node to the consistent hash ring, then run one
+    /// anti-entropy round: the ring now counts the joiner toward the replication factor of every
+    /// partition it gained, while the joiner holds none of them until it pulls. The round runs on
+    /// every node (the joiner's own `NodeJoined` included), and is idempotent with the periodic
+    /// cycle — nodes that gained nothing pull nothing (issue #420).
     @Contract
     public void onNodeJoined(MembershipDecision.NodeJoined event) {
         var addedNodeId = event.nodeId();
 
         log.info("DHT: Node added {}, updating ring", addedNodeId.id());
         node.ring().addNode(addedNodeId);
+        antiEntropy.onPresent(DHTAntiEntropy::synchronizeNow);
     }
 
     /// Handle a node-removed decision by removing the node from the consistent hash ring
