@@ -34,10 +34,11 @@
   `load()` returns the previous snapshot at its phase, only `state.toml` and `.git` remain, one commit]
   [verified: `FileOpsTest#moveAtomic_renameFails_targetSurvives` — source and target in sibling directories,
   the source's directory read-only so the rename fails while an unlink of the target would succeed: the target
-  survives; red without `ATOMIC_MOVE` (`target GONE`)] [unverified: that the `GitBackedPersistence` call site
-  itself is atomic — established by reading `UnixFileSystem.move` (single `rename` under `ATOMIC_MOVE`, `unlink`
-  then `rename` without it), not by a test: the partial and `state.toml` share a directory, so no non-root
-  fault injection makes the rename fail while the unlink succeeds] [unverified: the fsync itself — the seam
+  survives; red without `ATOMIC_MOVE` (`target GONE`)] [verified:
+  `GitBackedPersistenceTest#save_renameFails_keepsThePreviousSnapshotLoadable` — at the real call site, the writer
+  seam makes the partial a DIRECTORY so `rename(2)` over `state.toml` fails with ENOTDIR under `ATOMIC_MOVE` and
+  the previous snapshot stays loadable; with `moveReplace` the JDK unlinks `state.toml` first, the rename then
+  SUCCEEDS and the test goes red with a directory where the snapshot was] [unverified: the fsync itself — the seam
   replaces the production writer, so the `force(true)` call is exercised only by the healthy-write tests,
   never by a power-loss probe; no directory fsync follows the rename, matching the `PartitionWal` precedent]
 - **Docs corrected to the real mechanism** (`backup-recovery.md`, `configuration.md`, `management-api.md`,

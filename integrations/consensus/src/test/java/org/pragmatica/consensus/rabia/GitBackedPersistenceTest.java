@@ -153,6 +153,48 @@ class GitBackedPersistenceTest {
         assertGitCommitCount(1);
     }
 
+    /// #676: the rename itself must be atomic. The seam makes the partial a DIRECTORY, so
+    /// `rename(2)` over the existing `state.toml` fails with ENOTDIR under `ATOMIC_MOVE` and the
+    /// previous snapshot survives — while a non-atomic move unlinks `state.toml` FIRST and the
+    /// rename then succeeds, leaving a directory where the snapshot was and `load()` empty.
+    /// Same directory, no root needed (shape from verify-1118).
+    @Test
+    void save_renameFails_keepsThePreviousSnapshotLoadable() {
+        var disk = new DirectoryPartialDisk();
+        var interruptible = new GitBackedPersistence<TestCommand>(tempDir,
+                                                                  Option.none(),
+                                                                  GitBackedPersistenceTest::snapshotToToml,
+                                                                  GitBackedPersistenceTest::tomlToSnapshot,
+                                                                  GitBackedPersistence.DEFAULT_GIT_TIMEOUT,
+                                                                  disk::write);
+
+        stateMachine.setSnapshot(new byte[]{1, 2, 3});
+        interruptible.save(stateMachine, Phase.phase(5), List.of()).onFailure(_ -> fail("the first save is healthy"));
+        disk.directoryNext.set(true);
+        stateMachine.setSnapshot(new byte[]{9, 9, 9, 9, 9, 9, 9, 9});
+        interruptible.save(stateMachine, Phase.phase(6), List.of()).onSuccess(_ -> fail("the save whose rename fails must fail"));
+
+        assertThat(tempDir.resolve("state.toml")).as("state.toml is still the previous snapshot file").isRegularFile();
+        var loaded = interruptible.load();
+
+        assertThat(loaded.isPresent()).as("the previous snapshot is still loadable").isTrue();
+        assertRestoredState(loaded.unwrap(), new byte[]{1, 2, 3}, Phase.phase(5));
+        assertThat(tempDir.resolve("state.toml.partial")).as("the failed save removed its partial").doesNotExist();
+        assertGitCommitCount(1);
+    }
+
+    /// Creates a directory at the path it is given instead of a file, so the rename over
+    /// `state.toml` must fail.
+    private static final class DirectoryPartialDisk {
+        private final AtomicBoolean directoryNext = new AtomicBoolean(false);
+
+        Result<Unit> write(Path path, String content) {
+            return directoryNext.get()
+                   ? FileOps.createDirectories(path).mapToUnit()
+                   : FileOps.writeString(path, content);
+        }
+    }
+
     /// Writes the first half of the content to the path it is given, then fails.
     private static final class HalfWritingDisk {
         private final AtomicBoolean failNext = new AtomicBoolean(false);
