@@ -123,7 +123,7 @@ class SchemaOrchestratorLockClaimRaceTest {
     void twoNodesObservingLockExpired_exactlyOneRunsTheMigration() {
         seedPendingSchema();
         kvStore.put(SchemaMigrationLockKey.schemaMigrationLockKey(DATASOURCE),
-                    new SchemaMigrationLockValue(DATASOURCE, new NodeId("node-9"), 1_000L, 2_000L));
+                    new SchemaMigrationLockValue(DATASOURCE, new NodeId("node-9"), 1_000L, 2_000L, 3L));
         assertExactlyOneClaimWins();
     }
 

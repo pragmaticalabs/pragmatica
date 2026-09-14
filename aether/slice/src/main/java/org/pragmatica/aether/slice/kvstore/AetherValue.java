@@ -1266,17 +1266,45 @@ public sealed interface AetherValue {
         }
     }
 
-    record SchemaMigrationLockValue(String datasourceName, NodeId heldBy, long acquiredAt, long expiresAt) implements AetherValue {
+    /// `lockVersion` is the lost-update fence (RFC-0018, #570) added for #766: the lock claim is a
+    /// compare-and-put on this chain, so two nodes that both read the lock free (absent OR expired)
+    /// and both write cannot both commit — the applier accepts only the immediate successor of the
+    /// committed version, and a first write against an absent key. The acquirer derives the version
+    /// from the committed value ([#nextVersion]) and confirms after its apply resolves by re-reading
+    /// the committed value and comparing it to the one it wrote ([VersionFenced]'s protocol).
+    ///
+    /// Wire-format note: this adds a record component to a committed AetherValue (generated codec and
+    /// `KVStoreSerializer` text form both change), following the #805 `outcomeVersion` precedent. rc4
+    /// promises no cross-rc wire compatibility; that contract is #434/#666's.
+    record SchemaMigrationLockValue(String datasourceName,
+                                    NodeId heldBy,
+                                    long acquiredAt,
+                                    long expiresAt,
+                                    long lockVersion) implements AetherValue, VersionFenced {
+        /// The version a claim against an ABSENT key carries; the applier does not fence a first write.
+        public static final long FIRST_VERSION = 1L;
+
         public static SchemaMigrationLockValue schemaMigrationLockValue(String datasourceName,
                                                                         NodeId heldBy,
-                                                                        long ttlMs) {
+                                                                        long ttlMs,
+                                                                        long lockVersion) {
             var now = System.currentTimeMillis();
 
-            return new SchemaMigrationLockValue(datasourceName, heldBy, now, now + ttlMs);
+            return new SchemaMigrationLockValue(datasourceName, heldBy, now, now + ttlMs, lockVersion);
         }
 
         public boolean isExpired() {
             return System.currentTimeMillis() > expiresAt;
+        }
+
+        /// The version a claim that takes over THIS committed value (held-and-expired) must carry.
+        public long nextVersion() {
+            return lockVersion + 1;
+        }
+
+        @Override
+        public long fenceVersion() {
+            return lockVersion;
         }
     }
 
