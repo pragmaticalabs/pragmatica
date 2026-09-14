@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -38,6 +39,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
@@ -691,7 +693,9 @@ class SwimDeathPathCoConfirmationTest {
 
         @Test
         void singlePeerFaulty_notIsolation_backlogNotExpiredOnReconnect() {
-            var transport = new RecordingTransport();
+            // NODE_B is kept alive by the transport itself (#1152): every probe to it is acked before
+            // `send` returns, so its liveness never depends on how promptly a poll thread is scheduled.
+            var transport = new AnsweringTransport(NODE_B, ADDR_B);
             var listener = new RecordingListener();
             // Tight suspect window for the ONE peer we drive FAULTY; the other is kept alive by acks.
             var config = swimConfig(timeSpan(40).millis(),
@@ -708,15 +712,18 @@ class SwimDeathPathCoConfirmationTest {
                                                 List.of(new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A),
                                                         new MembershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B))));
 
+            // Wire the protocol as the transport's handler (what `CoreSwimHealthDetector` does; the
+            // protocol's own `start` does not) so the transport can hand NODE_B's acks back.
+            transport.start(SELF_ADDR.getPort(), protocol);
             protocol.start();
             try {
-                // Keep NODE_B alive across the window by answering its probes, while NODE_A goes FAULTY.
+                // NODE_A is never acked and goes FAULTY; NODE_B's probes are answered by the transport.
                 await().atMost(Duration.ofSeconds(10))
-                       .until(() -> {
-                           keepAlive(transport, protocol, NODE_B);
-                           return protocol.members().get(NODE_A).state() == MemberState.FAULTY;
-                       });
+                       .until(() -> protocol.members().get(NODE_A).state() == MemberState.FAULTY);
 
+                assertThat(transport.acksDelivered.get())
+                    .as("control: the transport answered at least one probe to NODE_B")
+                    .isPositive();
                 assertThat(protocol.members().get(NODE_B).state())
                     .as("NODE_B stays alive — not all peers faulty, so this is NOT isolation")
                     .isNotEqualTo(MemberState.FAULTY);
@@ -727,9 +734,12 @@ class SwimDeathPathCoConfirmationTest {
                     .as("The first-hand FAULTY for NODE_A is buffered for normal dissemination")
                     .isGreaterThan(0);
 
-                // Reconnection evidence from NODE_B: isolation was never latched, so the FAULTY
-                // dissemination must be retained (normal, non-isolation dissemination is unchanged).
-                deliverVerifiedAckFrom(transport, protocol, NODE_B);
+                // Reconnection evidence from NODE_B AFTER the verdict was buffered: the next probe to
+                // NODE_B is acked as it is sent (verified alive-evidence). Isolation was never latched,
+                // so the FAULTY dissemination must be retained (non-isolation dissemination unchanged).
+                var acksSoFar = transport.acksDelivered.get();
+                await().atMost(Duration.ofSeconds(10))
+                       .until(() -> transport.acksDelivered.get() > acksSoFar);
 
                 assertThat(protocol.piggybackFaultyCountForTest())
                     .as("Normal (non-isolation) FAULTY dissemination must NOT be expired")
@@ -753,43 +763,6 @@ class SwimDeathPathCoConfirmationTest {
             assertThat(buffer.size()).as("ALIVE and SUSPECT entries retained").isEqualTo(2);
         }
 
-        /// Answer NODE_B's outstanding probe so it stays ALIVE across the window.
-        private void keepAlive(RecordingTransport transport, SwimProtocol protocol, NodeId peer) {
-            var seq = pendingSeqFor(transport, peer);
-
-            if (seq >= 0) {
-                protocol.onMessage(addrOf(peer), new Ack(peer, seq, List.of()));
-            }
-        }
-
-        /// Synthesize a verified probe-ack for `peer`: locate the pending probe SEQ the protocol sent
-        /// to that peer and feed back a matching Ack so `acceptProbeAckIfFromTarget` accepts it as
-        /// alive-evidence (the P2 reconnection seam).
-        private void deliverVerifiedAckFrom(RecordingTransport transport, SwimProtocol protocol, NodeId peer) {
-            await().atMost(Duration.ofSeconds(10))
-                   .until(() -> pendingSeqFor(transport, peer) >= 0);
-            var seq = pendingSeqFor(transport, peer);
-            protocol.onMessage(addrOf(peer), new Ack(peer, seq, List.of()));
-        }
-
-        private long pendingSeqFor(RecordingTransport transport, NodeId peer) {
-            return transport.sentMessages.stream()
-                                         .filter(sent -> sent.target().equals(addrOf(peer))
-                                                         && sent.message() instanceof Ping)
-                                         .map(sent -> ((Ping) sent.message()).sequence())
-                                         .reduce((first, second) -> second)
-                                         .orElse(-1L);
-        }
-
-        private InetSocketAddress addrOf(NodeId peer) {
-            if (peer.equals(NODE_A)) {
-                return ADDR_A;
-            }
-            if (peer.equals(NODE_B)) {
-                return ADDR_B;
-            }
-            return ADDR_C;
-        }
     }
 
     // -- Test infrastructure --
@@ -828,6 +801,35 @@ class SwimDeathPathCoConfirmationTest {
         @Override public Promise<Unit> stop() {
             handler.set(null);
             return Promise.success(Unit.unit());
+        }
+    }
+
+    /// A `RecordingTransport` that answers every Ping sent to `peer` with a matching Ack before
+    /// `send` returns, on the sending thread. `SwimProtocol.probeTarget` registers the pending probe
+    /// before it sends, so the ack is accepted as verified alive-evidence before the probe timeout
+    /// is even scheduled — the peer's liveness carries no timing constant at all (#1152: a keepAlive
+    /// driven from Awaitility's 100ms poll lost to the 20ms probe + 60ms suspect budget under load,
+    /// the peer went FAULTY and self-isolation latched).
+    static final class AnsweringTransport extends RecordingTransport {
+        final AtomicLong acksDelivered = new AtomicLong();
+        private final NodeId peer;
+        private final InetSocketAddress peerAddress;
+
+        AnsweringTransport(NodeId peer, InetSocketAddress peerAddress) {
+            this.peer = peer;
+            this.peerAddress = peerAddress;
+        }
+
+        @Override public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
+            var sent = super.send(target, message);
+
+            if (target.equals(peerAddress) && message instanceof Ping ping) {
+                Option.option(handler.get())
+                      .onPresent(swim -> swim.onMessage(peerAddress, new Ack(peer, ping.sequence(), List.of())))
+                      .onPresent(_ -> acksDelivered.incrementAndGet());
+            }
+
+            return sent;
         }
     }
 

@@ -22,6 +22,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyManager;
@@ -54,6 +55,28 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// leader activation. Default no-op so test fakes and non-provisioning implementations are
     /// untouched.
     default void reconcileWorkerTopology() {}
+
+    /// #689 — the non-core join channel (#728), delivered so the leader can compare the role it
+    /// PROVISIONED a node with against the role the node ADVERTISES. Workers never appear in
+    /// `MembershipDecision`, so without this a core-intended replacement that boots labelled
+    /// `worker` would be invisible to the comparison. Default no-op so test fakes are untouched.
+    default void onWorkerJoin(WorkerJoinDecision decision) {}
+
+    /// #689 — every provisioned node whose LAST observed join advertised a role other than the one it
+    /// was provisioned with (including none), leader-scoped: intents live with the leader that minted
+    /// the node id, so a new leader reports none — absence of intent is not a mismatch. The intent is
+    /// retained for the id until the node is decommissioned, so every rejoin under that id is
+    /// re-compared: a still-mislabelled restart re-reports, a correctly relabelled one clears the
+    /// entry. A departed node's entry stays listed until decommission or leader change. The
+    /// classification itself is unchanged (blank counts as core); this is the record that says so.
+    default List<RoleMismatch> roleMismatches() {
+        return List.of();
+    }
+
+    /// One provisioned node whose advertised role label disagrees with its provisioning intent.
+    /// `advertisedRole` is the role the membership FSM holds for the node (`MemberDescriptor.role`,
+    /// `""` when no label ever arrived); `classifiedAs` is what `MemberDescriptor.isCoreRole` made of it.
+    record RoleMismatch(NodeId nodeId, String intendedRole, String advertisedRole, String classifiedAs) {}
 
     /// #1050 (verify-1057-r2 S1) — raw SWIM declared `nodeId` FAULTY: positive death evidence, delivered by the
     /// SWIM observation listener at the FAULTY edge. A departed-node reap that ran out of liveness re-checks while

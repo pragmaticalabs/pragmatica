@@ -11,7 +11,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
@@ -354,8 +353,6 @@ class BlueprintDeployStatusTest {
         public ArtifactMetricsCollector artifactMetricsCollector() { return unsupported("artifactMetricsCollector"); }
         @Override
         public ClusterEventAggregator eventAggregator() { return unsupported("eventAggregator"); }
-        @Override
-        public BackupService backupService() { return unsupported("backupService"); }
         @Override
         public StreamPartitionManager streamPartitionManager() { return unsupported("streamPartitionManager"); }
         @Override
