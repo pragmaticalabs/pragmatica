@@ -535,6 +535,9 @@ public interface Route<T> extends RouteSource {
 
         <Q1> PathQueryBuilder4_1<R, P1, P2, P3, P4, Q1> withQuery(QueryParameter<Q1> q1);
 
+        <Q1, Q2> PathQueryBuilder4_2<R, P1, P2, P3, P4, Q1, Q2> withQuery(QueryParameter<Q1> q1,
+                                                                          QueryParameter<Q2> q2);
+
         <Q1, Q2, Q3> PathQueryBuilder4_3<R, P1, P2, P3, P4, Q1, Q2, Q3> withQuery(QueryParameter<Q1> q1,
                                                                                   QueryParameter<Q2> q2,
                                                                                   QueryParameter<Q3> q3);
@@ -902,6 +905,20 @@ public interface Route<T> extends RouteSource {
 
         default ContentTypeBuilder<R> toValue(Fn5<R, P1, P2, P3, P4, Option<Q1>> fn) {
             return to((p1, p2, p3, p4, q1) -> Promise.success(fn.apply(p1, p2, p3, p4, q1)));
+        }
+    }
+
+    // 4 path + 2 query (6 total, no body — #1101: STREAMS_EVENTS's catalog-form registration needs
+    // its trailing spacer("events") slot once the router requires exact arity; same pattern as 4_3)
+    interface PathQueryBuilder4_2<R, P1, P2, P3, P4, Q1, Q2> {
+        ContentTypeBuilder<R> to(Fn6<Promise<R>, P1, P2, P3, P4, Option<Q1>, Option<Q2>> fn);
+
+        default ContentTypeBuilder<R> toResult(Fn6<Result<R>, P1, P2, P3, P4, Option<Q1>, Option<Q2>> fn) {
+            return to((p1, p2, p3, p4, q1, q2) -> Promise.resolved(fn.apply(p1, p2, p3, p4, q1, q2)));
+        }
+
+        default ContentTypeBuilder<R> toValue(Fn6<R, P1, P2, P3, P4, Option<Q1>, Option<Q2>> fn) {
+            return to((p1, p2, p3, p4, q1, q2) -> Promise.success(fn.apply(p1, p2, p3, p4, q1, q2)));
         }
     }
 
@@ -1374,6 +1391,12 @@ public interface Route<T> extends RouteSource {
         }
 
         @Override
+        public <Q1, Q2> PathQueryBuilder4_2<R, P1, P2, P3, P4, Q1, Q2> withQuery(QueryParameter<Q1> q1,
+                                                                                 QueryParameter<Q2> q2) {
+            return new PathQueryBuilder4_2Impl<>(parent, p1, p2, p3, p4, q1, q2);
+        }
+
+        @Override
         public <Q1, Q2, Q3> PathQueryBuilder4_3<R, P1, P2, P3, P4, Q1, Q2, Q3> withQuery(QueryParameter<Q1> q1,
                                                                                           QueryParameter<Q2> q2,
                                                                                           QueryParameter<Q3> q3) {
@@ -1690,6 +1713,28 @@ public interface Route<T> extends RouteSource {
             return parent.to(ctx -> ctx.matchPath(p1, p2, p3, p4)
                                        .flatMap((pv1, pv2, pv3, pv4) -> ctx.matchQuery(q1)
                                                                            .map(qv -> fn.apply(pv1, pv2, pv3, pv4, qv)))
+                                       .async()
+                                       .flatMap(p -> p));
+        }
+    }
+
+    record PathQueryBuilder4_2Impl<R, P1, P2, P3, P4, Q1, Q2>(ParameterBuilder<R> parent,
+                                                              PathParameter<P1> p1,
+                                                              PathParameter<P2> p2,
+                                                              PathParameter<P3> p3,
+                                                              PathParameter<P4> p4,
+                                                              QueryParameter<Q1> q1,
+                                                              QueryParameter<Q2> q2) implements PathQueryBuilder4_2<R, P1, P2, P3, P4, Q1, Q2> {
+        @Override
+        public ContentTypeBuilder<R> to(Fn6<Promise<R>, P1, P2, P3, P4, Option<Q1>, Option<Q2>> fn) {
+            return parent.to(ctx -> ctx.matchPath(p1, p2, p3, p4)
+                                       .flatMap((pv1, pv2, pv3, pv4) -> ctx.matchQuery(q1, q2)
+                                                                           .map((qv1, qv2) -> fn.apply(pv1,
+                                                                                                       pv2,
+                                                                                                       pv3,
+                                                                                                       pv4,
+                                                                                                       qv1,
+                                                                                                       qv2)))
                                        .async()
                                        .flatMap(p -> p));
         }
