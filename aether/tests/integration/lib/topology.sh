@@ -296,6 +296,18 @@ AUTOHEAL_ENABLE_PATH="/api/v1/cluster/topology/auto-heal/enable"
 # truncated at `"members"` before matching. Taking the first match over the whole body would
 # silently return a PEER's id if field order ever changed — which is the same class of
 # assumption this function exists to remove.
+# [verified: 2026-09-14 run 4 — live cloud round, 0 identity violations / 0 indeterminate across the whole
+#   arbitration; rc2 fires on an EMPTY observed id and rc1 on a DIFFERING one, so rc0 on every poll positively
+#   proves top-level `nodeId` was present, non-empty and exactly equal to the addressed survivor.]
+#
+# [unverified: THE TRUNCATION. Run 4 did NOT exercise it. The live body serialises `nodeId` BEFORE `members`,
+#   so a naive first-match-over-the-whole-body extractor would have returned the identical value and passed
+#   that run unchanged. **The live validation is FIELD-ORDER-DEPENDENT and covers presence and equality, NOT
+#   the truncation.** A `members`-first body has never been seen. Consequence: a refactor to first-match would
+#   pass a repeat of run 4 SILENTLY. The only thing standing between that refactor and a recycled-IP impostor
+#   being accepted is the OFFLINE mutation pin `I6` in test/test-s19-identity-guard.sh — which asserts the
+#   DIRECTION of failure (a reordered body must yield nothing and VOID, never fall through to a peer id).
+#   Do not delete I6 on the grounds that a live round passed; the live round cannot see what I6 sees.]
 membership_self_node_id() {
     local membership_json="$1"
     printf '%s' "$membership_json" \
