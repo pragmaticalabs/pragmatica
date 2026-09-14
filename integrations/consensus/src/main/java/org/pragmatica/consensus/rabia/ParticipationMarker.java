@@ -83,7 +83,6 @@ public interface ParticipationMarker {
     /// the moment it is read. Implementations cache, so repeated calls are cheap and stable, and a
     /// call after [#recordParticipation] reports [Participation#PARTICIPATED].
     Participation resolve();
-
     /// Durably records that this node has participated. Called from `RabiaEngine.activate()` BEFORE
     /// the engine transitions out of `Syncing`, because a node cannot vote before it activates.
     ///
@@ -103,7 +102,6 @@ public interface ParticipationMarker {
         /// No marker, or it could not be read or written. Treated exactly as [#PARTICIPATED] by the
         /// adoption rule — absence means WIPED, never NEW.
         UNKNOWN;
-
         /// Whether this node provably never voted, and may therefore adopt on `clusterSize / 2`.
         public boolean provablyNeverVoted() {
             return this == NEVER_PARTICIPATED;

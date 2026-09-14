@@ -37,9 +37,7 @@ import org.pragmatica.lang.utils.Causes;
 /// is strictly before it is started, which is strictly before its first `SyncRequest` reaches the
 /// wire. A lazily-resolved marker would be read at adoption time — after the node had already begun
 /// participating — and could not be trusted at the moment it was read.
-record FileBackedParticipationMarker(Path markerFile,
-                                     AtomicReference<ParticipationMarker.Participation> state)
-        implements ParticipationMarker {
+record FileBackedParticipationMarker(Path markerFile, AtomicReference<ParticipationMarker.Participation> state) implements ParticipationMarker {
     /// Versioned so an unrecognised token from a future node reads as UNKNOWN (conservative) rather
     /// than being silently misparsed as one of the two known states.
     private static final String TOKEN_NEVER = "aether-participation-v1:never";
@@ -111,9 +109,11 @@ record FileBackedParticipationMarker(Path markerFile,
             return Option.none();
         }
 
-        return Result.lift(Causes::fromThrowable, () -> Files.readString(markerFile, StandardCharsets.UTF_8))
+        return Result.lift(Causes::fromThrowable,
+                           () -> Files.readString(markerFile, StandardCharsets.UTF_8))
                      .map(FileBackedParticipationMarker::classify)
-                     .fold(_ -> Option.some(Participation.UNKNOWN), Option::some);
+                     .fold(_ -> Option.some(Participation.UNKNOWN),
+                           Option::some);
     }
 
     private static Participation classify(String content) {
@@ -145,24 +145,26 @@ record FileBackedParticipationMarker(Path markerFile,
     }
 
     private static Result<Unit> writeThroughTempFile(Path parent, Path markerFile, String token) {
-        return Result.lift(Causes::fromThrowable, () -> {
-            Files.createDirectories(parent);
+        return Result.lift(Causes::fromThrowable,
+                           () -> {
+                               Files.createDirectories(parent);
+                               var temp = Files.createTempFile(parent, ".participation-", ".tmp");
 
-            var temp = Files.createTempFile(parent, ".participation-", ".tmp");
+                               try {
+                               Files.writeString(temp, token, StandardCharsets.UTF_8);
+                               try (var channel = FileChannel.open(temp, StandardOpenOption.WRITE)) {
+                               channel.force(true);
+                           }
 
-            try {
-                Files.writeString(temp, token, StandardCharsets.UTF_8);
+                               Files.move(temp,
+                                          markerFile,
+                                          StandardCopyOption.REPLACE_EXISTING,
+                                          StandardCopyOption.ATOMIC_MOVE);
+                           } finally {
+                               Files.deleteIfExists(temp);
+                           }
 
-                try (var channel = FileChannel.open(temp, StandardOpenOption.WRITE)) {
-                    channel.force(true);
-                }
-
-                Files.move(temp, markerFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } finally {
-                Files.deleteIfExists(temp);
-            }
-
-            return Unit.unit();
-        });
+                               return Unit.unit();
+                           });
     }
 }

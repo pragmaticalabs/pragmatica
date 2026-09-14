@@ -366,8 +366,7 @@ public class RabiaEngine<C extends Command> {
         this.network = network;
         this.stateMachine = stateMachine;
         this.config = config;
-        this.participationMarker = config.participationMarker()
-                                         .or(ParticipationMarker::unknown);
+        this.participationMarker = config.participationMarker().or(ParticipationMarker::unknown);
         this.metrics = Option.option(metrics).or(ConsensusMetrics.noop());
         this.activationGated = activationGated;
         this.activationAuthorized = !activationGated;
@@ -1335,10 +1334,10 @@ public class RabiaEngine<C extends Command> {
     private boolean recordParticipation() {
         return participationMarker.recordParticipation()
                                   .onFailure(cause -> log.error("Node {} refusing to activate: could not durably record "
-                                                                + "consensus participation ({}). This node claims to have "
-                                                                + "never participated, and activating without recording "
-                                                                + "would let it vote and later rejoin presenting itself "
-                                                                + "as new (#1212).",
+                                                               + "consensus participation ({}). This node claims to have "
+                                                               + "never participated, and activating without recording "
+                                                               + "would let it vote and later rejoin presenting itself "
+                                                               + "as new (#1212).",
                                                                 self,
                                                                 cause))
                                   .isSuccess();
