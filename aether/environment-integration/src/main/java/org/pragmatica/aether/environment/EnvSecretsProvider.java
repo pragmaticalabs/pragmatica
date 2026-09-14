@@ -15,10 +15,15 @@ public record EnvSecretsProvider() implements SecretsProvider {
         return new EnvSecretsProvider();
     }
 
+    /// The failure names the variable the operator has to set, not only the path it was derived
+    /// from (#904).
     @Override
     public Promise<String> resolveSecret(String secretPath) {
-        return Option.option(System.getenv(toEnvVarName(secretPath))).async(EnvironmentError.secretResolutionFailed(secretPath,
-                                                                                                                    new IllegalStateException("Environment variable not set")));
+        var envVarName = toEnvVarName(secretPath);
+
+        return Option.option(System.getenv(envVarName)).async(EnvironmentError.secretResolutionFailed(secretPath,
+                                                                                                      new IllegalStateException("environment variable " + envVarName
+                                                                                                                               + " is not set")));
     }
 
     static String toEnvVarName(String path) {
