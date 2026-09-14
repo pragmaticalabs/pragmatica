@@ -4,9 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.zip.ZipInputStream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceStore;
@@ -39,6 +44,8 @@ import org.pragmatica.aether.deployment.schema.SchemaError;
 import org.pragmatica.aether.deployment.validation.ConfigSectionPreflightValidator;
 import org.pragmatica.aether.deployment.validation.ConfigSectionPreflightValidator.SliceJar;
 import org.pragmatica.aether.deployment.validation.StreamResourceValidator;
+import org.pragmatica.aether.deployment.validation.StreamValidationFailure;
+import org.pragmatica.aether.deployment.validation.StreamValidationFailures;
 import org.pragmatica.aether.deployment.validation.ValidatedStreamResources;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
@@ -185,6 +192,8 @@ public interface BlueprintService {
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
 class BlueprintServiceInstance implements BlueprintService {
     private static final Logger log = LoggerFactory.getLogger(BlueprintServiceInstance.class);
+    private static final String SLICE_RESOURCES_TOML = "META-INF/resources.toml";
+    private static final String RULE_CONFLICTING_STREAM_DECLARATION = "conflicting-stream-declaration";
 
     private final ClusterNode<KVCommand<AetherKey>> cluster;
     private final KVStore<AetherKey, AetherValue> store;
@@ -555,14 +564,25 @@ class BlueprintServiceInstance implements BlueprintService {
     private static KVCommand<AetherKey> buildStreamBindingsCommand(ExpandedBlueprint expanded,
                                                                    Option<String> resourcesConfig,
                                                                    Map<String, String> roleHints) {
-        var bindings = StreamResourceValidator.validate(resourcesConfig,
-                                                        expanded.id().artifact(),
-                                                        roleHints)
-                                              .map(validated -> toNamedAddresses(expanded.id(),
-                                                                                 validated))
-                                              .or(List.<NamedAddress> of());
+        return streamBindingsPut(expanded.id(), streamBindings(expanded.id(), resourcesConfig, roleHints));
+    }
 
-        return new Put<>(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(expanded.id()),
+    /// The ONE derivation of a blueprint's alias→address bindings, shared by both publish paths (#1066).
+    /// `publishFromArtifact` feeds it the blueprint jar's `resources.toml`; the body publish feeds it each
+    /// distinct slice-jar `resources.toml` (see [#sliceStreamBindingsCommand]). Both paths calling one
+    /// function is what makes them store the same bindings for the same declaration by construction.
+    private static List<NamedAddress> streamBindings(BlueprintId blueprintId,
+                                                     Option<String> resourcesConfig,
+                                                     Map<String, String> roleHints) {
+        return StreamResourceValidator.validate(resourcesConfig,
+                                                blueprintId.artifact(),
+                                                roleHints)
+                                      .map(validated -> toNamedAddresses(blueprintId, validated))
+                                      .or(List.<NamedAddress> of());
+    }
+
+    private static KVCommand<AetherKey> streamBindingsPut(BlueprintId blueprintId, List<NamedAddress> bindings) {
+        return new Put<>(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(blueprintId),
                          BlueprintStreamBindingsValue.blueprintStreamBindingsValue(bindings));
     }
 
@@ -734,12 +754,137 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private Promise<ExpandedBlueprint> storeBlueprint(ExpandedBlueprint expanded) {
-        return storeBlueprintWithKey(AetherKey.AppBlueprintKey.appBlueprintKey(expanded.id()),
-                                     expanded);
+        return sliceStreamBindingsCommand(expanded).flatMap(streamBindings -> storeBlueprintWithKey(AetherKey.AppBlueprintKey.appBlueprintKey(expanded.id()),
+                                                                                                    expanded,
+                                                                                                    streamBindings));
+    }
+
+    /// #1066 — the TOML body publish's stream bindings, derived from its slice jars.
+    ///
+    /// `publish(String)` serves `POST /api/v1/blueprints`, and therefore `aether blueprint apply` and
+    /// Forge's deploy route. It used to write no `BlueprintStreamBindingsKey` at all. Since #1040 made
+    /// `BlueprintStreamAddresses` refuse an owning blueprint without bindings, every stream publisher or
+    /// stream-access slice deployed this way failed to load and every declarative consumer was never
+    /// subscribed. The fix is that the bindings exist; a missing binding stays a loud failure.
+    ///
+    /// WHERE THE DECLARATIONS COME FROM. A body blueprint is a bare slice list; the `[streams.*]`
+    /// declarations live only in each slice jar's `META-INF/resources.toml`. Those jars are resolvable
+    /// here by construction — `BlueprintExpander` has already located and read every one of them to build
+    /// the load order — so a jar that cannot be read now fails the publish instead of binding a subset.
+    ///
+    /// WHY THIS EQUALS THE ARTIFACT PATH. The jbct plugin packages one module file,
+    /// `src/main/resources/resources.toml`, as both the blueprint jar's and every slice jar's
+    /// `META-INF/resources.toml` (`GenerateBlueprintMojo`/`PackageBlueprintMojo` and `PackageSlicesMojo`).
+    /// So the distinct slice declarations of a packaged blueprint are exactly the one text
+    /// `publishFromArtifact` reads, and [#streamBindings] turns it into the same list. Role hints are
+    /// passed EMPTY for the same reason: `publishFromArtifact` aggregates them from `META-INF/slice/`
+    /// manifests inside the BLUEPRINT jar, where the plugin never puts any, so that path always derives
+    /// with no hints. Taking hints from the slice manifests here would diverge exactly where hints matter
+    /// — an unpinned access-only alias would default to `latest` on this path and `1.0.0` on the other —
+    /// so hints can only be fixed on both paths together.
+    ///
+    /// Slices from DIFFERENT modules can ship different texts, a case the artifact path never sees. Their
+    /// bindings are unioned, and an alias bound to two different addresses refuses the publish
+    /// ([#ensureUnambiguousAliases]): `BlueprintStreamBindingsValue.addressFor` would otherwise answer
+    /// with whichever came first and silently misbind the other slice.
+    private Promise<KVCommand<AetherKey>> sliceStreamBindingsCommand(ExpandedBlueprint expanded) {
+        return loadSliceDeclarations(expanded).flatMap(declarations -> sliceBindings(expanded.id(),
+                                                                                     declarations).async())
+                                    .map(bindings -> streamBindingsPut(expanded.id(),
+                                                                       bindings));
+    }
+
+    private Promise<List<Option<String>>> loadSliceDeclarations(ExpandedBlueprint expanded) {
+        return Promise.allOf(expanded.loadOrder().stream().map(this::loadSliceResourcesToml).toList()).flatMap(BlueprintServiceInstance::requireAllRead);
+    }
+
+    /// Unlike `loadAllTopologies`, which drops an unresolvable jar, a declaration that cannot be read
+    /// fails the publish: binding the remaining slices would turn the lost ones into `UnboundStreamAlias`.
+    private static Promise<List<Option<String>>> requireAllRead(List<Result<Option<String>>> declarations) {
+        return Result.allOf(declarations).async();
+    }
+
+    private Promise<Option<String>> loadSliceResourcesToml(ResolvedSlice slice) {
+        return repository.locate(slice.artifact())
+                         .flatMap(BlueprintServiceInstance::readSliceResourcesToml);
+    }
+
+    private static Result<List<NamedAddress>> sliceBindings(BlueprintId blueprintId,
+                                                            List<Option<String>> declarations) {
+        return ensureUnambiguousAliases(declarations.stream()
+                                                    .flatMap(Option::stream)
+                                                    .flatMap(toml -> streamBindings(blueprintId,
+                                                                                    Option.some(toml),
+                                                                                    Map.of()).stream())
+                                                    .distinct()
+                                                    .toList());
+    }
+
+    private static Result<List<NamedAddress>> ensureUnambiguousAliases(List<NamedAddress> bindings) {
+        var conflicts = conflictingAliases(bindings);
+
+        return conflicts.isEmpty()
+               ? Result.success(bindings)
+               : StreamValidationFailures.streamValidationFailures(conflicts,
+                                                                   List.of())
+                                         .result();
+    }
+
+    private static List<StreamValidationFailure> conflictingAliases(List<NamedAddress> bindings) {
+        return bindings.stream()
+                       .collect(Collectors.groupingBy(NamedAddress::alias,
+                                                      LinkedHashMap::new,
+                                                      Collectors.toList()))
+                       .entrySet()
+                       .stream()
+                       .filter(BlueprintServiceInstance::hasSeveralAddresses)
+                       .map(BlueprintServiceInstance::aliasConflict)
+                       .toList();
+    }
+
+    private static boolean hasSeveralAddresses(Map.Entry<String, List<NamedAddress>> declared) {
+        return declared.getValue()
+                       .size() > 1;
+    }
+
+    private static StreamValidationFailure aliasConflict(Map.Entry<String, List<NamedAddress>> declared) {
+        var alias = declared.getKey();
+        var addresses = declared.getValue().stream().map(NamedAddress::address).map(ResourceAddress::asString).toList();
+
+        return StreamValidationFailure.streamValidationFailure("[streams." + alias + "]",
+                                                               RULE_CONFLICTING_STREAM_DECLARATION,
+                                                               "slices of this blueprint declare stream '" + alias
+                                                              + "' at different addresses " + addresses
+                                                              + "; an alias binds to exactly one address per blueprint, so the publish is"
+                                                              + " refused rather than binding one of them");
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Promise<Option<String>> readSliceResourcesToml(Location location) {
+        return Promise.lift(Causes::fromThrowable, () -> readResourcesToml(location));
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Option<String> readResourcesToml(Location location) throws IOException {
+        try (var zip = new ZipInputStream(location.url().openStream())) {
+            return findEntryText(zip, SLICE_RESOURCES_TOML);
+        }
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Option<String> findEntryText(ZipInputStream zip, String entryName) throws IOException {
+        for (var entry = zip.getNextEntry(); entry != null; entry = zip.getNextEntry()) {
+            if (entryName.equals(entry.getName())) {
+                return Option.some(new String(zip.readAllBytes(), StandardCharsets.UTF_8));
+            }
+        }
+
+        return Option.none();
     }
 
     private Promise<ExpandedBlueprint> storeBlueprintWithKey(AetherKey.AppBlueprintKey key,
-                                                             ExpandedBlueprint expanded) {
+                                                             ExpandedBlueprint expanded,
+                                                             KVCommand<AetherKey> streamBindings) {
         var value = AppBlueprintValue.appBlueprintValue(expanded);
         KVCommand<AetherKey> command = new Put<>(key, value);
         // #759 review round 2, BLOCKING 1: `publish(String dsl)` is a live republish path
@@ -753,8 +898,11 @@ class BlueprintServiceInstance implements BlueprintService {
         // IN_PROGRESS marking this attempt's start, in the SAME batch as the blueprint Put.
         KVCommand<AetherKey> outcomeStart = new Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
                                                       startedOutcome(expanded.id()));
-
-        return cluster.apply(List.of(command, outcomeStart))
+        // #1066: the stream bindings ride the SAME batch as the blueprint Put, exactly as in
+        // buildAllCommands. The FSM writes each slice's `SliceTargetKey` only after applying this
+        // blueprint, so no node can see a slice target without its bindings — the ordering
+        // `StreamAddressError` rests on when it treats missing bindings as fatal rather than retryable.
+        return cluster.apply(List.of(command, outcomeStart, streamBindings))
                       .flatMap(_ -> confirmOutcomeStart(expanded, 0));
     }
 
