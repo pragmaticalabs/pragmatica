@@ -760,17 +760,17 @@ cert_ttl = "720h"
 ```toml
 [operations.auto_heal]
 enabled = true
-retry_interval = "10s"
-startup_cooldown = "15s"
 ```
 
 | Field              | Type   | Required | Default  | Description                                          |
 |--------------------|--------|----------|----------|------------------------------------------------------|
-| `enabled`          | bool   | No       | `true`   | Master toggle for the CTM auto-heal reconcile loop.  |
-| `retry_interval`   | string | No       | `"10s"`  | Period of the reconcile loop between heal attempts.  |
-| `startup_cooldown` | string | No       | `"15s"`  | Delay between cluster formation and the first heal check, giving nodes time to complete boot. |
+| `enabled`          | bool   | No       | `true`   | Master toggle for the CTM auto-heal reconcile loop. `false` is refused (PF-25). |
 
-**REQ-7.2.1**: The shortcut `auto_heal = true` under `[operations]` is equivalent to `[operations.auto_heal] enabled = true` with default-valued `retry_interval` and `startup_cooldown`. Declaring both forms for the same field is a validation error.
+*(Superseded by #675: `retry_interval` and `startup_cooldown` were removed from this section — they
+reached no node — and are refused with PF-26. The formation-check delay is the NODE config's
+`[timeouts.scaling] auto_heal_startup_cooldown`; the reconcile cadence is not operator-tunable.)*
+
+**REQ-7.2.1**: The shortcut `auto_heal = true` under `[operations]` is equivalent to `[operations.auto_heal] enabled = true`. Declaring both forms for the same field is a validation error.
 
 **REQ-7.2.2**: Retry count, exponential backoff schedule, and the max-concurrent-replacements cap are not operator-tunable in v1 (KL-7).
 
@@ -1627,8 +1627,6 @@ cert_ttl = "720h"
 
 [operations.auto_heal]
 enabled = true
-retry_interval = "10s"
-startup_cooldown = "15s"
 
 [operations.timeouts]
 health_check = "300s"

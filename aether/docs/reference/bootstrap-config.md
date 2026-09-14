@@ -64,10 +64,8 @@ swim       = 6100
 
 [operations.auto_heal]
 enabled          = true
-# retry_interval / startup_cooldown shown for illustration only — parsed but currently
-# discarded at runtime. See "[operations.auto_heal] is bootstrap-only" trap below (#675).
-retry_interval   = "30s"
-startup_cooldown = "15s"
+# No other key is accepted here (#675): auto-heal timing lives in the NODE config —
+# [timeouts.scaling] auto_heal_startup_cooldown and [cluster] max_nodes under node_config.
 
 # --- Cost guardrail (#298): refuse provisioning past 12 nodes for this cluster.
 # Opt-in — omit it and provisioning stays unbounded, as it always has. See "Fleet cap" below.
@@ -236,14 +234,7 @@ allow `CONTAINER`, `JVM`, or `EMBER`. A mismatch fails validation before provisi
 |---|---|---|---|
 | `[operations] auto_heal` | bool | `true` | Cluster-wide auto-heal master switch. |
 | `[operations.auto_heal] enabled` | bool | `true` | `false` is **rejected at bootstrap** (error PF-25) — it has no runtime effect, so the parser refuses to accept a value that would silently lie. Use `aether cluster topology auto-heal disable` on a running cluster instead. See warning below. |
-| `[operations.auto_heal] retry_interval` | duration string | `"60s"` | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] startup_cooldown` | duration string | `"15s"` | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] stale_observation_ttl` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] quic_miss_promotion_threshold` | int | parser default | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] provisioning_timeout` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] provision_stability_window` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] decommissioned_retention` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] swim_hints_ttl` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
+| `[operations.auto_heal] retry_interval`, `startup_cooldown`, `stale_observation_ttl`, `quic_miss_promotion_threshold`, `provisioning_timeout`, `provision_stability_window`, `decommissioned_retention`, `swim_hints_ttl` | — | — | **Rejected at bootstrap** (error PF-26, #675). They parsed into `AutoHealSpec` and reached no node; see warning below. |
 | `[operations.tls] auto_generate` | bool | `true` | When `false`, the management API listener uses plain HTTP instead of an auto-generated self-signed cert. |
 | `[operations.tls] cert_ttl` | duration string | `"720h"` | |
 | `[operations.timeouts] health_check` | duration string | `"300s"` | |
@@ -308,15 +299,14 @@ it, so an unreachable provider API cannot silently disable the guard.
 the cap. Provisioning resumes on the next reconcile pass with no further action. The refusal is logged at
 WARN naming the cluster, the cap, and the observed count.
 
-> **Of the nine `[operations.auto_heal]` fields, only `enabled` and the fleet cap above are live.**
-> `retry_interval`, `startup_cooldown`, `stale_observation_ttl`, `quic_miss_promotion_threshold`,
-> `provisioning_timeout`, `provision_stability_window`, `decommissioned_retention`, and `swim_hints_ttl`
-> all parse and validate into `AutoHealSpec`, but `Main.resolveAutoHeal` builds every running node's
-> `AutoHealConfig` from `AutoHealConfig.DEFAULT`, overriding only `maxNodes` — sourced from `[cluster]
-> max_nodes` above, a different key entirely, not from this section. Nothing renders the other eight
-> fields into the composed per-node `aether.toml`; they are validated and then discarded. Do not use
-> this section to try to set the fleet cap — use `node_config.cluster` as above. (Recorded 2026-08-12
-> while wiring #298.)
+> **`[operations.auto_heal]` carries `enabled` and nothing else (#675).** The eight tunables that used
+> to be accepted here parsed into `AutoHealSpec` and reached no node: every running node builds its
+> `AutoHealConfig` from its OWN config — `[cluster] max_nodes` (the fleet cap, via `node_config.cluster`)
+> and `[timeouts.scaling] auto_heal_startup_cooldown` (the formation-check delay) — plus fixed defaults
+> for the two remaining live values (`provisioning_timeout` 60s, `swim_hints_ttl` 15s). The parser now
+> refuses any of the eight with PF-26 rather than parse and discard; the runtime record itself dropped
+> the five fields nothing read (retry interval, stale-observation TTL, QUIC miss threshold, provision
+> stability window, decommissioned retention).
 >
 > `enabled = false` is **rejected at bootstrap** (error PF-25) rather than silently accepted and ignored
 > — the parsed value is never read by the provisioning path, so a `false` here would falsely promise
@@ -324,8 +314,9 @@ WARN naming the cluster, the cap, and the observed count.
 > live operator toggle instead: `aether cluster topology auto-heal disable`, which actually suppresses
 > replacement provisioning for the current leader term.
 >
-> **Tracked as #675**: one open decision — wire every field or reject it PF-25-style, per surface — not
-> yet made. This warning describes current behavior, not a promise about future wiring.
+> #675 made that decision: the node config is the one live surface; every key here that could not reach
+> a node is refused (PF-26), and `[timeouts.scaling] auto_heal_retry` was removed from the node config
+> for the same reason.
 
 ### (a) `security_mode = "NONE"` — why dev/eval bootstrap needs it
 
