@@ -35,18 +35,6 @@ public sealed interface OperationalEvent extends Message.Local {
         }
     }
 
-    record BackupCreated(String commitId, String requestedBy, long timestamp) implements OperationalEvent {
-        public static BackupCreated backupCreated(String commitId, String requestedBy) {
-            return new BackupCreated(commitId, requestedBy, System.currentTimeMillis());
-        }
-    }
-
-    record BackupRestored(String commitId, String requestedBy, long timestamp) implements OperationalEvent {
-        public static BackupRestored backupRestored(String commitId, String requestedBy) {
-            return new BackupRestored(commitId, requestedBy, System.currentTimeMillis());
-        }
-    }
-
     record BlueprintDeployed(String artifactCoords, String requestedBy, long timestamp) implements OperationalEvent {
         public static BlueprintDeployed blueprintDeployed(String artifactCoords, String requestedBy) {
             return new BlueprintDeployed(artifactCoords, requestedBy, System.currentTimeMillis());
