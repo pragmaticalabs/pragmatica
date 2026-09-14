@@ -14,6 +14,7 @@ import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -60,7 +61,11 @@ class AetherNodeResourceFacadeSeamTest {
 
         method.setAccessible(true);
 
-        var setup = (AetherNode.ResourceProviderSetup) method.invoke(null, config);
+        // #904: the seam now returns `Result` -- a secret-resolution failure refuses boot -- so
+        // the populated branch is reached through `unwrap`, which throws (and fails this test)
+        // if the fixture's provider cannot be built.
+        @SuppressWarnings("unchecked")
+        var setup = ((Result<AetherNode.ResourceProviderSetup>) method.invoke(null, config)).unwrap();
 
         assertThat(setup.spiProvider().isPresent()).as("arming: the config carries a configProvider, so the populated "
                                                        + "branch must be taken -- on the noOp branch this test would "

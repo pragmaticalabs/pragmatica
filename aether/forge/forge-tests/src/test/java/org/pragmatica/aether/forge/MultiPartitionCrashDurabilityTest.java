@@ -53,7 +53,8 @@ import org.pragmatica.aether.ember.EmberCluster;
 ///
 /// The cluster is built with a writable, restart-stable per-node data dir
 /// (`EmberCluster.withDataBaseDir(@TempDir)`) so each node's disk tier and per-partition WALs
-/// (`<baseDir>/<nodeId>/stream-segments/<nodeId>/wal/multipart-events/{0,1,2,3}.wal`) are live. Forge's
+/// (`<baseDir>/<nodeId>/stream-segments/<nodeId>/wal/<engine key>/{0,1,2,3}.wal`, the engine key
+/// being [#STREAM_NAME]) are live. Forge's
 /// Rabia persistence is in-memory, so the restart wipes the KV; the test re-deploys the same blueprint,
 /// each partition's HRW owner re-materializes and replays its WAL tail before serving reads.
 ///
@@ -95,8 +96,11 @@ class MultiPartitionCrashDurabilityTest {
     private static final long POLL_GAP_NANOS = Duration.ofMillis(20).toNanos();
 
     private static final String STREAM_SLICE = TestArtifacts.STREAM_MULTIPART_SLICE;
-    private static final String STREAM_NAME = "multipart-events";
     private static final String BLUEPRINT_ID = "forge.test:multipart-crash-durability:1.0.0";
+    /// The engine key of the blueprint's `[streams.multipart-events]` ring ([TestArtifacts#streamEngineKey]):
+    /// what `replicaSnapshot` keys by AND the name of each partition's WAL directory
+    /// (`StreamPartitionManager` opens `<walBaseDir>/<config.name()>/<partition>.wal`).
+    private static final String STREAM_NAME = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "multipart-events");
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
     private static final Pattern EVENT_OBJECT = Pattern.compile("\\{[^{}]*\"offset\"[^{}]*}");
@@ -275,7 +279,7 @@ class MultiPartitionCrashDurabilityTest {
     private static boolean isMultipartWal(Path walFile) {
         var parent = walFile.getParent();
 
-        return parent != null && parent.getFileName().toString().equals("multipart-events");
+        return parent != null && parent.getFileName().toString().equals(STREAM_NAME);
     }
 
     private static List<Path> walFiles(Path base) throws IOException {
