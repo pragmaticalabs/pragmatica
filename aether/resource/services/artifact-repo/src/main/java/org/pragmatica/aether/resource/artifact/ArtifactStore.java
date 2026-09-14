@@ -12,7 +12,6 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
-import java.util.stream.Collectors;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
@@ -43,9 +42,38 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 public interface ArtifactStore {
-    Promise<DeployResult> deploy(Artifact artifact, byte[] content);
-    Promise<byte[]> resolve(Artifact artifact);
-    Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact);
+    /// The store is keyed per FILE (#281): a coordinate's jar, pom and classified files are
+    /// distinct entries. The `Artifact`-typed operations address the coordinate's PRIMARY file
+    /// (`jar`, no classifier), which is what slice resolution means by "the artifact".
+    Promise<DeployResult> deploy(ArtifactFile file, byte[] content);
+    Promise<byte[]> resolve(ArtifactFile file);
+    Promise<ResolvedArtifact> resolveWithMetadata(ArtifactFile file);
+    Promise<Boolean> exists(ArtifactFile file);
+    Promise<Unit> delete(ArtifactFile file);
+
+    default Promise<DeployResult> deploy(Artifact artifact, byte[] content) {
+        return deploy(ArtifactFile.primary(artifact), content);
+    }
+
+    default Promise<byte[]> resolve(Artifact artifact) {
+        return resolve(ArtifactFile.primary(artifact));
+    }
+
+    default Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact) {
+        return resolveWithMetadata(ArtifactFile.primary(artifact));
+    }
+
+    default Promise<Boolean> exists(Artifact artifact) {
+        return exists(ArtifactFile.primary(artifact));
+    }
+
+    default Promise<Option<ArtifactMetadata>> metadata(Artifact artifact) {
+        return metadata(ArtifactFile.primary(artifact));
+    }
+
+    default Promise<Unit> delete(Artifact artifact) {
+        return delete(ArtifactFile.primary(artifact));
+    }
 
     record ResolvedArtifact(byte[] content, ArtifactMetadata metadata) {
         public ResolvedArtifact {
@@ -70,16 +98,14 @@ public interface ArtifactStore {
         }
     }
 
-    Promise<Boolean> exists(Artifact artifact);
     /// Fetch persisted metadata for an artifact WITHOUT reading or integrity-verifying
     /// the underlying block contents. Returns `Option.none()` when no metadata key is
     /// present in the DHT (artifact absent). Used by the idempotent PUT path where the
     /// caller only needs size/hashes for the response body — paying the full
     /// `resolveWithMetadata` cost (block fan-out + SHA1 verification) would defeat the
     /// purpose of returning early on a duplicate upload.
-    Promise<Option<ArtifactMetadata>> metadata(Artifact artifact);
+    Promise<Option<ArtifactMetadata>> metadata(ArtifactFile file);
     Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId);
-    Promise<Unit> delete(Artifact artifact);
     Metrics metrics();
 
     record Metrics(int artifactCount, int chunkCount, long memoryBytes) {
@@ -140,31 +166,31 @@ public interface ArtifactStore {
     }
 
     sealed interface ArtifactStoreError extends Cause {
-        record NotFound(Artifact artifact) implements ArtifactStoreError {
+        record NotFound(ArtifactFile file) implements ArtifactStoreError {
             @Override
             public String message() {
-                return "Artifact not found: " + artifact.asString();
+                return "Artifact not found: " + file.asString();
             }
         }
 
-        record DeployFailed(Artifact artifact, String reason) implements ArtifactStoreError {
+        record DeployFailed(ArtifactFile file, String reason) implements ArtifactStoreError {
             @Override
             public String message() {
-                return "Failed to deploy " + artifact.asString() + ": " + reason;
+                return "Failed to deploy " + file.asString() + ": " + reason;
             }
         }
 
-        record ResolveFailed(Artifact artifact, String reason) implements ArtifactStoreError {
+        record ResolveFailed(ArtifactFile file, String reason) implements ArtifactStoreError {
             @Override
             public String message() {
-                return "Failed to resolve " + artifact.asString() + ": " + reason;
+                return "Failed to resolve " + file.asString() + ": " + reason;
             }
         }
 
-        record CorruptedArtifact(Artifact artifact) implements ArtifactStoreError {
+        record CorruptedArtifact(ArtifactFile file) implements ArtifactStoreError {
             @Override
             public String message() {
-                return "Corrupted artifact: " + artifact.asString();
+                return "Corrupted artifact: " + file.asString();
             }
         }
     }
@@ -304,8 +330,8 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     @Override
-    public Promise<DeployResult> deploy(Artifact artifact, byte[] content) {
-        log.info("Deploying artifact: {} ({} bytes)", artifact.asString(), content.length);
+    public Promise<DeployResult> deploy(ArtifactFile file, byte[] content) {
+        log.info("Deploying artifact: {} ({} bytes)", file.asString(), content.length);
         var md5 = computeHash(content, "MD5");
         var sha1 = computeHash(content, "SHA-1");
         var chunks = splitIntoChunks(content);
@@ -320,7 +346,7 @@ class ArtifactStoreImpl implements ArtifactStore {
         // CORRECTNESS: boundedFanOut preserves chunk order — blockIds are recorded into
         // metadata in chunk order and reassembled in that order on resolve; reordering
         // corrupts the artifact.
-        return boundedFanOut(chunks, MAX_CONCURRENT_CHUNKS, this::storagePutWithRetry).flatMap(blockIds -> storeMetadataAndVersions(artifact,
+        return boundedFanOut(chunks, MAX_CONCURRENT_CHUNKS, this::storagePutWithRetry).flatMap(blockIds -> storeMetadataAndVersions(file,
                                                                                                                                     blockIds,
                                                                                                                                     chunks.size(),
                                                                                                                                     md5,
@@ -330,32 +356,32 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     @Override
-    public Promise<byte[]> resolve(Artifact artifact) {
-        return resolveWithMetadata(artifact).map(ResolvedArtifact::content);
+    public Promise<byte[]> resolve(ArtifactFile file) {
+        return resolveWithMetadata(file).map(ResolvedArtifact::content);
     }
 
     @Override
-    public Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact) {
-        log.debug("Resolving artifact: {}", artifact.asString());
+    public Promise<ResolvedArtifact> resolveWithMetadata(ArtifactFile file) {
+        log.debug("Resolving artifact: {}", file.asString());
         // Aggregate timeout on the metadata-read leg (chunk count not yet known here, so the
         // resolveBase floor applies). The block fan-out leg is bounded separately in
         // resolveChunksFromStorage with a chunk-count-scaled budget. Placed early per
         // Promise.timeout's contract so a never-resolving dht.get is cancelled rather than a
         // downstream transformation.
-        return dhtGetWithRetry(metaKey(artifact)).timeout(resolveBase)
+        return dhtGetWithRetry(metaKey(file)).timeout(resolveBase)
                               .flatMap(metaOpt -> metaOpt.flatMap(ArtifactMetadata::fromBytes)
-                                                         .async(new ArtifactStoreError.NotFound(artifact))
-                                                         .flatMap(meta -> resolveChunksFromStorage(artifact, meta)));
+                                                         .async(new ArtifactStoreError.NotFound(file))
+                                                         .flatMap(meta -> resolveChunksFromStorage(file, meta)));
     }
 
     @Override
-    public Promise<Boolean> exists(Artifact artifact) {
-        return dht.exists(metaKey(artifact));
+    public Promise<Boolean> exists(ArtifactFile file) {
+        return dht.exists(metaKey(file));
     }
 
     @Override
-    public Promise<Option<ArtifactMetadata>> metadata(Artifact artifact) {
-        return dht.get(metaKey(artifact))
+    public Promise<Option<ArtifactMetadata>> metadata(ArtifactFile file) {
+        return dht.get(metaKey(file))
                   .map(opt -> opt.flatMap(ArtifactMetadata::fromBytes));
     }
 
@@ -368,17 +394,22 @@ class ArtifactStoreImpl implements ArtifactStore {
                                  .or(List.of()));
     }
 
+    /// Removes the file's metadata key and its entry in the version's file list; deleting the LAST
+    /// remaining file of a version removes the version from the versions list (CTO ruling, #281
+    /// round 2 — a pom-only version is delisted with its pom). The content chunks are NOT released: they are
+    /// content-addressed and shared across artifacts and across the cluster-shared DHT tier, so
+    /// releasing one artifact's chunks needs a cluster-wide reference index (#281 follow-up).
     @Override
-    public Promise<Unit> delete(Artifact artifact) {
-        log.info("Deleting artifact: {}", artifact.asString());
+    public Promise<Unit> delete(ArtifactFile file) {
+        log.info("Deleting artifact: {}", file.asString());
 
-        return dht.get(metaKey(artifact))
+        return dht.get(metaKey(file))
                   .flatMap(metaOpt -> metaOpt.flatMap(ArtifactMetadata::fromBytes)
-                                             .map(meta -> deleteMetadata(artifact, meta))
+                                             .map(meta -> deleteMetadata(file, meta))
                                              .or(Promise.unitPromise()));
     }
 
-    private Promise<DeployResult> storeMetadataAndVersions(Artifact artifact,
+    private Promise<DeployResult> storeMetadataAndVersions(ArtifactFile file,
                                                            List<BlockId> blockIds,
                                                            int chunkCount,
                                                            String md5,
@@ -387,13 +418,14 @@ class ArtifactStoreImpl implements ArtifactStore {
         var hexIds = blockIds.stream().map(BlockId::hexString).toList();
         var metadata = new ArtifactMetadata(contentLength, chunkCount, md5, sha1, System.currentTimeMillis(), hexIds);
 
-        return dhtPutWithRetry(metaKey(artifact),
-                               metadata.toBytes()).flatMap(_ -> updateVersionsList(artifact))
-                              .map(_ -> recordDeployMetrics(artifact, contentLength, chunkCount, md5, sha1));
+        return dhtPutWithRetry(metaKey(file),
+                               metadata.toBytes()).flatMap(_ -> updateVersionsList(file.artifact()))
+                              .flatMap(_ -> registerFile(file))
+                              .map(_ -> recordDeployMetrics(file, contentLength, chunkCount, md5, sha1));
     }
 
-    private Promise<ResolvedArtifact> resolveChunksFromStorage(Artifact artifact, ArtifactMetadata meta) {
-        var corruptedError = new ArtifactStoreError.CorruptedArtifact(artifact);
+    private Promise<ResolvedArtifact> resolveChunksFromStorage(ArtifactFile file, ArtifactMetadata meta) {
+        var corruptedError = new ArtifactStoreError.CorruptedArtifact(file);
         // CORRECTNESS: boundedFanOut preserves blockId order — chunks are reassembled in
         // metadata order; reordering corrupts the artifact.
         // Chunk-count-scaled aggregate timeout on the block fan-out leg (placed early per
@@ -405,7 +437,7 @@ class ArtifactStoreImpl implements ArtifactStore {
                                                                                                          .size()))
                             .map(blocks -> reassembleChunks(blocks,
                                                             (int) meta.size()))
-                            .flatMap(content -> verifyIntegrity(artifact, content, meta));
+                            .flatMap(content -> verifyIntegrity(file, content, meta));
     }
 
     /// Chunk-count-scaled resolve budget: `resolveBase` floor + `resolvePerChunk` per
@@ -472,36 +504,68 @@ class ArtifactStoreImpl implements ArtifactStore {
                       .flatMap(opt -> opt.async(error));
     }
 
-    private Promise<ResolvedArtifact> verifyIntegrity(Artifact artifact, byte[] content, ArtifactMetadata meta) {
+    private Promise<ResolvedArtifact> verifyIntegrity(ArtifactFile file, byte[] content, ArtifactMetadata meta) {
         var computedSha1 = computeHash(content, "SHA-1");
 
         if (!computedSha1.equals(meta.sha1())) {
             log.error("Integrity verification failed for {}: expected SHA1={}, computed={}",
-                      artifact.asString(),
+                      file.asString(),
                       meta.sha1(),
                       computedSha1);
 
-            return new ArtifactStoreError.CorruptedArtifact(artifact).promise();
+            return new ArtifactStoreError.CorruptedArtifact(file).promise();
         }
 
-        log.debug("Integrity verified for {}: SHA1={}", artifact.asString(), computedSha1);
+        log.debug("Integrity verified for {}: SHA1={}", file.asString(), computedSha1);
 
         return Promise.success(new ResolvedArtifact(content, meta));
     }
 
-    private Promise<Unit> deleteMetadata(Artifact artifact, ArtifactMetadata meta) {
-        return dht.remove(metaKey(artifact))
+    private Promise<Unit> deleteMetadata(ArtifactFile file, ArtifactMetadata meta) {
+        return dht.remove(metaKey(file))
+                  .flatMap(_ -> unregisterFile(file))
                   .map(_ -> recordDeleteMetrics(meta));
     }
 
     private Promise<Unit> updateVersionsList(Artifact artifact) {
-        var versionsKey = versionsKey(artifact.groupId(), artifact.artifactId());
+        return rewriteList(versionsKey(artifact.groupId(), artifact.artifactId()),
+                           versions -> addIfAbsent(versions,
+                                                   artifact.version().withQualifier())).map(Unit::unit);
+    }
 
-        return dht.get(versionsKey)
-                  .map(opt -> addVersionIfAbsent(opt,
-                                                 artifact.version()))
-                  .flatMap(versions -> dhtPutWithRetry(versionsKey,
-                                                       serializeVersionsList(versions)));
+    private Promise<Unit> removeFromVersionsList(Artifact artifact) {
+        return rewriteList(versionsKey(artifact.groupId(), artifact.artifactId()),
+                           versions -> without(versions,
+                                               artifact.version().withQualifier())).map(Unit::unit);
+    }
+
+    private Promise<Unit> registerFile(ArtifactFile file) {
+        return rewriteList(filesKey(file.artifact()), files -> addIfAbsent(files, file.fileName())).map(Unit::unit);
+    }
+
+    /// Drops the file from the version's file list; an emptied list delists the version.
+    private Promise<Unit> unregisterFile(ArtifactFile file) {
+        return rewriteList(filesKey(file.artifact()), files -> without(files, file.fileName())).flatMap(remaining -> delistIfNoFilesLeft(file.artifact(),
+                                                                                                                                         remaining));
+    }
+
+    private Promise<Unit> delistIfNoFilesLeft(Artifact artifact, List<String> remainingFiles) {
+        return remainingFiles.isEmpty()
+               ? removeFromVersionsList(artifact)
+               : Promise.unitPromise();
+    }
+
+    /// Get-then-put on a comma-separated list key, yielding the list as written; an emptied list
+    /// removes the key. Two concurrent rewrites can lose one another's change (pre-existing, #281
+    /// item 4 — the same race now covers the file list).
+    private Promise<List<String>> rewriteList(byte[] key, Function<List<String>, List<String>> change) {
+        return dht.get(key)
+                  .map(opt -> change.apply(opt.map(ArtifactStoreImpl::parseList).or(List.of())))
+                  .flatMap(items -> items.isEmpty()
+                                    ? dht.remove(key)
+                                         .map(_ -> items)
+                                    : dhtPutWithRetry(key,
+                                                      serializeList(items)).map(_ -> items));
     }
 
     private Promise<Unit> dhtPutWithRetry(byte[] key, byte[] value) {
@@ -657,49 +721,57 @@ class ArtifactStoreImpl implements ArtifactStore {
         SharedScheduler.schedule(() -> storagePutWithRetry(chunk, nextAttempt).onResult(result::resolve), backoff);
     }
 
-    private List<Version> addVersionIfAbsent(Option<byte[]> existingData, Version version) {
-        var versions = new ArrayList<>(existingData.map(this::parseVersionsList).or(List.of()));
-
-        if (!versions.contains(version)) {
-            versions.add(version);
+    private static List<String> addIfAbsent(List<String> existing, String item) {
+        if (existing.contains(item)) {
+            return existing;
         }
 
-        return versions;
+        var items = new ArrayList<>(existing);
+
+        items.add(item);
+
+        return items;
+    }
+
+    private static List<String> without(List<String> existing, String item) {
+        return existing.stream()
+                       .filter(i -> !i.equals(item))
+                       .toList();
+    }
+
+    private static List<String> parseList(byte[] data) {
+        var str = new String(data, StandardCharsets.UTF_8);
+
+        return str.isEmpty()
+               ? List.of()
+               : List.of(str.split(","));
     }
 
     @Contract
     private List<Version> parseVersionsList(byte[] data) {
-        var str = new String(data, StandardCharsets.UTF_8);
-
-        if (str.isEmpty()) {
-            return new ArrayList<>();
-        }
-
         var versions = new ArrayList<Version>();
 
-        for (var v : str.split(",")) {
+        for (var v : parseList(data)) {
             Version.version(v).onSuccess(versions::add);
         }
 
         return versions;
     }
 
-    private byte[] serializeVersionsList(List<Version> versions) {
-        var str = versions.stream().map(Version::withQualifier).collect(Collectors.joining(","));
-
-        return str.getBytes(StandardCharsets.UTF_8);
+    private static byte[] serializeList(List<String> items) {
+        return String.join(",", items).getBytes(StandardCharsets.UTF_8);
     }
 
-    private DeployResult recordDeployMetrics(Artifact artifact,
+    private DeployResult recordDeployMetrics(ArtifactFile file,
                                              int contentLength,
                                              int chunks,
                                              String md5,
                                              String sha1) {
         artifactCount.incrementAndGet();
         chunkCount.addAndGet(chunks);
-        log.info("Deployed artifact: {} ({} chunks)", artifact.asString(), chunks);
+        log.info("Deployed artifact: {} ({} chunks)", file.asString(), chunks);
 
-        return new DeployResult(artifact, contentLength, md5, sha1);
+        return new DeployResult(file.artifact(), contentLength, md5, sha1);
     }
 
     private Unit recordDeleteMetrics(ArtifactMetadata meta) {
@@ -709,11 +781,28 @@ class ArtifactStoreImpl implements ArtifactStore {
         return unit();
     }
 
-    private byte[] metaKey(Artifact artifact) {
+    /// Storage format, pinned by `ArtifactStoreTest.KeyShapeTests`: one metadata key per FILE —
+    /// `artifacts/<group>/<artifact>/<version>/<[classifier.]extension>/meta`, the primary jar
+    /// included (`.../jar/meta`). The pre-#281 GAV-only key (`.../<version>/meta`) is NOT read:
+    /// artifact-store contents are cluster DHT state with no pre-GA compatibility promise.
+    private byte[] metaKey(ArtifactFile file) {
+        var artifact = file.artifact();
         var key = "artifacts/" + artifact.groupId().id()
                 + "/" + artifact.artifactId().id()
                 + "/" + artifact.version().withQualifier()
+                + "/" + file.fileName()
                 + "/meta";
+
+        return key.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /// The files deployed for one version — `artifacts/<group>/<artifact>/<version>/files` — so a
+    /// delete can tell whether it removed the version's last file.
+    private byte[] filesKey(Artifact artifact) {
+        var key = "artifacts/" + artifact.groupId().id()
+                + "/" + artifact.artifactId().id()
+                + "/" + artifact.version().withQualifier()
+                + "/files";
 
         return key.getBytes(StandardCharsets.UTF_8);
     }
