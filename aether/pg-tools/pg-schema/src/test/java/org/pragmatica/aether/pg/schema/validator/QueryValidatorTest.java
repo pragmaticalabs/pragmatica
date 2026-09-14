@@ -672,6 +672,25 @@ class QueryValidatorTest {
             assertThat(result.isValid()).as(messages(result)).isTrue();
         }
 
+        // Reach controls for the two above: the DML statement's RECURSIVE body IS validated.
+        @Test void validate_bogusTableInsideRecursiveCteBodyOnUpdate_errors() {
+            var result = validate(
+                "WITH RECURSIVE t AS (SELECT id FROM users UNION ALL SELECT t.id FROM t JOIN nowhere n ON n.id = t.id) "
+                + "UPDATE orders SET status = 'x' FROM t WHERE t.id = orders.user_id"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message).contains("Table not found: nowhere");
+        }
+
+        @Test void validate_bogusTableInsideRecursiveCteBodyOnDelete_errors() {
+            var result = validate(
+                "WITH RECURSIVE t AS (SELECT id FROM users UNION ALL SELECT t.id FROM t JOIN nowhere n ON n.id = t.id) "
+                + "DELETE FROM orders USING t WHERE t.id = orders.user_id"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message).contains("Table not found: nowhere");
+        }
+
         // verify-1124 SF-1: the INSERT source query sees the INSERT's own WITH names (never the target).
         @Test void validate_insertSourceSelect_seesTheInsertsOwnCte() {
             var result = validate(
