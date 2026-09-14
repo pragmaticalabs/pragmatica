@@ -62,6 +62,24 @@
   [verified: `GossipKeyDivergenceGuardTest` — 7 tests: fires at the threshold, fires once not per
   datagram, one successful decrypt disarms it permanently, varied junk does not trip it, a differing
   key id resets the run, encrypt is passed through unchanged].
+  **The exit path itself is measured, not assumed.** `refuse` runs on a Netty event-loop thread, and
+  #838 proved by probe that `System.exit` from inside a shutdown HOOK parks the JVM forever, so the
+  same call from an IO thread could not be taken on trust. Probed with a real `NettySwimTransport` fed
+  real rotated-key datagrams: with no shutdown hook the process terminated in ~1s with **exit code 1**;
+  with a hook shaped like `Main.shutdownNode` it still terminated with **exit code 1**, hook completing
+  cleanly, port released, process gone. The arms differ only in the hook, attributing the extra ~10s to
+  Netty's graceful-shutdown quiet period rather than to a deadlock. `System.exit` is kept over `halt`
+  because it runs the node's own hooks, and `Main.shutdownNode` bounds those at 30s with `halt(3)`, so
+  a wedged subsystem cannot hang the process
+  `[unverified: the probe's hook stops the TRANSPORT; production's stops the whole node, a larger
+  surface. What is established is that the Netty-thread exit does not self-deadlock and that hook
+  machinery runs to completion; the 30s bound plus halt(3) is what caps the untested remainder]`.
+  **Exposure this introduces, stated as capability:** an attacker who can send UDP to a BOOTING node's
+  SWIM port can abort its boot by repeating datagrams under one unheld key id — an unencrypted datagram
+  is not distinguishable from a rotated peer by this signal alone. It cannot be done to a running node
+  (one successful decrypt disarms the check permanently), and such an attacker could already prevent
+  the join by other means, but it is a remote-input-triggered process exit that did not exist before.
+  Disclosed in SECURITY.md.
   **Detection is partial by construction, and the operator instruction that follows from it is the
   most important line here: IF A NODE WILL NOT JOIN AFTER A ROTATION, CHECK THE SEED NODES' LOGS, NOT
   THE NEW NODE'S** — `Failed to decrypt gossip from <id>`, already logged by `NettySwimTransport`.

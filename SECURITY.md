@@ -78,6 +78,17 @@ Two consequences follow directly:
 
     A general key-delivery path for joining nodes is not in rc4; it is an architecture change (it
     needs either a second trust root or a deliberately weakened revocation) and is tracked separately.
+
+    **Exposure introduced by the boot refusal, stated as capability:** an attacker who can send UDP to
+    a **booting** node's SWIM port can cause that node to abort its boot, by repeating datagrams
+    carrying one gossip key id the node does not hold. The refusal counts same-id-consecutive
+    unknown-key datagrams, and an unencrypted datagram cannot be distinguished from a rotated peer's
+    by that signal alone — anything at least as long as the 16-byte header has its first four bytes
+    read as a key id. It **cannot** be done to a running node: one successful decrypt disarms the
+    check permanently, so a node that has ever joined is immune. An attacker with this reach could
+    already prevent the join by other means (dropping or flooding the same port), so the capability
+    gained is a faster, louder failure rather than a new denial — but it is a remote-input-triggered
+    process exit and it did not exist before #683.
 - **The runtime/slice boundary is an accident boundary, not a security sandbox.** Each slice loads
   in its own `SliceClassLoader` [mechanism: `aether/slice/src/main/java/org/pragmatica/aether/slice/SliceClassLoader.java`],
   which isolates classpaths across slices/versions. This is **not** a hardened security boundary:

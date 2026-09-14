@@ -46,6 +46,16 @@ import org.slf4j.LoggerFactory;
 /// are dropped undecrypted by the seeds, which therefore never reply, so it receives NOTHING and this
 /// guard cannot fire. In that case the only signal is the `Failed to decrypt gossip from ...` WARN on
 /// the healthy seeds, not on the stranded node. SECURITY.md states this.
+/// **The exit path is MEASURED, not assumed** (#683 round 2). `refuse` runs on a Netty event-loop
+/// thread, and #838 proved by probe that `System.exit` from inside a shutdown HOOK parks the JVM
+/// forever — so the same call from an IO thread could not be taken on trust. Probed with a real
+/// `NettySwimTransport` fed real rotated-key datagrams, in two arms: with no shutdown hook the
+/// process terminated in ~1s with exit code 1; with a hook shaped like `Main.shutdownNode` (stop the
+/// transport, bounded await) it still terminated with exit code 1, the hook completing cleanly, the
+/// port released. The two arms differ only in the hook, which attributes the extra ~10s to Netty's
+/// graceful-shutdown quiet period rather than to any deadlock. `System.exit` is therefore kept in
+/// preference to `halt`, because it runs the node's own shutdown hooks; and `Main.shutdownNode`
+/// bounds those at 30s with `halt(3)`, so even a subsystem that wedges cannot hang the process.
 public final class GossipKeyDivergenceGuard implements GossipEncryptor {
     private static final Logger log = LoggerFactory.getLogger(GossipKeyDivergenceGuard.class);
     /// Unknown-keyId datagrams tolerated before the gate fires, given zero successful decrypts.
