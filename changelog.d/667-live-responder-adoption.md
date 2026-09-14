@@ -10,21 +10,57 @@
 - `SyncResponse` now carries `ResponderState` — `LIVE` (Active/Observing/Paused engine: the current
   state machine and phase) or `COLD` (Stopped/Syncing: the persisted snapshot or empty), with the #964
   `UNKNOWN` sentinel last. Adoption, re-evaluated on every arriving response (and on the existing
-  retry tick), never on a timer of its own, is now three cases with a stated guarantee each:
-  - **LIVE responders ≥ ⌊n/2⌋+1:** adopt the most advanced LIVE state. A live majority intersects every
-    majority that could have committed anything, so its maximum is at or past every commit; a COLD
-    snapshot cannot outrank it. Self's floor stays as belt.
+  retry tick), never on a timer of its own, now thresholds on RESPONSES and uses liveness only to
+  choose the source:
+  - **any LIVE responder:** adopt once `clusterSize/2+1` RESPONSES have arrived, whatever their mix.
+    The response quorum is what carries the argument — the responders are a majority on their own, so
+    they intersect every majority that could have committed anything **without** leaning on self's
+    history, which is precisely what the amnesiac self could not supply.
+  - **the source within that quorum:** the most advanced LIVE state when LIVE responders are
+    themselves a majority, otherwise the most advanced of ALL the responses. Filtering to LIVE inside
+    a mere response quorum is unsafe — the responder that intersects the commit quorum may be the COLD
+    one — so the filter is licensed only by a live majority. Self's floor stays as belt.
   - **no LIVE responder:** #660's cold rule, unchanged — `clusterSize/2` responses, self as the floor.
-  - **some LIVE responders, fewer than a majority:** keep collecting. A node rejoining a cluster that
-    has no live majority waits by design — that cluster has no quorum either — and the stuck-Syncing
-    WARN now says "L live of M needed for a live majority". `UNKNOWN` counts as COLD: an unreadable
-    flag never loosens the bound.
-  [verified: `integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaSyncAdoptionLiveResponderTest.java`
-  — (i) n=5, two LIVE responders behind: must not adopt (red before, adopted); two LIVE + one COLD and
-  two LIVE + one UNKNOWN: still waits; (ii) the third LIVE completes the majority and the LIVE maximum
-  is adopted, a COLD response "ahead" is not; (iii) all-COLD bare majority still activates (#660);
-  (iv) `ownStateFloor`'s LIVE arm, isolated with a never-persisting store; producer marking pinned in
-  `RabiaPausedSyncResponseTest` (Active → LIVE, Stopped → COLD)]
+  - `UNKNOWN` counts as COLD in every arm: it counts toward the response quorum exactly as a COLD
+    response does, and never toward the live majority.
+  [verified: `RabiaSyncAdoptionResponseQuorumTest` (13 tests) — the mixed state that deadlocked is red
+  at `db8bffedd` (n=3 one LIVE + one COLD, n=5 one LIVE + three COLD, every peer answering, 5s
+  timeouts) and green here in 0.34s; a response minority still waits with nothing installed; the cold,
+  all-UNKNOWN and mixed arms; n=1, n=2, n=3, n=5; a responder flipping LIVE→COLD.
+  `RabiaSyncAdoptionLiveResponderTest` keeps the #667 residual (two responses of five must not adopt)
+  and asserts UNKNOWN≡COLD as an equivalence rather than as one of its consequences]
+- **The round-1 rule was a deadlock, and this supersedes it.** It thresholded on LIVE responders
+  (`clusterSize/2+1` of them) and made a live minority wait. That count is one the blocked nodes
+  cannot raise: the moment one node activates it answers LIVE, every remaining joiner sees a live
+  responder, switches to the stricter bound, and they answer each other COLD — so a half-started
+  cluster could never finish, and nothing times out of `Syncing` (`syncRounds` only WARNs). Cold start
+  was never the defective arm. [mechanism: `RabiaEngine.adoptionThresholdMet` — a method that no
+  longer exists at this head — returned `live >= clusterSize/2+1` whenever `live > 0`, making the cold
+  rule unreachable; it and `candidateResponses` are replaced by a single `adoptionCandidates`, which
+  also closes the round-1 review's finding that the decision was computed twice from independently
+  re-read state]
+- **Known limit, stated because the previous wording overclaimed it.** "A COLD snapshot cannot outrank
+  what the live cluster holds" has **no implementation on the arrival path**: adoption fires at exactly
+  `clusterSize/2+1` responses, and the live-majority branch needs that many LIVE among exactly that
+  many responses — so it is taken if and only if the whole quorum is already LIVE, where filtering
+  removes nothing. Measured at n=5 across all four arrival orders of {3 LIVE, 1 COLD}: the decision
+  fired at 3 responses every time. The filter is kept because it becomes load-bearing the moment a
+  bounded collection window exists; until then it is inert.
+  [unverified: whether a collection window is wanted — open question, not implemented]
+- **Adoption now fires at the quorum and does not wait for a later, more advanced response.** That is
+  safe rather than merely different: the adopted state is at or past every committed value (the
+  maximum over a response quorum), and a node that activates behind the cluster's frontier catches up
+  through normal replication — `commitDecision` → `advancePhase` advances `currentPhase` on every
+  Decision, and a gap beyond `MAX_PHASE_AHEAD` buffers the Decision and calls `triggerResync`. No
+  consumer of the adopted state requires it to be the maximum available.
+  [mechanism: `RabiaEngine.advancePhase` / `isFarFuturePhase` / `triggerResync`]
+- **Still open (not fixed here):** at n=3 with one node permanently down and the survivor LIVE, a
+  restarting node collects one response, never reaches `clusterSize/2+1`, and cannot rejoin — although
+  self plus the survivor would be a quorum. Pre-#667 it activated. Same shape as the deadlock above,
+  narrower; closing it needs a threshold keyed on whether self can vouch for its own history, which
+  probing showed is unsafe in the form tried (self's persisted snapshot lags what self witnessed —
+  `persistence.save` is called only from pause, reconfigure, shutdown and restore, never on commit).
+  [unverified: no fix attempted; the same exposure already exists in #660's cold arm]
 - **Wire format.** `SyncResponse` gained a record component and `ResponderState` a tag (112, in the
   one-byte window the hot-prefix gate demands for `org.pragmatica.consensus.*`). The wire-assignment
   gates pin tags and ordinals, not record shape (#1147). Both pins live in
