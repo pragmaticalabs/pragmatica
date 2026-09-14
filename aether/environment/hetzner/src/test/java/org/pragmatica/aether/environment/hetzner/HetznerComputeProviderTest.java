@@ -754,9 +754,24 @@ class HetznerComputeProviderTest {
             assertThat(HetznerComputeProvider.mapStatus("deleting")).isEqualTo(InstanceStatus.STOPPING);
         }
 
+        /// #1049 — exhaustive over Hetzner Cloud's documented `server.status` enum (API reference, Servers:
+        /// running, initializing, starting, stopping, off, deleting, migrating, rebuilding, unknown), plus one
+        /// undocumented value. `unknown` and anything unrecognised must never read as stopping or terminated.
         @Test
-        void mapStatus_unknown_returnsTerminated() {
-            assertThat(HetznerComputeProvider.mapStatus("unknown")).isEqualTo(InstanceStatus.TERMINATED);
+        void mapStatus_everyDocumentedStatus_andAnUnrecognisedOne_mapExhaustively() {
+            var expected = Map.ofEntries(Map.entry("running", InstanceStatus.RUNNING),
+                                         Map.entry("initializing", InstanceStatus.PROVISIONING),
+                                         Map.entry("starting", InstanceStatus.PROVISIONING),
+                                         Map.entry("stopping", InstanceStatus.STOPPING),
+                                         Map.entry("off", InstanceStatus.STOPPING),
+                                         Map.entry("deleting", InstanceStatus.STOPPING),
+                                         Map.entry("migrating", InstanceStatus.PROVISIONING),
+                                         Map.entry("rebuilding", InstanceStatus.PROVISIONING),
+                                         Map.entry("unknown", InstanceStatus.UNKNOWN),
+                                         Map.entry("a-status-hetzner-adds-later", InstanceStatus.UNKNOWN));
+
+            assertThat(expected).hasSize(10);
+            expected.forEach((status, mapped) -> assertThat(HetznerComputeProvider.mapStatus(status)).as(status).isEqualTo(mapped));
         }
     }
 

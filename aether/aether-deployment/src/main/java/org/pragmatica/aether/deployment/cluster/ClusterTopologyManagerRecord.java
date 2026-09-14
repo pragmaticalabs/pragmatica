@@ -38,6 +38,7 @@ import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceInfo;
+import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
@@ -69,6 +70,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
@@ -79,6 +81,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.consensus.net.NodeInfo.LABEL_ZONE;
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
 
@@ -797,6 +800,80 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// a type the reconciler compares by kind.
     private static ProvisionDisposition asDispatched(InstanceInfo instanceInfo) {
         return ProvisionDisposition.dispatched();
+    }
+
+    /// #1049 — classify the provider's listing for the replacement minted as `nodeId`. One listing per
+    /// call, by the node-id tag every provider stamps at create (translated to each provider's native
+    /// key at its boundary), so it answers identically for a replacement this leader dispatched and one
+    /// it inherited from a prior leader.
+    @Override
+    public Promise<ReplacementInstanceState> replacementInstanceState(NodeId nodeId) {
+        return lifecycleManager.instancesForNode(nodeId)
+                               .map(ClusterTopologyManagerRecord::classifyReplacementInstances)
+                               .recover(cause -> unknownReplacementState(nodeId, cause));
+    }
+
+    /// Empty listing → ABSENT; any instance still provisioning or running → PRESENT (a replacement is
+    /// coming even if an earlier attempt under the same id left a stopped one behind); otherwise any
+    /// instance whose status the provider could not state → UNKNOWN, never FAILED (#1049: FAILED drops the
+    /// replacement at once, and that instance may still exist); otherwise every listed instance is stopping
+    /// or terminated → FAILED.
+    private static ReplacementInstanceState classifyReplacementInstances(List<InstanceInfo> instances) {
+        if (instances.isEmpty()) {
+            return ReplacementInstanceState.ABSENT;
+        }
+
+        if (anyInstanceIn(instances, ReplacementInstanceState.PRESENT)) {
+            return ReplacementInstanceState.PRESENT;
+        }
+
+        return anyInstanceIn(instances, ReplacementInstanceState.UNKNOWN)
+               ? ReplacementInstanceState.UNKNOWN
+               : ReplacementInstanceState.FAILED;
+    }
+
+    private static boolean anyInstanceIn(List<InstanceInfo> instances, ReplacementInstanceState state) {
+        return instances.stream()
+                        .anyMatch(instance -> instanceState(instance) == state);
+    }
+
+    private static ReplacementInstanceState instanceState(InstanceInfo instance) {
+        return switch (instance.status()) {
+            case InstanceStatus.Provisioning _, InstanceStatus.Running _ -> ReplacementInstanceState.PRESENT;
+            case InstanceStatus.Unknown _, InstanceStatus.unused _ -> ReplacementInstanceState.UNKNOWN;
+            case InstanceStatus.Stopping _, InstanceStatus.Terminated _ -> ReplacementInstanceState.FAILED;
+        };
+    }
+
+    /// FER (degrade forward): a listing that fails — provider API error, or no compute provider wired —
+    /// is absorbed into the explicit UNKNOWN answer rather than propagated. Guarantee earned: the
+    /// reconciler never reads an unanswerable query as "exists" (which would hold a slot forever) or as
+    /// "gone" (which would mint a duplicate); an UNKNOWN entry is bounded only by the per-source ceiling.
+    /// Mechanism: one listing per poll tick, no retry here — the next tick asks again.
+    private static ReplacementInstanceState unknownReplacementState(NodeId nodeId, Cause cause) {
+        log.warn("CTM v2: provider could not report the instance state of in-flight replacement {} — treating it as UNKNOWN (bounded by the replacement ceiling): {}",
+                 nodeId,
+                 cause.message());
+
+        return ReplacementInstanceState.UNKNOWN;
+    }
+
+    /// #1049 — the in-flight ceiling for a replacement of `intendedRole`, resolved through the SAME
+    /// [#cloudSourceFor] lookup as the replacement's zones, instance type and source name, so all four
+    /// ride one source profile. The ten-minute default applies when the persisted TOML is blank or
+    /// unparseable, or no cloud source backs the role (Docker / forge).
+    @Override
+    public TimeSpan replacementCeiling(NodeRole intendedRole) {
+        return persistedCloudSource(intendedRole).map(SourceProfile::effectiveReplacementCeiling)
+                                   .or(SourceProfile.DEFAULT_REPLACEMENT_CEILING);
+    }
+
+    /// The cloud [SourceProfile] backing `intendedRole` in the persisted cluster TOML, or empty when the
+    /// TOML is blank or unparseable or no cloud source declares the role.
+    private Option<SourceProfile> persistedCloudSource(NodeRole intendedRole) {
+        return option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or("")).filter(Verify.Is::present)
+                     .flatMap(ClusterTopologyManagerRecord::parseConfig)
+                     .flatMap(config -> cloudSourceFor(config, intendedRole));
     }
 
     /// #334 — auto-heal zone rotation. Mirrors the bootstrap rotation (`BootstrapPhaseProvision`):

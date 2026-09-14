@@ -72,7 +72,7 @@ public sealed interface EntityLogError extends Cause {
     /// wait because a fold over a long log can take real time, and a caller blocked with no explanation
     /// is indistinguishable from a wedged cluster — the #593 lesson, where a status that never advanced
     /// read exactly like a broken one.
-    record FoldInProgress(String keyspace, int partition) implements EntityLogError {
+    record FoldInProgress(String keyspace, int partition) implements EntityLogError, Cause.Transient {
         @Override
         public String message() {
             return "Entity keyspace '" + keyspace

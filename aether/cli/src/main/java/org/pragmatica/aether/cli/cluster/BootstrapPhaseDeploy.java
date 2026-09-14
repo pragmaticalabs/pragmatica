@@ -26,6 +26,7 @@ import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlWriter;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Option;
@@ -153,6 +154,19 @@ sealed interface BootstrapPhaseDeploy {
                                           Fn1<String, String> envLookup,
                                           long preflightTimeoutMs,
                                           long preflightPollMs) {
+        // #296: attribution is exact on the id's source segment, so an id that does not parse would
+        // belong to NO source and be skipped silently by every source's launch. That is an invariant
+        // violation of this CLI's own minting, refused by name rather than dropped.
+        var unparseable = ctx.nodes()
+                             .stream()
+                             .filter(n -> BootstrapPhaseProvision.parseNodeId(n.nodeId()).isEmpty())
+                             .findFirst();
+
+        if (unparseable.isPresent()) {
+            return new BootstrapError.DeploymentFailed(unparseable.get().nodeId(),
+                                                       "node id does not encode <source>-<core|worker|spot>-<index>, so it belongs to no source").result();
+        }
+
         var sourceNodes = collectSourceNodes(ctx, sourceName);
 
         if (sourceNodes.isEmpty()) {
@@ -327,8 +341,16 @@ sealed interface BootstrapPhaseDeploy {
                           sourceNodes.size(),
                           peers);
         for (var node : sourceNodes) {
+            var roleResult = BootstrapPhaseProvision.nodeRole(node.nodeId(), sourceName);
+
+            if (roleResult.isFailure()) {
+                return new BootstrapError.DeploymentFailed(node.publicIp(), roleResult.fold(Cause::message, _ -> "")).result();
+            }
+
+            var role = roleResult.unwrap();
             var command = isJvm
                           ? buildJvmRestartCommand(node.nodeId(),
+                                                   role,
                                                    clusterPort,
                                                    managementPort,
                                                    peers,
@@ -338,6 +360,7 @@ sealed interface BootstrapPhaseDeploy {
                           : buildRestartCommand(resolveContainerImage(ctx, source),
                                                 clusterName,
                                                 node.nodeId(),
+                                                role,
                                                 clusterPort,
                                                 managementPort,
                                                 peers,
@@ -438,6 +461,7 @@ sealed interface BootstrapPhaseDeploy {
     static String buildRestartCommand(String image,
                                       ClusterName clusterName,
                                       String nodeId,
+                                      NodeRole role,
                                       int clusterPort,
                                       int managementPort,
                                       String peers,
@@ -445,6 +469,7 @@ sealed interface BootstrapPhaseDeploy {
         return buildRestartCommand(image,
                                    clusterName,
                                    nodeId,
+                                   role,
                                    clusterPort,
                                    managementPort,
                                    peers,
@@ -459,9 +484,15 @@ sealed interface BootstrapPhaseDeploy {
     /// the C2 security gate fails, and the health poll never succeeds. AETHER_CLUSTER_SECRET is
     /// emitted explicitly from the finalized `clusterSecret` param and EXCLUDED from the allow-list
     /// pass (`none()` ref) so it never appears twice. `envLookup` is injectable for unit testing.
+    ///
+    /// #296 — `role` is the node's OWN role, threaded from its id: the `aether-role` label is what
+    /// operators filter tiers by, and the `AETHER_ROLE` the identity pass emits from the same value
+    /// is the SWIM role label, the only worker classifier. A literal `core` here did not merely
+    /// mislabel a non-core node, it reclassified it.
     static String buildRestartCommand(String image,
                                       ClusterName clusterName,
                                       String nodeId,
+                                      NodeRole role,
                                       int clusterPort,
                                       int managementPort,
                                       String peers,
@@ -471,7 +502,7 @@ sealed interface BootstrapPhaseDeploy {
              + " && docker run -d --name aether-node --restart no --network host"
              + " -l aether-cluster=" + clusterName.value()
              + " -l aether-node-id=" + nodeId
-             + " -l aether-role=core"
+             + " -l aether-role=" + role.value()
              + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro"
              + " -e NODE_ID=\"" + nodeId
              + "\""
@@ -482,7 +513,7 @@ sealed interface BootstrapPhaseDeploy {
              + " -e PEERS=\"" + peers
              + "\""
              + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret
-             + "\"" + identityEnvFlags(clusterName, envLookup)
+             + "\"" + identityEnvFlags(clusterName, role, envLookup)
              + " " + image;
     }
 
@@ -490,12 +521,12 @@ sealed interface BootstrapPhaseDeploy {
     /// AETHER_CLUSTER_SECRET, emitted explicitly by the caller). Mirrors the cloud-init start's
     /// emission so the re-launch keeps full env parity. Empty when no allow-list var is present
     /// (prod-safe: unset host env → nothing emitted).
-    private static String identityEnvFlags(ClusterName clusterName, Fn1<String, String> envLookup) {
+    private static String identityEnvFlags(ClusterName clusterName, NodeRole role, Fn1<String, String> envLookup) {
         var sb = new StringBuilder();
 
         UserDataTemplate.emitIdentityEnv((name, value) -> appendRestartEnvFlag(sb, name, value),
                                          clusterName,
-                                         NodeRole.CORE,
+                                         role,
                                          Option.empty(),
                                          envLookup);
 
@@ -511,12 +542,14 @@ sealed interface BootstrapPhaseDeploy {
     static String JVM_JAR_PATH = "/opt/aether/aether-node.jar";
 
     static String buildJvmRestartCommand(String nodeId,
+                                         NodeRole role,
                                          int clusterPort,
                                          int managementPort,
                                          String peers,
                                          String clusterSecret,
                                          ClusterName clusterName) {
         return buildJvmRestartCommand(nodeId,
+                                      role,
                                       clusterPort,
                                       managementPort,
                                       peers,
@@ -547,6 +580,7 @@ sealed interface BootstrapPhaseDeploy {
     /// AETHER_PEERS lines with the stale one last. `0600` is re-applied on every write: the file
     /// carries AETHER_CLUSTER_SECRET.
     static String buildJvmRestartCommand(String nodeId,
+                                         NodeRole role,
                                          int clusterPort,
                                          int managementPort,
                                          String peers,
@@ -558,7 +592,7 @@ sealed interface BootstrapPhaseDeploy {
              + " && chmod 600 " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && printf '%s\\n'"
              + " 'AETHER_CLUSTER_SECRET=" + clusterSecret
-             + "'" + identityEnvAssignments(clusterName, envLookup)
+             + "'" + identityEnvAssignments(clusterName, role, envLookup)
              + " 'AETHER_NODE_ID=" + nodeId
              + "'"
              + " 'AETHER_CLUSTER_PORT=" + clusterPort
@@ -573,12 +607,14 @@ sealed interface BootstrapPhaseDeploy {
 
     /// Space-prefixed `'VAR=value'` printf operands for the cluster-identity allow-list (minus
     /// AETHER_CLUSTER_SECRET, written explicitly by the caller), one env-file line each.
-    private static String identityEnvAssignments(ClusterName clusterName, Fn1<String, String> envLookup) {
+    private static String identityEnvAssignments(ClusterName clusterName,
+                                                 NodeRole role,
+                                                 Fn1<String, String> envLookup) {
         var sb = new StringBuilder();
 
         UserDataTemplate.emitIdentityEnv((name, value) -> appendJvmEnvAssignment(sb, name, value),
                                          clusterName,
-                                         NodeRole.CORE,
+                                         role,
                                          Option.empty(),
                                          envLookup);
 
@@ -634,8 +670,8 @@ sealed interface BootstrapPhaseDeploy {
     private static List<ProvisionedNode> collectSourceNodes(BootstrapContext ctx, SourceName sourceName) {
         return ctx.nodes()
                   .stream()
-                  .filter(n -> n.nodeId()
-                                .startsWith(sourceName.value() + "-"))
+                  .filter(n -> BootstrapPhaseProvision.belongsTo(n.nodeId(),
+                                                                 sourceName))
                   .toList();
     }
 

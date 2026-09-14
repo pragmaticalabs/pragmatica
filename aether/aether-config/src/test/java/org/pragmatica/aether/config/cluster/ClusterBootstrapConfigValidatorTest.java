@@ -32,6 +32,7 @@ import static org.pragmatica.aether.config.cluster.SourceProfile.sourceProfile;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 class ClusterBootstrapConfigValidatorTest {
@@ -248,6 +249,43 @@ class ClusterBootstrapConfigValidatorTest {
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-07"));
+        }
+
+        /// CL-08 second half (#296 review SF-1): node ids are `<source>-<role>-<index>`, so a source
+        /// name that dash-prefixes another would let two sources claim one node. Refused at load.
+        @Test
+        void validate_sourceNameIsDashPrefixOfAnother_returnsCl08NamingBoth() {
+            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+            var eu = sourceProfile(sourceNameOrDefault("eu"), SourceType.FORGE, none(), none(), none(), none(),
+                                   none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                   none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+            var eu1 = sourceProfile(sourceNameOrDefault("eu-1"), SourceType.FORGE, none(), none(), none(), none(),
+                                    none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                    none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+                                                defaultCoreTopology(), Map.of("eu", eu, "eu-1", eu1), Map.of(),
+                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                defaultOperationsConfig());
+            validate(config)
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("CL-08")
+                                                              .contains("'eu' is a prefix of source 'eu-1'"));
+        }
+
+        @Test
+        void validate_distinctNonPrefixSourceNames_pass() {
+            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+            var eu = sourceProfile(sourceNameOrDefault("eu"), SourceType.FORGE, none(), none(), none(), none(),
+                                   none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                   none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+            var us = sourceProfile(sourceNameOrDefault("us"), SourceType.FORGE, none(), none(), none(), none(),
+                                   none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                   none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+                                                defaultCoreTopology(), Map.of("eu", eu, "us", us), Map.of(),
+                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                defaultOperationsConfig());
+            validate(config).onFailure(cause -> assertThat(cause.message()).doesNotContain("CL-08"));
         }
 
         @Test
@@ -498,6 +536,45 @@ class ClusterBootstrapConfigValidatorTest {
             validate(cloudConfigWithFirewall(CloudProviderName.HETZNER))
                 .onFailure(cause -> Assertions.fail(cause.message()))
                 .onSuccess(config -> assertThat(config.cluster().name().value()).isEqualTo("production"));
+        }
+
+        /// #1049 — the runtime reads `replacement_ceiling` only from a cloud source; on any other
+        /// source type the value would parse and never be read, so it is refused (PF-26).
+        @Test
+        void validate_replacementCeilingOnForgeSource_returnsPf26() {
+            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+            var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
+                                       List.of(), none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                       none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of(), none(),
+                                       some(timeSpan(5).minutes()));
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
+                                                defaultCoreTopology(), Map.of("local", source), Map.of(),
+                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                defaultOperationsConfig());
+
+            validate(config)
+                .onSuccess(v -> Assertions.fail("Expected PF-26 for a ceiling no runtime path reads"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-26")
+                                                              .contains("replacement_ceiling"));
+        }
+
+        /// Control for the PF-26 case above: the same key on a cloud source is read, so it is accepted.
+        @Test
+        void validate_replacementCeilingOnCloudSource_accepted() {
+            var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
+            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
+            var source = sourceProfile(sourceNameOrDefault("hetzner-eu"), SourceType.CLOUD, some(CloudProviderName.HETZNER),
+                                       some("key"), some("eu-central"), none(), List.of(), none(), none(), none(),
+                                       LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
+                                       Map.of(NodeRole.CORE, coreRole), List.of(), none(),
+                                       some(timeSpan(5).minutes()));
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+                                                defaultCoreTopology(), Map.of("hetzner-eu", source),
+                                                Map.of("prod", runtime),
+                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+
+            validate(config)
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-26"));
         }
 
         @Test

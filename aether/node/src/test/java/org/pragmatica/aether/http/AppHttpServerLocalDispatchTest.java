@@ -67,7 +67,7 @@ class AppHttpServerLocalDispatchTest {
     }
 
     private AppHttpServer serverWithPublisher(Option<HttpRoutePublisher> publisher) {
-        return AppHttpServer.appHttpServer(AppHttpConfig.appHttpConfig(TEST_PORT),
+        return AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(TEST_PORT),
                                            ForwardingTimeouts.forwardingTimeouts(),
                                            SELF_NODE,
                                            registry,
