@@ -13,6 +13,7 @@ import java.util.concurrent.ScheduledFuture;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
+import org.pragmatica.aether.http.forward.AccessibilityFilter;
 import org.pragmatica.aether.endpoint.EndpointRegistry.Endpoint;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
@@ -148,6 +149,15 @@ public interface SliceInvoker extends SliceInvokerFacade {
     }
 
     Unit setFailureListener(SliceFailureListener listener);
+
+    /// #275: membership-liveness narrowing for slice-to-slice endpoint selection, the same
+    /// [AccessibilityFilter] the HTTP forward path consults (`MembershipFsm.reachableMembers`). A node
+    /// the filter rejects is skipped by every selection path (round-robin, cache affinity, failover)
+    /// even while its endpoints are still registered. Default no-op keeps the stubs that implement
+    /// this interface compilable; the production invoker overrides it.
+    default Unit setAccessibilityFilter(AccessibilityFilter filter) {
+        return unit();
+    }
 
     @FunctionalInterface
     interface CacheAffinityResolver {
