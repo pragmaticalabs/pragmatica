@@ -11,7 +11,9 @@
 > non-default `encryption-key-id` — are read by nothing at runtime, and since **#576** a blueprint
 > declaring them is **rejected at deploy time** rather than silently ignored. Copying an example from
 > those sections into a real `resources.toml` will therefore FAIL the deployment, not merely
-> under-deliver. Every such key is flagged in place. The wire-or-descope decision is **#677**; the
+> under-deliver. Every such key is flagged in place. **#677 descoped them for 1.0** (2026-09-14): they
+> stay rejected, `encryption-key-id` waits on #253's production key source, and compression plus the
+> per-consumer tuning family are a post-GA epic — a design target, not a 1.0 promise. The
 > authoritative per-operation statement of what streaming actually guarantees is
 > [`../reference/guarantees.md`](../reference/guarantees.md) §4, which is honest about these keys.
 
@@ -374,7 +376,7 @@ Consumer groups are configured inline under the stream section. Each consumer gr
 > **⚠️ EVERY KEY IN THIS EXAMPLE IS CURRENTLY REJECTED AT DEPLOY TIME (#576).** None of the
 > per-consumer tuning keys below is read at runtime, so a blueprint containing this block does not
 > deploy — `StreamResourceValidator.guardInertConfig` fails it as inert configuration. The block is
-> retained as the DESIGN target for #677, not as a working example. `auto-offset-reset` is the sharpest
+> retained as a post-GA DESIGN target (descoped from 1.0 in #677), not as a working example. `auto-offset-reset` is the sharpest
 > case: the only value the validator accepts is `"earliest"`, because a never-committed consumer always
 > starts at offset 0 **by the #478 ruling, permanently** — so the `"latest"` shown here (and named as
 > the default) is precisely the value that will be refused.
@@ -415,7 +417,8 @@ on-failure = "stall"             # REJECTED as inert
 
 The `Status` column records what the RUNTIME does with each key today, which is not what the `Default`
 column describes — the defaults are the design's, and #576 turned the gap between them into a loud
-deploy-time rejection rather than silence. `Default` is therefore the #677 target, not current behaviour.
+deploy-time rejection rather than silence. `Default` is therefore the post-GA design target (#677
+descoped the wiring from 1.0), not current behaviour.
 
 | Property | Type | Default | Status today | Description |
 |----------|------|---------|--------------|-------------|
