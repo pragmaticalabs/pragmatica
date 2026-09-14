@@ -54,8 +54,8 @@ class AutoHealConfigStaticInitTest {
     /// call — a caller reaching a different arity would hit the same NPE.
     @Test
     void everyFactoryOverload_yieldsNonNullMaxNodes() {
-        var twoArg = AutoHealConfig.autoHealConfig(AutoHealConfig.DEFAULT.retryInterval(),
-                                                   AutoHealConfig.DEFAULT.startupCooldown());
+        var twoArg = AutoHealConfig.autoHealConfig(AutoHealConfig.DEFAULT.startupCooldown(),
+                                                   AutoHealConfig.DEFAULT.provisioningTimeout());
 
         assertThat(twoArg.isSuccess()).isTrue();
         twoArg.onSuccess(config -> assertThat(config.maxNodes()).isNotNull());

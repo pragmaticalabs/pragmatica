@@ -94,13 +94,7 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
         var config = new TopologyConfig(SELF, 5, timeSpan(60).seconds(), timeSpan(1).seconds(), List.of(INFO_SELF));
         var snapshotSource = new StubSnapshotSource();
         var observer = TopologyObserver.topologyObserver(config, quietRouter(), snapshotSource).unwrap();
-        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
-                                                      timeSpan(1).millis(),
-                                                      AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
-                                                      AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
-                                                      AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
-                                                      timeSpan(0).millis())
-                                            .unwrap();
+        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(1).millis(), AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT).unwrap();
 
         return ClusterTopologyManager.clusterTopologyManager(observer,
                                                              new NoOpLifecycleManager(),
