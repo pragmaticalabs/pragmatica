@@ -449,7 +449,7 @@ public record Main(String[] args) {
     ///
     /// `UNBOUNDED` (0, the same "unset" sentinel `coreMax` uses) leaves the cap absent, which is
     /// what every existing config gets — provisioning stays unbounded until an operator opts in.
-    private static AutoHealConfig resolveAutoHeal(Option<AetherConfig> aetherConfig) {
+    static AutoHealConfig resolveAutoHeal(Option<AetherConfig> aetherConfig) {
         return aetherConfig.map(AetherConfig::cluster)
                            .map(ClusterConfig::maxNodes)
                            .filter(maxNodes -> maxNodes > ClusterConfig.UNBOUNDED)
