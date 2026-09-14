@@ -66,7 +66,9 @@ public final class DHTTopologyListener {
     /// @param node        the local DHT node whose ring will be updated
     /// @param rebalancer  rebalancer to trigger re-replication on node departure
     /// @param antiEntropy anti-entropy process to run once when a node joins the ring
-    public static DHTTopologyListener dhtTopologyListener(DHTNode node, DHTRebalancer rebalancer, DHTAntiEntropy antiEntropy) {
+    public static DHTTopologyListener dhtTopologyListener(DHTNode node,
+                                                          DHTRebalancer rebalancer,
+                                                          DHTAntiEntropy antiEntropy) {
         return new DHTTopologyListener(node, Option.some(rebalancer), Option.some(antiEntropy));
     }
 
