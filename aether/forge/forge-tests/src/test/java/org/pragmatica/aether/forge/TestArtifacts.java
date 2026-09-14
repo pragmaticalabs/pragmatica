@@ -91,5 +91,26 @@ final class TestArtifacts {
     /// blueprint version, resolved from the local Maven repo).
     static final String DURABLE_TOPIC_SLICE = "org.pragmatica.aether.test:test-durable-topic-durable-topic-slice:1.0.0";
 
+    /// The version every `[streams.X]` declaration in `aether/tests/blueprints` leaves implicit —
+    /// `ResourceVersion.defaultVersion()`. It is the STREAM's version, not the blueprint's; the two
+    /// merely coincide in this repository (`BlueprintStreamAddresses` on why they need not).
+    private static final String DEFAULT_STREAM_VERSION = "1.0.0";
+
+    /// The engine key a blueprint-declared `[streams.<alias>]` ring is materialized under since #1041:
+    /// `namespace:alias:version`, with the namespace the blueprint's `groupId.artifactId`
+    /// (`BlueprintNamespace.deriveNamespace`) and the reduction `StreamEngineKey.engineKey` — never the
+    /// bare alias, which only `system` streams keep. Every in-JVM sensor a Heavy fixture reads
+    /// (`StreamReadRouter.replicaSnapshot`, `read`), the `/api/v1/streams/declarative-consumers`
+    /// `stream` field and the per-partition WAL directory all carry this spelling. `blueprintId` is the
+    /// `group:artifact:version` the fixture posts; the blueprint version is deliberately unused.
+    ///
+    /// Until #1066 the body publish wrote no bindings, so a bare-alias lookup died in `setUp` before
+    /// it could be seen to match nothing; the fixtures were corrected to this key once it did.
+    static String streamEngineKey(String blueprintId, String alias) {
+        var coordinates = blueprintId.split(":");
+
+        return coordinates[0] + "." + coordinates[1] + ":" + alias + ":" + DEFAULT_STREAM_VERSION;
+    }
+
     private TestArtifacts() {}
 }

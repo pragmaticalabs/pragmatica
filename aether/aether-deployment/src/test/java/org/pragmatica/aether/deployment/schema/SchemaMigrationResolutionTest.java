@@ -20,6 +20,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.resource.artifact.ArtifactFile;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.DatabaseType;
@@ -108,8 +109,8 @@ class SchemaMigrationResolutionTest {
 
     @BeforeEach
     void setUp() {
-        cluster = new RecordingClusterNode(SELF);
         kvStore = new InMemoryKvStore(MessageRouter.mutable());
+        cluster = new RecordingClusterNode(SELF, kvStore);
         schemaManager = new RecordingSchemaManager();
     }
 
@@ -291,23 +292,23 @@ class SchemaMigrationResolutionTest {
 
     private static ArtifactStore artifactStore(Promise<byte[]> resolution) {
         return new ArtifactStore() {
-            @Override public Promise<DeployResult> deploy(Artifact artifact, byte[] content) {
+            @Override public Promise<DeployResult> deploy(ArtifactFile file, byte[] content) {
                 return NOT_IN_STORE.promise();
             }
 
-            @Override public Promise<byte[]> resolve(Artifact artifact) {
+            @Override public Promise<byte[]> resolve(ArtifactFile file) {
                 return resolution;
             }
 
-            @Override public Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact) {
+            @Override public Promise<ResolvedArtifact> resolveWithMetadata(ArtifactFile file) {
                 return NOT_IN_STORE.promise();
             }
 
-            @Override public Promise<Boolean> exists(Artifact artifact) {
+            @Override public Promise<Boolean> exists(ArtifactFile file) {
                 return Promise.success(false);
             }
 
-            @Override public Promise<Option<ArtifactMetadata>> metadata(Artifact artifact) {
+            @Override public Promise<Option<ArtifactMetadata>> metadata(ArtifactFile file) {
                 return Promise.success(Option.none());
             }
 
@@ -315,7 +316,7 @@ class SchemaMigrationResolutionTest {
                 return Promise.success(List.of());
             }
 
-            @Override public Promise<Unit> delete(Artifact artifact) {
+            @Override public Promise<Unit> delete(ArtifactFile file) {
                 return Promise.unitPromise();
             }
 
@@ -413,11 +414,19 @@ class SchemaMigrationResolutionTest {
         }
     }
 
+    /// #766: `apply()` commits the batch to `kvStore` before resolving, as production consensus does
+    /// (the same read-your-write parity `SchemaOrchestratorRetrySingleFlightTest` restored for
+    /// #760). `acquireLock` now confirms its claim by re-reading the committed lock after the apply
+    /// resolves, so a stub that records without committing turns every claim into a refusal.
     private static final class RecordingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         final NodeId self;
+        final InMemoryKvStore kvStore;
         final List<KVCommand<AetherKey>> commands = Collections.synchronizedList(new ArrayList<>());
 
-        RecordingClusterNode(NodeId self) {this.self = self;}
+        RecordingClusterNode(NodeId self, InMemoryKvStore kvStore) {
+            this.self = self;
+            this.kvStore = kvStore;
+        }
 
         @Override public NodeId self() {return self;}
 
@@ -429,6 +438,7 @@ class SchemaMigrationResolutionTest {
 
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             commands.addAll(batch);
+            kvStore.apply(batch);
 
             return Promise.success(Collections.emptyList());
         }
@@ -456,6 +466,10 @@ class SchemaMigrationResolutionTest {
 
         void put(AetherKey key, AetherValue value) {
             process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+        }
+
+        void apply(List<KVCommand<AetherKey>> batch) {
+            process(createBatch(batch));
         }
     }
 
