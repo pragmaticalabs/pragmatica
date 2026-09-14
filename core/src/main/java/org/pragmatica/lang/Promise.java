@@ -3306,7 +3306,7 @@ final class PromiseImpl<T> implements Promise<T> {
             // #914: park() returns at once, flag intact, on an interrupted thread -- without this
             // check the loop re-parked forever at 100% CPU and no supervisor could end the wait.
             if (thread.isInterrupted()) {
-                return AWAIT_INTERRUPTED.result();
+                return interruptedUnlessResolved();
             }
 
             LockSupport.park();
@@ -3345,7 +3345,7 @@ final class PromiseImpl<T> implements Promise<T> {
 
         while (result == null && System.nanoTime() < deadline) {
             if (thread.isInterrupted()) {
-                return AWAIT_INTERRUPTED.result();
+                return interruptedUnlessResolved();
             }
 
             LockSupport.parkNanos(deadline - System.nanoTime());
@@ -3365,6 +3365,16 @@ final class PromiseImpl<T> implements Promise<T> {
     /// the codebase relies on interrupt actually ending a wait, and every `await()` caller already
     /// handles a failed `Result`.
     private static final CoreError.Interrupted AWAIT_INTERRUPTED = new CoreError.Interrupted("Thread interrupted while awaiting Promise resolution");
+
+    /// A resolution that landed between the loop condition and the interrupt check still wins —
+    /// the same re-read the timed variant does after its loop.
+    private Result<T> interruptedUnlessResolved() {
+        var resolved = result;
+
+        return resolved != null
+               ? resolved
+               : AWAIT_INTERRUPTED.result();
+    }
 
     @Override
     public Promise<T> resolve(Result<T> value) {
