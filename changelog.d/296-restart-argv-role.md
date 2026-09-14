@@ -6,7 +6,7 @@
   been mislabelled for operators filtering by tier, it would have been reclassified as a core. The role
   is now threaded per node, read from the id the provision phase minted (`<source>-<role>-<index>`,
   `BootstrapPhaseProvision.nodeRole`) — the same convention the cleanup ledger already relies on
-  (`extractRole`). An id that encodes no role is refused with `DeploymentFailed` naming the node,
+  (`parseNodeId`). An id that encodes no role is refused with `DeploymentFailed` naming the node,
   never defaulted to `core`.
   [verified: `aether/cli` `BootstrapPhaseDeployCloudSshRestartTest.deployCloudSource_containerRestart_labelsAndEnvsEachNodeWithItsOwnRole`,
   `…jvmRestart_envsEachNodeWithItsOwnRole`, `…failsLoudly_whenANodeIdEncodesNoRole` — through

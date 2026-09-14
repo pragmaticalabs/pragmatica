@@ -173,7 +173,7 @@ sealed interface BootstrapPhaseProvision {
     /// #994 — appends the VM to the persisted cleanup ledger as soon as the provider reports it created,
     /// so a refusal on a LATER node of the same role group still leaves every already-paid server
     /// nameable by teardown. The role is passed in rather than parsed back out of the node id by
-    /// [#extractRole], because here it is known exactly.
+    /// [#parseNodeId], because here it is known exactly.
     ///
     /// Duplicate-free on the success path: [#buildUpdatedState] rebuilds the resource list from the
     /// pre-phase in-memory state and [ClusterBootstrapOrchestrator] saves THAT, replacing these

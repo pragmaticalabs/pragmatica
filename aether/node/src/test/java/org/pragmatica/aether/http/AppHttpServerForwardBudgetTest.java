@@ -65,7 +65,7 @@ class AppHttpServerForwardBudgetTest {
     void setUp() {
         network = new RecordingClusterNetwork();
         router = new CountingRouter();
-        server = AppHttpServer.appHttpServer(AppHttpConfig.appHttpConfig(TEST_PORT),
+        server = AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(TEST_PORT),
                                              ForwardingTimeouts.forwardingTimeouts(),
                                              SELF_NODE,
                                              HttpRouteRegistry.httpRouteRegistry(),

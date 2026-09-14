@@ -1188,7 +1188,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     // same argv emits is the SWIM role label — the only worker classifier — so a literal `core` would
     // not merely mislabel a worker, it would reclassify it. The role is read from the node id the
     // provision phase minted (`<source>-<role>-<index>`), the same convention the cleanup ledger
-    // already relies on (`BootstrapPhaseProvision.extractRole`). ---
+    // already relies on (`BootstrapPhaseProvision.parseNodeId`). ---
 
     private static BootstrapContext contextWithOneNodePerRole(SourceProfile source, Map<String, RuntimeProfile> runtimes) {
         var config = configWithShortTimeout(source, runtimes);
