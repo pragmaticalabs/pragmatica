@@ -13,6 +13,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.consensus.NodeId;
@@ -247,6 +248,16 @@ class ClusterConfigApplierTest {
         @Override
         public Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
             return Promise.success(unit());
+        }
+
+        @Override
+        public Promise<ReplacementInstanceState> replacementInstanceState(NodeId nodeId) {
+            return Promise.success(ReplacementInstanceState.UNKNOWN);
+        }
+
+        @Override
+        public TimeSpan replacementCeiling(NodeRole intendedRole) {
+            return SourceProfile.DEFAULT_REPLACEMENT_CEILING;
         }
 
         @Override

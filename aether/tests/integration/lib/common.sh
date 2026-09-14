@@ -772,7 +772,15 @@ http_status_with_body() {
 # Wait for condition with timeout
 # ---------------------------------------------------------------------------
 wait_for() {
-    local description="$1" check_cmd="$2" timeout="${3:-60}" interval="${4:-2}"
+    local description="$1" check_cmd="$2" timeout="${3:-60}" interval="${4:-2}" value_cmd="${5:-}"
+    # value_cmd (optional, #1051): a reader whose stdout is the value check_cmd tests,
+    # e.g. _cluster_active_core_count_checked. wait_for runs it ONCE per poll and
+    # exports its stdout as WAIT_FOR_VALUE for check_cmd to test
+    # (`[ "$WAIT_FOR_VALUE" -eq 5 ]`), so the predicate and the value the timeout
+    # message reports come from the same read. A reader that exits non-zero or prints
+    # nothing is a FAILED READ: check_cmd is not evaluated for that poll, the poll does
+    # not satisfy the wait, and no number is invented for it.
+    local last_value="" value value_rc read_failures=0 polls=0
     # Scale timeouts on slower environments (cloud VMs have higher inter-node latency than
     # docker-localhost). TIMEOUT_SCALE=3 default for cloud, 1 elsewhere — set in run-tests.sh.
     timeout=$((timeout * ${TIMEOUT_SCALE:-1}))
@@ -823,16 +831,36 @@ wait_for() {
         # the predicate is simply false. The `&& rc=0 || rc=$?` idiom swallows the exit
         # code into a captured variable, equivalent to the legacy `if eval; then`
         # protection without re-introducing the if/then nesting.
-        eval "$check_cmd" > /dev/null 2>"$errfile" && rc=0 || rc=$?
+        polls=$((polls + 1))
+        if [ -n "$value_cmd" ]; then
+            value=$(eval "$value_cmd" 2>/dev/null) && value_rc=0 || value_rc=$?
+            if [ "$value_rc" -eq 0 ] && [ -n "$value" ]; then
+                last_value="$value"
+                export WAIT_FOR_VALUE="$value"
+                eval "$check_cmd" > /dev/null 2>"$errfile" && rc=0 || rc=$?
+            else
+                read_failures=$((read_failures + 1))
+                last_value="<read failed: ${value_cmd} rc=${value_rc}, no value>"
+                unset WAIT_FOR_VALUE
+                rc=1
+            fi
+        else
+            eval "$check_cmd" > /dev/null 2>"$errfile" && rc=0 || rc=$?
+        fi
         case "$rc" in
             0)
                 log_pass "${description} ($((SECONDS - start_seconds))s)"
                 rm -f "$errfile"
+                # A read belongs to this wait only: a later wait without a reader must
+                # never see it (#1051 round 3).
+                unset WAIT_FOR_VALUE
                 return 0
                 ;;
             2|127)
                 # Bash parse error / command not found — predicate is buggy, not just false.
                 # Surface it so a test author can fix the typo instead of waiting for timeout.
+                # A count helper's failed read no longer lands here when it is passed as
+                # value_cmd: that poll never evaluates check_cmd.
                 log_warn "wait_for predicate emitted shell error (rc=${rc}): $(head -c 300 < "$errfile")"
                 ;;
         esac
@@ -848,7 +876,12 @@ wait_for() {
         # overshooting the wall-clock ceiling by an extra `interval` for no reason.
         [ "$SECONDS" -lt "$deadline" ] && sleep "$interval"
     done
-    log_fail "${description} (timed out after $((SECONDS - start_seconds))s, budget ${timeout}s)"
+    local read_note=""
+    if [ -n "$value_cmd" ]; then
+        read_note=" — last observed value: ${last_value:-<none: no poll ran>} (${read_failures} of ${polls} read(s) failed)"
+    fi
+    unset WAIT_FOR_VALUE
+    log_fail "${description} (timed out after $((SECONDS - start_seconds))s, budget ${timeout}s)${read_note}"
     rm -f "$errfile"
     return 1
 }
@@ -1284,6 +1317,71 @@ cloud_ssh() {
     ssh "${SSH_OPTS[@]}" \
         -i "${AETHER_SSH_KEY}" \
         "${CLOUD_SSH_USER:-root}@${target_ip}" "$@"
+}
+
+# ---------------------------------------------------------------------------
+# JVM-runtime systemd unit inspection (H1/H2, 2026-09-13 cloud-JVM harness
+# fixes: docker inspect over SSH is a hard failure on --runtime jvm, since a
+# JVM cloud VM has no docker daemon at all — the node runs as systemd unit
+# `aether-node`, Restart=no by deliberate product design. Shared here (rather
+# than duplicated per suite) so it is unit-testable via
+# test/test-cloud-helpers.sh by stubbing cloud_ssh/ssh, and so every caller
+# reads the halt reason the same way.
+# ---------------------------------------------------------------------------
+
+# Read one or more `systemctl show aether-node` properties on a node's own VM
+# over SSH. Prints raw "KEY=value\n..." lines on stdout in whatever order
+# systemd returns them (callers extract by field name via jvm_unit_field, so
+# order never matters). Returns the ssh/remote-command rc — a non-zero rc
+# means either the SSH transport failed or the remote systemctl invocation
+# itself failed; the caller must not treat rc!=0 output as a valid reading.
+jvm_unit_show() {
+    local node_id="$1" properties="$2"
+    cloud_ssh "$node_id" "systemctl show aether-node --property=${properties} 2>&1"
+}
+
+# Extract one KEY=value field's value from jvm_unit_show's raw output. Prints
+# nothing if the field is absent (e.g. rc!=0 output, or a field name typo) —
+# callers must treat an empty result as "not read", never coerce it into a
+# passing or failing comparison value.
+jvm_unit_field() {
+    local show="$1" field="$2"
+    printf '%s\n' "$show" | sed -n "s/^${field}=//p" | head -1 | tr -d '\r'
+}
+
+# The designed drain-halt signature of the aether-node unit: the node's drain ends in
+# the Runtime.getRuntime().halt(2) that AetherNode.aetherNode(...) wires as
+# DrainProcedure's jvmExit, and Restart=no leaves the unit at ActiveState=failed with
+# ExecMainStatus=2. The ONE predicate both readers of the S19 halt REASON use (S19
+# tier 2 and the exit-code step in test-self-drain-quorum-loss.sh), so they cannot
+# disagree. The reap gate asks a different question — may this VM be reaped — and
+# accepts a broader positive-evidence class (_cloud_vm_node_state, lib/cluster.sh).
+jvm_unit_is_drain_halt() {
+    local active_state="$1" exec_status="$2"
+    [ "$active_state" = "failed" ] && [ "$exec_status" = "2" ]
+}
+
+# H2 (#1051): assert the drain-halt signature on a JVM-runtime node, read over SSH via
+# systemctl show — the JVM-runtime analog of `docker inspect .State.ExitCode`. An
+# SSH/systemctl read failure is a hard log_fail, never a silent pass. Unit-tested via
+# test/test-cloud-helpers.sh and test/test-chaos-harness.sh with a stubbed ssh.
+jvm_unit_assert_drain_halt() {
+    local node_id="$1" label="${2:-$1}"
+    local show rc active_state exec_status
+    show=$(jvm_unit_show "$node_id" "ActiveState,ExecMainStatus")
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        log_fail "${label} systemd unit unreadable: SSH/systemctl failed (rc=${rc}): $(printf '%s' "$show" | head -c 300)"
+        return 1
+    fi
+    active_state=$(jvm_unit_field "$show" "ActiveState")
+    exec_status=$(jvm_unit_field "$show" "ExecMainStatus")
+    if jvm_unit_is_drain_halt "$active_state" "$exec_status"; then
+        log_pass "${label} systemd unit ActiveState=failed ExecMainStatus=2 (Runtime.halt(2), read via systemctl show)"
+        return 0
+    fi
+    log_fail "${label} systemd unit is not in the drain-halt state: expected ActiveState=failed ExecMainStatus=2, got ActiveState='${active_state}' ExecMainStatus='${exec_status}'"
+    return 1
 }
 
 # ---------------------------------------------------------------------------

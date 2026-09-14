@@ -221,7 +221,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
                 // Step 2: inject FAULTY for the now-known-Healthy peer. The second-hand
                 // (gossip) FAULTY drives the death path only when locally corroborated
                 // (P1 death-path co-confirmation) — record a transport-down hint first.
-                protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down")));
+                protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
                 var faultyA = new MembershipUpdate(NODE_A, MemberState.FAULTY, 0, ADDR_A);
                 protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
 
@@ -274,7 +274,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
                 // SwimProtocol instance. The second-hand (gossip) FAULTY needs local
                 // transport-down corroboration to drive the death path (P1).
                 phase.set(false);
-                protocol.recordTransportHint(NODE_B, new TransportObservation.PeerUnreachable(NODE_B, Causes.cause("test peer down")));
+                protocol.recordTransportHint(NODE_B, new TransportObservation.PeerUnreachable(NODE_B, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
                 var faultyB = new MembershipUpdate(NODE_B, MemberState.FAULTY, 0, ADDR_B);
                 protocol.onMessage(ADDR_A, new Ping(NODE_A, 2L, List.of(faultyB)));
 
@@ -368,7 +368,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
                 // via direct gossip — must emit FaultyObserved. The second-hand FAULTY needs
                 // local transport-down corroboration to drive the death path (P1).
                 phase.set(false);
-                protocol.recordTransportHint(NODE_B, new TransportObservation.PeerUnreachable(NODE_B, Causes.cause("test peer down")));
+                protocol.recordTransportHint(NODE_B, new TransportObservation.PeerUnreachable(NODE_B, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
                 var faultyB = new MembershipUpdate(NODE_B, MemberState.FAULTY, 0, ADDR_B);
                 protocol.onMessage(ADDR_A, new Ping(NODE_A, 2L, List.of(faultyB)));
 
@@ -519,7 +519,7 @@ class SwimProtocolPhaseAwareSuppressionTest {
                 // FAULTY while STILL within grace: everSeenHealthy short-circuits suppression
                 // → FaultyObserved, not Unknown. The second-hand (gossip) FAULTY needs local
                 // transport-down corroboration to drive the death path (P1).
-                protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down")));
+                protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
                 var faultyA = new MembershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
                 protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
                 await().atMost(Duration.ofSeconds(2))

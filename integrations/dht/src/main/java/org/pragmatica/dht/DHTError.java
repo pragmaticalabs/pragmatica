@@ -61,35 +61,35 @@ public sealed interface DHTError extends Cause {
         return new PeerUnreachable(peerId, reason);
     }
 
-    record PeerUnreachable(NodeId peerId, String reason) implements DHTError {
+    record PeerUnreachable(NodeId peerId, String reason) implements DHTError, Cause.Transient {
         @Override
         public String message() {
             return "Peer " + peerId.id() + " unreachable: " + reason;
         }
     }
 
-    record QuorumNotReached(int required, int achieved) implements DHTError {
+    record QuorumNotReached(int required, int achieved) implements DHTError, Cause.Transient {
         @Override
         public String message() {
             return "Quorum not reached: required " + required + ", achieved " + achieved;
         }
     }
 
-    record NoAvailableNodes() implements DHTError {
+    record NoAvailableNodes() implements DHTError, Cause.Transient {
         @Override
         public String message() {
             return "No available nodes for key";
         }
     }
 
-    record OperationTimeout() implements DHTError {
+    record OperationTimeout() implements DHTError, Cause.Transient {
         @Override
         public String message() {
             return "DHT operation timed out";
         }
     }
 
-    record MigrationInProgress() implements DHTError {
+    record MigrationInProgress() implements DHTError, Cause.Transient {
         @Override
         public String message() {
             return "Operation rejected: migration in progress";

@@ -19,11 +19,14 @@ import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
+import org.pragmatica.aether.deployment.cluster.ReplacementInstanceState;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.ClusterName;
@@ -81,13 +84,23 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// reconcile completes, the flag is cleared and if `rescheduleRequested` was set, one
 /// follow-up reconcile is scheduled.
 ///
-/// **In-flight provisioning bookkeeping.** Per reconcile pass, entries past
-/// `nttDepartureTimeout × 3` are evicted (assumed failed) so they no longer mask the
-/// "underprovisioned" signal. This expiry is decoupled from — and intentionally longer than —
-/// the `× 1.5` leader-activation quiesce delay: it must exceed a provisioned node's worst-case
-/// time-to-stable-membership (container boot + JVM + SWIM up-hysteresis) so the reconciler
-/// does not forget an in-flight node and re-provision a phantom replacement (the auto-heal
-/// provisioning storm). The map is internal — exposed only via observability accessors.
+/// **In-flight provisioning bookkeeping — tracked by provider instance state, not a timer (#1049).**
+/// A dispatched replacement stays in-flight (counted toward effective capacity, so its deficit is not
+/// dispatched twice) for as long as the compute provider reports its instance existing or booting. A
+/// self-rescheduling status poll asks the provider through
+/// [`ClusterTopologyManager#replacementInstanceState`] — one listing per entry per `nttDepartureTimeout`,
+/// single-flight per entry, leader-only, never from a reconcile pass — and drops the entry on a
+/// provider-reported failure, or on the deletion of an instance: one it has already seen, or one it has
+/// never seen once enough successful listings have omitted it for long enough (see
+/// [`#computeRequiredAbsentListings`]). Every entry is bounded by a hard per-source ceiling
+/// ([`ClusterTopologyManager#replacementCeiling`], ten minutes by default), which is also the only bound
+/// on an entry whose provider cannot answer. The former `nttDepartureTimeout × 3` expiry (45s at the
+/// default) is gone: cloud replacements take 50–63s from mint to membership, so it expired first and
+/// the leader minted a duplicate it then drained as surplus. A new leader inherits the prior leader's
+/// entries and asks the provider about them the same way; their ceiling keeps running from the mint time
+/// each node id's ULID carries, so a leader change does not restart it, while their absence count starts
+/// afresh at inheritance (see [`#inheritedEntry`]). The map is internal — exposed only via observability
+/// accessors.
 ///
 /// **Reached-full-membership latch (safety-critical — Bug C).** The reconciler must NEVER
 /// provision a replacement for a configured core peer that has not yet joined (initial
@@ -162,7 +175,14 @@ public final class LeaderReconciler {
     /// membership timing constant (`nttDepartureTimeout`) rather than introducing a new literal.
     /// Age source: [`MembershipFsm#memberAgeMs`] (first-tracked stamp on the FSM's wall clock).
     private final TimeSpan drainSafetyGraceWindow;
-    private final TimeSpan inFlightExpiry;
+    /// Status-poll cadence for in-flight replacements (#1049) — see [`#computeInFlightPollInterval`].
+    private final TimeSpan inFlightPollInterval;
+    /// Wall floor a never-listed in-flight replacement must stay absent for, since it became pollable,
+    /// before it counts as deleted (#1049) — [`SourceProfile#REPLACEMENT_FIRST_LISTING_FLOOR`].
+    private final TimeSpan firstListingFloor;
+    /// Consecutive successful listings that must omit a never-listed replacement before it counts as
+    /// deleted (#1049) — see [`#computeRequiredAbsentListings`].
+    private final int requiredAbsentListings;
     private final PresenceSampler presenceSampler;
     /// Authoritative membership-count source (membership v2 cutover, #68/#94; role-scoped per
     /// cluster-topology-overhaul Wave 2 / W2). The reconciler COUNTS this FSM's
@@ -279,7 +299,10 @@ public final class LeaderReconciler {
 
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
 
-    private final ConcurrentHashMap<NodeId, Long> inFlightProvisioning = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<NodeId, InFlightEntry> inFlightProvisioning = new ConcurrentHashMap<>();
+    /// Node ids with a provider status query outstanding (#1049) — the single-flight guard, so a slow
+    /// provider never accumulates stacked queries for the same replacement across poll ticks.
+    private final Set<NodeId> statusQueriesOutstanding = ConcurrentHashMap.newKeySet();
 
     /// Provisioning-stickiness fix — supplier of the STICKILY-retained set of in-flight provisioning
     /// ids the prior leader broadcast (via the metrics ping's `dispatchedNodes`, retained term-fenced
@@ -317,7 +340,9 @@ public final class LeaderReconciler {
         // Drain-safety grace = nttDepartureTimeout × 2 — see the field doc for the full rationale
         // (role-propagation race window; ≥ deficit debounce; single timing constant).
         this.drainSafetyGraceWindow = computeDrainSafetyGrace(membershipConfig.splitTimeout());
-        this.inFlightExpiry = computeInFlightExpiry(membershipConfig.splitTimeout());
+        this.inFlightPollInterval = computeInFlightPollInterval(membershipConfig.splitTimeout());
+        this.firstListingFloor = SourceProfile.REPLACEMENT_FIRST_LISTING_FLOOR;
+        this.requiredAbsentListings = computeRequiredAbsentListings(firstListingFloor, inFlightPollInterval);
         this.presenceSampler = presenceSampler;
         this.membershipFsm = membershipFsm;
         this.configuredCoreCountSupplier = configuredCoreCountSupplier;
@@ -400,11 +425,17 @@ public final class LeaderReconciler {
     /// Provisioning-stickiness fix — on leadership GAIN, seed `inFlightProvisioning` from the prior
     /// leader's STICKILY-retained dispatched set (the metrics-ping `dispatchedNodes`, retained
     /// term-fenced by `ClusterSyncCollector`). Each retained id that is NOT already a current member
-    /// is recorded in-flight (stamped with the same `timeSource.nanoTime()` clock the normal dispatch
-    /// path uses, so the ×3 expiry backstop ages it identically), via `putIfAbsent` so a concurrent
-    /// genuine dispatch is never clobbered. This makes the new leader INHERIT the prior leader's
-    /// in-flight provisions instead of re-dispatching them (the over-provisioning / "6 cores instead
-    /// of 5" bug). Ids that are already members are skipped — the provision already fulfilled.
+    /// is recorded in-flight via `putIfAbsent` so a concurrent genuine dispatch is never clobbered. This
+    /// makes the new leader INHERIT the prior leader's in-flight provisions instead of re-dispatching
+    /// them (the over-provisioning / "6 cores instead of 5" bug). Ids that are already members are
+    /// skipped — the provision already fulfilled.
+    ///
+    /// #1049 — an inherited entry is UNCONFIRMED (the prior leader's create call has returned or never
+    /// will; this leader has not yet seen the instance), carries the per-source ceiling, and the status
+    /// poll is armed so this leader keeps it by what the provider reports rather than by age. Its ceiling
+    /// runs from the replacement's mint time where the node id carries one, so a leader change does not
+    /// restart it; its absence count and first-listing floor start at inheritance — see [`#inheritedEntry`].
+    @Contract
     private void seedInFlightFromRetainedDispatched() {
         var retained = retainedDispatchedSupplier.get().get();
 
@@ -412,7 +443,8 @@ public final class LeaderReconciler {
             return;
         }
 
-        var now = timeSource.nanoTime();
+        var nowNanos = timeSource.nanoTime();
+        var ceiling = ctm.replacementCeiling(NodeRole.CORE);
         // Core-scoped (Wave 2 / W2): a retained dispatch is fulfilled only by a CORE member —
         // matches the fulfillment-clear in runReconcileBody, which also reads coreCountedMembers().
         var currentMembers = membershipFsm.coreCountedMembers();
@@ -422,12 +454,44 @@ public final class LeaderReconciler {
                 continue;
             }
 
-            inFlightProvisioning.putIfAbsent(id, now);
+            inFlightProvisioning.putIfAbsent(id, inheritedEntry(id, nowNanos, ceiling));
         }
 
         log.info("LeaderReconciler seeded in-flight provisioning from retained dispatched set (retained={}, inFlight={})",
                  retained.size(),
                  inFlightProvisioning.size());
+        if (!inFlightProvisioning.isEmpty()) {
+            armInFlightSweep();
+        }
+    }
+
+    /// #1049 — the in-flight entry a new leader stamps for the inherited replacement `id`. The ceiling's clock
+    /// is backdated on [`#timeSource`] by how long ago the prior leader minted it: a CTM-minted id ends in a
+    /// ULID ([`IdGenerator#generate`]) whose 48-bit timestamp is the wall-clock millisecond it was minted —
+    /// and dispatched, since the reconciler mints an id only to dispatch it. Its absence count starts at zero
+    /// and its first-listing floor at inheritance: this leader counts only listings it has seen itself, so no
+    /// part of a prior leader's history can shorten the observation.
+    private static InFlightEntry inheritedEntry(NodeId id, long nowNanos, TimeSpan ceiling) {
+        return InFlightEntry.inFlightEntry(nowNanos - timeSpan(mintAgeMs(id)).millis().nanos(),
+                                           ceiling,
+                                           InFlightState.UNCONFIRMED,
+                                           nowNanos);
+    }
+
+    /// How long ago `id` was minted, in milliseconds, read from the wall clock `ULID#ulid` stamps with (an
+    /// injected test clock here would compare a fake time against a real mint). Bounds:
+    ///   - no parseable ULID suffix (a configured `<prefix>-<ordinal>` id) → 0: nothing says when it was
+    ///     dispatched, so its ceiling restarts at inheritance;
+    ///   - a mint time in the future — this node's clock behind the minter's — → 0, as if minted now.
+    /// No upper bound is needed: a ULID timestamp is non-negative, so the age is at most the wall clock's
+    /// milliseconds since the epoch (≈1.8e12 ms, ≈1.8e18 ns), and the ceiling check subtracts the backdated
+    /// stamp from `nanoTime` modulo 2^64, which recovers exactly that age whatever `nanoTime`'s origin.
+    /// Not guarded: this node's clock running AHEAD of the minter's makes the entry look older by the skew,
+    /// so its ceiling ends early by that much.
+    private static long mintAgeMs(NodeId id) {
+        return mintedUlid(id).map(ulid -> Math.max(System.currentTimeMillis() - ulid.timestamp(),
+                                                   0L))
+                         .or(0L);
     }
 
     /// Deactivate the leader-pinned reconciler. Idempotent. Cancels the pending one-shot
@@ -445,6 +509,7 @@ public final class LeaderReconciler {
         cancelSurplusFollowUp();
         cancelDrainGraceReEval();
         inFlightProvisioning.clear();
+        statusQueriesOutstanding.clear();
         deficitSinceNanos = UNSET_NANOS;
         reachedFullMembership.set(false);
     }
@@ -618,10 +683,19 @@ public final class LeaderReconciler {
         return drainSafetyGraceWindow;
     }
 
-    /// Observability — read-only snapshot of the in-flight provisioning map. Stage 6
-    /// will surface this through metrics.
+    /// Observability — read-only snapshot of the in-flight provisioning map: each tracked id to the
+    /// `timeSource.nanoTime()` it is aged from (dispatch; for an entry inherited from a prior leader, its
+    /// mint time where the node id carries one, else inheritance — see [`#inheritedEntry`]).
+    /// Stage 6 will surface this through metrics.
     public Map<NodeId, Long> inFlightProvisioningSnapshot() {
-        return Map.copyOf(inFlightProvisioning);
+        return inFlightProvisioning.entrySet()
+                                   .stream()
+                                   .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, LeaderReconciler::stampOf));
+    }
+
+    private static long stampOf(Map.Entry<NodeId, InFlightEntry> entry) {
+        return entry.getValue()
+                    .sinceNanos();
     }
 
     /// CAS-debounce entry point. First trigger schedules a short-debounced reconcile;
@@ -676,7 +750,7 @@ public final class LeaderReconciler {
     private void runReconcileBody(ReconcileTrigger trigger) {
         var now = timeSource.nanoTime();
 
-        evictExpiredInFlightEntries(now);
+        evictInFlightPastCeiling(now);
         // Core-scoped membership (Wave 2 / W2): only CORE-role counted members enter every
         // count below (deficit vs configuredCoreCount, quorum-safety, drain-victim pool,
         // in-flight fulfillment). A worker can neither fill a core deficit arithmetically nor
@@ -687,9 +761,9 @@ public final class LeaderReconciler {
         // EXACT id the replacement boots under, so once that id appears in `currentMembers` the
         // provision is fulfilled — the node joined under its minted identity and is now a
         // confirmed member. Removing it here keeps the in-flight map promptly accurate (it no
-        // longer lingers in the union until TTL), so membership presence is the authoritative
-        // fulfillment signal; the `× 3` TTL eviction above remains a pure backstop for provisions
-        // that never arrive (failed boot). This runs BEFORE computing `effective`/effectiveCapacity
+        // longer lingers in the union), so membership presence is the authoritative fulfillment
+        // signal; the provider-state poll and the per-source ceiling eviction above (#1049) remain the
+        // backstop for provisions that never arrive (failed boot). This runs BEFORE computing `effective`/effectiveCapacity
         // so a fulfilled id is never double-counted in the union.
         currentMembers.forEach(inFlightProvisioning::remove);
         var clusterMembershipCount = currentMembers.size();
@@ -808,8 +882,8 @@ public final class LeaderReconciler {
         // Deficit-convergence follow-up (H1 / #257 completion — generalizes Fix 2). Armed off the
         // RAW confirmed-member deficit, deliberately ignoring in-flight placeholders: a pass that
         // dispatched (or is masked by in-flight) is only PENDING-resolved, so the follow-up keeps
-        // re-checking until the replacement actually JOINS (or the in-flight TTL evicts it and the
-        // deficit re-provisions). This also covers WITHIN_DEBOUNCE / quorum-unsafe / cold-start
+        // re-checking until the replacement actually JOINS (or its in-flight entry is dropped — a
+        // provider-reported failure or deletion, or the ceiling — and the deficit re-provisions). This also covers WITHIN_DEBOUNCE / quorum-unsafe / cold-start
         // suppressed passes — without it, deaths during a post-churn lull with an UNCHANGED
         // configured size never re-poke the reconciler (live-gate: a deficit sat past the 600s
         // window, then healed in 13s once poked). Runs AFTER the anchor reset above so a
@@ -1178,14 +1252,20 @@ public final class LeaderReconciler {
     /// cross-layer dependency: `ULID` is the same utility `NodeId`/`IdGenerator` already use to
     /// MINT these ids.
     private boolean isEphemeral(NodeId id) {
+        return mintedUlid(id).isPresent();
+    }
+
+    /// The ULID a minted id ends in (`<prefix>-<ULID>`), or empty for any other shape — the id-shape
+    /// contract [`#isEphemeral`] describes. Its timestamp is the id's mint time ([`#mintAgeMs`]).
+    private static Option<ULID> mintedUlid(NodeId id) {
         var raw = id.id();
         var lastDash = raw.lastIndexOf('-');
 
         if (lastDash < 0 || lastDash == raw.length() - 1) {
-            return false;
+            return none();
         }
 
-        return ULID.parse(raw.substring(lastDash + 1)).isSuccess();
+        return ULID.parse(raw.substring(lastDash + 1)).option();
     }
 
     /// Whether `id`'s membership age has reached the drain-safety grace window. Unknown age
@@ -1295,7 +1375,11 @@ public final class LeaderReconciler {
 
     @Contract
     private void dispatchSingleProvision(long nowNanos, NodeId placeholder, Set<NodeId> currentMembers) {
-        inFlightProvisioning.put(placeholder, nowNanos);
+        inFlightProvisioning.put(placeholder,
+                                 InFlightEntry.inFlightEntry(nowNanos,
+                                                             ctm.replacementCeiling(NodeRole.CORE),
+                                                             InFlightState.DISPATCHING,
+                                                             nowNanos));
         armInFlightSweep();
         // Pass the SAME minted placeholder as the new node's intended identity: the provisioned
         // node boots under exactly this id (CTM threads it into ProvisionContext.nodeId()), so the
@@ -1306,7 +1390,9 @@ public final class LeaderReconciler {
         //
         // Disposition handling (auto-heal-wedge fix): the placeholder was stamped above BEFORE the
         // call, so effectiveCapacity already counts it. Keep it ONLY when a VM is genuinely coming.
-        //   - Dispatched (success, real boot) → KEEP the placeholder; a VM is on its way.
+        //   - Dispatched (success, real boot) → KEEP the placeholder; a VM is on its way. The create call
+        //     has returned, so the entry leaves DISPATCHING and the status poll starts asking the
+        //     provider about it (#1049). While DISPATCHING only the ceiling bounds it.
         //   - Deferred (success, NO boot: circuit-open or no-healthy-peers) → REMOVE it; nothing is
         //     coming, so the raw deficit must stay visible for the next tick to re-poke (a retained
         //     placeholder would mask the deficit and permanently wedge auto-heal once the breaker
@@ -1327,8 +1413,22 @@ public final class LeaderReconciler {
     private void reconcileInFlightForDisposition(NodeId placeholder, ProvisionDisposition disposition) {
         switch (disposition) {
             case ProvisionDisposition.Deferred _ -> inFlightProvisioning.remove(placeholder);
-            case ProvisionDisposition.Dispatched _ -> {}
+            case ProvisionDisposition.Dispatched _ -> markDispatched(placeholder);
         }
+    }
+
+    /// #1049 — a Dispatched provision's create call has returned, so the provider can now be asked about
+    /// the instance: DISPATCHING → UNCONFIRMED, pollable from now. Its first-listing floor starts here, never
+    /// at dispatch: a slow create-and-readiness wait says nothing about how far the provider's listing lags.
+    /// Guarded by `replace(key, expected, next)` so an entry the ceiling already evicted, or membership
+    /// already fulfilled, is never resurrected.
+    @Contract
+    private void markDispatched(NodeId placeholder) {
+        Option.option(inFlightProvisioning.get(placeholder))
+              .filter(InFlightEntry::isDispatching)
+              .onPresent(entry -> inFlightProvisioning.replace(placeholder,
+                                                               entry,
+                                                               entry.pollableFrom(timeSource.nanoTime())));
     }
 
     @Contract
@@ -1341,20 +1441,39 @@ public final class LeaderReconciler {
         ctm.drainNode(peerId, DrainReason.OVERPROVISION_PARTITION_HEAL);
     }
 
+    /// #1049 — drop every in-flight entry older than its own per-source ceiling. The one time bound left,
+    /// applied whatever the provider reports, so neither an instance stuck booting nor a provider that
+    /// cannot answer holds a slot forever. Cheap (no provider call), so it runs on every reconcile pass
+    /// as well as on the sweep tick.
     @Contract
-    private void evictExpiredInFlightEntries(long nowNanos) {
-        var expiryThresholdNanos = inFlightExpiry.nanos();
-
-        inFlightProvisioning.entrySet().removeIf(entry -> nowNanos - entry.getValue() > expiryThresholdNanos);
+    private void evictInFlightPastCeiling(long nowNanos) {
+        inFlightProvisioning.entrySet()
+                            .removeIf(entry -> isPastCeilingLogged(nowNanos,
+                                                                   entry.getKey(),
+                                                                   entry.getValue()));
     }
 
-    /// Arm a single self-rescheduling one-shot sweep that purges expired in-flight provisioning
-    /// entries. The periodic full-reconcile tick was deliberately removed (it caused over-
-    /// provisioning storms); this sweep is NOT that tick — it fires ONLY while in-flight entries
-    /// exist and self-cancels once the map drains. It exists for the case where a provisioned
-    /// replacement boots then dies before reaching READY: the SWIM/QUIC churn that would re-enter
-    /// the event-triggered reconcile stops, so without this sweep the placeholder never expires and
-    /// the deficit is never re-seen. Idempotent: at most one outstanding sweep future via the
+    private static boolean isPastCeilingLogged(long nowNanos, NodeId id, InFlightEntry entry) {
+        if (!entry.isPastCeiling(nowNanos)) {
+            return false;
+        }
+
+        log.info("LeaderReconciler dropping in-flight replacement {}: still unjoined after its {} ms replacement ceiling (state={}) — the deficit re-opens",
+                 id,
+                 entry.ceiling().millis(),
+                 entry.state());
+
+        return true;
+    }
+
+    /// Arm a single self-rescheduling one-shot sweep over the in-flight provisioning entries. The
+    /// periodic full-reconcile tick was deliberately removed (it caused over-provisioning storms);
+    /// this sweep is NOT that tick — it fires ONLY while in-flight entries exist and self-cancels once
+    /// the map drains. It exists for the case where a provisioned replacement boots then dies before
+    /// reaching READY: the SWIM/QUIC churn that would re-enter the event-triggered reconcile stops, so
+    /// without this sweep the placeholder would never be re-examined and the deficit never re-seen.
+    /// Each tick evicts entries past their ceiling and polls the provider (#1049), at
+    /// [`#inFlightPollInterval`] spacing. Idempotent: at most one outstanding sweep future via the
     /// null-check + CAS guard, so a concurrent `dispatchSingleProvision` cannot orphan a timer.
     @Contract
     private void armInFlightSweep() {
@@ -1362,18 +1481,18 @@ public final class LeaderReconciler {
             return;
         }
 
-        var future = scheduler.schedule(this::runInFlightSweep, inFlightExpiry);
+        var future = scheduler.schedule(this::runInFlightSweep, inFlightPollInterval);
 
         if (!inFlightSweepFutureRef.compareAndSet(null, future)) {
             future.cancel(false);
         }
     }
 
-    /// Sweep tick: purge expired in-flight entries, re-trigger reconcile if a slot was reclaimed
-    /// (so the deficit is re-evaluated), and re-arm only while in-flight entries remain. Re-arms
-    /// via [`#armInFlightSweep`] (NOT a bare ref set) so a concurrently-armed future is never
-    /// orphaned — the ref is nulled at the top, then `armInFlightSweep` arms cleanly or no-ops if a
-    /// concurrent dispatch already armed.
+    /// Sweep tick: evict entries past their ceiling (re-triggering reconcile if a slot was reclaimed,
+    /// so the deficit is re-evaluated), poll the provider for the rest, and re-arm only while in-flight
+    /// entries remain. Re-arms via [`#armInFlightSweep`] (NOT a bare ref set) so a concurrently-armed
+    /// future is never orphaned — the ref is nulled at the top, then `armInFlightSweep` arms cleanly or
+    /// no-ops if a concurrent dispatch already armed.
     @Contract
     private void runInFlightSweep() {
         inFlightSweepFutureRef.set(null);
@@ -1383,14 +1502,100 @@ public final class LeaderReconciler {
 
         var before = inFlightProvisioning.size();
 
-        evictExpiredInFlightEntries(timeSource.nanoTime());
+        evictInFlightPastCeiling(timeSource.nanoTime());
         if (inFlightProvisioning.size() < before) {
             triggerReconcile(ReconcileTrigger.NTT_FIRE);
         }
 
+        pollInFlightInstanceStates();
         if (!inFlightProvisioning.isEmpty()) {
             armInFlightSweep();
         }
+    }
+
+    /// #1049 — ask the provider about every in-flight entry whose create call has returned. A
+    /// DISPATCHING entry is skipped (its create may not have happened yet, so an empty listing would
+    /// say nothing), and so is an entry whose previous query is still outstanding (single-flight).
+    @Contract
+    private void pollInFlightInstanceStates() {
+        inFlightProvisioning.forEach(this::pollInstanceStateIfDue);
+    }
+
+    /// The query's failure channel is not observed here: [`ClusterTopologyManager#replacementInstanceState`]
+    /// answers an unanswerable query with UNKNOWN rather than failing, and UNKNOWN changes nothing —
+    /// so a failure that escaped that contract leaves the entry exactly as UNKNOWN would, bounded by
+    /// the ceiling.
+    @Contract
+    private void pollInstanceStateIfDue(NodeId id, InFlightEntry entry) {
+        if (entry.isDispatching() || !statusQueriesOutstanding.add(id)) {
+            return;
+        }
+
+        ctm.replacementInstanceState(id)
+           .onResult(_ -> statusQueriesOutstanding.remove(id))
+           .onSuccess(state -> applyInstanceState(id, entry, state));
+    }
+
+    /// #1049 — act on one provider answer. Every transition is guarded against the entry the query was
+    /// issued for (`replace`/`remove` with the expected value), so an answer arriving after the entry was
+    /// fulfilled by membership, evicted by the ceiling, or cleared by deactivation changes nothing.
+    ///   - PRESENT → keep, and mark CONFIRMED: the instance has now been seen.
+    ///   - FAILED → drop and re-trigger: the provider reports the boot failed.
+    ///   - ABSENT → drop and re-trigger when CONFIRMED (an instance already seen is gone). A never-seen
+    ///     absence is counted, and is a deletion only once the count and the floor both say so — see
+    ///     [`#computeRequiredAbsentListings`]. Until then it may be a listing that lags creation.
+    ///   - UNKNOWN → keep, and do not count: a listing that failed, or a status the provider could not
+    ///     state, is no evidence of absence. The ceiling is the only bound.
+    /// A dropped entry re-opens the raw deficit, which re-ages past the normal deficit debounce before the
+    /// next dispatch (the anchor was reset when this replacement was dispatched).
+    @Contract
+    private void applyInstanceState(NodeId id, InFlightEntry polled, ReplacementInstanceState state) {
+        switch (state) {
+            case PRESENT -> inFlightProvisioning.replace(id, polled, polled.withState(InFlightState.CONFIRMED));
+            case FAILED -> dropInFlight(id, polled, state);
+            case ABSENT -> recordAbsence(id, polled);
+            case UNKNOWN -> {}
+        }
+    }
+
+    /// An ABSENT answer is a deletion for an instance already listed. For a never-listed one it is counted —
+    /// through a guarded `replace`, so two answers issued for the same polled entry count once — and it is a
+    /// deletion only when the count reaches [`#requiredAbsentListings`] and [`#firstListingFloor`] has passed
+    /// since the entry became pollable.
+    @Contract
+    private void recordAbsence(NodeId id, InFlightEntry polled) {
+        if (polled.state() == InFlightState.CONFIRMED) {
+            dropInFlight(id, polled, ReplacementInstanceState.ABSENT);
+
+            return;
+        }
+
+        var counted = polled.withAbsentListing();
+
+        if (isEstablishedDeletion(counted)) {
+            dropInFlight(id, polled, ReplacementInstanceState.ABSENT);
+
+            return;
+        }
+
+        inFlightProvisioning.replace(id, polled, counted);
+    }
+
+    private boolean isEstablishedDeletion(InFlightEntry counted) {
+        return counted.absentListings() >= requiredAbsentListings && counted.isPollableFor(timeSource.nanoTime(),
+                                                                                           firstListingFloor);
+    }
+
+    @Contract
+    private void dropInFlight(NodeId id, InFlightEntry polled, ReplacementInstanceState state) {
+        if (!inFlightProvisioning.remove(id, polled)) {
+            return;
+        }
+
+        log.info("LeaderReconciler dropping in-flight replacement {}: provider reports {} — the deficit re-opens and re-dispatches after the deficit debounce",
+                 id,
+                 state);
+        triggerReconcile(ReconcileTrigger.NTT_FIRE);
     }
 
     /// Arm the deficit-convergence follow-up (H1 / #257 completion) when this pass ended with
@@ -1542,15 +1747,34 @@ public final class LeaderReconciler {
         return timeSpan(splitTimeout.nanos() * 3 / 2).nanos();
     }
 
-    /// In-flight provisioning entries expire at `nttDepartureTimeout × 3`. This window is
-    /// decoupled from (and deliberately longer than) the `× 1.5` leader-activation quiesce
-    /// delay: an in-flight entry must outlive a freshly provisioned node's WORST-CASE
-    /// time-to-stable-membership (container boot + JVM start + SWIM up-hysteresis), which can
-    /// run to tens of seconds. If the entry expired first, the reconciler would forget the
-    /// node it is still waiting on, re-observe the same deficit, and re-provision a phantom
-    /// replacement — the auto-heal provisioning storm this expiry exists to prevent.
-    private static TimeSpan computeInFlightExpiry(TimeSpan splitTimeout) {
-        return timeSpan(splitTimeout.nanos() * 3).nanos();
+    /// Status-poll cadence for in-flight replacements (#1049) = `nttDepartureTimeout` (×1; 15s at the
+    /// default). One provider listing per in-flight entry per interval, only while entries exist, only on
+    /// the leader, single-flight per entry, and never from the reconcile pass — whose triggers can burst —
+    /// so a heal of a few nodes costs a few listings a minute. Tied to the single membership timing
+    /// constant: a provider-reported failure is seen within one interval and re-dispatched after one
+    /// more (the deficit debounce). This is NOT a lifetime: an entry the provider reports booting is
+    /// kept across any number of intervals, up to its ceiling. (It replaces the former `× 3` expiry,
+    /// which was a lifetime and was shorter than a cloud replacement's time to join.)
+    private static TimeSpan computeInFlightPollInterval(TimeSpan splitTimeout) {
+        return splitTimeout;
+    }
+
+    /// Consecutive successful listings that must omit a never-listed replacement before it counts as deleted
+    /// (#1049) = ⌈first-listing floor ÷ status-poll interval⌉, which is 12 at the default 3-minute floor
+    /// ([`SourceProfile#REPLACEMENT_FIRST_LISTING_FLOOR`], where the floor is derived) and 15s interval.
+    ///
+    /// The guarantee, with the floor: a replacement the provider has never listed is re-dispatched only once
+    /// BOTH at least this many successful listings since it became pollable (its create call resolved, or a
+    /// new leader inherited it) have omitted it, AND the floor has passed since then. A listing that failed,
+    /// or a status the provider could not state, counts toward neither and does not reset the count (it is
+    /// not a successful listing, so it does not break a run of them); a listing that shows the instance ends
+    /// the count for good. So a listing that lags a create by less than the floor never mints a duplicate,
+    /// however long the create itself took, and a provider outage cannot shorten the observation: without
+    /// successful listings only the ceiling bounds the entry. Deriving the count from the floor makes the two
+    /// agree when every poll succeeds on the grid; the count binds when listings fail or run slower than the
+    /// interval, the floor when they land off the grid. Always at least one, since both spans are positive.
+    private static int computeRequiredAbsentListings(TimeSpan firstListingFloor, TimeSpan inFlightPollInterval) {
+        return (int) Math.ceilDiv(firstListingFloor.nanos(), inFlightPollInterval.nanos());
     }
 
     /// Drain-safety grace = `nttDepartureTimeout × 2` — see the [`#drainSafetyGraceWindow`]
@@ -1612,6 +1836,61 @@ public final class LeaderReconciler {
                                                 quorumSafe,
                                                 deficitAgeMs(now),
                                                 captured.map(ProvisioningDecisionSnapshot::reason).or("NOT_EVALUATED"));
+    }
+
+    /// #1049 — lifecycle of one in-flight auto-heal replacement. Advanced only by guarded transitions
+    /// (`replace`/`remove` against the expected entry), never by an overwrite.
+    private enum InFlightState {
+        /// The provision call has not resolved: the create may not have happened, so the provider is not
+        /// asked. Bounded only by the ceiling.
+        DISPATCHING,
+        /// The create returned (or the entry was inherited from a prior leader) but the provider has not
+        /// yet listed the instance — absences are counted, and are a deletion only once enough of them span
+        /// the first-listing floor (see [`LeaderReconciler#computeRequiredAbsentListings`]).
+        UNCONFIRMED,
+        /// The provider has listed the instance at least once — a later absence IS a deletion.
+        CONFIRMED
+    }
+
+    /// #1049 — one in-flight replacement: the [`#timeSource`] instant its ceiling runs from (dispatch, or for
+    /// an inherited entry its mint time — see [`#inheritedEntry`]), the per-source ceiling, its
+    /// [`InFlightState`], the instant it became pollable (meaningful once it has left DISPATCHING: its create
+    /// call resolved, or a new leader inherited it), and how many successful listings have omitted it since.
+    private record InFlightEntry(long sinceNanos,
+                                 TimeSpan ceiling,
+                                 InFlightState state,
+                                 long pollableSinceNanos,
+                                 int absentListings) {
+        static InFlightEntry inFlightEntry(long sinceNanos,
+                                           TimeSpan ceiling,
+                                           InFlightState state,
+                                           long pollableSinceNanos) {
+            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, 0);
+        }
+
+        InFlightEntry withState(InFlightState next) {
+            return new InFlightEntry(sinceNanos, ceiling, next, pollableSinceNanos, absentListings);
+        }
+
+        InFlightEntry pollableFrom(long nowNanos) {
+            return new InFlightEntry(sinceNanos, ceiling, InFlightState.UNCONFIRMED, nowNanos, 0);
+        }
+
+        InFlightEntry withAbsentListing() {
+            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, absentListings + 1);
+        }
+
+        boolean isDispatching() {
+            return state == InFlightState.DISPATCHING;
+        }
+
+        boolean isPastCeiling(long nowNanos) {
+            return nowNanos - sinceNanos > ceiling.nanos();
+        }
+
+        boolean isPollableFor(long nowNanos, TimeSpan span) {
+            return nowNanos - pollableSinceNanos >= span.nanos();
+        }
     }
 
     /// #336 observability — immutable snapshot of one reconcile pass's provisioning decision. The

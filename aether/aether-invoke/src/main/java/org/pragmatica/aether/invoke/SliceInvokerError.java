@@ -34,7 +34,7 @@ public sealed interface SliceInvokerError extends Cause {
         }
     }
 
-    record NoEndpointsError(Artifact artifact, MethodName method) implements SliceInvokerError {
+    record NoEndpointsError(Artifact artifact, MethodName method) implements SliceInvokerError, Cause.Transient {
         public static NoEndpointsError noEndpointsError(Artifact artifact, MethodName method) {
             return new NoEndpointsError(artifact, method);
         }
@@ -67,7 +67,7 @@ public sealed interface SliceInvokerError extends Cause {
         }
     }
 
-    record TimeoutError(Artifact artifact, MethodName method, long timeoutMs) implements SliceInvokerError {
+    record TimeoutError(Artifact artifact, MethodName method, long timeoutMs) implements SliceInvokerError, Cause.Transient {
         public static TimeoutError timeoutError(Artifact artifact, MethodName method, long timeoutMs) {
             return new TimeoutError(artifact, method, timeoutMs);
         }

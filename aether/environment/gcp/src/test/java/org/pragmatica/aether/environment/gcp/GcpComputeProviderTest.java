@@ -313,9 +313,28 @@ class GcpComputeProviderTest {
             assertThat(GcpComputeProvider.mapStatus("SUSPENDED")).isEqualTo(InstanceStatus.STOPPING);
         }
 
+        /// #1049 — exhaustive over Compute Engine's documented `Instance.Status` enum (v1 API reference:
+        /// PROVISIONING, STAGING, RUNNING, STOPPING, SUSPENDING, SUSPENDED, REPAIRING, TERMINATED, PENDING,
+        /// PENDING_STOP, STOPPED, DEPROVISIONING), plus one undocumented value. `REPAIRING` is an instance that
+        /// still exists, so it and anything unrecognised must never read as stopping or terminated.
         @Test
-        void mapStatus_unknown_returnsTerminated() {
-            assertThat(GcpComputeProvider.mapStatus("UNKNOWN")).isEqualTo(InstanceStatus.TERMINATED);
+        void mapStatus_everyDocumentedStatus_andAnUnrecognisedOne_mapExhaustively() {
+            var expected = Map.ofEntries(Map.entry("PROVISIONING", InstanceStatus.PROVISIONING),
+                                         Map.entry("STAGING", InstanceStatus.PROVISIONING),
+                                         Map.entry("RUNNING", InstanceStatus.RUNNING),
+                                         Map.entry("STOPPING", InstanceStatus.STOPPING),
+                                         Map.entry("SUSPENDING", InstanceStatus.STOPPING),
+                                         Map.entry("SUSPENDED", InstanceStatus.STOPPING),
+                                         Map.entry("REPAIRING", InstanceStatus.UNKNOWN),
+                                         Map.entry("TERMINATED", InstanceStatus.STOPPING),
+                                         Map.entry("PENDING", InstanceStatus.PROVISIONING),
+                                         Map.entry("PENDING_STOP", InstanceStatus.STOPPING),
+                                         Map.entry("STOPPED", InstanceStatus.STOPPING),
+                                         Map.entry("DEPROVISIONING", InstanceStatus.STOPPING),
+                                         Map.entry("A_STATUS_GCP_ADDS_LATER", InstanceStatus.UNKNOWN));
+
+            assertThat(expected).hasSize(13);
+            expected.forEach((status, mapped) -> assertThat(GcpComputeProvider.mapStatus(status)).as(status).isEqualTo(mapped));
         }
     }
 
@@ -351,6 +370,15 @@ class GcpComputeProviderTest {
         @Test
         void toLabelFilter_emptyMap_returnsEmptyString() {
             assertThat(GcpComputeProvider.toLabelFilter(Map.of())).isEmpty();
+        }
+
+        /// #1049 — upper layers select a node's instance by the dotted `aether.node-id`, but this
+        /// provider stamps the `aether-node-id` label. Untranslated, the filter matches nothing and an
+        /// existing replacement reads as deleted to the auto-heal in-flight tracker.
+        @Test
+        void toLabelFilter_nodeIdTag_translatesToStampedLabelKey() {
+            assertThat(GcpComputeProvider.toLabelFilter(Map.of("aether.node-id", "node-7")))
+                .isEqualTo("labels.aether-node-id=node-7");
         }
     }
 
