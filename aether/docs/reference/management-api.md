@@ -4892,7 +4892,8 @@ with `400 Bad Request`.
 > **Still open — #806:** the lock TTL (5 min) is shorter than the migration timeout (15 min), so an
 > expired lock can be taken over while its holder is still migrating, and `releaseLock` is an
 > unfenced Remove; a holder that times out after a takeover can delete the taker's lock and re-claim.
-> Until #806 lands, do not run two schema commands against one datasource concurrently.
+> Until #806 lands, a migration, undo or baseline that runs longer than 5 minutes loses its lock while
+> still running (concurrent dispatch itself is refused with `LockAcquisitionFailed` since #766).
 >
 > The leader check above `undo`/`baseline` is also check-then-act, undisclosed until now:
 > `requireLeader` reads `node.isLeader()` once and lets the manager call proceed with no re-check,
