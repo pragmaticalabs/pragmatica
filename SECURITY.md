@@ -91,13 +91,22 @@ Two consequences follow directly:
     SWIM UDP to `0.0.0.0/0`, so the packets are off-path and spoofable, and a restart supervisor will
     crash-loop the node.
 
-    Two bounds contain it, and neither is an argument that the capability is unimportant:
-    - **It cannot be done to a node that is communicating.** One successful decrypt disarms the check
-      permanently, so a node that has ever exchanged gossip is immune for the life of the process. A
-      healthy node in a healthy cluster decrypts within seconds of SWIM starting.
-    - **The attacker must SUSTAIN the condition, not send a burst.** The check arms only after 60
-      seconds with no successful decrypt, and disarms again once the boot window has passed, so there
-      is a bounded interval — and only for a node that is already failing to communicate.
+    Two bounds contain it, and they are not equally load-bearing — **the first is the protection, the
+    second only bounds what the first has not yet covered:**
+    - **A node that has decrypted even once is immune, permanently.** One successful decrypt latches
+      the check off for the life of the process, so no volume of later traffic can reach it —
+      measured at 500 junk packets after a single successful decrypt, no effect. A healthy node in a
+      healthy cluster decrypts within seconds of SWIM starting. **This, not the arming delay, is what
+      keeps running nodes safe.**
+    - **The arming delay only bounds the pre-decrypt interval, and it costs an attacker patience
+      rather than bandwidth.** It removes the instant kill — before it, eight packets sufficed — but
+      it does not make the attack expensive: **a one-packet-per-second stream that merely crosses the
+      60-second boundary trips the gate at 68 packets, needing no knowledge of when the node booted.**
+      The exposed population is therefore nodes that have not yet decrypted anything, for a bounded
+      interval, at a price measured in seconds of waiting.
+
+    **Do not "harden" this by lengthening the arming delay.** That widens the pre-decrypt interval,
+    which is the only interval that was ever exposed; it makes the exposure worse, not better.
 
     **Both bounds are CHOSEN, not measured.** 60 seconds is intended to clear a healthy node's
     first-decrypt latency — expected to be seconds after SWIM starts, itself unmeasured — by roughly

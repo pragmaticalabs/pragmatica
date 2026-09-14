@@ -33,14 +33,19 @@ import org.slf4j.LoggerFactory;
 /// hold. It is raised by `AesGcmGossipEncryptor.resolveKey` and, before this class, was consumed
 /// nowhere: `NettySwimTransport` logged one indistinguishable WARN per datagram and dropped it.
 ///
-/// **Why a successful decrypt disarms this permanently.** One successful decrypt proves key agreement,
-/// so the guard can only ever fire on a node that has never once decrypted a gossip datagram while
-/// receiving several it cannot — which is the divergence signature and nothing else. That also makes
-/// it a BOOT gate without needing a clock: a joined node has decrypted. A live rotation is applied to
-/// the delegate beneath this decorator, so traffic keeps decrypting and the guard stays disarmed.
+/// **Why a successful decrypt disarms this permanently — and why THAT is the safety property, not
+/// the arming window.** One successful decrypt proves key agreement, so the guard can only ever fire
+/// on a node that has never once decrypted a gossip datagram while receiving several it cannot —
+/// which is the divergence signature and nothing else. `everDecrypted` latches, so a node that has
+/// exchanged any gossip is immune for the life of the process regardless of what arrives afterwards.
+/// That also makes it a BOOT gate without needing a clock: a joined node has decrypted. A live
+/// rotation is applied to the delegate beneath this decorator, so traffic keeps decrypting and the
+/// guard stays disarmed.
 ///
 /// **Threshold AND an arming window**, because the threshold alone was not enough: eight spoofable
-/// junk datagrams were shown to end a booting process. See [#ARMING_DELAY_NANOS].
+/// junk datagrams were shown to end a booting process. But the window BOUNDS the remaining exposure
+/// rather than removing it — a slow stream that merely crosses the delay still fires the gate. See
+/// [#ARMING_DELAY_NANOS] for the measured price, and do not mistake the window for the defence.
 ///
 /// **Coverage — this gate is a determination for some boots and blind for others, by construction.**
 /// It fires only if the cluster SENDS to this node. Peers probe their configured seed set, so a
@@ -63,25 +68,34 @@ public final class GossipKeyDivergenceGuard implements GossipEncryptor {
     private static final Logger log = LoggerFactory.getLogger(GossipKeyDivergenceGuard.class);
     /// Unknown-keyId datagrams tolerated before the gate fires, given zero successful decrypts.
     static final int UNKNOWN_KEY_THRESHOLD = 8;
-    /// The gate is ARMED only inside `[ARMING_DELAY, ARMING_WINDOW_END]` after construction, and both
-    /// bounds close a hole that the threshold alone does not.
+    /// The gate is ARMED only inside `[ARMING_DELAY, ARMING_WINDOW_END]` after construction.
     ///
-    /// **The lower bound** stops 8 spoofable packets from ending a process. `NettySwimTransport`
-    /// decrypts every inbound datagram from any sender with no source check, and the default firewall
-    /// preset opens SWIM UDP to `0.0.0.0/0` — so without a delay, eight 16-byte junk datagrams
-    /// carrying one repeated arbitrary key id kill any booting node, off-path and spoofable, and it
-    /// crash-loops under a restart supervisor. Requiring the node to have gone this long without a
-    /// SINGLE successful decrypt means an attacker must SUSTAIN the condition rather than send a
-    /// burst — and a healthy node in a healthy cluster decrypts within seconds of SWIM starting, so
-    /// it passes out of reach long before the gate arms.
+    /// **READ THIS BEFORE TUNING EITHER NUMBER. The arming delay is NOT what protects a node — the
+    /// disarm on first successful decrypt is.** `everDecrypted` latches permanently, so a node that
+    /// has ever decrypted one gossip datagram cannot be killed by this gate at all, whatever arrives
+    /// afterwards and whatever the window says: measured at 500 junk packets inside the window
+    /// after a single successful decrypt, no fire. That is the protection. **A reader who hardens
+    /// `ARMING_DELAY_NANOS` believing IT is the defence will make the system worse while believing
+    /// they have improved it** — lengthening it widens the pre-decrypt interval, and the pre-decrypt
+    /// interval is the only one that was ever exposed.
     ///
-    /// **The upper bound** stops the window from lasting forever. Without it a node that never
-    /// decrypts stays armed for life — and that is precisely the auto-heal replacement described in
-    /// SECURITY.md, so the most exposed node would be the one that stays killable longest. Closing
-    /// the window costs nothing for the defect this gate exists to catch: the case it CAN detect (a
-    /// restarted member, probed continuously by peers that still hold it in their seed set)
-    /// accumulates its datagrams within seconds of arming, while the case it cannot detect receives
-    /// nothing at all and would never have fired however long it stayed armed.
+    /// **What the lower bound actually buys, stated at its real price.** It removes the instant
+    /// kill: without it, eight 16-byte junk datagrams end a booting node outright
+    /// (`NettySwimTransport` decrypts from any sender with no source check, and the default firewall
+    /// preset opens SWIM UDP to `0.0.0.0/0`, so the packets are off-path and spoofable and the node
+    /// crash-loops under a restart supervisor). It does **not** make the attack expensive. Measured:
+    /// **a one-packet-per-second stream that merely crosses the 60s boundary trips the gate at 68
+    /// packets, with no knowledge of the node's boot time.** The delay costs an attacker PATIENCE,
+    /// not bandwidth. It bounds the window; it does not close it.
+    ///
+    /// **The upper bound** stops that window lasting forever. Without it a node that never decrypts
+    /// stays armed for life — precisely the auto-heal replacement described in SECURITY.md, so the
+    /// most exposed node would be the one that stays killable longest. The case this gate CAN detect
+    /// (a restarted member, probed continuously by peers that still hold it in their seed set) is
+    /// expected to accumulate its datagrams well inside the window, though that timing is unmeasured
+    /// (#1208); the case it cannot detect receives nothing at all and would never have fired however
+    /// long it stayed armed.
+    ///
     /// **Both numbers are CHOSEN, not measured, and are recorded as such so a later reader does not
     /// defend them as derived.** 60 seconds is intended to clear a healthy node's first-decrypt
     /// latency — expected to be seconds after SWIM starts, itself unmeasured — by roughly an order of

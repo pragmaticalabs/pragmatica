@@ -81,12 +81,17 @@
   off-path and spoofable, since the SWIM listener decrypts from any sender with no source check and
   the default firewall preset opens SWIM UDP to `0.0.0.0/0`, and crash-looping under a restart
   supervisor. The gate is therefore ARMED only inside a window: it requires **60 seconds with no
-  successful decrypt** before it will count anything (so an attacker must sustain the condition rather
-  than send a burst, while a healthy node decrypts within seconds and is immune for the life of the
-  process), and the window **closes** afterwards — without an upper bound a node that never decrypts
-  would stay armed for life, which is exactly the auto-heal replacement described above, making the
-  most exposed node the one that stays killable longest. Out-of-window datagrams reset the run, so a
-  burst cannot be banked up to the moment the window opens. **Both bounds are chosen, not measured:**
+  successful decrypt** before it will count anything, and the window **closes** afterwards — without
+  an upper bound a node that never decrypts would stay armed for life, which is exactly the auto-heal
+  replacement described above, making the most exposed node the one that stays killable longest.
+  Out-of-window datagrams reset the run, so a burst cannot be banked up to the moment the window
+  opens. **The protection here is the permanent disarm on first successful decrypt, NOT the arming
+  delay** — a node that has decrypted even once is immune for the life of the process (measured: 500
+  junk packets after one successful decrypt, no effect), while the delay merely bounds the
+  pre-decrypt interval and costs an attacker **patience rather than bandwidth**: a one-per-second
+  stream that simply crosses the 60s boundary trips the gate at 68 packets, needing no knowledge of
+  boot time. Lengthening the delay would widen the only interval that is exposed, so it is not a
+  hardening knob. **Both bounds are chosen, not measured:**
   60s is intended to clear a healthy node's first-decrypt latency (expected to be seconds after SWIM
   starts, itself unmeasured) by roughly an order of magnitude, and 10min to clear by a similar margin
   the time a probed restarted member needs to accumulate the threshold. Both margins were chosen
