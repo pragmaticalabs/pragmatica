@@ -212,14 +212,16 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// escape a stopped protocol: an [#announceJoin] that resolved this protocol before the stop and
     /// calls in after it (arming a loop no later `stop()` will ever see — the shape #501 was filed
     /// about), and a `runAnnounceAttempt` already executing, which `cancel(false)` does not interrupt.
-    /// This latch is the code that REFUSES both: checked in [#announceJoin] before arming and at the
-    /// head of [#runAnnounceAttempt] before sending, where a stopped loop also cancels itself.
+    /// This latch is the code that REFUSES both: [#announceJoin] arms nothing while it is set, and
+    /// [#runAnnounceAttempt] re-reads it BEFORE EACH SEED, so an attempt already in flight stops at
+    /// the seed it has reached.
     ///
     /// A latch rather than holding [#lifecycleLock] across the attempt: `runAnnounceAttempt` sends to
     /// every seed, and `NettySwimTransport.resolveAndSend` falls back to SYNCHRONOUS DNS resolution
     /// for an unresolved seed host — under that lock an unresolvable seed would block `stop()` for the
-    /// resolver timeout. The residual window is one attempt that passed the check before `stop()` set
-    /// the latch; it sends once and never re-arms.
+    /// resolver timeout. The residual window is one send already past its check; it completes and
+    /// never re-arms, because `runAnnounceAttempt` does not reschedule and `cancel(false)` has stopped
+    /// the executor's re-arm.
     private final AtomicBoolean announceStopped = new AtomicBoolean(false);
 
     /// Per-member last-probe ORDINAL (a strictly-monotonic `probeOrdinal` value), keyed by
@@ -1751,14 +1753,6 @@ public final class SwimProtocol implements SwimMessageHandler {
                                     List<InetSocketAddress> seeds,
                                     AtomicInteger attempts,
                                     AtomicReference<ScheduledFuture<?>> future) {
-        // #501: cancel(false) never interrupts an attempt already running, and an orphan loop armed
-        // in the stop race has no handle anyone holds. Both die here, before a single seed is sent.
-        if (announceStopped.get()) {
-            cancelAnnounce(future, self, "protocol stopped");
-
-            return;
-        }
-
         if (inboundProbeReceived) {
             cancelAnnounce(future, self, "self acknowledged by peer");
 
