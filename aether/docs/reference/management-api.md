@@ -3566,11 +3566,25 @@ entry) and restart the node.
 Rotate the SWIM gossip encryption key in place (#683). The leader generates 32 bytes of fresh key
 material and writes one `GossipKeyRotationKey` record through consensus: `currentKeyId` is the previous
 id plus one, and the previous key rides along so nodes mid-rotation keep decrypting each other. Every
-node applies it through its existing `GossipKeyRotationHandler`; a late joiner receives the record on
-replay before it sends its first SWIM datagram. The response carries ids only — the key is never
-returned or logged. Consequences an operator must know: the key material is stored in the consensus log
-and its snapshots (readable by any KV reader), and after the first rotation the `cluster_secret`-derived
-daily key scheme is superseded on that cluster for good; see SECURITY.md.
+running node applies it through its existing `GossipKeyRotationHandler`. The response carries ids only
+— the key is never returned or logged. The write is version-fenced and confirmed: a rotation that loses
+a race against a concurrent one is reported as a failure, never as a success for a write that did not
+land.
+
+**Three consequences an operator must accept before invoking this — see SECURITY.md:**
+
+1. The key material is stored in the consensus log and its snapshots, readable by any KV reader.
+2. **The first rotation has no decrypt overlap.** With no prior record there is no previous key to
+   carry, so the emergency rotation — the one that runs during an actual leak response — replaces the
+   boot key outright. Only rotations from the second onward are seamless.
+3. **A rotated cluster cannot grow until you act, and that includes auto-heal.** A node booting after a
+   rotation holds only the `cluster_secret`-derived key, which the cluster no longer accepts; it cannot
+   complete SWIM in either direction, so no quorum forms and the consensus replay that would deliver
+   the cluster key never runs. Auto-heal replacements, scale-up and re-provisioned nodes all fail to
+   join until given the rotated key material out of band. Existing running nodes are unaffected. A
+   restarted existing member refuses to boot with a `FATAL` line naming gossip-key divergence; a node
+   the cluster has never heard of cannot detect the cause at all, and the only signal is the
+   `Failed to decrypt gossip from ...` WARN on the healthy seeds.
 
 **RBAC:** ADMIN (exact route; an appended path segment is 404, never a weaker permission) · **Routing:** LEADER
 

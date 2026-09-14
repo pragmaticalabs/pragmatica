@@ -48,7 +48,6 @@ import org.slf4j.LoggerFactory;
 /// the healthy seeds, not on the stranded node. SECURITY.md states this.
 public final class GossipKeyDivergenceGuard implements GossipEncryptor {
     private static final Logger log = LoggerFactory.getLogger(GossipKeyDivergenceGuard.class);
-
     /// Unknown-keyId datagrams tolerated before the gate fires, given zero successful decrypts.
     static final int UNKNOWN_KEY_THRESHOLD = 8;
 
@@ -97,6 +96,7 @@ public final class GossipKeyDivergenceGuard implements GossipEncryptor {
 
         if (lastUnknownKeyId.getAndSet(unknown.keyId()) != unknown.keyId()) {
             consecutive.set(1);
+
             return;
         }
 
@@ -108,7 +108,8 @@ public final class GossipKeyDivergenceGuard implements GossipEncryptor {
     /// Names the cause, the observed key epoch and the remedy. Fires once — a per-datagram message
     /// would bury the one line an operator needs under the flood that IS the symptom.
     private void refuse(int observedKeyId) {
-        log.error("FATAL: {}", new GossipKeyDivergence(observedKeyId, consecutive.get()).message());
+        log.error("FATAL: {}",
+                  new GossipKeyDivergence(observedKeyId, consecutive.get()).message());
         onDivergence.run();
     }
 
@@ -117,14 +118,14 @@ public final class GossipKeyDivergenceGuard implements GossipEncryptor {
         @Override
         public String message() {
             return "Gossip-key divergence: " + undecryptableDatagrams
-                   + " gossip datagram(s) arrived under key id " + observedKeyId
-                   + " which this node does not hold, and none has ever decrypted. The cluster has almost"
-                   + " certainly had its gossip key rotated (POST /api/v1/cluster/gossip-key/rotate) since"
-                   + " this node's cluster_secret-derived key was issued. This node CANNOT join: without"
-                   + " SWIM there is no quorum, and without quorum the rotation record that carries the"
-                   + " cluster key is never replayed to it. Refusing to boot rather than sit unjoinable."
-                   + " Remedy: re-provision this node with the rotated cluster's key material, or restore"
-                   + " the cluster to the derived key scheme. See #683.";
+                 + " gossip datagram(s) arrived under key id " + observedKeyId
+                 + " which this node does not hold, and none has ever decrypted. The cluster has almost"
+                 + " certainly had its gossip key rotated (POST /api/v1/cluster/gossip-key/rotate) since"
+                 + " this node's cluster_secret-derived key was issued. This node CANNOT join: without"
+                 + " SWIM there is no quorum, and without quorum the rotation record that carries the"
+                 + " cluster key is never replayed to it. Refusing to boot rather than sit unjoinable."
+                 + " Remedy: re-provision this node with the rotated cluster's key material, or restore"
+                 + " the cluster to the derived key scheme. See #683.";
         }
     }
 }

@@ -18,8 +18,16 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_GOS
 
 
 /// #683 — emergency, in-place gossip-key rotation. The leader generates fresh key material and
-/// publishes it through consensus; every node rotates with a one-key decrypt overlap, late joiners
-/// adopt it on replay. ADMIN-only. The response carries key ids, never the key.
+/// publishes it through consensus; running nodes adopt it live. ADMIN-only. The response carries key
+/// ids, never the key.
+///
+/// Two limits an operator must know before invoking this, both stated in SECURITY.md. The FIRST
+/// rotation carries no decrypt overlap — there is no prior record to carry — so boot-key ciphertext
+/// is rejected the moment it lands; later rotations carry the previous key. And a rotated cluster
+/// **cannot grow until an operator acts**: a node booting afterwards holds only the
+/// `cluster_secret`-derived key, cannot complete SWIM in either direction, and therefore never
+/// reaches the consensus replay that would deliver the cluster key. Auto-heal replacements and
+/// scale-up nodes are included. Existing running nodes are unaffected.
 @Command(name = "rotate-gossip-key", description = "Rotate the SWIM gossip encryption key in place (ADMIN; after a suspected cluster_secret or gossip-key leak)")
 @SuppressWarnings("JBCT-RET-01")
 class ClusterRotateGossipKeyCommand implements Callable<Integer> {

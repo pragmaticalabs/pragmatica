@@ -29,17 +29,27 @@ import org.slf4j.LoggerFactory;
 
 
 /// #683 — the producer for [GossipKeyRotationKey]. Every node already consumes the record
-/// (`GossipKeyRotationHandler` → `RotatingGossipEncryptor.rotate`, idempotent, replayed to late
-/// joiners), but nothing ever wrote it: the emergency, in-place rotation an operator reaches for after
-/// a suspected `cluster_secret` or gossip-key leak could not be invoked. `POST /cluster/gossip-key/rotate`
-/// (ADMIN, exact row) generates 32 random bytes and Puts them through consensus with the previous
-/// record's key carried for the decrypt overlap, so peers mid-rotation keep understanding each other.
+/// (`GossipKeyRotationHandler` → `RotatingGossipEncryptor.rotate`, idempotent), but nothing ever
+/// wrote it: the emergency, in-place rotation an operator reaches for after a suspected
+/// `cluster_secret` or gossip-key leak could not be invoked. `POST /cluster/gossip-key/rotate`
+/// (ADMIN, exact row) generates 32 random bytes and Puts them through consensus, carrying the
+/// previous record's key so peers mid-rotation keep understanding each other.
 ///
-/// Two facts the operator must know, stated in SECURITY.md: the key material lives in the consensus
-/// log and its snapshots, readable by any KV reader (accepted by the §5.8 design — the alternative,
-/// a per-node out-of-band channel, would need a second trust root); and after the first rotation the
-/// `cluster_secret`-derived key scheme is superseded on that cluster for good. The key bytes are never
-/// logged — only the ids are.
+/// Three facts the operator must know, all stated in SECURITY.md:
+/// - the key material lives in the consensus log and its snapshots, readable by any KV reader
+///   (accepted by the §5.8 design — the alternative, a per-node out-of-band channel, would need a
+///   second trust root);
+/// - **the FIRST rotation carries no overlap.** With no prior record there is no previous key to
+///   carry, so the emergency rotation — the only one that runs during an actual leak response —
+///   replaces the boot key outright and boot-key ciphertext is rejected immediately. Only rotations
+///   from the second onward are seamless;
+/// - **after the first rotation the `cluster_secret`-derived key scheme is superseded for good, and
+///   the cluster cannot GROW until an operator acts.** A node booting afterwards holds only the
+///   derived key, so SWIM fails in both directions, no quorum forms, and the replay that would hand
+///   it the cluster key never runs — auto-heal replacements and scale-up included.
+///   [GossipKeyDivergenceGuard] refuses such a boot loudly where it is detectable.
+///
+/// The key bytes are never logged — only the ids are.
 public final class GossipKeyRoutes implements RouteSource {
     private static final Logger log = LoggerFactory.getLogger(GossipKeyRoutes.class);
     private static final int KEY_BYTES = 32;

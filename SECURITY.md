@@ -40,12 +40,33 @@ Two consequences follow directly:
   removing the node and rotating the shared secret. For the gossip layer specifically there is one
   in-place mitigation, `aether cluster rotate-gossip-key` (`POST /api/v1/cluster/gossip-key/rotate`,
   ADMIN), which pushes a fresh, non-derived gossip key through consensus without a restart (#683).
-  Two facts about it, accepted and stated: **the key material lives in the consensus log and its
-  snapshots, readable by any KV reader** — accepted by the §5.8 delivery design because a per-node
-  out-of-band channel would need a second trust root, and every KV reader is already a full member;
-  and **after the first rotation the `cluster_secret`-derived daily key is permanently superseded on
-  that cluster** — the delivered key is what every node encrypts under from then on, and a rebooted
-  node derives its boot-day key only until the record replays to it.
+  Three facts about it, accepted and stated:
+  - **The key material lives in the consensus log and its snapshots, readable by any KV reader** —
+    accepted by the §5.8 delivery design because a per-node out-of-band channel would need a second
+    trust root, and every KV reader is already a full member.
+  - **After the first rotation the `cluster_secret`-derived daily key is permanently superseded on
+    that cluster.** The delivered key is what every node encrypts under from then on. The first
+    rotation carries NO decrypt overlap (there is no prior record to carry), so boot-key ciphertext
+    is rejected from the moment it lands; subsequent rotations carry the previous key.
+  - **A ROTATED CLUSTER CANNOT GROW UNTIL AN OPERATOR ACTS — INCLUDING AUTO-HEAL.** This is the
+    operational cost of the mitigation and it is severe enough to plan for before invoking it. A node
+    booting after a rotation derives its gossip key from `cluster_secret`, which the rotated cluster
+    no longer accepts; its SWIM datagrams are dropped and it cannot decrypt the cluster's either. SWIM
+    therefore discovers no peers, the QUIC dial set stays self-only, no quorum forms, and the
+    consensus replay that carries the rotation record — the only way to obtain the cluster key —
+    never runs. The node cannot join, and the cycle cannot resolve itself. **So an emergency rotation,
+    performed precisely because something was compromised, leaves the cluster unable to self-heal:
+    auto-heal replacements, scale-up and re-provisioned nodes all fail to join until they are given
+    the rotated key material out of band.** Existing running nodes are unaffected.
+    - A **restarted existing member** detects this and refuses to boot with a `FATAL` line naming
+      gossip-key divergence (#683), because its peers still probe it and it can see gossip arriving
+      under a key id it does not hold.
+    - A **node the cluster has never heard of** — an auto-heal replacement or scale-up node — cannot
+      detect it: nobody probes an address they do not know, so it receives nothing at all and its
+      silence is indistinguishable from a partition. In that case the only signal is the
+      `Failed to decrypt gossip from ...` WARN on the **healthy seeds**, not on the stranded node.
+    A general key-delivery path for joining nodes is not in rc4; it is an architecture change (it
+    needs either a second trust root or a deliberately weakened revocation) and is tracked separately.
 - **The runtime/slice boundary is an accident boundary, not a security sandbox.** Each slice loads
   in its own `SliceClassLoader` [mechanism: `aether/slice/src/main/java/org/pragmatica/aether/slice/SliceClassLoader.java`],
   which isolates classpaths across slices/versions. This is **not** a hardened security boundary:

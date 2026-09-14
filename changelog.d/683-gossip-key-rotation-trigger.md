@@ -28,10 +28,10 @@
   not disturb the pinned wire tag 1622].
 - `aether cluster rotate-gossip-key` (`ClusterRotateGossipKeyCommand`, no options) posts to the route and prints the
   ids; documented in `cli.md`, the route in `management-api.md`.
-- **SECURITY.md states two facts, not design notes:** the delivered key material lives in the consensus log and its
+- **SECURITY.md states three facts, not design notes:** the delivered key material lives in the consensus log and its
   snapshots, readable by any KV reader (accepted by the §5.8 design: every KV reader is already a full member, and a
-  per-node out-of-band channel would need a second trust root); and after the first rotation the
-  `cluster_secret`-derived daily key is permanently superseded on that cluster.
+  per-node out-of-band channel would need a second trust root); the first rotation carries no decrypt overlap; and a
+  rotated cluster cannot grow until an operator acts, auto-heal included.
 - **Two corrections to claims this PR made in round 1**, both traced to their producers:
   - The late-joiner replay does **not** precede the joiner's first SWIM datagram. SWIM starts on QUIC
     transport-ready (`clusterNode.network().whenReady(startSwimTrigger)`), deliberately before `startClusterAsync()`
@@ -43,5 +43,42 @@
     quoted `/api/v1/` prefixes present in that file), so `resolveMutationPermission` returns `ADMIN_ONLY`. The
     protection is doubly held, but `GossipKeyRotatePermissionTest` stays green with #1101's arm removed and therefore
     cannot attest to it; `LengthenedPathPermissionMatrixTest` is the instrument that does.
+- **A rotated cluster cannot GROW until an operator acts, and a boot that cannot join now refuses
+  instead of sitting silent (#683 round 2).** Rotation replaces the live encryptor's accept set with
+  the record's `{currentKeyId, previousKeyId}`, so the `cluster_secret`-derived key id leaves it. A
+  node booting afterwards holds only the derived key: peers drop its SWIM datagrams and it cannot
+  decrypt theirs, so SWIM discovers nobody, the QUIC dial set stays self-only (SWIM is its sole
+  writer besides self), no quorum forms, and the consensus replay that carries the rotation record —
+  the only source of the cluster key — never runs. The cycle cannot resolve itself.
+  **Auto-heal replacements, scale-up and re-provisioned nodes are all included, so an emergency
+  rotation leaves the cluster unable to self-heal.** Existing running nodes are unaffected. This cost
+  is accepted for rc4 and disclosed in SECURITY.md, the CLI and the endpoint docs; a general
+  key-delivery path for joiners is an architecture change (a second trust root, or a deliberately
+  weakened revocation) and is tracked separately.
+  `GossipKeyDivergenceGuard` turns the detectable half into a refused boot: gossip arriving under one
+  unheld key id, repeatedly, with no datagram ever having decrypted, is the divergence signature, and
+  the node exits with a `FATAL` line naming the cause and the remedy rather than proceeding into a
+  permanently unjoinable state
+  [verified: `GossipKeyDivergenceGuardTest` — 7 tests: fires at the threshold, fires once not per
+  datagram, one successful decrypt disarms it permanently, varied junk does not trip it, a differing
+  key id resets the run, encrypt is passed through unchanged].
+  **Detection is partial by construction, and the blast radius differs from the symptom.** The guard
+  fires only if the cluster SENDS to the node. A RESTARTED member is still in its peers' configured
+  seed set, so it is probed and the divergence is detected precisely. A node the cluster has never
+  heard of — the auto-heal replacement case — is probed by nobody, receives nothing at all, and cannot
+  distinguish this from a partition; there the only signal is the `Failed to decrypt gossip from ...`
+  WARN on the healthy seeds, not on the stranded node. Note also that CTM sets `AETHER_ADVERTISE_HOST`
+  (`NodeUserDataRenderer`, via `ip route get`), so auto-heal and scale-up skip `SelfAddressResolver`'s
+  reflection probe entirely — they skip the *symptom* while their live SWIM transport still cannot
+  talk. A reader who learns only "reflection breaks" would wrongly conclude auto-heal is safe.
+  `[unverified: no multi-node run — the cycle is established from the code that enforces each step
+  (`TopologyObserverTest.SwimOnlyDialSet` pins the self-only dial set; `NettySwimTransport` drops on
+  decrypt failure) plus an in-process test of the key divergence itself, not from an observed cluster]`
+- **The first rotation has no decrypt overlap**, and the docs no longer claim otherwise. With no prior
+  record there is no previous key to carry, so the emergency rotation — the only one that runs during
+  an actual leak response — replaces the boot key outright. Carrying the live derived key as
+  `previousKey` was considered and rejected: it would extend the derived key's life by a rotation
+  while fixing nothing, because a joiner still cannot decrypt the cluster's replies. The behaviour is
+  unchanged and the CLI, endpoint docs and SECURITY.md now state it.
 - Not changed: the boot-only derivation of the "daily" key, filed as #1164.
   `[unverified: no multi-node run; the route is exercised over a mocked ManageableNode and an in-process KVStore]`
