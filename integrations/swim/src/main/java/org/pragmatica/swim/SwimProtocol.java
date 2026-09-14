@@ -223,7 +223,6 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// never re-arms, because `runAnnounceAttempt` does not reschedule and `cancel(false)` has stopped
     /// the executor's re-arm.
     private final AtomicBoolean announceStopped = new AtomicBoolean(false);
-
     /// Per-member last-probe ORDINAL (a strictly-monotonic `probeOrdinal` value), keyed by
     /// `NodeId` so probe scheduling is identity-stable under churn. Stamped in [#probeTarget]
     /// the moment a probe is sent. [#selectNextProbeTarget] always picks the least-recently-
@@ -445,7 +444,6 @@ public final class SwimProtocol implements SwimMessageHandler {
             // announce loop runs on to the 60-attempt cap — 30 s of ANNOUNCE from a stopped node.
             announceStopped.set(true);
             announceFuture.getAndSet(none()).onPresent(f -> f.cancel(false));
-
             if (!tickFuture.get().isPresent()) {
                 return SwimError.General.PROTOCOL_NOT_RUNNING.result();
             }
@@ -1704,7 +1702,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         // read announceFuture, leaving a live loop no stop() can reach.
         synchronized (lifecycleLock) {
             if (announceStopped.get()) {
-                LOG.info("SWIM ANNOUNCE join refused for node {} — protocol is stopped", self.id().id());
+                LOG.info("SWIM ANNOUNCE join refused for node {} — protocol is stopped",
+                         self.id().id());
 
                 return;
             }
@@ -1771,7 +1770,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         // node to every remaining seed.
         seeds.stream()
              .takeWhile(_ -> !announceStopped.get())
-             .forEach(seed -> transport.send(seed, Announce.announce(self, clusterName, incarnation)));
+             .forEach(seed -> transport.send(seed,
+                                             Announce.announce(self, clusterName, incarnation)));
         if (attempt >= 60) {
             cancelAnnounce(future, self, "max attempts reached");
         }
