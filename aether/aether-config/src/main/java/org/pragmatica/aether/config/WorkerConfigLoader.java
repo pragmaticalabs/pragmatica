@@ -74,8 +74,15 @@ public final class WorkerConfigLoader {
     /// while being accepted. A present key is refused at parse (PF-style, as #675's PF-26 does for a
     /// silently-ignored `replacement_ceiling`): an inert key that stays accepted is exactly the
     /// defect this ticket names, and pre-GA an honest break beats a lie.
+    ///
+    /// PRESENCE is the trigger, not type, which is why this reads the key via `getString` and not
+    /// `getInt`. `TomlDocument.getInt` yields `none()` for a boolean, float, array or unparseable
+    /// string, so keying the refusal on it would silently ACCEPT `max_group_size = 3.5` while the
+    /// docs say the key is refused — a key documented as refused but still accepted is worse than
+    /// either state alone. `getString` maps any present value through `toString`, so it is present
+    /// exactly when the key is, and the offending value still reaches the message.
     private static Result<Unit> refuseRemovedKeys(TomlDocument doc) {
-        return doc.getInt("worker", "max_group_size")
+        return doc.getString("worker", "max_group_size")
                   .map(value -> Causes.cause("[worker] max_group_size = " + value
                                             + " is not supported: the key was removed in #673 (worker group splitting was never "
                                             + "wired; communities are one per source). Remove the key.").<Unit> result())

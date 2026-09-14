@@ -32,6 +32,25 @@ class WorkerConfigLoaderMaxGroupSizeRemovedTest {
         }
     }
 
+    /// The refusal triggers on PRESENCE, not on type. `TomlDocument.getInt` yields `none()` for each
+    /// of these, so a refusal keyed on it would accept them silently while the docs say the key is
+    /// refused. Every value here is a plausible operator typo for the removed int knob.
+    @Test
+    void loadFromString_nonIntegerMaxGroupSize_isStillRefused() {
+        for (var literal : new String[]{"3.5", "true", "\"100\"", "\"unlimited\"", "[1, 2]"}) {
+            var result = WorkerConfigLoader.loadFromString("""
+                [worker]
+                core_nodes = ["core-1:localhost:6000"]
+                max_group_size = %s
+                """.formatted(literal));
+
+            result.onSuccess(_ -> fail("max_group_size = " + literal
+                                       + " must refuse at parse: presence is the trigger, not type"));
+            result.onFailure(cause -> assertThat(cause.message()).contains("max_group_size")
+                                                                 .contains("#673"));
+        }
+    }
+
     /// Control: a worker config without the key parses exactly as before.
     @Test
     void loadFromString_absentMaxGroupSize_parses() {

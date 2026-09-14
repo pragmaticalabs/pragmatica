@@ -497,11 +497,23 @@ zone = "local"
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `group_name` | string | `"default"` | Logical group name for this worker pool |
-| `zone` | string | `"local"` | Zone identifier for zone-aware grouping. Workers in the same zone auto-cluster |
+| `group_name` | string | `"default"` | Logical group name for this worker pool. Parsed, validated and stored; **read by no production code** (see below) |
+| `zone` | string | `"local"` | Zone identifier. Parsed, validated and stored; **read by no production code** (see below). Not the same knob as the `AETHER_ZONE` environment variable |
 | `max_group_size` | — | — | **Removed (#673, 2026-09-14).** A present key is refused at parse: worker group splitting was never wired, and communities are one per source (`<source>-w-0`). Remove the key from any `[worker]` table. |
 
-Zone is also extracted from the NodeId: everything before the last dash (e.g., `us-east-worker-1` → zone `us-east-worker`). The explicit `zone` config takes precedence for group computation.
+Both keys above are parsed, validated and stored on `AetherNodeConfig`, and then **read by nothing**. Their only
+consumer was the worker group-splitting chain (`GroupMembershipTracker` → `GroupAssignment.computeGroups`), which
+was never wired into a live node and was deleted in #673 (2026-09-14). Setting either key changes no behaviour
+today; they are documented because they are still accepted, not because they do anything.
+
+NodeId-derived zones were removed in #592 (2026-08-17). A node's zone is no longer inferred by splitting its id at
+the last dash — that was identifier parsing rather than zone awareness, and it put `node-1` in a zone called
+`node`.
+
+`[worker] zone` is a **different knob** from the `AETHER_ZONE` environment variable, and only the latter is live:
+`Main` maps `AETHER_ZONE` onto `NodeInfo.LABEL_ZONE`, the Hello handshake propagates that label into
+`SwimMember.labels`, and it is read for observability by `ClusterTopologyManagerRecord` and `ClusterTopologyRoutes`.
+`AETHER_ZONE` is carried to every provisioned node via `ClusterIdentityEnv.IDENTITY_VARS`.
 
 Workers self-organize into groups deterministically from SWIM membership. Same membership produces identical groups on every worker — no coordination needed. Each group elects its own governor (lowest ALIVE NodeId).
 
