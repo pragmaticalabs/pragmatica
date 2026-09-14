@@ -760,17 +760,17 @@ cert_ttl = "720h"
 ```toml
 [operations.auto_heal]
 enabled = true
-retry_interval = "10s"
-startup_cooldown = "15s"
 ```
 
 | Field              | Type   | Required | Default  | Description                                          |
 |--------------------|--------|----------|----------|------------------------------------------------------|
-| `enabled`          | bool   | No       | `true`   | Master toggle for the CTM auto-heal reconcile loop.  |
-| `retry_interval`   | string | No       | `"10s"`  | Period of the reconcile loop between heal attempts.  |
-| `startup_cooldown` | string | No       | `"15s"`  | Delay between cluster formation and the first heal check, giving nodes time to complete boot. |
+| `enabled`          | bool   | No       | `true`   | Master toggle for the CTM auto-heal reconcile loop. `false` is refused (PF-25). |
 
-**REQ-7.2.1**: The shortcut `auto_heal = true` under `[operations]` is equivalent to `[operations.auto_heal] enabled = true` with default-valued `retry_interval` and `startup_cooldown`. Declaring both forms for the same field is a validation error.
+*(Superseded by #675: `retry_interval` and `startup_cooldown` were removed from this section — they
+reached no node — and are refused with PF-26. The formation-check delay is the NODE config's
+`[timeouts.scaling] auto_heal_startup_cooldown`; the reconcile cadence is not operator-tunable.)*
+
+**REQ-7.2.1**: The shortcut `auto_heal = true` under `[operations]` is equivalent to `[operations.auto_heal] enabled = true`. Declaring both forms for the same field is a validation error.
 
 **REQ-7.2.2**: Retry count, exponential backoff schedule, and the max-concurrent-replacements cap are not operator-tunable in v1 (KL-7).
 
@@ -1627,8 +1627,6 @@ cert_ttl = "720h"
 
 [operations.auto_heal]
 enabled = true
-retry_interval = "10s"
-startup_cooldown = "15s"
 
 [operations.timeouts]
 health_check = "300s"
@@ -1745,7 +1743,7 @@ This model supports only a **single deployment type** and a **single runtime** p
 | KL-4  | No database URL validation at bootstrap                                                    | Runtime failure if database unreachable                    |
 | KL-5  | Source-level field migration in `apply` is destroy+recreate for region/zone changes        | Downtime during cross-zone moves; replace-before-retire keeps same-zone moves safe |
 | KL-6  | No SWIM port in new schema                                                                 | SWIM is multiplexed over the existing cluster QUIC connection, so there is no second port to configure. Old `swim_port` values are silently ignored during migration (see §15.3). |
-| KL-7  | Auto-heal retry count, backoff schedule, and max-concurrent-replacements are hardcoded     | Only `retry_interval` and `startup_cooldown` are operator-tunable in v1 |
+| KL-7  | Auto-heal retry count, backoff schedule, and max-concurrent-replacements are hardcoded     | The tunable auto-heal timings are the NODE config's `[timeouts.scaling] auto_heal_startup_cooldown` / `auto_heal_provisioning_timeout` / `auto_heal_swim_hints_ttl` (#675); `[operations.auto_heal]` carries `enabled` only |
 | KL-8  | Forge integration tests require rewrite to use elected-LB model                            | The old `aether-lb:local` separate process is gone; tests must exercise the in-cluster LB task group |
 | KL-9  | Upgrade verification windows and auto-rollback for runtime upgrades not implemented        | V2 feature                                                 |
 | KL-10 | Spot provisioning is schema-recognized but not implemented for AWS/GCP/Azure               | Operators using `spot` will see pre-flight errors for Hetzner (unsupported) and Phase 2 errors for AWS/GCP/Azure (stub `provisionSpot`) |

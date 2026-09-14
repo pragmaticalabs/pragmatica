@@ -453,7 +453,6 @@ class ClusterBootstrapConfigParserTest {
                 .onSuccess(config -> {
                     var ops = config.operations();
                     assertThat(ops.autoHeal().enabled()).isTrue();
-                    assertThat(ops.autoHeal().retryInterval()).isEqualTo("60s");
                     assertThat(ops.tls().autoGenerate()).isTrue();
                     assertThat(ops.tls().certTtl()).isEqualTo("720h");
                     assertThat(ops.timeouts().healthCheck()).isEqualTo("300s");
@@ -463,6 +462,111 @@ class ClusterBootstrapConfigParserTest {
                     assertThat(ops.ports().appHttp()).isEqualTo(8070);
                     assertThat(ops.ports().swim()).isEqualTo(8190);
                 });
+        }
+    }
+
+    /// #675: `[operations.auto_heal]` tunables beyond `enabled` were parsed into `AutoHealSpec` and
+    /// never reached a node — the runtime builds its `AutoHealConfig` from defaults plus
+    /// `[cluster] max_nodes`. A key that changes nothing is refused loudly (PF-26), like PF-25.
+    @Nested
+    class AutoHealTunablesRefused {
+        private static final String[] REMOVED_KEYS = {"retry_interval = \"60s\"",
+                                                      "startup_cooldown = \"15s\"",
+                                                      "stale_observation_ttl = \"30s\"",
+                                                      "quic_miss_promotion_threshold = 10",
+                                                      "provisioning_timeout = \"60s\"",
+                                                      "provision_stability_window = \"30s\"",
+                                                      "decommissioned_retention = \"24h\"",
+                                                      "swim_hints_ttl = \"15s\""};
+
+        @Test
+        void parse_autoHealTunable_isRefused_namingTheKey() {
+            for (var assignment : REMOVED_KEYS) {
+                var key = assignment.substring(0, assignment.indexOf(' '));
+                var toml = """
+                    config_version = "1.0.0"
+
+                    [cluster]
+                    name = "tunables"
+                    version = "1.0.0"
+
+                    [source.local]
+                    type = "forge"
+
+                    [source.local.core]
+                    count = 3
+
+                    [operations.auto_heal]
+                    enabled = true
+                    """ + assignment + "\n";
+
+                ClusterBootstrapConfigParser.parse(toml)
+                    .onSuccess(_ -> Assertions.fail("a tunable nothing reads must be refused: " + key))
+                    .onFailure(cause -> assertThat(cause.message()).as(key)
+                                                                   .contains("PF-26")
+                                                                   .contains(key)
+                                                                   .contains("#675"));
+            }
+        }
+
+        /// Round 2: a file with N stale keys is reported in ONE bootstrap attempt, and each key that named
+        /// a timing the runtime reads is pointed at the node-config key that sets it now.
+        @Test
+        void parse_autoHealTunables_areAllNamed_withTheirNodeKeys() {
+            var toml = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "tunables"
+                version = "1.0.0"
+
+                [source.local]
+                type = "forge"
+
+                [source.local.core]
+                count = 3
+
+                [operations.auto_heal]
+                enabled = true
+                swim_hints_ttl = "15s"
+                provisioning_timeout = "60s"
+                retry_interval = "60s"
+                """;
+
+            ClusterBootstrapConfigParser.parse(toml)
+                .onSuccess(_ -> Assertions.fail("stale tunables must be refused"))
+                .onFailure(cause -> assertThat(cause.message())
+                    .contains("PF-26")
+                    .contains("swim_hints_ttl", "provisioning_timeout", "retry_interval")
+                    .contains("never took effect")
+                    .contains("provisioning_timeout -> [timeouts.scaling] auto_heal_provisioning_timeout")
+                    .contains("swim_hints_ttl -> [timeouts.scaling] auto_heal_swim_hints_ttl")
+                    .contains("node_config.timeouts.scaling")
+                    .doesNotContain("retry_interval ->"));
+        }
+
+        @Test
+        void parse_autoHealEnabledOnly_stillParses() {
+            var toml = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "enabled-only"
+                version = "1.0.0"
+
+                [source.local]
+                type = "forge"
+
+                [source.local.core]
+                count = 3
+
+                [operations.auto_heal]
+                enabled = true
+                """;
+
+            ClusterBootstrapConfigParser.parse(toml)
+                .onFailure(cause -> Assertions.fail(cause.message()))
+                .onSuccess(config -> assertThat(config.operations().autoHeal().enabled()).isTrue());
         }
     }
 

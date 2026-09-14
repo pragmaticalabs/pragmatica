@@ -34,6 +34,7 @@ import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.MembershipConfigBinding;
 import org.pragmatica.aether.config.StreamingConfig;
+import org.pragmatica.aether.config.TimeoutsConfig;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.StorageEncryptionConfig;
 import org.pragmatica.config.ConfigurationProvider;
@@ -446,15 +447,29 @@ public record Main(String[] args) {
     /// #298 — carry `[cluster] max_nodes` into the auto-heal config the node runs with. Until this
     /// existed the builder fell through to `AutoHealConfig.DEFAULT`, so no auto-heal setting was
     /// operator-tunable at all and the fleet cap had no way to be set outside a test.
+    /// #675 — the three `[timeouts.scaling] auto_heal_*` timings are carried the same way; the
+    /// cooldown parsed into `TimeoutsConfig` and stopped there while the runtime honoured only
+    /// `DEFAULT`'s 15s, and the provisioning timeout and SWIM-hints TTL had no key at all.
     ///
     /// `UNBOUNDED` (0, the same "unset" sentinel `coreMax` uses) leaves the cap absent, which is
     /// what every existing config gets — provisioning stays unbounded until an operator opts in.
-    private static AutoHealConfig resolveAutoHeal(Option<AetherConfig> aetherConfig) {
+    static AutoHealConfig resolveAutoHeal(Option<AetherConfig> aetherConfig) {
+        var withTimings = aetherConfig.map(AetherConfig::timeouts)
+                                      .map(TimeoutsConfig::scaling)
+                                      .map(Main::withAutoHealTimings)
+                                      .or(AutoHealConfig.DEFAULT);
+
         return aetherConfig.map(AetherConfig::cluster)
                            .map(ClusterConfig::maxNodes)
                            .filter(maxNodes -> maxNodes > ClusterConfig.UNBOUNDED)
-                           .map(AutoHealConfig.DEFAULT::withMaxNodes)
-                           .or(AutoHealConfig.DEFAULT);
+                           .map(withTimings::withMaxNodes)
+                           .or(withTimings);
+    }
+
+    private static AutoHealConfig withAutoHealTimings(TimeoutsConfig.ScalingTimeouts scaling) {
+        return AutoHealConfig.DEFAULT.withStartupCooldown(scaling.autoHealStartupCooldown())
+                                     .withProvisioningTimeout(scaling.autoHealProvisioningTimeout())
+                                     .withSwimHintsTtl(scaling.autoHealSwimHintsTtl());
     }
 
     private static MembershipConfig liftMembershipBinding(MembershipConfigBinding binding) {

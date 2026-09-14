@@ -181,13 +181,7 @@ class ClusterTopologyManagerActuatorTest {
     private ClusterTopologyManager ctmWithDrainGrace(TimeSpan drainGrace,
                                                      Consumer<NodeId> drainSink,
                                                      MembershipLiveness liveness) {
-        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
-                                                      timeSpan(1).millis(),
-                                                      AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
-                                                      AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
-                                                      drainGrace,
-                                                      timeSpan(0).millis())
-                                            .unwrap();
+        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(1).millis(), drainGrace).unwrap();
 
         return ClusterTopologyManager.clusterTopologyManager(observer,
                                                              lifecycleManager,
