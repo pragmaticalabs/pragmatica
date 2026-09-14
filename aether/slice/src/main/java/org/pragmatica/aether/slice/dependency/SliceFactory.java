@@ -264,6 +264,7 @@ public interface SliceFactory {
         if (packageName.isEmpty()) {
             return false;
         }
+
         var directory = packageName.replace('.', '/');
 
         return (loader instanceof URLClassLoader urlLoader
