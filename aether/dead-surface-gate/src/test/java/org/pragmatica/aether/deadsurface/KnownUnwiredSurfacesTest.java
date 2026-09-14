@@ -7,14 +7,16 @@ package org.pragmatica.aether.deadsurface;
 import java.nio.file.Path;
 import java.util.List;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.cli.cluster.ApplyOrchestrator;
 import org.pragmatica.aether.cli.cluster.WaveExecutor;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 
+import org.junit.jupiter.api.Test;
+
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
 
 /// Production surfaces that are KNOWN to be unwired, registered on purpose with the ticket that
 /// owns the decision, so that neither a silent wire nor a silent deletion can happen: wiring one
@@ -46,11 +48,11 @@ class KnownUnwiredSurfacesTest {
 
         assertFalse(reachability.isReachable(freshApply),
                     "#686: ApplyOrchestrator.apply(desired, stored, skipConfirmation) has been wired into production. "
-                    + "The ruling is (b): plain apply stays scale-only via the leader; a client-side wave rollout is a "
-                    + "second actuation authority. Retire this entry only with the server-side wave design.");
+                   + "The ruling is (b): plain apply stays scale-only via the leader; a client-side wave rollout is a "
+                   + "second actuation authority. Retire this entry only with the server-side wave design.");
         assertTrue(reachability.isReachable(waves),
                    "control: WaveExecutor.execute IS reachable — through ApplyOrchestrator.resume/rollback (--resume/--rollback), "
-                   + "the documented recovery path; if this flips, the scanner or the CLI changed, not the ruling");
+                  + "the documented recovery path; if this flips, the scanner or the CLI changed, not the ruling");
     }
 
     private static void assertCorpusComplete() {
@@ -58,6 +60,6 @@ class KnownUnwiredSurfacesTest {
 
         assertTrue(missing.isEmpty(),
                    "Corpus incomplete: module(s) with src/main/java but no target/classes: " + missing
-                   + ". Run a full reactor build before trusting this gate.");
+                  + ". Run a full reactor build before trusting this gate.");
     }
 }
