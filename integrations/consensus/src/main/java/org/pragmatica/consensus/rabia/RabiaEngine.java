@@ -1060,10 +1060,10 @@ public class RabiaEngine<C extends Command> {
         }
 
         log.warn("Node {} still SYNCING after {} rounds: {} of {} required peer responses ({} live of {} needed "
-                 + "for a live majority), from {} (clusterSize={}). Adoption needs clusterSize/2 peers to answer "
-                 + "when none is live (self completes the majority), or a live majority of clusterSize/2+1 "
-                 + "live peers otherwise; a live minority waits. This node has no leader and runs no "
-                 + "reconciler while this persists.",
+                + "for a live majority), from {} (clusterSize={}). Adoption needs clusterSize/2 peers to answer "
+                + "when none is live (self completes the majority), or a live majority of clusterSize/2+1 "
+                + "live peers otherwise; a live minority waits. This node has no leader and runs no "
+                + "reconciler while this persists.",
                  self,
                  round,
                  syncResponses.size(),
@@ -1111,13 +1111,10 @@ public class RabiaEngine<C extends Command> {
         var persisted = persistence.load();
         // #667: with a live majority the candidate is the LIVE maximum — a COLD snapshot is a picture
         // of unknown age and cannot outrank what the live cluster holds; with none, every response counts.
-        var liveMajority = liveResponseCount() >= liveResponsesRequired();
-        var responses = syncResponses.values()
-                                     .stream()
-                                     .filter(response -> !liveMajority || response.responder() == ResponderState.LIVE)
-                                     .map(SyncResponse::state)
-                                     .sorted(Comparator.comparing(SavedState::lastCommittedPhase))
-                                     .toList();
+        var responses = candidateResponses().stream()
+                                            .map(SyncResponse::state)
+                                            .sorted(Comparator.comparing(SavedState::lastCommittedPhase))
+                                            .toList();
 
         syncRounds.set(0);
 
@@ -1582,6 +1579,17 @@ public class RabiaEngine<C extends Command> {
         }
 
         return syncResponses.size() >= syncPeerResponsesRequired();
+    }
+
+    /// The responses adoption may choose from: only the LIVE ones once a live majority has answered,
+    /// every response under the cold rule.
+    private List<SyncResponse<C>> candidateResponses() {
+        var liveMajority = liveResponseCount() >= liveResponsesRequired();
+
+        return syncResponses.values()
+                            .stream()
+                            .filter(response -> !liveMajority || response.responder() == ResponderState.LIVE)
+                            .toList();
     }
 
     private long liveResponseCount() {
