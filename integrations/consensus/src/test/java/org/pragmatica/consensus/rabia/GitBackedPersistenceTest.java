@@ -24,10 +24,15 @@ import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.FileError;
+import org.pragmatica.lang.io.FileOps;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -117,6 +122,52 @@ class GitBackedPersistenceTest {
     }
 
     // --- Helpers ---
+
+    /// #676: an interrupted snapshot write must not corrupt the previous snapshot. The seam writes
+    /// half of the new content and fails — a disk that fills mid-snapshot; `load()` must still
+    /// return the previous state, and nothing but `state.toml` and `.git` may remain.
+    @Test
+    void save_interruptedMidWrite_keepsThePreviousSnapshotLoadable() {
+        var failing = new HalfWritingDisk();
+        var interruptible = new GitBackedPersistence<TestCommand>(tempDir,
+                                                                  Option.none(),
+                                                                  GitBackedPersistenceTest::snapshotToToml,
+                                                                  GitBackedPersistenceTest::tomlToSnapshot,
+                                                                  GitBackedPersistence.DEFAULT_GIT_TIMEOUT,
+                                                                  failing::write);
+
+        stateMachine.setSnapshot(new byte[]{1, 2, 3});
+        interruptible.save(stateMachine, Phase.phase(5), List.of()).onFailure(_ -> fail("the first save is healthy"));
+        failing.failNext.set(true);
+        stateMachine.setSnapshot(new byte[]{9, 9, 9, 9, 9, 9, 9, 9});
+        interruptible.save(stateMachine, Phase.phase(6), List.of()).onSuccess(_ -> fail("the interrupted save must fail"));
+
+        assertThat(failing.bytesLeftOnDisk.get()).as("the fixture left a partial file behind").isPositive();
+        var loaded = interruptible.load();
+
+        assertThat(loaded.isPresent()).as("the previous snapshot is still loadable").isTrue();
+        assertRestoredState(loaded.unwrap(), new byte[]{1, 2, 3}, Phase.phase(5));
+        assertThat(FileOps.walk(tempDir, path -> Files.isRegularFile(path) && !path.startsWith(tempDir.resolve(".git")))
+                          .unwrap()).as("no partial file survives the failed save")
+                  .containsExactly(tempDir.resolve("state.toml"));
+        assertGitCommitCount(1);
+    }
+
+    /// Writes the first half of the content to the path it is given, then fails.
+    private static final class HalfWritingDisk {
+        private final AtomicBoolean failNext = new AtomicBoolean(false);
+        private final AtomicLong bytesLeftOnDisk = new AtomicLong(-1);
+
+        Result<Unit> write(Path path, String content) {
+            if (!failNext.get()) {
+                return FileOps.writeString(path, content);
+            }
+
+            return FileOps.writeString(path, content.substring(0, content.length() / 2))
+                          .onSuccess(_ -> bytesLeftOnDisk.set(FileOps.size(path).or(-1L)))
+                          .flatMap(_ -> new FileError.WriteFailed(path, "No space left on device").result());
+        }
+    }
 
     private static void assertRestoredState(RabiaPersistence.SavedState<TestCommand> state,
                                             byte[] expectedSnapshot,

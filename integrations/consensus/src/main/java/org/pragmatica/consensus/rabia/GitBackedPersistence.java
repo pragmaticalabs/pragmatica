@@ -19,6 +19,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 
@@ -50,6 +51,7 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     private final Function<byte[], Result<String>> snapshotToToml;
     private final Function<String, Result<byte[]>> tomlToSnapshot;
     private final TimeSpan gitTimeout;
+    private final BiFunction<Path, String, Result<Unit>> fileWriter;
 
     GitBackedPersistence(Path backupDir,
                          Option<String> remote,
@@ -63,11 +65,23 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
                          Function<byte[], Result<String>> snapshotToToml,
                          Function<String, Result<byte[]>> tomlToSnapshot,
                          TimeSpan gitTimeout) {
+        this(backupDir, remote, snapshotToToml, tomlToSnapshot, gitTimeout, GitBackedPersistence::writeDurably);
+    }
+
+    /// Test seam: the file write, for a fixture that fails after N bytes (a disk that fills
+    /// mid-snapshot). Everything after the failure is the production path.
+    GitBackedPersistence(Path backupDir,
+                         Option<String> remote,
+                         Function<byte[], Result<String>> snapshotToToml,
+                         Function<String, Result<byte[]>> tomlToSnapshot,
+                         TimeSpan gitTimeout,
+                         BiFunction<Path, String, Result<Unit>> fileWriter) {
         this.backupDir = backupDir;
         this.remote = remote;
         this.snapshotToToml = snapshotToToml;
         this.tomlToSnapshot = tomlToSnapshot;
         this.gitTimeout = gitTimeout;
+        this.fileWriter = fileWriter;
     }
 
     @Override
@@ -121,7 +135,12 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     }
 
     private Result<Unit> writeTomlFile(String toml) {
-        return writeString(backupDir.resolve(STATE_FILE), toml).mapError(e -> PersistenceError.ioFailure(new RuntimeException(e.message())));
+        return fileWriter.apply(backupDir.resolve(STATE_FILE), toml)
+                         .mapError(e -> PersistenceError.ioFailure(new RuntimeException(e.message())));
+    }
+
+    private static Result<Unit> writeDurably(Path path, String content) {
+        return writeString(path, content);
     }
 
     private Result<Unit> ensureGitInitialized() {
