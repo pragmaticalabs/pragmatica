@@ -108,10 +108,10 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
         }
 
         /// #758 — a class the slice references is unresolvable and NO loader above the slice's own
-        /// (shared/infra loader, runtime loader) has defined any class in its package: nothing in
-        /// evidence says a runtime upgrade removed it, so the remedy is dependency wiring, never a
-        /// rebuild. The loader chain is listed so the gap can be seen rather than inferred, and every
-        /// section a dependency jar can come from is named so the operator's next action is right.
+        /// (shared/infra loader, runtime loader) serves its package: none has defined a class in it or
+        /// holds its directory. The message states that and asserts no cause; the loader chain is
+        /// listed so the gap can be seen rather than inferred, and every section a dependency jar can
+        /// come from is named so the operator's next action is right.
         record DependencyClassNotOnClasspath(String context,
                                              String className,
                                              String packageName,
@@ -120,8 +120,8 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
             public String message() {
                 return "Class " + className
                      + " referenced by " + context
-                     + " is not on this slice's classloader, and no loader above it has defined any class in package " + packageName
-                     + " — nothing shows a runtime upgrade removed it, so a rebuild will not help. Loader chain: " + loaderChain
+                     + " is not on this slice's classloader, and no loader above it serves package " + packageName
+                     + " (none has defined a class in it or holds its directory). Loader chain: " + loaderChain
                      + ". Check the slice's declared dependencies in META-INF/dependencies/<FactoryClass>:"
                      + " [slices] jars are appended to the slice's loader; [shared] jars go to the shared loader,"
                      + " or to the slice's loader on a version conflict, and a [shared] artifact found in no"

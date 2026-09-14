@@ -214,19 +214,19 @@ public interface SliceFactory {
     /// LOADER, never the class name — a name prefix cannot tell a runtime class from an application
     /// class scaffolded under the vendor namespace (the ticket's own `org.pragmatica.example.ticketing`):
     ///
-    ///   - a loader ABOVE the slice's own (the shared/infra loader, the runtime loader) has defined a
-    ///     class in the missing class's package: that loader serves the package and yet lacks the class,
-    ///     which is what a class removed by an upgrade looks like — the remedy is a rebuild, and the
-    ///     message names the loader;
-    ///   - no loader above the slice's has defined any class in that package: nothing in evidence says
-    ///     the runtime ever had it, so it is a dependency that never reached the slice's loader chain,
-    ///     and a rebuild cannot help. The message lists the chain and every section a jar can come from.
+    ///   - a loader ABOVE the slice's own (the shared/infra loader, the runtime loader) SERVES the
+    ///     missing class's package — it has defined a class in it, or holds the package directory as
+    ///     a resource — and yet lacks the class, which is what a class removed by an upgrade looks like:
+    ///     the remedy is a rebuild, and the message names the loader;
+    ///   - no loader above the slice's serves that package: the message says exactly that, lists the
+    ///     chain with each loader's URLs and every section a jar can come from, and asserts no cause.
     ///
-    /// `getDefinedPackage` sees only packages a loader has DEFINED a class from, so a runtime package
-    /// nothing has loaded yet reads as unserved and falls into the second branch — which then says so
-    /// rather than asserting a cause. Only the FIRST unresolvable class is named: `getDeclaredMethods`
-    /// fails once for the whole class, so the others are not enumerable from this failure. Anything
-    /// that is not a resolution error stays the generic ClassLoadFailed.
+    /// Both probes are needed. `getDefinedPackage` is lazy — populated only once a class from the
+    /// package has been loaded — and a `[shared]`/`[infra]` jar nothing has loaded from yet is the
+    /// DEFAULT state at factory-inspection time; the resource probe covers it, and keeps the verdict
+    /// from flipping once a class does load. Only the FIRST unresolvable class is named:
+    /// `getDeclaredMethods` fails once for the whole class, so the others are not enumerable from this
+    /// failure. Anything that is not a resolution error stays the generic ClassLoadFailed.
     private static Cause classLoadFailure(Class<?> sliceClass, String context, Throwable t) {
         if (!isMissingClass(t)) {
             return new SliceLoadingFailure.Fatal.ClassLoadFailed(context, Causes.fromThrowable(t));
@@ -243,13 +243,32 @@ public interface SliceFactory {
                                                                                                   loaderChain(sliceLoader)));
     }
 
-    /// The first loader strictly above the slice's own that has defined a class in `packageName`.
+    /// The first loader strictly above the slice's own that serves `packageName`.
     private static Option<ClassLoader> servingLoader(ClassLoader sliceLoader, String packageName) {
         return ancestors(sliceLoader).skip(1)
-                        .filter(loader -> loader.getDefinedPackage(packageName) != null)
+                        .filter(loader -> serves(loader, packageName))
                         .findFirst()
                         .map(Option::some)
                         .orElseGet(Option::none);
+    }
+
+    /// Defined a class in the package, or holds its directory (own URLs for a URLClassLoader — a
+    /// parent-first `getResource` would credit a child with its parent's contents — the chain
+    /// otherwise). A jar written without directory entries is invisible to the second probe; Maven
+    /// always writes them. The default package has no directory and gets the first probe only.
+    private static boolean serves(ClassLoader loader, String packageName) {
+        if (loader.getDefinedPackage(packageName) != null) {
+            return true;
+        }
+
+        if (packageName.isEmpty()) {
+            return false;
+        }
+        var directory = packageName.replace('.', '/');
+
+        return (loader instanceof URLClassLoader urlLoader
+                ? urlLoader.findResource(directory)
+                : loader.getResource(directory)) != null;
     }
 
     /// The slice's loader and everything above it, each labelled with its URLs when it has any, so the
