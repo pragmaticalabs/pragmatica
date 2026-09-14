@@ -15,7 +15,6 @@
  */
 package org.pragmatica.consensus.rabia;
 
-import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -131,37 +130,39 @@ record FileBackedParticipationMarker(Path markerFile,
         return Participation.UNKNOWN;
     }
 
+    /// Write-temp, fsync, atomic-rename, expressed without `throw` or a `throws` clause so the
+    /// failure is a value (JBCT-EX-01). A plain `Files.writeString` would leave the marker vulnerable
+    /// to exactly the crash it exists to survive: a torn or unflushed marker after a power loss reads
+    /// as an unrecognised token, and while that IS conservative, it would turn every crashed new node
+    /// into an amnesiac one and reintroduce the wedge this ticket removes.
+    ///
+    /// The `finally` cleans the temp file on the failure path and is a harmless no-op on the success
+    /// path, where `ATOMIC_MOVE` has already consumed it.
     private static Result<Unit> write(Path markerFile, String token) {
-        return Result.lift(Causes::fromThrowable, () -> writeAtomically(markerFile, token));
+        return Option.option(markerFile.getParent())
+                     .toResult(Causes.cause("Participation marker path has no parent directory: " + markerFile))
+                     .flatMap(parent -> writeThroughTempFile(parent, markerFile, token));
     }
 
-    /// Write-temp, fsync, atomic-rename. A plain `Files.writeString` would leave the marker
-    /// vulnerable to exactly the crash it exists to survive: a torn or unflushed marker after a power
-    /// loss reads as an unrecognised token, and while that IS conservative, it would turn every
-    /// crashed new node into an amnesiac one and reintroduce the wedge this ticket removes.
-    private static void writeAtomically(Path markerFile, String token) throws IOException {
-        var parent = markerFile.getParent();
+    private static Result<Unit> writeThroughTempFile(Path parent, Path markerFile, String token) {
+        return Result.lift(Causes::fromThrowable, () -> {
+            Files.createDirectories(parent);
 
-        if (parent == null) {
-            throw new IOException("Participation marker path has no parent directory: " + markerFile);
-        }
+            var temp = Files.createTempFile(parent, ".participation-", ".tmp");
 
-        Files.createDirectories(parent);
+            try {
+                Files.writeString(temp, token, StandardCharsets.UTF_8);
 
-        var temp = Files.createTempFile(parent, ".participation-", ".tmp");
+                try (var channel = FileChannel.open(temp, StandardOpenOption.WRITE)) {
+                    channel.force(true);
+                }
 
-        try {
-            Files.writeString(temp, token, StandardCharsets.UTF_8);
-
-            try (var channel = FileChannel.open(temp, StandardOpenOption.WRITE)) {
-                channel.force(true);
+                Files.move(temp, markerFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } finally {
+                Files.deleteIfExists(temp);
             }
 
-            Files.move(temp, markerFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (IOException e) {
-            Files.deleteIfExists(temp);
-
-            throw e;
-        }
+            return Unit.unit();
+        });
     }
 }

@@ -223,6 +223,7 @@ class RabiaSyncAdoptionFirstBootMarkerTest {
                                                  Phase.ZERO,
                                                  Batch.create(SERIALIZER, List.of(new TestCommand("peer")))));
         }
+    }
 
     private static long voteCount(TestClusterNetwork network) {
         return network.getMessages()
