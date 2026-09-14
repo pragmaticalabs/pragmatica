@@ -534,9 +534,10 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     private Promise<Unit> removeFromVersionsList(Artifact artifact) {
-        return rewriteVersionsList(artifact, versions -> versions.stream()
-                                                                 .filter(v -> !v.equals(artifact.version()))
-                                                                 .toList());
+        return rewriteVersionsList(artifact,
+                                   versions -> versions.stream()
+                                                       .filter(v -> !v.equals(artifact.version()))
+                                                       .toList());
     }
 
     /// Get-then-put on the versions list; two concurrent rewrites can lose one another's change
@@ -545,8 +546,7 @@ class ArtifactStoreImpl implements ArtifactStore {
         var versionsKey = versionsKey(artifact.groupId(), artifact.artifactId());
 
         return dht.get(versionsKey)
-                  .map(opt -> change.apply(opt.map(this::parseVersionsList)
-                                              .or(List.of())))
+                  .map(opt -> change.apply(opt.map(this::parseVersionsList).or(List.of())))
                   .flatMap(versions -> dhtPutWithRetry(versionsKey,
                                                        serializeVersionsList(versions)));
     }

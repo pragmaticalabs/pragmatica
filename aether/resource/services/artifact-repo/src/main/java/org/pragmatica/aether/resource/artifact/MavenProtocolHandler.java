@@ -423,10 +423,7 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
     private String generateMavenMetadata(GroupId groupId, ArtifactId artifactId, List<Version> unordered) {
         var versions = unordered.stream().sorted(VersionOrder.INSTANCE).toList();
         var latest = versions.getLast();
-        var release = versions.stream()
-                              .filter(v -> !VersionOrder.isSnapshot(v))
-                              .reduce((a, b) -> b)
-                              .orElse(latest);
+        var release = versions.stream().filter(v -> !VersionOrder.isSnapshot(v)).reduce((a, b) -> b).orElse(latest);
         var timestamp = DateTimeFormatter.ofPattern("yyyyMMddHHmmss").format(Instant.now().atOffset(ZoneOffset.UTC));
         var sb = new StringBuilder();
 

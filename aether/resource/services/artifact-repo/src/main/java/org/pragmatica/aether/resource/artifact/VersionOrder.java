@@ -2,13 +2,13 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.resource.artifact;
-
-import org.pragmatica.aether.artifact.Version;
 
 import java.util.Comparator;
 import java.util.Locale;
+
+import org.pragmatica.aether.artifact.Version;
+
 
 /// Orders versions for `maven-metadata.xml`'s `<latest>`/`<release>` (#281): numeric
 /// `major.minor.patch` first, then the qualifier in Maven's canonical order of the known
@@ -18,15 +18,14 @@ import java.util.Locale;
 /// NOT Maven's full `ComparableVersion` algorithm (no dotted qualifier lists, no `-1` build numbers).
 enum VersionOrder implements Comparator<Version> {
     INSTANCE;
-
     private static final int UNKNOWN_RANK = 4;
     private static final int SNAPSHOT_RANK = 5;
     private static final int RELEASE_RANK = 6;
-
     static boolean isSnapshot(Version version) {
-        return version.qualifier().toLowerCase(Locale.ROOT).contains("snapshot");
+        return version.qualifier()
+                      .toLowerCase(Locale.ROOT)
+                      .contains("snapshot");
     }
-
     @Override
     public int compare(Version a, Version b) {
         var numeric = Comparator.comparingInt(Version::major)
@@ -38,7 +37,6 @@ enum VersionOrder implements Comparator<Version> {
                ? numeric
                : compareQualifiers(a.qualifier(), b.qualifier());
     }
-
     private static int compareQualifiers(String a, String b) {
         var qa = Qualifier.parse(a);
         var qb = Qualifier.parse(b);
@@ -50,9 +48,9 @@ enum VersionOrder implements Comparator<Version> {
 
         return byNumber != 0
                ? byNumber
-               : qa.rest().compareTo(qb.rest());
+               : qa.rest()
+                   .compareTo(qb.rest());
     }
-
     private record Qualifier(int rank, long number, String rest) {
         static Qualifier parse(String qualifier) {
             var lower = qualifier.toLowerCase(Locale.ROOT);
@@ -69,7 +67,6 @@ enum VersionOrder implements Comparator<Version> {
             while (numberEnd < rest.length() && Character.isDigit(rest.charAt(numberEnd))) {
                 numberEnd++;
             }
-
             // A digit run past `long` (a 30-digit stamp) saturates rather than throws; ties there
             // fall to the lexical `rest` comparison.
             var number = numberEnd == 0
@@ -77,7 +74,6 @@ enum VersionOrder implements Comparator<Version> {
                          : numberEnd > 18
                            ? Long.MAX_VALUE
                            : Long.parseLong(rest.substring(0, numberEnd));
-
             var rankedRest = numberEnd > 18
                              ? rest
                              : rest.substring(numberEnd);
