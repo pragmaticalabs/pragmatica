@@ -20,6 +20,7 @@ import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.Partition;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.BlockEncryptor;
@@ -661,6 +662,194 @@ class StorageFactoryEncryptionTest {
 
         assertThat(Files.exists(healthyDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME)))
                 .as("an admitted boot stamps the encrypted instance's directory")
+                .isTrue();
+    }
+
+    /// #852 round 2: `AetherNode.assembleNode` decides the boot in TWO calls -- `createAll` for the
+    /// config-map instances, then `defaultStreamStorage` for `streams` -- and only the first was
+    /// two-phase. Every marker `createAll` had just committed was therefore orphaned by a `streams`
+    /// refusal: the node never started, and backing those instances out to `encrypted = false`
+    /// tripped their own reverse guard on a stamp no ciphertext justified, which is verbatim the
+    /// #852 symptom one call later. Both directions of the `streams` guard are reachable from the
+    /// `[storage.encryption] streams_encrypted` flag alone, with no code defect involved.
+    ///
+    /// [#bootDecision] is that decision, in `assembleNode`'s order and with its abort semantics.
+    /// An orphaned marker is only observable across a boot, so each case asserts on the DIRECTORY
+    /// after the refusal and then drives the back-out boot the operator actually performs.
+    private static Result<Map<String, StorageFactory.StorageSetup>> bootDecision(Map<String, StorageConfig> configs,
+                                                                                 Option<EncryptionKeyring> keyring,
+                                                                                 Path streamDataDir,
+                                                                                 Option<EncryptionKeyring> streamsKeyring) {
+        return StorageFactory.createAll(configs, NODE_ID, Option.none(), keyring)
+                              .flatMap(setups -> StorageFactory.defaultStreamStorage(Option.none(),
+                                                                                     streamDataDir,
+                                                                                     NODE_ID,
+                                                                                     streamsKeyring)
+                                                                .map(_ -> setups));
+    }
+
+    private Map<String, StorageConfig> configsWithDefaults(Path instanceDir,
+                                                           boolean encrypted,
+                                                           Path artifactsDir,
+                                                           Path contentDir) {
+        return Map.of("healthy", storageConfigAt(instanceDir, encrypted),
+                      ARTIFACTS, storageConfigAt(artifactsDir, false),
+                      CONTENT, storageConfigAt(contentDir, false));
+    }
+
+    /// Forward direction: `streams_encrypted` turned on over a segments dir that already holds
+    /// plaintext blocks from an unencrypted boot.
+    @Test
+    void bootDecision_leavesNoDiskMarkerOnAnInstance_whenTheStreamsArmRefusesOverExistingPlaintext() {
+        var healthyDir = tempDir.resolve("streams-fwd-healthy");
+        var artifactsDir = tempDir.resolve("streams-fwd-artifacts");
+        var contentDir = tempDir.resolve("streams-fwd-content");
+        var streamDataDir = tempDir.resolve("streams-fwd-data");
+
+        seedRawPlaintextBlock(streamDataDir.resolve("segments"));
+
+        var refused = bootDecision(configsWithDefaults(healthyDir, true, artifactsDir, contentDir),
+                                   Option.some(singleKeyRing("key-1")),
+                                   streamDataDir,
+                                   Option.some(singleKeyRing("key-1")));
+
+        assertThat(refused.isFailure()).as("the streams arm's forward guard refuses a boot that would enable "
+                                           + "encryption over an existing plaintext segments dir")
+                                       .isTrue();
+        refused.onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.EnablingOverExistingPlaintext.class));
+        assertThat(Files.exists(healthyDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME)))
+                .as("a boot refused by the streams arm must leave no marker behind on an instance admitted "
+                    + "earlier in the SAME boot decision")
+                .isFalse();
+        assertThat(bootDecision(configsWithDefaults(healthyDir, false, artifactsDir, contentDir),
+                                Option.none(),
+                                streamDataDir,
+                                Option.none()).isSuccess())
+                .as("the instance, backed out to encrypted = false after the refused boot, must start")
+                .isTrue();
+    }
+
+    /// Reverse direction: `streams_encrypted` turned back off while the segments dir still carries
+    /// the marker a prior encrypted boot wrote.
+    @Test
+    void bootDecision_leavesNoDiskMarkerOnAnInstance_whenTheStreamsArmRefusesAMarkerWithNoKeyring() {
+        var healthyDir = tempDir.resolve("streams-rev-healthy");
+        var artifactsDir = tempDir.resolve("streams-rev-artifacts");
+        var contentDir = tempDir.resolve("streams-rev-content");
+        var streamDataDir = tempDir.resolve("streams-rev-data");
+
+        StorageFactory.defaultStreamStorage(Option.none(), streamDataDir, NODE_ID, Option.some(singleKeyRing("key-1")))
+                       .onFailure(cause -> fail("seeding the encrypted streams marker failed: " + cause.message()));
+
+        var refused = bootDecision(configsWithDefaults(healthyDir, true, artifactsDir, contentDir),
+                                   Option.some(singleKeyRing("key-1")),
+                                   streamDataDir,
+                                   Option.none());
+
+        assertThat(refused.isFailure()).as("the streams arm's reverse guard refuses a plain boot over a marked segments dir")
+                                       .isTrue();
+        refused.onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.EncryptedTierRequiresKeyring.class));
+        assertThat(Files.exists(healthyDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME)))
+                .as("a boot refused by the streams arm's reverse guard must leave no marker behind on an "
+                    + "instance admitted earlier in the SAME boot decision")
+                .isFalse();
+        assertThat(bootDecision(configsWithDefaults(healthyDir, false, artifactsDir, contentDir),
+                                Option.none(),
+                                streamDataDir,
+                                Option.some(singleKeyRing("key-1"))).isSuccess())
+                .as("the instance, backed out to encrypted = false after the refused boot, must start")
+                .isTrue();
+    }
+
+    /// The symmetric case, and the anti-regression control for folding `streams` into `createAll`'s
+    /// commit phase: a refusal raised by a CONFIG-MAP instance must not stamp the segments dir
+    /// either, whichever order the arms happen to be armed in.
+    @Test
+    void bootDecision_leavesNoStreamsMarker_whenAConfiguredInstanceRefusesTheBoot() {
+        var legacyDir = tempDir.resolve("streams-sym-legacy");
+        var artifactsDir = tempDir.resolve("streams-sym-artifacts");
+        var contentDir = tempDir.resolve("streams-sym-content");
+        var streamDataDir = tempDir.resolve("streams-sym-data");
+
+        seedRawPlaintextBlock(legacyDir);
+
+        var refused = bootDecision(configsWithDefaults(legacyDir, true, artifactsDir, contentDir),
+                                   Option.some(singleKeyRing("key-1")),
+                                   streamDataDir,
+                                   Option.some(singleKeyRing("key-1")));
+
+        assertThat(refused.isFailure()).as("the configured instance's guard refuses the boot").isTrue();
+        assertThat(Files.exists(streamDataDir.resolve("segments").resolve(EncryptingStorageTier.MARKER_FILE_NAME)))
+                .as("a boot refused by a configured instance must leave the streams segments dir unstamped")
+                .isFalse();
+    }
+
+    /// #852: the one window the two-phase commit does NOT close, pinned so its behaviour is a
+    /// decision rather than an accident. Both phases have already been admitted here; what remains
+    /// is a marker-file I/O error, or a crash, part-way through writing the set, which leaves some
+    /// directories stamped and some not. There is no seam to fail one `commitMarker` and not
+    /// another, so the resulting on-disk state is seeded directly: `a` carries the marker a
+    /// committed write would have left, `b` is the arm whose write never happened.
+    ///
+    /// Re-running the same config completes the set (`a`'s guard short-circuits on marker-present,
+    /// `b` re-arms over its still-empty directory). Backing out to `encrypted = false` instead does
+    /// NOT recover -- `a`'s reverse guard refuses -- which is the residual #852 symptom, now
+    /// reachable only through an I/O failure and no longer through any guard refusal.
+    @Test
+    void createAll_completesAHalfStampedSet_whenRebootedOnTheSameConfig() throws IOException {
+        var aDir = tempDir.resolve("half-stamped-a");
+        var bDir = tempDir.resolve("half-stamped-b");
+        var artifactsDir = tempDir.resolve("half-stamped-artifacts");
+        var contentDir = tempDir.resolve("half-stamped-content");
+
+        Files.createDirectories(aDir);
+        Files.write(aDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME), "key-1".getBytes(StandardCharsets.UTF_8));
+
+        var configs = Map.of("a", storageConfigAt(aDir, true),
+                             "b", storageConfigAt(bDir, true),
+                             ARTIFACTS, storageConfigAt(artifactsDir, false),
+                             CONTENT, storageConfigAt(contentDir, false));
+
+        createAllOrFail(configs, Option.none(), Option.some(singleKeyRing("key-1")));
+
+        assertThat(Files.exists(bDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME)))
+                .as("re-running the same config completes the half-stamped set")
+                .isTrue();
+
+        var backedOut = StorageFactory.createAll(Map.of("a", storageConfigAt(aDir, false),
+                                                        "b", storageConfigAt(bDir, false),
+                                                        ARTIFACTS, storageConfigAt(artifactsDir, false),
+                                                        CONTENT, storageConfigAt(contentDir, false)),
+                                                 NODE_ID,
+                                                 Option.none(),
+                                                 Option.none());
+
+        assertThat(backedOut.isFailure()).as("backing a stamped instance out to encrypted = false does NOT recover "
+                                             + "a half-stamped set -- its reverse guard refuses, which is the "
+                                             + "residual #852 symptom this fix leaves behind an I/O failure")
+                                         .isTrue();
+    }
+
+    /// The other half of the guarantee, so a fix that simply stops writing markers cannot pass: an
+    /// admitted boot stamps BOTH the encrypted instance and the encrypted segments dir.
+    @Test
+    void bootDecision_stampsTheInstanceAndTheSegmentsDir_whenEveryArmPasses() {
+        var healthyDir = tempDir.resolve("streams-ok-healthy");
+        var artifactsDir = tempDir.resolve("streams-ok-artifacts");
+        var contentDir = tempDir.resolve("streams-ok-content");
+        var streamDataDir = tempDir.resolve("streams-ok-data");
+
+        assertThat(bootDecision(configsWithDefaults(healthyDir, true, artifactsDir, contentDir),
+                                Option.some(singleKeyRing("key-1")),
+                                streamDataDir,
+                                Option.some(singleKeyRing("key-1"))).isSuccess())
+                .as("every arm passes, so the boot is admitted")
+                .isTrue();
+        assertThat(Files.exists(healthyDir.resolve(EncryptingStorageTier.MARKER_FILE_NAME)))
+                .as("an admitted boot stamps the encrypted instance's directory")
+                .isTrue();
+        assertThat(Files.exists(streamDataDir.resolve("segments").resolve(EncryptingStorageTier.MARKER_FILE_NAME)))
+                .as("an admitted boot stamps the encrypted segments directory")
                 .isTrue();
     }
 
