@@ -26,7 +26,11 @@
   #281's key change); a mixed-version cluster is not supported across this change.
   [verified: `integrations/dht/src/test/java/org/pragmatica/dht/PartitionPlacementTest.java` —
   2,000/2,000 keys have the ordered owner list, the filtered list and the primary of their partition;
-  reverting either `nodesFor` overload or `primaryFor` to the key's own hash reddens it]
+  `#repairOwnersEqualPlacementOwners_overGeneratedRings` asserts it over GENERATED rings (4 node
+  counts x 4 replication factors x 500 random keys = 8,000 checks, control asserts the count) and
+  `#keysSharingAPartitionShareTheirOwners` asserts the structural half a delegation cannot make true
+  by itself — two keys in one partition have one owner list, over 10,000+ same-partition pairs.
+  Reverting `nodesFor(byte[], int)` to a per-key ring walk reddens 9 tests across 3 classes]
 - **The anti-entropy cycle now runs.** `AetherNode` arms it with the node's other periodic work
   (#644: after cluster formation, cancelled first on `stop()`, never a zombie) on the configured
   `[timeouts.dht] anti_entropy_interval` (default 30 s). [verified:
@@ -79,8 +83,13 @@
   `DHTTopologyListener.onNodeDeparting` deliberately runs AHEAD of `NodeRemoved` (seed-500 part 2),
   so a later join's snapshot would re-add a node already halting.
   [verified: `DHTChurnSurvivalTest#productionShapedJoin_pullsEveryPartitionItOwns_andNothingElse` —
-  the joiner's ring built the way `AetherNode` builds it (empty, filled by the events), 600 keys on
-  5 nodes RF=3: it holds every key it owns and 0 it does not; red at the parent commit]
+  the joiner's ring built the way `AetherNode` builds it (empty, filled by the events), 400 keys on
+  5 nodes RF=3, asserted at EVERY position the joiner's own promotion can take in its staircase
+  (a single position cannot settle it — self announced LAST is the one benign order). Stranded keys
+  by position before the fix: 174 / 178 / 165 / 75 / 32 / 0; after: 0 at every position, with every
+  owned key still held. Red with the holder-side refusal reverted;
+  `DHTAntiEntropyTest#onDigestResponse_doesNotRequestMigration_whenTheRingNoLongerMakesThisNodeAReplica`
+  pins the response-time re-check, red with that guard alone removed]
 - **The survivor-side rebalance's placement is now pinned.** `DHTRebalancer.rebalancePartition`
   reverting to `nodesFor("partition:" + partitionIndex, rf)` left the whole module green before
   this — the half of #1136 that actually ran in production was unpinned.
