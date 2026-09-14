@@ -59,6 +59,23 @@ n=$(find "${INTEG_DIR}/suites/02-chaos" -name 'test-*.sh' | wc -l | tr -d ' ')
 [ "$n" = "7" ] && ok "R6 02-chaos still holds its 7 test files" \
                || fail "R6 02-chaos holds ${n} test files, expected 7 — the full suite changed size"
 
+echo "lint gate — a symlinked suite is not counted twice"
+# The find-based rules (R1/R3/R5) enumerate a symlink as a second path to the same bytes, so before
+# `-type f` every finding in the S19 file was counted under BOTH paths and the baseline would have
+# recorded 8 R1 findings in a file containing 4 — a permanently wrong denominator in the one
+# artifact people read to judge whether things are getting worse. grep -r (R2/R4) never followed
+# symlinks, so the gate disagreed with itself about what a "file" is.
+LINT="${INTEG_DIR}/lint-tests.sh"
+n=$(grep -c 'find "$SUITES_DIR" -type f' "$LINT")
+[ "$n" = "3" ] && ok "R7 all three find-based rules carry -type f (got ${n})" \
+                || fail "R7 ${n}/3 find-based rules carry -type f — a symlinked suite would be double-counted"
+
+# Behavioural, not just structural: no finding may be attributed to the symlinked path.
+lint_out=$(bash "$LINT" 2>&1 || true)
+dupes=$(printf '%s\n' "$lint_out" | grep -c '02s-selfdrain' || true)
+[ "$dupes" = "0" ] && ok "R8 lint attributes no finding to the symlinked 02s path" \
+                   || fail "R8 ${dupes} finding(s) attributed to 02s-selfdrain — the same file counted twice"
+
 echo ""
 echo "  ----"
 echo "  passed: ${PASS}"

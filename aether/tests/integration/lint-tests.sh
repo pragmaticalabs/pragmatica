@@ -22,6 +22,14 @@
 # Rules:
 #   R1: warn-then-pass demotion (log_warn ... log_pass in same control flow)
 #   R2: 2>/dev/null || true inside suites/** (silent stderr trap)
+#
+# `-type f` on the find-based rules (R1/R3/R5) is load-bearing, not tidiness. A suite directory may
+# reach a test through a SYMLINK (suites/02s-selfdrain/ links the S19 file that lives in 02-chaos/),
+# and `find` enumerates the link as a second path to the same bytes — so every finding in that file
+# was counted twice, under two paths, and the baseline would have recorded 8 R1 findings in a file
+# that contains 4. The grep -r rules (R2/R4) never had this problem: grep -r does not follow
+# symlinks. The gate therefore disagreed with itself about what a "file" is, for as long as both
+# rule families have existed; the 02s suite is simply the first thing to walk into it.
 #   R3: assert_ne <var> "" on raw HTTP response (tautology — see audit §2.1)
 #   R4: [ status -ge 200 ] && [ status -lt 400 ] outside lib/load.sh (3xx-as-success)
 #   R5: test_* function defined but never invoked via run_test (dead code)
@@ -98,7 +106,7 @@ while IFS= read -r line; do
     lineno=$(echo "$line" | cut -d: -f2)
     detail=$(echo "$line" | cut -d: -f3-)
     emit_finding R1 "$file" "$lineno" "$detail"
-done < <(find "$SUITES_DIR" -name "*.sh" -exec bash -c "$(declare -f lint_r1_warn_then_pass); lint_r1_warn_then_pass \"\$1\"" _ {} \;)
+done < <(find "$SUITES_DIR" -type f -name "*.sh" -exec bash -c "$(declare -f lint_r1_warn_then_pass); lint_r1_warn_then_pass \"\$1\"" _ {} \;)
 
 # ============================================================
 # R2 — silent stderr trap
@@ -146,7 +154,7 @@ while IFS= read -r line; do
     lineno=$(echo "$line" | cut -d: -f2)
     detail=$(echo "$line" | cut -d: -f3-)
     emit_finding R3 "$file" "$lineno" "$detail"
-done < <(find "$SUITES_DIR" -name "*.sh" -exec bash -c "$(declare -f lint_r3_raw_response); lint_r3_raw_response \"\$1\"" _ {} \;)
+done < <(find "$SUITES_DIR" -type f -name "*.sh" -exec bash -c "$(declare -f lint_r3_raw_response); lint_r3_raw_response \"\$1\"" _ {} \;)
 
 # ============================================================
 # R4 — 3xx-as-success outside lib/load.sh
@@ -186,7 +194,7 @@ while IFS= read -r line; do
     lineno=$(echo "$line" | cut -d: -f2)
     detail=$(echo "$line" | cut -d: -f3-)
     emit_finding R5 "$file" "$lineno" "$detail"
-done < <(find "$SUITES_DIR" -name "test-*.sh" -exec bash -c "$(declare -f lint_r5_dead_test); lint_r5_dead_test \"\$1\"" _ {} \;)
+done < <(find "$SUITES_DIR" -type f -name "test-*.sh" -exec bash -c "$(declare -f lint_r5_dead_test); lint_r5_dead_test \"\$1\"" _ {} \;)
 
 # ============================================================
 # Report
