@@ -25,7 +25,6 @@ import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentStarted;
-import org.pragmatica.aether.api.ClusterEvent.GenerationChanged;
 import org.pragmatica.aether.api.ClusterEvent.LeaderElected;
 import org.pragmatica.aether.api.ClusterEvent.LeaderLost;
 import org.pragmatica.aether.api.ClusterEvent.NodeFailed;
@@ -976,22 +975,6 @@ public final class ClusterEventAggregator {
                                   Severity.INFO,
                                   "Blueprint deleted: " + event.artifactId(),
                                   Map.of("artifactId", event.artifactId(), "requestedBy", event.requestedBy())));
-    }
-
-    @Contract
-    public void onGenerationChanged(OperationalEvent.GenerationChanged event) {
-        emitAsLeader(new GenerationChanged(hlcClock.now(),
-                                           Severity.INFO,
-                                           "Generation epoch advanced " + event.oldEpoch()
-                                          + " -> " + event.newEpoch()
-                                          + " (" + event.reason()
-                                          + ")",
-                                           Map.of("oldEpoch",
-                                                  event.oldEpoch(),
-                                                  "newEpoch",
-                                                  event.newEpoch(),
-                                                  "reason",
-                                                  event.reason())));
     }
 
     @Contract

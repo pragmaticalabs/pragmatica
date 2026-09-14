@@ -605,6 +605,11 @@ aether cluster await-quiesced --epoch=7:142 [--timeout=30s]
 
 `/api/events` gains an event stream of `GenerationChanged(oldEpoch, newEpoch, reason)` so external observers can subscribe.
 
+*(Superseded by #722: never built. The event type, its `GenerationReason`, sink and aggregator route
+were deleted; the live epoch is `(leaderTerm, tenure-tick)` and advances once per ping interval of
+leadership — a 1 Hz "event" nobody should subscribe to — while leader changes already surface as
+`LEADER_ELECTED`/`LEADER_LOST`. Read the epoch on demand from `/api/v1/cluster/generation`.)*
+
 ## 15. Edge cases
 
 ### 15.1 Two leaders during election race (brief)
