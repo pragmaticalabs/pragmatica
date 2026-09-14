@@ -7,7 +7,9 @@ package org.pragmatica.aether.slice.dependency;
 import org.pragmatica.aether.slice.MethodHandle;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.ResourceProviderFacade;
+import org.pragmatica.aether.slice.SharedLibraryClassLoader;
 import org.pragmatica.aether.slice.Slice;
+import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceMethod;
@@ -18,10 +20,16 @@ import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
 
 import java.io.IOException;
+import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
+import java.util.jar.JarEntry;
+import java.util.jar.JarOutputStream;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -167,22 +175,117 @@ class SliceFactoryTest {
         });
     }
 
-    /// #758: the same reflective failure for an APPLICATION type — another slice's class that never
-    /// reached this slice's classloader — must not be diagnosed as a removed runtime class. That
-    /// message sent seven investigations after a rebuild that could not have helped. The cause must
-    /// name the missing class, say it is not on the slice's classloader, list what that loader
-    /// holds, and point at the declared dependencies; it must not say "rebuild".
+    /// #758, runtime direction for an ARRAY-typed parameter: the JVM reports the descriptor
+    /// `[Lorg/pragmatica/…/GhostAspect;`, which must be unwrapped to the element class before the
+    /// owning loader is asked — else a removed runtime class reads as an unserved dependency.
     @Test
-    void fails_namingTheClassloaderGap_whenAnApplicationTypeIsMissing() throws ClassNotFoundException {
-        var hiddenType = com.example.ghost.GhostProviderType.class.getName();
-        var loader = new HidingClassLoader(hiddenType, com.example.ghost.GhostConsumerFactory.class.getName());
-        var factoryClass = loader.loadClass(com.example.ghost.GhostConsumerFactory.class.getName());
+    void fails_with_rebuild_hint_when_factory_array_parameter_type_missing() throws ClassNotFoundException {
+        var loader = new HidingClassLoader(GhostAspect.class.getName(), GhostArrayParamFactory.class.getName());
+        var factoryClass = loader.loadClass(GhostArrayParamFactory.class.getName());
 
         SliceFactory.createSlice(factoryClass, STUB_CONTEXT, List.of(), List.of()).await().onSuccessRun(Assertions::fail).onFailure(cause -> {
-            assertThat(cause.message()).contains("GhostProviderType")
+            assertThat(cause.message()).contains("rebuild against this runtime version")
+                                       .contains("removed class " + GhostAspect.class.getName())
+                                       .doesNotContain("[L");
+        });
+    }
+
+    /// #758: the same reflective failure for an APPLICATION type — another slice's class that never
+    /// reached this slice's loader chain — must not be diagnosed as a removed runtime class. The
+    /// cause must name the missing class, say no loader above the slice's serves its package, list
+    /// the chain, point at every dependency section, and negate the rebuild.
+    @Test
+    void fails_namingTheClassloaderGap_whenAnApplicationTypeIsMissing() throws ClassNotFoundException {
+        assertApplicationTypeDiagnosedAsDependencyGap(GHOST_PROVIDER_TYPE, GHOST_CONSUMER_FACTORY);
+    }
+
+    /// #758, the ticket's own shape: the application type lives UNDER the vendor namespace
+    /// (`org.pragmatica.example.…`, as every `ticketing/` slice does). A name-prefix discriminator
+    /// calls this a removed runtime class; the owning-loader discriminator must not.
+    @Test
+    void fails_namingTheClassloaderGap_whenAnApplicationTypeUnderTheVendorPrefixIsMissing() throws ClassNotFoundException {
+        assertApplicationTypeDiagnosedAsDependencyGap(SEAT_SELLABILITY_PROBE, BUY_TICKET_PROBE_FACTORY);
+    }
+
+    /// #758, application direction for an ARRAY-typed parameter: the message must name the element
+    /// class, never the descriptor.
+    @Test
+    void fails_namingTheClassloaderGap_whenAnApplicationArrayTypeIsMissing() throws ClassNotFoundException {
+        assertApplicationTypeDiagnosedAsDependencyGap(GHOST_PROVIDER_TYPE, GHOST_ARRAY_CONSUMER_FACTORY);
+    }
+
+    /// #758, the production loader shape: the factory is defined by a real [SliceClassLoader] over
+    /// its jar, parent [SharedLibraryClassLoader], with a `[slices]` jar appended AFTER construction as
+    /// `DependencyResolver` does; the missing type is hidden above the shared loader. The message must
+    /// list the chain with each loader's LIVE urls — the appended jar included — so the operator sees
+    /// what was consulted.
+    @Test
+    void fails_listingTheLiveLoaderChain_whenTheFactoryLoadsThroughASliceClassLoader(@TempDir Path tempDir) throws Exception {
+        var factoryJar = jarWithClass(tempDir.resolve("consumer.jar"), BUY_TICKET_PROBE_FACTORY);
+        var addedLater = jarWithClass(tempDir.resolve("added-later.jar"), GHOST_PROVIDER_TYPE);
+        var sharedLoader = new SharedLibraryClassLoader(HidingClassLoader.hidingOnly(SEAT_SELLABILITY_PROBE));
+
+        try (var sliceLoader = new SliceClassLoader(new URL[]{factoryJar}, sharedLoader)) {
+            sliceLoader.addSliceDependencyUrl(addedLater);
+            var factoryClass = sliceLoader.loadClass(BUY_TICKET_PROBE_FACTORY);
+
+            assertThat(factoryClass.getClassLoader()).as("child-first: the jar defines the factory").isSameAs(sliceLoader);
+
+            SliceFactory.createSlice(factoryClass, STUB_CONTEXT, List.of(), List.of()).await().onSuccessRun(Assertions::fail).onFailure(cause -> {
+                assertThat(cause.message()).contains("Class " + SEAT_SELLABILITY_PROBE)
+                                           .contains("a rebuild will not help")
+                                           .contains("Loader chain: [SliceClassLoader[" + factoryJar + ", " + addedLater + "], SharedLibraryClassLoader[], "
+                                                    + HidingClassLoader.class.getName())
+                                           .doesNotContain("rebuild against this runtime version");
+            });
+        }
+    }
+
+    /// A jar holding exactly one class, its bytes read from the test classpath as a RESOURCE (never
+    /// as a class — see the fixture rule above).
+    private static URL jarWithClass(Path path, String className) throws IOException {
+        var entry = className.replace('.', '/') + ".class";
+
+        try (var out = new JarOutputStream(Files.newOutputStream(path));
+             var in = SliceFactoryTest.class.getClassLoader().getResourceAsStream(entry)) {
+            out.putNextEntry(new JarEntry(entry));
+            out.write(in.readAllBytes());
+            out.closeEntry();
+        }
+
+        return path.toUri().toURL();
+    }
+
+    // Fixture names as STRINGS: a class literal would load the type through the application loader,
+    // define its package there, and make the application loader "serve" it — the fixture would then
+    // BE a runtime class as far as the discriminator can tell.
+    private static final String GHOST_PROVIDER_TYPE = "com.example.ghost.GhostProviderType";
+    private static final String GHOST_CONSUMER_FACTORY = "com.example.ghost.GhostConsumerFactory";
+    private static final String GHOST_ARRAY_CONSUMER_FACTORY = "com.example.ghost.GhostArrayConsumerFactory";
+    private static final String SEAT_SELLABILITY_PROBE = "org.pragmatica.example.probe758.SeatSellabilityProbe";
+    private static final String BUY_TICKET_PROBE_FACTORY = "org.pragmatica.example.probe758.BuyTicketProbeFactory";
+
+    private static void assertApplicationTypeDiagnosedAsDependencyGap(String hiddenType, String factoryName) throws ClassNotFoundException {
+        var packageName = hiddenType.substring(0, hiddenType.lastIndexOf('.'));
+
+        // Control on the fixture's premise: nothing may have defined the fixture package in the
+        // application loader, or this test would be probing a runtime class.
+        assertThat(SliceFactoryTest.class.getClassLoader().getDefinedPackage(packageName)).as("fixture package %s leaked into the application loader — some test loaded it via a class literal",
+                                                                                              packageName)
+                                                                                          .isNull();
+        var loader = new HidingClassLoader(hiddenType, factoryName);
+        var factoryClass = loader.loadClass(factoryName);
+
+        SliceFactory.createSlice(factoryClass, STUB_CONTEXT, List.of(), List.of()).await().onSuccessRun(Assertions::fail).onFailure(cause -> {
+            assertThat(cause.message()).contains("Class " + hiddenType + " referenced by " + factoryName)
                                        .contains("not on this slice's classloader")
+                                       .contains("no loader above it has defined any class in package " + packageName)
+                                       .contains("Loader chain: [" + HidingClassLoader.class.getName())
                                        .contains("[slices]")
+                                       .contains("[shared]")
+                                       .contains("[infra]")
                                        .contains("a rebuild will not help")
+                                       .doesNotContain("[L")
                                        .doesNotContain("rebuild against this runtime version")
                                        .doesNotContain("removed class");
         });
@@ -199,6 +302,11 @@ class SliceFactoryTest {
 
         private HidingClassLoader(String hiddenType) {
             this(hiddenType, GhostParamFactory.class.getName());
+        }
+
+        /// Hides only; defines nothing — for sitting ABOVE a real loader chain that defines the factory.
+        private static HidingClassLoader hidingOnly(String hiddenType) {
+            return new HidingClassLoader(hiddenType, "");
         }
 
         private HidingClassLoader(String hiddenType, String definedHere) {
@@ -269,6 +377,13 @@ class GhostSlice implements Slice {
 /// slice loaded against a runtime where the factory parameter type was removed.
 class GhostParamFactory {
     public static Promise<Slice> ghostParamSlice(GhostAspect ignored) {
+        return Promise.success(new GhostSlice());
+    }
+}
+
+/// Same as {@link GhostParamFactory} with the removed type as an ARRAY parameter (#758).
+class GhostArrayParamFactory {
+    public static Promise<Slice> ghostArrayParamSlice(GhostAspect[] ignored) {
         return Promise.success(new GhostSlice());
     }
 }
