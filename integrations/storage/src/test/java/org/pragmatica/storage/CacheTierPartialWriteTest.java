@@ -210,6 +210,42 @@ class CacheTierPartialWriteTest {
         assertThat(tier.usedBytes()).isZero();
     }
 
+    /// The rename replaces an EMPTY directory squatting on the block path (the JDK removes it
+    /// before the rename), and the count then reflects the block alone — a directory was never a
+    /// previous copy to correct for.
+    @Test
+    @SuppressWarnings("JBCT-EX-01")
+    void localDiskTier_emptyDirectorySquattingTheBlockPath_isReplacedByTheBlock() throws Exception {
+        var dir = tempDir.resolve("empty-squat");
+        var tier = LocalDiskTier.localDiskTier(dir, 1024 * 1024).unwrap();
+        var content = block(2048);
+        var id = BlockId.blockId(content).unwrap();
+
+        Files.createDirectories(blockPath(dir, id));
+        tier.put(id, content).await().onFailure(cause -> fail("an empty directory is replaced: " + cause.message()));
+        assertThat(tier.get(id).await().unwrap().unwrap()).isEqualTo(content);
+        assertThat(tier.usedBytes()).isEqualTo(2048);
+    }
+
+    /// A partial file left by a write the process did not survive is removed at startup and never
+    /// counted: nothing else would ever delete it, and it is never served.
+    @Test
+    @SuppressWarnings("JBCT-EX-01")
+    void localDiskTier_startup_removesLeftoverPartials_andCountsOnlyBlocks() throws Exception {
+        var dir = tempDir.resolve("leftover");
+        var content = block(2048);
+        var id = BlockId.blockId(content).unwrap();
+        var path = blockPath(dir, id);
+
+        Files.createDirectories(path.getParent());
+        Files.write(path, content);
+        Files.write(path.resolveSibling(path.getFileName() + ".3.partial"), block(1024));
+        var tier = LocalDiskTier.localDiskTier(dir, 1024 * 1024).unwrap();
+
+        assertThat(partialFiles(dir)).as("the leftover partial is removed at startup").isEmpty();
+        assertThat(tier.usedBytes()).as("only the block is counted").isEqualTo(2048);
+    }
+
     /// SF-1: a tier that is not merely full but broken logs the first failure at WARN and the rest
     /// at DEBUG; `TierFull` never reaches WARN.
     @Test

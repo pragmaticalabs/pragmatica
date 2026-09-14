@@ -365,9 +365,16 @@ final class DefaultStorageInstance implements StorageInstance {
     /// at the first tier that returns bytes — the corrupt copy would then fail every read with
     /// `IntegrityError` while the durable copy sits unreachable behind it (review of #1095, B-1,
     /// reproduced on a real `LocalDiskTier` under ENOSPC). So the failed promotion is followed by a
-    /// best-effort `delete` on that tier, itself absorbed, before the chain moves on.
+    /// best-effort `delete` on that tier, itself absorbed, before the chain moves on. A tier that
+    /// refused BEFORE writing (`TierFull`) wrote nothing to discard, and the id may already hold a
+    /// valid copy there from an earlier promotion — deleting it would evict a good cache entry on
+    /// every re-promotion against a full tier (r3, a).
     private Promise<Unit> discardFailedPromotion(StorageTier tier, BlockId id, Cause cause) {
         logPromotionFailure(tier, id, cause);
+
+        if (cause instanceof StorageError.TierFull) {
+            return Promise.success(unit());
+        }
 
         return tier.delete(id)
                    .recover(deleteCause -> discardFailed(tier, id, deleteCause));
