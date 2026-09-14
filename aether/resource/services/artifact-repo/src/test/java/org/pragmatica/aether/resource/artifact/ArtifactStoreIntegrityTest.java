@@ -80,7 +80,7 @@ class ArtifactStoreIntegrityTest {
              .onFailureRun(Assertions::fail);
 
         // Corrupt the metadata to have wrong SHA1
-        var metaKey = "artifacts/org.example/test/1.0.0/meta";
+        var metaKey = "artifacts/org.example/test/1.0.0/jar/meta";
         var corruptedMeta = dhtStorage.get(metaKey);
         var metaStr = new String(corruptedMeta, StandardCharsets.UTF_8);
         // Replace sha1 with a bogus value (field index 3)
