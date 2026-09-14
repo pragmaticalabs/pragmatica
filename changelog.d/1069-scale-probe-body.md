@@ -37,18 +37,19 @@
   counting exactly the survivor set, every victim `Dead` in its view, nothing `Departing`), with the survival read taken from
   that named survivor `[verified: with the terminal clauses removed the tripwire `requireTerminalOnSurvivor` fails at 511 ms —
   "accepted at the DEPARTING edge … churn-1 still sees departing=[churn-2, churn-1]"]`.
-- **That terminal edge is unreachable today (#1089): the reconciler drains the LEADER and the DRAIN command never reaches it.**
+- **#1089 — the reconciler selects the LEADER as a drain victim and the DRAIN command can never reach it.**
   `LeaderReconciler.selectDrainVictims` does not exclude the leader (in Ember no id is ephemeral, the slice owners are
-  excluded and the added nodes are inside the drain-safety grace, so the reversed-id mature seeds — the leader among them —
-  are chosen), and the command is delivered only on the leader's broadcast `ClusterSyncPing`, which
-  `ClusterSyncState.dispatchPing` never sends to `self`. The leader never runs its `DrainProcedure`, stays a member, keeps
-  leadership, prunes itself from its own count; the CTM's 60 s grace-terminate is the only backstop — ungraceful, no departure
-  push, the #427 loss mode — and unsupported in Ember. So the churn leg ships as a tripwire until #1089:
-  `leaderInDrainSet_neverDrains_tripwireUntil1089` is ENABLED and asserts that behaviour precisely (its failure message says
-  "#1089 landed — delete me and enable the terminal-edge probe below"), and the real probe
-  `seededArtifact_survivesManagedFiveToSevenToFiveChurn` is `@Disabled("#1089")`. The control is enabled and the real one
-  disabled because, until #1089, the real one would fail for the product reason rather than pass vacuously — a known-red
-  probe is one readers learn to ignore, while an enabled tripwire guarantees it is re-enabled. `ScaleUpFiveToSevenProbeTest`
-  is unaffected and stays strict.
-- `readConfigVersion` returned 0 on a failed GET, which the route treats as the CAS-bypass sentinel
-  (`checkVersionAsync`); both probes now refuse to POST a fencing version below 1.
+  excluded and the added nodes are inside the 30 s drain-safety grace, so the reversed-id mature seeds — the leader among
+  them — are chosen first), and the command is delivered only on the leader's broadcast `ClusterSyncPing`, which
+  `ClusterSyncState.dispatchPing` never sends to `self`. The leader never runs its `DrainProcedure`; it marks itself
+  `Departing`, #1058 withdraws it to MEMBER when no acknowledgement arrives, and it is selected again — until an added node
+  passes the grace and is drained instead, so the churn completes ~45 s late (before #1058 the leader wedged and the edge
+  was unreachable; in cloud the CTM's 60 s grace-terminate kills the leader ungracefully, no departure push — the #427 loss
+  mode). No product change here (ruling C). `ArtifactChurnSurvival5to7to5ProbeTest` therefore carries an ENABLED tripwire,
+  `leaderSelectedAsDrainVictim_neverDrains_tripwireUntil1089`, asserting that behaviour precisely (the leader listed ITSELF
+  as `Departing` during the down-leg and is still a survivor at the terminal edge; its failure message says "#1089 landed —
+  delete me") beside the enabled terminal-edge probe; both read one churn cycle
+  `[verified: with the leader shielded from selection in the clone (shape B simulated, not the real fix) the tripwire
+  reddens on "must have marked ITSELF Departing" while the probe stays green; at head both are green, down-leg terminal at
+  50.0–50.9 s with victims churn-2 and churn-7 Dead and the leader intact]`. `ScaleUpFiveToSevenProbeTest` is unaffected
+  and stays strict.

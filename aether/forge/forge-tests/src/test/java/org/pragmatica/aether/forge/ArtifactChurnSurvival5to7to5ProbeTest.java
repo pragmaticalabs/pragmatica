@@ -7,7 +7,6 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -30,6 +29,7 @@ import java.net.http.HttpRequest;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -37,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.pragmatica.lang.Option.some;
 
 /// #427 deliverable 4 — end-to-end evidence check: an artifact seeded before a MANAGED 5→7→5 scale
 /// cycle must survive the cycle (its DHT-resident bytecode chunks are not lost when surplus cores
@@ -83,19 +84,19 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// seeded chunk's holder set changed" assertion is NOT added — per-key DHT ring holders are not
 /// exposed on the Ember/Forge surface without deep plumbing.)
 ///
-/// ## #1089 — the terminal edge is unreachable today, so the down-leg ships as a TRIPWIRE
+/// ## #1089 — the leader selects itself as a drain victim and can never drain; a TRIPWIRE pins it
 /// The DRAIN command is delivered only on the leader's broadcast `ClusterSyncPing`
 /// (`ClusterSyncState.dispatchPing` skips `self`), and `LeaderReconciler.selectDrainVictims` never
-/// excludes the leader. So when the reconciler picks the leader — which it does here — the leader
-/// never runs its `DrainProcedure`: it stays in the cluster, keeps claiming leadership, prunes itself
-/// from its own count, and the CTM's 60 s grace-terminate is the only backstop (ungraceful, no
-/// departure push — the #427 loss mode; unsupported in Ember). Until #1089 lands:
-///   - [#leaderInDrainSet_neverDrains_tripwireUntil1089] is ENABLED and asserts that wrong behaviour
-///     precisely. It reddens the moment the product changes, with a message saying what to do.
-///   - [#seededArtifact_survivesManagedFiveToSevenToFiveChurn] — the real terminal-edge probe — is
-///     `@Disabled("#1089")`. It is disabled rather than enabled-and-red because it would fail for the
-///     product reason, not pass vacuously: an enabled probe that is red for a known cause teaches
-///     readers to ignore it, while the tripwire guarantees someone re-enables it.
+/// excludes the leader. So when the reconciler picks the leader — which it does here, first pass —
+/// the leader never runs its `DrainProcedure`: it marks itself DEPARTING, the drain is never
+/// acknowledged, #1058 withdraws it to MEMBER, and it is selected again. The churn still completes,
+/// ~45 s later, because the withdrawal lets the reconciler re-evaluate until an added node has passed
+/// the 30 s drain-safety grace and is drained instead — so the terminal edge IS reached and the real
+/// probe runs. Before #1058 the leader wedged in DEPARTING and the edge was unreachable; in cloud the
+/// CTM's 60 s grace-terminate would kill the leader ungracefully (no departure push — the #427 loss
+/// mode). [#leaderSelectedAsDrainVictim_neverDrains_tripwireUntil1089] is ENABLED and asserts that
+/// remaining wrong behaviour precisely; it reddens the moment #1089 lands, with a message saying what
+/// to do. Both tests read ONE churn cycle ([#churn]) so the cluster is scaled 5→7→5 exactly once.
 ///
 /// Both the count and the POST target are the LEADER — the node whose own `isLeader()` holds
 /// (`EmberCluster.currentLeader()`), never an arbitrary map entry. After `addNode()` the first entry is
@@ -160,55 +161,46 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
         Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
-    /// #1089 TRIPWIRE — asserts the CURRENT wrong behaviour of the down-leg precisely, so that the
-    /// product fix cannot land without this test going red. What it pins, from the last observation
-    /// of the bounded wait: the terminal edge was never reached; the node that was leader at the POST
-    /// is still in the cluster (its `DrainProcedure` never ran — `EmberCluster.handleSelfDrain` is
-    /// that procedure's only exit and it would have removed the node) and still claims leadership
-    /// while its own count excludes itself; and the OTHER victim did drain to `Dead` and was removed
-    /// (the control that the drain mechanism works for a non-leader — the defect is the leader's
-    /// missing self-delivery, nothing wider). On failure: #1089 landed — delete this test and enable
-    /// [#seededArtifact_survivesManagedFiveToSevenToFiveChurn].
+    /// #1089 TRIPWIRE — asserts the CURRENT wrong behaviour precisely, so the product fix cannot land
+    /// without this test going red: during the down-leg the leader saw ITSELF as `Departing` (it was
+    /// selected as a drain victim), and at the terminal edge it is still a survivor (its
+    /// `DrainProcedure` never ran — `EmberCluster.handleSelfDrain` is that procedure's only exit and
+    /// would have removed it). Fix shape A (deliver the drain set to self) reddens the second clause;
+    /// shape B (exclude the leader from selection) reddens the first. On failure: #1089 landed —
+    /// delete this test; [#seededArtifact_survivesManagedFiveToSevenToFiveChurn] stays as the probe.
     @Test
     @TerminalOperation
-    void leaderInDrainSet_neverDrains_tripwireUntil1089() {
-        var churn = seedThenScaleUpThenScaleDown();
+    void leaderSelectedAsDrainVictim_neverDrains_tripwireUntil1089() {
+        var churn = churn();
         var downLeg = churn.downLeg();
-        var landed = "#1089 landed — delete me and enable the terminal-edge probe below "
-                     + "(seededArtifact_survivesManagedFiveToSevenToFiveChurn). Observed: " + downLeg;
+        var landed = "#1089 landed — delete me; the terminal-edge probe beside me "
+                     + "(seededArtifact_survivesManagedFiveToSevenToFiveChurn) is the test that stays. Observed: " + downLeg;
 
         assertThat(downLeg.reachedAtMs())
-            .as("the 7->5 down-leg must NOT reach the terminal edge within %ds while the leader is a drain victim "
-                + "that never drains. %s", SCALE_TIMEOUT.toSeconds(), landed)
-            .isEqualTo(-1L);
-        assertThat(downLeg.countedOn())
-            .as("the pre-POST leader must still claim leadership after the bounded wait. %s", landed)
-            .isEqualTo(churn.leaderAtPost());
+            .as("PRECONDITION: the churn must have reached its terminal edge for this tripwire to say anything "
+                + "(it did at head via #1058's withdrawal + re-evaluation). Observed: %s", downLeg)
+            .isGreaterThanOrEqualTo(0L);
+        assertThat(churn.leaderSawSelfDeparting())
+            .as("the leader at the POST (%s) must have marked ITSELF Departing during the down-leg — it was "
+                + "selected as a drain victim. %s", churn.leaderAtPost(), landed)
+            .isTrue();
         assertThat(downLeg.survivors())
-            .as("the pre-POST leader must still be in the cluster — its DrainProcedure never ran. %s", landed)
+            .as("the leader at the POST (%s) must still be in the cluster at the terminal edge — its "
+                + "DrainProcedure never ran because the DRAIN command is never delivered to self. %s",
+                churn.leaderAtPost(), landed)
             .contains(churn.leaderAtPost());
-        assertThat(downLeg.counted())
-            .as("the leader prunes ITSELF from its own count (the DEPARTING edge on self) while staying a "
-                + "member. %s", landed)
-            .doesNotContain(churn.leaderAtPost())
-            .containsExactlyInAnyOrderElementsOf(without(downLeg.survivors(), churn.leaderAtPost()));
-        assertThat(downLeg.victimStates())
-            .as("CONTROL: the other drain victim must have drained to Dead and left the cluster — the drain "
-                + "mechanism works for a non-leader. %s", landed)
-            .hasSize(1)
-            .containsValue(DEAD);
+        assertThat(downLeg.victims())
+            .as("the victims that DID drain are non-leaders (the control that the mechanism works for them). %s",
+                landed)
+            .doesNotContain(churn.leaderAtPost());
     }
 
-    /// The real probe — enabled by deleting the tripwire above once #1089 lands. Disabled, not
-    /// enabled-and-red: until then it fails for the product reason (see the class doc), and a
-    /// known-red probe is one readers learn to ignore. It cannot pass vacuously while disabled
-    /// because it does not run; the tripwire guarantees it is re-enabled.
+    /// The real probe: the churn is terminal, the count and the survival read come from a named
+    /// survivor, and the seeded artifact is still resolvable.
     @Test
     @TerminalOperation
-    @Disabled("#1089: the reconciler drains the leader and the DRAIN command never reaches it, so the terminal "
-              + "edge is unreachable; enable when leaderInDrainSet_neverDrains_tripwireUntil1089 reddens")
     void seededArtifact_survivesManagedFiveToSevenToFiveChurn() {
-        var downLeg = seedThenScaleUpThenScaleDown().downLeg();
+        var downLeg = churn().downLeg();
         assertThat(downLeg.reachedAtMs())
             .as("GUARD: managed 7->5 via /api/v1/cluster/scale must COMPLETE within %ds: both drain victims "
                 + "stopped and removed from the cluster, and a surviving leader counting exactly the %d survivors "
@@ -233,10 +225,23 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
             .doesNotContain("\"error\"");
     }
 
-    /// The prelude both tests share: seed the artifact, run the STRICT up-leg guard, then POST the
-    /// down-leg and wait (bounded) for its terminal edge. `leaderAtPost` is the node the down-leg
-    /// was addressed to — the drain victim #1089 is about.
-    private record Churn(String leaderAtPost, DownLeg downLeg) {}
+    /// One churn cycle, run on first use and shared by both tests (PER_CLASS): seed the artifact, run
+    /// the STRICT up-leg guard, POST the down-leg and wait (bounded) for its terminal edge.
+    /// `leaderAtPost` is the node the down-leg was addressed to — the drain victim #1089 is about;
+    /// `leaderSawSelfDeparting` is whether that node listed ITSELF as `Departing` on any tick. If the
+    /// prelude throws nothing is cached, so the second test re-runs it on a cluster mid-cycle and fails
+    /// too — two reds for one cause, never a green.
+    private record Churn(String leaderAtPost, boolean leaderSawSelfDeparting, DownLeg downLeg) {}
+
+    private Option<Churn> cachedChurn = Option.none();
+
+    @TerminalOperation
+    private Churn churn() {
+        if (cachedChurn.isEmpty()) {
+            cachedChurn = some(seedThenScaleUpThenScaleDown());
+        }
+        return cachedChurn.unwrap();
+    }
 
     @TerminalOperation
     private Churn seedThenScaleUpThenScaleDown() {
@@ -255,7 +260,9 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
             .isGreaterThanOrEqualTo(0L);
 
         var leaderAtPost = cluster.currentLeader().or("none");
-        return new Churn(leaderAtPost, managedScaleDown(INITIAL_CORES));
+        var selfDeparting = new boolean[]{false};
+        var downLeg = managedScaleDown(INITIAL_CORES, observed -> selfDeparting[0] |= observed.departing().contains(leaderAtPost));
+        return new Churn(leaderAtPost, selfDeparting[0], downLeg);
     }
 
     private static Set<String> without(Set<String> ids, String id) {
@@ -283,10 +290,10 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     /// victims and survivors, and the victims' states in that node's view — the guard
     /// [#requireTerminalOnSurvivor] re-checks it, and the survival read is taken from that node.
     @TerminalOperation
-    private DownLeg managedScaleDown(int targetCores) {
+    private DownLeg managedScaleDown(int targetCores, Consumer<DownLeg> onTick) {
         var membersAtStart = nodeIds();
         postScaleToLeader(targetCores);
-        var downLeg = awaitDrained(targetCores, membersAtStart, SCALE_TIMEOUT);
+        var downLeg = awaitDrained(targetCores, membersAtStart, SCALE_TIMEOUT, onTick);
         log.info("CHURN-PROBE RESULT: target={} reachedAtMs={} (-1=NOT within {}s) {}",
                  targetCores, downLeg.reachedAtMs(), SCALE_TIMEOUT.toSeconds(), downLeg);
         return downLeg;
@@ -344,7 +351,11 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
                    && victims.size() == membersAtStart - target
                    && counted.equals(survivors)
                    && departing.isEmpty()
-                   && victimStates.values().stream().allMatch(DEAD::equals);
+                   && allDead(victimStates);
+        }
+
+        static boolean allDead(Map<String, String> states) {
+            return states.values().stream().allMatch(DEAD::equals);
         }
 
         DownLeg reachedAt(long elapsedMs) {
@@ -352,14 +363,17 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
         }
     }
 
-    private DownLeg awaitDrained(int target, Set<String> membersAtStart, Duration budget) {
+    /// `onTick` sees every observation, terminal or not — the tripwire's evidence lives in the
+    /// intermediate ticks, which the returned (latched) snapshot no longer shows.
+    private DownLeg awaitDrained(int target, Set<String> membersAtStart, Duration budget, Consumer<DownLeg> onTick) {
         var t0 = System.nanoTime();
         var latest = new DownLeg[]{observeDownLeg(membersAtStart)};
         var lastLog = new long[]{0L};
+        onTick.accept(latest[0]);
         await().pollInterval(POLL)
                .pollDelay(Duration.ZERO)
                .timeout(budget.plusSeconds(5))
-               .until(() -> drainTick(target, membersAtStart, t0, budget, latest, lastLog));
+               .until(() -> drainTick(target, membersAtStart, t0, budget, latest, lastLog, onTick));
         return latest[0];
     }
 
@@ -371,9 +385,10 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     /// class doc explains is not a churn. A leaderless tick (election in progress after the old
     /// leader drained) is "not yet", never a count.
     private boolean drainTick(int target, Set<String> membersAtStart, long t0, Duration budget,
-                              DownLeg[] latest, long[] lastLog) {
+                              DownLeg[] latest, long[] lastLog, Consumer<DownLeg> onTick) {
         var elapsed = (System.nanoTime() - t0) / 1_000_000L;
         var observed = observeDownLeg(membersAtStart);
+        onTick.accept(observed);
         if (latest[0].reachedAtMs() < 0) {
             latest[0] = observed.terminal(target, membersAtStart.size())
                         ? observed.reachedAt(elapsed)
@@ -395,20 +410,18 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
         var states = leader.map(this::memberStateNames).or(Map.of());
         var victimStates = victims.stream()
                                   .collect(Collectors.toMap(id -> id, id -> states.getOrDefault(id, "absent")));
-        var departing = states.entrySet()
-                              .stream()
-                              .filter(entry -> DEPARTING.equals(entry.getValue()))
-                              .map(Map.Entry::getKey)
-                              .collect(Collectors.toSet());
+        var departing = states.entrySet().stream().filter(ArtifactChurnSurvival5to7to5ProbeTest::isDeparting).map(Map.Entry::getKey).collect(Collectors.toSet());
         return new DownLeg(-1L, countedOn, counted, survivors, victims, victimStates, departing);
     }
 
+    private static boolean isDeparting(Map.Entry<String, String> entry) {
+        return DEPARTING.equals(entry.getValue());
+    }
+
     private Map<String, String> memberStateNames(AetherNode node) {
-        return node.membershipFsm()
-                   .memberStates()
-                   .entrySet()
-                   .stream()
-                   .collect(Collectors.toMap(entry -> entry.getKey().id(), Map.Entry::getValue));
+        var states = node.membershipFsm().memberStates();
+
+        return states.entrySet().stream().collect(Collectors.toMap(entry -> entry.getKey().id(), Map.Entry::getValue));
     }
 
     /// Tripwire behind [#DownLeg#terminal]: the 5 must have been read from a survivor that was a
@@ -419,7 +432,7 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
         if (!downLeg.survivors().contains(downLeg.countedOn()) || downLeg.victims().contains(downLeg.countedOn())) {
             failScenario("the 7->5 count was read from " + downLeg.countedOn() + ", which is not a survivor: " + downLeg);
         }
-        if (!downLeg.departing().isEmpty() || !downLeg.victimStates().values().stream().allMatch(DEAD::equals)) {
+        if (!downLeg.departing().isEmpty() || !DownLeg.allDead(downLeg.victimStates())) {
             failScenario("the 7->5 count was accepted at the DEPARTING edge, not the terminal one: " + downLeg.countedOn()
                          + " still sees departing=" + downLeg.departing() + " victims=" + downLeg.victimStates()
                          + " — a drainer is pruned from coreCountedMembers() before its departure push has moved a "
@@ -435,16 +448,13 @@ class ArtifactChurnSurvival5to7to5ProbeTest {
     }
 
     private int survivorPort(DownLeg downLeg) {
-        return cluster.status()
-                      .nodes()
-                      .stream()
-                      .filter(node -> node.id().equals(downLeg.countedOn()))
-                      .findFirst()
-                      .map(EmberCluster.NodeStatus::mgmtPort)
-                      .orElseGet(() -> {
-                          failScenario("survivor " + downLeg.countedOn() + " has no management port in status()");
-                          return -1;
-                      });
+        var nodes = cluster.status().nodes();
+        var port = nodes.stream().filter(node -> node.id().equals(downLeg.countedOn())).findFirst();
+
+        return Option.from(port)
+                     .map(EmberCluster.NodeStatus::mgmtPort)
+                     .onEmpty(() -> failScenario("survivor " + downLeg.countedOn() + " has no management port in status()"))
+                     .or(-1);
     }
 
     private Set<String> nodeIds() {
