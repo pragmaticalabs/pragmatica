@@ -152,7 +152,7 @@ class SmtpSessionTest {
     @Nested
     class ErrorHandling {
         @Test
-        void handleResponse_failsWithConnectionFailed_greetingRejected() {
+        void handleResponse_failsWithRejected_greetingRejected() {
             var config = smtpConfig("localhost", 25).withTlsMode(SmtpTlsMode.NONE);
             var msg = smtpMessage("a@b.com", List.of("c@d.com"), "Sub", "Body");
             var session = createSession(config, msg);

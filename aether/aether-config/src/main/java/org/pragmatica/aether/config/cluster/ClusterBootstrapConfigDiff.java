@@ -141,6 +141,11 @@ public final class ClusterBootstrapConfigDiff {
                          desired.loadBalancerEndpoint(),
                          modifications);
         checkSourceField(sourceName, "firewallRules", stored.firewallRules(), desired.firewallRules(), modifications);
+        checkSourceField(sourceName,
+                         "replacementCeiling",
+                         stored.replacementCeiling(),
+                         desired.replacementCeiling(),
+                         modifications);
     }
 
     private static void checkSourceField(SourceName sourceName,

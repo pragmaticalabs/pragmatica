@@ -11,7 +11,7 @@ Cross-refs: #226 (blueprint endpoint consolidation), #198 (slice HTTP API versio
 1. **No version prefix.** All 181 `ManagementRoute` entries (`aether/aether-management-api/.../route/ManagementRoute.java:30-249`) mount at bare `/api/...`. Once RC freezes the wire, every rename post-GA is a breaking change for CLI, dashboards, harnesses, and third-party tooling. Pre-GA, a rename is free (no-backward-compat policy). This is the last window.
 2. **Dual overlapping surfaces**, resolved only by a *double route-resolution path* in `ManagementRouter.dispatch` (`aether/node/.../routes/ManagementRouter.java:66-92`): first the `ManagementRoute` enum table, then a fallback to the `RequestRouter` trie. Concrete duplicates:
    - **Streams:** `StreamRoutes.java` (flat engine surface: `STREAM_*`, `CONSUMER_GROUP_*`, name/partition-addressed) and `StreamApiRoutes.java` (namespaced catalog surface: `STREAMS_*`, `(namespace, stream, version)`-addressed) both mount under `/api/streams`. Collisions are disambiguated only by param *count*: `POST /api/streams/publish/{name}` (`STREAM_PUBLISH`, ManagementRoute.java:144) vs `POST /api/streams/publish/{ns}/{stream}/{ver}` (`STREAMS_PUBLISH`, :165); `GET /api/streams/groups/{id}` (:157) vs `GET /api/streams/groups/{ns}/{stream}/{ver}` (:164).
-   - **Backups CLI:** `aether backups` (`AetherCli.java:3429`, subcommands trigger/list/restore) and `aether backup` (`AetherCli.java:3503`, create/restore/list) — a documented singular alias over the same three REST routes.
+   - **Backups CLI:** `aether backups` (`AetherCli.java:3429`, subcommands trigger/list/restore) and `aether backup` (`AetherCli.java:3503`, create/restore/list) — a documented singular alias over the same three REST routes. *(Superseded: both trees and the routes were removed in #676 — the only `BackupService` implementation was `disabled()`.)*
 3. **Doc drift:** `management-api.md` documents bare `/api` (matches code); `architecture/12-management.md` claims `/api/v1` routes that were never implemented (#310). Two documents, two answers.
 
 ## 2. Design
@@ -56,7 +56,7 @@ The `RequestRouter` fallback in `ManagementRouter.dispatch` (ManagementRouter.ja
 | Dual surface | Rule (winner) |
 |---|---|
 | `StreamApiRoutes` vs `StreamRoutes` under `/api/streams` | **Full merge into the namespaced catalog (owner decision, 2026-07-04 — pre-GA, no compat constraints: "build what we planned in one shot").** One surface: `/api/v1/streams/**`, catalog-addressed `(namespace, stream, version)`. The flat engine surface is DELETED; raw/system streams surface under the reserved **`system` namespace**; engine diagnostics (partitions, replicas, raw read, consumers) become **sub-resources of the catalog identity** (§3.2). Param-count disambiguation disappears; `StreamRoutes.java` is retired. |
-| `aether backups` vs `aether backup` CLI | Plural `aether backups` wins (matches `scheduled-tasks` etc.); absorbs the singular's verb set as `create` / `list` / `restore` (`trigger` renamed `create`); singular command deleted. REST surface unchanged (POST/GET on one collection is not a duplicate). |
+| `aether backups` vs `aether backup` CLI | *Moot since #676 — both removed with the routes.* Was: plural `aether backups` wins (matches `scheduled-tasks` etc.); absorbs the singular's verb set as `create` / `list` / `restore` (`trigger` renamed `create`); singular command deleted. REST surface unchanged (POST/GET on one collection is not a duplicate). |
 | `POST /api/blueprints` vs `/api/blueprints/publish` vs `/api/blueprints/deploy` | Owned by #226; not respecified here. This spec only (a) reserves `/api/v1/blueprints/**`, (b) converts #226's migration to hard-cutover (§2.3). |
 | Enum table vs `RequestRouter` trie | Enum wins; trie fallback deleted (§2.4). |
 
@@ -86,8 +86,8 @@ Covers all 181 enum entries. HTTP methods and path parameters are unchanged unle
 | `/api/alerts/history` | `/api/v1/alerts/history` |
 | `/api/alerts/inject` | `/api/v1/alerts/inject` |
 | `/api/artifacts/metrics` | `/api/v1/artifacts/metrics` |
-| `/api/backups` | `/api/v1/backups` |
-| `/api/backups/restore` | `/api/v1/backups/restore` |
+| `/api/backups` | *(removed in #676)* |
+| `/api/backups/restore` | *(removed in #676)* |
 | `/api/blueprints` | `/api/v1/blueprints` |
 | `/api/blueprints/deploy` | `/api/v1/blueprints/deploy` (shape owned by #226) |
 | `/api/blueprints/publish` | `/api/v1/blueprints/publish` |
@@ -114,6 +114,7 @@ Covers all 181 enum entries. HTTP methods and path parameters are unchanged unle
 | `/api/cluster/topology/auto-heal` | `/api/v1/cluster/topology/auto-heal` |
 | `/api/cluster/topology/auto-heal/disable` | `/api/v1/cluster/topology/auto-heal/disable` |
 | `/api/cluster/topology/auto-heal/enable` | `/api/v1/cluster/topology/auto-heal/enable` |
+| `/api/cluster/topology/role-mismatches` | `/api/v1/cluster/topology/role-mismatches` |
 | `/api/cluster/topology/circuit-breaker` | `/api/v1/cluster/topology/circuit-breaker` |
 | `/api/cluster/topology/circuit-breaker/reset` | `/api/v1/cluster/topology/circuit-breaker/reset` |
 | `/api/cluster/upgrade` | `/api/v1/cluster/upgrade` |
@@ -267,12 +268,12 @@ collection, delete=DELETE on the identity) — no verb suffixes remain anywhere 
 |---|---|
 | `ManagementRoute.java` (aether-management-api) | Literals → suffixes + `API_BASE` composition + `raw(...)` variant. `RouteMatcher`/`RouteAssembler`/`ManagementRoutes.route` inherit — no changes. |
 | `ManagementRouter.java:66-92` (aether/node) | Delete `RequestRouter` fallback; matched-but-unregistered → 501 (§2.4). |
-| `ManagementServer.java` | **DONE** — `STREAM_WRITE_PATH_PREFIX` removed entirely; the gate resolves target identity via `ManagementRoute.match` (the same primitive the dispatch path uses) + `SystemStreams.isForbiddenEngineKey`, fail-closed on unresolvable identity. `STREAM_CREATE` is structurally excluded from this pre-auth, path-based gate — its target name is body-carried (`StreamCreateRequest`), not path-carried, and condition 1 (reuse the dispatch path's canonicalization, no parallel body parser) rules out extending the gate to see it. It is protected instead by a separate, **post-auth**, handler-level guard in `StreamRoutes#createFreshStream` (the sole stream-minting method) — this is a deliberate, documented departure from the pre-auth guarantee the path-based gate gives the other write routes, not an oversight. `CONSUMER_GROUP_JOIN`/`CONSUMER_GROUP_LEAVE` remain uncovered by either mechanism (also body-carried identity) until this spec's §3.3 catalog-form reshape lands; tracked as a separate ticket (rc4 provisional, cross-referencing #300) pending an evidence-based answer to whether joining/leaving a consumer group on a framework stream actually mutates state. |
-| CLI | Inherits via `route.assemble()`. Exceptions to fix: hardcoded `endpoint + "/api/cluster/config"` and `"/api/cluster/keys"` in `BootstrapPhaseFormation.java:243,263`. Delete `aether backup` singular (`AetherCli.java:3496-3503`); rename `backups trigger` → `backups create`. |
+| `ManagementServer.java` | **DONE** — `STREAM_WRITE_PATH_PREFIX` removed entirely; the gate resolves target identity via `ManagementRoute.match` (the same primitive the dispatch path uses) + `SystemStreams.isForbiddenEngineKey`, fail-closed on unresolvable identity. `STREAM_CREATE` is structurally excluded from this pre-auth, path-based gate — its target name is body-carried (`StreamCreateRequest`), not path-carried, and condition 1 (reuse the dispatch path's canonicalization, no parallel body parser) rules out extending the gate to see it. It is protected instead by a separate, **post-auth**, handler-level guard in `StreamRoutes#createFreshStream` (the sole stream-minting method) — this is a deliberate, documented departure from the pre-auth guarantee the path-based gate gives the other write routes, not an oversight. `CONSUMER_GROUP_JOIN`/`CONSUMER_GROUP_LEAVE` (also body-carried identity) carry the same handler-level guard since #742 (`StreamRoutes#joinGroup`/`#leaveGroup`); the §3.3 catalog-form reshape is still pending (#754). |
+| CLI | Inherits via `route.assemble()`. Exceptions to fix: hardcoded `endpoint + "/api/cluster/config"` and `"/api/cluster/keys"` in `BootstrapPhaseFormation.java:243,263`. Delete `aether backup` singular (`AetherCli.java:3496-3503`); rename `backups trigger` → `backups create`. *(Superseded: both command trees were removed in #676.)* |
 | Dashboard | `aether/dashboard/src/main/resources/dashboard/index.html:62` `fetch('/api/nodes/status')` → new path; audit remaining fetches/WS paths in that module. |
-| Integration harness | `api_get`/`api_post` (`tests/integration/lib/common.sh:340-357`) take full literal paths — mechanical sed sweep of `/api/` → `/api/v1/` across `tests/integration/**` (greppable, wire-honest) rather than helper-injected prefix (hides the real path). Stream-engine tests re-pathed per §3.2; `TC-NEW-G4-kv-store-backup` re-targeted to `aether backups`. |
+| Integration harness | `api_get`/`api_post` (`tests/integration/lib/common.sh:340-357`) take full literal paths — mechanical sed sweep of `/api/` → `/api/v1/` across `tests/integration/**` (greppable, wire-honest) rather than helper-injected prefix (hides the real path). Stream-engine tests re-pathed per §3.2; `TC-NEW-G4-kv-store-backup` re-targeted to `aether backups` *(superseded: `aether backups` was removed in #676; the test case has no CLI target)*. |
 | Java sweep | `grep -rn '"/api/' aether --include='*.java'` — fix remaining literals (tests, k6 configs on the *management* port only; slice-app-port `/api/v1/urls/` in k6 belongs to #198's surface, untouched). |
-| Docs | `management-api.md` (base URL + every path), `cli.md` (backups), `architecture/12-management.md` (#310 fold-in), `feature-catalog.md`, `CHANGELOG.md`. |
+| Docs | `management-api.md` (base URL + every path), `cli.md` (backups — moot since #676), `architecture/12-management.md` (#310 fold-in), `feature-catalog.md`, `CHANGELOG.md`. |
 
 Non-collision note: slice-served routes (e.g. `/api/v1/urls/` in k6) live on the slice HTTP port, not the management port — `/api/v1` on the management port is free. #198's auto-inserted version segment is `{prefix}/v{N}/...` (suffix position) and stays independent of this spec.
 

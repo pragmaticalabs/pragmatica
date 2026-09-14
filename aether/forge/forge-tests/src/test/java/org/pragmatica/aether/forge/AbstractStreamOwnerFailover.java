@@ -85,8 +85,10 @@ abstract class AbstractStreamOwnerFailover {
     private static final long POLL_GAP_NANOS = Duration.ofMillis(20).toNanos();
 
     private static final String STREAM_SLICE = TestArtifacts.STREAM_REPL_SLICE;
-    private static final String STREAM_NAME = "repl-failover-events";
     private static final String BLUEPRINT_ID = "forge.test:stream-owner-failover:1.0.0";
+    /// The engine key of the blueprint's `[streams.repl-failover-events]` ring ([TestArtifacts#streamEngineKey]);
+    /// `replicaSnapshot` on the bare alias yields an HRW "owner" view with an empty replica set forever.
+    private static final String STREAM_NAME = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "repl-failover-events");
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
     private static final Pattern EVENT_OBJECT = Pattern.compile("\\{[^{}]*\"offset\"[^{}]*}");

@@ -1,0 +1,38 @@
+### Fixed (2026-09-13 — #1061: a stale death hint terminalized a live node whose link had already healed)
+- **A QUIC eviction's death hint was never retracted when the link came back, so it kept counting as death evidence against a node whose link had already healed.** `onPeerLeft` records a `PeerUnreachable` hint in SWIM. In the observed run the re-dial completed 29ms after the eviction, but `PeerReachable` was a no-op. On the evicting node the stale hint then did two things:
+  - It floored the suspect window to 3s. The unfloored window was about 13.9s: `suspectTimeout` 10s × `ln(4)` for the two ALIVE peers it held.
+  - It satisfied the #336 kill gate with a single accuser.
+
+  A lone first-hand FAULTY then drove `DepartedObserved` and a synchronous DEAD, and the live node was reaped. The evicting node was **not** the ClusterSync leader at that moment: it was re-electing. Observed on a docker `02-chaos` control run. [mechanism: hint → `SwimProtocol.effectiveSuspectTimeoutMs` and `transportVetoConfirms`, neither of which consulted the live link]
+- **The same terminalization also reached a leader-side evictor through the ClusterSync missed-pong hint, even with the victim ponging.** Found in adversarial review.
+  - The leader counts missed pongs while a stalled link is still CONNECTED. The report is suppressed while SWIM trusts the peer.
+  - The eviction did not reset that count, so the first ping on the replacement link reported the peer.
+  - A pong reset the counter but could not retract the SWIM hint.
+  - [mechanism: `ClusterSyncState` `missedPings` survived the transport REMOVE/RECONNECT; `SwimHintLeaderChainTest` reddens at the previous head]
+- **Hints carry an origin** (`TransportObservation.HintOrigin`), and each origin is believed only while its own evidence is current:
+  - A `LINK_LOST` hint (QUIC eviction or channel close) floors the window and vetoes only while `transportConnected(peer)` is false.
+    - `PeerReachable` retracts it only while the link is connected. A reconnect event that arrives after a newer eviction therefore cannot erase that eviction's hint.
+    - [mechanism: `SwimDeathPathCoConfirmationTest.OriginAwareTransportHints` — `linkLostHint_thenLinkReconnected_…`, `linkLostHint_linkConnectedBeforeReachableEvent_…`, `lateReachable_whileLinkDown_keepsLinkLostFloorAndVeto`, `linkLostHint_linkStillDown_floorsAndVetoes`]
+  - A `PEER_UNRESPONSIVE` hint (the ClusterSync missed-pong report) still floors and vetoes with the link CONNECTED. Now:
+    - its count covers only consecutive misses on the current link since the last pong, because a (re)established link or a pong starts a new missed-pong epoch. The pong advances the epoch itself, before the FSM's `PongReceived` transition, so a transition dropped on a lost CAS cannot re-admit the count;
+    - a pong from the peer retracts the hint (`PeerResponsive`). The leader's own pong reports nothing.
+    - Epochs are drawn from one process-wide sequence, so a forgotten peer's entry is dropped (`ClusterSyncContext.forgetPeer`) and a re-join can never reuse an epoch an earlier count was recorded against.
+    - [mechanism: `ClusterSyncSchedulerPingTimeoutTest.linkReestablished_afterStallMisses_firstTickOnNewLinkReportsNothing`, `onPongReceived_startsNewMissedPongEpoch_beforeTheFsmTransition`, `forgetPeer_dropsTheEpochEntry_andARejoinNeverReusesAnEpoch`; `SwimHintLeaderChainTest.leaderChain_*`; `pingTimeoutHint_thenPongArrives_hintRetracted_floorAndVetoWithdrawn`; `peerUnresponsiveHint_thenPeerResponsive_retractsFloorAndVeto`; `SwimHintWiringTest.pongResponsiveReporter_selfPong_sendsNothing`]
+    - [unverified: concurrency-only — the `PongReceived` transition actually losing its CAS to a concurrent tick, which the epoch advance on pong exists to survive, is not reproduced by any test]
+  - **Hung-peer detection is kept.** A peer that holds its link but never pongs is still reported after `DEFAULT_PING_TIMEOUT_THRESHOLD` (3) misses in the new link epoch, and that hint still floors and vetoes. [mechanism: `hungPeer_afterLinkReestablished_reportsAtThresholdMissesInNewLinkEpoch`; `SwimHintLeaderChainTest.hungPeer_linkConnectedNoPongs_hintFiresAtThresholdInNewLinkEpoch_andDeparts`]
+  - `SwimHintWiringTest` pins the three reporter factories (`quicPeerStateListener`, `pingTimeoutReporter`, `pongResponsiveReporter`); the cause→origin mapping is pinned by `QuicTransportCauseHintOriginTest`. Their installation in `AetherNode.assembleNode` is pinned through a booted single-node cluster by `SwimHintInstallBootTest` for the missed-pong reporter and the pong listener: the hint's origin and its retraction on a pong are read off `SwimProtocol`'s own log lines. [unverified: the `metricsScheduler::onLinkEstablished` binding at the `attachQuicPeerStateListener` call in `assembleNode` — reaching it needs a second QUIC peer completing a handshake, and the epoch it advances is not observable from outside the node; reading only]
+- **Retracting a hint never reports life.** `PeerReachable` and `PeerResponsive` never move a peer toward ALIVE and never touch the suspicion clock. Only a probe-ack or a higher-incarnation ALIVE ends a suspicion. [mechanism: `peerReachable_neverPromotesToAlive_onlyProbeAckDoes`, `peerUnresponsiveHint_thenPeerResponsive_retractsFloorAndVeto`]
+- **The suspicion journal lines print the window actually enforced.**
+  - The start line used to print the dogpile window, e.g. `window 10000ms` for a suspicion that expired in 3.2s.
+  - Both retractions now log `… death hint retracted … effective suspect window now Nms`.
+  - [mechanism: `suspicionJournal_logsEnforcedWindow_atStartAndOnRetraction`]
+- **Production suspect windows, for reading these logs.** A lone accuser at local health score 0 gets `suspectTimeout` (10s) × `clamp(ln(ALIVE peers + 2), 1, 3)`, with the suspected peer not counted. That is ≈11.0s on a 3-node cluster and ≈16.1s on 5 nodes. The local health multiplier stretches it up to 8× while the node itself is struggling. [mechanism: `SwimProtocol.newSuspicion`, `clusterSizeWindowMultiplier`; `TimeoutsConfig.SwimTimeouts`]
+- **Cost: a peer that reconnects and then genuinely dies loses the 3s floor until fresh death evidence arrives.** Detection after death (t2) on the node that evicted it (t0), at default timeouts:
+  - **ClusterSync leader: ≤ t2 + 4s.** That is 3 missed pongs × `pingInterval` 1s plus one 1s SWIM tick. It needs t2 − t0 < W − 4s (≈7.0s on 3 nodes, ≈12.1s on 5).
+  - **Non-leader: ≤ t2 + 14s.** That is the receipt TTL (`LIVENESS_TTL_PING_INTERVAL_FACTOR` 8 × 1s), plus the zombie sweep on `RECONCILE_TICK` 5s, plus one 1s tick. QUIC idle close is disabled. It needs t2 − t0 < W − 14s, which never holds on 3 nodes or at C2's ≈13.9s, and only within ≈2.1s on 5 nodes.
+  - Outside those conditions the suspicion armed at the eviction has already expired. The lone first-hand verdict is then held by the #336 kill gate until a second accuser corroborates it, as for any death without a current hint, and that path is not bounded by transport constants.
+  - **Residual window:** a ClusterSync tick that races a reconnect or a pong can emit one stale `PING_TIMEOUT` hint. The next pong from the live peer retracts it, which bounds the window to one ping round-trip while pongs flow.
+  - [design intent — unverified: derived from the named constants; no cluster run]
+- **Not changed here:**
+  - The CTM reap of a `NodeRemoved` node does not re-check liveness.
+  - The cause of the bidirectional QUIC write stall that started the chain is unexplained.

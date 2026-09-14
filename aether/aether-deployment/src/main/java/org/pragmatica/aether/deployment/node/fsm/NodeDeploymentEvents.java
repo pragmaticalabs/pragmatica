@@ -7,8 +7,12 @@ package org.pragmatica.aether.deployment.node.fsm;
 import org.pragmatica.aether.deployment.drain.DrainReason;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
@@ -20,6 +24,12 @@ public interface NodeDeploymentEvents extends ClusterFsmEvent {
     record NodeArtifactRemoveReceived(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) implements NodeDeploymentEvents {}
 
     record NodeRoutesPutReceived(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) implements NodeDeploymentEvents {}
+
+    /// #1068 — a committed target or routing entry arrived; a start this node deferred for want of one
+    /// is re-evaluated (see `NodeDeploymentState.Active.deferredStarts`).
+    record SliceTargetPutReceived(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) implements NodeDeploymentEvents {}
+
+    record VersionRoutingPutReceived(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) implements NodeDeploymentEvents {}
 
     record LeavingRequested(DrainReason reason) implements NodeDeploymentEvents {}
 }

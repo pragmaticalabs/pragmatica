@@ -108,13 +108,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
         var observer = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
         lifecycleManager = new WorkerRecordingLifecycleManager();
         configRef = new AtomicReference<>(Option.none());
-        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
-                                                     timeSpan(1).millis(),
-                                                     AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
-                                                     AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
-                                                     AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
-                                                     timeSpan(0).millis())
-                                     .unwrap();
+        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(1).millis(), AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT).unwrap();
         ctm = ClusterTopologyManager.clusterTopologyManager(observer,
                                                             lifecycleManager,
                                                             autoHeal,
@@ -125,7 +119,8 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                                             () -> AetherValue.ClusterPhase.NORMAL,
                                                             _ -> {},
                                                             _ -> {},
-                                                            Option::none);
+                                                            Option::none,
+                                                            MembershipLiveness.UNWIRED);
     }
 
     private static Promise<List<Object>> applyNoop(List<KVCommand<AetherKey>> commands) {

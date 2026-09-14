@@ -16,6 +16,7 @@ import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapE
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
+import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.RuntimeProfile;
 import org.pragmatica.aether.config.cluster.RuntimeType;
 import org.pragmatica.aether.config.cluster.SourceProfile;
@@ -26,8 +27,10 @@ import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlWriter;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn3;
+import org.pragmatica.lang.Functions.Fn4;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -56,13 +59,24 @@ sealed interface BootstrapPhaseDeploy {
                                             Fn1<Result<String>, String> healthCheck,
                                             Fn3<Result<String>, String, String, SshConfig> sshExec,
                                             Fn1<String, String> envLookup) {
+        return execute(ctx, healthCheck, sshExec, RemoteCommandRunner::scp, envLookup);
+    }
+
+    /// `scpExec(localPath, host, remotePath, sshConfig)` — the SSH source's config push, injectable
+    /// like `sshExec` so `deploySshSource` is pinnable with captured commands (#1090).
+    @SuppressWarnings("JBCT-PAT-01")
+    static Result<BootstrapContext> execute(BootstrapContext ctx,
+                                            Fn1<Result<String>, String> healthCheck,
+                                            Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                            Fn4<Result<Unit>, String, String, String, SshConfig> scpExec,
+                                            Fn1<String, String> envLookup) {
         ClusterBootstrapOrchestrator.logPhase(DEPLOY_RUNTIME,
                                               "Deploying runtime to %d node(s)",
                                               ctx.addresses().size());
         for (var entry : ctx.config().sources().entrySet()) {
             var sourceName = sourceNameOrDefault(entry.getKey());
             var source = entry.getValue();
-            var deployResult = deploySource(ctx, source, sourceName, healthCheck, sshExec, envLookup);
+            var deployResult = deploySource(ctx, source, sourceName, healthCheck, sshExec, scpExec, envLookup);
 
             if (deployResult.isFailure()) {
                 return deployResult.map(_ -> ctx);
@@ -107,10 +121,11 @@ sealed interface BootstrapPhaseDeploy {
                                              SourceName sourceName,
                                              Fn1<Result<String>, String> healthCheck,
                                              Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                             Fn4<Result<Unit>, String, String, String, SshConfig> scpExec,
                                              Fn1<String, String> envLookup) {
         return switch (source.type()) {
             case CLOUD -> deployCloudSource(ctx, source, sourceName, healthCheck, sshExec, envLookup);
-            case SSH -> deploySshSource(ctx, source, sourceName);
+            case SSH -> deploySshSource(ctx, source, sourceName, sshExec, scpExec, envLookup);
             case FORGE -> deployForgeSource(sourceName);
             case DOCKER -> deployDockerSource(sourceName);
         };
@@ -153,6 +168,19 @@ sealed interface BootstrapPhaseDeploy {
                                           Fn1<String, String> envLookup,
                                           long preflightTimeoutMs,
                                           long preflightPollMs) {
+        // #296: attribution is exact on the id's source segment, so an id that does not parse would
+        // belong to NO source and be skipped silently by every source's launch. That is an invariant
+        // violation of this CLI's own minting, refused by name rather than dropped.
+        var unparseable = ctx.nodes()
+                             .stream()
+                             .filter(n -> BootstrapPhaseProvision.parseNodeId(n.nodeId()).isEmpty())
+                             .findFirst();
+
+        if (unparseable.isPresent()) {
+            return new BootstrapError.DeploymentFailed(unparseable.get().nodeId(),
+                                                       "node id does not encode <source>-<core|worker|spot>-<index>, so it belongs to no source").result();
+        }
+
         var sourceNodes = collectSourceNodes(ctx, sourceName);
 
         if (sourceNodes.isEmpty()) {
@@ -327,8 +355,16 @@ sealed interface BootstrapPhaseDeploy {
                           sourceNodes.size(),
                           peers);
         for (var node : sourceNodes) {
+            var roleResult = BootstrapPhaseProvision.nodeRole(node.nodeId(), sourceName);
+
+            if (roleResult.isFailure()) {
+                return new BootstrapError.DeploymentFailed(node.publicIp(), roleResult.fold(Cause::message, _ -> "")).result();
+            }
+
+            var role = roleResult.unwrap();
             var command = isJvm
                           ? buildJvmRestartCommand(node.nodeId(),
+                                                   role,
                                                    clusterPort,
                                                    managementPort,
                                                    peers,
@@ -338,6 +374,7 @@ sealed interface BootstrapPhaseDeploy {
                           : buildRestartCommand(resolveContainerImage(ctx, source),
                                                 clusterName,
                                                 node.nodeId(),
+                                                role,
                                                 clusterPort,
                                                 managementPort,
                                                 peers,
@@ -438,6 +475,7 @@ sealed interface BootstrapPhaseDeploy {
     static String buildRestartCommand(String image,
                                       ClusterName clusterName,
                                       String nodeId,
+                                      NodeRole role,
                                       int clusterPort,
                                       int managementPort,
                                       String peers,
@@ -445,6 +483,7 @@ sealed interface BootstrapPhaseDeploy {
         return buildRestartCommand(image,
                                    clusterName,
                                    nodeId,
+                                   role,
                                    clusterPort,
                                    managementPort,
                                    peers,
@@ -459,9 +498,15 @@ sealed interface BootstrapPhaseDeploy {
     /// the C2 security gate fails, and the health poll never succeeds. AETHER_CLUSTER_SECRET is
     /// emitted explicitly from the finalized `clusterSecret` param and EXCLUDED from the allow-list
     /// pass (`none()` ref) so it never appears twice. `envLookup` is injectable for unit testing.
+    ///
+    /// #296 — `role` is the node's OWN role, threaded from its id: the `aether-role` label is what
+    /// operators filter tiers by, and the `AETHER_ROLE` the identity pass emits from the same value
+    /// is the SWIM role label, the only worker classifier. A literal `core` here did not merely
+    /// mislabel a non-core node, it reclassified it.
     static String buildRestartCommand(String image,
                                       ClusterName clusterName,
                                       String nodeId,
+                                      NodeRole role,
                                       int clusterPort,
                                       int managementPort,
                                       String peers,
@@ -471,7 +516,7 @@ sealed interface BootstrapPhaseDeploy {
              + " && docker run -d --name aether-node --restart no --network host"
              + " -l aether-cluster=" + clusterName.value()
              + " -l aether-node-id=" + nodeId
-             + " -l aether-role=core"
+             + " -l aether-role=" + role.value()
              + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro"
              + " -e NODE_ID=\"" + nodeId
              + "\""
@@ -482,7 +527,7 @@ sealed interface BootstrapPhaseDeploy {
              + " -e PEERS=\"" + peers
              + "\""
              + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret
-             + "\"" + identityEnvFlags(clusterName, envLookup)
+             + "\"" + identityEnvFlags(clusterName, role, envLookup)
              + " " + image;
     }
 
@@ -490,12 +535,12 @@ sealed interface BootstrapPhaseDeploy {
     /// AETHER_CLUSTER_SECRET, emitted explicitly by the caller). Mirrors the cloud-init start's
     /// emission so the re-launch keeps full env parity. Empty when no allow-list var is present
     /// (prod-safe: unset host env → nothing emitted).
-    private static String identityEnvFlags(ClusterName clusterName, Fn1<String, String> envLookup) {
+    private static String identityEnvFlags(ClusterName clusterName, NodeRole role, Fn1<String, String> envLookup) {
         var sb = new StringBuilder();
 
         UserDataTemplate.emitIdentityEnv((name, value) -> appendRestartEnvFlag(sb, name, value),
                                          clusterName,
-                                         NodeRole.CORE,
+                                         role,
                                          Option.empty(),
                                          envLookup);
 
@@ -511,12 +556,14 @@ sealed interface BootstrapPhaseDeploy {
     static String JVM_JAR_PATH = "/opt/aether/aether-node.jar";
 
     static String buildJvmRestartCommand(String nodeId,
+                                         NodeRole role,
                                          int clusterPort,
                                          int managementPort,
                                          String peers,
                                          String clusterSecret,
                                          ClusterName clusterName) {
         return buildJvmRestartCommand(nodeId,
+                                      role,
                                       clusterPort,
                                       managementPort,
                                       peers,
@@ -547,6 +594,7 @@ sealed interface BootstrapPhaseDeploy {
     /// AETHER_PEERS lines with the stale one last. `0600` is re-applied on every write: the file
     /// carries AETHER_CLUSTER_SECRET.
     static String buildJvmRestartCommand(String nodeId,
+                                         NodeRole role,
                                          int clusterPort,
                                          int managementPort,
                                          String peers,
@@ -558,7 +606,7 @@ sealed interface BootstrapPhaseDeploy {
              + " && chmod 600 " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && printf '%s\\n'"
              + " 'AETHER_CLUSTER_SECRET=" + clusterSecret
-             + "'" + identityEnvAssignments(clusterName, envLookup)
+             + "'" + identityEnvAssignments(clusterName, role, envLookup)
              + " 'AETHER_NODE_ID=" + nodeId
              + "'"
              + " 'AETHER_CLUSTER_PORT=" + clusterPort
@@ -573,12 +621,14 @@ sealed interface BootstrapPhaseDeploy {
 
     /// Space-prefixed `'VAR=value'` printf operands for the cluster-identity allow-list (minus
     /// AETHER_CLUSTER_SECRET, written explicitly by the caller), one env-file line each.
-    private static String identityEnvAssignments(ClusterName clusterName, Fn1<String, String> envLookup) {
+    private static String identityEnvAssignments(ClusterName clusterName,
+                                                 NodeRole role,
+                                                 Fn1<String, String> envLookup) {
         var sb = new StringBuilder();
 
         UserDataTemplate.emitIdentityEnv((name, value) -> appendJvmEnvAssignment(sb, name, value),
                                          clusterName,
-                                         NodeRole.CORE,
+                                         role,
                                          Option.empty(),
                                          envLookup);
 
@@ -634,8 +684,8 @@ sealed interface BootstrapPhaseDeploy {
     private static List<ProvisionedNode> collectSourceNodes(BootstrapContext ctx, SourceName sourceName) {
         return ctx.nodes()
                   .stream()
-                  .filter(n -> n.nodeId()
-                                .startsWith(sourceName.value() + "-"))
+                  .filter(n -> BootstrapPhaseProvision.belongsTo(n.nodeId(),
+                                                                 sourceName))
                   .toList();
     }
 
@@ -704,39 +754,62 @@ sealed interface BootstrapPhaseDeploy {
         return Result.unitResult();
     }
 
+    /// #1090 — the SSH source's launch, brought level with the cloud re-launch it used to be a
+    /// hand-rolled copy of: only THIS source's hosts (exact id attribution, not every `ssh` node
+    /// in the context), each with its OWN role (label + `AETHER_ROLE`, else the node classifies
+    /// itself as CORE), the image the runtime profile resolves to (never `:latest`), and the
+    /// [ClusterIdentityEnv#IDENTITY_VARS] env names the cloud path forwards from the operator's
+    /// host env. The container is the only runtime this path can launch: the validator refuses a
+    /// JVM or Ember profile on an SSH source at config load (PF-22, before anything provisions),
+    /// and this path refuses it by name again rather than silently run it as a container —
+    /// installing a JVM unit over SSH is the cloud-init script's job and has no SSH equivalent yet.
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
-    private static Result<Unit> deploySshSource(BootstrapContext ctx, SourceProfile source, SourceName sourceName) {
+    static Result<Unit> deploySshSource(BootstrapContext ctx,
+                                        SourceProfile source,
+                                        SourceName sourceName,
+                                        Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                        Fn4<Result<Unit>, String, String, String, SshConfig> scpExec,
+                                        Fn1<String, String> envLookup) {
         var sshConfig = buildSshConfig(source);
         var clusterName = ctx.config().cluster().name();
-        var peers = buildThreePartPeers(ctx);
-        var peersValue = String.join(",", peers);
+        var peersValue = String.join(",", buildThreePartPeers(ctx));
         var clusterSecret = ctx.clusterSecret();
         var clusterPort = ctx.config().operations().ports().cluster();
         var managementPort = ctx.config().operations().ports().management();
         var nodeIndex = 0;
 
         for (var node : ctx.nodes()) {
-            if (!node.serverId().equals("ssh")) {
+            if (!node.serverId().equals("ssh") || !BootstrapPhaseProvision.belongsTo(node.nodeId(), sourceName)) {
                 nodeIndex++;
                 continue;
             }
 
-            var nodeIdValue = node.nodeId();
-            var result = NodeConfigBuilder.compose(ctx,
-                                                   source,
-                                                   nodeIndex,
-                                                   NodeRole.CORE,
-                                                   Option.empty(),
-                                                   Option.some(clusterSecret))
-                                          .flatMap(doc -> deploySshNode(node,
-                                                                        TomlWriter.toToml(doc),
-                                                                        sshConfig,
-                                                                        clusterName,
-                                                                        nodeIdValue,
-                                                                        clusterPort,
-                                                                        managementPort,
-                                                                        peersValue,
-                                                                        clusterSecret));
+            var index = nodeIndex;
+            var result = BootstrapPhaseProvision.nodeRole(node.nodeId(),
+                                                          sourceName)
+                                                .flatMap(role -> sshContainerImage(ctx,
+                                                                                   source,
+                                                                                   role,
+                                                                                   node.nodeId()).flatMap(image -> NodeConfigBuilder.compose(ctx,
+                                                                                                                                             source,
+                                                                                                                                             index,
+                                                                                                                                             role,
+                                                                                                                                             Option.empty(),
+                                                                                                                                             Option.some(clusterSecret))
+                                                                                                                                    .flatMap(doc -> deploySshNode(node,
+                                                                                                                                                                  TomlWriter.toToml(doc),
+                                                                                                                                                                  sshConfig,
+                                                                                                                                                                  buildSshStartCommand(image,
+                                                                                                                                                                                       clusterName,
+                                                                                                                                                                                       node.nodeId(),
+                                                                                                                                                                                       role,
+                                                                                                                                                                                       clusterPort,
+                                                                                                                                                                                       managementPort,
+                                                                                                                                                                                       peersValue,
+                                                                                                                                                                                       clusterSecret,
+                                                                                                                                                                                       envLookup),
+                                                                                                                                                                  sshExec,
+                                                                                                                                                                  scpExec))));
 
             if (result.isFailure()) {
                 return result;
@@ -750,41 +823,80 @@ sealed interface BootstrapPhaseDeploy {
         return Result.unitResult();
     }
 
-    static List<String> buildThreePartPeers(BootstrapContext ctx) {
-        var nodes = ctx.nodes();
-        var addresses = ctx.addresses();
-        var clusterPort = ctx.config().operations().ports().cluster();
-        var size = Math.min(nodes.size(), addresses.size());
+    /// The image for THIS role's runtime profile — the same resolution the cloud path makes, per
+    /// role rather than for CORE only, and refusing a non-container runtime instead of ignoring it.
+    private static Result<String> sshContainerImage(BootstrapContext ctx,
+                                                    SourceProfile source,
+                                                    NodeRole role,
+                                                    String nodeId) {
+        var profile = Option.option(source.roles().get(role))
+                            .map(RoleSubTable::runtimeRef)
+                            .flatMap(ref -> Option.option(ctx.config().runtimes().get(ref)));
+        var type = profile.map(RuntimeProfile::type).or(RuntimeType.CONTAINER);
 
-        return IntStream.range(0, size)
-                        .mapToObj(i -> nodes.get(i)
-                                            .nodeId() + ":" + addresses.get(i)
-                                                                       .publicIp() + ":" + clusterPort)
-                        .toList();
+        if (type != RuntimeType.CONTAINER) {
+            return new BootstrapError.DeploymentFailed(nodeId,
+                                                       "SSH source '" + sourceNameOf(source)
+                                                      + "' declares runtime '" + profile.map(RuntimeProfile::name)
+                                                                                        .or("?")
+                                                      + "' of type " + type
+                                                      + "; only CONTAINER can be launched over SSH in this release (#1090)").result();
+        }
+
+        return Result.success(profile.flatMap(RuntimeProfile::image).or(derivedImage(ctx)));
+    }
+
+    private static String sourceNameOf(SourceProfile source) {
+        return source.name()
+                     .value();
+    }
+
+    /// One launch line, built from the SAME builder the cloud re-launch uses ([#buildRestartCommand]),
+    /// so role label, `AETHER_ROLE`, node id, identity allow-list and image are threaded once. The
+    /// prefix creates the config dir (the scp before it needs it) and pulls the resolved image; the
+    /// `docker rm -f … || true` inside the builder makes a re-run on the same host idempotent.
+    static String buildSshStartCommand(String image,
+                                       ClusterName clusterName,
+                                       String nodeId,
+                                       NodeRole role,
+                                       int clusterPort,
+                                       int managementPort,
+                                       String peers,
+                                       String clusterSecret,
+                                       Fn1<String, String> envLookup) {
+        return "mkdir -p /opt/aether/config && docker pull " + image
+             + " && " + buildRestartCommand(image,
+                                            clusterName,
+                                            nodeId,
+                                            role,
+                                            clusterPort,
+                                            managementPort,
+                                            peers,
+                                            clusterSecret,
+                                            envLookup);
     }
 
     @SuppressWarnings("JBCT-EX-01")
     private static Result<Unit> deploySshNode(ProvisionedNode node,
                                               String nodeConfig,
                                               SshConfig sshConfig,
-                                              ClusterName clusterName,
-                                              String nodeId,
-                                              int clusterPort,
-                                              int managementPort,
-                                              String peers,
-                                              String clusterSecret) {
-        return writeNodeConfigToTemp(node.nodeId(),
-                                     nodeConfig).flatMap(tempPath -> scpConfigToNode(tempPath,
-                                                                                     node.publicIp(),
-                                                                                     sshConfig))
-                                    .flatMap(_ -> startRuntimeViaSsh(node.publicIp(),
-                                                                     sshConfig,
-                                                                     clusterName,
-                                                                     nodeId,
-                                                                     clusterPort,
-                                                                     managementPort,
-                                                                     peers,
-                                                                     clusterSecret));
+                                              String startCommand,
+                                              Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                              Fn4<Result<Unit>, String, String, String, SshConfig> scpExec) {
+        // The config dir must exist before the scp lands in it; the launch line recreates it harmlessly.
+        return sshExec.apply(node.publicIp(),
+                             "mkdir -p /opt/aether/config",
+                             sshConfig)
+                      .flatMap(_ -> writeNodeConfigToTemp(node.nodeId(),
+                                                          nodeConfig))
+                      .flatMap(tempPath -> scpExec.apply(tempPath.toString(),
+                                                         node.publicIp(),
+                                                         "/opt/aether/config/aether.toml",
+                                                         sshConfig))
+                      .flatMap(_ -> sshExec.apply(node.publicIp(),
+                                                  startCommand,
+                                                  sshConfig))
+                      .mapToUnit();
     }
 
     private static Result<Path> writeNodeConfigToTemp(String nodeId, String content) {
@@ -803,45 +915,25 @@ sealed interface BootstrapPhaseDeploy {
         return new BootstrapError.DeploymentFailed(nodeId, "Failed to write temp config: " + message);
     }
 
-    private static Result<Unit> scpConfigToNode(Path localPath, String host, SshConfig sshConfig) {
-        return RemoteCommandRunner.scp(localPath.toString(), host, "/opt/aether/config/aether.toml", sshConfig);
-    }
-
-    private static Result<Unit> startRuntimeViaSsh(String host,
-                                                   SshConfig sshConfig,
-                                                   ClusterName clusterName,
-                                                   String nodeId,
-                                                   int clusterPort,
-                                                   int managementPort,
-                                                   String peers,
-                                                   String clusterSecret) {
-        var peersEnv = peers.isEmpty()
-                       ? ""
-                       : " -e PEERS=\"" + peers + "\"";
-        var startCommand = "mkdir -p /opt/aether/config"
-                         + " && docker pull ghcr.io/pragmaticalabs/aether-node:latest"
-                         + " && docker run -d --name aether-node --restart no --network host"
-                         + " -l aether-cluster=" + clusterName.value()
-                         + " -e NODE_ID=\"" + nodeId
-                         + "\""
-                         + " -e CLUSTER_PORT=\"" + clusterPort
-                         + "\""
-                         + " -e MANAGEMENT_PORT=\"" + managementPort
-                         + "\"" + peersEnv
-                         + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret
-                         + "\""
-                         + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro"
-                         + " ghcr.io/pragmaticalabs/aether-node:latest";
-
-        return RemoteCommandRunner.ssh(host, startCommand, sshConfig).mapToUnit();
-    }
-
     private static SshConfig buildSshConfig(SourceProfile source) {
         var user = source.user().or("root");
         var keyPath = source.key().or("~/.ssh/id_rsa");
         var port = source.sshPort().or(22);
 
         return SshConfig.sshConfig(user, keyPath, port);
+    }
+
+    static List<String> buildThreePartPeers(BootstrapContext ctx) {
+        var nodes = ctx.nodes();
+        var addresses = ctx.addresses();
+        var clusterPort = ctx.config().operations().ports().cluster();
+        var size = Math.min(nodes.size(), addresses.size());
+
+        return IntStream.range(0, size)
+                        .mapToObj(i -> nodes.get(i)
+                                            .nodeId() + ":" + addresses.get(i)
+                                                                       .publicIp() + ":" + clusterPort)
+                        .toList();
     }
 
     static Result<TomlDocument> composeNodeConfig(BootstrapContext ctx,

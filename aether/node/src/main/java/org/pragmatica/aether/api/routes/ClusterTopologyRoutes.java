@@ -19,6 +19,8 @@ import org.pragmatica.aether.api.ManagementApiResponses.AutoHealToggleResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.CircuitBreakerResetResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.CircuitBreakerStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterMembershipResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.RoleMismatchEntry;
+import org.pragmatica.aether.api.ManagementApiResponses.RoleMismatchesResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.FsmMemberDetail;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorsResponse;
@@ -90,6 +92,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
                          ManagementRoutes.<CircuitBreakerStatusResponse> route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_STATUS).toJson(_ -> buildCircuitBreakerStatus()),
                          ManagementRoutes.<CircuitBreakerResetResponse> route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_RESET).toJson(_ -> resetCircuitBreaker()),
                          ManagementRoutes.<AutoHealStatusResponse> route(ManagementRoute.CLUSTER_AUTO_HEAL_STATUS).toJson(_ -> buildAutoHealStatus()),
+                         ManagementRoutes.<RoleMismatchesResponse> route(ManagementRoute.CLUSTER_ROLE_MISMATCHES).toJson(_ -> buildRoleMismatches()),
                          ManagementRoutes.<AutoHealToggleResponse> route(ManagementRoute.CLUSTER_AUTO_HEAL_ENABLE).toJson(_ -> setAutoHeal(true)),
                          ManagementRoutes.<AutoHealToggleResponse> route(ManagementRoute.CLUSTER_AUTO_HEAL_DISABLE).toJson(_ -> setAutoHeal(false)));
     }
@@ -112,6 +115,20 @@ public final class ClusterTopologyRoutes implements RouteSource {
 
                                 return new CircuitBreakerResetResponse("reset", prior);
                             })
+                     .async(CTM_UNAVAILABLE);
+    }
+
+    /// #689: the operator-visible half of the role-mismatch detection — the same ledger the CTM's
+    /// WARN writes, so a suppressed community-tier fence on a mislabelled node is explainable
+    /// without log access.
+    private Promise<RoleMismatchesResponse> buildRoleMismatches() {
+        return ctmOpt().map(ctm -> new RoleMismatchesResponse(ctm.roleMismatches()
+                                                                 .stream()
+                                                                 .map(m -> new RoleMismatchEntry(m.nodeId().id(),
+                                                                                                 m.intendedRole(),
+                                                                                                 m.advertisedRole(),
+                                                                                                 m.classifiedAs()))
+                                                                 .toList()))
                      .async(CTM_UNAVAILABLE);
     }
 

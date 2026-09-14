@@ -10,6 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.environment.SourceName;
@@ -18,11 +19,14 @@ import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.Number;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.parse.TimeSpan.timeSpan;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
@@ -79,13 +83,13 @@ public final class ClusterBootstrapConfigParser {
         var infrastructure = parseInfrastructure(doc);
         var operations = parseOperations(doc);
 
-        return sources.map(s -> ClusterBootstrapConfig.clusterBootstrapConfig(version,
-                                                                              cluster,
-                                                                              coreTopology,
-                                                                              s,
-                                                                              runtimes,
-                                                                              infrastructure,
-                                                                              operations));
+        return Result.all(sources, operations).map((s, ops) -> ClusterBootstrapConfig.clusterBootstrapConfig(version,
+                                                                                                             cluster,
+                                                                                                             coreTopology,
+                                                                                                             s,
+                                                                                                             runtimes,
+                                                                                                             infrastructure,
+                                                                                                             ops));
     }
 
     /// W6 — document-level format gate (RFC-0016 §3.5). `config_version` is the version of the whole
@@ -237,8 +241,65 @@ public final class ClusterBootstrapConfigParser {
                                                             SourceName name,
                                                             String section,
                                                             SourceType type) {
-        return parseProvider(doc, section).map(provider -> assembleSourceProfile(doc, name, section, type, provider));
+        return Result.all(parseProvider(doc, section), parseReplacementCeiling(doc, section)).map((provider, ceiling) -> assembleSourceProfile(doc,
+                                                                                                                                               name,
+                                                                                                                                               section,
+                                                                                                                                               type,
+                                                                                                                                               provider,
+                                                                                                                                               ceiling));
     }
+
+    /// #1049 — `replacement_ceiling` is optional (absent → the runtime's ten-minute default), but a
+    /// present value that is not a positive duration must fail loudly: a typo silently falling back to the
+    /// default would leave an operator believing a ceiling is in force that is not, and a zero ceiling
+    /// would re-dispatch every replacement the moment it was minted.
+    private static Result<Option<TimeSpan>> parseReplacementCeiling(TomlDocument doc, String section) {
+        return doc.getString(section, REPLACEMENT_CEILING_KEY)
+                  .fold(() -> success(none()),
+                        raw -> resolveReplacementCeiling(section, raw));
+    }
+
+    private static Result<Option<TimeSpan>> resolveReplacementCeiling(String section, String raw) {
+        return timeSpan(raw).mapError(cause -> parseFailed(section
+                                                          + "." + REPLACEMENT_CEILING_KEY
+                                                          + ": " + cause.message()
+                                                          + " (was '" + raw
+                                                          + "')"))
+                       .map(parsed -> TimeSpan.fromDuration(parsed.duration()))
+                       .flatMap(ceiling -> requirePositiveCeiling(section, raw, ceiling))
+                       .flatMap(ceiling -> requireCeilingAboveMinimum(section, raw, ceiling))
+                       .map(Option::some);
+    }
+
+    private static Result<TimeSpan> requirePositiveCeiling(String section, String raw, TimeSpan ceiling) {
+        if (ceiling.nanos() <= 0) {
+            return parseFailed(section
+                              + "." + REPLACEMENT_CEILING_KEY
+                              + " must be a positive duration, e.g. \"10m\" (was '" + raw
+                              + "')").result();
+        }
+
+        return success(ceiling);
+    }
+
+    /// #1049 — refuse, at load, a ceiling that cannot outlast the first-listing floor plus a join allowance
+    /// ([SourceProfile#MINIMUM_REPLACEMENT_CEILING]); never clamp it, so the operator sees the value that
+    /// is in force.
+    private static Result<TimeSpan> requireCeilingAboveMinimum(String section, String raw, TimeSpan ceiling) {
+        if (ceiling.nanos() <= SourceProfile.MINIMUM_REPLACEMENT_CEILING.nanos()) {
+            return parseFailed(section
+                              + "." + REPLACEMENT_CEILING_KEY
+                              + " must exceed " + SourceProfile.MINIMUM_REPLACEMENT_CEILING.duration().toMinutes()
+                              + "m: the " + SourceProfile.REPLACEMENT_FIRST_LISTING_FLOOR.duration().toMinutes()
+                              + "m an absent replacement is watched for plus a " + SourceProfile.REPLACEMENT_JOIN_ALLOWANCE.duration().toMinutes()
+                              + "m join allowance; a shorter ceiling re-dispatches replacements that are still booting (was '" + raw
+                              + "')").result();
+        }
+
+        return success(ceiling);
+    }
+
+    private static final String REPLACEMENT_CEILING_KEY = "replacement_ceiling";
 
     /// `provider` is optional (SSH / forge / docker sources have none) but must NOT be silently
     /// dropped on a typo. Absent → `Success(None)`; present + valid → `Success(Some)`; present +
@@ -264,7 +325,8 @@ public final class ClusterBootstrapConfigParser {
                                                        SourceName name,
                                                        String section,
                                                        SourceType type,
-                                                       Option<CloudProviderName> provider) {
+                                                       Option<CloudProviderName> provider,
+                                                       Option<TimeSpan> replacementCeiling) {
         var credentials = doc.getString(section, "credentials");
         var region = doc.getString(section, "region");
         var zone = doc.getString(section, "zone");
@@ -296,7 +358,8 @@ public final class ClusterBootstrapConfigParser {
                                            databases,
                                            roles,
                                            firewallRules,
-                                           nodeConfig);
+                                           nodeConfig,
+                                           replacementCeiling);
     }
 
     private static Option<TomlDocument> parseNodeConfig(TomlDocument doc, String sourceName) {
@@ -537,59 +600,83 @@ public final class ClusterBootstrapConfigParser {
         return multiple;
     }
 
-    private static OperationsConfig parseOperations(TomlDocument doc) {
+    private static Result<OperationsConfig> parseOperations(TomlDocument doc) {
         if (!doc.hasSection(OPERATIONS_SECTION) && !doc.hasSection(OPERATIONS_AUTO_HEAL_SECTION) && !doc.hasSection(OPERATIONS_TLS_SECTION) && !doc.hasSection(OPERATIONS_TIMEOUTS_SECTION) && !doc.hasSection(OPERATIONS_PORTS_SECTION)) {
-            return OperationsConfig.defaultOperationsConfig();
+            return success(OperationsConfig.defaultOperationsConfig());
         }
 
-        return OperationsConfig.operationsConfig(parseAutoHealSpec(doc),
-                                                 parseTlsConfig(doc),
-                                                 parseTimeoutsConfig(doc),
-                                                 parsePortMapping(doc));
+        return parseAutoHealSpec(doc).map(autoHeal -> OperationsConfig.operationsConfig(autoHeal,
+                                                                                        parseTlsConfig(doc),
+                                                                                        parseTimeoutsConfig(doc),
+                                                                                        parsePortMapping(doc)));
     }
 
-    private static AutoHealSpec parseAutoHealSpec(TomlDocument doc) {
+    /// #675: every `[operations.auto_heal]` key other than `enabled` parsed into `AutoHealSpec` and
+    /// reached no node — the runtime's `AutoHealConfig` is built from the NODE config (`[cluster]
+    /// max_nodes`, `[timeouts.scaling] auto_heal_*`), never from this document. A tunable that changes
+    /// nothing is refused loudly, mirroring PF-25 (`enabled = false`) and PF-23, and the refusal names
+    /// EVERY stale key at once so one bootstrap attempt reports them all.
+    private static final List<String> REMOVED_AUTO_HEAL_KEYS = List.of("retry_interval",
+                                                                       "startup_cooldown",
+                                                                       "stale_observation_ttl",
+                                                                       "quic_miss_promotion_threshold",
+                                                                       "provisioning_timeout",
+                                                                       "provision_stability_window",
+                                                                       "decommissioned_retention",
+                                                                       "swim_hints_ttl");
+
+    /// The three removed keys that named a timing the runtime DOES read, and the node-config key
+    /// (`[timeouts.scaling]`) that sets it now. The other five named nothing that is read anywhere.
+    private static final Map<String, String> AUTO_HEAL_NODE_KEYS = Map.of("startup_cooldown",
+                                                                          "auto_heal_startup_cooldown",
+                                                                          "provisioning_timeout",
+                                                                          "auto_heal_provisioning_timeout",
+                                                                          "swim_hints_ttl",
+                                                                          "auto_heal_swim_hints_ttl");
+
+    private static Result<AutoHealSpec> parseAutoHealSpec(TomlDocument doc) {
         if (doc.hasSection(OPERATIONS_AUTO_HEAL_SECTION)) {
-            return parseAutoHealFromSection(doc);
+            var enabled = doc.getBoolean(OPERATIONS_AUTO_HEAL_SECTION, "enabled").or(true);
+
+            return refuseRemovedAutoHealKeys(doc).map(_ -> AutoHealSpec.autoHealSpec(enabled));
         }
 
-        return doc.getBoolean(OPERATIONS_SECTION, "auto_heal")
-                  .map(ClusterBootstrapConfigParser::autoHealFromShortcut)
-                  .or(AutoHealSpec.defaultAutoHealSpec());
+        return success(doc.getBoolean(OPERATIONS_SECTION, "auto_heal")
+                          .map(AutoHealSpec::autoHealSpec)
+                          .or(AutoHealSpec.defaultAutoHealSpec()));
     }
 
-    private static AutoHealSpec autoHealFromShortcut(boolean enabled) {
-        var defaults = AutoHealSpec.defaultAutoHealSpec();
+    private static Result<Unit> refuseRemovedAutoHealKeys(TomlDocument doc) {
+        var present = doc.keys(OPERATIONS_AUTO_HEAL_SECTION);
+        var removed = REMOVED_AUTO_HEAL_KEYS.stream().filter(present::contains).toList();
 
-        return AutoHealSpec.autoHealSpec(enabled, defaults.retryInterval(), defaults.startupCooldown());
+        return removed.isEmpty()
+               ? Result.unitResult()
+               : removedAutoHealKeys(removed);
     }
 
-    private static AutoHealSpec parseAutoHealFromSection(TomlDocument doc) {
-        var enabled = doc.getBoolean(OPERATIONS_AUTO_HEAL_SECTION, "enabled").or(true);
-        var retryInterval = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "retry_interval").or("60s");
-        var startupCooldown = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "startup_cooldown").or("15s");
-        var staleObservationTtl = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "stale_observation_ttl")
-                                     .or(AutoHealSpec.DEFAULT_STALE_OBSERVATION_TTL);
-        var quicMissPromotionThreshold = doc.getInt(OPERATIONS_AUTO_HEAL_SECTION, "quic_miss_promotion_threshold")
-                                            .or(AutoHealSpec.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD);
-        var provisioningTimeout = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "provisioning_timeout")
-                                     .or(AutoHealSpec.DEFAULT_PROVISIONING_TIMEOUT);
-        var provisionStabilityWindow = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "provision_stability_window")
-                                          .or(AutoHealSpec.DEFAULT_PROVISION_STABILITY_WINDOW);
-        var decommissionedRetention = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "decommissioned_retention")
-                                         .or(AutoHealSpec.DEFAULT_DECOMMISSIONED_RETENTION);
-        var swimHintsTtl = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "swim_hints_ttl")
-                              .or(AutoHealSpec.DEFAULT_SWIM_HINTS_TTL);
+    private static Result<Unit> removedAutoHealKeys(List<String> keys) {
+        var them = keys.size() == 1
+                   ? "it"
+                   : "them";
 
-        return AutoHealSpec.autoHealSpec(enabled,
-                                         retryInterval,
-                                         startupCooldown,
-                                         staleObservationTtl,
-                                         quicMissPromotionThreshold,
-                                         provisioningTimeout,
-                                         provisionStabilityWindow,
-                                         decommissionedRetention,
-                                         swimHintsTtl);
+        return parseFailed("PF-26: [operations.auto_heal] " + String.join(", ", keys)
+                          + " never took effect — the node builds its auto-heal settings from its own aether.toml"
+                          + " and never reads this document. Remove " + them
+                          + " (#675)." + relocatedAutoHealKeys(keys)).result();
+    }
+
+    /// Where each live timing is set now, so the refusal is not a dead end for an operator who tuned one.
+    private static String relocatedAutoHealKeys(List<String> keys) {
+        var relocated = keys.stream()
+                            .filter(AUTO_HEAL_NODE_KEYS::containsKey)
+                            .map(key -> key + " -> [timeouts.scaling] " + AUTO_HEAL_NODE_KEYS.get(key))
+                            .collect(Collectors.joining(", "));
+
+        return relocated.isEmpty()
+               ? ""
+               : " Set the live timing in the NODE config instead: " + relocated
+                + " (from this file: [source.<name>.node_config.timeouts.scaling]).";
     }
 
     private static TlsDeploymentConfig parseTlsConfig(TomlDocument doc) {

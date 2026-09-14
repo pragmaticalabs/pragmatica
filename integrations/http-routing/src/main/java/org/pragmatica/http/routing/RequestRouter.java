@@ -94,12 +94,21 @@ public final class RequestRouter {
     private Option<Route<?>> selectBestRoute(List<Route<?>> candidates, String inputPath) {
         // A candidate whose handler needs more trailing segments than the request supplies cannot
         // serve it: dispatching anyway reaches the handler and dies at pathParam(), which surfaces
-        // as "Unknown request path" instead of the ordinary no-match. Spacer routes carry their own
-        // matching and are left to it.
+        // as "Unknown request path" instead of the ordinary no-match. Arity counts spacers too, so
+        // spacer routes are held to it as well (#764) — and additionally to their spacers being
+        // present, so neither the single-candidate shortcut nor the fallback below can hand back a
+        // spacer route the path does not name.
+        // #1101: a route that declares parameters consumes exactly that many trailing segments — an
+        // over-length path is a MISS, never a dispatch of the first N (that dispatch, paired with a
+        // weaker prefix authorisation, was a privilege escalation). An arity-0 route keeps its prefix
+        // tolerance: `StaticFileRouteSource` registers `route(GET, urlPrefix, …)` and consumes the
+        // remainder itself, and an arity-0 handler binds nothing positional.
         var viable = candidates.stream()
-                               .filter(route -> !route.spacers().isEmpty()
-                                                || route.pathParamCount() <= trailingSegmentCount(route.path(),
-                                                                                                  inputPath))
+                               .filter(route -> arityAdmits(route,
+                                                            trailingSegmentCount(route.path(),
+                                                                                 inputPath)))
+                               .filter(route -> route.spacers()
+                                                     .isEmpty() || routeMatchesPath(route, inputPath))
                                .toList();
 
         if (viable.isEmpty()) {
@@ -117,6 +126,10 @@ public final class RequestRouter {
                : findArityMatchingRoute(viable, inputPath);
     }
 
+    private static boolean arityAdmits(Route<?> route, int trailing) {
+        return route.pathParamCount() == 0 || route.pathParamCount() == trailing;
+    }
+
     private Option<Route<?>> findMatchingSpacerRoute(List<Route<?>> candidates, String inputPath) {
         return Option.from(candidates.stream()
                                      .filter(route -> !route.spacers()
@@ -126,8 +139,10 @@ public final class RequestRouter {
     }
 
     /// Select the spacer-free candidate whose declared path arity equals the request's trailing
-    /// segment count. Falls back to a no-arity (collection) route, then to the first candidate, so
-    /// a match is always returned for a path that reached this point.
+    /// segment count, falling back to the first spacer-free candidate. Every spacer route that
+    /// reaches this point already matched its spacers and was preferred above, so with no
+    /// spacer-free candidate left there is nothing that can serve the path — a miss, not the first
+    /// registered route.
     private Option<Route<?>> findArityMatchingRoute(List<Route<?>> candidates, String inputPath) {
         var trailingSegments = trailingSegmentCount(candidates.getFirst().path(),
                                                     inputPath);
@@ -140,10 +155,8 @@ public final class RequestRouter {
     }
 
     private Option<Route<?>> findFallbackRoute(List<Route<?>> candidates) {
-        var noSpacerRoute = candidates.stream().filter(route -> route.spacers()
-                                                                     .isEmpty()).findFirst();
-
-        return Option.some(noSpacerRoute.orElse(candidates.getFirst()));
+        return Option.from(candidates.stream().filter(route -> route.spacers()
+                                                                    .isEmpty()).findFirst());
     }
 
     /// Count the trailing path segments of `inputPath` beyond the candidates' shared `basePath`.

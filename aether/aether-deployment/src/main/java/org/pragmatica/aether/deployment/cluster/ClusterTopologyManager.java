@@ -22,6 +22,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyManager;
@@ -29,6 +30,7 @@ import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 
 
 @SuppressWarnings("JBCT-RET-01")
@@ -53,6 +55,35 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// leader activation. Default no-op so test fakes and non-provisioning implementations are
     /// untouched.
     default void reconcileWorkerTopology() {}
+
+    /// #689 — the non-core join channel (#728), delivered so the leader can compare the role it
+    /// PROVISIONED a node with against the role the node ADVERTISES. Workers never appear in
+    /// `MembershipDecision`, so without this a core-intended replacement that boots labelled
+    /// `worker` would be invisible to the comparison. Default no-op so test fakes are untouched.
+    default void onWorkerJoin(WorkerJoinDecision decision) {}
+
+    /// #689 — every provisioned node whose LAST observed join advertised a role other than the one it
+    /// was provisioned with (including none), leader-scoped: intents live with the leader that minted
+    /// the node id, so a new leader reports none — absence of intent is not a mismatch. The intent is
+    /// retained for the id until the node is decommissioned, so every rejoin under that id is
+    /// re-compared: a still-mislabelled restart re-reports, a correctly relabelled one clears the
+    /// entry. A departed node's entry stays listed until decommission or leader change. The
+    /// classification itself is unchanged (blank counts as core); this is the record that says so.
+    default List<RoleMismatch> roleMismatches() {
+        return List.of();
+    }
+
+    /// One provisioned node whose advertised role label disagrees with its provisioning intent.
+    /// `advertisedRole` is the role the membership FSM holds for the node (`MemberDescriptor.role`,
+    /// `""` when no label ever arrived); `classifiedAs` is what `MemberDescriptor.isCoreRole` made of it.
+    record RoleMismatch(NodeId nodeId, String intendedRole, String advertisedRole, String classifiedAs) {}
+
+    /// #1050 (verify-1057-r2 S1) — raw SWIM declared `nodeId` FAULTY: positive death evidence, delivered by the
+    /// SWIM observation listener at the FAULTY edge. A departed-node reap that ran out of liveness re-checks while
+    /// SWIM still reported the node SUSPECTED (the suspicion window is LHM-scaled and can outlast the whole re-check
+    /// budget) is re-armed by this evidence; nothing else is. Default no-op so test fakes and non-provisioning
+    /// implementations are untouched.
+    default void onSwimFaulty(NodeId nodeId) {}
 
     void onClusterPhaseChanged(ClusterPhase newPhase);
     void activate();
@@ -121,13 +152,29 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                        NodeRole intendedRole);
 
     /// Membership v2 / E2 — drain a specific node. Targets either the operator/scale-down
-    /// flow or the overprovision-drain path. `reason` is observability-only at this layer.
+    /// flow or the overprovision-drain path. `reason` is observability-only at this layer except for
+    /// [`DrainReason#isSurplusTrim`], which makes the grace-terminate backstop re-check before reaping
+    /// (#1050).
     /// Returns a `Promise<Unit>` resolving once the drain has been initiated (the target node
     /// observes the `DRAIN` command on the leader↔node heartbeat and self-drains per spec §8).
     ///
     /// Drain is delivered as a heartbeat command (spec §7.5.4) and is heartbeat-reported /
     /// leader-cached — there is no KV drain record and no node-state KV write on this path.
     Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason);
+    /// #1049 — what the compute provider reports about the instance behind the auto-heal replacement
+    /// minted as `nodeId`: [ReplacementInstanceState#PRESENT] while it provisions or runs,
+    /// [ReplacementInstanceState#FAILED] once every listed instance is stopping or terminated,
+    /// [ReplacementInstanceState#ABSENT] when the provider lists none, and
+    /// [ReplacementInstanceState#UNKNOWN] when it cannot answer or reports only statuses it cannot state
+    /// (and none provisioning or running). The returned `Promise` does not fail:
+    /// an unanswerable query IS the `UNKNOWN` answer, so the caller never has to guess what a failure
+    /// meant. One provider listing per call — the caller owns the cadence.
+    Promise<ReplacementInstanceState> replacementInstanceState(NodeId nodeId);
+    /// #1049 — the hard ceiling on how long an auto-heal replacement of `intendedRole` may stay in-flight
+    /// while its provider still reports it existing or booting (or cannot report at all). Resolved from
+    /// the `replacement_ceiling` of the cloud source backing the role in the persisted cluster config,
+    /// else the ten-minute `SourceProfile.DEFAULT_REPLACEMENT_CEILING`.
+    TimeSpan replacementCeiling(NodeRole intendedRole);
     /// Membership v2 / E2 — reconcile current cluster membership against configured size
     /// (spec §7.4). Derives action from the SWIM-converged member count plus the KV
     /// configured count: shortfall → `provisionReplacement` per missing slot; surplus →
@@ -159,8 +206,8 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// Membership v2 / B5b production factory. Wires the leader's DRAIN command channel:
     /// `drainCommandSink` enqueues a drain target into the `DrainCommandRegistry` (so the leader's
     /// cluster-sync ping carries the target in its global `drainNodes` set, and the target self-drains via its
-    /// `DrainProcedure`); `drainCommandClear` removes the target after the CTM grace-terminate
-    /// backstop reaps the container. `AetherNode` wires these to
+    /// `DrainProcedure`); `drainCommandClear` removes the target when the CTM grace-terminate
+    /// backstop fires, whether or not it reaps (#1050). `AetherNode` wires these to
     /// `DrainCommandRegistry::requestDrain` / `::clearDrain`.
     ///
     /// #685 review round 1 NOTE 4 — `autoHealStateReader` is REQUIRED here, not defaulted: a
@@ -177,7 +224,8 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          Supplier<ClusterPhase> phaseSupplier,
                                                          Consumer<NodeId> drainCommandSink,
                                                          Consumer<NodeId> drainCommandClear,
-                                                         Supplier<Option<AutoHealStateValue>> autoHealStateReader) {
+                                                         Supplier<Option<AutoHealStateValue>> autoHealStateReader,
+                                                         MembershipLiveness liveness) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
                                                                          lifecycleManager,
                                                                          config,
@@ -189,7 +237,8 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          System::currentTimeMillis,
                                                                          drainCommandSink,
                                                                          drainCommandClear,
-                                                                         autoHealStateReader);
+                                                                         autoHealStateReader,
+                                                                         liveness);
     }
 
     /// #336 production factory — additionally wires the leader's OWN RESOLVED config as
@@ -206,6 +255,10 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// `autoHealStateReader` (#685) is the durable KV read for the operator's auto-heal
     /// enable/disable flag — a direct local lookup against `AetherKey.AutoHealStateKey.SINGLETON`,
     /// never a separately-maintained cache. `AetherNode` wires it to the production `KVStore`.
+    ///
+    /// `liveness` (#1050 / #1062) is the membership and liveness evidence consulted before every irreversible
+    /// reap — the drain-grace backstop, the departed-node reap and the activation replay
+    /// ([MembershipLiveness]). REQUIRED for the same fail-open reason as `autoHealStateReader`.
     static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
                                                          NodeLifecycleManager lifecycleManager,
                                                          AutoHealConfig config,
@@ -217,7 +270,8 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          Consumer<NodeId> drainCommandSink,
                                                          Consumer<NodeId> drainCommandClear,
                                                          Supplier<Option<TomlDocument>> resolvedLocalConfig,
-                                                         Supplier<Option<AutoHealStateValue>> autoHealStateReader) {
+                                                         Supplier<Option<AutoHealStateValue>> autoHealStateReader,
+                                                         MembershipLiveness liveness) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
                                                                          lifecycleManager,
                                                                          config,
@@ -230,6 +284,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          drainCommandSink,
                                                                          drainCommandClear,
                                                                          resolvedLocalConfig,
-                                                                         autoHealStateReader);
+                                                                         autoHealStateReader,
+                                                                         liveness);
     }
 }

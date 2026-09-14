@@ -26,7 +26,9 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.IntSupplier;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -68,7 +70,9 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// partition's owner is itself a candidate and owner-preference keeps every read local — that is the
 /// control. [DeclarativeConsumerPlacementTest] deploys the SAME stream at `instances = 1`, where the
 /// owners cannot run the consumer and reads must be forwarded. Having both means a change that fixes
-/// the uncovered case by breaking the co-located one cannot pass.
+/// the uncovered case by breaking the co-located one cannot pass. `setUp` therefore waits until every
+/// node reports every partition consumed by its owner: instances reach ACTIVE seconds apart, and until
+/// the last one does the manager legitimately hands its partitions to a node that IS active.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -80,10 +84,6 @@ class DeclarativeStreamConsumerTest {
     private static final int INSTANCES = 5;
     private static final int EVENT_COUNT = 30;
     private static final int ORDER_COUNT = 10;
-
-    private static final String CONSUMER_EVENTS_STREAM = "consumer-events";
-    private static final String ORDER_EVENTS_STREAM = "order-events";
-    private static final String SPREAD_EVENTS_STREAM = "spread-events";
 
     /// Attachments expected cluster-wide once settled: one partition each for consumer-events and
     /// order-events, plus the five of spread-events. With the slice on EVERY node each partition's own
@@ -99,8 +99,22 @@ class DeclarativeStreamConsumerTest {
     private static final String BLUEPRINT_ID = "forge.test:declarative-consumer:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
+    /// The engine keys the declarative consumers register and attach under — and so the `stream` field
+    /// `/api/v1/streams/declarative-consumers` reports ([TestArtifacts#streamEngineKey]): the
+    /// blueprint-qualified key, not the bare `[streams.X]` alias, which matches nothing since #1041.
+    private static final String CONSUMER_EVENTS_STREAM = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "consumer-events");
+    private static final String ORDER_EVENTS_STREAM = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "order-events");
+    private static final String SPREAD_EVENTS_STREAM = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "spread-events");
+
     private static final Pattern COUNT_FIELD = Pattern.compile("\"count\"\\s*:\\s*(\\d+)");
     private static final Pattern ATTACHED_FIELD = Pattern.compile("\"attachedSubscriptions\"\\s*:\\s*(\\d+)");
+
+    /// One `partitionAssignments` row. Field order follows the record's component order, as
+    /// [DeclarativeConsumerPlacementTest] relies on too; a partition nobody consumes has no
+    /// `consumerNode` field and is deliberately not matched.
+    private static final Pattern ASSIGNMENT_ROW =
+        Pattern.compile("\\{\"partition\":(\\d+),\"consumerNode\":\"([^\"]*)\",\"ownerNode\":\"([^\"]*)\"\\}");
+    private static final Pattern CONFIG_SECTION = Pattern.compile("\"configSection\":\"streams\\.([a-z-]+)\"");
 
     private EmberCluster cluster;
     private final HttpOperations http = jdkHttpOperations();
@@ -156,6 +170,22 @@ class DeclarativeStreamConsumerTest {
                .until(() -> consumerAttachedFor(CONSUMER_EVENTS_STREAM)
                             && consumerAttachedFor(ORDER_EVENTS_STREAM)
                             && consumerAttachedFor(SPREAD_EVENTS_STREAM));
+
+        // Gate on the configuration this suite claims to test: every partition consumed BY ITS OWNER,
+        // on every node's view. The manager assigns a partition to a non-owner whenever its owner is not
+        // yet ACTIVE (rule 2, the #535 forwarded path), and instances reach ACTIVE seconds apart — so the
+        // per-stream gate above is satisfied by a temporary assignee. Measured 2026-09-14: in 4 of 7 local
+        // runs one or two nodes were still ACTIVATING/ROUTING when the first test ran, and the Heavy run
+        // at 683b9dd7a delivered every order TWICE because the late owner attached while the temporary
+        // assignee never let go. The co-located case cannot be asserted before it exists; the forwarded
+        // case is [DeclarativeConsumerPlacementTest]'s to assert, not this suite's to stumble into.
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .untilAsserted(() -> assertThat(everyPartitionConsumedByItsOwner())
+                       .describedAs("every partition must be consumed by its own owner on every node's view before the "
+                                    + "co-located suite starts; per-node assignments: %s", assignmentReport())
+                       .isTrue());
     }
 
     @AfterAll
@@ -210,7 +240,8 @@ class DeclarativeStreamConsumerTest {
             sleep(Duration.ofSeconds(12));
 
             assertThat(receivedMatching("once-batch"))
-                    .describedAs("no duplicate observed — exactly one node is assigned, and it stays the only one")
+                    .describedAs("no duplicate observed — exactly one node is assigned, and it stays the only one; "
+                                 + "per-node assignments: %s", assignmentReport())
                     .isEqualTo(EVENT_COUNT);
         }
     }
@@ -224,7 +255,8 @@ class DeclarativeStreamConsumerTest {
         @Test
         void declarativeConsumersEndpoint_reportsOneAttachedSubscriptionPerPartition() {
             assertThat(totalAttachedSubscriptions())
-                    .describedAs("one partition each for consumer-events and order-events, five for spread-events")
+                    .describedAs("one partition each for consumer-events and order-events, five for spread-events; "
+                                 + "per-node assignments: %s", assignmentReport())
                     .isEqualTo(EXPECTED_ATTACHMENTS);
         }
 
@@ -287,7 +319,8 @@ class DeclarativeStreamConsumerTest {
             await().atMost(DELIVERY_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
                    .untilAsserted(() -> assertThat(totalOrdersReceived() - baseline)
-                           .describedAs("every app-typed event must round-trip through the slice codec")
+                           .describedAs("every app-typed event must round-trip through the slice codec; "
+                                        + "per-node assignments: %s", assignmentReport())
                            .isEqualTo(ORDER_COUNT));
         }
 
@@ -418,6 +451,71 @@ class DeclarativeStreamConsumerTest {
 
     private static boolean isRepeatSample(AtomicInteger lastSample, int current) {
         return lastSample.getAndSet(current) == current;
+    }
+
+    /// Every node's own view of who consumes and who owns each partition, plus its attached count —
+    /// rendered only when an assertion fails (the description formats it lazily). The 2026-09-14 Heavy
+    /// run failed this class with `8 attached` and `21 of 10 orders` and nothing said WHICH node held
+    /// the second `order-events[0]` subscription: the manager's attach/detach log lines carry no node
+    /// id, so the failure could be read as a double ring, a stale literal or a divergent assignment
+    /// view with equal ease. This names the nodes.
+    private Object assignmentReport() {
+        return new LazyReport(() -> mgmtPorts().stream()
+                                               .map(port -> port + ": " + assignmentSummary(httpGet(port, "/api/v1/streams/declarative-consumers")))
+                                               .collect(Collectors.joining("; ")));
+    }
+
+    /// `attached=N alias[p]=consumer/owner …`, one consumer object at a time (the response carries one
+    /// per declared stream, and the alias is that object's `configSection`).
+    private static String assignmentSummary(String body) {
+        var rows = Arrays.stream(body.split("\\{\"stream\":\""))
+                         .skip(1)
+                         .map(DeclarativeStreamConsumerTest::assignmentRows)
+                         .collect(Collectors.joining(" "));
+
+        return "attached=" + firstInt(ATTACHED_FIELD, body) + " " + rows;
+    }
+
+    private static String assignmentRows(String consumerFragment) {
+        var section = CONFIG_SECTION.matcher(consumerFragment);
+        var alias = section.find()
+                    ? section.group(1)
+                    : "?";
+
+        return ASSIGNMENT_ROW.matcher(consumerFragment)
+                             .results()
+                             .map(match -> alias + "[" + match.group(1) + "]=" + match.group(2) + "/" + match.group(3))
+                             .collect(Collectors.joining(" "));
+    }
+
+    /// `String.format("%s", …)` calls `toString()` only when the message is built, so an assertion
+    /// that passes never issues the report's HTTP round trips.
+    private record LazyReport(Supplier<String> report) {
+        @Override
+        public String toString() {
+            return report.get();
+        }
+    }
+
+    /// True once EVERY node reports all [#EXPECTED_ATTACHMENTS] partitions assigned to their own owners
+    /// and the attached subscriptions sum to that count — the "slice on every node, every read local"
+    /// configuration. A node still reporting a forwarded row (consumer ≠ owner), a missing row, or a
+    /// surplus attachment (the temporary assignee not yet detached) keeps this false.
+    private boolean everyPartitionConsumedByItsOwner() {
+        var bodies = mgmtPorts().stream()
+                                .map(port -> httpGet(port, "/api/v1/streams/declarative-consumers"))
+                                .toList();
+        var attached = bodies.stream()
+                             .mapToInt(body -> firstInt(ATTACHED_FIELD, body))
+                             .sum();
+
+        return attached == EXPECTED_ATTACHMENTS && bodies.stream().allMatch(DeclarativeStreamConsumerTest::allRowsOwnerConsumed);
+    }
+
+    private static boolean allRowsOwnerConsumed(String body) {
+        var rows = ASSIGNMENT_ROW.matcher(body).results().toList();
+
+        return rows.size() == EXPECTED_ATTACHMENTS && rows.stream().allMatch(row -> row.group(2).equals(row.group(3)));
     }
 
     private int totalAttachedSubscriptions() {

@@ -107,7 +107,8 @@ class BootstrapPhasePostEndpointTest {
                   .isEqualTo(BootstrapPhasePost.managementEndpoint(ctx));
     }
 
-    private static BootstrapContext context(boolean autoGenerateTls, PortMapping ports, String publicIp) {
+    /// Package-visible: `BootstrapPhasePostContextTest` drives the real registration step with it.
+    static BootstrapContext context(boolean autoGenerateTls, PortMapping ports, String publicIp) {
         return BootstrapContext.bootstrapContext(config(autoGenerateTls, ports),
                                                  state(),
                                                  List.of(),

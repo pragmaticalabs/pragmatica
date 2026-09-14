@@ -48,7 +48,6 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 |-------------------|-------------|----------|
 | Blueprint management | ADMIN | `POST /api/v1/blueprints`, `DELETE /api/v1/blueprints/{id}` |
 | Node shutdown | ADMIN | `POST /api/v1/nodes/shutdown/{id}` |
-| Backup restore | ADMIN | `POST /api/v1/backups/restore/{id}` |
 | Log level changes | ADMIN | `PUT /api/v1/logging/levels` |
 | Observability depth | ADMIN | `PUT /api/v1/observability/depth` |
 | Observability config (write) | ADMIN | `POST`/`DELETE /api/v1/observability/config` |
@@ -58,7 +57,6 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 | Scaling | OPERATOR | `POST /api/v1/scale` |
 | Schema operations | OPERATOR | `POST /api/v1/schema/*` |
 | Deployment strategies | OPERATOR | `POST /api/v1/deploy`, `POST /api/v1/deploy/promote/*`, `POST /api/v1/deploy/rollback/*`, `POST /api/v1/deploy/complete/*`, `POST /api/v1/ab-tests/*` |
-| Backup trigger | OPERATOR | `POST /api/v1/backups` |
 | Config overrides | OPERATOR | `PUT /api/v1/config/*` |
 | Alert management | OPERATOR | `POST /api/v1/alerts/inject` |
 | Scheduled tasks | OPERATOR | `POST /api/v1/scheduled-tasks/*` |
@@ -284,7 +282,8 @@ No authentication required.
   "components": [
     {"name": "consensus", "status": "UP", "detail": "Cluster active"},
     {"name": "routes", "status": "UP", "detail": "Route sync received"},
-    {"name": "quorum", "status": "UP", "detail": "Reachable core members: 3 / required: 2"}
+    {"name": "quorum", "status": "UP", "detail": "Reachable core members: 3 / required: 2"},
+    {"name": "dht-admission", "status": "UP", "detail": "No DHT-backed storage instance awaiting its encryption-marker check"}
   ]
 }
 ```
@@ -295,6 +294,10 @@ Components checked:
 - **quorum** — Does the node hold quorum? True iff its counted strict core-member set meets the
   consensus simple-majority threshold (`coreCount / 2 + 1`), sourced from the same per-node
   quorum-loss signal the minority self-drain uses. A minority partition (e.g. 2 of 5) reports DOWN.
+- **dht-admission** — Has every DHT-backed storage instance passed its post-formation
+  encryption-marker check? DOWN names the instances still pending (`#1052`). The check retries while
+  the DHT cannot answer, for example while the ring is still converging after a join. The node stays
+  `JOINING` until it completes, so the overall status is DOWN (503) for as long as this is DOWN.
 
 ### GET /health/ready/{id}
 
@@ -422,8 +425,7 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `ACCESS_DENIED` -- an operation was denied by RBAC (`details` carries `principal`, `method`, `path`, `requiredRole`, `actualRole`). Severity WARNING.
 - `NODE_LIFECYCLE_CHANGED` -- a node lifecycle transition was requested/applied (leader-gated). Severity INFO.
 - `CONFIG_CHANGED` -- dynamic config was added, updated, or removed. Severity INFO.
-- `BACKUP_CREATED` -- a KV backup/commit was created. Severity INFO.
-- `BACKUP_RESTORED` -- a KV backup was restored. Severity WARNING.
+- `BACKUP_CREATED` / `BACKUP_RESTORED` -- no producer since the backup API was removed (#676); the types stay wire-pinned (tags 258/259) and never appear.
 - `BLUEPRINT_DEPLOYED` -- a blueprint was deployed. Severity INFO.
 - `BLUEPRINT_DELETED` -- a blueprint was deleted. Severity INFO.
 - `GENERATION_CHANGED` -- the cluster generation epoch advanced (leader-gated; see below). Severity INFO.
@@ -3377,6 +3379,25 @@ The toggle is a durable cluster fact (#685): it is stored as a typed record (`Au
 }
 ```
 
+### GET /api/v1/cluster/topology/role-mismatches
+
+Provisioned nodes whose advertised role label disagrees with the role the leader provisioned them with (#689). A node's role is a self-asserted SWIM label (`AETHER_ROLE` → `aether-role` → `NodeInfo` `role` label); a blank or unknown label is classified **CORE** by every peer, deliberately — acting on an unresolved view is the dangerous direction for the core tier. So an intended worker whose label never arrived (env not threaded, user-data lost it, image booted without it) silently joins the core set, and every community-tier mechanism gated on "positively not a core" — the core-absence fence first — is suppressed on it. This route is where that becomes visible without log access; the same fact is logged at WARN by the leader when the node is first observed.
+
+**Scope, stated:** leader-scoped and intent-based. The leader compares only nodes it provisioned itself (auto-heal replacements and worker reconcile); bootstrap nodes, nodes provisioned by an earlier leader and hand-started nodes have no intent on record and are never listed — absence of intent is not a mismatch. The intent is retained for the node id until the node is **decommissioned**, and every join of that id is compared: an in-place restart (crash, OOM, operator restart — same id) that is still mislabelled is re-reported (the WARN fires again) and stays listed; a rejoin that now carries the right label clears the entry. A listed node that departs (`NodeRemoved`) **stays listed** — a restart may follow — until it is decommissioned or leadership changes; a replacement provisioned under a fresh id gets its own comparison. On re-activation of the same leader the ledger is re-derived from membership's current view for every still-tracked provisioned node. `advertisedRole` is the role membership holds for the node (`MemberDescriptor.role`, the self-asserted label after the blank-downgrade merge — never the observer's first sighting, which can be label-less when the node was learned by gossip), `""` when no label ever arrived; `classifiedAs` is what membership made of it. The classification itself is unchanged.
+
+CLI: `aether cluster topology role-mismatches`.
+
+**RBAC:** VIEWER · **Routing:** LEADER
+
+**Response:**
+```json
+{
+  "mismatches": [
+    { "nodeId": "worker-3", "intendedRole": "worker", "advertisedRole": "", "classifiedAs": "CORE" }
+  ]
+}
+```
+
 ### POST /api/v1/cluster/topology/auto-heal/enable
 
 Re-enable CTM auto-heal. Writes `AutoHealStateValue(enabled=true, reason)` through the same consensus-backed command path as other topology mutations; every node converges on it once it applies the committed Put (see the staleness note under `GET .../auto-heal`). If a deficit exists at the time of the call, the next reconcile picks it up immediately (no scheduled poll wait) on the node applying the write. Returns the prior `enabled` state, as observed by this node's local (possibly stale) view, for the audit log. A same-state call (already enabled, by that local view) still writes through unconditionally — the write is never skipped on a local-read shortcut, since that read can lag the durable value (#685 review round 1).
@@ -4488,53 +4509,10 @@ Surface per-node execution attribution for a scheduled task. Used by `TC-08-F3` 
 
 ## Backup Management
 
-### POST /api/v1/backups
-
-Trigger a manual backup of the KV-Store state.
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Backup completed"
-}
-```
-
-### GET /api/v1/backups
-
-List available backups.
-
-**Response:**
-```json
-[
-  {
-    "commitId": "abc123",
-    "message": "Backup phase 42 at 2026-03-10T12:00:00Z",
-    "timestamp": "2026-03-10T12:00:00Z"
-  }
-]
-```
-
-### POST /api/v1/backups/restore
-
-Restore from a specific backup.
-
-**Request body:**
-```json
-{
-  "commit": "abc123"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Restore completed"
-}
-```
-
----
+Removed (#676). `POST /api/v1/backups`, `GET /api/v1/backups` and `POST /api/v1/backups/restore` were
+served by `BackupService.disabled()` in every configuration — no other implementation ever existed —
+so each returned `backup-disabled`. Declared-state durability is `[backup]` git-backed persistence,
+which has no API: see the [backup-recovery runbook](../operators/runbooks/backup-recovery.md).
 
 ## Error Responses
 
@@ -4876,16 +4854,19 @@ with `400 Bad Request`.
 > underlying physical database and IS reachable from `migrate`/`undo`/`baseline` alike, via the
 > shared ownership claim) is in the table above.
 
-> **Known limitation — `acquireLock`'s cross-node lock check is not atomic (#766, not fixed by
-> #543).** Both `undo` and `baseline` share `SchemaOrchestratorService.acquireLock` with `migrate`.
-> Its cross-node lock (`SchemaMigrationLockKey`) is read (`isLockHeld`) and then written
-> (`Put<SchemaMigrationLockValue>`) as two separate steps, not an atomic compare-and-set; two
-> concurrent dispatches can both observe the lock free before either writes it. #766 reproduced
-> this live on a 5-node Forge run (two dispatches within two seconds, the second reaching
-> `aether_schema_history` and failing on a duplicate-key constraint, which marked the datasource
-> `FAILED`). Recovery when it happens: `aether schema retry` after the false-`FAILED` record is
-> observed. The fix needs an atomic compare-and-set on the lock key rather than read-then-write;
-> tracked in #766, not addressed here.
+> **Fixed in #766 — `acquireLock`'s cross-node lock claim is a fenced compare-and-set.** Both
+> `undo` and `baseline` share `SchemaOrchestratorService.acquireLock` with `migrate`. The lock
+> (`SchemaMigrationLockKey`) carries a `lockVersion`; a claim writes committed+1 (or the first
+> version) and the KV applier refuses a stale successor, so two concurrent dispatches cannot both
+> hold it [mechanism: `SchemaMigrationLockValue implements VersionFenced`, `KVStore` stale-successor
+> refusal]. Before #766 the claim was a read followed by a separate write, reproduced live on a
+> 5-node Forge run (two dispatches within two seconds, the second failing on `aether_schema_history`'s
+> duplicate-key constraint and marking the datasource `FAILED`; recovery was `aether schema retry`).
+> **Still open — #806:** the lock TTL (5 min) is shorter than the migration timeout (15 min), so an
+> expired lock can be taken over while its holder is still migrating, and `releaseLock` is an
+> unfenced Remove; a holder that times out after a takeover can delete the taker's lock and re-claim.
+> Until #806 lands, a migration, undo or baseline that runs longer than 5 minutes loses its lock while
+> still running (concurrent dispatch itself is refused with `LockAcquisitionFailed` since #766).
 >
 > The leader check above `undo`/`baseline` is also check-then-act, undisclosed until now:
 > `requireLeader` reads `node.isLeader()` once and lets the manager call proceed with no re-check,
@@ -5602,7 +5583,9 @@ management security is disabled. The check runs ahead of the role/auth pipeline 
 `ManagementServer`, so it short-circuits before role evaluation.
 
 Each identity-bearing write route — the catalog-form
-`STREAMS_PUBLISH`/`STREAMS_DELETE`/`STREAMS_GROUP_CREATE`/`STREAMS_GROUP_DELETE` —
+`STREAMS_PUBLISH`/`STREAMS_PUBLISH_BATCH`/`STREAMS_DELETE`/`STREAMS_GROUP_CREATE`/`STREAMS_GROUP_DELETE`
+(`STREAMS_PUBLISH_BATCH` joined the set with #742; until then the batch form wrote where the single
+form was refused) —
 resolves its target through the same `ManagementRoute` route-match the real dispatch path uses
 (never a raw path-segment scan), reduces the match to an engine key, and rejects when that key
 names one of `SystemStreams.ALL`. A route match whose params fail to resolve to a valid identity
@@ -5623,11 +5606,16 @@ body is rejected the same as anyone else), but it is not the same short-circuit-
 guarantee the path-based gate above gives the other write routes.
 
 `CONSUMER_GROUP_JOIN`/`CONSUMER_GROUP_LEAVE` carry their target
-stream name in the request body rather than the path — a known, currently open gap this path-only
-gate cannot see, closed once these routes gain path-resolvable identity via the catalog-form
-reshape (management-api-versioning-spec.md §3.3). Tracked as its own ticket (rc4 provisional,
-cross-referencing #300), pending an evidence-based answer to whether joining/leaving a consumer
-group on a framework stream actually mutates state or is merely untidy.
+stream name in the request body rather than the path, so this path-only gate cannot see them. Since
+#742 they are protected the same way `STREAM_CREATE` is: a post-auth, handler-level guard in
+`StreamRoutes#joinGroup`/`#leaveGroup` that refuses a reserved system stream name before the
+coordinator is called (`405 Cannot join or leave a consumer group on a reserved system stream` — the
+same status this gate answers with). The body name is canonicalized the way this gate canonicalizes
+a path — the catalog spelling `system:cluster-events:1.0.0` reduces to the engine key
+`cluster-events` before the predicate — so both spellings are refused; a missing name is
+`Missing stream name`. The evidence question that ticket was filed on was answered: joining/leaving
+does mutate state — both call `rebalance`, which proposes replicated KV assignment records under the
+named stream.
 
 Reads of `system:*` streams (e.g. `system:cluster-events`) are unaffected; only writes are gated.
 The compile-time SPI split already blocks application code from producing into system streams;

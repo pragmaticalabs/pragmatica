@@ -397,12 +397,10 @@ public class FactoryClassGenerator {
 
         for (var method : model.methods()) {
             for (var interceptor : method.interceptors()) {
-                var key = interceptor.deduplicationKey();
+                var key = provisionKey(interceptor, method);
 
                 if (!seen.containsKey(key)) {
-                    var varName = issueUniqueName(lowercaseFirst(interceptor.variableSafeName())
-                                                 + "_" + interceptor.variableSafeConfigSection(),
-                                                  issuedNames);
+                    var varName = issueUniqueName(variableNameFor(interceptor, method), issuedNames);
 
                     seen.put(key, new InterceptorEntry(varName, interceptor, method));
                 }
@@ -410,6 +408,37 @@ public class FactoryClassGenerator {
         }
 
         return new ArrayList<>(seen.values());
+    }
+
+    /// Identity of one provisioned interceptor instance.
+    ///
+    /// Interceptors are shared per `(type, config)` on purpose — one rate-limit bucket, one circuit
+    /// breaker, one cache NAME across every method that names the section. A method carrying a
+    /// `@Key` is the exception: the extractor is provisioned INTO the instance
+    /// (`withKeyExtractor`), and an instance shared across methods captured the first method's
+    /// extractor and applied it to every other method's request type (#279). So a key-bearing
+    /// method gets its own instance; what is shared underneath (the named cache or store) is shared
+    /// by the factory's registry, not by the generated variable.
+    private static String provisionKey(ResourceQualifierModel interceptor, MethodModel method) {
+        return carriesKey(method)
+               ? interceptor.deduplicationKey() + "#" + method.name()
+               : interceptor.deduplicationKey();
+    }
+
+    private static boolean carriesKey(MethodModel method) {
+        var singleKey = method.keyExtractor().isPresent();
+        var multiParamKey = method.multiParamKeyParam().isPresent();
+
+        return singleKey || multiParamKey;
+    }
+
+    /// Generated variable name: type + section, plus the method for a per-method instance.
+    private String variableNameFor(ResourceQualifierModel interceptor, MethodModel method) {
+        var base = lowercaseFirst(interceptor.variableSafeName()) + "_" + interceptor.variableSafeConfigSection();
+
+        return carriesKey(method)
+               ? base + "_" + method.name()
+               : base;
     }
 
     /// Returns `candidate` if unused, otherwise the first free `candidate_N` (N starting at 2).
@@ -788,7 +817,7 @@ public class FactoryClassGenerator {
         var interceptorVarMap = new LinkedHashMap<String, String>();
 
         for (var ie : allInterceptors) {
-            interceptorVarMap.put(ie.qualifier().deduplicationKey(),
+            interceptorVarMap.put(provisionKey(ie.qualifier(), ie.firstMethod()),
                                   ie.varName());
         }
 
@@ -816,7 +845,7 @@ public class FactoryClassGenerator {
 
                 for (int i = interceptors.size() - 1; i >= 0; i--) {
                     var ic = interceptors.get(i);
-                    var icVarName = interceptorVarMap.get(ic.deduplicationKey());
+                    var icVarName = interceptorVarMap.get(provisionKey(ic, method));
 
                     expression = icVarName + ".intercept(" + expression + ")";
                 }
@@ -875,15 +904,15 @@ public class FactoryClassGenerator {
         var configSection = escapeJavaString(qualifier.configSection());
         var typeName = importTracker.use(qualifier.resourceType().toString());
 
-        return findKeyInfoForInterceptor(entry, model).fold(() -> "ctx.resources().provide(" + typeName
-                                                                 + ".class, \"" + configSection
-                                                                 + "\")",
-                                                            ki -> generateProvideWithContext(configSection,
-                                                                                             ki,
-                                                                                             entry.firstMethod(),
-                                                                                             model,
-                                                                                             importTracker,
-                                                                                             typeName));
+        return findKeyInfoForInterceptor(entry).fold(() -> "ctx.resources().provide(" + typeName
+                                                          + ".class, \"" + configSection
+                                                          + "\")",
+                                                     ki -> generateProvideWithContext(configSection,
+                                                                                      ki,
+                                                                                      entry.firstMethod(),
+                                                                                      model,
+                                                                                      importTracker,
+                                                                                      typeName));
     }
 
     private String generateProvideWithContext(String configSection,
@@ -909,26 +938,25 @@ public class FactoryClassGenerator {
              + "))";
     }
 
-    private Option<KeyExtractorInfo> findKeyInfoForInterceptor(InterceptorEntry entry, SliceModel model) {
-        for (var method : model.methods()) {
-            for (var interceptor : method.interceptors()) {
-                if (interceptor.deduplicationKey().equals(entry.qualifier().deduplicationKey())) {
-                    if (method.keyExtractor().isPresent()) {
-                        return method.keyExtractor();
-                    }
-                    // Check multi-param key resolution — use simple record name (inner record of factory class)
-                    if (method.multiParamKeyParam().isPresent()) {
-                        var keyParam = method.multiParamKeyParam().expect("checked with isPresent above");
-                        var requestRecordName = capitalize(method.name()) + "Request";
+    /// The key extractor of the method this entry was provisioned FOR — its own, never another
+    /// method's. A key-bearing method has its own entry (see [#provisionKey]); an entry shared by
+    /// key-less methods has none to offer.
+    private Option<KeyExtractorInfo> findKeyInfoForInterceptor(InterceptorEntry entry) {
+        var method = entry.firstMethod();
 
-                        return KeyExtractorInfo.single(keyParam.type().toString(),
-                                                       keyParam.name(),
-                                                       requestRecordName)
-                                               .fold(_ -> Option.none(),
-                                                     Option::some);
-                    }
-                }
-            }
+        if (method.keyExtractor().isPresent()) {
+            return method.keyExtractor();
+        }
+        // Check multi-param key resolution — use simple record name (inner record of factory class)
+        if (method.multiParamKeyParam().isPresent()) {
+            var keyParam = method.multiParamKeyParam().expect("checked with isPresent above");
+            var requestRecordName = capitalize(method.name()) + "Request";
+
+            return KeyExtractorInfo.single(keyParam.type().toString(),
+                                           keyParam.name(),
+                                           requestRecordName)
+                                   .fold(_ -> Option.none(),
+                                         Option::some);
         }
 
         return Option.none();

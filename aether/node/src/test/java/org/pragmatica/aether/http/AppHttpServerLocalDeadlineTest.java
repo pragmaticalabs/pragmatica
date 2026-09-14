@@ -66,7 +66,7 @@ class AppHttpServerLocalDeadlineTest {
     void localDispatch_overRealHttp_routeHandlerObservesBoundedDeadline() throws Exception {
         var observed = new AtomicReference<Deadline>();
         var router = new DeadlineObservingRouter(observed);
-        var server = AppHttpServer.appHttpServer(AppHttpConfig.appHttpConfig(TEST_PORT),
+        var server = AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(TEST_PORT),
                                                  ForwardingTimeouts.forwardingTimeouts(),
                                                  SELF_NODE,
                                                  registry,

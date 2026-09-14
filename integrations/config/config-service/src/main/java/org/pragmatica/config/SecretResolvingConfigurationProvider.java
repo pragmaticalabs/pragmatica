@@ -13,6 +13,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
@@ -26,6 +27,9 @@ import static org.pragmatica.lang.Result.unitResult;
 /// The resolver function maps secret paths to their values asynchronously.
 final class SecretResolvingConfigurationProvider implements ConfigurationProvider {
     private static final Pattern SECRET_PATTERN = Pattern.compile("\\$\\{secrets:([^}]+)}");
+
+    private static final Cause NO_SECRETS_PROVIDER = Causes.cause("no secrets provider configured to resolve it"
+                                                                 + " (the placeholder would otherwise be used as the literal value)");
 
     private final ConfigurationProvider delegate;
     private final Map<String, String> resolvedValues;
@@ -43,6 +47,24 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
     static Result<ConfigurationProvider> resolve(ConfigurationProvider provider,
                                                  Fn1<Promise<String>, String> secretResolver) {
         return resolveAllEntries(provider, secretResolver).map(resolved -> wrapProvider(provider, resolved));
+    }
+
+    /// #904: the caller has NO resolver. Succeeds with `provider` itself -- never wrapped, so a
+    /// placeholder-free provider is served exactly as before -- when no value carries a
+    /// `${secrets:path}` placeholder; fails with [ConfigError.SecretResolutionFailed] naming the
+    /// first offending key and path otherwise. Without this, the placeholder text passed through as
+    /// the literal value and the failure surfaced later as an auth error naming nothing about
+    /// secrets. Same [#SECRET_PATTERN] as resolution, so "present" here and "resolved" there agree.
+    static Result<ConfigurationProvider> requireNoPlaceholders(ConfigurationProvider provider) {
+        for (var entry : provider.asMap().entrySet()) {
+            var matcher = SECRET_PATTERN.matcher(entry.getValue());
+
+            if (matcher.find()) {
+                return secretFailure(entry.getKey(), matcher.group(1), NO_SECRETS_PROVIDER).map(_ -> provider);
+            }
+        }
+
+        return success(provider);
     }
 
     private static ConfigurationProvider wrapProvider(ConfigurationProvider provider, Map<String, String> resolved) {

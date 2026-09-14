@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
@@ -33,6 +34,7 @@ import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.MembershipConfigBinding;
 import org.pragmatica.aether.config.StreamingConfig;
+import org.pragmatica.aether.config.TimeoutsConfig;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.StorageEncryptionConfig;
 import org.pragmatica.config.ConfigurationProvider;
@@ -62,6 +64,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.security.CertificateProvider;
 import org.pragmatica.net.tcp.security.SelfSignedCertificateProvider;
 import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.storage.EncryptionError;
 import org.pragmatica.swim.NettySwimTransport;
 
 import com.sun.management.HotSpotDiagnosticMXBean;
@@ -444,15 +447,29 @@ public record Main(String[] args) {
     /// #298 — carry `[cluster] max_nodes` into the auto-heal config the node runs with. Until this
     /// existed the builder fell through to `AutoHealConfig.DEFAULT`, so no auto-heal setting was
     /// operator-tunable at all and the fleet cap had no way to be set outside a test.
+    /// #675 — the three `[timeouts.scaling] auto_heal_*` timings are carried the same way; the
+    /// cooldown parsed into `TimeoutsConfig` and stopped there while the runtime honoured only
+    /// `DEFAULT`'s 15s, and the provisioning timeout and SWIM-hints TTL had no key at all.
     ///
     /// `UNBOUNDED` (0, the same "unset" sentinel `coreMax` uses) leaves the cap absent, which is
     /// what every existing config gets — provisioning stays unbounded until an operator opts in.
-    private static AutoHealConfig resolveAutoHeal(Option<AetherConfig> aetherConfig) {
+    static AutoHealConfig resolveAutoHeal(Option<AetherConfig> aetherConfig) {
+        var withTimings = aetherConfig.map(AetherConfig::timeouts)
+                                      .map(TimeoutsConfig::scaling)
+                                      .map(Main::withAutoHealTimings)
+                                      .or(AutoHealConfig.DEFAULT);
+
         return aetherConfig.map(AetherConfig::cluster)
                            .map(ClusterConfig::maxNodes)
                            .filter(maxNodes -> maxNodes > ClusterConfig.UNBOUNDED)
-                           .map(AutoHealConfig.DEFAULT::withMaxNodes)
-                           .or(AutoHealConfig.DEFAULT);
+                           .map(withTimings::withMaxNodes)
+                           .or(withTimings);
+    }
+
+    private static AutoHealConfig withAutoHealTimings(TimeoutsConfig.ScalingTimeouts scaling) {
+        return AutoHealConfig.DEFAULT.withStartupCooldown(scaling.autoHealStartupCooldown())
+                                     .withProvisioningTimeout(scaling.autoHealProvisioningTimeout())
+                                     .withSwimHintsTtl(scaling.autoHealSwimHintsTtl());
     }
 
     private static MembershipConfig liftMembershipBinding(MembershipConfigBinding binding) {
@@ -701,9 +718,23 @@ public record Main(String[] args) {
     private void startNodeAndWait(AetherNode node, NodeId nodeId) {
         node.start()
             .onSuccess(_ -> log.info("Node {} is running. Press Ctrl+C to stop.", nodeId))
-            .onFailure(cause -> exitWithError(cause.message()))
+            .onFailure(cause -> onStartFailure(cause, this::exitWithError))
             .await();
         waitForInterrupt();
+    }
+
+    /// #1052 fix round 2 (N-2): a stop requested while the DHT encryption-marker check is still retrying
+    /// ends `start()` with [EncryptionError.DhtMarkerCheckAbandoned]. That is the operator's own stop
+    /// (SIGTERM -> [#registerShutdownHook] -> `node.stop()`), not a boot failure, so it is logged at INFO
+    /// and the hook that issued the stop keeps ownership of the process exit. Every other start failure
+    /// is fatal as before (`exit(1)` via [#exitWithError]). Package-private with the exit injected so
+    /// `MainShutdownTest` can pin both branches without a `System.exit`.
+    static void onStartFailure(Cause cause, Consumer<String> exitWithError) {
+        switch (cause) {
+            case EncryptionError.DhtMarkerCheckAbandoned stopped -> log.info("Stop requested before start completed; not a boot failure: {}",
+                                                                             stopped.message());
+            default -> exitWithError.accept(cause.message());
+        }
     }
 
     private void exitWithError(String message) {
@@ -1131,7 +1162,15 @@ public record Main(String[] args) {
         envLookup.apply("AETHER_INSTANCE_TYPE").onPresent(t -> labels.put(NodeInfo.LABEL_INSTANCE_TYPE, t));
         envLookup.apply("AETHER_POOL").onPresent(p -> labels.put(NodeInfo.LABEL_POOL, p));
         envLookup.apply("AETHER_SOURCE").onPresent(s -> labels.put(NodeInfo.LABEL_SOURCE, s));
-        envLookup.apply("AETHER_ROLE").onPresent(r -> labels.put(NodeInfo.LABEL_ROLE, r));
+        // #689: the default is deliberate (blank counts as core — the safe failure direction for
+        // the core tier) and unchanged; what was missing is the node saying so. A worker started
+        // without this label joins the core set on every peer and nothing else reports why.
+        envLookup.apply("AETHER_ROLE")
+                 .onPresent(r -> labels.put(NodeInfo.LABEL_ROLE, r))
+                 .onEmpty(() -> log.warn("AETHER_ROLE is not set: this node advertises no role label and every peer will "
+                                        + "classify it as CORE (blank counts as core). Intended workers must be launched "
+                                        + "with AETHER_ROLE=worker (aether-role=worker label); a core node may leave it "
+                                        + "unset. See #689."));
 
         return Map.copyOf(labels);
     }

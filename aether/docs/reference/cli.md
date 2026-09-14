@@ -50,13 +50,24 @@ Interactive CLI for managing Aether clusters.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `-c, --connect <host:port>` | Node address to connect to | `localhost:8080` |
+| `-c, --connect <host:port>` | Node address to connect to | active cluster context, else `localhost:8080` |
 | `--config <path>` | Path to aether.toml config file | |
-| `-k, --api-key <key>` | API key for authenticated access | `AETHER_API_KEY` env |
+| `-k, --api-key <key>` | API key for authenticated access | `AETHER_API_KEY` env, else the active context's `api_key_env` |
 | `-h, --help` | Show help | |
 | `-V, --version` | Show version | |
 
-When `--config` is specified, the CLI reads the management port from the config file. The `--connect` option takes precedence if both are provided.
+**Endpoint precedence (#584).** Every command resolves its target the same way: an explicit
+`--connect`/`--endpoint` (or `--config`, which yields `localhost:<management port>`) wins; otherwise the
+**active cluster context** in `~/.aether/clusters.toml` (`[current] context`, set by `cluster bootstrap`
+and `cluster use`) is dialled with the credential its `api_key_env` names; only when no context is set
+does the built-in `localhost:8080` default apply. `cluster` subcommands that take `--cluster <name>`
+target that entry instead of the context. So with a context set, a local compose node needs
+`--connect localhost:8080` explicitly. **The credential follows the endpoint's source:** the
+context's `api_key_env` is sent only when the context supplied the endpoint; `--connect` sends only
+`--api-key`/`AETHER_API_KEY`; `--cluster X` sends X's stored key or nothing. A `--config` path that
+does not exist warns and uses the localhost default, never the context. A registry that cannot be
+read, a context naming no entry, or an entry without an endpoint each warn on stderr and fall back
+to the localhost default; `--cluster` on an entry without an endpoint is refused by name.
 
 ### Authentication
 
@@ -94,7 +105,7 @@ authorization_role = "VIEWER"
 | Role | CLI Access |
 |------|-----------|
 | **ADMIN** | All commands |
-| **OPERATOR** | Status, scaling, drain, deploy from artifact, schema, updates, backup, config, alerts |
+| **OPERATOR** | Status, scaling, drain, deploy from artifact, schema, updates, config, alerts |
 | **VIEWER** | Read-only commands: `status`, `nodes`, `slices`, `nodes slices`, `routes`, `nodes routes`, `metrics`, `events`, `health` |
 
 When `authorization_role` is omitted, the key defaults to `ADMIN`. See [Management API - Authorization](management-api.md#authorization-rbac) for the full permission mapping.
@@ -1364,43 +1375,11 @@ aether scheduled-tasks inject \
 
 ### backup
 
-Manage cluster backups. Two surfaces are available: the **singular** `aether backup` parent
-with verb-style subcommands (`create`, `restore`, `list`) introduced for operator-facing
-workflows in P-NEW-C, and the legacy **plural** `aether backups` parent with the original
-`trigger`/`list`/`restore` subcommands. Both call the same REST routes
-(`POST /api/backups`, `POST /api/backups/restore`, `GET /api/backups`) — pick whichever
-reads more naturally for your scripts.
-
-```bash
-# Singular surface (P-NEW-C, recommended for new scripts)
-aether backup create                   # create a new backup (synchronous)
-aether backup create --wait            # create + poll /api/backups until the new entry appears
-aether backup create --wait --timeout 120
-aether backup restore <commit-id>      # restore from a specific backup commit (prompts for confirmation)
-aether backup restore <commit-id> --yes  # skip confirmation (required in non-interactive shells)
-aether backup list                     # list available backups
-
-# Plural surface (legacy alias, identical routes)
-aether backups trigger
-aether backups list
-aether backups restore <commit-id>
-```
-
-#### `aether backup` subcommands
-
-| Subcommand | Description |
-|------------|-------------|
-| `create [--wait] [--timeout N]` | Create a new backup (`POST /api/backups`). With `--wait`, polls `GET /api/backups` until the new entry appears or `--timeout` (default 60s) elapses. |
-| `restore <commit> [--yes\|--force]` | Restore the cluster KV-Store from the named backup commit (`POST /api/backups/restore`). Destructive — overwrites current state, so it prompts for confirmation; `--yes`/`--force` skips the prompt (required in non-interactive shells). |
-| `list` | List available backups (`GET /api/backups`). |
-
-#### `aether backups` subcommands (legacy)
-
-| Subcommand | Description |
-|------------|-------------|
-| `trigger` | Trigger a manual backup |
-| `list` | List available backups |
-| `restore <commit>` | Restore from backup |
+Removed (#676). The `backup` and `backups` command trees and `POST|GET /api/v1/backups` were wired to a
+service whose only implementation was `disabled()`, so every call returned `backup-disabled` in every
+configuration. Declared-state durability is `[backup]` git-backed persistence — see
+[backup-recovery](../operators/runbooks/backup-recovery.md); it has no CLI or API surface and is
+inspected with `git log` in the configured `path`.
 
 ---
 
@@ -2130,6 +2109,32 @@ Example output:
 {"enabled": true, "previousState": false}
 ```
 
+### `aether cluster topology role-mismatches`
+
+List provisioned nodes whose advertised role label disagrees with the role the leader provisioned them with (#689). A node's role is a self-asserted label (`AETHER_ROLE` → `aether-role`); a blank or unknown label is classified **CORE** by every peer, deliberately, so an intended worker whose label never arrived silently joins the core set and every community-tier mechanism gated on "positively not a core" is suppressed on it. This is that fact without log access; the leader also logs it at WARN on every join of such a node. Leader-scoped and intent-based: only nodes this leader provisioned are compared, the intent is kept until the node is decommissioned, a still-mislabelled restart under the same id is re-listed and a correctly relabelled rejoin clears the entry. See `GET /api/v1/cluster/topology/role-mismatches` in `management-api.md` for the full scope statement.
+
+```bash
+aether cluster topology role-mismatches
+```
+
+| Option | Description |
+|--------|-------------|
+| `--format` | Output format: `table` (default), `json`, `value`, `csv` |
+
+Example:
+```bash
+aether cluster topology role-mismatches
+
+# Output (table):
+# NODE                      INTENDED    ADVERTISED    CLASSIFIED
+# worker-3                  worker                    CORE
+```
+
+Example output (`--format json`):
+```json
+{"mismatches": [{"nodeId": "worker-3", "intendedRole": "worker", "advertisedRole": "", "classifiedAs": "CORE"}]}
+```
+
 ### `aether cluster governors`
 
 Show the per-slice governor assignment across the cluster — which node currently owns the governor role for each slice. Wraps `GET /api/cluster/governors`.
@@ -2428,6 +2433,13 @@ Seven-phase flow: Validate → Upload SSH Keys → Provision → Collect Address
 
 After provisioning, the deploy phase SSHes each cloud node (via `cloud-init status --wait` preflight) and restarts the runtime with the finalized 3-part PEERS list (`nodeId:host:port`). On default (`--keep-on-failure` not set), all tracked resources (VMs, SSH keys, firewall rules, floating IPs) are cleaned up automatically on failure.
 
+**Post-bootstrap registration (#584).** A successful bootstrap registers the cluster in
+`~/.aether/clusters.toml` with the management endpoint it actually serves (`<scheme>://<ip>:<management
+port>`) and **makes it the active context**, printing `Active cluster context: <name>`. Every command
+that follows without an explicit `--connect`/`--config` (`cluster scale`, `cluster destroy`, `deploy`,
+`status`, …) targets the cluster just bootstrapped — see *Endpoint precedence* under Options; switch
+back with `aether cluster use <name>` or pass `--connect` for a local node.
+
 ### `aether cluster destroy`
 
 Destroy the active cluster: drain and shut down all nodes, terminate its cloud resources (VMs, SSH keys), and remove the local registry entry. Symmetric counterpart to `aether cluster bootstrap`.
@@ -2449,6 +2461,16 @@ aether cluster destroy --cluster=my-cluster --yes
 > addressable while its VMs may still be billing. Just re-run the command. From a repo
 > checkout, `tools/cloud-reaper.sh --cluster <name>` (dry-run; add `--destroy` to delete)
 > is the label-driven safety net that finds resources no local state knows about.
+>
+> **The exit code is a retry signal (#587).** Non-zero means the registry entry was **kept** and a
+> re-run has work to do — and if the VMs were already deleted when it failed (the registry save
+> after cleanup), that re-run needs `--force-undrained`, because enumeration finds no nodes. When
+> cloud cleanup completes, `destroy` exits `0` even if some drains or shutdowns failed first: the
+> VMs are gone, the entry is removed, and a retry would find nothing — the failures are reported by
+> node with their reason on stderr (`Warning: 2 of 3 drain operations failed (core-2: refused with
+> HTTP 409; core-3: timed out after 120s waiting for DECOMMISSIONED) … nothing is left to retry`).
+> The drain phase prints each node's start and outcome as it happens. Draining a whole cluster necessarily hits the disruption budget below the quorum
+> floor; that refusal is tracked as #1032 and is not overridden by `destroy`.
 
 ### `aether cluster apply`
 

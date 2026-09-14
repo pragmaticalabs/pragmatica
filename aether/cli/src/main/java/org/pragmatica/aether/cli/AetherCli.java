@@ -29,6 +29,7 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
+import org.pragmatica.aether.cli.cluster.ClusterRegistry;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.ConfigLoader;
@@ -57,13 +58,18 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.BackupSingularCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.VersionsCommand.class, AetherCli.DhtCommand.class, AetherCli.EntityCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.ttm.TtmCommand.class, GenerateCompletion.class})
+@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.VersionsCommand.class, AetherCli.DhtCommand.class, AetherCli.EntityCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.ttm.TtmCommand.class, GenerateCompletion.class})
 @Contract
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
 
     @CommandLine.Option(names = {"-c", "--connect", "--endpoint"}, description = "Node address to connect to (host:port)")
     private String nodeAddress;
+
+    /// #584 — true only when [#setAddressFromContextOrDefault] took the endpoint from the active
+    /// context; the context's `api_key_env` is consulted only then (the credential follows the
+    /// endpoint's source, never the other way round).
+    private boolean endpointFromContext;
 
     @CommandLine.Option(names = {"--config"}, description = "Path to aether.toml config file")
     private Path configPath;
@@ -109,7 +115,12 @@ public class AetherCli implements Runnable {
         cli.lookupConnection(args);
         cli.tlsSkipVerify = containsTlsSkipVerify(args);
         cli.httpOps = cli.buildHttpOperations();
-        org.pragmatica.aether.cli.cluster.ClusterHttpClient.setEndpointOverride(cli.resolveEndpointUrl());
+        if (cli.endpointFromContext) {
+            org.pragmatica.aether.cli.cluster.ClusterHttpClient.setContextEndpoint(cli.resolveEndpointUrl());
+        } else {
+            org.pragmatica.aether.cli.cluster.ClusterHttpClient.setEndpointOverride(cli.resolveEndpointUrl());
+        }
+
         extractApiKeyArg(args).orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()))
                         .onPresent(org.pragmatica.aether.cli.cluster.ClusterHttpClient::setApiKeyOverride);
         org.pragmatica.aether.cli.cluster.ClusterHttpClient.setRequestTimeout(resolveRequestTimeoutDuration(args));
@@ -271,7 +282,62 @@ public class AetherCli implements Runnable {
     }
 
     private void setAddressFromConfigOrDefault(Option<Path> configArg) {
-        configArg.filter(Files::exists).onPresent(this::readConfigFromPath).onEmpty(() -> nodeAddress = DEFAULT_ADDRESS);
+        configArg.onPresent(this::readConfigIfPresent).onEmpty(this::setAddressFromContextOrDefault);
+    }
+
+    /// A `--config` the operator named is an explicit, LOCAL choice: a path that does not exist takes
+    /// the config-failure branch (warn, localhost default) — never the active context, or a mistyped
+    /// local file would run the command against the cloud (#584 review SF-3).
+    private void readConfigIfPresent(Path path) {
+        if (Files.exists(path)) {
+            readConfigFromPath(path);
+
+            return;
+        }
+
+        System.err.println("Warning: config file not found: " + path + " — using " + DEFAULT_ADDRESS);
+        nodeAddress = DEFAULT_ADDRESS;
+    }
+
+    /// #584 — endpoint precedence: explicit `--connect`/`--endpoint` or `--config` > the registry's
+    /// active cluster context > the built-in localhost default. This used to install the default
+    /// unconditionally, so `ClusterHttpClient.resolveEndpoint` never reached `registry.current()`
+    /// and a freshly bootstrapped cluster's context routed nothing but `destroy`/`rotate-key`
+    /// (which install their own override): `cluster scale` after bootstrap dialled `localhost:8080`
+    /// and reported the ticket's bare `ConnectException`. The default now applies only when no
+    /// context is set. A registry that cannot be read is treated as no context — the same fallback
+    /// as no registry — since a corrupt file must not stop `aether --connect …` from working.
+    private void setAddressFromContextOrDefault() {
+        var context = activeContext();
+
+        endpointFromContext = context.isPresent();
+        nodeAddress = context.map(ClusterRegistry.ClusterEntry::endpoint).or(DEFAULT_ADDRESS);
+    }
+
+    /// The active context, if it is usable. Each way it can be unusable is said on stderr rather
+    /// than silently becoming the localhost default: a registry that does not parse, a
+    /// `[current] context` naming no entry, an entry with a blank `endpoint` (a hand-edited or
+    /// legacy line — the product never writes one).
+    private static Option<ClusterRegistry.ClusterEntry> activeContext() {
+        var registry = ClusterRegistry.load()
+                                      .onFailure(cause -> System.err.println("Warning: cannot read ~/.aether/clusters.toml (" + cause.message()
+                                                                            + ") — using " + DEFAULT_ADDRESS))
+                                      .option();
+        var current = registry.flatMap(ClusterRegistry::current);
+
+        registry.filter(r -> r.currentContext()
+                              .isPresent() && current.isEmpty())
+                .onPresent(r -> System.err.println("Warning: active cluster context '" + r.currentContext()
+                                                                                          .or("")
+                                                  + "' names no registered cluster — using " + DEFAULT_ADDRESS));
+        current.filter(entry -> entry.endpoint() == null || entry.endpoint()
+                                                                 .isBlank())
+               .onPresent(entry -> System.err.println("Warning: active cluster context '" + entry.name()
+                                                     + "' has no endpoint — using " + DEFAULT_ADDRESS
+                                                     + "; fix ~/.aether/clusters.toml or pass --connect"));
+
+        return current.filter(entry -> entry.endpoint() != null && !entry.endpoint()
+                                                                         .isBlank());
     }
 
     @Contract
@@ -591,9 +657,20 @@ public class AetherCli implements Runnable {
                             AetherCli::extractResponseBody);
     }
 
+    /// `--api-key` > `AETHER_API_KEY` > the active context's `api_key_env` (#584: the same fallback
+    /// `ClusterHttpClient.resolveApiKey` makes, so a context-routed top-level command carries the
+    /// credential the registry recorded for that cluster rather than dialling it unauthenticated).
     private Option<String> resolveApiKey() {
         return option(apiKey).filter(k -> !k.isBlank())
-                     .orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()));
+                     .orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()))
+                     .orElse(this::contextApiKey);
+    }
+
+    private Option<String> contextApiKey() {
+        return endpointFromContext
+               ? activeContext().flatMap(ClusterRegistry.ClusterEntry::apiKeyEnv)
+                              .flatMap(envName -> option(System.getenv(envName)))
+               : Option.empty();
     }
 
     private void attachApiKey(HttpRequest.Builder builder) {
@@ -3575,228 +3652,6 @@ public class AetherCli implements Runnable {
         private String buildEventsQuery() {
             return option(since).map(s -> "since=" + s)
                          .or("");
-        }
-    }
-
-    @Command(name = "backups", description = "Manage cluster backups", subcommands = {BackupCommand.TriggerCommand.class, BackupCommand.ListCommand.class, BackupCommand.RestoreCommand.class})
-    static class BackupCommand implements Runnable {
-        @CommandLine.ParentCommand
-        private AetherCli parent;
-
-        @Contract
-        @Override
-        public void run() {
-            CommandLine.usage(this, System.out);
-        }
-
-        @Command(name = "trigger", description = "Trigger a manual backup")
-        static class TriggerCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private BackupCommand backupParent;
-
-            @Override
-            public Integer call() {
-                var response = backupParent.parent.post(BACKUP_TRIGGER, "{}");
-
-                return OutputFormatter.printAction(response, backupParent.parent.outputOptions(), "Backup triggered");
-            }
-        }
-
-        @Command(name = "list", description = "List available backups")
-        static class ListCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private BackupCommand backupParent;
-
-            @Override
-            public Integer call() {
-                var response = backupParent.parent.fetch(BACKUPS_LIST);
-
-                return OutputFormatter.printQuery(response, backupParent.parent.outputOptions());
-            }
-        }
-
-        @Command(name = "restore", description = "Restore from a backup")
-        static class RestoreCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private BackupCommand backupParent;
-
-            @Parameters(index = "0", description = "Git commit ID to restore from")
-            private String commitId;
-
-            @CommandLine.Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
-            private boolean skipConfirmation;
-
-            @Override
-            public Integer call() {
-                if (!DestructiveAction.destructiveAction().confirm(skipConfirmation,
-                                                                   "This will restore cluster state from backup " + commitId
-                                                                  + ", overwriting current state.")) {
-                    System.out.println("Aborted.");
-
-                    return ExitCode.SUCCESS;
-                }
-
-                var response = backupParent.parent.post(BACKUP_RESTORE, "{\"commit\":\"" + commitId + "\"}");
-
-                return OutputFormatter.printAction(response,
-                                                   backupParent.parent.outputOptions(),
-                                                   "Restore initiated from " + commitId);
-            }
-        }
-    }
-
-    /// Singular `aether backup` parent — operator-facing alias of `aether backups`
-    /// with verb-style `create` / `restore` subcommands as called out in
-    /// `aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-C
-    /// (test target `TC-NEW-G4-kv-store-backup`). Shares the same REST routes
-    /// (`POST /api/backups`, `POST /api/backups/restore`, `GET /api/backups`) as
-    /// the existing plural form — this is an additional CLI surface, not a new
-    /// server endpoint.
-    @Command(name = "backup", description = "Operator-facing backup commands (create/restore/list)", subcommands = {BackupSingularCommand.CreateCommand.class, BackupSingularCommand.RestoreCommand.class, BackupSingularCommand.ListCommand.class})
-    static class BackupSingularCommand implements Runnable {
-        @CommandLine.ParentCommand
-        private AetherCli parent;
-
-        @Contract
-        @Override
-        public void run() {
-            CommandLine.usage(this, System.out);
-        }
-
-        @Command(name = "create", description = "Create a new backup (synchronous; --wait polls for visibility)")
-        @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
-        static class CreateCommand implements Callable<Integer> {
-            private static final int POLL_INTERVAL_MS = 1000;
-
-            @CommandLine.ParentCommand
-            private BackupSingularCommand backupParent;
-
-            @CommandLine.Option(names = "--wait", description = "Poll /api/backups until the new backup appears (or --timeout elapses)")
-            private boolean waitForCompletion;
-
-            @CommandLine.Option(names = "--timeout", description = "Timeout in seconds when --wait is set", defaultValue = "60")
-            private int timeoutSeconds;
-
-            @Override
-            public Integer call() {
-                var existingCount = waitForCompletion
-                                    ? countExistingBackups()
-                                    : -1;
-                var response = backupParent.parent.post(BACKUP_TRIGGER, "{}");
-                var result = OutputFormatter.printAction(response, backupParent.parent.outputOptions(), "Backup created");
-
-                if (result != ExitCode.SUCCESS || !waitForCompletion) {
-                    return result;
-                }
-
-                return pollUntilBackupVisible(existingCount);
-            }
-
-            private int countExistingBackups() {
-                var response = backupParent.parent.fetch(BACKUPS_LIST);
-
-                return countBackupEntries(response);
-            }
-
-            @SuppressWarnings("JBCT-EX-01")
-            private int pollUntilBackupVisible(int baselineCount) {
-                System.out.printf("Waiting for backup to appear in /api/backups (timeout: %ds)...%n", timeoutSeconds);
-                var deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
-
-                while (System.currentTimeMillis() < deadline) {
-                    var currentCount = countExistingBackups();
-
-                    if (currentCount > baselineCount) {
-                        System.out.printf("Backup visible: %d entries in /api/backups.%n", currentCount);
-
-                        return ExitCode.SUCCESS;
-                    }
-
-                    sleepQuietly();
-                }
-
-                System.err.printf("Timeout: backup did not become visible within %ds.%n", timeoutSeconds);
-
-                return ExitCode.TIMEOUT;
-            }
-
-            @SuppressWarnings("JBCT-EX-01")
-            private static void sleepQuietly() {
-                try {
-                    Thread.sleep(POLL_INTERVAL_MS);
-                } catch (InterruptedException _) {
-                    Thread.currentThread().interrupt();
-                }
-            }
-
-            /// Best-effort count of `"commitId"` occurrences in the BACKUPS_LIST JSON
-            /// envelope. Falls back to 0 on parse error so a missing/empty list does
-            /// not collide with the "saw new entry" condition.
-            static int countBackupEntries(String response) {
-                if (response == null || response.isBlank() || response.contains("\"error\"")) {
-                    return 0;
-                }
-
-                var marker = "\"commitId\"";
-                var idx = 0;
-                var count = 0;
-
-                while ((idx = response.indexOf(marker, idx)) >= 0) {
-                    count++;
-                    idx += marker.length();
-                }
-
-                return count;
-            }
-        }
-
-        @Command(name = "restore", description = "Restore the cluster from a backup commit (synchronous)")
-        static class RestoreCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private BackupSingularCommand backupParent;
-
-            @Parameters(index = "0", description = "Git commit ID to restore from")
-            private String commitId;
-
-            @CommandLine.Option(names = "--wait", description = "Reserved for future async-restore support (currently a no-op — restore is synchronous server-side)")
-            private boolean waitForCompletion;
-
-            @CommandLine.Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
-            private boolean skipConfirmation;
-
-            @Override
-            public Integer call() {
-                if (!DestructiveAction.destructiveAction().confirm(skipConfirmation,
-                                                                   "This will restore cluster state from backup " + commitId
-                                                                  + ", overwriting current state.")) {
-                    System.out.println("Aborted.");
-
-                    return ExitCode.SUCCESS;
-                }
-
-                var response = backupParent.parent.post(BACKUP_RESTORE, buildRestoreBody());
-
-                return OutputFormatter.printAction(response,
-                                                   backupParent.parent.outputOptions(),
-                                                   "Restore initiated from " + commitId);
-            }
-
-            String buildRestoreBody() {
-                return "{\"commit\":\"" + escapeJsonValue(commitId) + "\"}";
-            }
-        }
-
-        @Command(name = "list", description = "List available backups")
-        static class ListCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private BackupSingularCommand backupParent;
-
-            @Override
-            public Integer call() {
-                var response = backupParent.parent.fetch(BACKUPS_LIST);
-
-                return OutputFormatter.printQuery(response, backupParent.parent.outputOptions());
-            }
         }
     }
 

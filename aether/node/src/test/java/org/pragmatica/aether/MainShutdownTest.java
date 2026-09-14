@@ -8,17 +8,20 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.storage.EncryptionError;
 
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.IntConsumer;
 
 import org.mockito.Mockito;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -31,6 +34,36 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///   - SHOULD-FIX: [ThreadMXBean#dumpAllThreads] omits virtual threads; [Main#captureThreadDump] must
 ///     include them.
 class MainShutdownTest {
+
+    /// #1052 fix round 2 (N-2): SIGTERM while the DHT encryption-marker check is still retrying runs the
+    /// shutdown hook, whose `stop()` ends `start()` with `DhtMarkerCheckAbandoned`. Before the fix that
+    /// reached `exitWithError` -- "Failed to start node" at ERROR plus a second `System.exit(1)` from a
+    /// non-hook thread -- for what was the operator's own stop. Pins: the abandon cause does NOT exit;
+    /// every other start failure still does, with its own message.
+    @Nested
+    class StartFailure {
+
+        @Test
+        void onStartFailure_doesNotExit_whenTheNodeWasStoppedBeforeStartCompleted() {
+            var exitedWith = new AtomicReference<String>();
+
+            Main.onStartFailure(new EncryptionError.DhtMarkerCheckAbandoned("artifacts"), exitedWith::set);
+
+            assertNull(exitedWith.get(), "a stop issued by the operator during start must not be turned into "
+                                         + "a boot failure exit -- the shutdown hook that stopped the node owns the exit");
+        }
+
+        @Test
+        void onStartFailure_exitsWithTheCauseMessage_forAnyOtherStartFailure() {
+            var exitedWith = new AtomicReference<String>();
+            var refusal = new EncryptionError.EncryptedTierRequiresKeyring("artifacts", "k1");
+
+            Main.onStartFailure(refusal, exitedWith::set);
+
+            assertEquals(refusal.message(), exitedWith.get(),
+                         "a definite marker refusal must still exit(1) with its own message (#858 kept by #1052)");
+        }
+    }
 
     @Nested
     class ShutdownNodeGate {

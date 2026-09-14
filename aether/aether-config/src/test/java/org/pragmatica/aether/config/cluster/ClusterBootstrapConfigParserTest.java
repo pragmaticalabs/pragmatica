@@ -453,7 +453,6 @@ class ClusterBootstrapConfigParserTest {
                 .onSuccess(config -> {
                     var ops = config.operations();
                     assertThat(ops.autoHeal().enabled()).isTrue();
-                    assertThat(ops.autoHeal().retryInterval()).isEqualTo("60s");
                     assertThat(ops.tls().autoGenerate()).isTrue();
                     assertThat(ops.tls().certTtl()).isEqualTo("720h");
                     assertThat(ops.timeouts().healthCheck()).isEqualTo("300s");
@@ -463,6 +462,111 @@ class ClusterBootstrapConfigParserTest {
                     assertThat(ops.ports().appHttp()).isEqualTo(8070);
                     assertThat(ops.ports().swim()).isEqualTo(8190);
                 });
+        }
+    }
+
+    /// #675: `[operations.auto_heal]` tunables beyond `enabled` were parsed into `AutoHealSpec` and
+    /// never reached a node — the runtime builds its `AutoHealConfig` from defaults plus
+    /// `[cluster] max_nodes`. A key that changes nothing is refused loudly (PF-26), like PF-25.
+    @Nested
+    class AutoHealTunablesRefused {
+        private static final String[] REMOVED_KEYS = {"retry_interval = \"60s\"",
+                                                      "startup_cooldown = \"15s\"",
+                                                      "stale_observation_ttl = \"30s\"",
+                                                      "quic_miss_promotion_threshold = 10",
+                                                      "provisioning_timeout = \"60s\"",
+                                                      "provision_stability_window = \"30s\"",
+                                                      "decommissioned_retention = \"24h\"",
+                                                      "swim_hints_ttl = \"15s\""};
+
+        @Test
+        void parse_autoHealTunable_isRefused_namingTheKey() {
+            for (var assignment : REMOVED_KEYS) {
+                var key = assignment.substring(0, assignment.indexOf(' '));
+                var toml = """
+                    config_version = "1.0.0"
+
+                    [cluster]
+                    name = "tunables"
+                    version = "1.0.0"
+
+                    [source.local]
+                    type = "forge"
+
+                    [source.local.core]
+                    count = 3
+
+                    [operations.auto_heal]
+                    enabled = true
+                    """ + assignment + "\n";
+
+                ClusterBootstrapConfigParser.parse(toml)
+                    .onSuccess(_ -> Assertions.fail("a tunable nothing reads must be refused: " + key))
+                    .onFailure(cause -> assertThat(cause.message()).as(key)
+                                                                   .contains("PF-26")
+                                                                   .contains(key)
+                                                                   .contains("#675"));
+            }
+        }
+
+        /// Round 2: a file with N stale keys is reported in ONE bootstrap attempt, and each key that named
+        /// a timing the runtime reads is pointed at the node-config key that sets it now.
+        @Test
+        void parse_autoHealTunables_areAllNamed_withTheirNodeKeys() {
+            var toml = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "tunables"
+                version = "1.0.0"
+
+                [source.local]
+                type = "forge"
+
+                [source.local.core]
+                count = 3
+
+                [operations.auto_heal]
+                enabled = true
+                swim_hints_ttl = "15s"
+                provisioning_timeout = "60s"
+                retry_interval = "60s"
+                """;
+
+            ClusterBootstrapConfigParser.parse(toml)
+                .onSuccess(_ -> Assertions.fail("stale tunables must be refused"))
+                .onFailure(cause -> assertThat(cause.message())
+                    .contains("PF-26")
+                    .contains("swim_hints_ttl", "provisioning_timeout", "retry_interval")
+                    .contains("never took effect")
+                    .contains("provisioning_timeout -> [timeouts.scaling] auto_heal_provisioning_timeout")
+                    .contains("swim_hints_ttl -> [timeouts.scaling] auto_heal_swim_hints_ttl")
+                    .contains("node_config.timeouts.scaling")
+                    .doesNotContain("retry_interval ->"));
+        }
+
+        @Test
+        void parse_autoHealEnabledOnly_stillParses() {
+            var toml = """
+                config_version = "1.0.0"
+
+                [cluster]
+                name = "enabled-only"
+                version = "1.0.0"
+
+                [source.local]
+                type = "forge"
+
+                [source.local.core]
+                count = 3
+
+                [operations.auto_heal]
+                enabled = true
+                """;
+
+            ClusterBootstrapConfigParser.parse(toml)
+                .onFailure(cause -> Assertions.fail(cause.message()))
+                .onSuccess(config -> assertThat(config.operations().autoHeal().enabled()).isTrue());
         }
     }
 
@@ -629,6 +733,83 @@ class ClusterBootstrapConfigParserTest {
                 .onFailure(cause -> Assertions.fail(cause.message()))
                 .onSuccess(config -> assertThat(config.sources().get("local").provider())
                     .isEqualTo(Option.empty()));
+        }
+    }
+
+    /// #1049 — `replacement_ceiling` bounds how long an auto-heal replacement may stay in-flight while
+    /// its provider still reports it booting. Absent → the ten-minute default; a present value that is
+    /// not a positive duration fails loudly rather than silently falling back.
+    @Nested
+    class ReplacementCeiling {
+        private static final String CLOUD_WITH_CEILING = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "production"
+            version = "1.0.0"
+
+            [source.hetzner-eu]
+            type = "cloud"
+            provider = "hetzner"
+            region = "eu-central"
+            %s
+
+            [source.hetzner-eu.core]
+            count = 3
+            instance_type = "cx41"
+            runtime = "prod-container"
+
+            [runtime.prod-container]
+            type = "container"
+            image = "ghcr.io/pragmaticalabs/aether-node:1.0.0"
+            """;
+
+        @Test
+        void parse_replacementCeiling_parsesDuration() {
+            ClusterBootstrapConfigParser.parse(CLOUD_WITH_CEILING.formatted("replacement_ceiling = \"7m\""))
+                .onFailure(cause -> Assertions.fail(cause.message()))
+                .onSuccess(config -> assertThat(config.sources().get("hetzner-eu").effectiveReplacementCeiling().millis())
+                    .isEqualTo(7 * 60 * 1000L));
+        }
+
+        @Test
+        void parse_absentReplacementCeiling_usesTenMinuteDefault() {
+            ClusterBootstrapConfigParser.parse(CLOUD_WITH_CEILING.formatted(""))
+                .onFailure(cause -> Assertions.fail(cause.message()))
+                .onSuccess(config -> assertThat(config.sources().get("hetzner-eu").effectiveReplacementCeiling().millis())
+                    .isEqualTo(10 * 60 * 1000L));
+        }
+
+        @Test
+        void parse_invalidReplacementCeiling_failsNamingBadValue() {
+            ClusterBootstrapConfigParser.parse(CLOUD_WITH_CEILING.formatted("replacement_ceiling = \"ten minutes\""))
+                .onSuccess(config -> Assertions.fail("Expected a parse failure, not a silent fallback to the default"))
+                .onFailure(cause -> assertThat(cause.message())
+                    .contains("replacement_ceiling")
+                    .contains("ten minutes"));
+        }
+
+        @Test
+        void parse_zeroReplacementCeiling_failsAsNonPositive() {
+            ClusterBootstrapConfigParser.parse(CLOUD_WITH_CEILING.formatted("replacement_ceiling = \"0s\""))
+                .onSuccess(config -> Assertions.fail("A zero ceiling would re-dispatch every replacement at once"))
+                .onFailure(cause -> assertThat(cause.message())
+                    .contains("replacement_ceiling")
+                    .contains("positive"));
+        }
+
+        /// #1049 round 3 (S4) — a ceiling that cannot exceed the 3m first-listing floor plus the 2m join
+        /// allowance is refused at load, not clamped: `30s` is below the measured 50–63s mint-to-join, and the
+        /// leader evicts past the ceiling whatever the provider reports. Five minutes exactly cannot exceed it.
+        @Test
+        void parse_replacementCeilingNotAboveFloorPlusJoinAllowance_failsNamingTheMinimum() {
+            List.of("30s", "4m", "5m")
+                .forEach(value -> ClusterBootstrapConfigParser.parse(CLOUD_WITH_CEILING.formatted("replacement_ceiling = \"" + value + "\""))
+                                                              .onSuccess(config -> Assertions.fail("Expected " + value + " to be refused, not accepted"))
+                                                              .onFailure(cause -> assertThat(cause.message())
+                                                                  .contains("replacement_ceiling")
+                                                                  .contains("must exceed 5m")
+                                                                  .contains(value)));
         }
     }
 }

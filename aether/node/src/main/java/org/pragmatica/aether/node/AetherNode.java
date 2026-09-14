@@ -41,7 +41,6 @@ import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.api.routes.RetentionRoutes;
 import org.pragmatica.aether.api.DynamicConfigManager;
-import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.DynamicConfigurationProvider;
@@ -61,6 +60,7 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.aether.deployment.cluster.MembershipLiveness;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery;
@@ -389,7 +389,6 @@ public interface AetherNode extends ManageableNode {
     ArtifactMetricsCollector artifactMetricsCollector();
     DeploymentMap deploymentMap();
     ClusterEventAggregator eventAggregator();
-    BackupService backupService();
     StreamPartitionManager streamPartitionManager();
     StreamReadRouter streamReadRouter();
     ConsumerGroupCoordinator consumerGroupCoordinator();
@@ -1521,7 +1520,16 @@ public interface AetherNode extends ManageableNode {
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
         var repositories = repositoryFactory.createAll(config.sliceConfig());
         var sharedLibraryLoader = createSharedLibraryLoader(config);
-        var resourceProviderSetup = createResourceProviderFacade(config);
+        // #904: a configured resource provider whose secrets cannot be resolved is a boot failure
+        // naming the secret, propagated exactly like `baseStorageSetupsResult` above -- never a boot
+        // on the no-op facade with provisioning silently disabled.
+        var resourceProviderSetupResult = createResourceProviderFacade(config);
+
+        if (resourceProviderSetupResult.isFailure()) {
+            return resourceProviderSetupResult.map(ignored -> null);
+        }
+
+        var resourceProviderSetup = resourceProviderSetupResult.fold(_ -> null, setup -> setup);
         var sliceStore = SliceStore.sliceStore(sliceRegistry,
                                                repositories,
                                                sharedLibraryLoader,
@@ -1595,7 +1603,6 @@ public interface AetherNode extends ManageableNode {
                           ArtifactMetricsCollector artifactMetricsCollector,
                           DeploymentMap deploymentMap,
                           ClusterEventAggregator eventAggregator,
-                          BackupService backupService,
                           StreamPartitionManager streamPartitionManager,
                           SegmentIndex streamSegmentIndex,
                           StreamReadRouter streamReadRouter,
@@ -1686,19 +1693,6 @@ public interface AetherNode extends ManageableNode {
                                        .onSuccess(_ -> clusterNode.network()
                                                                   .whenReady(startSwimTrigger))
                                        .flatMap(_ -> startClusterAsync())
-                                       // #858: check/write each DHT-tier instance's encryption marker
-                                       // here — AFTER startClusterAsync() resolves (cluster formation
-                                       // complete, dhtClient can route) and BEFORE armPeriodicTasks /
-                                       // "started" (no DHT read is reachable before this point: deployed
-                                       // slices need leader election + quorum, which themselves need
-                                       // formation). Was boot-time, inside the constructor path
-                                       // (createAll → createOne), where it always blocked the full 30 s
-                                       // DHT_MARKER_TIMEOUT because the DHTClient handed to the
-                                       // constructor cannot route yet (#858). A no-keyring instance whose
-                                       // marker is present fails HERE with
-                                       // EncryptionError.EncryptedTierRequiresKeyring, which aborts
-                                       // start() and stops the node — same cause as before, just later.
-                                       .flatMap(_ -> verifyDhtMarkers())
                                        // #644: arm the deferred periodic tasks only now, once cluster
                                        // formation has resolved — a created-but-unstarted node performs
                                        // no periodic work, and none of the deferred tasks participates
@@ -1712,17 +1706,47 @@ public interface AetherNode extends ManageableNode {
                                        // PeriodicTasks.arm() is a no-op after stop(), closing the
                                        // late-resolution race in the other direction.
                                        .map(this::armPeriodicTasks)
+                                       // #858: check/write each DHT-tier instance's encryption marker
+                                       // here — AFTER startClusterAsync() resolves (cluster formation
+                                       // complete, dhtClient can route). Was boot-time, inside the
+                                       // constructor path (createAll → createOne), where it always blocked
+                                       // the full 30 s DHT_MARKER_TIMEOUT because the DHTClient handed to
+                                       // the constructor cannot route yet (#858).
+                                       //
+                                       // #1052: AFTER armPeriodicTasks, not before. The check now retries
+                                       // for as long as the DHT cannot answer (a ring still converging),
+                                       // and LeaderManager picks the lowest id of the sorted topology, so
+                                       // a replacement still retrying can already be leader. Holding the
+                                       // periodic work behind the check would switch off that leader's
+                                       // generation bump, readiness sweep and activation heal. What must
+                                       // not precede the check is enforced elsewhere, not by this order:
+                                       // every DHT-tier get/put/delete/exists waits on the instance's
+                                       // readGate (#874), and the node reports not-ready until every gate
+                                       // admits (markSubsystemsReadyOnceDhtAdmitted). Only
+                                       // EncryptionError.EncryptedTierRequiresKeyring (a marker present
+                                       // with no keyring) fails start() — and Main#exitWithError still
+                                       // stops the node on it; a timeout or an unreachable quorum is
+                                       // retried and never exits.
+                                       .flatMap(_ -> verifyDhtMarkers())
                                        .onSuccess(_ -> log.info("Aether node {} started, cluster forming...",
                                                                 self()));
             }
 
-            /// #858: post-formation DHT encryption-marker check/write, run once from [#start] between
+            /// #858: post-formation DHT encryption-marker check/write, run once from [#start] after
             /// `startClusterAsync()` and `armPeriodicTasks`. Generic over `storageSetups`' CONTENTS —
             /// iterates whatever [StorageFactory.StorageSetup#dhtMarkerCheck] entries are present, no
             /// hardcoded instance list — so an instance that starts carrying a DHT tier later (#783:
             /// `content` routed through `createAll`) is covered automatically without touching this
             /// method. No `dhtClient` (no DHT-backed instance in this config) short-circuits to
             /// `Promise.UNIT` — nothing to check.
+            ///
+            /// #1052: retries until each check completes or definitively refuses; `periodicTasks`'
+            /// cancellation is the loop's stop signal, so a stopped node stops retrying. In practice
+            /// that signal is `stop()` alone: the other canceller, the failed-boot guard
+            /// (`cancelArmedWork`, from `verifyRoutedTypesEncodable`), runs at construction, before
+            /// [#start] and therefore before this loop exists. Consequence: a refusal leaves periodic
+            /// work armed until whoever owns the node stops it (`Main#exitWithError`, Ember's
+            /// `abortStart`, a test's tear-down).
             private Promise<Unit> verifyDhtMarkers() {
                 var checks = storageSetups.values()
                                           .stream()
@@ -1730,7 +1754,9 @@ public interface AetherNode extends ManageableNode {
                                           .flatMap(Option::stream)
                                           .toList();
 
-                return dhtClient.map(client -> StorageFactory.verifyDhtMarkers(client, checks))
+                return dhtClient.map(client -> StorageFactory.verifyDhtMarkers(client,
+                                                                               checks,
+                                                                               periodicTasks::isCancelled))
                                 .or(Promise.UNIT);
             }
 
@@ -2484,6 +2510,23 @@ public interface AetherNode extends ManageableNode {
         // node boots with resolved credentials instead of crashing on placeholders. Returns none()
         // gracefully when no config path was published (forge/tests) or the file can't be parsed.
         var resolvedLocalConfig = Lazy.lazy(AetherNode::parseOwnResolvedConfig);
+        // #1050 / #1062 — the CTM consults membership and liveness evidence before every irreversible reap. The
+        // SWIM detector and the LeaderReconciler are built further below, so both are reached through holders
+        // declared HERE (read per call; empty until published, which every reap gate treats as fail-closed).
+        // The configured core count comes out of the same seam and is handed to the LeaderReconciler and the
+        // QuorumLossDetector below, so the drain decision and its reap read ONE count supplier.
+        var swimHealthDetectorHolder = new AtomicReference<CoreSwimHealthDetector>();
+        var leaderReconcilerRef = new AtomicReference<LeaderReconciler>();
+        var ctmLiveness = drainGraceLiveness(membershipFsmRef::get,
+                                             clusterConfigReader,
+                                             config.topology().coreNodes().size(),
+                                             swimHealthDetectorHolder::get,
+                                             peer -> clusterNode.network()
+                                                                .connectedPeers()
+                                                                .contains(peer),
+                                             leaderReconcilerRef::get,
+                                             metricsCollector::retainedDispatchedNodes);
+        IntSupplier configuredCoreCountSupplier = ctmLiveness.configuredCoreCount();
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
@@ -2498,7 +2541,8 @@ public interface AetherNode extends ManageableNode {
                                                                                    drainCommandRegistry::clearDrain,
                                                                                    resolvedLocalConfig::get,
                                                                                    () -> kvStore.getTyped(AetherKey.AutoHealStateKey.SINGLETON,
-                                                                                                          AutoHealStateValue.class));
+                                                                                                          AutoHealStateValue.class),
+                                                                                   ctmLiveness);
         // E2 Phase 2b (2026-05-28): OrphanSelfDrainChecker deleted; NTT (§6) drives departure
         // detection and the §8 unified drain handles surplus dissolution. Membership v2 finale:
         // the leader-pinned `LifecycleReconciler` (and the FSM it wrote through) are gone — the
@@ -2901,7 +2945,7 @@ public interface AetherNode extends ManageableNode {
         // ValuePut handler only fires long after seeding, so the holder is always populated by
         // read time. A holder (not a reorder) keeps the router-build / replay-burst ordering
         // documented below intact.
-        var swimHealthDetectorHolder = new AtomicReference<CoreSwimHealthDetector>();
+        // (`swimHealthDetectorHolder` is declared earlier, beside the CTM wiring that also reads it.)
         // #642: worker-mode subsystems are created lazily, when a WORKER activation directive arrives —
         // long after assembly — so the announcer cannot be a plain local. The holder is how stop()
         // reaches it to cancel the re-announce tick; empty on a node that never became a worker.
@@ -3023,13 +3067,14 @@ public interface AetherNode extends ManageableNode {
         // robust against owner partial-network errors. See `ClusterSyncCollector.processEvictionHints`.
         metricsCollector.setPeerLocallyAlive(nodeId -> swimHealthDetector.healthOf(nodeId) == SwimHealth.HEALTHY);
         // Option 1 (S01) — feed cluster-sync missed-pong into SWIM as a transport-unreachable HINT
-        // instead of a destructive disconnect. SWIM drives the SUSPECT → 3s-floored-FAULTY →
-        // DepartedObserved → synchronous-DEAD pipeline (the same path the QUIC `onPeerLeft` listener
-        // feeds) and refutes the hint when pongs resume, so a transient flap no longer false-evicts a
-        // healthy peer. The owner-side SWIM-HEALTHY early-skip in `emitPingTimeoutIfExceeded` still
-        // suppresses the hint for a peer SWIM already trusts (avoids conflicting evidence).
-        metricsCollector.setUnreachableReporter(nodeId -> swimHealthDetector.recordTransportHint(new TransportObservation.PeerUnreachable(nodeId,
-                                                                                                                                          QuicTransportCause.PING_TIMEOUT)));
+        // instead of a destructive disconnect. The owner-side SWIM-HEALTHY early-skip in
+        // `emitPingTimeoutIfExceeded` still suppresses the hint for a peer SWIM already trusts. The hint
+        // is PEER_UNRESPONSIVE (#1061): it floors and vetoes with the QUIC link CONNECTED, so its count
+        // covers only the current link since the last pong (R-a, reset by the QUIC listener attached
+        // below and by every pong), and a pong from the peer retracts it (R-b). Neither reports life:
+        // only a SWIM probe-ack ends the suspicion.
+        metricsCollector.setUnreachableReporter(pingTimeoutReporter(swimHealthDetector::recordTransportHint));
+        metricsCollector.addPongListener(pongResponsiveReporter(selfId, swimHealthDetector::recordTransportHint));
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> swimHealthDetector.onLeaderChanged(change.leaderId())));
         var announceTopology = config.topology();
@@ -3066,12 +3111,6 @@ public interface AetherNode extends ManageableNode {
         // constructed and listeners registered on every node. The migration-ramp
         // observation-flag and DivergenceLogger are gone.
         var membershipConfig = config.membership().or(MembershipConfig::membershipConfig);
-        IntSupplier configuredCoreCountSupplier = () -> clusterConfigReader.get()
-                                                                           .map(AetherValue.ClusterConfigValue::coreCount)
-                                                                           .or(() -> config.topology()
-                                                                                           .coreNodes()
-                                                                                           .size());
-        var leaderReconcilerRef = new AtomicReference<LeaderReconciler>();
         Runnable nttReconcileTrigger = () -> onNttReconcile(quorumLossDetectorRef,
                                                             membershipFsmRef,
                                                             leaderReconcilerRef,
@@ -3120,6 +3159,11 @@ public interface AetherNode extends ManageableNode {
         // Publish the FSM into the deferred holder so the membership consumers wired earlier (DHT
         // livePeers, accessibility filter, quorum-count propagation) read the authoritative FSM set.
         membershipFsmRef.set(membershipFsm);
+        // #1054: every DRAINING pong the leader records is a drain acknowledgement, latched by the FSM for the
+        // member's drain episode. It is latched as the pong lands because the readiness sweep forgets a halted
+        // drainee within three pings, long before the DEPARTING timeout. An acknowledged drain terminalizes at
+        // expiry; an undelivered DRAIN to a live target is withdrawn to MEMBER instead of reaped.
+        pongSignalFan.onDrainingReported(membershipFsm::onDrainAcknowledged);
         // Wave-1 Enrichment A (cluster-topology-overhaul spec): per-node TRANSITION JOURNAL —
         // bounded per-layer ring buffer recording EVERY MembershipFsm transition and EVERY
         // PeerState transition, dumpable via GET /api/cluster/journal. Diagnostic-only and
@@ -3217,6 +3261,9 @@ public interface AetherNode extends ManageableNode {
         // SUSPECT / FAULTY / DEPARTED / UNKNOWN map to the matching onSwim* ingress; the FSM drives the
         // per-member lifecycle and evicts on the DEAD edge. Leader-gating happens inside the FSM.
         swimHealthDetector.addObservationListener(obs -> routeSwimEdgeToMembershipFsm(obs, membershipFsm));
+        // #1050 (verify-1057-r2 S1): the FAULTY edge is the death evidence that re-arms a departed-node reap the CTM
+        // abandoned while SWIM still reported the node SUSPECTED. Pinned by `SwimFaultyToCtmRoutingTest`.
+        swimHealthDetector.addObservationListener(obs -> routeSwimFaultyToCtm(obs, clusterTopologyManager));
         // P3 (membership unification): quorum-loss is detected by QuorumLossDetector from the
         // unified tracker's stable membership (armed after first quorum; grace =
         // quorumLossDrainThreshold) and drives the §8.2 unified `DrainProcedure` directly.
@@ -3526,7 +3573,7 @@ public interface AetherNode extends ManageableNode {
                                        leaderEpochSupplier,
                                        nttConnectTap,
                                        nttDisconnectTap);
-        attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector);
+        attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector, metricsScheduler::onLinkEstablished);
         attachBroadcastMembershipView(clusterNode.network(), membershipFsm);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForPublisher(change,
@@ -4320,7 +4367,6 @@ public interface AetherNode extends ManageableNode {
                                   artifactMetricsCollector,
                                   deploymentMap,
                                   eventAggregator,
-                                  BackupService.disabled(),
                                   streamPartitionManager,
                                   streamSegmentIndex,
                                   streamReadRouter,
@@ -4378,8 +4424,15 @@ public interface AetherNode extends ManageableNode {
 
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(retentionInvariantWatch::tick,
                                                                       RETENTION_INVARIANT_CHECK_INTERVAL));
-        nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReady(nodeLifecycle::signalReady,
-                                                                           nodeReportedStateHolder));
+        // #1052: self-ready (lifecycle ACTIVE, reported READY) waits for every DHT-backed storage
+        // instance to be admitted by its post-formation encryption-marker check, which now retries while
+        // the DHT cannot answer. Without this the node would report ready while its DHT tiers still refuse
+        // every operation.
+        var dhtAdmission = StorageFactory.dhtAdmission(storageSetups);
+
+        nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReadyOnceDhtAdmitted(dhtAdmission,
+                                                                                          nodeLifecycle::signalReady,
+                                                                                          nodeReportedStateHolder));
         // Activation level-heal: a cold-start `restart_all_nodes` can drop the single CAS-latched
         // ClusterStateNotification.ACTIVE edge while the router delegate is being rebuilt, leaving NDM
         // stuck in Dormant (self-ready/subsystemsReady never fire) so the node reports SYNCING forever.
@@ -4529,7 +4582,6 @@ public interface AetherNode extends ManageableNode {
                                                                         artifactMetricsCollector,
                                                                         deploymentMap,
                                                                         eventAggregator,
-                                                                        BackupService.disabled(),
                                                                         streamPartitionManager,
                                                                         streamSegmentIndex,
                                                                         streamReadRouter,
@@ -4734,6 +4786,18 @@ public interface AetherNode extends ManageableNode {
         holder.onSubsystemsReady();
     }
 
+    /// #1052: the NDM self-ready signal, deferred until `dhtAdmission` succeeds -- every DHT-backed
+    /// storage instance admitted by its post-formation encryption-marker check. Already admitted (or no
+    /// DHT tier at all: an empty set resolves at once), it runs synchronously, exactly as before. Still
+    /// pending, it runs when the last gate admits. A refusal never runs it: the node stays `JOINING`
+    /// while `start()` fails on the same cause.
+    @Contract
+    private static void markSubsystemsReadyOnceDhtAdmitted(Promise<Unit> dhtAdmission,
+                                                           Runnable signalReady,
+                                                           NodeReportedStateHolder holder) {
+        dhtAdmission.onSuccess(_ -> markSubsystemsReady(signalReady, holder));
+    }
+
     /// B4/C-1 (membership v2 §7.5): nodes the leader observes in a given reported state — peers from
     /// the readiness view PLUS self when the local holder reports that state (the leader does not pong
     /// itself, so it is absent from the aggregated pong view; its own state is authoritative locally).
@@ -4794,6 +4858,74 @@ public interface AetherNode extends ManageableNode {
                            .or(Set.of());
     }
 
+    /// #1050 / #1062 — the CTM's membership and liveness evidence as ONE named seam, the sibling of
+    /// [#presenceMemberSupplier]. Every projection is read live, per call:
+    /// - counted — the FSM's role-scoped MEMBER + SUSPECT set, the `LeaderReconciler`'s own drain denominator;
+    /// - tracked — the FSM's not-DEAD set (OBSERVED + MEMBER + SUSPECT + DEPARTING);
+    /// - swimAlive — raw SWIM HEALTHY/SUSPECTED;
+    /// - transportConnected — the leader's own cluster-transport view;
+    /// - in-flight — this leader's reconciler in-flight keys plus the set retained from the previous leader's
+    ///   pings;
+    /// - configured — the committed `ClusterConfigValue.coreCount`, else the bootstrap topology size;
+    /// - advertisedRole (#689) — the FSM's `memberDescriptor(id).role()`, the self-asserted role the projector
+    ///   classified the node's join by; `none()` for an untracked id or before the FSM is published.
+    ///
+    /// Before the FSM, detector or reconciler is published, its projection reads empty or false, which every
+    /// reap gate treats as not quorum-safe (fail-closed). `DrainGraceLivenessSeamTest` pins this method.
+    static MembershipLiveness drainGraceLiveness(Supplier<MembershipFsm> membershipFsm,
+                                                 Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader,
+                                                 int topologyCoreNodes,
+                                                 Supplier<CoreSwimHealthDetector> swimHealthDetector,
+                                                 Predicate<NodeId> transportConnected,
+                                                 Supplier<LeaderReconciler> leaderReconciler,
+                                                 Supplier<Set<NodeId>> retainedDispatched) {
+        return MembershipLiveness.membershipLiveness(() -> fsmProjection(membershipFsm.get(),
+                                                                         MembershipFsm::coreCountedMembers),
+                                                     () -> fsmProjection(membershipFsm.get(),
+                                                                         MembershipFsm::broadcastEligibleMembers),
+                                                     nodeId -> swimAliveIfPublished(swimHealthDetector.get(), nodeId),
+                                                     transportConnected,
+                                                     () -> inFlightProvisioning(leaderReconciler.get(),
+                                                                                retainedDispatched.get()),
+                                                     () -> configuredCoreCount(clusterConfigReader.get(),
+                                                                               topologyCoreNodes),
+                                                     nodeId -> advertisedRole(membershipFsm.get(), nodeId));
+    }
+
+    private static Option<String> advertisedRole(MembershipFsm membershipFsm, NodeId nodeId) {
+        return Option.option(membershipFsm)
+                     .flatMap(fsm -> fsm.memberDescriptor(nodeId))
+                     .map(MemberDescriptor::role);
+    }
+
+    private static Set<NodeId> fsmProjection(MembershipFsm membershipFsm,
+                                             Function<MembershipFsm, Set<NodeId>> projection) {
+        return Option.option(membershipFsm)
+                     .map(projection::apply)
+                     .or(Set.of());
+    }
+
+    private static boolean swimAliveIfPublished(CoreSwimHealthDetector swimHealthDetector, NodeId nodeId) {
+        return Option.option(swimHealthDetector)
+                     .map(detector -> swimAliveForCoConfirmation(detector, nodeId))
+                     .or(false);
+    }
+
+    private static Set<NodeId> inFlightProvisioning(LeaderReconciler leaderReconciler, Set<NodeId> retainedDispatched) {
+        return Stream.concat(retainedDispatched.stream(),
+                             Option.option(leaderReconciler)
+                                   .map(LeaderReconciler::inFlightProvisioningKeys)
+                                   .or(Set.of())
+                                   .stream())
+                     .collect(Collectors.toUnmodifiableSet());
+    }
+
+    private static int configuredCoreCount(Option<AetherValue.ClusterConfigValue> clusterConfig,
+                                           int topologyCoreNodes) {
+        return clusterConfig.map(AetherValue.ClusterConfigValue::coreCount)
+                            .or(topologyCoreNodes);
+    }
+
     @Contract
     private static void commandedDrain(DrainProcedure drainProcedure, NodeReportedStateHolder holder) {
         drainProcedure.initiate(DrainReason.COMMANDED);
@@ -4818,15 +4950,19 @@ public interface AetherNode extends ManageableNode {
         Option.option(quorumLossDetectorRef.get()).onPresent(detector -> detector.onQuorumPresence(notification.state() != ClusterStateNotification.State.PASSIVE));
     }
 
+    /// #517: self is in its own topology by the time assembly runs — `TopologyObserver.topologyObserver`
+    /// (via `RabiaNode.rabiaNode`, before `assembleNode`) refuses the config otherwise, pinned by
+    /// `AetherNodeSelfAbsentFromTopologyBootTest`. The old `.orElse(new NodeAddress("", 0))` was a
+    /// dead branch that would have advertised a placeholder silently if that ordering ever changed.
     private static NodeAddress findSelfAddress(AetherNodeConfig config) {
-        return config.topology()
-                     .coreNodes()
-                     .stream()
-                     .filter(info -> info.id()
-                                         .equals(config.self()))
-                     .map(NodeInfo::address)
-                     .findFirst()
-                     .orElse(new NodeAddress("", 0));
+        return Option.from(config.topology()
+                                 .coreNodes()
+                                 .stream()
+                                 .filter(info -> info.id()
+                                                     .equals(config.self()))
+                                 .map(NodeInfo::address)
+                                 .findFirst()).expect("self " + config.self()
+                                                     + " absent from its own topology — refused by TopologyObserver.topologyObserver before assembly (#517)");
     }
 
     private static AetherValue.ProvisioningSource detectProvisioningSource() {
@@ -4905,7 +5041,9 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    private static void attachQuicPeerStateListener(ClusterNetwork network, CoreSwimHealthDetector swimDetector) {
+    private static void attachQuicPeerStateListener(ClusterNetwork network,
+                                                    CoreSwimHealthDetector swimDetector,
+                                                    Consumer<NodeId> linkEstablished) {
         LOG.debug("attachQuicPeerStateListener: network class={}",
                   Option.option(network).map(n -> n.getClass()
                                                    .getName()).or("null"));
@@ -4915,37 +5053,74 @@ public interface AetherNode extends ManageableNode {
             return;
         }
 
-        var listener = new QuicPeerStateListener() {
-            @Override
-            @Contract
-            public void onPeerJoined(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerJoined({}) — recordTransportHint(reachable)", nodeId);
-                swimDetector.recordTransportHint(new TransportObservation.PeerReachable(nodeId));
-            }
-
-            @Override
-            @Contract
-            public void onPeerReconnected(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerReconnected({}) — recordTransportHint(reachable)", nodeId);
-                swimDetector.recordTransportHint(new TransportObservation.PeerReachable(nodeId));
-            }
-
-            @Override
-            @Contract
-            public void onPeerLeft(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerLeft({}) — recordTransportHint(unreachable)", nodeId);
-                swimDetector.recordTransportHint(new TransportObservation.PeerUnreachable(nodeId,
-                                                                                          QuicTransportCause.PEER_LEFT));
-            }
-        };
-
-        quicNetwork.setPeerStateListener(listener);
+        quicNetwork.setPeerStateListener(quicPeerStateListener(swimDetector::recordTransportHint, linkEstablished));
         quicNetwork.connectedPeers()
                    .forEach(peer -> {
                                 LOG.debug("QuicPeerState: catch-up recordTransportHint(reachable) for already-connected peer {}",
                                           peer);
                                 swimDetector.recordTransportHint(new TransportObservation.PeerReachable(peer));
                             });
+    }
+
+    /// The QUIC peer-state listener feeding SWIM transport hints and ClusterSync link epochs (#1061).
+    /// Package-private so a test pins the observation each callback produces, not only the
+    /// cause→origin mapping. A join or reconnect first starts a new ClusterSync missed-pong epoch
+    /// for the peer (R-a: misses counted against the previous link are discarded) and then sends
+    /// `PeerReachable`; a departure sends a `PEER_LEFT` hint, which is `LINK_LOST`.
+    static QuicPeerStateListener quicPeerStateListener(Consumer<TransportObservation> swimHints,
+                                                       Consumer<NodeId> linkEstablished) {
+        return new QuicPeerStateListener() {
+            @Override
+            @Contract
+            public void onPeerJoined(NodeId nodeId) {
+                reportLinkEstablished("onPeerJoined", nodeId, swimHints, linkEstablished);
+            }
+
+            @Override
+            @Contract
+            public void onPeerReconnected(NodeId nodeId) {
+                reportLinkEstablished("onPeerReconnected", nodeId, swimHints, linkEstablished);
+            }
+
+            @Override
+            @Contract
+            public void onPeerLeft(NodeId nodeId) {
+                LOG.debug("QuicPeerState: onPeerLeft({}) — recordTransportHint(unreachable)", nodeId);
+                swimHints.accept(unreachableHint(QuicTransportCause.PEER_LEFT, nodeId));
+            }
+        };
+    }
+
+    /// A QUIC link to `nodeId` was (re)established: start a new ClusterSync missed-pong epoch, then
+    /// send SWIM `PeerReachable`.
+    private static void reportLinkEstablished(String callback,
+                                              NodeId nodeId,
+                                              Consumer<TransportObservation> swimHints,
+                                              Consumer<NodeId> linkEstablished) {
+        LOG.debug("QuicPeerState: {}({}) — link epoch + recordTransportHint(reachable)", callback, nodeId);
+        linkEstablished.accept(nodeId);
+        swimHints.accept(new TransportObservation.PeerReachable(nodeId));
+    }
+
+    /// ClusterSync missed-pong reporter: each report is a `PING_TIMEOUT` (`PEER_UNRESPONSIVE`) SWIM
+    /// hint (#1061). Package-private so a test pins the cause this call site reports.
+    static Consumer<NodeId> pingTimeoutReporter(Consumer<TransportObservation> swimHints) {
+        return nodeId -> swimHints.accept(unreachableHint(QuicTransportCause.PING_TIMEOUT, nodeId));
+    }
+
+    /// ClusterSync pong listener (#1061 R-b): a pong retracts that peer's `PEER_UNRESPONSIVE` hint via
+    /// `PeerResponsive` — ClusterSync withdrawing its own stale evidence on contrary evidence of the
+    /// same kind. SWIM state is untouched; SWIM probe-ack remains the sole ALIVE authority. The
+    /// A pong from `self` reports nothing — a defensive guard, not a producer: no production path
+    /// delivers one (`QuicClusterNetwork.broadcastPayload` iterates peers, which excludes self, and a
+    /// pong is sent to the leader only), and there would be no hint about `self` to retract anyway.
+    static Consumer<ClusterSyncMessage.ClusterSyncPong> pongResponsiveReporter(NodeId self,
+                                                                               Consumer<TransportObservation> swimHints) {
+        return pong -> {
+            if (!self.equals(pong.sender())) {
+                swimHints.accept(new TransportObservation.PeerResponsive(pong.sender()));
+            }
+        };
     }
 
     enum QuicTransportCause implements Cause {
@@ -4959,6 +5134,20 @@ public interface AetherNode extends ManageableNode {
         public String message() {
             return message;
         }
+    }
+
+    /// The SWIM death hint a QUIC-side cause reports, tagged with the origin that decides how long
+    /// SWIM believes it (#1061): `PEER_LEFT` describes one lost link, so a reconnect or a live link
+    /// overrides it; `PING_TIMEOUT` describes a connected-but-silent peer, so a live link does not.
+    static TransportObservation.PeerUnreachable unreachableHint(QuicTransportCause cause, NodeId peer) {
+        return new TransportObservation.PeerUnreachable(peer, cause, hintOrigin(cause));
+    }
+
+    private static TransportObservation.HintOrigin hintOrigin(QuicTransportCause cause) {
+        return switch (cause) {
+            case PEER_LEFT -> TransportObservation.HintOrigin.LINK_LOST;
+            case PING_TIMEOUT -> TransportObservation.HintOrigin.PEER_UNRESPONSIVE;
+        };
     }
 
     /// Installs a single `PeerConnectivityReporter` on EVERY node (leader + followers).
@@ -5029,6 +5218,16 @@ public interface AetherNode extends ManageableNode {
         };
 
         quicNetwork.setFollowerObservationWiring(isLeaderSupplier, reporter, epochAdapter);
+    }
+
+    /// #1050 — only the FAULTY edge reaches [`ClusterTopologyManager#onSwimFaulty`]; every other observation
+    /// (including `DepartedObserved`, which SWIM emits as the second half of the same FAULTY-edge pair) is
+    /// dropped here. The CTM acts on it only for a reap it has abandoned.
+    @Contract
+    static void routeSwimFaultyToCtm(SwimObservation observation, ClusterTopologyManager clusterTopologyManager) {
+        if (observation instanceof SwimObservation.FaultyObserved faulty) {
+            clusterTopologyManager.onSwimFaulty(faulty.peer());
+        }
     }
 
     /// Route a SWIM observation edge into the authoritative [`MembershipFsm`]. HEALTHY / SUSPECT /
@@ -5589,16 +5788,9 @@ public interface AetherNode extends ManageableNode {
         return resolveLongEnv("CLUSTER_EVENTS_MAX_EVENT_SIZE_BYTES", 64L * 1024);
     }
 
+    /// #517: same invariant as [#findSelfAddress]; `localhost` was a dead placeholder, never a default.
     private static String resolveHostname(AetherNodeConfig config) {
-        return config.topology()
-                     .coreNodes()
-                     .stream()
-                     .filter(n -> n.id()
-                                   .equals(config.self()))
-                     .findFirst()
-                     .map(n -> n.address()
-                                .host())
-                     .orElse("localhost");
+        return findSelfAddress(config).host();
     }
 
     private static List<MessageRouter.Entry<?>> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,
@@ -5666,6 +5858,10 @@ public interface AetherNode extends ManageableNode {
                                                   .onRemove(AetherKey.VersionRoutingKey.class,
                                                             clusterDeploymentManager::onVersionRoutingRemove)
                                                   .onPut(AetherKey.SliceTargetKey.class, controlLoop::onSliceTargetPut)
+                                                  .onPut(AetherKey.SliceTargetKey.class,
+                                                         nodeDeploymentManager::onSliceTargetPut)
+                                                  .onPut(AetherKey.VersionRoutingKey.class,
+                                                         nodeDeploymentManager::onVersionRoutingPut)
                                                   .onRemove(AetherKey.SliceTargetKey.class,
                                                             controlLoop::onSliceTargetRemove)
                                                   .onPut(AetherKey.AlertThresholdKey.class,
@@ -5857,6 +6053,9 @@ public interface AetherNode extends ManageableNode {
                                               clusterTopologyManager::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                               clusterTopologyManager::onMembershipDecision));
+        // #689: the worker join channel reaches the CTM too, so a provisioned node's advertised role
+        // is compared against its provisioning intent on whichever channel it joins.
+        entries.add(MessageRouter.Entry.route(WorkerJoinDecision.class, clusterTopologyManager::onWorkerJoin));
         // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
                                               clusterTopologyManager::onSelfShutdown));
@@ -5952,8 +6151,6 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(OperationalEvent.NodeLifecycleChanged.class,
                                               eventAggregator::onNodeLifecycleChanged));
         entries.add(MessageRouter.Entry.route(OperationalEvent.ConfigChanged.class, eventAggregator::onConfigChanged));
-        entries.add(MessageRouter.Entry.route(OperationalEvent.BackupCreated.class, eventAggregator::onBackupCreated));
-        entries.add(MessageRouter.Entry.route(OperationalEvent.BackupRestored.class, eventAggregator::onBackupRestored));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeployed.class,
                                               eventAggregator::onBlueprintDeployed));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeleted.class,
@@ -6065,18 +6262,18 @@ public interface AetherNode extends ManageableNode {
                                  Option<SpiResourceProvider> spiProvider,
                                  Option<Fn1<Promise<String>, String>> secretResolver) {}
 
-    private static ResourceProviderSetup createResourceProviderFacade(AetherNodeConfig config) {
+    private static Result<ResourceProviderSetup> createResourceProviderFacade(AetherNodeConfig config) {
         var log = LoggerFactory.getLogger(AetherNode.class);
 
         return config.configProvider()
                      .fold(() -> {
                                log.debug("No configuration provider configured, resource provisioning disabled");
 
-                               return new ResourceProviderSetup(noOpResourceProviderFacade(),
-                                                                Option.empty(),
-                                                                Option.empty(),
-                                                                Option.empty(),
-                                                                Option.empty());
+                               return Result.success(new ResourceProviderSetup(noOpResourceProviderFacade(),
+                                                                               Option.empty(),
+                                                                               Option.empty(),
+                                                                               Option.empty(),
+                                                                               Option.empty()));
                            },
                            configProvider -> {
                                log.info("Creating ConfigService and ResourceProvider from configuration provider");
@@ -6089,20 +6286,21 @@ public interface AetherNode extends ManageableNode {
                                var secretsProvider = config.environment()
                                                            .flatMap(EnvironmentIntegration::secrets);
                                var secretResolver = secretsProvider.map(sp -> (Fn1<Promise<String>, String>) sp::resolveSecret);
-                               var resolvedProvider = secretsProvider.fold(() -> Result.success(configProvider),
+                               // No SecretsProvider (no `[cloud]` block, or `Main.resolveEnvironment`
+                               // dropped a failed one): a `${secrets:...}` placeholder in node.toml
+                               // can never resolve, so it refuses here too rather than being served
+                               // as the literal value -- the `NoSecretsProviderForStorageEncryption`
+                               // rule applied to the config map. A placeholder-free provider (Ember,
+                               // Forge) is returned as-is.
+                               var resolvedProvider = secretsProvider.fold(() -> ConfigurationProvider.withoutSecretResolution(configProvider),
                                                                            sp -> ConfigurationProvider.withSecretResolution(configProvider,
                                                                                                                             sp::resolveSecret));
-
-                               return resolvedProvider.fold(cause -> {
-                                                                log.error("Failed to resolve secrets in configuration: {}",
-                                                                          cause.message());
-
-                                                                return new ResourceProviderSetup(noOpResourceProviderFacade(),
-                                                                                                 Option.empty(),
-                                                                                                 Option.empty(),
-                                                                                                 Option.empty(),
-                                                                                                 secretResolver);
-                                                            },
+                               // #904: the operator DID configure a provider; the failure is in
+                               // resolving its secrets, and the refusal says so. Booting on the
+                               // no-op facade instead left `nodeComposite` empty, so every
+                               // `ConfigurationSection` slice failed later with a cause that blamed
+                               // the node for having no provider configured.
+                               return resolvedProvider.fold(cause -> secretResolutionRefused(cause),
                                                             provider -> {
                                                                 // KV-overlay layer: holds operator config puts only.
                                                                 // Base is empty — the merged view is composed below via
@@ -6132,13 +6330,22 @@ public interface AetherNode extends ManageableNode {
                                                                 // `Promise.unitPromise()` default and every slice unload
                                                                 // reported a successful release without one reaching
                                                                 // `SpiResourceProvider` (#892).
-                                                                return new ResourceProviderSetup(resourceProvider.facade(),
-                                                                                                 Option.some(dynamicProvider),
-                                                                                                 Option.some(nodeComposite),
-                                                                                                 Option.some(resourceProvider),
-                                                                                                 secretResolver);
+                                                                return Result.success(new ResourceProviderSetup(resourceProvider.facade(),
+                                                                                                                Option.some(dynamicProvider),
+                                                                                                                Option.some(nodeComposite),
+                                                                                                                Option.some(resourceProvider),
+                                                                                                                secretResolver));
                                                             });
                            });
+    }
+
+    private static Result<ResourceProviderSetup> secretResolutionRefused(Cause cause) {
+        return Causes.cause("configured resource provider cannot be built: " + cause.message()
+                           + " — refusing to boot: the node would otherwise start with that configuration"
+                           + " unusable, either with resource provisioning silently disabled or with the"
+                           + " placeholder text served as the value (#904)",
+                            Option.some(cause))
+                     .result();
     }
 
     private static ResourceProviderFacade noOpResourceProviderFacade() {

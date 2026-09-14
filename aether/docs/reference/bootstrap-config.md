@@ -64,10 +64,9 @@ swim       = 6100
 
 [operations.auto_heal]
 enabled          = true
-# retry_interval / startup_cooldown shown for illustration only — parsed but currently
-# discarded at runtime. See "[operations.auto_heal] is bootstrap-only" trap below (#675).
-retry_interval   = "30s"
-startup_cooldown = "15s"
+# No other key is accepted here (#675): auto-heal settings live in the NODE config, under
+# node_config — [timeouts.scaling] auto_heal_startup_cooldown / auto_heal_provisioning_timeout /
+# auto_heal_swim_hints_ttl, and [cluster] max_nodes.
 
 # --- Cost guardrail (#298): refuse provisioning past 12 nodes for this cluster.
 # Opt-in — omit it and provisioning stays unbounded, as it always has. See "Fleet cap" below.
@@ -129,6 +128,7 @@ If `[cluster.core]` is absent entirely, `min`/`max` are unset (no bound) and `ma
 | `load_balancer` | string | type-dependent | no | `none` \| `external` \| `elected`. |
 | `load_balancer_ips` | string list | `[]` | no | Used with `external` mode. |
 | `load_balancer_endpoint` | string | — | no | Used with `external` mode. |
+| `replacement_ceiling` | duration string | `"10m"` | no | Cloud sources only (rejected on any other type — PF-26). The longest an auto-heal replacement from this source may stay in flight while the provider still reports it provisioning or running, reports a status it cannot state, or cannot report at all; past it, the leader re-dispatches. A replacement is re-dispatched sooner, after the deficit debounce, when the provider reports it stopped, terminated or failed; when an instance the provider has listed is no longer listed; when an instance the provider has never listed is omitted by twelve consecutive successful listings spanning at least three minutes since its create call resolved; or when the provider's readiness check fails the provision (on a cloud, after 5 minutes still provisioning). A replacement the leader gives up on is not terminated: find it by the `auto-heal PROVISIONED a billable instance` WARN line's `instanceId`, or through the `aether-cluster` label sweep at teardown. Must exceed `5m` (the three-minute first-listing floor plus a two-minute join allowance); a shorter value is refused at load. Read at runtime by the leader from the persisted cluster config (#1049). |
 | `databases.<name> = "url"` (inline) or `[source.<name>.databases]` (subtable) | string map | `{}` | no | Maps to composed **`[database.<name>]`** (nested), never flat `[database]` — see Trap (c). |
 | `[source.<name>.node_config.<section>]` | raw TOML overlay | — | no | Merged verbatim as `[<section>]` into the composed per-node `aether.toml`, prefix-stripped. Escape hatch for any node-level setting not otherwise modeled (used above for `[app-http]`). |
 | `[source.<name>.firewall] allow_ingress` | table array | `[]` | no | Each entry: `port` (int, required), `protocol` (default `"tcp"`, may be `"tcp+udp"`), `source_cidr` (default `"0.0.0.0/0"`), `description` (optional). **Hetzner only** — see below. |
@@ -218,7 +218,11 @@ At least one role sub-table per source is expected in practice (`core` in the ex
 
 **Source/runtime compatibility** (validator codes `PF-19`..`PF-22`): `forge` sources require `EMBER`
 runtime; `docker` sources require `DOCKER`; `cloud` sources require `CONTAINER` or `JVM`; `ssh` sources
-allow `CONTAINER`, `JVM`, or `EMBER`. A mismatch fails validation before provisioning starts.
+require `CONTAINER` — the deploy phase can launch only a container over SSH in this release, so a
+`JVM` or `EMBER` profile on an `ssh` source is refused at config load (`PF-22`), before any other
+source provisions (#1090); the deploy phase refuses it by name again as a backstop. A mismatch fails
+validation before provisioning starts. A host may be declared by at most one `ssh` source (`PF-27`);
+`PF-09` covers the same host twice within one source.
 
 ### `[infrastructure.networking]` / `[infrastructure.ssh]`
 
@@ -235,14 +239,7 @@ allow `CONTAINER`, `JVM`, or `EMBER`. A mismatch fails validation before provisi
 |---|---|---|---|
 | `[operations] auto_heal` | bool | `true` | Cluster-wide auto-heal master switch. |
 | `[operations.auto_heal] enabled` | bool | `true` | `false` is **rejected at bootstrap** (error PF-25) — it has no runtime effect, so the parser refuses to accept a value that would silently lie. Use `aether cluster topology auto-heal disable` on a running cluster instead. See warning below. |
-| `[operations.auto_heal] retry_interval` | duration string | `"60s"` | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] startup_cooldown` | duration string | `"15s"` | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] stale_observation_ttl` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] quic_miss_promotion_threshold` | int | parser default | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] provisioning_timeout` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] provision_stability_window` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] decommissioned_retention` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] swim_hints_ttl` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
+| `[operations.auto_heal] retry_interval`, `startup_cooldown`, `stale_observation_ttl`, `quic_miss_promotion_threshold`, `provisioning_timeout`, `provision_stability_window`, `decommissioned_retention`, `swim_hints_ttl` | — | — | **Rejected at bootstrap** (error PF-26, #675). They parsed into `AutoHealSpec` and reached no node; see warning below. |
 | `[operations.tls] auto_generate` | bool | `true` | When `false`, the management API listener uses plain HTTP instead of an auto-generated self-signed cert. |
 | `[operations.tls] cert_ttl` | duration string | `"720h"` | |
 | `[operations.timeouts] health_check` | duration string | `"300s"` | |
@@ -307,15 +304,16 @@ it, so an unreachable provider API cannot silently disable the guard.
 the cap. Provisioning resumes on the next reconcile pass with no further action. The refusal is logged at
 WARN naming the cluster, the cap, and the observed count.
 
-> **Of the nine `[operations.auto_heal]` fields, only `enabled` and the fleet cap above are live.**
-> `retry_interval`, `startup_cooldown`, `stale_observation_ttl`, `quic_miss_promotion_threshold`,
-> `provisioning_timeout`, `provision_stability_window`, `decommissioned_retention`, and `swim_hints_ttl`
-> all parse and validate into `AutoHealSpec`, but `Main.resolveAutoHeal` builds every running node's
-> `AutoHealConfig` from `AutoHealConfig.DEFAULT`, overriding only `maxNodes` — sourced from `[cluster]
-> max_nodes` above, a different key entirely, not from this section. Nothing renders the other eight
-> fields into the composed per-node `aether.toml`; they are validated and then discarded. Do not use
-> this section to try to set the fleet cap — use `node_config.cluster` as above. (Recorded 2026-08-12
-> while wiring #298.)
+> **`[operations.auto_heal]` carries `enabled` and nothing else (#675).** The eight tunables that used
+> to be accepted here parsed into `AutoHealSpec` and reached no node: every running node builds its
+> `AutoHealConfig` from its OWN config — `[cluster] max_nodes` (the fleet cap, via `node_config.cluster`)
+> and, under `node_config.timeouts.scaling`, `auto_heal_startup_cooldown` (the formation-check delay, 15s),
+> `auto_heal_provisioning_timeout` (the replacement boot window, circuit backoff and drain grace, 60s) and
+> `auto_heal_swim_hints_ttl` (the SUSPECTED-hint decay, 15s). The parser now refuses any of the eight with
+> PF-26 — naming every stale key in the file and, for the three that named a live timing, the node key
+> that sets it — rather than parse and discard; the runtime record itself dropped the five fields nothing
+> read (retry interval, stale-observation TTL, QUIC miss threshold, provision stability window,
+> decommissioned retention).
 >
 > `enabled = false` is **rejected at bootstrap** (error PF-25) rather than silently accepted and ignored
 > — the parsed value is never read by the provisioning path, so a `false` here would falsely promise
@@ -323,8 +321,9 @@ WARN naming the cluster, the cap, and the observed count.
 > live operator toggle instead: `aether cluster topology auto-heal disable`, which actually suppresses
 > replacement provisioning for the current leader term.
 >
-> **Tracked as #675**: one open decision — wire every field or reject it PF-25-style, per surface — not
-> yet made. This warning describes current behavior, not a promise about future wiring.
+> #675 made that decision: the node config is the one live surface; every key here that could not reach
+> a node is refused (PF-26), and `[timeouts.scaling] auto_heal_retry` was removed from the node config
+> for the same reason.
 
 ### (a) `security_mode = "NONE"` — why dev/eval bootstrap needs it
 

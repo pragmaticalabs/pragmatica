@@ -32,6 +32,7 @@ import static org.pragmatica.aether.config.cluster.SourceProfile.sourceProfile;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 class ClusterBootstrapConfigValidatorTest {
@@ -250,6 +251,43 @@ class ClusterBootstrapConfigValidatorTest {
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-07"));
         }
 
+        /// CL-08 second half (#296 review SF-1): node ids are `<source>-<role>-<index>`, so a source
+        /// name that dash-prefixes another would let two sources claim one node. Refused at load.
+        @Test
+        void validate_sourceNameIsDashPrefixOfAnother_returnsCl08NamingBoth() {
+            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+            var eu = sourceProfile(sourceNameOrDefault("eu"), SourceType.FORGE, none(), none(), none(), none(),
+                                   none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                   none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+            var eu1 = sourceProfile(sourceNameOrDefault("eu-1"), SourceType.FORGE, none(), none(), none(), none(),
+                                    none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                    none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+                                                defaultCoreTopology(), Map.of("eu", eu, "eu-1", eu1), Map.of(),
+                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                defaultOperationsConfig());
+            validate(config)
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("CL-08")
+                                                              .contains("'eu' is a prefix of source 'eu-1'"));
+        }
+
+        @Test
+        void validate_distinctNonPrefixSourceNames_pass() {
+            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+            var eu = sourceProfile(sourceNameOrDefault("eu"), SourceType.FORGE, none(), none(), none(), none(),
+                                   none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                   none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+            var us = sourceProfile(sourceNameOrDefault("us"), SourceType.FORGE, none(), none(), none(), none(),
+                                   none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                   none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+                                                defaultCoreTopology(), Map.of("eu", eu, "us", us), Map.of(),
+                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                defaultOperationsConfig());
+            validate(config).onFailure(cause -> assertThat(cause.message()).doesNotContain("CL-08"));
+        }
+
         @Test
         void validate_portsNotDistinct_returnsError() {
             var ports = portMapping(8080, 8080, 8070, 8190);
@@ -280,7 +318,7 @@ class ClusterBootstrapConfigValidatorTest {
         void validate_autoHealDisabled_returnsPf25() {
             // Positive control for enabled=true already exists: HappyPath.validate_validForgeConfig_succeeds
             // uses defaultOperationsConfig(), which defaults autoHeal to enabled=true and must not trip PF-25.
-            var autoHeal = AutoHealSpec.autoHealSpec(false, "60s", "15s");
+            var autoHeal = AutoHealSpec.autoHealSpec(false);
             var ops = operationsConfig(autoHeal, defaultOperationsConfig().tls(),
                                        defaultOperationsConfig().timeouts(), defaultOperationsConfig().ports());
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
@@ -500,6 +538,45 @@ class ClusterBootstrapConfigValidatorTest {
                 .onSuccess(config -> assertThat(config.cluster().name().value()).isEqualTo("production"));
         }
 
+        /// #1049 — the runtime reads `replacement_ceiling` only from a cloud source; on any other
+        /// source type the value would parse and never be read, so it is refused (PF-26).
+        @Test
+        void validate_replacementCeilingOnForgeSource_returnsPf26() {
+            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+            var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
+                                       List.of(), none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                       none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of(), none(),
+                                       some(timeSpan(5).minutes()));
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
+                                                defaultCoreTopology(), Map.of("local", source), Map.of(),
+                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                defaultOperationsConfig());
+
+            validate(config)
+                .onSuccess(v -> Assertions.fail("Expected PF-26 for a ceiling no runtime path reads"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-26")
+                                                              .contains("replacement_ceiling"));
+        }
+
+        /// Control for the PF-26 case above: the same key on a cloud source is read, so it is accepted.
+        @Test
+        void validate_replacementCeilingOnCloudSource_accepted() {
+            var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
+            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
+            var source = sourceProfile(sourceNameOrDefault("hetzner-eu"), SourceType.CLOUD, some(CloudProviderName.HETZNER),
+                                       some("key"), some("eu-central"), none(), List.of(), none(), none(), none(),
+                                       LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
+                                       Map.of(NodeRole.CORE, coreRole), List.of(), none(),
+                                       some(timeSpan(5).minutes()));
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+                                                defaultCoreTopology(), Map.of("hetzner-eu", source),
+                                                Map.of("prod", runtime),
+                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+
+            validate(config)
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-26"));
+        }
+
         @Test
         void validate_electedLbOnSsh_returnsError() {            var coreRole = roleSubTable(NodeRole.CORE, none(), some(List.of("h1", "h2", "h3")), none(), "ember");
             var source = sourceProfile(sourceNameOrDefault("ssh-src"), SourceType.SSH, none(), none(), none(), none(),
@@ -597,6 +674,83 @@ class ClusterBootstrapConfigValidatorTest {
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-19"));
+        }
+
+        /// #1090 review SF-2: a JVM/EMBER runtime on an SSH source used to pass validation and be
+        /// refused only at DEPLOY_RUNTIME — after every other source had already provisioned. The
+        /// deploy phase can launch only a container over SSH, so PF-22 says so at config load.
+        @Test
+        void validate_sshWithJvmRuntime_returnsError() {
+            validate(sshConfigWithRuntime(runtimeProfile("jvm-rt", RuntimeType.JVM, none(), none())))
+                .onSuccess(v -> Assertions.fail("Expected PF-22: a JVM runtime cannot be launched over SSH"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-22").contains("jvm-rt"));
+        }
+
+        @Test
+        void validate_sshWithEmberRuntime_returnsError() {
+            validate(sshConfigWithRuntime(runtimeProfile("ember-rt", RuntimeType.EMBER, none(), none())))
+                .onSuccess(v -> Assertions.fail("Expected PF-22: an EMBER runtime cannot be launched over SSH"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-22").contains("ember-rt"));
+        }
+
+        /// Control for the two above: the container runtime is what the SSH path launches.
+        @Test
+        void validate_sshWithContainerRuntime_isAccepted() {
+            var runtime = runtimeProfile("ctr", RuntimeType.CONTAINER, some("ghcr.io/pragmaticalabs/aether-node:1.0.0"),
+                                         none());
+            validate(sshConfigWithRuntime(runtime))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-22"));
+        }
+
+        private static ClusterBootstrapConfig sshConfigWithRuntime(RuntimeProfile runtime) {
+            var coreRole = roleSubTable(NodeRole.CORE, none(), some(List.of("h1", "h2", "h3")), none(), runtime.name());
+            var source = sourceProfile(sourceNameOrDefault("ssh-src"), SourceType.SSH, none(), none(), none(), none(),
+                                       some("root"), some("/key"), some(22), LoadBalancerMode.NONE,
+                                       List.of(), none(), Map.of(),
+                                       Map.of(NodeRole.CORE, coreRole), List.of());
+            return clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+                                          defaultCoreTopology(), Map.of("ssh-src", source),
+                                          Map.of(runtime.name(), runtime),
+                                          infrastructureConfig(NetworkingType.MANUAL),
+                                          defaultOperationsConfig());
+        }
+
+        /// #1090 review SF-3: PF-09 catches a host listed twice INSIDE one SSH source; a host listed
+        /// by two SSH sources was deployed twice, the second `docker run` replacing the first. One
+        /// host runs one node — refuse it at config load, naming both sources.
+        @Test
+        void validate_sameHostInTwoSshSources_returnsError() {
+            validate(twoSshSources(List.of("10.0.0.1", "10.0.0.2", "10.0.0.3"), List.of("10.0.0.1")))
+                .onSuccess(v -> Assertions.fail("Expected PF-27: host 10.0.0.1 is declared by both SSH sources"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-27")
+                                                               .contains("10.0.0.1")
+                                                               .contains("'dc'")
+                                                               .contains("'lab'"));
+        }
+
+        @Test
+        void validate_distinctHostsAcrossSshSources_isAccepted() {
+            validate(twoSshSources(List.of("10.0.0.1", "10.0.0.2", "10.0.0.3"), List.of("10.0.1.1")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-27"));
+        }
+
+        private static ClusterBootstrapConfig twoSshSources(List<String> dcHosts, List<String> labHosts) {
+            var runtime = runtimeProfile("ctr", RuntimeType.CONTAINER, some("ghcr.io/pragmaticalabs/aether-node:1.0.0"),
+                                         none());
+            return clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+                                          defaultCoreTopology(),
+                                          Map.of("dc", sshSource("dc", NodeRole.CORE, dcHosts),
+                                                 "lab", sshSource("lab", NodeRole.WORKER, labHosts)),
+                                          Map.of("ctr", runtime),
+                                          infrastructureConfig(NetworkingType.MANUAL),
+                                          defaultOperationsConfig());
+        }
+
+        private static SourceProfile sshSource(String name, NodeRole role, List<String> hosts) {
+            return sourceProfile(sourceNameOrDefault(name), SourceType.SSH, none(), none(), none(), none(),
+                                 some("root"), some("/key"), some(22), LoadBalancerMode.NONE,
+                                 List.of(), none(), Map.of(),
+                                 Map.of(role, roleSubTable(role, none(), some(hosts), none(), "ctr")), List.of());
         }
 
         @Test

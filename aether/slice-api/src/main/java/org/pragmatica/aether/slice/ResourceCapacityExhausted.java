@@ -26,6 +26,13 @@ public interface ResourceCapacityExhausted extends Cause {
         return true;
     }
 
+    /// A capacity shortage IS the transient condition [Cause#isTransient] describes, so the marker
+    /// answers for it — per instance, through [#transientCapacity] (#280).
+    @Override
+    default boolean isTransient() {
+        return transientCapacity();
+    }
+
     /// Whether `cause` is a transient resource-capacity exhaustion (marker present AND predicate true).
     static boolean isTransientCapacity(Cause cause) {
         return cause instanceof ResourceCapacityExhausted exhausted && exhausted.transientCapacity();

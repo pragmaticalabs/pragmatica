@@ -9,7 +9,25 @@ import org.pragmatica.json.JsonMapper;
 
 
 public interface SliceRouterFactory<T> {
+    /// #882 — the route-security contract a generated factory was built against. `1` is the #763
+    /// contract: a route with no `[security]` section is generated as `SecurityPolicy.unspecified()`
+    /// and inherits the node's global policy. Before it, the same route was generated as
+    /// `publicRoute()`, and that value is compiled into the slice JAR — a runtime upgrade cannot
+    /// reach it. This is the contract the NODE requires; the generator carries its own copy
+    /// (`RouteSourceGenerator.ROUTE_SECURITY_CONTRACT`) and stamps that as a literal into every
+    /// `*Routes` class it emits, so a stamp names the generator that wrote it, not the adapter the
+    /// slice happened to compile against. `slice-processor-tests` pins the two equal.
+    int ROUTE_SECURITY_CONTRACT = 1;
     Class<T> sliceType();
+
+    /// #882 — which route-security contract this factory was generated against; `0` for a factory
+    /// emitted before the contract existed (nothing to override) or hand-written. A factory below
+    /// [#ROUTE_SECURITY_CONTRACT] that declares a PUBLIC route cannot say whether that policy was
+    /// declared or defaulted, so the publisher refuses it rather than serve it open.
+    default int routeSecurityContract() {
+        return 0;
+    }
+
     SliceRouter create(T slice);
 
     SliceRouter create(T slice, JsonMapper jsonMapper);

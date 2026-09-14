@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
@@ -103,6 +104,35 @@ class SliceTargetOverridePreservationTest {
                 assertThat(target.owningBlueprint()).as("#698: the deployment-update writer must not erase the slice's owner")
                                                     .isEqualTo(Option.some(OWNER));
             });
+        }
+
+        /// #1068: a rolled-back rolling update must not leave its `VersionRoutingKey` behind — while it
+        /// exists the rolled-back NEW version stays permitted to start and allocated. The removal must
+        /// follow the old-target restore in the same batch: the leader's routing-removal handler
+        /// deallocates every version the committed target does not name at that moment.
+        @Test
+        void rollback_removesTheRoutingEntry_afterRestoringTheOldTarget() {
+            manager.rollback(DEPLOYMENT_ID).onFailure(cause -> Assertions.fail(cause.message()));
+
+            var commands = rabiaNode.appliedCommands;
+            var routingKey = VersionRoutingKey.versionRoutingKey(BASE);
+            var targetPutIndex = indexOf(commands, c -> c instanceof KVCommand.Put<AetherKey, ?> put && put.key().equals(SliceTargetKey.sliceTargetKey(BASE)));
+            var routingRemoveIndex = indexOf(commands, c -> c instanceof KVCommand.Remove<AetherKey> remove && remove.key().equals(routingKey));
+
+            assertThat(routingRemoveIndex).as("the rollback batch removes the routing entry").isNotNegative();
+            assertThat(commands).as("and never rewrites it").noneMatch(c -> c instanceof KVCommand.Put<AetherKey, ?> put && put.key().equals(routingKey));
+            assertThat(targetPutIndex).as("the old target is restored in the same batch").isNotNegative();
+            assertThat(routingRemoveIndex).as("target restore precedes the routing removal").isGreaterThan(targetPutIndex);
+        }
+
+        private static int indexOf(List<KVCommand<AetherKey>> commands, java.util.function.Predicate<KVCommand<AetherKey>> test) {
+            for (var i = 0; i < commands.size(); i++) {
+                if (test.test(commands.get(i))) {
+                    return i;
+                }
+            }
+
+            return -1;
         }
 
         private DeploymentValue deployedDeploymentValue() {

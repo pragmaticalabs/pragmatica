@@ -9,6 +9,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -23,6 +25,8 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.parse.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.Retry;
+import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 import org.pragmatica.storage.DemotionConfig;
 import org.pragmatica.storage.DemotionManager;
 import org.pragmatica.storage.EncryptingStorageTier;
@@ -62,12 +66,33 @@ public final class StorageFactory {
     private static final long STREAM_SNAPSHOT_INTERVAL_MILLIS = 30_000L;
     private static final int STREAM_SNAPSHOT_RETENTION_COUNT = 5;
     /// #253 SHOULD-FIX #1 (2026-09-04 ruling): bounds the DHT marker put/get that
-    /// [#maybeEncryptDht]/[#refuseIfDhtEncryptedWithoutKeyring] perform at boot -- otherwise fully
-    /// synchronous, boot-time code bridging into `DHTClient`'s `Promise`-based API. Same rationale
-    /// and value as `StorageEncryption.RESOLUTION_TIMEOUT`: a hung round-trip must fail boot, not
-    /// hang it. Named `org.pragmatica.lang.io.TimeSpan` in full because this file already imports
-    /// the unrelated `org.pragmatica.lang.parse.TimeSpan` under the simple name.
+    /// [#writeDhtMarker]/[#refuseIfDhtEncryptedWithoutKeyring] perform, bridging into `DHTClient`'s
+    /// `Promise`-based API. Same value as `StorageEncryption.RESOLUTION_TIMEOUT`: a hung round trip must
+    /// end, not hang. #1052: it bounds ONE attempt ([#attemptDhtMarker]); a timed-out attempt is retried
+    /// on [#DHT_MARKER_RETRY_BACKOFF], never fatal. Named `org.pragmatica.lang.io.TimeSpan` in full
+    /// because this file already imports the unrelated `org.pragmatica.lang.parse.TimeSpan` under the
+    /// simple name.
     private static final org.pragmatica.lang.io.TimeSpan DHT_MARKER_TIMEOUT = timeSpan(30).seconds();
+
+    /// #1052: delay between marker-check attempts that could not complete: 1 s, doubling, capped at
+    /// 30 s, jittered. It starts fast because a joining node's ring usually converges within seconds. The
+    /// 30 s cap keeps a node that has waited out a long convergence at most one cap behind the ring once
+    /// it answers. Jitter spreads replacements that joined together.
+    ///
+    /// No give-up bound, deliberately. Giving up could only mean exiting, and exiting is not safer than
+    /// waiting: the tier stays gated (#858 C1/#874) and the node stays not-ready, so a node that never
+    /// verifies serves nothing DHT-backed and says so on `/health/ready`. Exiting would only take a
+    /// node out of a cluster that is already short (#1052's docker repro). The one outcome that
+    /// warrants stopping is a definite refusal, and that is a [Cause.Terminal] cause, not a count.
+    private static final BackoffStrategy DHT_MARKER_RETRY_BACKOFF = BackoffStrategy.exponential()
+                                                                                   .initialDelay(timeSpan(1).seconds())
+                                                                                   .maxDelay(timeSpan(30).seconds())
+                                                                                   .factor(2.0)
+                                                                                   .withJitter();
+
+    /// #1052: the stop signal for callers that own no node lifecycle (tests, [#verifyDhtMarker]'s
+    /// two-argument entry point). `AetherNode` passes its `PeriodicTasks` cancellation instead.
+    private static final BooleanSupplier NEVER_STOPPED = () -> false;
 
     private StorageFactory() {}
 
@@ -131,6 +156,16 @@ public final class StorageFactory {
                                     demotionManager,
                                     garbageCollector,
                                     dhtMarkerCheck);
+        }
+
+        /// #1052: whether this instance's DHT tier is still waiting on its post-formation
+        /// encryption-marker check, which retries while the DHT cannot answer. `false` for an instance
+        /// with no DHT tier, and for a check that has finished either way. A refused check fails
+        /// `start()`, so it never leaves a node reporting ready.
+        public boolean dhtAdmissionPending() {
+            return dhtMarkerCheck.map(check -> !check.readGate()
+                                                     .isResolved())
+                                 .or(false);
         }
     }
 
@@ -576,18 +611,78 @@ public final class StorageFactory {
     /// anything could observe it -- true for `start()`'s own chain, but `readGate` is a shared,
     /// resolve-once promise with no guarantee every caller reads it only after that abort completes;
     /// resolving it with the cause removes the race instead of relying on the abort's timing.
+    ///
+    /// #1052: a check that cannot complete is retried, not failed. Each [#attemptDhtMarker] that ends in a
+    /// non-terminal cause (`EncryptionError.DhtMarkerCheckTimedOut`, `DHTError.QuorumNotReached`,
+    /// `DHTError.PeerUnreachable`, ...) is retried on [#DHT_MARKER_RETRY_BACKOFF] with no attempt budget.
+    /// Only a [Cause.Terminal] cause ends the check. So `readGate` is resolved by the FINAL outcome
+    /// alone. It stays pending across failed attempts, so the tier stays gated. It must not be resolved
+    /// per attempt: it is first-writer-wins, so a timed-out first attempt would refuse the tier forever,
+    /// even after a later attempt verified it.
     static Promise<Unit> verifyDhtMarker(DHTClient client, DhtMarkerCheck check) {
-        return verifyDhtMarker(client, check, DHT_MARKER_TIMEOUT);
+        return verifyDhtMarker(client, check, DHT_MARKER_TIMEOUT, DHT_MARKER_RETRY_BACKOFF, NEVER_STOPPED);
     }
 
-    /// #858 C2 test seam: lets a test bound the marker get/put far below the 30s production default,
-    /// so "a never-resolving DHT client yields the timeout cause" is provable in milliseconds. Mirrors
-    /// `MavenProtocolRoutesTimeoutTest`'s injected `SHORT_TIMEOUT` for the same reason. Package-private
-    /// -- only `StorageFactoryEncryptionTest` (same package) needs it; [#verifyDhtMarker] above is the
-    /// production entry point, fixed at [#DHT_MARKER_TIMEOUT].
+    /// #1052: the retrying check with every knob explicit. The two-argument [#verifyDhtMarker] and
+    /// [#verifyDhtMarkers] fix the production bound and cadence. Package-private so a test can shrink
+    /// them to milliseconds and drive `stopped`. `stopped` is read before every attempt. Once it reports
+    /// `true`, the next attempt fails with the terminal [EncryptionError.DhtMarkerCheckAbandoned] instead
+    /// of touching the DHT, so the loop ends. core `Retry` keeps scheduling after its output resolves, so
+    /// cancelling the returned promise alone would not stop it.
     static Promise<Unit> verifyDhtMarker(DHTClient client,
                                          DhtMarkerCheck check,
-                                         org.pragmatica.lang.io.TimeSpan timeout) {
+                                         org.pragmatica.lang.io.TimeSpan attemptTimeout,
+                                         BackoffStrategy backoff,
+                                         BooleanSupplier stopped) {
+        var attempts = new AtomicInteger();
+
+        return Retry.retry()
+                    .attempts(Integer.MAX_VALUE)
+                    .strategy(backoff)
+                    .execute(() -> attemptUnlessStopped(client,
+                                                        check,
+                                                        attemptTimeout,
+                                                        stopped,
+                                                        attempts.incrementAndGet()))
+                    .onResult(check.readGate()::resolve);
+    }
+
+    private static Promise<Unit> attemptUnlessStopped(DHTClient client,
+                                                      DhtMarkerCheck check,
+                                                      org.pragmatica.lang.io.TimeSpan attemptTimeout,
+                                                      BooleanSupplier stopped,
+                                                      int attempt) {
+        return stopped.getAsBoolean()
+               ? new EncryptionError.DhtMarkerCheckAbandoned(check.instanceName()).promise()
+               : attemptAndReport(client, check, attemptTimeout, attempt);
+    }
+
+    /// #1052: one WARN per failed attempt, naming the instance and the attempt number (1-based, counted
+    /// per [#verifyDhtMarker] call -- core `Retry` does not hand its attempt index to the operation). The
+    /// rate is bounded by [#DHT_MARKER_RETRY_BACKOFF]: at most one line per 30 s per instance once the
+    /// backoff has reached its cap. core `Retry` logs per-attempt progress only at DEBUG (#718), which
+    /// would leave a node that is not ready silent at the default level. Emitted through this class's
+    /// SLF4J logger (onto log4j2 in the node), not `System.Logger` (#1077), so it reaches the node's
+    /// appenders and `StorageFactoryDhtMarkerRetryTest` can capture it.
+    private static Promise<Unit> attemptAndReport(DHTClient client,
+                                                  DhtMarkerCheck check,
+                                                  org.pragmatica.lang.io.TimeSpan attemptTimeout,
+                                                  int attempt) {
+        return attemptDhtMarker(client, check, attemptTimeout).onFailure(cause -> log.warn("DHT encryption-marker check attempt {} for instance '{}' did not complete: {} "
+                                                                                          + "(operations on its DHT tier stay gated and the node stays not-ready until the check completes)",
+                                                                                           attempt,
+                                                                                           check.instanceName(),
+                                                                                           cause.message()));
+    }
+
+    /// #858 C2 test seam, renamed from the three-argument `verifyDhtMarker` by #1052: ONE marker get/put
+    /// attempt, bounded by `timeout`, which neither retries nor touches `readGate`. Lets a test prove "a
+    /// never-resolving DHT client yields the timeout cause" in milliseconds, mirroring
+    /// `MavenProtocolRoutesTimeoutTest`'s injected `SHORT_TIMEOUT`. Production reaches it only through
+    /// [#verifyDhtMarker], at [#DHT_MARKER_TIMEOUT].
+    static Promise<Unit> attemptDhtMarker(DHTClient client,
+                                          DhtMarkerCheck check,
+                                          org.pragmatica.lang.io.TimeSpan timeout) {
         return check.effectiveKeyring()
                     .fold(() -> refuseIfDhtEncryptedWithoutKeyring(client,
                                                                    check.dhtKeyPrefix(),
@@ -597,11 +692,7 @@ public final class StorageFactory {
                                                  check.dhtKeyPrefix(),
                                                  check.instanceName(),
                                                  ring,
-                                                 timeout))
-                    .onSuccess(_ -> check.readGate()
-                                         .resolve(Result.success(unit())))
-                    .onFailure(cause -> check.readGate()
-                                             .resolve(Result.failure(cause)));
+                                                 timeout));
     }
 
     /// #858: fans [#verifyDhtMarker] across every check in `checks` -- called once, post-formation,
@@ -610,15 +701,57 @@ public final class StorageFactory {
     /// `createAll`) is covered automatically. Cancels the remaining in-flight checks on the first
     /// failure (`allOfOrCancel`) since one failure aborts `start()` and stops the node regardless of
     /// the others' outcome.
-    static Promise<Unit> verifyDhtMarkers(DHTClient client, List<DhtMarkerCheck> checks) {
+    ///
+    /// #1052: every check retries until it completes, so the only failure that reaches `allOfOrCancel` is
+    /// a terminal one. `stopped` is the owning node's stop signal (`PeriodicTasks#isCancelled`). A
+    /// cancelled sibling's output promise resolves at once, but its retry loop keeps attempting until
+    /// `stopped` fires, because core `Retry` does not observe its output. On a refusal that happens
+    /// immediately: `Main#exitWithError` in production, `abortStart`'s stop in Ember.
+    static Promise<Unit> verifyDhtMarkers(DHTClient client, List<DhtMarkerCheck> checks, BooleanSupplier stopped) {
         if (checks.isEmpty()) {
             return Promise.UNIT;
         }
 
-        var verifications = checks.stream().map(check -> verifyDhtMarker(client, check)).toList();
+        var verifications = checks.stream()
+                                  .map(check -> verifyDhtMarker(client,
+                                                                check,
+                                                                DHT_MARKER_TIMEOUT,
+                                                                DHT_MARKER_RETRY_BACKOFF,
+                                                                stopped))
+                                  .toList();
 
         return Promise.allOfOrCancel(verifications).flatMap(results -> Result.firstFailureOf(results).fold(cause -> Promise.<Unit> failure(cause),
                                                                                                            _ -> Promise.UNIT));
+    }
+
+    /// #1052: succeeds once EVERY DHT-backed instance in `setups` has been admitted by its
+    /// post-formation marker check, with no DHT-backed instance counting as admitted at once. Fails if
+    /// any check refused (or was abandoned by a stop). Built from the same `readGate`s the tiers wait
+    /// on, so "reported ready" and "DHT tier admitted" cannot disagree. `AetherNode` defers the NDM
+    /// self-ready signal (lifecycle ACTIVE, reported READY) on it.
+    static Promise<Unit> dhtAdmission(Map<String, StorageSetup> setups) {
+        var gates = setups.values()
+                          .stream()
+                          .map(StorageSetup::dhtMarkerCheck)
+                          .flatMap(Option::stream)
+                          .map(DhtMarkerCheck::readGate)
+                          .toList();
+
+        return Promise.allOf(gates)
+                      .flatMap(results -> Result.allOf(results).async())
+                      .mapToUnit();
+    }
+
+    /// #1052: names, sorted, of the instances in `setups` whose DHT marker check is still pending --
+    /// the `dht-admission` readiness component's detail (`StatusRoutes`).
+    public static List<String> pendingDhtAdmissions(Map<String, StorageSetup> setups) {
+        return setups.entrySet()
+                     .stream()
+                     .filter(entry -> entry.getValue()
+                                           .dhtAdmissionPending())
+                     .map(Map.Entry::getKey)
+                     .sorted()
+                     .toList();
     }
 
     private static Promise<Unit> writeDhtMarker(DHTClient client,
@@ -638,10 +771,13 @@ public final class StorageFactory {
     /// timeout-vs-real-result race on the same promise.
     ///
     /// Two distinct causes, never conflated: a marker get/put that itself times out after formation
-    /// means `start()` never learned whether a marker exists, so it fails on THIS cause
+    /// means the attempt never learned whether a marker exists, so it fails on THIS cause (#1052: and
+    /// is retried)
     /// ([EncryptionError.DhtMarkerCheckTimedOut]) -- never [EncryptionError.EncryptedTierRequiresKeyring],
-    /// which means the opposite: the marker WAS read successfully and named a key id absent from the
-    /// configured keyring.
+    /// which means the opposite: the marker WAS read successfully, it is present, and no keyring is
+    /// configured for the instance ([#refuseIfDhtEncryptedWithoutKeyring] -- the only branch that raises
+    /// it here; it compares nothing against a keyring, and with a keyring configured the marker is
+    /// overwritten unread, #831).
     private static Cause remapMarkerTimeout(Cause cause, String instanceName, org.pragmatica.lang.io.TimeSpan timeout) {
         return cause instanceof CoreError.Timeout
                ? new EncryptionError.DhtMarkerCheckTimedOut(instanceName, timeout.millis())

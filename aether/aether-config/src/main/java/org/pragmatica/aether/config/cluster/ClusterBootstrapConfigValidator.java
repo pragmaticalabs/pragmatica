@@ -6,6 +6,7 @@ package org.pragmatica.aether.config.cluster;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -37,10 +38,6 @@ public final class ClusterBootstrapConfigValidator {
 
     private static final Set<RuntimeType> CLOUD_RUNTIME_TYPES = EnumSet.of(RuntimeType.CONTAINER, RuntimeType.JVM);
 
-    private static final Set<RuntimeType> SSH_RUNTIME_TYPES = EnumSet.of(RuntimeType.CONTAINER,
-                                                                         RuntimeType.JVM,
-                                                                         RuntimeType.EMBER);
-
     private ClusterBootstrapConfigValidator() {}
 
     public static Result<ClusterBootstrapConfig> validate(ClusterBootstrapConfig config) {
@@ -49,6 +46,7 @@ public final class ClusterBootstrapConfigValidator {
         validateClusterLevel(config, errors);
         validateCoreTopology(config, errors);
         validateSources(config, errors);
+        validateSshHostsUniqueAcrossSources(config, errors);
         validatePortDistinctness(config, errors);
         validateAutoHealDisableHonesty(config, errors);
         if (errors.isEmpty()) {
@@ -141,9 +139,23 @@ public final class ClusterBootstrapConfigValidator {
         }
     }
 
+    /// CL-08, second half (#296 review SF-1): node ids are minted as `<source>-<role>-<index>`,
+    /// and every surface that attributes a node to its source parses that id. A source whose name
+    /// is a dash-prefix of another (`eu` / `eu-1`) is refused up front, so two sources can never
+    /// disagree about which of them a node belongs to.
     private static void validateSourceNamesNonEmpty(ClusterBootstrapConfig config, List<String> errors) {
         if (config.sources().containsKey("")) {
             errors.add("CL-08: Source names must not be empty");
+        }
+
+        for (var name : config.sources().keySet()) {
+            config.sources()
+                  .keySet()
+                  .stream()
+                  .filter(other -> !other.equals(name) && other.startsWith(name + "-"))
+                  .forEach(other -> errors.add("CL-08: Source name '" + name
+                                              + "' is a prefix of source '" + other
+                                              + "' under the node-id form <source>-<role>-<index>; rename one of them"));
         }
     }
 
@@ -257,6 +269,24 @@ public final class ClusterBootstrapConfigValidator {
         validateFirewallRules(name, source, managementPort, errors);
         validateRuntimeTypeCompatibility(name, source, runtimes, errors);
         validatePortConflictsOnSameHost(name, source, errors);
+        rejectReplacementCeilingOffCloud(name, source, errors);
+    }
+
+    /// #1049 — the runtime reads `replacement_ceiling` only from the CLOUD source backing a replacement's
+    /// role (`ClusterTopologyManagerRecord.replacementCeiling`, the same lookup that resolves its zones and
+    /// instance type). On any other source type the value would parse and never be read — the #675 shape —
+    /// so it is refused rather than accepted as a silent no-op.
+    private static void rejectReplacementCeilingOffCloud(String name, SourceProfile source, List<String> errors) {
+        if (source.replacementCeiling().isEmpty() || source.type() == SourceType.CLOUD) {
+            return;
+        }
+
+        errors.add("PF-26: Source '" + name
+                  + "' is type '" + source.type().value()
+                  + "' and sets replacement_ceiling, which only a cloud source's auto-heal replacements read"
+                  + " — the value would be silently ignored. Remove it; replacements outside a cloud source"
+                  + " use the " + SourceProfile.DEFAULT_REPLACEMENT_CEILING.duration().toMinutes()
+                  + "-minute default.");
     }
 
     private static void validateRoleConstraints(String name, SourceProfile source, List<String> errors) {
@@ -565,11 +595,13 @@ public final class ClusterBootstrapConfigValidator {
                                         String runtimeRef,
                                         RuntimeType runtimeType,
                                         List<String> errors) {
-        if (!SSH_RUNTIME_TYPES.contains(runtimeType)) {
+        // #1090 review SF-2: the deploy phase launches only a container over SSH; admitting JVM/EMBER
+        // here meant every other source provisioned before DEPLOY_RUNTIME refused the profile by name.
+        if (runtimeType != RuntimeType.CONTAINER) {
             errors.add("PF-22: SSH source '" + sourceName
                       + "' role '" + role.value()
                       + "' runtime '" + runtimeRef
-                      + "' must be CONTAINER, JVM, or EMBER, got " + runtimeType.value());
+                      + "' must be CONTAINER (only a container is launched over SSH), got " + runtimeType.value());
         }
     }
 
@@ -592,6 +624,35 @@ public final class ClusterBootstrapConfigValidator {
 
     private static void collectDuplicateHosts(List<String> hosts, Set<String> seen, Set<String> duplicates) {
         hosts.stream().filter(host -> !seen.add(host)).forEach(duplicates::add);
+    }
+
+    /// PF-27 (#1090 review SF-3): PF-09 is intra-source; a host declared by two SSH sources was
+    /// launched by both deploys, the second `docker run` replacing the first. One host runs one node.
+    private static void validateSshHostsUniqueAcrossSources(ClusterBootstrapConfig config, List<String> errors) {
+        var owners = new HashMap<String, String>();
+
+        config.sources()
+              .forEach((name, source) -> sshHosts(source).forEach(host -> Option.option(owners.putIfAbsent(host, name))
+                                                                                .filter(owner -> !owner.equals(name))
+                                                                                .onPresent(owner -> errors.add("PF-27: Host '" + host
+                                                                                                              + "' is declared by SSH sources '" + owner
+                                                                                                              + "' and '" + name
+                                                                                                              + "' — one host runs one node"))));
+    }
+
+    private static List<String> sshHosts(SourceProfile source) {
+        if (source.type() != SourceType.SSH) {
+            return List.of();
+        }
+
+        return source.roles()
+                     .values()
+                     .stream()
+                     .flatMap(sub -> sub.hosts()
+                                        .stream()
+                                        .flatMap(List::stream))
+                     .distinct()
+                     .toList();
     }
 
     private static void validatePortDistinctness(ClusterBootstrapConfig config, List<String> errors) {

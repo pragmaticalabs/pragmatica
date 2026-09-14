@@ -89,6 +89,35 @@ class RouteAssemblerTest {
         path.onFailure(c -> assertThat(c).isInstanceOf(ManagementRouteError.MissingParam.class));
     }
 
+    /// #725 (1): an empty or whitespace-only value rendered as two adjacent slashes
+    /// (`/api/v1/deploy/promote/`) — a malformed URL the matcher happily round-trips, so the caller
+    /// with an accidentally-empty value got a wrong request instead of an error at the assembly
+    /// site. Blank is missing.
+    @Test
+    void assemble_failsOnBlankParam_ratherThanRenderingAdjacentSlashes() {
+        for (var blank : List.of("", " ", "\t")) {
+            var path = ManagementRoute.DEPLOY_PROMOTE.assemble(blank);
+
+            assertThat(path.isFailure()).as("blank value %s must be refused at assembly", blank.length())
+                                        .isTrue();
+            path.onFailure(c -> assertThat(c).isInstanceOf(ManagementRouteError.MissingParam.class));
+        }
+    }
+
+    /// #725 (2) is NOT a defect: `/` inside a value is load-bearing. `aether artifact …` builds
+    /// `groupPath = group.replace('.', '/')` (`AetherCli`) and passes it as ONE value to
+    /// `ARTIFACT_GET`/`PUT`/`DELETE`/`MAVEN_METADATA`, whose `groupPath` param spans as
+    /// many segments as the group has dots. `assemble_urlEncodesSegments` above pins the
+    /// un-escape; this pins the caller's shape so the reason is next to the rule.
+    @Test
+    void assemble_groupPathWithSlashes_spansSegments_becauseMavenRoutesNeedIt() {
+        // ARTIFACT_GET, not ARTIFACT_INFO: the server positional-parses INFO's dotted group and
+        // does not honour the spanning form there (#1102); GET/PUT/DELETE/MAVEN_METADATA do.
+        var path = ManagementRoute.ARTIFACT_GET.assemble("org/example", "hello", "1.0.0", "hello-1.0.0.jar");
+        path.onSuccess(p -> assertThat(p).isEqualTo("/repository/org/example/hello/1.0.0/hello-1.0.0.jar"));
+        assertThat(path.isSuccess()).isTrue();
+    }
+
     @Test
     void roundTrip_assembleThenMatch_preservesParams() {
         var matcher = RouteMatcher.shared();
