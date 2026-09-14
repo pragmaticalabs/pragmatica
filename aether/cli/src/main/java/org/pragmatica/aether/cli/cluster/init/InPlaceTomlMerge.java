@@ -64,9 +64,12 @@ public sealed interface InPlaceTomlMerge {
                  .filter(edit -> applyChanges || !edit.rewrite())
                  .sorted(Comparator.comparingInt(Edit::start).thenComparingInt(Edit::end).reversed())
                  .forEach(edit -> {
-                     result.subList(edit.start(), edit.end()).clear();
-                     result.addAll(edit.start(), edit.replacement());
-                 });
+                              result.subList(edit.start(),
+                                             edit.end())
+                                    .clear();
+                              result.addAll(edit.start(),
+                                            edit.replacement());
+                          });
 
             return String.join("\n", result);
         }
@@ -79,8 +82,7 @@ public sealed interface InPlaceTomlMerge {
     /// Plans the merge of `generated` (init's own output, always parseable) into `existingText`,
     /// whose parse is `existing`. The result parses again — checked here — or the plan is refused.
     static Result<Plan> plan(String existingText, TomlDocument existing, String generated) {
-        return TomlParser.parse(generated)
-                         .flatMap(fresh -> plan(existingText, existing, generated, fresh));
+        return TomlParser.parse(generated).flatMap(fresh -> plan(existingText, existing, generated, fresh));
     }
 
     private static Result<Plan> plan(String existingText, TomlDocument existing, String generated, TomlDocument fresh) {
@@ -107,7 +109,11 @@ public sealed interface InPlaceTomlMerge {
         }
 
         insertions.forEach((at, block) -> edits.add(new Edit(at, at, block, false)));
-        var plan = new Plan(List.copyOf(changes), List.copyOf(added), kept(index, existing, fresh), lines, List.copyOf(edits));
+        var plan = new Plan(List.copyOf(changes),
+                            List.copyOf(added),
+                            kept(index, existing, fresh),
+                            lines,
+                            List.copyOf(edits));
 
         return TomlParser.parse(plan.render(true))
                          .flatMap(_ -> TomlParser.parse(plan.render(false)))
@@ -151,9 +157,11 @@ public sealed interface InPlaceTomlMerge {
 
             var oldValue = line.start() == line.end()
                            ? lines.get(line.start()).substring(line.valueStart(), line.valueEnd())
-                           : String.join("\\n", lines.subList(line.start(), line.end() + 1));
+                           : String.join("\\n",
+                                         lines.subList(line.start(), line.end() + 1));
             var rewritten = line.start() == line.end()
-                            ? lines.get(line.start()).substring(0, line.valueStart()) + newValue + lines.get(line.start()).substring(line.valueEnd())
+                            ? lines.get(line.start()).substring(0, line.valueStart()) + newValue + lines.get(line.start())
+                                                                                                        .substring(line.valueEnd())
                             : lines.get(line.start()).substring(0, line.valueStart()) + newValue;
 
             changes.add(new Change(path, oldValue, newValue));
@@ -168,6 +176,7 @@ public sealed interface InPlaceTomlMerge {
 
         if (section.isPresent() && (!name.isEmpty() || section.unwrap().lastContent >= 0)) {
             insertions.computeIfAbsent(section.unwrap().lastContent + 1, _ -> new ArrayList<>()).addAll(missing);
+
             return;
         }
 
@@ -177,6 +186,7 @@ public sealed interface InPlaceTomlMerge {
             block.addAll(missing);
             block.add("");
             insertions.computeIfAbsent(index.rootInsertionPoint(lines), _ -> new ArrayList<>()).addAll(block);
+
             return;
         }
 
@@ -184,7 +194,9 @@ public sealed interface InPlaceTomlMerge {
 
         block.add("");
         block.addAll(genLines.subList(genBlock.header, genBlock.lastContent + 1));
-        insertions.computeIfAbsent(index.insertionPointAfter(name, genIndex, lines), _ -> new ArrayList<>()).addAll(block);
+        insertions.computeIfAbsent(index.insertionPointAfter(name, genIndex, lines),
+                                   _ -> new ArrayList<>())
+                  .addAll(block);
     }
 
     private static void planArray(String name,
@@ -217,9 +229,10 @@ public sealed interface InPlaceTomlMerge {
             return;
         }
 
-        var at = Option.option(index.arrays.get(name))
-                       .map(elements -> elements.getLast().lastContent + 1)
-                       .or(() -> index.insertionPointAfter(name, genIndex, lines));
+        var elements = index.arrays.getOrDefault(name, List.of());
+        var at = elements.isEmpty()
+                 ? index.insertionPointAfter(name, genIndex, lines)
+                 : elements.getLast().lastContent + 1;
 
         insertions.computeIfAbsent(at, _ -> new ArrayList<>()).addAll(block);
     }
@@ -234,7 +247,8 @@ public sealed interface InPlaceTomlMerge {
                    .keySet()
                    .stream()
                    .filter(key -> !freshValues.containsKey(key))
-                   .forEach(key -> kept.add(dotted(section.getKey(), key)));
+                   .forEach(key -> kept.add(dotted(section.getKey(),
+                                                   key)));
         }
 
         for (var name : index.arrays.keySet()) {
@@ -243,7 +257,8 @@ public sealed interface InPlaceTomlMerge {
             existing.getTableArray(name)
                     .or(List.of())
                     .stream()
-                    .filter(element -> freshElements.stream().noneMatch(candidate -> sameIdentity(candidate, element)))
+                    .filter(element -> freshElements.stream()
+                                                    .noneMatch(candidate -> sameIdentity(candidate, element)))
                     .forEach(element -> kept.add(elementPath(name, element)));
         }
 
@@ -263,12 +278,13 @@ public sealed interface InPlaceTomlMerge {
 
     private static String elementPath(String name, Map<String, Object> element) {
         return name + identity(element).entrySet()
-                                       .stream()
-                                       .map(entry -> entry.getKey() + "=" + (entry.getValue() instanceof String s
-                                                                             ? "\"" + s + "\""
-                                                                             : entry.getValue()))
-                                       .sorted()
-                                       .collect(Collectors.joining(", ", "[", "]"));
+                              .stream()
+                              .map(entry -> entry.getKey()
+                                           + "=" + (entry.getValue() instanceof String s
+                                                    ? "\"" + s + "\""
+                                                    : entry.getValue()))
+                              .sorted()
+                              .collect(Collectors.joining(", ", "[", "]"));
     }
 
     private static String dotted(String section, String key) {
@@ -369,7 +385,9 @@ public sealed interface InPlaceTomlMerge {
                 }
 
                 var kv = keyValue.unwrap();
-                var end = spanEnd(lines, i, raw.substring(kv.valueStart()).trim());
+                var end = spanEnd(lines,
+                                  i,
+                                  raw.substring(kv.valueStart()).trim());
 
                 current.lastContent = end;
                 if (arrayBase.isEmpty()) {
@@ -383,8 +401,13 @@ public sealed interface InPlaceTomlMerge {
                                    ? kv.valueStart() + stripInlineComment(raw.substring(kv.valueStart())).length()
                                    : raw.length();
 
-                    index.keys.computeIfAbsent(effective, _ -> new LinkedHashMap<>())
-                              .put(kv.key(), new KeyLine(i, end, kv.valueStart(), valueEnd));
+                    index.keys.computeIfAbsent(effective,
+                                               _ -> new LinkedHashMap<>())
+                              .put(kv.key(),
+                                   new KeyLine(i,
+                                               end,
+                                               kv.valueStart(),
+                                               valueEnd));
                 }
 
                 i = end;
@@ -404,8 +427,10 @@ public sealed interface InPlaceTomlMerge {
                          .stream()
                          .allMatch(entry -> document.getTableArray(entry.getKey())
                                                     .map(List::size)
-                                                    .or(0) == entry.getValue().size())
-                   && document.tableArrayNames().stream().allMatch(arrays::containsKey);
+                                                    .or(0) == entry.getValue()
+                                                                   .size()) && document.tableArrayNames()
+                                                                                       .stream()
+                                                                                       .allMatch(arrays::containsKey);
         }
 
         /// The line after the last block (section or array) that precedes `name` in the generated
@@ -422,7 +447,8 @@ public sealed interface InPlaceTomlMerge {
                 }
 
                 if (arrays.containsKey(candidate)) {
-                    return arrays.get(candidate).getLast().lastContent + 1;
+                    return arrays.get(candidate)
+                                 .getLast().lastContent + 1;
                 }
             }
 
@@ -448,11 +474,13 @@ public sealed interface InPlaceTomlMerge {
 
             return sections.containsKey(name)
                    ? sections.get(name).header
-                   : arrays.get(name).getFirst().header;
+                   : arrays.get(name)
+                           .getFirst().header;
         }
 
         private static int endOfFile(List<String> lines) {
-            return !lines.isEmpty() && lines.getLast().isEmpty()
+            return ! lines.isEmpty() && lines.getLast()
+                                             .isEmpty()
                    ? lines.size() - 1
                    : lines.size();
         }
@@ -578,7 +606,8 @@ public sealed interface InPlaceTomlMerge {
                     } else if (c == ']' || c == '}') {
                         depth--;
                     } else if (c == '#' && depth == 0) {
-                        return value.substring(0, i).stripTrailing();
+                        return value.substring(0, i)
+                                    .stripTrailing();
                     }
                 }
             }

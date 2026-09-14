@@ -56,7 +56,7 @@ class ClusterInitCommand implements Callable<Integer> {
     /// output differs from the new answers. Without it batch mode refuses with the diff and
     /// interactive mode asks; with it the answers are applied and nothing else in the file moves.
     @Option(names = "--merge", description = "Apply the new answers to init-generated keys whose value differs in an "
-                                             + "existing output file (batch mode refuses without it; interactive mode asks)")
+                                           + "existing output file (batch mode refuses without it; interactive mode asks)")
     private boolean merge;
 
     /// P-NEW-G (2026-05-21): Forces non-interactive (batch) mode and disables all prompts.
@@ -448,9 +448,11 @@ class ClusterInitCommand implements Callable<Integer> {
             return write(generated);
         }
 
-        return readExisting().flatMap(existing -> InPlaceTomlMerge.plan(existing.text(), existing.document(), generated))
-                             .flatMap(this::consented)
-                             .flatMap(this::write);
+        return readExisting().flatMap(existing -> InPlaceTomlMerge.plan(existing.text(),
+                                                                        existing.document(),
+                                                                        generated))
+                           .flatMap(this::consented)
+                           .flatMap(this::write);
     }
 
     private record Existing(String text, TomlDocument document) {}
@@ -463,7 +465,8 @@ class ClusterInitCommand implements Callable<Integer> {
 
             return TomlParser.parse(text)
                              .map(document -> new Existing(text, document))
-                             .mapError(cause -> new ClusterInitError.OutputUnreadable(output.toString(), cause.message()));
+                             .mapError(cause -> new ClusterInitError.OutputUnreadable(output.toString(),
+                                                                                      cause.message()));
         } catch (IOException e) {
             return new ClusterInitError.OutputUnreadable(output.toString(), e.getMessage()).result();
         }
@@ -490,8 +493,9 @@ class ClusterInitCommand implements Callable<Integer> {
     }
 
     private boolean confirmChanges(List<String> diffs) {
-        System.out.println("Output file " + output + " exists and " + diffs.size()
-                           + " init-generated key(s) differ from the new answers:");
+        System.out.println("Output file " + output
+                          + " exists and " + diffs.size()
+                          + " init-generated key(s) differ from the new answers:");
         diffs.forEach(diff -> System.out.println("  " + diff));
 
         return prompt.confirm("Apply the new answers to these keys? (No keeps the existing values)", false);
@@ -503,8 +507,12 @@ class ClusterInitCommand implements Callable<Integer> {
         if (!plan.changes().isEmpty()) {
             parts.add((applied
                        ? "updated "
-                       : "kept the existing value of ") + plan.changes().size() + " key(s) — "
-                      + String.join(", ", plan.changes().stream().map(InPlaceTomlMerge.Change::toString).toList()));
+                       : "kept the existing value of ") + plan.changes().size()
+                     + " key(s) — " + String.join(", ",
+                                                  plan.changes()
+                                                      .stream()
+                                                      .map(InPlaceTomlMerge.Change::toString)
+                                                      .toList()));
         }
 
         if (!plan.added().isEmpty()) {
@@ -512,7 +520,8 @@ class ClusterInitCommand implements Callable<Integer> {
         }
 
         if (!plan.kept().isEmpty()) {
-            parts.add("kept " + plan.kept().size() + " key(s) init does not generate — " + String.join(", ", plan.kept()));
+            parts.add("kept " + plan.kept().size()
+                     + " key(s) init does not generate — " + String.join(", ", plan.kept()));
         }
 
         System.out.println("Merged into " + output + (parts.isEmpty()

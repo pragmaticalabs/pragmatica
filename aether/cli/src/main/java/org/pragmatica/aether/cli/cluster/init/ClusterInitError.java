@@ -31,7 +31,8 @@ public sealed interface ClusterInitError extends Cause {
     record OutputUnreadable(String path, String detail) implements ClusterInitError {
         @Override
         public String message() {
-            return "Output file " + path + " exists and the merge cannot read it (" + detail
+            return "Output file " + path
+                 + " exists and the merge cannot read it (" + detail
                  + "). Fix it, or re-run with --force to overwrite.";
         }
     }
@@ -42,9 +43,9 @@ public sealed interface ClusterInitError extends Cause {
     record OutputDiffers(String path, List<String> changes) implements ClusterInitError {
         @Override
         public String message() {
-            return "Output file " + path + " exists and " + changes.size()
-                 + " init-generated key(s) differ from the new answers:\n  "
-                 + String.join("\n  ", changes)
+            return "Output file " + path
+                 + " exists and " + changes.size()
+                 + " init-generated key(s) differ from the new answers:\n  " + String.join("\n  ", changes)
                  + "\nRe-run with --merge to apply the new answers to these keys, or --force to "
                  + "overwrite the whole file.";
         }
@@ -60,7 +61,6 @@ public sealed interface ClusterInitError extends Cause {
                  + "). Re-run with --force to overwrite, and report this.";
         }
     }
-
 
     record MissingField(String name) implements ClusterInitError {
         @Override
