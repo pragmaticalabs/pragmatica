@@ -286,8 +286,10 @@ public final class ProviderBasedConfigService implements ConfigService {
         var extracted = extractValue(section, component);
 
         if (extracted.isSuccess() || isUnsupportedType(extracted)) {
-            // #761: a declaration error is not satisfiable by a derived name or a DEFAULT instance;
-            // letting it fall through would turn "cannot be configured" into a silent default.
+            // #761: a declaration error is not satisfiable by a DEFAULT instance, and must not be
+            // reported as SectionNotFound; letting it fall through would turn "cannot be configured"
+            // into a silent default. (The derived-name fallback below is String-only, so an Option
+            // component never reaches it.)
             return extracted.flatMap(v -> IndexedValue.indexedValue(index, v));
         }
         // Convention: derive `name` (String) from the section suffix when it's absent from TOML.

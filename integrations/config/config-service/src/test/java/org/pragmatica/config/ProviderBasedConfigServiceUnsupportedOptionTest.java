@@ -8,26 +8,35 @@ import java.net.URI;
 import java.util.List;
 import java.util.Map;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.config.source.MapConfigSource;
 import org.pragmatica.lang.Option;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.config.ProviderBasedConfigService.providerBasedConfigService;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #761 — the guarantee: "cannot bind this type" and "nothing was configured" must not be
 /// indistinguishable. Before this pin `extractOptionValue` had two silent arms for an `Option<X>`
 /// it cannot bind: (a) X a nested generic (`Option<List<String>>`) — the component was handed the
 /// raw `Option<String>` unchecked, a live type error; (b) X a class that is neither primitive,
 /// enum nor record — `handleOptionalRecord` answered `none()`, indistinguishable from an absent
-/// key. Both are now a `ConfigError.UnsupportedType` naming the key and the declared type, whether
-/// or not the key is present, and it survives the binder's derived-name and `DEFAULT` fallbacks. The enumeration that licensed this (every `Option<X>` reachable from
-/// every record the binder is handed) found NO instance of either case, so nothing that binds
-/// today changes; `OptionBindingSupportGateTest` in `aether/dead-surface-gate` keeps it so.
+/// key. A raw `Option` (no type argument at all) took the same path as (a). All three are now a
+/// `ConfigError.UnsupportedType` naming the key and the declared type, whether or not the key is
+/// present, and it survives the two fallbacks `collectComponentAt` can reach for an `Option`
+/// component: the record's `DEFAULT` instance and `SectionNotFound` (the derived-name fallback
+/// applies only to a `String` component named `name`, so an `Option` never reaches it). The
+/// enumeration that licensed this (every `Option<X>` reachable from every record the binder is
+/// handed) found NO instance of any case, so nothing that binds today changes;
+/// `OptionBindingSupportGateTest` in `aether/dead-surface-gate` keeps it so.
 class ProviderBasedConfigServiceUnsupportedOptionTest {
     record NestedGenericOption(String name, Option<List<String>> hosts) {}
 
     record UnsupportedClassOption(String name, Option<URI> endpoint) {}
+
+    @SuppressWarnings("rawtypes")
+    record RawOption(String name, Option raw) {}
 
     record SupportedOption(String name, Option<String> description) {}
 
@@ -39,38 +48,51 @@ class ProviderBasedConfigServiceUnsupportedOptionTest {
     @Test
     void optionOfNestedGeneric_isRefusedAsTypeMismatch_notHandedAnOptionString() {
         var service = serviceWith(Map.of("svc.name", "x", "svc.hosts", "a,b"));
-
         var result = service.config("svc", NestedGenericOption.class);
 
         assertThat(result.isFailure()).as("#761 case (a): Option<List<String>> must not bind to an Option<String>")
-                                      .isTrue();
+                  .isTrue();
         result.onFailure(cause -> {
             assertThat(cause).isInstanceOf(ConfigError.UnsupportedType.class);
             assertThat(cause.message()).contains("svc.hosts")
-                                       .contains("List");
+                      .contains("List");
+        });
+    }
+
+    /// Case (a), raw form: before the fix a raw `Option` was handed `provider.getString(fullKey)`.
+    @Test
+    void rawOption_isRefused_notHandedAnOptionString() {
+        var service = serviceWith(Map.of("svc.name", "x", "svc.raw", "anything"));
+        var result = service.config("svc", RawOption.class);
+
+        assertThat(result.isFailure()).as("#761 case (a): a raw Option has no type the binder can bind").isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(ConfigError.UnsupportedType.class);
+            assertThat(cause.message()).contains("svc.raw");
         });
     }
 
     @Test
     void optionOfUnsupportedClass_isRefused_evenWhenTheKeyIsAbsent() {
         var service = serviceWith(Map.of("svc.name", "x"));
-
         var result = service.config("svc", UnsupportedClassOption.class);
 
         assertThat(result.isFailure()).as("#761 case (b): an unbindable inner type is a declaration error, not an absent key")
-                                      .isTrue();
+                  .isTrue();
         result.onFailure(cause -> {
             assertThat(cause).isInstanceOf(ConfigError.UnsupportedType.class);
             assertThat(cause.message()).contains("svc.endpoint")
-                                       .contains("URI");
+                      .contains("URI");
         });
     }
 
     @Test
     void optionOfUnsupportedClass_isRefused_whenTheKeyIsPresent() {
         var service = serviceWith(Map.of("svc.name", "x", "svc.endpoint", "http://example"));
+        var result = service.config("svc", UnsupportedClassOption.class);
 
-        assertThat(service.config("svc", UnsupportedClassOption.class).isFailure()).isTrue();
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(ConfigError.UnsupportedType.class));
     }
 
     @Test
@@ -78,7 +100,7 @@ class ProviderBasedConfigServiceUnsupportedOptionTest {
         var result = serviceWith(Map.of("svc.name", "x")).config("svc", DefaultedUnsupportedOption.class);
 
         assertThat(result.isFailure()).as("#761: a DEFAULT instance would turn 'cannot be configured' into a silent default")
-                                      .isTrue();
+                  .isTrue();
         result.onFailure(cause -> assertThat(cause).isInstanceOf(ConfigError.UnsupportedType.class));
     }
 

@@ -174,8 +174,10 @@ public sealed interface ConfigError extends Cause {
     /// #761 — a record component whose DECLARED type the binder cannot bind at all (an `Option<X>`
     /// whose X is a nested generic, or a class that is neither primitive, enum nor record). Distinct
     /// from [TypeMismatch], which is about a present VALUE of the wrong shape: this is a declaration
-    /// error, so it is never satisfied by an absent key, a derived name or a `DEFAULT` instance —
-    /// [ProviderBasedConfigService] propagates it past every one of those fallbacks.
+    /// error, so it is never satisfied by an absent key or a `DEFAULT` instance and is never
+    /// reported as [SectionNotFound] — [ProviderBasedConfigService] propagates it past those
+    /// fallbacks. It surfaces where the record is bound: at slice activation, as
+    /// `SliceLoadingFailure.Fatal.ConfigurationFailed`, never at node boot.
     record UnsupportedType(String key, String declaredType) implements ConfigError {
         public static Result<UnsupportedType> unsupportedType(String key, String declaredType) {
             return success(new UnsupportedType(key, declaredType));
