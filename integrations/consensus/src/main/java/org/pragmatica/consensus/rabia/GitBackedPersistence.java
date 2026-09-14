@@ -145,7 +145,8 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
         var partial = backupDir.resolve(PARTIAL_FILE);
 
         return fileWriter.apply(partial, toml)
-                         .flatMap(_ -> moveReplace(partial, backupDir.resolve(STATE_FILE)))
+                         .flatMap(_ -> moveReplace(partial,
+                                                   backupDir.resolve(STATE_FILE)))
                          .onFailure(_ -> deleteIfExists(partial))
                          .mapToUnit()
                          .mapError(e -> PersistenceError.ioFailure(new RuntimeException(e.message())));
@@ -156,13 +157,16 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     }
 
     private static Result<Unit> fsync(Path path) {
-        return Result.lift(PersistenceError::ioFailure, () -> {
-            try (var channel = FileChannel.open(path, StandardOpenOption.WRITE)) {
-                channel.force(true);
-            }
+        return Result.lift(PersistenceError::ioFailure, () -> forceToDisk(path));
+    }
 
-            return Unit.unit();
-        });
+    @Contract
+    private static Unit forceToDisk(Path path) throws Exception {
+        try (var channel = FileChannel.open(path, StandardOpenOption.WRITE)) {
+            channel.force(true);
+        }
+
+        return Unit.unit();
     }
 
     private Result<Unit> ensureGitInitialized() {
