@@ -220,7 +220,11 @@ public final class QueryValidator {
             case "UpdateStmt" -> validateUpdate(nav, errors);
             case "DeleteStmt" -> validateDelete(nav, errors);
             case "WithClause", "InsertSource" -> validateChildrenIn(nt, Option.empty(), errors);
-            case "SubqueryRef" -> validateChildrenIn(nt, nav.has("LateralKW") ? enclosing : Option.empty(), errors);
+            case "SubqueryRef" -> validateChildrenIn(nt,
+                                                     nav.has("LateralKW")
+                                                     ? enclosing
+                                                     : Option.empty(),
+                                                     errors);
             default -> validateChildrenIn(nt, enclosing, errors);
         }
     }
@@ -235,7 +239,6 @@ public final class QueryValidator {
         var scope = withScope(stmt, enclosing);
 
         validateCteBodies(stmt, scope, errors);
-
         for (var child : stmt.children()) {
             if (! (child instanceof CstNode.NonTerminal nt)) continue;
 
@@ -275,7 +278,9 @@ public final class QueryValidator {
     /// to, except that a `RECURSIVE` body sees the `WITH` names (its own self-reference among them).
     private void validateCteBodies(CstNavigator stmt, Option<Scope> withScope, List<ValidationError> errors) {
         for (var wc : stmt.allChildren("WithClause")) {
-            var bodyScope = wc.has("RecursiveKW") ? withScope : Option.<Scope>empty();
+            Option<Scope> bodyScope = wc.has("RecursiveKW")
+                                      ? withScope
+                                      : Option.empty();
 
             for (var child : wc.children()) {
                 validateStatementsIn(child, bodyScope, errors);
