@@ -12,7 +12,6 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.worker.WorkerCodecs;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -83,7 +82,7 @@ class WireAssignmentTripwireTest {
 
     /// Every codec whose byte format this repository owns.
     ///
-    /// The two node registries are the bulk of it. `DelegationCodecsSlice` and `StreamCodecsSliceApi`
+    /// The node registry is the bulk of it (the orphaned `WorkerCodecs` was deleted in #503). `DelegationCodecsSlice` and `StreamCodecsSliceApi`
     /// are added EXPLICITLY because deriving from the node registries alone silently missed them:
     /// their codecs are generated from `@Codec` but composed into no node registry, so `TaskGroup` and
     /// `StreamRegistryEntry.RegisteredByKind` — 2 of the 26 generated enum codecs — had no pin at all
@@ -92,7 +91,6 @@ class WireAssignmentTripwireTest {
     /// derived set against the generated files rather than by reading this method.
     private static Stream<SliceCodec.TypeCodec<?>> allCodecs() {
         return Stream.of(NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs()).registeredTypes().values().stream(),
-                         WorkerCodecs.workerCodecs(FrameworkCodecs.frameworkCodecs()).registeredTypes().values().stream(),
                          org.pragmatica.aether.slice.delegation.DelegationCodecsSlice.CODECS.stream(),
                          org.pragmatica.aether.slice.stream.StreamCodecsSliceApi.CODECS.stream())
                      .flatMap(stream -> stream);

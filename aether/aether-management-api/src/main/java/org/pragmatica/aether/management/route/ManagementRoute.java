@@ -75,6 +75,8 @@ public enum ManagementRoute {
     CLUSTER_CIRCUIT_BREAKER_STATUS(GET, "/cluster/topology/circuit-breaker", List.of(), LEADER),
     CLUSTER_CIRCUIT_BREAKER_RESET(POST, "/cluster/topology/circuit-breaker/reset", List.of(), LEADER),
     CLUSTER_AUTO_HEAL_STATUS(GET, "/cluster/topology/auto-heal", List.of(), LEADER),
+    // #689: provisioned nodes whose advertised role label disagrees with their provisioning intent.
+    CLUSTER_ROLE_MISMATCHES(GET, "/cluster/topology/role-mismatches", List.of(), LEADER),
     CLUSTER_AUTO_HEAL_ENABLE(POST, "/cluster/topology/auto-heal/enable", List.of(), LEADER),
     CLUSTER_AUTO_HEAL_DISABLE(POST, "/cluster/topology/auto-heal/disable", List.of(), LEADER),
     CLUSTER_UPGRADE(POST, "/cluster/upgrade", List.of(), taskGroup(DEPLOYMENT)),
@@ -367,9 +369,6 @@ public enum ManagementRoute {
     ALERTS_ACTIVE(GET, "/alerts/active", List.of(), LOCAL),
     ALERTS_HISTORY(GET, "/alerts/history", List.of(), LOCAL),
     ALERTS_INJECT(POST, "/alerts/inject", List.of(), LOCAL),
-    BACKUP_TRIGGER(POST, "/backups", List.of(), taskGroup(DEPLOYMENT)),
-    BACKUPS_LIST(GET, "/backups", List.of(), LOCAL),
-    BACKUP_RESTORE(POST, "/backups/restore", List.of(), taskGroup(DEPLOYMENT)),
     CONFIG_LIST(GET, "/config", List.of(), LEADER),
     CONFIG_OVERRIDES(GET, "/config/overrides", List.of(), LEADER),
     CONFIG_SET(POST, "/config", List.of(), taskGroup(DEPLOYMENT)),
