@@ -356,20 +356,24 @@ final class DeploymentManagerImpl implements DeploymentManager {
         return current.newVersionPercentage() <= stageRouting.newVersionPercentage();
     }
 
+    /// #1068: a rollback ends the rolling update the same way `complete` does — the `VersionRoutingKey`
+    /// is REMOVED, not rewritten all-old. `ROLLED_BACK` is terminal, so nothing later would remove it,
+    /// and while it exists the rolled-back NEW version stays permitted (`CommittedSliceTarget`) and the
+    /// leader keeps its instances allocated (`activeRoutings`). Request routing never read the entry —
+    /// `activeRouting` filters terminal deployments — so nothing loses it. ORDER IS LOAD-BEARING: the
+    /// target must be restored to the old version BEFORE the routing removal in the same batch, because
+    /// the leader's `handleRoutingRemoval` deallocates every version the committed target does not name.
     private Result<Deployment> applyRollbackRouting(Deployment deployment) {
         return deployment.rolledBack()
                          .flatMap(finalized -> {
                                       var commands = new ArrayList<KVCommand<AetherKey>>();
 
                                       for (var base : finalized.artifacts()) {
-                                      addVersionRoutingAllOld(commands,
-                                                              base,
-                                                              finalized.oldVersion(),
-                                                              finalized.newVersion());
                                       addSliceTargetCommand(commands,
                                                             base,
                                                             finalized.oldVersion(),
                                                             finalized.newInstances());
+                                      commands.add(new KVCommand.Remove<>(VersionRoutingKey.versionRoutingKey(base)));
                                   }
 
                                       addDeploymentCommand(commands, finalized);
@@ -421,16 +425,6 @@ final class DeploymentManagerImpl implements DeploymentManager {
                                           ArtifactBase base,
                                           Version oldVersion,
                                           Version newVersion) {
-        var key = VersionRoutingKey.versionRoutingKey(base);
-        var value = VersionRoutingValue.versionRoutingValue(oldVersion, newVersion);
-
-        commands.add(new KVCommand.Put<>(key, value));
-    }
-
-    private void addVersionRoutingAllOld(List<KVCommand<AetherKey>> commands,
-                                         ArtifactBase base,
-                                         Version oldVersion,
-                                         Version newVersion) {
         var key = VersionRoutingKey.versionRoutingKey(base);
         var value = VersionRoutingValue.versionRoutingValue(oldVersion, newVersion);
 

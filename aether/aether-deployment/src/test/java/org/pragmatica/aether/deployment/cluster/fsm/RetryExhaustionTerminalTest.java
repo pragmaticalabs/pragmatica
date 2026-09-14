@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster.fsm;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.AppBlueprintPutReceived;
@@ -14,6 +15,7 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Node
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.SliceLoadingFailure.Unrecognised;
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -168,10 +170,20 @@ class RetryExhaustionTerminalTest {
                     + "back earlier would destroy the bounded retry this path exists to provide")
                 .isEqualTo(TERMINAL_ON_REPORT);
 
-        leaderSideCluster.commands.clear();
-        ((ClusterDeploymentState.Active) leaderHarness.state()).reconcile();
+        var active = (ClusterDeploymentState.Active) leaderHarness.state();
 
-        assertThat(leaderSideCluster.commandKeysFor(SLICE))
+        // The rollback dropped the artifact from the leader's projection, so `reconcileBlueprint` would never
+        // be reached for it and the assertion below would hold vacuously (#1083 review S3). Re-instate the
+        // projection entry — a stale mirror, the shape `OrphanSweepStaleProjection` also drives — so the
+        // `permanentlyFailed` gate is what has to refuse the re-drive.
+        active.blueprints().put(SLICE, Blueprint.blueprint(SLICE, 3, 1, Option.some(expanded.id()), false));
+        leaderSideCluster.commands.clear();
+        active.reconcile();
+
+        // #1068: the rollback removed the SliceTarget while the LOAD key it had issued is still in the
+        // store, so this reconcile's orphan sweep UNLOADs that leftover — a teardown, the opposite of
+        // a re-drive. Only LOAD/ACTIVATE would be the loop this test pins.
+        assertThat(leaderSideCluster.startCommandsFor(SLICE))
                 .as("and the terminal must HOLD: a reconcile after exhaustion must not re-drive the "
                     + "artifact, which is the step that turned the old exhaustion into a loop")
                 .isEmpty();
@@ -395,6 +407,21 @@ class RetryExhaustionTerminalTest {
         private List<AetherKey> commandKeysFor(Artifact artifact) {
             synchronized (commands) {
                 return commands.stream()
+                               .map(KVCommand::key)
+                               .filter(key -> key.asString()
+                                                 .contains(artifact.asString()))
+                               .toList();
+            }
+        }
+
+        /// Every LOAD or ACTIVATE the leader issued for the given artifact — a re-drive. UNLOAD and
+        /// Remove are teardown and deliberately excluded (#1068's orphan sweep issues them).
+        private List<AetherKey> startCommandsFor(Artifact artifact) {
+            synchronized (commands) {
+                return commands.stream()
+                               .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                  && put.value() instanceof NodeArtifactValue value
+                                                  && (value.state() == SliceState.LOAD || value.state() == SliceState.ACTIVATE))
                                .map(KVCommand::key)
                                .filter(key -> key.asString()
                                                  .contains(artifact.asString()))
