@@ -492,7 +492,6 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                         .flatMap(this::registerAndNotifyConfig)
                         .flatMap(this::publishRoutesIfPresent)
                         .flatMap(this::transitionToActiveWithStreamRefs)
-                        .flatMap(this::publishEndpoints)
                         .timeout(ctx.activationChainTimeout())
                         .withFailure(cause -> handleActivationFailure(sliceKey, cause));
         }
@@ -912,12 +911,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 return Promise.unitPromise();
             }
 
-            int instanceNumber = Math.abs(ctx.self().id().hashCode());
-            var methodNames = methods.stream().map(m -> m.name()
-                                                         .name()).toList();
             var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(ctx.self(), artifact);
-            var nodeArtifactValue = NodeArtifactValue.activeNodeArtifactValue(instanceNumber, methodNames);
-            KVCommand<AetherKey> command = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
+            KVCommand<AetherKey> command = new KVCommand.Put<>(nodeArtifactKey, endpointBearingActive(slice));
 
             return applyWithRetry(List.of(command),
                                   0).onSuccess(_ -> log.debug("Published {} endpoints for slice {}",
@@ -926,6 +921,49 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                  .onFailure(cause -> log.error("Failed to publish endpoints for {}: {}",
                                                                artifact,
                                                                cause.message()));
+        }
+
+        /// The ACTIVE value that carries this node's endpoints for `slice`: `instanceNumber` is derived
+        /// from the node id, `methods` from the slice. Written by [#publishEndpointsForSlice] and by
+        /// every ACTIVE state transition ([#nodeArtifactValueFor]).
+        private NodeArtifactValue endpointBearingActive(Slice slice) {
+            int instanceNumber = Math.abs(ctx.self().id().hashCode());
+            var methodNames = slice.methods().stream().map(m -> m.name()
+                                                                 .name()).toList();
+
+            return NodeArtifactValue.activeNodeArtifactValue(instanceNumber, methodNames);
+        }
+
+        /// #771: an ACTIVE transition carries the slice's endpoints IN THE SAME PUT. The leader
+        /// activates dependents on the first ACTIVE it observes for this key
+        /// (`ClusterDeploymentState.handleSliceActive`), and every node's `EndpointRegistry` learns
+        /// the endpoints from the same key's `methods` — so an ACTIVE written first and the endpoints
+        /// published in a later put left a window in which a dependent was told to activate before
+        /// the endpoint it invokes at activation (`SliceInvoker.verifyEndpointExists`) existed
+        /// anywhere. The retry classification that #771's mitigation added covered the symptom; this
+        /// closes the order. Every ACTIVE write goes through here — the activation chain, the ROUTING
+        /// ack fast path and the stuck-ACTIVATING/ROUTING remediations all reach it via `transitionTo`
+        /// — so no path can announce ACTIVE without its endpoints. A slice with no methods, or one no
+        /// longer in the store, writes the plain value as before.
+        private NodeArtifactValue nodeArtifactValueFor(Artifact artifact, SliceNodeValue value) {
+            var state = value.state();
+
+            if (state == SliceState.FAILED) {
+                return new NodeArtifactValue(SliceState.FAILED, value.failureReason(), value.fatal(), 0, List.of(), 0L);
+            }
+
+            if (state == SliceState.ACTIVE) {
+                return findLoadedSlice(artifact).filter(ls -> !ls.slice()
+                                                                 .methods()
+                                                                 .isEmpty())
+                                      .map(ls -> endpointBearingActive(ls.slice()))
+                                      .or(() -> NodeArtifactValue.nodeArtifactValue(state, 0L));
+            }
+
+            return NodeArtifactValue.nodeArtifactValue(state,
+                                                       state.isTransitional()
+                                                       ? ctx.nowMs()
+                                                       : 0L);
         }
 
         private void handleDeactivating(SliceNodeKey sliceKey) {
@@ -1852,17 +1890,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       attempt,
                       extraCommands.size());
             var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(ctx.self(), sliceKey.artifact());
-            var transitionedAt = value.state().isTransitional()
-                                 ? ctx.nowMs()
-                                 : 0L;
-            var nodeArtifactValue = value.state() == SliceState.FAILED
-                                    ? new NodeArtifactValue(SliceState.FAILED,
-                                                            value.failureReason(),
-                                                            value.fatal(),
-                                                            0,
-                                                            List.of(),
-                                                            0L)
-                                    : NodeArtifactValue.nodeArtifactValue(value.state(), transitionedAt);
+            var nodeArtifactValue = nodeArtifactValueFor(sliceKey.artifact(), value);
             var commands = new ArrayList<KVCommand<AetherKey>>();
 
             commands.add(new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue));
@@ -1956,17 +1984,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       value.state(),
                       attempt);
             var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(ctx.self(), sliceKey.artifact());
-            var transitionedAt = value.state().isTransitional()
-                                 ? ctx.nowMs()
-                                 : 0L;
-            var nodeArtifactValue = value.state() == SliceState.FAILED
-                                    ? new NodeArtifactValue(SliceState.FAILED,
-                                                            value.failureReason(),
-                                                            value.fatal(),
-                                                            0,
-                                                            List.of(),
-                                                            0L)
-                                    : NodeArtifactValue.nodeArtifactValue(value.state(), transitionedAt);
+            var nodeArtifactValue = nodeArtifactValueFor(sliceKey.artifact(), value);
             KVCommand<AetherKey> putArtifact = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
 
             return ctx.cluster()
