@@ -19,14 +19,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
 import io.netty.handler.ssl.SslContext;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -57,37 +56,54 @@ class SmtpClientFailClosedTest {
 
     @Test
     void startTlsMode_tlsContextCannotBeBuilt_failsTerminal_beforeAnyConnection() {
-        var server = new ScriptedServer(List.of(List.of("220 probe ESMTP"), List.of("250-probe", "250-STARTTLS", "250 AUTH PLAIN"), List.of("220 go ahead")));
+        var server = new ScriptedServer(List.of(List.of("220 probe ESMTP"),
+                                                List.of("250-probe", "250-STARTTLS", "250 AUTH PLAIN"),
+                                                List.of("220 go ahead")));
 
         try (server) {
-            var config = SmtpConfig.smtpConfig("127.0.0.1", server.port(), SmtpTlsMode.STARTTLS, SmtpAuth.smtpAuth("u", "p"))
+            var config = SmtpConfig.smtpConfig("127.0.0.1",
+                                               server.port(),
+                                               SmtpTlsMode.STARTTLS,
+                                               SmtpAuth.smtpAuth("u", "p"))
                                    .withCommandTimeout(SHORT);
-            var client = SmtpClient.smtpClient(config, eventLoop, () -> new SmtpError.TlsSetupFailed("no trust store").result());
+            var client = SmtpClient.smtpClient(config,
+                                               eventLoop,
+                                               () -> new SmtpError.TlsSetupFailed("no trust store").result());
+            var result = client.send(SmtpMessage.smtpMessage("a@example.com",
+                                                             List.of("b@example.com"),
+                                                             "s",
+                                                             "b"))
+                               .await(SHORT);
 
-            var result = client.send(SmtpMessage.smtpMessage("a@example.com", List.of("b@example.com"), "s", "b")).await(SHORT);
-
-            assertThat(result.isFailure()).as("a TLS setup failure must fail the send, never fall back to cleartext").isTrue();
+            assertThat(result.isFailure()).as("a TLS setup failure must fail the send, never fall back to cleartext")
+                      .isTrue();
             result.onFailure(cause -> {
                 assertThat(cause).isInstanceOf(SmtpError.TlsSetupFailed.class);
                 assertThat(cause.isTerminal()).isTrue();
             });
-            assertThat(server.connections.get()).as("no connection is opened without the TLS the mode requires").isZero();
-            assertThat(server.commands).as("AUTH PLAIN must never reach the wire in cleartext").noneMatch(line -> line.startsWith("AUTH"));
+            assertThat(server.connections.get()).as("no connection is opened without the TLS the mode requires")
+                      .isZero();
+            assertThat(server.commands).as("AUTH PLAIN must never reach the wire in cleartext")
+                      .noneMatch(line -> line.startsWith("AUTH"));
         }
     }
 
     /// Control: with a buildable context the same script gets STARTTLS, not AUTH, after EHLO.
     @Test
     void startTlsMode_withAContext_sendsStartTlsAfterEhlo() {
-        var server = new ScriptedServer(List.of(List.of("220 probe ESMTP"), List.of("250-probe", "250-STARTTLS", "250 AUTH PLAIN"), List.of("554 TLS refused")));
+        var server = new ScriptedServer(List.of(List.of("220 probe ESMTP"),
+                                                List.of("250-probe", "250-STARTTLS", "250 AUTH PLAIN"),
+                                                List.of("554 TLS refused")));
 
         try (server) {
-            var config = SmtpConfig.smtpConfig("127.0.0.1", server.port(), SmtpTlsMode.STARTTLS, SmtpAuth.smtpAuth("u", "p"))
+            var config = SmtpConfig.smtpConfig("127.0.0.1",
+                                               server.port(),
+                                               SmtpTlsMode.STARTTLS,
+                                               SmtpAuth.smtpAuth("u", "p"))
                                    .withCommandTimeout(SHORT);
             var client = SmtpClient.smtpClient(config, eventLoop, SmtpClientImpl::buildInsecureSslContext);
 
             client.send(SmtpMessage.smtpMessage("a@example.com", List.of("b@example.com"), "s", "b")).await(SHORT);
-
             assertThat(server.commands).anyMatch(line -> line.startsWith("STARTTLS"));
             assertThat(server.commands).noneMatch(line -> line.startsWith("AUTH"));
         }
@@ -99,8 +115,11 @@ class SmtpClientFailClosedTest {
 
         try (server) {
             var client = SmtpClient.smtpClient(plain(server.port()), eventLoop, SmtpClientImpl::buildInsecureSslContext);
-
-            var result = client.send(SmtpMessage.smtpMessage("a@example.com", List.of("b@example.com"), "s", "b")).await(SHORT);
+            var result = client.send(SmtpMessage.smtpMessage("a@example.com",
+                                                             List.of("b@example.com"),
+                                                             "s",
+                                                             "b"))
+                               .await(SHORT);
 
             assertThat(result.isFailure()).isTrue();
             assertThat(server.awaitClientClosed(3_000)).as("the session must close the socket it cannot parse").isTrue();
@@ -115,8 +134,11 @@ class SmtpClientFailClosedTest {
             var client = SmtpClient.smtpClient(plain(server.port()).withCommandTimeout(TimeSpan.timeSpan(300).millis()),
                                                eventLoop,
                                                SmtpClientImpl::buildInsecureSslContext);
-
-            var result = client.send(SmtpMessage.smtpMessage("a@example.com", List.of("b@example.com"), "s", "b")).await(SHORT);
+            var result = client.send(SmtpMessage.smtpMessage("a@example.com",
+                                                             List.of("b@example.com"),
+                                                             "s",
+                                                             "b"))
+                               .await(SHORT);
 
             assertThat(result.isFailure()).isTrue();
             result.onFailure(cause -> assertThat(cause).isInstanceOf(SmtpError.Timeout.class));
@@ -127,24 +149,32 @@ class SmtpClientFailClosedTest {
     /// NIT-1: a 3yz where a completion is expected is refused, not treated as success.
     @Test
     void threeYzWhereCompletionExpected_isRefused_terminal() {
-        var server = new ScriptedServer(List.of(List.of("220 probe ESMTP"), List.of("250 probe"), List.of("354 unexpected")));
+        var server = new ScriptedServer(List.of(List.of("220 probe ESMTP"),
+                                                List.of("250 probe"),
+                                                List.of("354 unexpected")));
 
         try (server) {
             var client = SmtpClient.smtpClient(plain(server.port()), eventLoop, SmtpClientImpl::buildInsecureSslContext);
-
-            var result = client.send(SmtpMessage.smtpMessage("a@example.com", List.of("b@example.com"), "s", "b")).await(SHORT);
+            var result = client.send(SmtpMessage.smtpMessage("a@example.com",
+                                                             List.of("b@example.com"),
+                                                             "s",
+                                                             "b"))
+                               .await(SHORT);
 
             assertThat(result.isFailure()).as("354 at MAIL FROM is not a completion").isTrue();
             result.onFailure(cause -> {
                 assertThat(cause).isInstanceOf(SmtpError.Rejected.class);
-                assertThat(cause.isTerminal()).as("a challenge this client cannot answer is not a passing condition").isTrue();
+                assertThat(cause.isTerminal()).as("a challenge this client cannot answer is not a passing condition")
+                          .isTrue();
                 assertThat(cause.isTransient()).isFalse();
             });
         }
     }
 
     private static SmtpConfig plain(int port) {
-        return SmtpConfig.smtpConfig("127.0.0.1", port).withTlsMode(SmtpTlsMode.NONE).withCommandTimeout(SHORT);
+        return SmtpConfig.smtpConfig("127.0.0.1", port)
+                         .withTlsMode(SmtpTlsMode.NONE)
+                         .withCommandTimeout(SHORT);
     }
 
     /// One reply GROUP per client line (the greeting group first, unprompted); records commands;
@@ -182,7 +212,7 @@ class SmtpClientFailClosedTest {
             try {
                 socket.close();
             } catch (IOException _) {
-                // closing
+            // closing
             }
         }
 
@@ -203,7 +233,7 @@ class SmtpClientFailClosedTest {
                     }
                 }
             } catch (IOException _) {
-                // server closed
+            // server closed
             }
         }
 
@@ -228,7 +258,6 @@ class SmtpClientFailClosedTest {
                 commands.add(line);
                 reply(out, replies.get(index++));
             }
-
             // script exhausted: hold the socket and watch for the client closing it
             clientClosed = in.readLine() == null;
         }

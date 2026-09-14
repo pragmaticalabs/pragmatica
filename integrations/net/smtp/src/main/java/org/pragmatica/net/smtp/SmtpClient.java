@@ -73,7 +73,9 @@ public interface SmtpClient extends AsyncCloseable {
     /// Test seam: a client whose TLS context comes from the caller, so a test can make the context
     /// FAIL to build and observe that the send fails closed. Package-private; production goes
     /// through the two factories above.
-    static SmtpClient smtpClient(SmtpConfig config, EventLoopGroup eventLoopGroup, Supplier<Result<SslContext>> tlsContext) {
+    static SmtpClient smtpClient(SmtpConfig config,
+                                 EventLoopGroup eventLoopGroup,
+                                 Supplier<Result<SslContext>> tlsContext) {
         return new SmtpClientImpl(config, eventLoopGroup, false, tlsContext);
     }
 }
@@ -122,7 +124,7 @@ record SmtpClientImpl(SmtpConfig config,
         // of #1075, SF-2): failing the promise alone left the socket open until the client closed.
         promise.async(config.commandTimeout(),
                       _ -> session.onTimeout(new SmtpError.Timeout("SMTP session timed out after " + config.commandTimeout()
-                                                                                                        .millis()
+                                                                                                           .millis()
                                                                   + "ms")));
     }
 

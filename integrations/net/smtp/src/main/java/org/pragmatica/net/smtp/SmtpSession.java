@@ -18,6 +18,7 @@ package org.pragmatica.net.smtp;
 import java.util.List;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 
 import io.netty.channel.Channel;
@@ -268,6 +269,7 @@ class SmtpSession {
 
     /// Called when the command timeout fires: fails the promise and closes the channel, so a
     /// timed-out session does not leave its socket open until the client is closed.
+    @Contract
     void onTimeout(SmtpError.Timeout timeout) {
         if (state != State.DONE) {
             failSession(timeout);

@@ -18,12 +18,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class TransientClassificationTest {
     @Test
     void transientCauses_areTransientAndNotTerminal() {
-        Cause[] transientCauses = {
-            new HttpEmailError.RequestFailed(503, "unavailable"),
-            new HttpEmailError.RequestFailed(429, "slow down"),
-            new HttpEmailError.RequestFailed(408, "timeout"),
-            new HttpEmailError.RequestFailed(500, "boom"),
-        };
+        Cause[] transientCauses = {new HttpEmailError.RequestFailed(503, "unavailable"), new HttpEmailError.RequestFailed(429,
+                                                                                                                          "slow down"), new HttpEmailError.RequestFailed(408,
+                                                                                                                                                                         "timeout"), new HttpEmailError.RequestFailed(500,
+                                                                                                                                                                                                                      "boom"), };
 
         for (var cause : transientCauses) {
             assertThat(cause.isTransient()).as(cause.getClass().getName()).isTrue();
@@ -33,12 +31,8 @@ class TransientClassificationTest {
 
     @Test
     void terminalCauses_areTerminalAndNotTransient() {
-        Cause[] terminalCauses = {
-            new HttpEmailError.RequestFailed(400, "bad request"),
-            new HttpEmailError.RequestFailed(404, "gone"),
-            new HttpEmailError.AuthError("HTTP 401"),
-            new HttpEmailError.VendorNotFound("nope"),
-        };
+        Cause[] terminalCauses = {new HttpEmailError.RequestFailed(400, "bad request"), new HttpEmailError.RequestFailed(404,
+                                                                                                                         "gone"), new HttpEmailError.AuthError("HTTP 401"), new HttpEmailError.VendorNotFound("nope"), };
 
         for (var cause : terminalCauses) {
             assertThat(cause.isTerminal()).as(cause.getClass().getName()).isTrue();

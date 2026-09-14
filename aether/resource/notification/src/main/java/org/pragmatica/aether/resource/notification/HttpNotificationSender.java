@@ -34,7 +34,8 @@ final class HttpNotificationSender implements NotificationSender {
 
         return retry.execute(() -> sender.send(message)
                                          .map(response -> notificationResult(response, "http")))
-                    .mapError(cause -> new NotificationError.DeliveryFailed("HTTP delivery failed: " + cause.message(), cause));
+                    .mapError(cause -> new NotificationError.DeliveryFailed("HTTP delivery failed: " + cause.message(),
+                                                                            cause));
     }
 
     static EmailMessage toEmailMessage(Notification.Email email) {

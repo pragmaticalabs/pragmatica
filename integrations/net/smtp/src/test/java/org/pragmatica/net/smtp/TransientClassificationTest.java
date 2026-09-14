@@ -18,14 +18,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 class TransientClassificationTest {
     @Test
     void transientCauses_areTransientAndNotTerminal() {
-        Cause[] transientCauses = {
-            new SmtpError.ConnectionFailed("refused"),
-            new SmtpError.Timeout("no banner"),
-            new SmtpError.Rejected(451, "try again"),
-            new SmtpError.AuthFailed(454, "temporary authentication failure"),
-            new SmtpError.TlsFailed(454, "TLS not available"),
-            new SmtpError.ProtocolError(421, "service not available"),
-        };
+        Cause[] transientCauses = {new SmtpError.ConnectionFailed("refused"), new SmtpError.Timeout("no banner"), new SmtpError.Rejected(451,
+                                                                                                                                         "try again"), new SmtpError.AuthFailed(454,
+                                                                                                                                                                                "temporary authentication failure"), new SmtpError.TlsFailed(454,
+                                                                                                                                                                                                                                             "TLS not available"), new SmtpError.ProtocolError(421,
+                                                                                                                                                                                                                                                                                               "service not available"), };
 
         for (var cause : transientCauses) {
             assertThat(cause.isTransient()).as(cause.getClass().getName()).isTrue();
@@ -35,15 +32,12 @@ class TransientClassificationTest {
 
     @Test
     void terminalCauses_areTerminalAndNotTransient() {
-        Cause[] terminalCauses = {
-            new SmtpError.Rejected(550, "no such user"),
-            new SmtpError.AuthFailed(535, "bad credentials"),
-            new SmtpError.TlsFailed(554, "TLS not supported"),
-            new SmtpError.ProtocolError(502, "command not implemented"),
-            new SmtpError.AuthFailed(334, "a challenge this client cannot answer"),
-            new SmtpError.Rejected(354, "3yz where a completion was expected"),
-            new SmtpError.TlsSetupFailed("no trust store"),
-        };
+        Cause[] terminalCauses = {new SmtpError.Rejected(550, "no such user"), new SmtpError.AuthFailed(535,
+                                                                                                        "bad credentials"), new SmtpError.TlsFailed(554,
+                                                                                                                                                    "TLS not supported"), new SmtpError.ProtocolError(502,
+                                                                                                                                                                                                      "command not implemented"), new SmtpError.AuthFailed(334,
+                                                                                                                                                                                                                                                           "a challenge this client cannot answer"), new SmtpError.Rejected(354,
+                                                                                                                                                                                                                                                                                                                            "3yz where a completion was expected"), new SmtpError.TlsSetupFailed("no trust store"), };
 
         for (var cause : terminalCauses) {
             assertThat(cause.isTerminal()).as(cause.getClass().getName()).isTrue();

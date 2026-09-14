@@ -37,7 +37,7 @@ public sealed interface SmtpError extends Cause {
 
         @Override
         default boolean isTerminal() {
-            return !isTransient();
+            return ! isTransient();
         }
 
         @Override
