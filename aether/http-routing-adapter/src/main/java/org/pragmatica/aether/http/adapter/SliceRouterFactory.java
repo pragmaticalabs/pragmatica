@@ -13,7 +13,10 @@ public interface SliceRouterFactory<T> {
     /// contract: a route with no `[security]` section is generated as `SecurityPolicy.unspecified()`
     /// and inherits the node's global policy. Before it, the same route was generated as
     /// `publicRoute()`, and that value is compiled into the slice JAR — a runtime upgrade cannot
-    /// reach it. The generator stamps this into every `*Routes` class it emits.
+    /// reach it. This is the contract the NODE requires; the generator carries its own copy
+    /// (`RouteSourceGenerator.ROUTE_SECURITY_CONTRACT`) and stamps that as a literal into every
+    /// `*Routes` class it emits, so a stamp names the generator that wrote it, not the adapter the
+    /// slice happened to compile against. `slice-processor-tests` pins the two equal.
     int ROUTE_SECURITY_CONTRACT = 1;
     Class<T> sliceType();
 

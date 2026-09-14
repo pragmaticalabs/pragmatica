@@ -81,6 +81,14 @@ import org.pragmatica.lang.utils.Causes;
 /// }
 /// }```
 public class RouteSourceGenerator {
+    /// #882 — the route-security contract THIS generator implements, emitted into every `*Routes`
+    /// class as a literal. It is deliberately not `SliceRouterFactory.ROUTE_SECURITY_CONTRACT`: a
+    /// symbolic reference would be resolved by javac against whatever adapter is on the SLICE's
+    /// classpath, so an old generator compiled against a newer adapter would stamp the adapter's
+    /// number and claim a contract it does not implement. This module cannot see the adapter;
+    /// `slice-processor-tests` pins the two constants equal. `1` is the #763 contract (no
+    /// `[security]` → `SecurityPolicy.unspecified()`); bump both sides together.
+    public static final int ROUTE_SECURITY_CONTRACT = 1;
     private static final Map<String, String> TYPE_TO_PATH_PARAMETER = Map.ofEntries(Map.entry("String", "aString"),
                                                                                     Map.entry("java.lang.String",
                                                                                               "aString"),
@@ -286,9 +294,11 @@ public class RouteSourceGenerator {
         out.println();
         // #882: stamp the route-security contract this generator implements, so a node can tell a
         // JAR built before #763 (no stamp, unspecified security baked in as public) from a current one.
+        // Emitted as a LITERAL so the stamp is the generator's own number, frozen at generation time,
+        // never a symbol the slice's compile classpath would resolve to some other adapter's value.
         out.println("    @Override");
         out.println("    public int routeSecurityContract() {");
-        out.println("        return SliceRouterFactory.ROUTE_SECURITY_CONTRACT;");
+        out.println("        return " + ROUTE_SECURITY_CONTRACT + ";");
         out.println("    }");
         out.println();
         // SliceRouterFactory: create(slice)
