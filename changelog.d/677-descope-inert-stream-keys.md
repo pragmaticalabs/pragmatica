@@ -23,18 +23,21 @@
   `StreamConfigParser` is the one parser. No consolidation was needed.
 - Post-GA wiring epic (compression sink, per-consumer tuning through `StreamConsumerManager`, encryption
   once #253 lands) is a ticket draft in the report; the CTO files it.
-- **Feature-catalog rows 141 and 142 now state the descope** (143 deliberately not touched — see below). Row 141 (consumer read-preference) and row 142
+- **Feature-catalog rows 141, 142 and 143 now state the descope.** Row 141 (consumer read-preference) and row 142
   (segment compression) both read as *accepted-but-partial* while their `[streams.X]` TOML keys are refused;
   each now says so and names the refusing symbol. Two stale citations in row 141 were corrected in passing
   because the row is in this diff: `selectReplicaAndRead()` has **zero declarations** in `src/main` (15 test
   method names and 2 comments keep the old name; `readWithPreference` is the live symbol), and the enum list
   omitted `LINEARIZABLE`. The bare line number `PartitionedStreamAccess.java:278` pointed at unrelated javadoc
   and was replaced by the symbol. Row 207 already carried the #576 statement for `encryption-key-id`.
-  **Row 143 (segment encryption) carries the same missing clause and is deliberately LEFT ALONE:** its own
-  neighbouring claim — "`.encrypt(` has zero callers in `src/main`" — is false (there are 4, incl.
-  `StorageSegmentSink.applyEncryption` and `EncryptingStorageTier`; positive control `.decrypt(` = 4), so
-  adding a true clause beside it would have implicitly blessed the false half. Filed as its own ticket to be
-  fixed whole by someone who has checked the whole row.
+  **Row 143 (segment encryption) needed BOTH halves fixed, not one:** besides missing the descope clause, its
+  own neighbouring claim — "`.encrypt(` has zero callers in `src/main`" — is FALSE; there are **4**
+  (`StorageSegmentSink.applyEncryption`, `EncryptingStorageTier`, and two SWIM transports; positive control
+  `.decrypt(` = 4, same instrument). Adding a true clause beside a false count would have blessed the false
+  half, so the count is corrected too, and the row now marks explicitly what is **not settled here** —
+  whether #253's `EncryptingStorageTier` (row 207) closes the row's AHSE-engine gap, a pass this PR did not
+  take and which is filed separately. The narrower claim that `writeToAllTiers` does not *itself* invoke the
+  encryptor survives and is kept.
 - **Found while checking the inverse (documented-as-refused but still reachable): THE REFUSAL DOES NOT FAIL A
   DEPLOY.** `StreamResourceValidator.validate` has exactly one production caller — `BlueprintService.streamBindings`
   — which ends `.or(List.<NamedAddress>of())`, discarding the `Cause` and publishing an EMPTY bindings entry.
