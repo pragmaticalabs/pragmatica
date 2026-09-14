@@ -784,7 +784,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // PeerDisconnected observations. A null peer is treated as a first-time authoritative
         // departure and emits AT THE SITE (there is no PeerState to transition) — SWIM may
         // confirm a peer gone before we ever held a live QUIC link, and topology projection
-        // must still prune it (see `disconnect_unknownPeer_propagatesListenerForTopologyRemoval`).
+        // must still prune it. The at-site emission is pinned by
+        // `disconnect_unknownPeer_emitsConnectivityObservation_withoutAPriorLink`; the downstream
+        // topology prune is not asserted there.
         if (peer == null) {
             processViewChange(REMOVE, nodeId);
 
