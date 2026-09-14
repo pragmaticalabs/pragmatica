@@ -1021,10 +1021,8 @@ public class RabiaEngine<C extends Command> {
             return;
         }
         // Check if we already have enough responses from previous attempt
-        if (adoptionThresholdMet()) {
-            // Process immediately instead of clearing
-            adoptCollectedState();
-
+        if (adoptIfThresholdMet()) {
+            // Processed immediately instead of clearing
             return;
         }
         warnIfSyncStuck();
@@ -1059,19 +1057,19 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        log.warn("Node {} still SYNCING after {} rounds: {} of {} required peer responses ({} live of {} needed "
-                + "for a live majority), from {} (clusterSize={}). Adoption needs clusterSize/2 peers to answer "
-                + "when none is live (self completes the majority), or a live majority of clusterSize/2+1 "
-                + "live peers otherwise; a live minority waits. This node has no leader and runs no "
-                + "reconciler while this persists.",
+        log.warn("Node {} still SYNCING after {} rounds: {} responses of which {} live, from {} "
+                + "(clusterSize={}). Adoption needs {} responses while any responder is live (a response "
+                + "quorum, whatever mix of live and cold), or {} responses when none is live (self "
+                + "completes the majority). This node has no leader and runs no reconciler while this "
+                + "persists.",
                  self,
                  round,
                  syncResponses.size(),
-                 syncPeerResponsesRequired(),
                  liveResponseCount(),
-                 liveResponsesRequired(),
                  syncResponses.keySet(),
-                 topologyManager.clusterSize());
+                 topologyManager.clusterSize(),
+                 responseQuorumRequired(),
+                 syncPeerResponsesRequired());
     }
 
     /// The state this node adopts: the most advanced state among the peer sync responses AND this
@@ -1107,14 +1105,12 @@ public class RabiaEngine<C extends Command> {
     /// quantity from what this node ends up holding: [#detectBootFutureHistory] compares self against
     /// what the CLUSTER reports, and folding self into the candidate would make its predicate
     /// unfireable and silently retire the §6.4 mixed-wipe detector.
-    private void adoptCollectedState() {
+    private void adoptCollectedState(List<SyncResponse<C>> candidates) {
         var persisted = persistence.load();
-        // #667: with a live majority the candidate is the LIVE maximum — a COLD snapshot is a picture
-        // of unknown age and cannot outrank what the live cluster holds; with none, every response counts.
-        var responses = candidateResponses().stream()
-                                            .map(SyncResponse::state)
-                                            .sorted(Comparator.comparing(SavedState::lastCommittedPhase))
-                                            .toList();
+        var responses = candidates.stream()
+                                  .map(SyncResponse::state)
+                                  .sorted(Comparator.comparing(SavedState::lastCommittedPhase))
+                                  .toList();
 
         syncRounds.set(0);
 
@@ -1174,18 +1170,14 @@ public class RabiaEngine<C extends Command> {
         }
 
         syncResponses.put(response.sender(), response);
-        if (!adoptionThresholdMet()) {
-            log.trace("Node {} received {} responses {}, not enough to proceed (required = {})",
+
+        if (!adoptIfThresholdMet()) {
+            log.trace("Node {} received {} responses {}, not enough to proceed (live responders = {})",
                       self,
                       syncResponses.size(),
                       syncResponses.keySet(),
-                      syncPeerResponsesRequired());
-
-            return;
+                      liveResponseCount());
         }
-
-        log.trace("Node {} received {} responses, collected: {}", self, syncResponses.size(), syncResponses);
-        adoptCollectedState();
     }
 
     private void restoreState(SavedState<C> state) {
@@ -1545,51 +1537,72 @@ public class RabiaEngine<C extends Command> {
         return topologyManager.clusterSize() / 2;
     }
 
-    /// True when this node has heard from enough peers that self completes a cluster majority.
+    /// #667 round 2: the adoption decision, computed ONCE from a single read of the response map and
+    /// a single read of `clusterSize()`. `Option.none()` means "keep collecting"; a present value is
+    /// the exact set adoption may choose its candidate from.
     ///
-    /// The `clusterSize >= 1` arm is not defensive noise. `clusterSize()` is a derived cell fed from the
-    /// KV `coreCount`, and at 0 the requirement would be `0 / 2 == 0`: a node would meet its own
-    /// adoption threshold with ZERO responses and activate alone. The previous `clusterSize <= 1 ? 1`
-    /// made that unsatisfiable by accident; here it is refused on purpose, and the periodic WARN reports
-    /// `clusterSize=0` so the real fault is visible rather than masked by a node that quietly came up.
-    /// #667: which of the three adoption cases the collected responses are in, re-evaluated on every
-    /// arriving response (and on the retry tick), never on a timer of its own.
+    /// The first cut of #667 thresholded on LIVE responders (`clusterSize / 2 + 1` of them) and a live
+    /// minority waited. That is a quantity the waiting nodes cannot increase: the moment one node
+    /// activates it answers LIVE, every remaining joiner sees a live responder, switches to the
+    /// stricter bound, and they answer each other COLD. The only nodes that could raise the live count
+    /// are precisely the ones blocked, and nothing times out of `Syncing` — [#warnIfSyncStuck] only
+    /// WARNs. A cluster that had half-started could never finish. Cold start was never the defective
+    /// arm: at t=0 every responder is COLD and #660's rule is reached.
     ///
-    /// - LIVE responders form a cluster majority (`⌊n/2⌋+1`): adopt the most advanced LIVE state. A
-    ///   live majority intersects every majority that could have committed anything, so its maximum is
-    ///   at or past every commit — this is the intersection argument the old `clusterSize/2+1`
-    ///   PEER bound got by accident, and it holds without leaning on self's floor.
-    /// - no LIVE responder: #660's cold rule, unchanged — `clusterSize/2` responses with self as the
+    /// So the threshold is on RESPONSES, and liveness only chooses the SOURCE:
+    ///
+    /// - any LIVE responder, and `clusterSize / 2 + 1` RESPONSES of any mix: adopt the maximum over
+    ///   the LIVE responders. The response quorum is what carries the safety argument — responders
+    ///   alone are a majority, so they intersect every majority that could have committed anything,
+    ///   without leaning on self's history (the #667 hole was exactly a self whose in-memory
+    ///   persistence left it at phase 0, unable to refuse). [#ownStateFloor] stays as the belt.
+    /// - no LIVE responder: #660's cold rule, unchanged — `clusterSize / 2` responses with self as the
     ///   floor. Nothing durable answered live, so this is the full-cluster cold bootstrap.
-    /// - some LIVE responders but fewer than a majority: keep collecting. A node rejoining a cluster
-    ///   that has no live majority waits by design: that cluster has no quorum either, and adopting
-    ///   from a live minority is exactly how a single restarted node discarded a commit held only by
-    ///   the peers that had not answered yet (#667).
-    /// `UNKNOWN` (an ordinal this node cannot name, #964) counts as COLD: an unreadable flag can loosen
-    /// nothing.
-    private boolean adoptionThresholdMet() {
-        if (topologyManager.clusterSize() < 1) {
-            return false;
+    ///
+    /// A response minority still waits, which is the arm the live bound existed to protect: a stale
+    /// LIVE responder in a minority partition cannot by itself authorize adoption.
+    ///
+    /// `UNKNOWN` (an ordinal this node cannot name, #964) counts as COLD when choosing the source, and
+    /// counts as a response toward the quorum like any other answer: it can never become the state this
+    /// node installs, and it never lowers the number of answers required.
+    ///
+    /// The single read matters: the previous split between `adoptionThresholdMet()` and
+    /// `candidateResponses()` re-read both the response map and `clusterSize()`, so a topology change
+    /// between the two could pass the gate on one rule and build the candidate set under the other.
+    private Option<List<SyncResponse<C>>> adoptionCandidates() {
+        var clusterSize = topologyManager.clusterSize();
+
+        // `clusterSize()` is a derived cell fed from the KV `coreCount`; at 0 the cold requirement
+        // would be `0 / 2 == 0` and a node would meet its own threshold with ZERO responses and
+        // activate alone. Refused on purpose, with the periodic WARN reporting `clusterSize=0`.
+        if (clusterSize < 1) {
+            return Option.none();
         }
 
-        var live = liveResponseCount();
+        var responses = List.copyOf(syncResponses.values());
+        var liveResponses = responses.stream()
+                                     .filter(response -> response.responder() == ResponderState.LIVE)
+                                     .toList();
 
-        if (live > 0) {
-            return live >= liveResponsesRequired();
+        if (!liveResponses.isEmpty()) {
+            return responses.size() >= clusterSize / 2 + 1
+                   ? Option.some(liveResponses)
+                   : Option.none();
         }
 
-        return syncResponses.size() >= syncPeerResponsesRequired();
+        return responses.size() >= clusterSize / 2
+               ? Option.some(responses)
+               : Option.none();
     }
 
-    /// The responses adoption may choose from: only the LIVE ones once a live majority has answered,
-    /// every response under the cold rule.
-    private List<SyncResponse<C>> candidateResponses() {
-        var liveMajority = liveResponseCount() >= liveResponsesRequired();
+    /// Adopts when the collected responses already satisfy the rule, reporting whether it did so the
+    /// callers can log the "still waiting" case without evaluating the decision a second time.
+    private boolean adoptIfThresholdMet() {
+        var candidates = adoptionCandidates();
 
-        return syncResponses.values()
-                            .stream()
-                            .filter(response -> !liveMajority || response.responder() == ResponderState.LIVE)
-                            .toList();
+        candidates.onPresent(this::adoptCollectedState);
+
+        return candidates.isPresent();
     }
 
     private long liveResponseCount() {
@@ -1599,8 +1612,9 @@ public class RabiaEngine<C extends Command> {
                             .count();
     }
 
-    /// LIVE responders needed for the live-majority case: a majority of the CLUSTER, `⌊n/2⌋+1`.
-    private int liveResponsesRequired() {
+    /// Responses required while any responder is live: a majority of the CLUSTER, `⌊n/2⌋+1`, counted
+    /// over responders alone. Diagnostics only — [#adoptionCandidates] owns the decision.
+    private int responseQuorumRequired() {
         return topologyManager.clusterSize() / 2 + 1;
     }
 
