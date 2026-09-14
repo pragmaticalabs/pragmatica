@@ -575,18 +575,17 @@ class SliceInvokerImpl implements SliceInvoker {
 
             return endpointRegistry.selectEndpointExcluding(slice, method, exclude);
         }
-
         // #275: the weighted pick draws from every version of the base, so the exclusion handed to it
         // must be base-scoped too. Scoping it to `slice`'s own version left a dead node hosting only the
         // other version out of the set, and the pick then handed that node out mid-deployment.
         var exclude = excludedNodesForBase(artifactBase, method, failedNodes);
 
         return activeRouting.flatMap(routing -> endpointRegistry.selectEndpointWithRouting(artifactBase,
-                                                                                            method,
-                                                                                            routing.routing(),
-                                                                                            routing.oldVersion(),
-                                                                                            routing.newVersion(),
-                                                                                            exclude))
+                                                                                           method,
+                                                                                           routing.routing(),
+                                                                                           routing.oldVersion(),
+                                                                                           routing.newVersion(),
+                                                                                           exclude))
                             .orElse(() -> endpointRegistry.selectEndpointExcluding(slice, method, exclude));
     }
 
@@ -996,7 +995,6 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private Promise<Endpoint> selectEndpoint(Artifact slice, MethodName method) {
         var artifactBase = ArtifactBase.artifactBase(slice.groupId(), slice.artifactId());
-
         // #275: an endpoint on a node membership no longer counts reachable is skipped even while its
         // KV row is still registered. Each arm narrows over the candidate set it will actually draw
         // from: the weighted pick spans every version of the base, the plain round-robin only `slice`.
@@ -1005,7 +1003,9 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                                   artifactBase,
                                                                                   method,
                                                                                   routing,
-                                                                                  excludedNodesForBase(artifactBase, method, Set.of())))
+                                                                                  excludedNodesForBase(artifactBase,
+                                                                                                       method,
+                                                                                                       Set.of())))
                                 .or(() -> selectEndpointWithoutRouting(slice, method));
     }
 
@@ -1051,10 +1051,7 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private Set<NodeId> inaccessibleAmong(List<Endpoint> endpoints) {
-        var candidates = endpoints.stream()
-                                  .map(Endpoint::nodeId)
-                                  .distinct()
-                                  .toList();
+        var candidates = endpoints.stream().map(Endpoint::nodeId).distinct().toList();
         var accessible = Set.copyOf(accessibilityFilter.keepOnlyAccessible(candidates));
 
         return candidates.stream()

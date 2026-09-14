@@ -222,8 +222,8 @@ public interface EndpointRegistry {
                                                               Version newVersion,
                                                               java.util.Set<NodeId> excludeNodes) {
                 var allEndpoints = findEndpointsForBase(artifactBase, methodName).stream()
-                                                                                 .filter(e -> !excludeNodes.contains(e.nodeId()))
-                                                                                 .toList();
+                                                       .filter(e -> !excludeNodes.contains(e.nodeId()))
+                                                       .toList();
 
                 if (allEndpoints.isEmpty()) {
                     return Option.none();
