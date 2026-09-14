@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.dependency;
 
+import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.MethodHandle;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.ResourceProviderFacade;
@@ -19,6 +20,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.URL;
 import java.nio.file.Files;
@@ -26,8 +28,11 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
+import java.util.stream.Stream;
+import javax.tools.ToolProvider;
 
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -193,102 +198,221 @@ class SliceFactoryTest {
     /// #758: the same reflective failure for an APPLICATION type — another slice's class that never
     /// reached this slice's loader chain — must not be diagnosed as a removed runtime class. The
     /// cause must name the missing class, say no loader above the slice's serves its package, list
-    /// the chain, point at every dependency section, and negate the rebuild.
+    /// the chain, point at every dependency section, and assert no cause.
     @Test
-    void fails_namingTheClassloaderGap_whenAnApplicationTypeIsMissing() throws ClassNotFoundException {
-        assertApplicationTypeDiagnosedAsDependencyGap(GHOST_PROVIDER_TYPE, GHOST_CONSUMER_FACTORY);
+    void fails_namingTheUnservedPackage_whenAnApplicationTypeIsMissing() throws Exception {
+        assertMissingTypeDiagnosedAsUnserved(GHOST_PROVIDER_TYPE, GHOST_CONSUMER_FACTORY, List.of());
     }
 
     /// #758, the ticket's own shape: the application type lives UNDER the vendor namespace
     /// (`org.pragmatica.example.…`, as every `ticketing/` slice does). A name-prefix discriminator
     /// calls this a removed runtime class; the owning-loader discriminator must not.
     @Test
-    void fails_namingTheClassloaderGap_whenAnApplicationTypeUnderTheVendorPrefixIsMissing() throws ClassNotFoundException {
-        assertApplicationTypeDiagnosedAsDependencyGap(SEAT_SELLABILITY_PROBE, BUY_TICKET_PROBE_FACTORY);
+    void fails_namingTheUnservedPackage_whenAnApplicationTypeUnderTheVendorPrefixIsMissing() throws Exception {
+        assertMissingTypeDiagnosedAsUnserved(SEAT_SELLABILITY_PROBE, BUY_TICKET_PROBE_FACTORY, List.of());
     }
 
     /// #758, application direction for an ARRAY-typed parameter: the message must name the element
     /// class, never the descriptor.
     @Test
-    void fails_namingTheClassloaderGap_whenAnApplicationArrayTypeIsMissing() throws ClassNotFoundException {
-        assertApplicationTypeDiagnosedAsDependencyGap(GHOST_PROVIDER_TYPE, GHOST_ARRAY_CONSUMER_FACTORY);
+    void fails_namingTheUnservedPackage_whenAnApplicationArrayTypeIsMissing() throws Exception {
+        assertMissingTypeDiagnosedAsUnserved(GHOST_PROVIDER_TYPE, GHOST_ARRAY_CONSUMER_FACTORY, List.of());
     }
 
-    /// #758, the production loader shape: the factory is defined by a real [SliceClassLoader] over
-    /// its jar, parent [SharedLibraryClassLoader], with a `[slices]` jar appended AFTER construction as
-    /// `DependencyResolver` does; the missing type is hidden above the shared loader. The message must
-    /// list the chain with each loader's LIVE urls — the appended jar included — so the operator sees
-    /// what was consulted.
+    /// #758, the production loader shape: a `[slices]` jar appended AFTER construction as
+    /// `DependencyResolver` does must appear in the listed chain with the slice's own jar — the
+    /// operator sees what was consulted.
     @Test
-    void fails_listingTheLiveLoaderChain_whenTheFactoryLoadsThroughASliceClassLoader(@TempDir Path tempDir) throws Exception {
-        var factoryJar = jarWithClass(tempDir.resolve("consumer.jar"), BUY_TICKET_PROBE_FACTORY);
-        var addedLater = jarWithClass(tempDir.resolve("added-later.jar"), GHOST_PROVIDER_TYPE);
-        var sharedLoader = new SharedLibraryClassLoader(HidingClassLoader.hidingOnly(SEAT_SELLABILITY_PROBE));
+    void fails_listingTheLiveLoaderChain_whenAJarWasAppendedAfterConstruction() throws Exception {
+        var addedLater = jar("added-later", GHOST_PROVIDER_TYPE);
 
-        try (var sliceLoader = new SliceClassLoader(new URL[]{factoryJar}, sharedLoader)) {
-            sliceLoader.addSliceDependencyUrl(addedLater);
-            var factoryClass = sliceLoader.loadClass(BUY_TICKET_PROBE_FACTORY);
-
-            assertThat(factoryClass.getClassLoader()).as("child-first: the jar defines the factory").isSameAs(sliceLoader);
-
-            SliceFactory.createSlice(factoryClass, STUB_CONTEXT, List.of(), List.of()).await().onSuccessRun(Assertions::fail).onFailure(cause -> {
-                assertThat(cause.message()).contains("Class " + SEAT_SELLABILITY_PROBE)
-                                           .contains("a rebuild will not help")
-                                           .contains("Loader chain: [SliceClassLoader[" + factoryJar + ", " + addedLater + "], SharedLibraryClassLoader[], "
-                                                    + HidingClassLoader.class.getName())
-                                           .doesNotContain("rebuild against this runtime version");
-            });
-        }
+        assertMissingTypeDiagnosedAsUnserved(SEAT_SELLABILITY_PROBE, BUY_TICKET_PROBE_FACTORY, List.of(addedLater));
     }
 
-    /// A jar holding exactly one class, its bytes read from the test classpath as a RESOURCE (never
-    /// as a class — see the fixture rule above).
-    private static URL jarWithClass(Path path, String className) throws IOException {
-        var entry = className.replace('.', '/') + ".class";
+    /// #758, the case the lazy probe alone gets wrong: the missing class's package IS served by a jar
+    /// in the shared loader (an `[infra]`/`[shared]` artifact of the wrong version) from which NOTHING
+    /// has been loaded yet — the default state at factory-inspection time. `getDefinedPackage` reads
+    /// null there; the directory probe must still find the package and the verdict must be the
+    /// rebuild one, naming the serving loader and its jar.
+    @Test
+    void fails_with_rebuild_hint_whenTheMissingClassPackageIsServedByAJarNothingHasLoadedFrom() throws Exception {
+        var providerJar = jar("provider", OTHER_PROBE_TYPE);
+        var sharedLoader = sharedLoaderWith(providerJar);
 
-        try (var out = new JarOutputStream(Files.newOutputStream(path));
-             var in = SliceFactoryTest.class.getClassLoader().getResourceAsStream(entry)) {
-            out.putNextEntry(new JarEntry(entry));
-            out.write(in.readAllBytes());
-            out.closeEntry();
+        // Control, inside the run: the lazy probe alone cannot see the package yet.
+        assertThat(sharedLoader.getDefinedPackage(PROBE_PACKAGE)).isNull();
+
+        assertServedPackageDiagnosedAsRebuild(sharedLoader, providerJar);
+    }
+
+    /// #758: and the same verdict once a class HAS been loaded from that jar — the diagnosis must not
+    /// flip with load order.
+    @Test
+    void fails_with_rebuild_hint_whenTheMissingClassPackageIsServedByAJarAClassWasLoadedFrom() throws Exception {
+        var providerJar = jar("provider", OTHER_PROBE_TYPE);
+        var sharedLoader = sharedLoaderWith(providerJar);
+
+        sharedLoader.loadClass(OTHER_PROBE_TYPE);
+        assertThat(sharedLoader.getDefinedPackage(PROBE_PACKAGE)).isNotNull();
+
+        assertServedPackageDiagnosedAsRebuild(sharedLoader, providerJar);
+    }
+
+    // ---- #758 fixtures: compiled at test time into OUT-OF-TREE jars. They must not sit on the test
+    // classpath: the application loader would then serve their packages (as a resource, or as a
+    // defined package once a class literal touched them) and the fixture would read as a runtime
+    // class — the very thing the discriminator exists to tell apart.
+
+    private static final String PROBE_PACKAGE = "org.pragmatica.example.probe758";
+    private static final String SEAT_SELLABILITY_PROBE = PROBE_PACKAGE + ".SeatSellabilityProbe";
+    private static final String BUY_TICKET_PROBE_FACTORY = PROBE_PACKAGE + ".BuyTicketProbeFactory";
+    private static final String OTHER_PROBE_TYPE = PROBE_PACKAGE + ".OtherProbeType";
+    private static final String GHOST_PROVIDER_TYPE = "com.example.ghost.GhostProviderType";
+    private static final String GHOST_CONSUMER_FACTORY = "com.example.ghost.GhostConsumerFactory";
+    private static final String GHOST_ARRAY_CONSUMER_FACTORY = "com.example.ghost.GhostArrayConsumerFactory";
+
+    private static final String SLICE_BODY = """
+            {
+                return org.pragmatica.lang.Promise.success(new org.pragmatica.aether.slice.Slice() {
+                    @Override
+                    public java.util.List<org.pragmatica.aether.slice.SliceMethod<?, ?>> methods() {
+                        return java.util.List.of();
+                    }
+                });
+            }
+            """;
+
+    private static final List<String> FIXTURE_SOURCES = List.of(
+        "package " + PROBE_PACKAGE + "; public class SeatSellabilityProbe {}",
+        "package " + PROBE_PACKAGE + "; public class OtherProbeType {}",
+        "package " + PROBE_PACKAGE + "; public class BuyTicketProbeFactory {"
+        + " public static org.pragmatica.lang.Promise<org.pragmatica.aether.slice.Slice> buyTicketProbeSlice(SeatSellabilityProbe ignored)"
+        + SLICE_BODY + "}",
+        "package com.example.ghost; public class GhostProviderType {}",
+        "package com.example.ghost; public class GhostConsumerFactory {"
+        + " public static org.pragmatica.lang.Promise<org.pragmatica.aether.slice.Slice> ghostConsumerSlice(GhostProviderType ignored)"
+        + SLICE_BODY + "}",
+        "package com.example.ghost; public class GhostArrayConsumerFactory {"
+        + " public static org.pragmatica.lang.Promise<org.pragmatica.aether.slice.Slice> ghostArrayConsumerSlice(GhostProviderType[] ignored)"
+        + SLICE_BODY + "}");
+
+    @TempDir
+    static Path fixtureDir;
+    static Path fixtureClasses;
+
+    @BeforeAll
+    static void compileFixtures() throws Exception {
+        var sources = fixtureDir.resolve("src");
+        var files = new java.util.ArrayList<String>();
+
+        for (var source : FIXTURE_SOURCES) {
+            var pkg = source.substring("package ".length(), source.indexOf(';'));
+            var name = source.replaceAll("(?s).*public class (\\w+)\\b.*", "$1");
+            var file = sources.resolve(pkg.replace('.', '/')).resolve(name + ".java");
+
+            Files.createDirectories(file.getParent());
+            Files.writeString(file, source);
+            files.add(file.toString());
+        }
+
+        fixtureClasses = Files.createDirectories(fixtureDir.resolve("classes"));
+        var classpath = Stream.of(Slice.class, SliceMethod.class, Promise.class)
+                              .map(c -> c.getProtectionDomain().getCodeSource().getLocation().getPath())
+                              .collect(java.util.stream.Collectors.joining(File.pathSeparator));
+        var args = new java.util.ArrayList<>(List.of("-d", fixtureClasses.toString(), "-cp", classpath, "-proc:none"));
+
+        args.addAll(files);
+        assertThat(ToolProvider.getSystemJavaCompiler().run(null, null, null, args.toArray(String[]::new))).as("fixture javac").isZero();
+    }
+
+    /// A jar holding the named classes (plus their nested classes) WITH directory entries, as Maven
+    /// writes them. Only the named classes go in — a consumer jar deliberately omits the type it
+    /// references. A fresh file per call: a loader holds its jar open.
+    private static URL jar(String prefix, String... classNames) throws IOException {
+        var path = Files.createTempFile(fixtureDir, prefix, ".jar");
+        var directories = new java.util.HashSet<String>();
+
+        try (var out = new JarOutputStream(Files.newOutputStream(path))) {
+            for (var className : classNames) {
+                var directory = className.substring(0, className.lastIndexOf('.')).replace('.', '/') + "/";
+
+                if (directories.add(directory)) {
+                    out.putNextEntry(new JarEntry(directory));
+                    out.closeEntry();
+                }
+                var simpleName = className.substring(className.lastIndexOf('.') + 1);
+
+                try (var siblings = Files.list(fixtureClasses.resolve(directory))) {
+                    for (var classFile : siblings.filter(f -> f.getFileName().toString().matches(simpleName + "(\\$.*)?\\.class")).toList()) {
+                        out.putNextEntry(new JarEntry(directory + classFile.getFileName()));
+                        out.write(Files.readAllBytes(classFile));
+                        out.closeEntry();
+                    }
+                }
+            }
         }
 
         return path.toUri().toURL();
     }
 
-    // Fixture names as STRINGS: a class literal would load the type through the application loader,
-    // define its package there, and make the application loader "serve" it — the fixture would then
-    // BE a runtime class as far as the discriminator can tell.
-    private static final String GHOST_PROVIDER_TYPE = "com.example.ghost.GhostProviderType";
-    private static final String GHOST_CONSUMER_FACTORY = "com.example.ghost.GhostConsumerFactory";
-    private static final String GHOST_ARRAY_CONSUMER_FACTORY = "com.example.ghost.GhostArrayConsumerFactory";
-    private static final String SEAT_SELLABILITY_PROBE = "org.pragmatica.example.probe758.SeatSellabilityProbe";
-    private static final String BUY_TICKET_PROBE_FACTORY = "org.pragmatica.example.probe758.BuyTicketProbeFactory";
+    private static SharedLibraryClassLoader sharedLoaderWith(URL providerJar) {
+        var sharedLoader = new SharedLibraryClassLoader(SliceFactoryTest.class.getClassLoader());
 
-    private static void assertApplicationTypeDiagnosedAsDependencyGap(String hiddenType, String factoryName) throws ClassNotFoundException {
-        var packageName = hiddenType.substring(0, hiddenType.lastIndexOf('.'));
+        sharedLoader.addArtifact("org.example", "provider", Version.version("1.0.0").unwrap(), providerJar);
 
-        // Control on the fixture's premise: nothing may have defined the fixture package in the
-        // application loader, or this test would be probing a runtime class.
-        assertThat(SliceFactoryTest.class.getClassLoader().getDefinedPackage(packageName)).as("fixture package %s leaked into the application loader — some test loaded it via a class literal",
-                                                                                              packageName)
-                                                                                          .isNull();
-        var loader = new HidingClassLoader(hiddenType, factoryName);
-        var factoryClass = loader.loadClass(factoryName);
+        return sharedLoader;
+    }
 
-        SliceFactory.createSlice(factoryClass, STUB_CONTEXT, List.of(), List.of()).await().onSuccessRun(Assertions::fail).onFailure(cause -> {
-            assertThat(cause.message()).contains("Class " + hiddenType + " referenced by " + factoryName)
-                                       .contains("not on this slice's classloader")
-                                       .contains("no loader above it has defined any class in package " + packageName)
-                                       .contains("Loader chain: [" + HidingClassLoader.class.getName())
-                                       .contains("[slices]")
-                                       .contains("[shared]")
-                                       .contains("[infra]")
-                                       .contains("a rebuild will not help")
-                                       .doesNotContain("[L")
-                                       .doesNotContain("rebuild against this runtime version")
-                                       .doesNotContain("removed class");
-        });
+    private static void assertFixtureOffTheTestClasspath(String className) {
+        var packageName = className.substring(0, className.lastIndexOf('.'));
+        var appLoader = SliceFactoryTest.class.getClassLoader();
+
+        assertThat(appLoader.getResource(packageName.replace('.', '/'))).as("fixture package %s is on the test classpath", packageName).isNull();
+        assertThat(appLoader.getDefinedPackage(packageName)).as("fixture package %s defined in the application loader", packageName).isNull();
+    }
+
+    private static void assertMissingTypeDiagnosedAsUnserved(String missingType, String factoryName, List<URL> appendedJars) throws Exception {
+        assertFixtureOffTheTestClasspath(missingType);
+        var packageName = missingType.substring(0, missingType.lastIndexOf('.'));
+        var consumerJar = jar("consumer", factoryName);
+        var sharedLoader = new SharedLibraryClassLoader(SliceFactoryTest.class.getClassLoader());
+
+        try (var sliceLoader = new SliceClassLoader(new URL[]{consumerJar}, sharedLoader)) {
+            appendedJars.forEach(sliceLoader::addSliceDependencyUrl);
+            var factoryClass = sliceLoader.loadClass(factoryName);
+            var expectedUrls = Stream.concat(Stream.of(consumerJar), appendedJars.stream()).map(URL::toString).toList();
+
+            assertThat(factoryClass.getClassLoader()).as("child-first: the jar defines the factory").isSameAs(sliceLoader);
+
+            SliceFactory.createSlice(factoryClass, STUB_CONTEXT, List.of(), List.of()).await().onSuccessRun(Assertions::fail).onFailure(cause -> {
+                assertThat(cause.message()).contains("Class " + missingType + " referenced by " + factoryName)
+                                           .contains("not on this slice's classloader")
+                                           .contains("no loader above it serves package " + packageName)
+                                           .contains("Loader chain: [SliceClassLoader" + expectedUrls + ", SharedLibraryClassLoader[], ")
+                                           .contains("[slices]")
+                                           .contains("[shared]")
+                                           .contains("[infra]")
+                                           .doesNotContain("[L")
+                                           .doesNotContain("rebuild")
+                                           .doesNotContain("removed class");
+            });
+        }
+    }
+
+    private static void assertServedPackageDiagnosedAsRebuild(SharedLibraryClassLoader sharedLoader, URL providerJar) throws Exception {
+        assertFixtureOffTheTestClasspath(SEAT_SELLABILITY_PROBE);
+        var consumerJar = jar("consumer", BUY_TICKET_PROBE_FACTORY);
+
+        try (var sliceLoader = new SliceClassLoader(new URL[]{consumerJar}, sharedLoader)) {
+            var factoryClass = sliceLoader.loadClass(BUY_TICKET_PROBE_FACTORY);
+
+            SliceFactory.createSlice(factoryClass, STUB_CONTEXT, List.of(), List.of()).await().onSuccessRun(Assertions::fail).onFailure(cause -> {
+                assertThat(cause.message()).contains("rebuild against this runtime version")
+                                           .contains("removed class " + SEAT_SELLABILITY_PROBE + ", whose package " + PROBE_PACKAGE
+                                                    + " is served by SharedLibraryClassLoader[" + providerJar + "]")
+                                           .doesNotContain("not on this slice's classloader");
+            });
+        }
     }
 
     /// Test classloader implementing the JDK {@link ClassLoader} SPI: it defines the ghost factory
@@ -302,11 +426,6 @@ class SliceFactoryTest {
 
         private HidingClassLoader(String hiddenType) {
             this(hiddenType, GhostParamFactory.class.getName());
-        }
-
-        /// Hides only; defines nothing — for sitting ABOVE a real loader chain that defines the factory.
-        private static HidingClassLoader hidingOnly(String hiddenType) {
-            return new HidingClassLoader(hiddenType, "");
         }
 
         private HidingClassLoader(String hiddenType, String definedHere) {
