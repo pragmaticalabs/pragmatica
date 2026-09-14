@@ -87,10 +87,11 @@
   would stay armed for life, which is exactly the auto-heal replacement described above, making the
   most exposed node the one that stays killable longest. Out-of-window datagrams reset the run, so a
   burst cannot be banked up to the moment the window opens. **Both bounds are chosen, not measured:**
-  60s clears a healthy node's first-decrypt latency (seconds after SWIM starts) by roughly an order of
-  magnitude, and 10min clears by a similar margin the time a probed restarted member needs to
-  accumulate the threshold — wide margins rather than tuned values, recorded as such so they are not
-  later defended as derived
+  60s is intended to clear a healthy node's first-decrypt latency (expected to be seconds after SWIM
+  starts, itself unmeasured) by roughly an order of magnitude, and 10min to clear by a similar margin
+  the time a probed restarted member needs to accumulate the threshold. Both margins were chosen
+  deliberately wide; **whether the behaviour is sensitive to either number is unknown until those
+  distributions are measured** (#1208), so this is not a reason to skip that work
   [verified: `GossipKeyDivergenceGuardTest` — 10 tests covering both bounds, the banking attack, the
   permanent disarm on one successful decrypt, varied-junk, differing-id reset, fire-once and
   encrypt-passthrough; plus an out-of-tree end-to-end probe over real UDP against a real

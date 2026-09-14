@@ -99,13 +99,14 @@ Two consequences follow directly:
       seconds with no successful decrypt, and disarms again once the boot window has passed, so there
       is a bounded interval — and only for a node that is already failing to communicate.
 
-    **Both bounds are CHOSEN, not measured.** 60 seconds is chosen to clear a healthy node's
-    first-decrypt latency — seconds after SWIM starts — by roughly an order of magnitude, so a
-    spurious refusal needs a node that is genuinely not communicating. 10 minutes is chosen to clear,
-    by a similar margin, the time a restarted member takes to accumulate the threshold once its peers
-    begin probing it, while still ending the interval in which the process can be killed. Neither
-    number was derived from a measured distribution; they are wide margins rather than tuned values,
-    and tightening them would need one.
+    **Both bounds are CHOSEN, not measured.** 60 seconds is intended to clear a healthy node's
+    first-decrypt latency — expected to be seconds after SWIM starts, itself unmeasured — by roughly
+    an order of magnitude, so a spurious refusal needs a node that is genuinely not communicating.
+    10 minutes is intended to clear, by a similar margin, the time a restarted member takes to
+    accumulate the threshold once its peers begin probing it, while still ending the interval in
+    which the process can be killed. Neither number was derived from a measured distribution; both
+    margins were chosen deliberately wide, and **whether the behaviour is sensitive to either is
+    unknown until those distributions are measured** (#1208).
 
     Do not read the pre-existing alternatives as making this free: dropping traffic requires being
     on-path and flooding requires sustained bandwidth, whereas this requires a handful of spoofable
