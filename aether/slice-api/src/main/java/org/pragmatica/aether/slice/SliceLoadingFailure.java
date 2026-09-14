@@ -116,10 +116,8 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
             public String message() {
                 return "Class " + className
                      + " referenced by " + context
-                     + " is not on this slice's classloader, and no loader above it has defined any class in package "
-                     + packageName
-                     + " — nothing shows a runtime upgrade removed it, so a rebuild will not help. Loader chain: "
-                     + loaderChain
+                     + " is not on this slice's classloader, and no loader above it has defined any class in package " + packageName
+                     + " — nothing shows a runtime upgrade removed it, so a rebuild will not help. Loader chain: " + loaderChain
                      + ". Check the slice's declared dependencies in META-INF/dependencies/<FactoryClass>:"
                      + " [slices] jars are appended to the slice's loader; [shared] jars go to the shared loader,"
                      + " or to the slice's loader on a version conflict, and a [shared] artifact found in no"

@@ -58,11 +58,9 @@ public interface SliceFactory {
                                                                        method.getName(),
                                                                        dependencies.size());
 
-                                                             return verifyParameters(method,
-                                                                                     dependencies,
-                                                                                     descriptors).onFailure(cause -> log.error("Failed to verify parameters for {}: {}",
-                                                                                                                               method.getName(),
-                                                                                                                               cause.message()));
+                                                             return verifyParameters(method, dependencies, descriptors).onFailure(cause -> log.error("Failed to verify parameters for {}: {}",
+                                                                                                                                                     method.getName(),
+                                                                                                                                                     cause.message()));
                                                          });
 
         return verifiedResult.async()
@@ -237,28 +235,28 @@ public interface SliceFactory {
         var missingClass = missingClassName(t);
         var sliceLoader = sliceClass.getClassLoader();
 
-        return servingLoader(sliceLoader, packageOf(missingClass))
-               .map(owner -> incompatibleRuntime(context, missingClass, owner))
-               .or(() -> new SliceLoadingFailure.Fatal.DependencyClassNotOnClasspath(context,
-                                                                                    missingClass,
-                                                                                    packageOf(missingClass),
-                                                                                    loaderChain(sliceLoader)));
+        return servingLoader(sliceLoader,
+                             packageOf(missingClass)).map(owner -> incompatibleRuntime(context, missingClass, owner))
+                            .or(() -> new SliceLoadingFailure.Fatal.DependencyClassNotOnClasspath(context,
+                                                                                                  missingClass,
+                                                                                                  packageOf(missingClass),
+                                                                                                  loaderChain(sliceLoader)));
     }
 
     /// The first loader strictly above the slice's own that has defined a class in `packageName`.
     private static Option<ClassLoader> servingLoader(ClassLoader sliceLoader, String packageName) {
         return ancestors(sliceLoader).skip(1)
-                                     .filter(loader -> loader.getDefinedPackage(packageName) != null)
-                                     .findFirst()
-                                     .map(Option::some)
-                                     .orElseGet(Option::none);
+                        .filter(loader -> loader.getDefinedPackage(packageName) != null)
+                        .findFirst()
+                        .map(Option::some)
+                        .orElseGet(Option::none);
     }
 
     /// The slice's loader and everything above it, each labelled with its URLs when it has any, so the
     /// reader sees which loaders were asked and what each one holds.
     private static List<String> loaderChain(ClassLoader sliceLoader) {
         return ancestors(sliceLoader).map(SliceFactory::loaderLabel)
-                                     .toList();
+                        .toList();
     }
 
     private static Stream<ClassLoader> ancestors(ClassLoader loader) {
@@ -267,10 +265,12 @@ public interface SliceFactory {
 
     private static String loaderLabel(ClassLoader loader) {
         return loader instanceof URLClassLoader urlLoader
-               ? loader.getClass().getSimpleName() + Arrays.stream(urlLoader.getURLs())
-                                                           .map(URL::toString)
-                                                           .toList()
-               : loader.getClass().getName();
+               ? loader.getClass()
+                       .getSimpleName() + Arrays.stream(urlLoader.getURLs())
+                                                .map(URL::toString)
+                                                .toList()
+               : loader.getClass()
+                       .getName();
     }
 
     private static String packageOf(String className) {
