@@ -624,6 +624,7 @@ public final class ClusterBootstrapConfigParser {
                                                                        "provision_stability_window",
                                                                        "decommissioned_retention",
                                                                        "swim_hints_ttl");
+
     /// The three removed keys that named a timing the runtime DOES read, and the node-config key
     /// (`[timeouts.scaling]`) that sets it now. The other five named nothing that is read anywhere.
     private static final Map<String, String> AUTO_HEAL_NODE_KEYS = Map.of("startup_cooldown",
@@ -649,13 +650,19 @@ public final class ClusterBootstrapConfigParser {
         var present = doc.keys(OPERATIONS_AUTO_HEAL_SECTION);
         var removed = REMOVED_AUTO_HEAL_KEYS.stream().filter(present::contains).toList();
 
-        return removed.isEmpty() ? Result.unitResult() : removedAutoHealKeys(removed);
+        return removed.isEmpty()
+               ? Result.unitResult()
+               : removedAutoHealKeys(removed);
     }
 
     private static Result<Unit> removedAutoHealKeys(List<String> keys) {
+        var them = keys.size() == 1
+                   ? "it"
+                   : "them";
+
         return parseFailed("PF-26: [operations.auto_heal] " + String.join(", ", keys)
                           + " never took effect — the node builds its auto-heal settings from its own aether.toml"
-                          + " and never reads this document. Remove " + (keys.size() == 1 ? "it" : "them")
+                          + " and never reads this document. Remove " + them
                           + " (#675)." + relocatedAutoHealKeys(keys)).result();
     }
 
@@ -669,7 +676,7 @@ public final class ClusterBootstrapConfigParser {
         return relocated.isEmpty()
                ? ""
                : " Set the live timing in the NODE config instead: " + relocated
-                 + " (from this file: [source.<name>.node_config.timeouts.scaling]).";
+                + " (from this file: [source.<name>.node_config.timeouts.scaling]).";
     }
 
     private static TlsDeploymentConfig parseTlsConfig(TomlDocument doc) {
