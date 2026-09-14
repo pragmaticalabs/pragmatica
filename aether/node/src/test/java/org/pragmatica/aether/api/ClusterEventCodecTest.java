@@ -21,7 +21,6 @@ import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentStarted;
-import org.pragmatica.aether.api.ClusterEvent.GenerationChanged;
 import org.pragmatica.aether.api.ClusterEvent.LeaderElected;
 import org.pragmatica.aether.api.ClusterEvent.LeaderLost;
 import org.pragmatica.aether.api.ClusterEvent.NodeFailed;
@@ -347,7 +346,6 @@ class ClusterEventCodecTest {
                        new BackupRestored(ts, sev, "BackupRestored", d),
                        new BlueprintDeployed(ts, sev, "BlueprintDeployed", d),
                        new BlueprintDeleted(ts, sev, "BlueprintDeleted", d),
-                       new GenerationChanged(ts, sev, "GenerationChanged", d),
                        new StreamRegistered(ts, sev, "StreamRegistered", d, addr),
                        new StreamDeleted(ts, sev, "StreamDeleted", d, addr),
                        new AlertInjected(ts, sev, "AlertInjected", d),

@@ -254,6 +254,9 @@ public interface SystemTags {
         pin(table, 268, "org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted");
         pin(table, 269, "org.pragmatica.aether.api.ClusterEvent.DeploymentFailed");
         pin(table, 270, "org.pragmatica.aether.api.ClusterEvent.DeploymentStarted");
+        // RETIRED 2026-09-14 (#722): `ClusterEvent.GenerationChanged` was deleted — documented and
+        // consumer-wired, never produced. The pin STAYS so the tag is never reused (see the
+        // DHTNotification note under [base 640]).
         pin(table, 271, "org.pragmatica.aether.api.ClusterEvent.GenerationChanged");
         pin(table, 272, "org.pragmatica.aether.api.ClusterEvent.LeaderElected");
         pin(table, 273, "org.pragmatica.aether.api.ClusterEvent.LeaderLost");
@@ -324,6 +327,7 @@ public interface SystemTags {
         pin(table, 836, "org.pragmatica.aether.slice.generation.CommunitySummary");
         pin(table, 837, "org.pragmatica.aether.slice.generation.CoreMember");
         pin(table, 838, "org.pragmatica.aether.slice.generation.Epoch");
+        // RETIRED 2026-09-14 (#722): `GenerationReason` went with the never-produced generation event.
         pin(table, 839, "org.pragmatica.aether.slice.generation.GenerationReason");
         pin(table, 840, "org.pragmatica.aether.slice.generation.HealthHint");
         pin(table, 841, "org.pragmatica.aether.slice.generation.PartitionOwner");

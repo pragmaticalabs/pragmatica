@@ -18,7 +18,6 @@ ENUM org.pragmatica.aether.slice.delegation.TaskGroup METRICS=0,SCALING=1,STRATE
 ENUM org.pragmatica.aether.slice.generation.ClusterMode CORE_ONLY=0,HIERARCHICAL=1,UNKNOWN=2
 ENUM org.pragmatica.aether.slice.generation.ClusterQuiescence QUIESCED=0,CONVERGING=1,DEGRADED=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.generation.CommunityQuiescence QUIESCED=0,CONVERGING=1,DEGRADED=2,DISSOLVING=3,UNKNOWN=4
-ENUM org.pragmatica.aether.slice.generation.GenerationReason LEADER_ELECTED=0,MEMBER_ADDED=1,MEMBER_REMOVED=2,HEALTH_CHANGE=3,COMMUNITY_FORMED=4,COMMUNITY_DISSOLVED=5,PARTITION_TRANSFERRED=6,CLUSTER_SIZE_CHANGED=7,SPOKESMAN_REBALANCED=8,PERIODIC_REFRESH=9,UNKNOWN=10
 ENUM org.pragmatica.aether.slice.generation.HealthHint HEALTHY=0,SUSPECTED=1,FAULTY=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$ClusterPhase COLD_BOOT=0,NORMAL=1,RECOVERING=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentOutcomeStatus SUCCEEDED=0,FAILED=1,ROLLED_BACK=2,IN_PROGRESS=3,UNKNOWN=4
@@ -60,7 +59,6 @@ TAG  org.pragmatica.aether.api.ClusterEvent$DeparturePushIncomplete 267
 TAG  org.pragmatica.aether.api.ClusterEvent$DeploymentCompleted 268
 TAG  org.pragmatica.aether.api.ClusterEvent$DeploymentFailed 269
 TAG  org.pragmatica.aether.api.ClusterEvent$DeploymentStarted 270
-TAG  org.pragmatica.aether.api.ClusterEvent$GenerationChanged 271
 TAG  org.pragmatica.aether.api.ClusterEvent$LeaderElected 272
 TAG  org.pragmatica.aether.api.ClusterEvent$LeaderLost 273
 TAG  org.pragmatica.aether.api.ClusterEvent$NodeFailed 274
@@ -132,7 +130,6 @@ TAG  org.pragmatica.aether.slice.generation.CommunityQuiescence 835
 TAG  org.pragmatica.aether.slice.generation.CommunitySummary 836
 TAG  org.pragmatica.aether.slice.generation.CoreMember 837
 TAG  org.pragmatica.aether.slice.generation.Epoch 838
-TAG  org.pragmatica.aether.slice.generation.GenerationReason 839
 TAG  org.pragmatica.aether.slice.generation.HealthHint 840
 TAG  org.pragmatica.aether.slice.generation.PartitionOwner 841
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$AbTestKey 1088
