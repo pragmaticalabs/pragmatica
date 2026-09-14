@@ -2950,10 +2950,28 @@ public interface AetherNode extends ManageableNode {
         // Gossip-key delivery (§5.8 AMENDED): the GossipKeyRotationKey subscription above is the
         // SOLE delivery path. A late joiner that synced AFTER the rotation PUT receives the
         // current rotation as a replayed ValuePut on this normal subscription once the engine
-        // activates (sync → activate → replay) — no ad-hoc replayFromStore needed. The replay
-        // burst structurally precedes any live apply, so the joiner adopts the cluster key before
-        // it sends its first SWIM datagram. applyRotation is idempotent, so a later live rotation
-        // re-PUT is harmless.
+        // activates (sync → activate → replay) — no ad-hoc replayFromStore needed. applyRotation
+        // is idempotent, so a later live rotation re-PUT is harmless.
+        //
+        // #683 round 2 — WHAT THIS ORDERING DOES **NOT** GUARANTEE. An earlier version of this
+        // comment said the replay burst "structurally precedes any live apply, so the joiner
+        // adopts the cluster key before it sends its first SWIM datagram". The first half is true
+        // of KV notification ordering; the second is false of SWIM datagram ordering, and it was
+        // the safety argument for late joiners. SWIM starts on QUIC transport-ready
+        // (`clusterNode.network().whenReady(startSwimTrigger)`), deliberately BEFORE
+        // startClusterAsync() resolves — so the joiner's first SWIM datagram is sent strictly
+        // EARLIER in boot than the replay, which is reached only via restore → activate → replay
+        // inside the consensus engine.
+        //
+        // The consequence is a cycle, not merely a window: a node booting into a cluster that has
+        // already rotated encrypts SWIM under its cluster_secret-derived key, which the rotated
+        // accept set no longer contains, so peers drop its datagrams and it drops theirs. SWIM
+        // discovers nothing; the QUIC dial set is self-only and SWIM is its sole writer besides
+        // self (TopologyObserverTest.SwimOnlyDialSet); without peers there is no quorum, and
+        // without quorum there is no sync/activate/replay — so the record that would install the
+        // cluster key never arrives. GossipKeyRotationBootDivergenceTest pins both directions of
+        // the key divergence this rests on.
+
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
 
         allEntries.addAll(aetherEntries);
