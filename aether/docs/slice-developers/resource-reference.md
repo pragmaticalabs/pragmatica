@@ -1313,6 +1313,23 @@ As of #841, `execution_mode = "all"` tasks accumulate this state **per node** �
 - **Cron tasks re-schedule after the previous execution completes**, not after the fire is launched — so a slow execution delays the next cron fire rather than launching two runs concurrently; there is nothing to skip and `skippedOverlaps` never increments for cron tasks.
 - This is a fixed default (skip, not queue or run concurrently); there is no per-task configuration knob.
 
+### Clock Source
+
+Cron next-fire times are computed from the **node's own wall clock** (`Instant.now()`, read as UTC by
+`CronExpression`); there is no cluster clock, and the HLC is not consulted [mechanism:
+`ScheduledTaskManager.TaskOps.nextCronFireAt`, `CronExpression.nextFireTime(Instant)`]. Consequences, stated
+rather than solved:
+
+- `execution_mode = "all"`: each node fires a cron boundary at its own reading of it, so clock skew between
+  nodes is skew between their fires. Nothing aligns them.
+- `execution_mode = "single"`: the leader's clock is the reference; a leader change moves the reference
+  clock along with the timer, so the phase of a boundary can shift by the skew between the two leaders.
+- A clock that steps across a minute boundary on one node can fire that boundary twice or skip it once on that
+  node. Nothing detects or compensates this. Keep node clocks NTP-disciplined if cron boundaries matter.
+
+Interval tasks are unaffected in the same way only in phase: the interval is measured on the node's monotonic
+scheduler, but `nextFireAt` reported in state is `System.currentTimeMillis() + interval`, also node-local.
+
 ### Schedule Validation
 
 The `interval`/`cron` string is **node-local configuration** (`ScheduleConfig`, resolved per node from its own config document), not something the blueprint DSL parser can see — blueprint validation happens strictly earlier and has no access to per-node config. The earliest point an invalid interval/cron string can be rejected is therefore **slice activation**, not blueprint validation.
