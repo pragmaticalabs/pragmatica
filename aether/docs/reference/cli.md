@@ -1920,7 +1920,7 @@ aether cluster init --non-interactive --name test-cluster --core-nodes 5 --outpu
 | `--non-interactive` | Force non-interactive mode; default `--target=docker` if absent, fail fast on missing required flags (P-NEW-G, 2026-05-21). Required for CI/integration test usage (TC-07-J3). |
 | `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
 | `--target` | Deployment target: `docker`, `ssh`, `cloud`, or `forge` |
-| `--core-nodes` | Consensus tier size: 5 (minimum), 7 (recommended) or 9 (maximum). Must be odd. Required for non-SSH targets |
+| `--core-nodes` | Consensus tier size: 5 (minimum), 7 (recommended) or 9 (maximum). Must be odd. **Required for every target, `ssh` included** — see the note below |
 | `--worker-nodes` | Worker tier size (default 0). Not bounded by the consensus-tier maximum. For an `ssh` target it is the remainder of `--hosts` after `--core-nodes` and must not be given |
 | `--hosts` | SSH hosts (ssh target only), comma-separated |
 | `--ssh-user`, `--ssh-key`, `--ssh-port` | SSH credentials (ssh target only) |
@@ -1932,6 +1932,8 @@ aether cluster init --non-interactive --name test-cluster --core-nodes 5 --outpu
 | `--secret`, `--secret-env` | Cluster secret mode: `auto` (default) or `env` |
 
 When `--non-interactive` is set without `--target`, the command applies `--target=docker` as the default. Missing required flags (e.g. `--core-nodes` for docker target) produce a `MissingField` failure and a non-zero exit code rather than dropping into prompts.
+
+**Behaviour change (#1019): `--core-nodes` is now required for an `ssh` target too.** Previously an `ssh` batch run needed no count — the whole of `--hosts` became the cluster and the core/worker split was derived from its length. That derivation is what #1019 removed, so the split is now stated: `--core-nodes` names the consensus tier and the worker tier is whatever `--hosts` holds beyond it. An `ssh` invocation that passed only `--hosts` before will now fail with `Required field missing or invalid: --core-nodes`. `--worker-nodes` is refused on an `ssh` target rather than ignored, since the remainder is not a free choice there.
 
 ### `aether cluster scaffold`
 
@@ -1946,7 +1948,7 @@ aether cluster scaffold --name <cluster-name> --template docker-compose [--nodes
 |--------|-------------|
 | `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
 | `--template` | Output template. Currently `docker-compose` |
-| `--nodes` | Compose-fixed node count (default 5) |
+| `--nodes` | Compose-fixed node count (default 5, minimum 5) |
 | `--image` | Container image (default `aether-node:local`) |
 | `--mgmt-port-base` | Host port base for management API (default 5150) |
 | `--app-port-base` | Host port base for application HTTP (default 8070) |

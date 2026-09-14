@@ -643,7 +643,29 @@ public class ClusterConfigWizard {
     }
 
     private static StepResult parseCore(String raw, Prompt prompt, ClusterConfigAnswers state) {
-        return parseCount(raw).fold(() -> retryCore(state, prompt), core -> promptedWorker(state, prompt, core));
+        return parseCount(raw).fold(() -> retryCore(state, prompt), core -> coreOrRetry(state, prompt, core));
+    }
+
+    /// The core answer is checked BEFORE the worker question is asked (#1019 round-1 review, N2).
+    /// Previously any integer was accepted here, the worker prompt ran, and `splitOrFail` reported the
+    /// core problem only after BOTH answers — sending the operator back through both prompts to fix
+    /// one of them.
+    ///
+    /// Validating with a worker count of ZERO is what isolates the core rules rather than duplicating
+    /// them: `coreWorkerSplit` refuses a negative worker and nothing else about the tier, so 0 can
+    /// never be the reason this call fails, and every failure it returns is about the core. That keeps
+    /// the minimum, the odd rule and the maximum in [CoreWorkerSplit] as the single source — a second
+    /// copy here would be free to drift.
+    private static StepResult coreOrRetry(ClusterConfigAnswers state, Prompt prompt, int core) {
+        return CoreWorkerSplit.coreWorkerSplit(core, 0)
+                              .fold(cause -> reportCoreFailure(state, prompt, cause),
+                                    _ -> promptedWorker(state, prompt, core));
+    }
+
+    private static StepResult reportCoreFailure(ClusterConfigAnswers state, Prompt prompt, Cause cause) {
+        System.out.println("  ✗ " + cause.message());
+
+        return promptedCore(state, prompt);
     }
 
     private static StepResult retryCore(ClusterConfigAnswers state, Prompt prompt) {

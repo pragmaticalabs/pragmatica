@@ -568,6 +568,49 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(clusterStore.current().unwrap().coreCount()).isEqualTo(3);
     }
 
+    /// #1019 round-1 review, S2 — this actuator had a floor and NO CEILING, so a scale could grow the
+    /// consensus tier past the size `aether cluster init` refuses to author. That made the cap an
+    /// authoring convention rather than a property of the cluster: the shipped maximum was reachable
+    /// by anyone who could POST a scale.
+    ///
+    /// The write must not happen either. Asserting only the failed `Result` would leave a
+    /// reject-after-write ordering passing, and this is a fenced compare-and-put against the live
+    /// cluster config — the store version is the observable that distinguishes the two.
+    @Test
+    void setDesiredSize_aboveConsensusMaximum_rejectedWithoutAtomWrite() {
+        ctm.activate();
+
+        var before = clusterStore.currentVersion();
+        var result = ctm.setDesiredCount(sourceNameOrDefault("primary"), NodeRole.CORE, 11).await();
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(clusterStore.currentVersion()).isEqualTo(before);
+    }
+
+    /// The discriminating boundary: 9 is accepted, 11 is not. Without the accepted half, a cap set too
+    /// low passes the refusal test above.
+    @Test
+    void setDesiredSize_nine_acceptedAtTheConsensusMaximum() {
+        ctm.activate();
+
+        var result = ctm.setDesiredCount(sourceNameOrDefault("primary"), NodeRole.CORE, 9).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(clusterStore.current().unwrap().coreCount()).isEqualTo(9);
+    }
+
+    /// The ceiling is the CORE tier's only. Workers are where capacity beyond the consensus maximum is
+    /// meant to go, so a worker scale well past it has to succeed — otherwise the remedy every #1019
+    /// error message names does not exist.
+    @Test
+    void setDesiredSize_workerRoleAboveConsensusMaximum_isAccepted() {
+        ctm.activate();
+
+        var result = ctm.setDesiredCount(sourceNameOrDefault("primary"), NodeRole.WORKER, 40).await();
+
+        assertThat(result.isSuccess()).isTrue();
+    }
+
     @Test
     void setAutoHealEnabled_toggleReturnsPriorState() {
         assertThat(ctm.isAutoHealEnabled()).isTrue();

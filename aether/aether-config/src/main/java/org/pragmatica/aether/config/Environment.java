@@ -14,8 +14,10 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
-/// Per-environment defaults. `defaultNodes` is the CONSENSUS tier size (the quorum basis), bounded by
-/// [ConfigValidator]'s minimum of 5 and maximum of 9.
+/// Per-environment defaults. `defaultNodes` is the CONSENSUS tier size (the quorum basis), bounded
+/// above by [ConsensusTierBounds#MAXIMUM_CORE_NODES]. Its lower bound is the POLICY minimum of 5 from
+/// `CoreWorkerSplit`, not [ConfigValidator]'s floor, which is the STRUCTURAL 3 — an earlier draft of
+/// this line attributed both bounds to `ConfigValidator` and was wrong about the minimum.
 ///
 /// Owner ruling 2026-09-12 sets the production default at 7: a 3-node cluster tolerates ZERO failures
 /// during maintenance (a rolling restart leaves 2 of 3, and any further fault loses quorum), 5 is the

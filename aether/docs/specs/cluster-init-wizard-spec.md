@@ -19,7 +19,7 @@ An interactive wizard for the `aether cluster init` CLI command that guides user
 **Design principles:**
 - Step-by-step with back navigation (same UX as JBCT scaffolding wizard)
 - Validate at each step using existing `ClusterBootstrapConfigValidator`
-- Auto-derive topology (core/worker split) from total node count
+- Both tiers stated explicitly, nothing derived (#1019) — `--core-nodes` sizes the consensus tier, `--worker-nodes` the worker tier
 - Firewall presets for common scenarios (avoid manual port arithmetic)
 - Output: single `cluster-config.toml` file, ready for `aether cluster bootstrap`
 - Batch mode via flags for CI/scripting
@@ -55,12 +55,9 @@ Step 3/8: Cloud Provider
   Credentials env var [HCLOUD_TOKEN]: ↵
 
 Step 4/8: Topology
-  Total planned nodes [5]: 7
-  → Proposed: 3 core + 4 worker
-  Accept? [Y/n]: n
-  Core nodes [3]: 5
-  → Adjusted: 5 core + 2 worker
-  Accept? [Y/n]: ↵
+  Core (consensus) nodes [5]: 7
+  Worker nodes [0]: 2
+  → topology: 7 core + 2 worker
   Instance type (required — use a type from hetzner's current catalogue): cpx32
 
 Step 5/8: Database
@@ -147,41 +144,52 @@ When flags are insufficient, the wizard prompts for missing values. When all req
 
 ---
 
-## 3. Topology Auto-Derivation
+## 3. Topology — Both Tiers Stated
+
+**Superseded the RC1 auto-derivation (#1019, 2026-09-12).** This section previously specified a
+`TopologyDeriver` that took ONE total N and inferred the split. That inference WAS the defect: the
+config models `[cluster.core]` and `[source.X.worker]` as independent quantities, the wizard collapsed
+them into a total, and the round trip lost information — the old table mapped `N = 5` to 3 core, and
+every `N ≥ 11` to 5 core, so cloud bootstrap (which provisions core roles only) silently produced a
+consensus cluster smaller than the one asked for, with success reported. There is now no derivation
+and no ambiguous case to resolve: `TopologyDeriver` is deleted and `CoreWorkerSplit` holds both
+numbers as given.
 
 ### 3.1 Rules
 
-Given total node count N, derive core count C and worker count W:
+Two independent answers, neither computed from the other:
 
-| Total (N) | Core (C) | Worker (W) | Rationale |
-|-----------|----------|------------|-----------|
-| 1 | 1* | 0 | Dev only — below quorum, warn |
-| 3 | 3 | 0 | Minimum quorum, no workers |
-| 5 | 3 | 2 | Standard small cluster |
-| 7 | 5 | 2 | Or 3+4 — ask user |
-| 9 | 5 | 4 | Or 3+6 — ask user |
-| 11+ | 5 | N-5 | 5 cores sufficient for most workloads |
+| Answer | Flag | Wizard prompt | Meaning |
+|--------|------|---------------|---------|
+| Core | `--core-nodes` | "Core (consensus) nodes" | Consensus tier size — the quorum basis, broadcast to on every round |
+| Worker | `--worker-nodes` | "Worker nodes" | Worker tier size; absent means 0 |
 
-*N=1 generates a warning: "Single-node cluster cannot form quorum. Suitable for development only."
+An `ssh` target is the one exception, and it still derives nothing: the fleet IS `--hosts`, so
+`--core-nodes` names the consensus tier and the worker tier is the remainder. `--worker-nodes` is
+REFUSED there rather than ignored, because the remainder is not a free choice.
 
-### 3.2 Ambiguous Cases
+### 3.2 Bounds
 
-When multiple valid core/worker splits exist (N=7: 3+4 or 5+2), the wizard proposes the default and lets the user override:
+| Bound | Value | Enforced in | Applies at |
+|-------|-------|-------------|------------|
+| Core minimum (POLICY) | 5 | `CoreWorkerSplit` | `init` and `scaffold` only |
+| Core must be odd | — | `CoreWorkerSplit`, `ClusterBootstrapConfigValidator` | authoring and bootstrap |
+| Core maximum | 9 | `ConsensusTierBounds`, via `CoreWorkerSplit`, `ClusterBootstrapConfigValidator` (CL-04, REQ-3.3.3) and `ClusterTopologyManager#setDesiredCount` | authoring, bootstrap and scale |
+| Core floor (STRUCTURAL) | 3 | `ClusterSizeGate`, `ConfigValidator`, `ClusterBootstrapConfigValidator` | boot and bootstrap |
+| Worker | ≥ 0, unbounded above | `CoreWorkerSplit` | authoring |
 
-```
-Total planned nodes [5]: 7
-→ Proposed: 3 core + 4 worker
-Accept? [Y/n]: n
-Core nodes (must be odd, ≥ 3): 5
-→ Adjusted: 5 core + 2 worker
-```
+The minimum of 5 and the floor of 3 answer different questions and deliberately differ. Three is where
+a majority quorum stops existing at all. Five is where a cluster still has a fault budget DURING
+maintenance: a rolling restart of a 3-node cluster leaves 2 of 3, and any further fault loses quorum.
+The policy minimum is therefore applied only where a config is CREATED — raising the boot-path floor to
+it would strand clusters running today.
 
 ### 3.3 Validation
 
-- Core count must be odd and ≥ 3 (except N=1 dev mode)
-- Core count ≤ total nodes
-- Worker count = total - core (non-negative)
-- Uses `ClusterBootstrapConfigValidator` rules internally
+- Core: odd, ≥ 5, ≤ 9 at creation time
+- Worker: ≥ 0, not bounded by the consensus maximum
+- For `ssh`: `--core-nodes` ≤ `--hosts.size()`; worker = `hosts.size() - core`
+- The generated file is parsed back and run through `ClusterBootstrapConfigValidator` before it is written
 
 ---
 
@@ -222,7 +230,7 @@ Collected:
   instance types, so a baked-in suggestion becomes unprovisionable without any signal here.
 - SSH **public** key path — **required**; written to `[infrastructure.ssh] public_key_file`, which
   is where `SshKeyResolver` looks. Without it `bootstrap` refuses the config `init` just wrote.
-- Node count (total, then core/worker split)
+- Core node count and worker node count, asked separately (#1019 — no total, no derivation)
 
 Provider-specific credential defaults:
 
@@ -554,8 +562,8 @@ Each step validates input before proceeding:
 | Credentials env var | Non-empty, valid env var name. Keeps its provider default: it names where a secret is READ FROM and fails loud when wrong, unlike region |
 | SSH public key | Required for cloud (injected into provisioned VMs) |
 | Admin CIDR | Required for cloud on STANDARD and RESTRICTIVE — both scope SSH and the management API to it |
-| Node count | ≥ 1 (warn if 1), ≥ 3 for production |
-| Core count | Odd, ≥ 3, ≤ total |
+| Core count | Odd, ≥ 5 (supported minimum), ≤ 9 (consensus maximum). There is no sub-5 creation-time option and no single-node topology (#782, #1019) |
+| Worker count | ≥ 0; not bounded by the consensus maximum |
 | Instance type | Non-empty for cloud; **no default** — must be answered (any value shown in this spec is an EXAMPLE) |
 | DB host/port | Non-empty, port 1-65535 |
 | Firewall CIDR | Valid CIDR notation |
@@ -601,7 +609,7 @@ After generating the TOML, parse it back through `ClusterBootstrapConfigParser` 
 | `ClusterConfigWizard.java` | Interactive step-by-step flow |
 | `ClusterConfigAnswers.java` | Collected user input record |
 | `ClusterConfigGenerator.java` | TOML output generation |
-| `TopologyDeriver.java` | Core/worker auto-derivation logic |
+| `CoreWorkerSplit.java` | Both tiers as given, plus the minimum/maximum policy (replaced `TopologyDeriver.java`, #1019) |
 | `FirewallPresets.java` | Standard/restrictive/open preset definitions |
 
 ---
@@ -634,7 +642,7 @@ After generating the TOML, parse it back through `ClusterBootstrapConfigParser` 
 |----------|-------|-----------|
 | Output format | Single `cluster-config.toml` | Matches existing `aether cluster bootstrap` input |
 | Interactive UX | Step-by-step with back nav | Same as JBCT wizard, works in any terminal |
-| Topology derivation | Auto-propose core/worker split | Reduces error, user can override |
+| Topology | Both tiers stated, nothing derived (#1019) | A derived split lost information the config models independently, silently shrinking the consensus tier |
 | Firewall | Presets + custom | Avoid manual port arithmetic |
 | Database | Config only, no provisioning (RC1) | User manages their own DB |
 | Password handling | `${env:VAR}` recommended, plaintext with warning | Security-first default |

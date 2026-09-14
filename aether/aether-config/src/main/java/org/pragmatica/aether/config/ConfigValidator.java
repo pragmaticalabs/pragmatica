@@ -21,10 +21,22 @@ import static org.pragmatica.lang.Result.success;
 
 public final class ConfigValidator {
     /// STRUCTURAL floor — below three no majority quorum exists. Deliberately NOT the supported
-    /// minimum of 5 from the 2026-09-12 ruling: `ConfigLoader.load` calls [#validate] and `Main` loads
-    /// through `ConfigLoader`, so this runs on EVERY node boot. Raising it to the policy figure would
-    /// refuse to start clusters that are running today. The policy minimum is enforced where configs
-    /// are created — `CoreWorkerSplit`, reached from `aether cluster init` and `scaffold`.
+    /// minimum of 5 from the 2026-09-12 ruling. The policy minimum is enforced where configs are
+    /// CREATED — `CoreWorkerSplit`, reached from `aether cluster init` and `scaffold`.
+    ///
+    /// WHAT A FAILURE HERE ACTUALLY DOES, because it is not what this class looks like (#1019 round-1
+    /// review, S1): `ConfigLoader.load` calls [#validate] and `Main` loads through `ConfigLoader`, so
+    /// this does run on every node boot — but `Main#loadConfigFile` is
+    /// `ConfigLoader.load(path).onFailure(log::error).option()`, so a validation failure is LOGGED AND
+    /// DISCARDED and the node boots with NO CONFIG AT ALL. It does not refuse to start.
+    ///
+    /// That makes raising this floor worse than a refusal, not safer than one. A 3-node cluster whose
+    /// config stopped validating would boot without its TLS, port and secret settings, and
+    /// `Main#configuredClusterNodes` would report 0 — which takes `Main#discoverCloudCorePeers` off its
+    /// `expected > 0` arm, leaving `expectedClusterSize` to fall through to the RESOLVED peer count. On
+    /// a cloud node that resolves nothing, `ClusterSizeGate.enforce(0)` then aborts the boot citing
+    /// "Expected cluster size 0", a diagnostic that names neither the config file nor the floor that
+    /// rejected it. The refusal that stops a sub-3-node start is [ClusterSizeGate], not this.
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     /// Upper bound on the CONSENSUS tier, not on the fleet. `[cluster] nodes` is the quorum basis
     /// (`TopologyConfig#clusterSize`) and every consensus round is broadcast across it. Fleet size is
@@ -35,7 +47,13 @@ public final class ConfigValidator {
     /// one occurrence in the tree, its own declaration, while the live rule was the literal chain in
     /// [#nodeCountErrors]. Updating it would have changed no behaviour AND left a plausible-looking
     /// constant for the next reader to believe, which is worse than deleting it.
-    private static final int MAXIMUM_CLUSTER_SIZE = 9;
+    ///
+    /// The figure is [ConsensusTierBounds#MAXIMUM_CORE_NODES] rather than a local literal so that this
+    /// bound, `ClusterBootstrapConfigValidator`'s and `ClusterTopologyManager#setDesiredCount`'s cannot
+    /// drift apart — the exact failure the dead constant above demonstrates. Note this is a bound that
+    /// was already here and is RAISED (it refused above 7 before); the ruling adds no NEW boot-path
+    /// enforcement, and per the note on [#MINIMUM_CLUSTER_SIZE] a failure here does not refuse a boot.
+    private static final int MAXIMUM_CLUSTER_SIZE = ConsensusTierBounds.MAXIMUM_CORE_NODES;
     private static final Pattern HEAP_PATTERN = Pattern.compile("^\\d+[mMgG]$");
     private static final Set<String> VALID_GC = Set.of("zgc", "g1");
     /// #250 review: floor below which a storage-maintenance pass (walks every lifecycle in every

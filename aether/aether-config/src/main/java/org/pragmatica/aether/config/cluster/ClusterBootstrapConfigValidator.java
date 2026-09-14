@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+import org.pragmatica.aether.config.ConsensusTierBounds;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -122,6 +123,15 @@ public final class ClusterBootstrapConfigValidator {
         }
     }
 
+    /// #1019 — the ceiling is here, not only at `aether cluster init`. Round 1 of #1019 bounded the
+    /// consensus tier in the CLI alone, and this validator then ACCEPTED a hand-written bootstrap
+    /// config with a derived core count of 11: it was provisioned, and each provisioned node dropped
+    /// the resulting per-node config on boot. A cap only one authoring command applies is a
+    /// convention, not a bound.
+    ///
+    /// The floor stays STRUCTURAL at 3 rather than the supported minimum of 5 — an existing 3-node
+    /// cluster must still be able to re-bootstrap — so the two ends of this range answer different
+    /// questions and deliberately do not match `CoreWorkerSplit`'s.
     private static void validateDerivedCoreCount(int coreCount, List<String> errors) {
         if (coreCount < 3) {
             errors.add("CL-04: Derived core count " + coreCount + " must be >= 3");
@@ -129,6 +139,14 @@ public final class ClusterBootstrapConfigValidator {
 
         if (coreCount % 2 == 0) {
             errors.add("CL-04: Derived core count " + coreCount + " must be odd");
+        }
+
+        if (coreCount > ConsensusTierBounds.MAXIMUM_CORE_NODES) {
+            errors.add("CL-04: Derived core count " + coreCount
+                      + " must be <= " + ConsensusTierBounds.MAXIMUM_CORE_NODES
+                      + ". This sizes the CONSENSUS tier, which every consensus round is broadcast"
+                      + " across — it is not the fleet, which is unbounded. Add further capacity as"
+                      + " worker sub-tables.");
         }
     }
 
@@ -227,6 +245,11 @@ public final class ClusterBootstrapConfigValidator {
         }
     }
 
+    /// #1019 — `core_topology.max` is the ceiling the stage-5 reconciler is allowed to GROW the
+    /// consensus tier to, so leaving it unbounded while bounding the derived count would let a cluster
+    /// reach an unsupported tier size by scaling rather than by authoring. Five shipped harness TOMLs
+    /// carried `max = 15` under the old rule and are moved to 9 by this change; their derived count is
+    /// 5, so the bound they actually exercise is unchanged.
     private static void validateCoreMax(int max, int derivedCount, List<String> errors) {
         if (max % 2 == 0) {
             errors.add("REQ-3.3.3: core_topology.max " + max + " must be odd");
@@ -234,6 +257,13 @@ public final class ClusterBootstrapConfigValidator {
 
         if (max < derivedCount) {
             errors.add("REQ-3.3.3: core_topology.max " + max + " must be >= derived core count " + derivedCount);
+        }
+
+        if (max > ConsensusTierBounds.MAXIMUM_CORE_NODES) {
+            errors.add("REQ-3.3.3: core_topology.max " + max
+                      + " must be <= " + ConsensusTierBounds.MAXIMUM_CORE_NODES
+                      + ". core_topology.max is the ceiling a scale may grow the CONSENSUS tier to;"
+                      + " capacity beyond it is added as workers.");
         }
     }
 
