@@ -164,8 +164,10 @@ record StaleEntryCleaner(Active active) {
         if (!active.coreMembershipResolved()) {
             return;
         }
-
-        var currentNodes = new HashSet<>(active.activeNodes());
+        // #850: the inclusion filter is the placement set (core ∪ registered workers), not the core
+        // set alone — a worker-hosted orphan must be unloaded too, and the stale-entry sweeps no longer
+        // remove a live worker's key for it.
+        var currentNodes = placementNodes();
         var orphanedEntries = new ArrayList<Map.Entry<SliceNodeKey, SliceState>>();
 
         active.ctx()
