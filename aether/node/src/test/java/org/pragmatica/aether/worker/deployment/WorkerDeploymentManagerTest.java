@@ -94,6 +94,43 @@ class WorkerDeploymentManagerTest {
         assertThat(deployments.get(ARTIFACT).assignedInstances()).isEqualTo(1);
     }
 
+    /// SF-2 (#1115 review): the same hunk closes resurrection-after-removal. The old `put` re-inserted
+    /// a record read before `onDirectiveRemove` tore the slice down; `computeIfPresent` on the removed
+    /// key is a no-op.
+    @Test
+    void removalLandingDuringAssignmentRecomputation_isNotResurrected() throws InterruptedException {
+        var deployments = new LatchedMap();
+        var sliceStore = mock(SliceStore.class);
+
+        when(sliceStore.loadSlice(any())).thenReturn(Promise.success(mock(LoadedSlice.class)));
+        when(sliceStore.activateSlice(any())).thenReturn(Promise.success(mock(LoadedSlice.class)));
+        when(sliceStore.deactivateSlice(any())).thenReturn(Promise.success(mock(LoadedSlice.class)));
+        when(sliceStore.unloadSlice(any())).thenReturn(Promise.unitPromise());
+        when(sliceStore.loaded()).thenReturn(List.of());
+        var manager = WorkerDeploymentManager.workerDeploymentManager(SELF,
+                                                                      sliceStore,
+                                                                      mock(MutationForwarder.class),
+                                                                      deployments,
+                                                                      List.of(SELF),
+                                                                      () -> "default:local");
+        // Directive lands and the slice deploys to completion: the record is ACTIVE.
+        manager.onDirectivePut(WorkerSliceDirectiveValue.workerSliceDirectiveValue(ARTIFACT, 1, "any"));
+        assertThat(deployments.get(ARTIFACT).state()).isEqualTo(DeploymentState.ACTIVE);
+        deployments.armed.set(true);
+        var recompute = new Thread(() -> manager.onMembershipChange(List.of(SELF)),
+                                   "recompute");
+
+        recompute.start();
+        assertThat(deployments.readTaken.await(5, TimeUnit.SECONDS)).as("read taken").isTrue();
+        // Inside the window: the directive is withdrawn and the slice torn down — the record is removed.
+        manager.onDirectiveRemove(ARTIFACT);
+        assertThat(deployments.containsKey(ARTIFACT)).as("removed before the write").isFalse();
+        deployments.proceed.countDown();
+        recompute.join(5_000);
+        assertThat(recompute.isAlive()).as("recompute finished").isFalse();
+        assertThat(deployments.containsKey(ARTIFACT)).as("removed record must not be resurrected").isFalse();
+    }
+
     private static void await(CountDownLatch latch) {
         try {
             if (!latch.await(5, TimeUnit.SECONDS)) {
