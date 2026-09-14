@@ -219,6 +219,97 @@ class ArtifactStoreTest {
         }
     }
 
+    /// #281 — the metadata key is a STORAGE FORMAT: one key per file, the primary jar included, and
+    /// the pre-#281 GAV-only key is never written or read. A renamed segment must redden this.
+    @Nested
+    class KeyShapeTests {
+        @Test
+        void deploy_writesOneMetaKeyPerFile_underTheLiteralShape() {
+            var artifact = Artifact.artifact("org.example:keyed:1.0.0-rc4").unwrap();
+            var content = "bytes".getBytes(StandardCharsets.UTF_8);
+
+            store.deploy(artifact, content).await().onFailureRun(Assertions::fail);
+            store.deploy(ArtifactFile.artifactFile(artifact, "", "pom"), content).await().onFailureRun(Assertions::fail);
+            store.deploy(ArtifactFile.artifactFile(artifact, "sources", "jar"), content).await().onFailureRun(Assertions::fail);
+
+            assertThat(dhtStorage.keySet()).containsExactlyInAnyOrder(
+                "artifacts/org.example/keyed/1.0.0-rc4/jar/meta",
+                "artifacts/org.example/keyed/1.0.0-rc4/pom/meta",
+                "artifacts/org.example/keyed/1.0.0-rc4/sources.jar/meta",
+                "artifacts/org.example/keyed/versions");
+        }
+
+        @Test
+        void legacyGavOnlyKey_isNotRead() {
+            var artifact = Artifact.artifact("org.example:legacy:1.0.0").unwrap();
+            var content = "bytes".getBytes(StandardCharsets.UTF_8);
+
+            store.deploy(artifact, content).await().onFailureRun(Assertions::fail);
+            // Move the primary's metadata to the pre-#281 key: the store must not find it there.
+            var meta = dhtStorage.remove("artifacts/org.example/legacy/1.0.0/jar/meta");
+            dhtStorage.put("artifacts/org.example/legacy/1.0.0/meta", meta);
+
+            store.exists(artifact)
+                 .await()
+                 .onFailureRun(Assertions::fail)
+                 .onSuccess(exists -> assertThat(exists).as("no legacy read fallback").isFalse());
+        }
+    }
+
+    @Nested
+    class FileDeleteTests {
+        private final Artifact artifact = Artifact.artifact("org.example:files:1.0.0").unwrap();
+        private final ArtifactFile pom = ArtifactFile.artifactFile(artifact, "", "pom");
+        private final byte[] content = "file content".getBytes(StandardCharsets.UTF_8);
+
+        @Test
+        void deletePrimary_removesTheVersionEntry() {
+            store.deploy(artifact, content).await().onFailureRun(Assertions::fail);
+            store.deploy(pom, content).await().onFailureRun(Assertions::fail);
+
+            store.delete(artifact).await().onFailureRun(Assertions::fail);
+
+            store.versions(artifact.groupId(), artifact.artifactId())
+                 .await()
+                 .onFailureRun(Assertions::fail)
+                 .onSuccess(versions -> assertThat(versions).as("a version without its jar is not listed").isEmpty());
+            store.exists(pom)
+                 .await()
+                 .onFailureRun(Assertions::fail)
+                 .onSuccess(exists -> assertThat(exists).as("the pom is its own entry").isTrue());
+        }
+
+        @Test
+        void deleteSidecar_keepsTheVersionEntryAndThePrimary() {
+            store.deploy(artifact, content).await().onFailureRun(Assertions::fail);
+            store.deploy(pom, content).await().onFailureRun(Assertions::fail);
+
+            store.delete(pom).await().onFailureRun(Assertions::fail);
+
+            store.exists(pom).await().onSuccess(exists -> assertThat(exists).isFalse());
+            store.exists(artifact).await().onSuccess(exists -> assertThat(exists).isTrue());
+            store.versions(artifact.groupId(), artifact.artifactId())
+                 .await()
+                 .onFailureRun(Assertions::fail)
+                 .onSuccess(versions -> assertThat(versions).hasSize(1));
+        }
+
+        @Test
+        void deleteOneVersion_leavesTheOthersListed() {
+            var other = Artifact.artifact("org.example:files:2.0.0").unwrap();
+
+            store.deploy(artifact, content).await().onFailureRun(Assertions::fail);
+            store.deploy(other, content).await().onFailureRun(Assertions::fail);
+
+            store.delete(artifact).await().onFailureRun(Assertions::fail);
+
+            store.versions(artifact.groupId(), artifact.artifactId())
+                 .await()
+                 .onFailureRun(Assertions::fail)
+                 .onSuccess(versions -> assertThat(versions).containsExactly(other.version()));
+        }
+    }
+
     @Nested
     class VersionsTests {
         @Test

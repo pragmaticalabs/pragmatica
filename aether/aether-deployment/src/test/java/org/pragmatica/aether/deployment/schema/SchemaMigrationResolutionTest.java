@@ -20,6 +20,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.resource.artifact.ArtifactFile;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.DatabaseType;
@@ -291,23 +292,23 @@ class SchemaMigrationResolutionTest {
 
     private static ArtifactStore artifactStore(Promise<byte[]> resolution) {
         return new ArtifactStore() {
-            @Override public Promise<DeployResult> deploy(Artifact artifact, byte[] content) {
+            @Override public Promise<DeployResult> deploy(ArtifactFile file, byte[] content) {
                 return NOT_IN_STORE.promise();
             }
 
-            @Override public Promise<byte[]> resolve(Artifact artifact) {
+            @Override public Promise<byte[]> resolve(ArtifactFile file) {
                 return resolution;
             }
 
-            @Override public Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact) {
+            @Override public Promise<ResolvedArtifact> resolveWithMetadata(ArtifactFile file) {
                 return NOT_IN_STORE.promise();
             }
 
-            @Override public Promise<Boolean> exists(Artifact artifact) {
+            @Override public Promise<Boolean> exists(ArtifactFile file) {
                 return Promise.success(false);
             }
 
-            @Override public Promise<Option<ArtifactMetadata>> metadata(Artifact artifact) {
+            @Override public Promise<Option<ArtifactMetadata>> metadata(ArtifactFile file) {
                 return Promise.success(Option.none());
             }
 
@@ -315,7 +316,7 @@ class SchemaMigrationResolutionTest {
                 return Promise.success(List.of());
             }
 
-            @Override public Promise<Unit> delete(Artifact artifact) {
+            @Override public Promise<Unit> delete(ArtifactFile file) {
                 return Promise.unitPromise();
             }
 

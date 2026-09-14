@@ -83,6 +83,20 @@ class MavenFileRoundTripTest {
         assertThat(get(BASE + "-javadoc.jar").statusCode()).isEqualTo(404);
     }
 
+    @Test
+    void mavenMetadata_latestAndReleaseFollowVersionOrder_notDeployOrder() {
+        put("/repository/org/example/lib/2.0.0-SNAPSHOT/lib-2.0.0-SNAPSHOT.jar", JAR);
+        put("/repository/org/example/lib/1.0.0/lib-1.0.0.jar", JAR);
+        put("/repository/org/example/lib/1.0.0-rc4/lib-1.0.0-rc4.jar", JAR);
+
+        var xml = body(get("/repository/org/example/lib/maven-metadata.xml"));
+
+        assertThat(xml).contains("<latest>2.0.0-SNAPSHOT</latest>");
+        assertThat(xml).contains("<release>1.0.0</release>");
+        assertThat(xml.indexOf("<version>1.0.0-rc4</version>")).isLessThan(xml.indexOf("<version>1.0.0</version>"));
+        assertThat(xml.indexOf("<version>1.0.0</version>")).isLessThan(xml.indexOf("<version>2.0.0-SNAPSHOT</version>"));
+    }
+
     private MavenResponse put(String path, byte[] content) {
         return handler.handlePut(path, content).await().unwrap();
     }
