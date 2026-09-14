@@ -411,7 +411,7 @@ class QuicClusterNetworkLivenessSweepTest {
         // co-confirmation tap — a verdict must not co-confirm the death it caused.
         var reported = new CopyOnWriteArrayList<Boolean>();
         var network = createNetwork(NodeId.randomNodeId());
-        network.setFollowerObservationWiring(() -> false, recordingReporter(reported), zeroEpoch());
+        network.setFollowerObservationWiring(recordingReporter(reported), zeroEpoch());
         var peerId = new NodeId("verdict-victim");
         network.seedPeerForTests(peerId, connectedPeerState(peerId, activeChannel()));
 
@@ -428,7 +428,7 @@ class QuicClusterNetworkLivenessSweepTest {
         // death evidence and must report deathPathInitiated=false so the liveness-gone tap fires.
         var reported = new CopyOnWriteArrayList<Boolean>();
         var network = createNetwork(NodeId.randomNodeId());
-        network.setFollowerObservationWiring(() -> false, recordingReporter(reported), zeroEpoch());
+        network.setFollowerObservationWiring(recordingReporter(reported), zeroEpoch());
         var peerId = new NodeId("organic-drop");
         network.seedPeerForTests(peerId, connectedPeerState(peerId, activeChannel()));
 
@@ -520,7 +520,7 @@ class QuicClusterNetworkLivenessSweepTest {
         var selfInfo = NodeInfo.nodeInfo(nodeId, address);
         var topology = stubTopologyManager(selfInfo, helloTimeout);
         var network = new QuicClusterNetwork(topology, codec, codec, router, serverSsl, clientSsl,
-                                              ClusterFormationConfig.defaults(), QuicDisconnectListener.noop());
+                                              ClusterFormationConfig.defaults());
         networks.add(network);
         network.startOnPort(0).await(AWAIT_TIMEOUT).onFailure(cause -> fail("start failed: " + cause.message()));
         return network;

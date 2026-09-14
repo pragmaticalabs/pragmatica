@@ -3547,7 +3547,6 @@ public interface AetherNode extends ManageableNode {
                                                               clusterNode);
 
         attachQuicConnectivityReporter(clusterNode.network(),
-                                       isLeaderSupplier,
                                        peerObservationStore,
                                        leaderEpochSupplier,
                                        nttConnectTap,
@@ -5128,7 +5127,6 @@ public interface AetherNode extends ManageableNode {
     /// `ingestSelfTransition` fast-path is removed — SWIM (fed by these QUIC hints) is now the
     /// single liveness signal, so the separate reachability fold is gone.
     private static void attachQuicConnectivityReporter(ClusterNetwork network,
-                                                       BooleanSupplier isLeaderSupplier,
                                                        PeerObservationBuffer buffer,
                                                        Supplier<Epoch> epochSupplier,
                                                        Consumer<NodeId> onNttConnect,
@@ -5185,7 +5183,7 @@ public interface AetherNode extends ManageableNode {
             }
         };
 
-        quicNetwork.setFollowerObservationWiring(isLeaderSupplier, reporter, epochAdapter);
+        quicNetwork.setFollowerObservationWiring(reporter, epochAdapter);
     }
 
     /// #1050 — only the FAULTY edge reaches [`ClusterTopologyManager#onSwimFaulty`]; every other observation

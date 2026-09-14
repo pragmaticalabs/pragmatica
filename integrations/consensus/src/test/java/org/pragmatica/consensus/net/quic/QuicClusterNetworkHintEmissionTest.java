@@ -56,13 +56,10 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 
-/// Verifies that `QuicClusterNetwork` invokes the injected `QuicDisconnectListener`
-/// on every peer-removal view-change, alongside the existing
-/// `TransportObservation.PeerDisconnected` emission.
-///
-/// The contract is pinned here with a listener this test injects itself. No production caller
-/// installs one — `setDisconnectListener` has no call sites — so what this class guards is the
-/// transport's side of the contract, kept honest for whoever wires a consumer next.
+/// Verifies `QuicClusterNetwork`'s upward signals on peer teardown and attach: the
+/// `PeerConnectivityReporter` observation on every peer-removal view-change (the one live path
+/// since #691 removed the consumer-less `QuicDisconnectListener`), the
+/// `TransportObservation.PeerDisconnected` emission, and the `QuicPeerStateListener` hints.
 @Timeout(10)
 class QuicClusterNetworkHintEmissionTest {
     private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(5).seconds();
@@ -92,29 +89,12 @@ class QuicClusterNetworkHintEmissionTest {
     }
 
     @Test
-    void disconnect_unknownPeer_propagatesListenerForTopologyRemoval() {
-        // SWIM-driven DisconnectNode is the authoritative "this peer is gone" signal —
-        // even if we never had a live QUIC link, the REMOVE view-change must fire so
-        // topology and the membership layer see the departure. Otherwise peers whose
-        // connection tore down before lifecycle promotion stay in coreNodes forever.
-        var captured = new CopyOnWriteArrayList<NodeId>();
-        QuicDisconnectListener listener = captured::add;
-        var network = createNetworkWithListener(NodeId.randomNodeId(), List.of(), MessageRouter.mutable(), listener);
-
-        var missing = new NodeId("missing");
-        network.disconnect(new NetworkServiceMessage.DisconnectNode(missing));
-
-        assertThat(captured).as("REMOVE view-change fires listener even without a prior QUIC link").containsExactly(missing);
-    }
-
-    @Test
-    void disconnect_followerPath_buffersConnectivityObservation_skipsDisconnectListener() {
-        // Commit 2 (ClusterSync refactor): on a follower node, REMOVE view-changes
-        // must NOT invoke the disconnect listener (a v1 surface with no live
-        // consumer). Instead, a PeerConnectivityObservation is pushed to the
-        // upstream buffer via the PeerConnectivityReporter so the leader folds it.
-        var listenerInvocations = new CopyOnWriteArrayList<NodeId>();
-        QuicDisconnectListener listener = listenerInvocations::add;
+    void disconnect_unknownPeer_emitsConnectivityObservation_withoutAPriorLink() {
+        // SWIM-driven DisconnectNode is the authoritative "this peer is gone" signal — even if
+        // we never had a live QUIC link, the REMOVE view-change must report the departure via
+        // the PeerConnectivityReporter (leader and follower alike since #691 removed the
+        // leader-only listener) so topology and the membership layer see it. Otherwise peers
+        // whose connection tore down before lifecycle promotion stay in coreNodes forever.
         var reported = new CopyOnWriteArrayList<ReportedDisconnect>();
         PeerConnectivityReporter reporter = new PeerConnectivityReporter() {
             @Override public void onPeerDisconnected(NodeId peerId, long term, long counter, boolean deathPathInitiated) {
@@ -129,49 +109,14 @@ class QuicClusterNetworkHintEmissionTest {
             @Override public long term() {return 11L;}
             @Override public long counter() {return 4L;}
         };
-        var network = createNetworkWithListener(NodeId.randomNodeId(), List.of(), MessageRouter.mutable(), listener);
-        network.setFollowerObservationWiring(() -> false, reporter, epoch);
+        var network = createNetwork(NodeId.randomNodeId(), List.of(), MessageRouter.mutable());
+        network.setFollowerObservationWiring(reporter, epoch);
 
         var missing = new NodeId("missing");
         network.disconnect(new NetworkServiceMessage.DisconnectNode(missing));
 
-        assertThat(listenerInvocations).as("follower must NOT invoke local disconnect listener").isEmpty();
-        assertThat(reported).as("follower pushes PeerConnectivityObservation upstream")
+        assertThat(reported).as("REMOVE view-change reports the departure even without a prior QUIC link")
                             .containsExactly(new ReportedDisconnect(missing, 11L, 4L));
-    }
-
-    @Test
-    void disconnect_leaderPath_invokesBothDisconnectListenerAndReporter() {
-        // Topology-observation refactor Step 4: leader MUST also fire the connectivity
-        // reporter on QUIC drops so the AetherNode-level adapter can buffer the
-        // observation for the cluster-sync fold. The disconnect listener (a v1 fast
-        // path, today consumer-less) still fires too — these surfaces are
-        // complementary, not exclusive.
-        var listenerInvocations = new CopyOnWriteArrayList<NodeId>();
-        QuicDisconnectListener listener = listenerInvocations::add;
-        var reported = new CopyOnWriteArrayList<ReportedDisconnect>();
-        PeerConnectivityReporter reporter = new PeerConnectivityReporter() {
-            @Override public void onPeerDisconnected(NodeId peerId, long term, long counter, boolean deathPathInitiated) {
-                reported.add(new ReportedDisconnect(peerId, term, counter));
-            }
-            @Override public void onPeerConnected(NodeId peerId, long term, long counter) {
-                // No-op for this test.
-            }
-        };
-        QuicClusterNetwork.ObservedEpochSupplier epoch = new QuicClusterNetwork.ObservedEpochSupplier() {
-            @Override public long term() {return 7L;}
-            @Override public long counter() {return 2L;}
-        };
-        var network = createNetworkWithListener(NodeId.randomNodeId(), List.of(), MessageRouter.mutable(), listener);
-        network.setFollowerObservationWiring(() -> true, reporter, epoch);
-
-        var missing = new NodeId("missing");
-        network.disconnect(new NetworkServiceMessage.DisconnectNode(missing));
-
-        assertThat(listenerInvocations).as("leader disconnect listener fires")
-                                       .containsExactly(missing);
-        assertThat(reported).as("leader also emits via reporter for direct aggregator ingest")
-                            .containsExactly(new ReportedDisconnect(missing, 7L, 2L));
     }
 
     private record ReportedDisconnect(NodeId peerId, long term, long counter) {}
@@ -184,8 +129,7 @@ class QuicClusterNetworkHintEmissionTest {
         // that deadline and must be suppressed. Lower bound: jitter floor is 50ms, so at
         // least the first attempt is allowed.
         var clock = new AtomicLong(1_000_000L);
-        var network = createNetworkWithListener(NodeId.randomNodeId(), List.of(), MessageRouter.mutable(),
-                                                 QuicDisconnectListener.noop());
+        var network = createNetwork(NodeId.randomNodeId(), List.of(), MessageRouter.mutable());
         network.overrideWallClockForTests(clock::get);
 
         var peer = new NodeId("peer-bouncing");
@@ -221,8 +165,7 @@ class QuicClusterNetworkHintEmissionTest {
         // *on average*, but for a single sample we assert the deadline grows monotonically
         // and exceeds the BACKOFF_INITIAL_MS lower jitter floor on the first window).
         var clock = new AtomicLong(0L);
-        var network = createNetworkWithListener(NodeId.randomNodeId(), List.of(), MessageRouter.mutable(),
-                                                 QuicDisconnectListener.noop());
+        var network = createNetwork(NodeId.randomNodeId(), List.of(), MessageRouter.mutable());
         network.overrideWallClockForTests(clock::get);
         var peer = new NodeId("peer-flap");
 
@@ -264,10 +207,7 @@ class QuicClusterNetworkHintEmissionTest {
             @Override public void onPeerReconnected(NodeId nodeId) { reconnectedCalls.add(nodeId); }
             @Override public void onPeerLeft(NodeId nodeId) { leftCalls.add(nodeId); }
         };
-        var network = createNetworkWithListener(NodeId.randomNodeId(),
-                                                 List.of(),
-                                                 MessageRouter.mutable(),
-                                                 QuicDisconnectListener.noop());
+        var network = createNetwork(NodeId.randomNodeId(), List.of(), MessageRouter.mutable());
         network.setPeerStateListener(listener);
 
         var missing = new NodeId("departed-peer");
@@ -298,10 +238,7 @@ class QuicClusterNetworkHintEmissionTest {
         router.addRoute(TransportObservation.PeerDisconnected.class,
                         n -> disconnected.add(n.nodeId()));
 
-        var network = createNetworkWithListener(NodeId.randomNodeId(),
-                                                 List.of(),
-                                                 router,
-                                                 QuicDisconnectListener.noop());
+        var network = createNetwork(NodeId.randomNodeId(), List.of(), router);
 
         var missing = new NodeId("departed-peer");
         network.disconnect(new NetworkServiceMessage.DisconnectNode(missing));
@@ -322,7 +259,7 @@ class QuicClusterNetworkHintEmissionTest {
         var disconnected = new CopyOnWriteArrayList<NodeId>();
         var router = MessageRouter.mutable();
         router.addRoute(TransportObservation.PeerDisconnected.class, n -> disconnected.add(n.nodeId()));
-        var network = createNetworkWithListener(NodeId.randomNodeId(), List.of(), router, QuicDisconnectListener.noop());
+        var network = createNetwork(NodeId.randomNodeId(), List.of(), router);
 
         var peerId = new NodeId("flapping-peer");
         network.seedPeerForTests(peerId, connectedPeerState(peerId));
@@ -346,7 +283,7 @@ class QuicClusterNetworkHintEmissionTest {
         var disconnected = new CopyOnWriteArrayList<NodeId>();
         var router = MessageRouter.mutable();
         router.addRoute(TransportObservation.PeerDisconnected.class, n -> disconnected.add(n.nodeId()));
-        var network = createNetworkWithListener(NodeId.randomNodeId(), List.of(), router, QuicDisconnectListener.noop());
+        var network = createNetwork(NodeId.randomNodeId(), List.of(), router);
 
         var peerId = new NodeId("departing-peer");
         network.seedPeerForTests(peerId, connectedPeerState(peerId));
@@ -374,7 +311,7 @@ class QuicClusterNetworkHintEmissionTest {
     }
 
     @Test
-    void defaultConstructor_usesNoopListener_withoutCrashing() {
+    void defaultConstructor_disconnectOfUnknownPeer_doesNotCrash() {
         var nodeId = NodeId.randomNodeId();
         var address = NodeAddress.nodeAddress("127.0.0.1", 19999).fold(_ -> fail("bad address"), a -> a);
         var selfInfo = NodeInfo.nodeInfo(nodeId, address);
@@ -387,15 +324,12 @@ class QuicClusterNetworkHintEmissionTest {
         network.disconnect(new NetworkServiceMessage.DisconnectNode(new NodeId("missing")));
     }
 
-    private QuicClusterNetwork createNetworkWithListener(NodeId nodeId,
-                                                          List<NodeInfo> peers,
-                                                          MessageRouter router,
-                                                          QuicDisconnectListener listener) {
+    private QuicClusterNetwork createNetwork(NodeId nodeId, List<NodeInfo> peers, MessageRouter router) {
         var address = NodeAddress.nodeAddress("127.0.0.1", 19999).fold(_ -> fail("bad address"), a -> a);
         var selfInfo = NodeInfo.nodeInfo(nodeId, address);
         var topology = stubTopologyManager(selfInfo, peers);
         var network = new QuicClusterNetwork(topology, codec, codec, router, serverSsl, clientSsl,
-                                              ClusterFormationConfig.defaults(), listener);
+                                              ClusterFormationConfig.defaults());
         networks.add(network);
         network.startOnPort(0).await(AWAIT_TIMEOUT).onFailure(cause -> fail("start failed: " + cause.message()));
         return network;

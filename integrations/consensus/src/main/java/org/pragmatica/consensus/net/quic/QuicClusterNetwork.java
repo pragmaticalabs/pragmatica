@@ -224,7 +224,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// Periodic CONTROL-lane keepalive sender (Wave 5 receipt-evidence TTL). Scheduled at
     /// `pingInterval` alongside the reconciler; cancelled on [#stop].
     private final CancellableTask keepaliveTask = CancellableTask.cancellableTask();
-    private volatile QuicDisconnectListener disconnectListener;
     /// QUIC consensus-stream resilience tunables (retry attempts/backoff + CONSENSUS stream
     /// write-buffer watermarks). Defaults cover the observed deploy-burst backpressure window
     /// while staying well under the 30s `cluster.apply` deadline. See [QuicTransportTuning].
@@ -246,12 +245,10 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// ([#journalDialerHello]). Diagnostic-only; defaults to a no-op.
     private volatile Consumer<PeerTransitionRecord> peerTransitionListener = ignored -> {};
 
-    /// Leader-gate supplier. When `false`, REMOVE view-changes report a
-    /// connectivity observation upstream via `PeerConnectivityReporter`
-    /// instead of invoking the local disconnect listener (a v1 surface with
-    /// no live consumer since the membership-v2 migration).
-    /// See `aether/docs/specs/clustersync-refactor-spec.md` commit 2.
-    private volatile BooleanSupplier isLeaderSupplier;
+    /// REMOVE view-changes report a connectivity observation upstream via
+    /// `PeerConnectivityReporter` on leader and follower alike (#691 removed the leader-only
+    /// `QuicDisconnectListener`, a v1 surface whose only consumer was deleted with the
+    /// HealthSignal bus). See `aether/docs/specs/clustersync-refactor-spec.md` commit 2.
     private volatile PeerConnectivityReporter connectivityReporter;
     private volatile ObservedEpochSupplier observedEpochSupplier;
     /// SWIM health gate for the missing-peer reconciler. When present, the reconciler
@@ -362,8 +359,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
              router,
              serverSslContext,
              clientSslContext,
-             ClusterFormationConfig.defaults(),
-             QuicDisconnectListener.noop());
+             ClusterFormationConfig.defaults());
     }
 
     public QuicClusterNetwork(TopologyObserver topologyManager,
@@ -380,26 +376,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
              serverSslContext,
              clientSslContext,
              formationConfig,
-             QuicDisconnectListener.noop());
-    }
-
-    public QuicClusterNetwork(TopologyObserver topologyManager,
-                              Serializer serializer,
-                              Deserializer deserializer,
-                              MessageRouter router,
-                              QuicSslContext serverSslContext,
-                              QuicSslContext clientSslContext,
-                              ClusterFormationConfig formationConfig,
-                              QuicDisconnectListener disconnectListener) {
-        this(topologyManager,
-             serializer,
-             deserializer,
-             router,
-             serverSslContext,
-             clientSslContext,
-             formationConfig,
-             disconnectListener,
-             () -> true,
              PeerConnectivityReporter.noop(),
              ObservedEpochSupplier.zero());
     }
@@ -411,8 +387,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
                               QuicSslContext serverSslContext,
                               QuicSslContext clientSslContext,
                               ClusterFormationConfig formationConfig,
-                              QuicDisconnectListener disconnectListener,
-                              BooleanSupplier isLeaderSupplier,
                               PeerConnectivityReporter connectivityReporter,
                               ObservedEpochSupplier observedEpochSupplier) {
         this(topologyManager,
@@ -422,8 +396,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
              serverSslContext,
              clientSslContext,
              formationConfig,
-             disconnectListener,
-             isLeaderSupplier,
              connectivityReporter,
              observedEpochSupplier,
              QuicTransportTuning.defaults());
@@ -436,8 +408,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
                               QuicSslContext serverSslContext,
                               QuicSslContext clientSslContext,
                               ClusterFormationConfig formationConfig,
-                              QuicDisconnectListener disconnectListener,
-                              BooleanSupplier isLeaderSupplier,
                               PeerConnectivityReporter connectivityReporter,
                               ObservedEpochSupplier observedEpochSupplier,
                               QuicTransportTuning tuning) {
@@ -448,10 +418,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.router = router;
         this.serverSslContext = serverSslContext;
         this.clientSslContext = clientSslContext;
-        this.disconnectListener = disconnectListener;
-        this.isLeaderSupplier = isLeaderSupplier == null
-                                ? () -> true
-                                : isLeaderSupplier;
         this.connectivityReporter = connectivityReporter == null
                                     ? PeerConnectivityReporter.noop()
                                     : connectivityReporter;
@@ -468,16 +434,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.broadcastMembership = topologyManager::coreNodes;
     }
 
-    /// Late-bound leader gate + connectivity reporter. Follower REMOVE view-changes
-    /// report connectivity observations via the reporter instead of invoking the
-    /// local disconnect listener.
+    /// Late-bound connectivity reporter. REMOVE view-changes report connectivity observations
+    /// via the reporter on every node.
     @Contract
-    public void setFollowerObservationWiring(BooleanSupplier isLeaderSupplier,
-                                             PeerConnectivityReporter connectivityReporter,
+    public void setFollowerObservationWiring(PeerConnectivityReporter connectivityReporter,
                                              ObservedEpochSupplier observedEpochSupplier) {
-        this.isLeaderSupplier = isLeaderSupplier == null
-                                ? () -> true
-                                : isLeaderSupplier;
         this.connectivityReporter = connectivityReporter == null
                                     ? PeerConnectivityReporter.noop()
                                     : connectivityReporter;
@@ -541,17 +502,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.desiredConnections = supplier == null
                                   ? Option::none
                                   : () -> Option.option(supplier.get());
-    }
-
-    /// Attach a QUIC-disconnect listener post-construction. Higher layers (e.g.
-    /// `AetherNode`) need to wire the listener after the enclosing `RabiaNode`
-    /// — which owns this network — has already been built. A `null` argument
-    /// resets the listener to the no-op implementation.
-    @Contract
-    public void setDisconnectListener(QuicDisconnectListener listener) {
-        this.disconnectListener = listener == null
-                                  ? QuicDisconnectListener.noop()
-                                  : listener;
     }
 
     /// Attach a QUIC peer-state listener post-construction. Fires on join/reconnect/leave
@@ -2909,25 +2859,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private void reportPeerRemoval(NodeId peerId, boolean deathPathInitiated) {
-        // Leader path: route to the local disconnect listener (no consumer is installed today,
-        // so this arm is inert; the connectivity reporter below carries the live signal)
-        // for liveness bookkeeping. Symmetric to follower-side reporting, ALSO emit a
-        // connectivity transition via the reporter so the leader's local adapter can fold
-        // the observation directly into ReachabilityAggregator (Step 4 of the topology-
-        // observation refactor — eliminates the 5s self-fold tick latency on leader-side
-        // QUIC drops). Followers skip the disconnectListener (leader-only consumer) and
-        // only emit through the reporter, which buffers the observation for the next
-        // outbound ClusterSyncPong → leader.
-        //
-        // The leader `disconnectListener` is fired unconditionally — the call is independent of
-        // the FSM co-confirmation, and inert while no listener is installed. `deathPathInitiated`
-        // (Wave 9 Fix B) is forwarded to the connectivity reporter, whose aether-side adapter
-        // gates the FSM liveness-gone tap on it (organic close = death evidence; death-path
-        // close = the verdict's own side effect, must not self-co-confirm).
-        if (isLeaderSupplier.getAsBoolean()) {
-            disconnectListener.onDisconnect(peerId);
-        }
-
+        // Leader and follower alike emit a connectivity transition via the reporter: on the
+        // leader the local adapter folds the observation directly into ReachabilityAggregator
+        // (Step 4 of the topology-observation refactor — eliminates the 5s self-fold tick latency
+        // on leader-side QUIC drops); on a follower the reporter buffers it for the next outbound
+        // ClusterSyncPong → leader. The leader-only `QuicDisconnectListener` arm that used to
+        // precede this was removed in #691 — its sole consumer went with the HealthSignal bus.
+        // `deathPathInitiated` (Wave 9 Fix B) is forwarded to the connectivity reporter, whose
+        // aether-side adapter gates the FSM liveness-gone tap on it (organic close = death
+        // evidence; death-path close = the verdict's own side effect, must not self-co-confirm).
         var epoch = observedEpochSupplier;
 
         connectivityReporter.onPeerDisconnected(peerId, epoch.term(), epoch.counter(), deathPathInitiated);
