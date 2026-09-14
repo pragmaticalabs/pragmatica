@@ -23,10 +23,11 @@ import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_AUT
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_AUTO_HEAL_STATUS;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CIRCUIT_BREAKER_RESET;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CIRCUIT_BREAKER_STATUS;
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_ROLE_MISMATCHES;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TOPOLOGY;
 
 
-@Command(name = "topology", description = "Show cluster topology with node details", subcommands = {ClusterTopologyCommand.CircuitBreakerCommand.class, ClusterTopologyCommand.AutoHealCommand.class})
+@Command(name = "topology", description = "Show cluster topology with node details", subcommands = {ClusterTopologyCommand.CircuitBreakerCommand.class, ClusterTopologyCommand.AutoHealCommand.class, ClusterTopologyCommand.RoleMismatchesCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 class ClusterTopologyCommand implements Callable<Integer> {
     private static final TableSpec TOPOLOGY_TABLE = new TableSpec("Cluster Topology",
@@ -38,6 +39,20 @@ class ClusterTopologyCommand implements Callable<Integer> {
                                                                           new Column("ZONE", "zone", 14),
                                                                           new Column("ADDRESS", "address", 24)),
                                                                   "nodeDetails");
+
+    /// #689: one row per provisioned node whose advertised role label disagrees with its provisioning intent.
+    private static final TableSpec ROLE_MISMATCHES_TABLE = new TableSpec("Role Mismatches",
+                                                                         List.of(new Column("NODE", "nodeId", 24),
+                                                                                 new Column("INTENDED",
+                                                                                            "intendedRole",
+                                                                                            10),
+                                                                                 new Column("ADVERTISED",
+                                                                                            "advertisedRole",
+                                                                                            12),
+                                                                                 new Column("CLASSIFIED",
+                                                                                            "classifiedAs",
+                                                                                            12)),
+                                                                         "mismatches");
 
     @CommandLine.ParentCommand
     private ClusterCommand parent;
@@ -222,6 +237,33 @@ class ClusterTopologyCommand implements Callable<Integer> {
 
                 return ExitCode.ERROR;
             }
+        }
+    }
+
+    /// #689 — the CLI half of `GET /cluster/topology/role-mismatches`: read-only, leader-routed like the
+    /// route, rendered as a table over the `mismatches` array (`--format json` for the raw ledger).
+    @Command(name = "role-mismatches", description = "List provisioned nodes whose advertised role label disagrees with the role the leader provisioned them with (#689)")
+    @SuppressWarnings("JBCT-RET-01")
+    static class RoleMismatchesCommand implements Callable<Integer> {
+        @CommandLine.ParentCommand
+        private ClusterTopologyCommand topologyParent;
+
+        @Mixin
+        ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+
+        @Override
+        public Integer call() {
+            return clusterTarget.applyOverrides()
+                                .flatMap(_ -> ClusterHttpClient.fetch(CLUSTER_ROLE_MISMATCHES))
+                                .fold(this::onFailure, this::onSuccess);
+        }
+
+        private int onSuccess(String json) {
+            return OutputFormatter.printQuery(json, topologyParent.parent.outputOptions(), ROLE_MISMATCHES_TABLE);
+        }
+
+        private int onFailure(Cause cause) {
+            return OutputFormatter.printError(cause, topologyParent.parent.outputOptions());
         }
     }
 }
