@@ -5403,13 +5403,21 @@ public interface AetherNode extends ManageableNode {
     // plane, so gating it behind the replacement's own quorum deadlocked sub-quorum
     // auto-heal. The gossip encryptor is ready at boot (createGossipEncryptor), and the
     // COLD_BOOT/`isBooting` FAULTY-suppression keeps pre-quorum SWIM safe.
+    /// #683: the transport sees the encryptor through [GossipKeyDivergenceGuard], which refuses the
+    /// boot if gossip arrives under a key epoch this node does not hold and none has ever decrypted
+    /// — the signature of a cluster that rotated its gossip key after this node's derived key was
+    /// issued. The guard decorates for the TRANSPORT only; `encryptor` itself stays the rotation
+    /// target, so an applied rotation is picked up through the delegate and disarms the guard.
+    /// `System.exit(1)` mirrors `Main`'s other boot gates: the failure surfaces at deployment time
+    /// rather than as a silent, permanently unjoinable node.
     private static void startSwim(CoreSwimHealthDetector swimHealthDetector,
                                   ClusterNetwork network,
                                   RotatingGossipEncryptor encryptor,
                                   Runnable announceJoinTrigger) {
         var workerGroup = network.server().map(Server::workerGroup);
+        var guarded = GossipKeyDivergenceGuard.gossipKeyDivergenceGuard(encryptor, () -> System.exit(1));
 
-        swimHealthDetector.start(workerGroup, encryptor);
+        swimHealthDetector.start(workerGroup, guarded);
         announceJoinTrigger.run();
     }
 
