@@ -805,7 +805,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private boolean committedStateIs(SliceNodeKey sliceKey, SliceState state) {
             return ctx.kvStore()
-                      .get(NodeArtifactKey.nodeArtifactKey(ctx.self(), sliceKey.artifact()))
+                      .get(NodeArtifactKey.nodeArtifactKey(ctx.self(),
+                                                           sliceKey.artifact()))
                       .filter(NodeArtifactValue.class::isInstance)
                       .map(NodeArtifactValue.class::cast)
                       .map(value -> value.state() == state)
