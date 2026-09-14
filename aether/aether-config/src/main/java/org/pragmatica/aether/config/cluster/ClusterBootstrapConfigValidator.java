@@ -141,9 +141,23 @@ public final class ClusterBootstrapConfigValidator {
         }
     }
 
+    /// CL-08, second half (#296 review SF-1): node ids are minted as `<source>-<role>-<index>`,
+    /// and every surface that attributes a node to its source parses that id. A source whose name
+    /// is a dash-prefix of another (`eu` / `eu-1`) is refused up front, so two sources can never
+    /// disagree about which of them a node belongs to.
     private static void validateSourceNamesNonEmpty(ClusterBootstrapConfig config, List<String> errors) {
         if (config.sources().containsKey("")) {
             errors.add("CL-08: Source names must not be empty");
+        }
+
+        for (var name : config.sources().keySet()) {
+            config.sources()
+                  .keySet()
+                  .stream()
+                  .filter(other -> !other.equals(name) && other.startsWith(name + "-"))
+                  .forEach(other -> errors.add("CL-08: Source name '" + name
+                                              + "' is a prefix of source '" + other
+                                              + "' under the node-id form <source>-<role>-<index>; rename one of them"));
         }
     }
 

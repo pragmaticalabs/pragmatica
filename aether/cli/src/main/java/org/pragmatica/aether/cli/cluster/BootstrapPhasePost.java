@@ -7,6 +7,7 @@ package org.pragmatica.aether.cli.cluster;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapResult;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
+import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.environment.FloatingIpProvider;
 import org.pragmatica.aether.environment.SourceName;
@@ -60,8 +61,10 @@ sealed interface BootstrapPhasePost {
                                             BootstrapContext ctx) {
         var targetNode = ctx.nodes()
                             .stream()
-                            .filter(n -> n.nodeId()
-                                          .startsWith(sourceName.value() + "-core-"))
+                            .filter(n -> BootstrapPhaseProvision.parseNodeId(n.nodeId())
+                                                                .map(parsed -> parsed.source()
+                                                                                     .equals(sourceName.value()) && parsed.role() == NodeRole.CORE)
+                                                                .or(false))
                             .findFirst();
 
         targetNode.ifPresent(node -> attachLoadBalancerIps(fip, source, node.nodeId()));
