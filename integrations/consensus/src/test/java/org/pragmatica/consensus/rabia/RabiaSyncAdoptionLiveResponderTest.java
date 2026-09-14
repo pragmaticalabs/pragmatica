@@ -180,15 +180,17 @@ class RabiaSyncAdoptionLiveResponderTest {
 
     @Nested
     class OwnStateFloorLiveArm {
-        /// (iv) `ownStateFloor` is the more advanced of the PERSISTED and the LIVE phase. Persistence is
-        /// in-memory here (persisted phase stays 0); the live phase reaches 99 by adopting a live
-        /// majority; then a far-future Propose forces a resync, and a fresh live majority answers at
-        /// phase 50 with a different snapshot. The floor is the live 99, so nothing is installed and
-        /// the engine activates on its own state.
+        /// (iv) `ownStateFloor` is the more advanced of the PERSISTED and the LIVE phase. Persistence
+        /// here never records anything — `RabiaPersistence.inMemory()` would not do: `applyRestoredState`
+        /// saves the adopted phase into it, so the PERSISTED arm would cover this case and the test would
+        /// stay green with the live arm deleted (it did, on the first run). The live phase reaches 99 by
+        /// adopting a live majority; a far-future Propose forces a resync; a fresh live majority answers
+        /// at phase 50 with a different snapshot. The floor is the live 99 alone, so nothing is
+        /// installed and the engine activates on its own state.
         @Test
         void resyncFromActive_refusesALiveMajorityBehindTheLivePhase() {
             var stateMachine = new RecordingStateMachine();
-            var engine = coldStarted(5, stateMachine, RabiaPersistence.inMemory());
+            var engine = coldStarted(5, stateMachine, neverPersists());
 
             engine.processSyncResponse(live(NODE_2, Phase.phase(99), AHEAD_SNAPSHOT));
             engine.processSyncResponse(live(NODE_3, Phase.phase(99), AHEAD_SNAPSHOT));
@@ -214,6 +216,25 @@ class RabiaSyncAdoptionLiveResponderTest {
 
     private static Batch<TestCommand> farFutureBatch() {
         return new Batch<>(Batch.Id.randomId(), List.of(CorrelationId.randomCorrelationId()), System.nanoTime(), List.of(new TestCommand("resync")));
+    }
+
+    /// Persistence that records nothing: `load()` is always empty, so only the LIVE phase can floor.
+    private static RabiaPersistence<TestCommand> neverPersists() {
+        record never() implements RabiaPersistence<TestCommand> {
+            @Override
+            public Result<Unit> save(StateMachine<TestCommand> stateMachine,
+                                     Phase lastCommittedPhase,
+                                     Collection<Batch<TestCommand>> pendingBatches) {
+                return Result.success(Unit.unit());
+            }
+
+            @Override
+            public Option<SavedState<TestCommand>> load() {
+                return Option.none();
+            }
+        }
+
+        return new never();
     }
 
     private static SyncResponse<TestCommand> live(NodeId sender, Phase phase, byte[] snapshot) {
