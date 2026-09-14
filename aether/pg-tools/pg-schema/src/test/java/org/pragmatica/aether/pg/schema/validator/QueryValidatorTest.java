@@ -430,6 +430,354 @@ class QueryValidatorTest {
         }
     }
 
+    /// #651 — a subquery's scope CHAINS to the scope of the statement enclosing it: names resolve
+    /// inner-first and fall back outward, which is what a correlated `EXISTS`/`IN`/scalar subquery
+    /// needs. Before, every `SelectCore` in the tree was validated standalone, so each correlated
+    /// reference was a hard "Table or alias not found" on legal SQL.
+    @Nested
+    class CorrelatedSubqueries {
+        private static final String NOT_FOUND_U = "Table or alias not found: u";
+
+        @Test void validate_updateExistsCorrelatedByTargetName_isClean() {
+            var result = validate(
+                "UPDATE reservations SET state = 'released' "
+                + "WHERE EXISTS (SELECT 1 FROM bookings b WHERE b.reservation_claim_id = reservations.claim_id)"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        @Test void validate_updateExistsCorrelatedByTargetAlias_isClean() {
+            var result = validate(
+                "UPDATE reservations r SET state = 'released' "
+                + "WHERE EXISTS (SELECT 1 FROM bookings b WHERE b.reservation_claim_id = r.claim_id)"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        @Test void validate_updateSetValueCorrelatedSubquery_isClean() {
+            var result = validate(
+                "UPDATE reservations SET state = "
+                + "(SELECT b.status FROM bookings b WHERE b.reservation_claim_id = reservations.claim_id)"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        @Test void validate_deleteNotExistsCorrelated_isClean() {
+            var result = validate(
+                "DELETE FROM reservations "
+                + "WHERE NOT EXISTS (SELECT 1 FROM bookings b WHERE b.reservation_claim_id = reservations.claim_id)"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        @Test void validate_deleteReturningCorrelatedSubquery_isClean() {
+            var result = validate(
+                "DELETE FROM reservations RETURNING "
+                + "(SELECT b.id FROM bookings b WHERE b.reservation_claim_id = reservations.claim_id)"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        @Test void validate_onConflictWhereCorrelatedSubquery_isClean() {
+            var result = validate(
+                "INSERT INTO orders (id, user_id, total) VALUES (1, 1, 0) "
+                + "ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status "
+                + "WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = EXCLUDED.user_id AND u.id = orders.user_id)"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        @Test void validate_selectExistsCorrelated_isClean() {
+            var result = validate("SELECT u.id FROM users u WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id)");
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        @Test void validate_selectInCorrelated_isClean() {
+            var result = validate(
+                "SELECT u.id FROM users u WHERE u.id IN (SELECT o.user_id FROM orders o WHERE o.status = u.name)"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        @Test void validate_scalarSubqueryInTargetList_isClean() {
+            var result = validate("SELECT u.id, (SELECT count(*) FROM orders o WHERE o.user_id = u.id) FROM users u");
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        @Test void validate_twoLevelsOfNesting_seeEveryEnclosingScope() {
+            var result = validate(
+                "SELECT u.id FROM users u WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id "
+                + "AND EXISTS (SELECT 1 FROM bookings b WHERE b.id = u.id AND b.id = o.id))"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        @Test void validate_setOperationArmsInsideSubquery_seeOuterScope() {
+            var result = validate(
+                "SELECT u.id FROM users u WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id "
+                + "UNION SELECT 1 FROM bookings b WHERE b.id = u.id)"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        @Test void validate_outerCteVisibleInsideSubquery_isClean() {
+            var result = validate(
+                "WITH c AS (SELECT id FROM users) SELECT u.id FROM users u "
+                + "WHERE EXISTS (SELECT 1 FROM c WHERE c.id = u.id)"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        @Test void validate_lateralSubquery_seesPrecedingFromItems() {
+            var result = validate(
+                "SELECT u.id FROM users u, LATERAL (SELECT o.id FROM orders o WHERE o.user_id = u.id) l"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message).doesNotContain(NOT_FOUND_U);
+        }
+
+        // The subquery keeps its own scope: a bogus column on an INNER alias is still reported.
+        @Test void validate_bogusInnerColumnInsideCorrelatedSubquery_errors() {
+            var result = validate("SELECT u.id FROM users u WHERE EXISTS (SELECT 1 FROM orders o WHERE o.nope = u.id)");
+
+            assertThat(result.errors()).extracting(ValidationError::message)
+                                       .containsExactly("Column 'nope' not found in table 'o'");
+        }
+
+        // ... and a bogus column on the OUTER alias is resolved through the chain and reported too.
+        @Test void validate_bogusOuterColumnInsideCorrelatedSubquery_errors() {
+            var result = validate("SELECT u.id FROM users u WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.nope)");
+
+            assertThat(result.errors()).extracting(ValidationError::message)
+                                       .containsExactly("Column 'nope' not found in table 'u'");
+        }
+
+        @Test void validate_unknownAliasInsideSubquery_errors() {
+            var result = validate("SELECT u.id FROM users u WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = zz.id)");
+
+            assertThat(result.errors()).extracting(ValidationError::message)
+                                       .containsExactly("Table or alias not found: zz");
+        }
+
+        // Same alias in both scopes, bound to different tables: the inner binding wins inside the
+        // subquery and the outer binding is untouched by it.
+        @Test void validate_shadowedAlias_resolvesInnerFirst() {
+            var clean = validate(
+                "SELECT t.name FROM users t WHERE EXISTS (SELECT 1 FROM orders t WHERE t.status = 'x')"
+            );
+
+            assertThat(clean.isValid()).as(messages(clean)).isTrue();
+
+            var innerOnly = validate(
+                "SELECT t.name FROM users t WHERE EXISTS (SELECT 1 FROM orders t WHERE t.name = 'x')"
+            );
+
+            assertThat(innerOnly.errors()).extracting(ValidationError::message)
+                                          .containsExactly("Column 'name' not found in table 't'");
+        }
+
+        // Scope is lexical, not lexical-order: a sibling subquery's alias is not in reach.
+        @Test void validate_siblingSubqueryAlias_isNotVisible() {
+            var result = validate(
+                "SELECT u.id FROM users u WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id) "
+                + "AND EXISTS (SELECT 1 FROM bookings b WHERE b.id = o.id)"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message)
+                                       .containsExactly("Table or alias not found: o");
+        }
+
+        // `INSERT ... SELECT`: the source query does not see the target relation.
+        @Test void validate_insertSourceSelect_doesNotSeeTarget() {
+            var result = validate(
+                "INSERT INTO orders (id, user_id, total) SELECT u.id, u.id, 0 FROM users u WHERE orders.id = 1"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message)
+                                       .containsExactly("Table or alias not found: orders");
+        }
+
+        // A RECURSIVE body sees the WITH names — its own self-reference among them.
+        @Test void validate_recursiveCteBody_seesItsOwnName() {
+            var result = validate(
+                "WITH RECURSIVE t AS (SELECT id FROM users UNION ALL SELECT t.id FROM t WHERE t.id < 10) "
+                + "SELECT t.id FROM t"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        // The control for the clean ON CONFLICT case above: the subquery IS reached, so a bogus
+        // inner column is reported rather than the clause going unvalidated.
+        @Test void validate_onConflictWhereSubqueryBogusColumn_errors() {
+            var result = validate(
+                "INSERT INTO orders (id, user_id, total) VALUES (1, 1, 0) "
+                + "ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status "
+                + "WHERE EXISTS (SELECT 1 FROM users u WHERE u.nope = EXCLUDED.user_id)"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message)
+                                       .containsExactly("Column 'nope' not found in table 'u'");
+        }
+
+        // A subquery's own WITH names chain to the enclosing scope, so its body sees both.
+        @Test void validate_subqueryWithOwnCte_seesCteAndOuterScope() {
+            var result = validate(
+                "SELECT u.id FROM users u WHERE EXISTS (WITH c AS (SELECT id FROM orders) "
+                + "SELECT 1 FROM c WHERE c.id = u.id)"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        // A derived table's relations belong to the derived table, not to the enclosing FROM list.
+        @Test void validate_derivedTableRelations_doNotLeakIntoOuterScope() {
+            var result = validate(
+                "SELECT u.id FROM users u, (SELECT o.id FROM orders o) d WHERE o.user_id = u.id"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message)
+                                       .contains("Table or alias not found: o");
+        }
+
+        // verify-1124 BLOCKING-1: a RECURSIVE CTE on a DML statement was clean at the tip and refused
+        // at the first head — the DML validators never gave the body its WITH scope.
+        @Test void validate_recursiveCteOnUpdate_isClean() {
+            var result = validate(
+                "WITH RECURSIVE t AS (SELECT id FROM users UNION ALL SELECT t.id FROM t WHERE t.id < 10) "
+                + "UPDATE orders SET status = 'x' FROM t WHERE t.id = orders.user_id"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        @Test void validate_recursiveCteOnDelete_isClean() {
+            var result = validate(
+                "WITH RECURSIVE t AS (SELECT id FROM users UNION ALL SELECT t.id FROM t WHERE t.id < 10) "
+                + "DELETE FROM orders USING t WHERE t.id = orders.user_id"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        // Reach controls for the two above: the DML statement's RECURSIVE body IS validated.
+        @Test void validate_bogusTableInsideRecursiveCteBodyOnUpdate_errors() {
+            var result = validate(
+                "WITH RECURSIVE t AS (SELECT id FROM users UNION ALL SELECT t.id FROM t JOIN nowhere n ON n.id = t.id) "
+                + "UPDATE orders SET status = 'x' FROM t WHERE t.id = orders.user_id"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message).contains("Table not found: nowhere");
+        }
+
+        @Test void validate_bogusTableInsideRecursiveCteBodyOnDelete_errors() {
+            var result = validate(
+                "WITH RECURSIVE t AS (SELECT id FROM users UNION ALL SELECT t.id FROM t JOIN nowhere n ON n.id = t.id) "
+                + "DELETE FROM orders USING t WHERE t.id = orders.user_id"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message).contains("Table not found: nowhere");
+        }
+
+        // verify-1124 SF-1: the INSERT source query sees the INSERT's own WITH names (never the target).
+        @Test void validate_insertSourceSelect_seesTheInsertsOwnCte() {
+            var result = validate(
+                "WITH x AS (SELECT id FROM users) INSERT INTO orders (id, user_id, total) SELECT x.id, x.id, 0 FROM x"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        // verify-1124 SF-4: a CTE inside a subquery sees the enclosing query (PostgreSQL 17 accepts
+        // this); a top-level statement's CTE body sees nothing outside the statement.
+        @Test void validate_cteBodyInsideSubquery_seesTheEnclosingScope() {
+            var result = validate(
+                "SELECT u.id FROM users u WHERE EXISTS (WITH c AS (SELECT 1 AS x FROM orders o WHERE o.user_id = u.id) "
+                + "SELECT 1 FROM c)"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        @Test void validate_topLevelCteBody_doesNotSeeTheStatementsFrom() {
+            var result = validate(
+                "WITH c AS (SELECT users.id AS id FROM users WHERE users.id = o.user_id) SELECT o.id FROM orders o, c"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message).contains("Table or alias not found: o");
+        }
+
+        // verify-1124 SF-3 / NIT-2: reach controls — a bogus INNER column at each correlated position
+        // is reported, so the clean cases above cannot pass by the position going unvalidated.
+        @Test void validate_bogusColumnInsideLateralSubquery_errors() {
+            var result = validate(
+                "SELECT u.id FROM users u, LATERAL (SELECT o.nope FROM orders o WHERE o.user_id = u.id) l"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message)
+                                       .containsExactly("Column 'nope' not found in table 'o'");
+        }
+
+        @Test void validate_bogusColumnInsideSetValueSubquery_errors() {
+            var result = validate(
+                "UPDATE reservations SET state = (SELECT b.nope FROM bookings b WHERE b.reservation_claim_id = reservations.claim_id)"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message)
+                                       .containsExactly("Column 'nope' not found in table 'b'");
+        }
+
+        @Test void validate_bogusColumnInsideReturningSubquery_errors() {
+            var result = validate(
+                "DELETE FROM reservations RETURNING (SELECT b.nope FROM bookings b WHERE b.reservation_claim_id = reservations.claim_id)"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message)
+                                       .containsExactly("Column 'nope' not found in table 'b'");
+        }
+
+        // A UNION body's columns are not inferable, so `t` is permissive and a bogus `t.column` is
+        // (by design) not reported; a bogus TABLE inside the body proves the body is validated.
+        @Test void validate_bogusTableInsideRecursiveCteBody_errors() {
+            var result = validate(
+                "WITH RECURSIVE t AS (SELECT id FROM users UNION ALL SELECT t.id FROM t JOIN nowhere n ON n.id = t.id) "
+                + "SELECT t.id FROM t"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message).contains("Table not found: nowhere");
+        }
+
+        @Test void validate_bogusColumnInsideSubqueryOverOuterCte_errors() {
+            var result = validate(
+                "WITH c AS (SELECT id FROM users) SELECT u.id FROM users u WHERE EXISTS (SELECT 1 FROM c WHERE c.nope = u.id)"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message)
+                                       .containsExactly("Column 'nope' not found in table 'c'");
+        }
+
+        // A derived table without LATERAL does not see the enclosing FROM list.
+        @Test void validate_nonLateralDerivedTable_doesNotSeeOuterScope() {
+            var result = validate(
+                "SELECT u.id FROM users u, (SELECT o.id FROM orders o WHERE o.user_id = u.id) d"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message).contains(NOT_FOUND_U);
+        }
+    }
+
     /// #646 — the output-column set a return-row record is mapped against. Sourced from the
     /// statement's own `RETURNING` list or its statement-level `SELECT` core, never from a
     /// `SelectCore` discovered anywhere in the tree.
