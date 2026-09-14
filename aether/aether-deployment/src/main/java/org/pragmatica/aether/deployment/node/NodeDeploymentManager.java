@@ -41,6 +41,7 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Number;
@@ -200,15 +201,23 @@ public interface NodeDeploymentManager {
         public Result<Long> requireLong(String section, String key) {
             return delegate.getString(section + "." + key)
                            .toResult(MISSING_KEY)
-                           .flatMap(Number::parseLong);
+                           .flatMap(value -> Number.parseLong(value)
+                                                   .mapError(_ -> NOT_A_LONG.apply(section + "." + key, value)));
         }
 
         @Override
         public Result<Double> requireDouble(String section, String key) {
             return delegate.getString(section + "." + key)
                            .toResult(MISSING_KEY)
-                           .flatMap(Number::parseDouble);
+                           .flatMap(value -> Number.parseDouble(value)
+                                                   .mapError(_ -> NOT_A_DOUBLE.apply(section + "." + key, value)));
         }
+
+        // The parse failure is mapped at the Result boundary to a cause that NAMES the key and the
+        // value; Number.parseX's own cause is a Causes.fromThrowable, whose message is the whole
+        // stack trace with the key nowhere in it (review of #1092, SF-2).
+        private static final Fn2<Cause, String, String> NOT_A_LONG = Causes.forTwoValues("Config key %s is not a long: \"%s\"");
+        private static final Fn2<Cause, String, String> NOT_A_DOUBLE = Causes.forTwoValues("Config key %s is not a double: \"%s\"");
 
         @Override
         public Result<Boolean> requireBoolean(String section, String key) {
