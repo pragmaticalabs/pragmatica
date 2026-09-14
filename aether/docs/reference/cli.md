@@ -1364,7 +1364,7 @@ aether scheduled-tasks inject \
 
 ### backup
 
-Removed (#676). `aether backup` / `aether backups` and `POST|GET /api/v1/backups` were wired to a
+Removed (#676). The `backup` and `backups` command trees and `POST|GET /api/v1/backups` were wired to a
 service whose only implementation was `disabled()`, so every call returned `backup-disabled` in every
 configuration. Declared-state durability is `[backup]` git-backed persistence — see
 [backup-recovery](../operators/runbooks/backup-recovery.md); it has no CLI or API surface and is

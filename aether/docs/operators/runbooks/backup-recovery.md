@@ -4,8 +4,8 @@
 Declared cluster state (the consensus KV-Store snapshot) is persisted by `GitBackedPersistence`
 (`integrations/consensus`) when `[backup]` is enabled: a single file, `state.toml`, in a local git
 repository at `[backup] path`, one commit per save, optionally pushed to a git remote. This is the
-only backup mechanism. **There is no backup API or CLI** — `POST /api/v1/backups` and
-`aether backup`/`aether backups` were removed in #676 because their only implementation was a
+only backup mechanism. **There is no backup API or CLI** — `POST /api/v1/backups` and the
+`backup`/`backups` command trees were removed in #676 because their only implementation was a
 `disabled()` stub that returned `backup-disabled` in every configuration.
 
 What the file holds, precisely: a `# Phase: N` header followed by the **base64 of the raw binary KV
