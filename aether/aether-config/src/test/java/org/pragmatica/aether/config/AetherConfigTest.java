@@ -16,7 +16,7 @@ class AetherConfigTest {
         var config = AetherConfig.aetherConfig(Environment.LOCAL);
 
         assertThat(config.environment()).isEqualTo(Environment.LOCAL);
-        assertThat(config.cluster().nodes()).isEqualTo(3);
+        assertThat(config.cluster().nodes()).isEqualTo(5);
         assertThat(config.node().heap()).isEqualTo("256m");
         assertThat(config.tlsEnabled()).isFalse();
         assertThat(config.docker().isEmpty()).isTrue();
@@ -28,7 +28,7 @@ class AetherConfigTest {
         var config = AetherConfig.aetherConfig(Environment.DOCKER);
 
         assertThat(config.environment()).isEqualTo(Environment.DOCKER);
-        assertThat(config.cluster().nodes()).isEqualTo(5);
+        assertThat(config.cluster().nodes()).isEqualTo(7);
         assertThat(config.node().heap()).isEqualTo("512m");
         assertThat(config.tlsEnabled()).isTrue();
         assertThat(config.tls().isPresent()).isTrue();
@@ -43,7 +43,7 @@ class AetherConfigTest {
         var config = AetherConfig.aetherConfig(Environment.KUBERNETES);
 
         assertThat(config.environment()).isEqualTo(Environment.KUBERNETES);
-        assertThat(config.cluster().nodes()).isEqualTo(5);
+        assertThat(config.cluster().nodes()).isEqualTo(7);
         assertThat(config.node().heap()).isEqualTo("1g");
         assertThat(config.tlsEnabled()).isTrue();
         assertThat(config.tls().isPresent()).isTrue();
@@ -81,7 +81,7 @@ class AetherConfigTest {
 
         assertThat(config.node().heap()).isEqualTo("2g");
         // Other defaults remain
-        assertThat(config.cluster().nodes()).isEqualTo(5);
+        assertThat(config.cluster().nodes()).isEqualTo(7);
     }
 
     @Test

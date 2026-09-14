@@ -212,7 +212,7 @@ public final class ForgeServer {
         System.out.println("  FORGE_LOAD_CONFIG   Path to load config file");
         System.out.println("  FORGE_AUTO_START    Set to \"true\" to auto-start load");
         System.out.println("  FORGE_PORT          Dashboard port (default: 8888)");
-        System.out.println("  CLUSTER_SIZE        Number of nodes (default: 5)");
+        System.out.println("  CLUSTER_SIZE        Number of nodes (default: " + StartupConfig.DEFAULT_CLUSTER_SIZE + ")");
     }
 
     private static EmberConfig loadForgeConfig(StartupConfig startupConfig) {

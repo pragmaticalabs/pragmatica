@@ -41,7 +41,7 @@ class ClusterScaffoldCommandTest {
 
     @Test
     void call_dockerComposeTemplate_everyClusterSecretLineIsARequiredShellReference() {
-        var exitCode = runScaffold("--name", "us-prod", "--template", "docker-compose", "--nodes", "3");
+        var exitCode = runScaffold("--name", "us-prod", "--template", "docker-compose", "--nodes", "5");
 
         assertThat(exitCode).isZero();
 
@@ -56,7 +56,7 @@ class ClusterScaffoldCommandTest {
 
     @Test
     void call_dockerComposeTemplate_emitsClusterSecretAsRequiredShellReference() {
-        var exitCode = runScaffold("--name", "us-prod", "--template", "docker-compose", "--nodes", "3");
+        var exitCode = runScaffold("--name", "us-prod", "--template", "docker-compose", "--nodes", "5");
 
         assertThat(exitCode).isZero();
         assertThat(out.toString())

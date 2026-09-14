@@ -368,7 +368,7 @@ class ConfigLoaderTest {
         ConfigLoader.loadFromString(toml)
             .onSuccessRun(Assertions::fail)
             .onFailure(cause -> assertThat(cause.message())
-                .contains("Node count must be odd"));
+                .contains("which is even"));
     }
 
     @Test

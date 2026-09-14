@@ -33,7 +33,7 @@ class ClusterInitCommandNonInteractiveTest {
                               .execute("init",
                                        "--non-interactive",
                                        "--name", "test-cluster",
-                                       "--nodes", "5",
+                                       "--core-nodes", "5",
                                        "--output", output.toString());
 
             assertThat(exit).isEqualTo(0);
@@ -48,7 +48,7 @@ class ClusterInitCommandNonInteractiveTest {
                                        "--non-interactive",
                                        "--target", "docker",
                                        "--name", "test-cluster",
-                                       "--nodes", "3",
+                                       "--core-nodes", "5",
                                        "--output", output.toString());
 
             assertThat(exit).isEqualTo(0);
@@ -85,7 +85,7 @@ class ClusterInitCommandNonInteractiveTest {
                               .execute("init",
                                        "--target", "docker",
                                        "--name", "test-cluster",
-                                       "--nodes", "3",
+                                       "--core-nodes", "5",
                                        "--output", output.toString());
 
             assertThat(exit).isEqualTo(0);
@@ -114,7 +114,7 @@ class ClusterInitCommandNonInteractiveTest {
                                                                    "--credential-env", "HCLOUD_TOKEN",
                                                                    "--ssh-public-key", KEY,
                                                                    "--admin-cidr", "203.0.113.0/24",
-                                                                   "--nodes", "3",
+                                                                   "--core-nodes", "5",
                                                                    "--name", "prod-eu",
                                                                    "--output", output.toString()));
 
