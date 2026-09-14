@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -45,15 +46,18 @@ public final class LocalDiskTier implements StorageTier {
     private final long maxBytes;
     private final TimeSpan readTimeout;
     private final Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride;
+    private final Fn2<Result<Unit>, Path, byte[]> writer;
 
     private LocalDiskTier(Path basePath,
                           long maxBytes,
                           TimeSpan readTimeout,
-                          Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride) {
+                          Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride,
+                          Option<Fn2<Result<Unit>, Path, byte[]>> writerOverride) {
         this.basePath = basePath;
         this.maxBytes = maxBytes;
         this.readTimeout = readTimeout;
         this.readerOverride = readerOverride;
+        this.writer = writerOverride.or(FileOps::writeBytes);
     }
 
     public static Result<LocalDiskTier> localDiskTier(Path basePath, long maxBytes) {
@@ -67,8 +71,18 @@ public final class LocalDiskTier implements StorageTier {
                                                       long maxBytes,
                                                       TimeSpan readTimeout,
                                                       Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride) {
+        return localDiskTier(basePath, maxBytes, readTimeout, readerOverride, none());
+    }
+
+    /// Variant with an injectable file write, for tests that need a write to fail after N bytes
+    /// (a disk that fills mid-block) without a real ENOSPC.
+    static Result<LocalDiskTier> localDiskTier(Path basePath,
+                                               long maxBytes,
+                                               TimeSpan readTimeout,
+                                               Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride,
+                                               Option<Fn2<Result<Unit>, Path, byte[]>> writerOverride) {
         return FileOps.createDirectories(basePath)
-                      .map(_ -> new LocalDiskTier(basePath, maxBytes, readTimeout, readerOverride))
+                      .map(_ -> new LocalDiskTier(basePath, maxBytes, readTimeout, readerOverride, writerOverride))
                       .onSuccess(LocalDiskTier::calculateUsedBytes);
     }
 
@@ -157,7 +171,7 @@ public final class LocalDiskTier implements StorageTier {
 
         return FileOps.createDirectories(path.getParent())
                       .flatMap(_ -> existingSize(path))
-                      .flatMap(previousSize -> FileOps.writeBytes(path, content)
+                      .flatMap(previousSize -> writer.apply(path, content)
                                                       .onSuccess(_ -> correctUsedBytes(previousSize))
                                                       .onFailure(_ -> discardFailedWrite(path, previousSize)));
     }

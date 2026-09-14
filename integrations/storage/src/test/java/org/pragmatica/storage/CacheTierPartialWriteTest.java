@@ -12,9 +12,13 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
+import org.pragmatica.lang.io.FileError;
+import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import org.apache.logging.log4j.Level;
@@ -33,7 +37,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -100,22 +107,107 @@ class CacheTierPartialWriteTest {
         assertThat(read.unwrap()).isEqualTo(content);
     }
 
-    /// SF-2 on the real `LocalDiskTier`: a directory squatting on the block's path makes the write
-    /// fail after the reservation; the reservation must be released and nothing left behind.
+    /// r3 (a): a tier that refuses BEFORE writing (`TierFull`) has nothing to discard, and the id
+    /// may already hold a valid copy there — the instance-level delete must not evict it.
+    @Test
+    void fullCacheTier_rePromotion_keepsTheValidCopy() {
+        var content = block(4096);
+        var id = BlockId.blockId(content).unwrap();
+        var cache = MemoryTier.memoryTier(content.length);
+        var durable = MemoryTier.memoryTier(1024 * 1024, TierLevel.REMOTE);
+
+        cache.put(id, content).await().onFailure(cause -> fail("the copy fits exactly: " + cause.message()));
+        var instance = StorageInstance.storageInstance("full-cache", List.of(cache, durable));
+
+        instance.put(content).await().onFailure(cause -> fail("the durable write succeeded: " + cause.message()));
+        assertThat(cache.exists(id).await().unwrap()).as("TierFull wrote nothing; the valid copy must survive")
+                  .isTrue();
+        assertThat(cache.get(id).await().unwrap().unwrap()).isEqualTo(content);
+    }
+
+    /// r3 (b), the mid-write shape on the real `LocalDiskTier`: the disk takes N bytes of the block
+    /// and fails. The partial file is discarded, the reservation released exactly once, and the
+    /// instance-level delete that follows finds nothing to subtract — `usedBytes` ends at zero,
+    /// never below it.
+    @Test
+    void localDiskTier_midWriteFailure_discardsThePartial_usedBytesEndsAtZero() {
+        var disk = new FillingDisk();
+        var dir = tempDir.resolve("filling");
+        var tier = diskTier(dir, disk);
+        var durable = MemoryTier.memoryTier(1024 * 1024, TierLevel.REMOTE);
+        var instance = StorageInstance.storageInstance("filling", List.of(tier, durable));
+        var content = block(4096);
+
+        disk.bytesBeforeFailure.set(1024);
+        var id = instance.put(content)
+                         .await()
+                         .fold(cause -> fail("the durable write succeeded; the put must succeed: " + cause.message()),
+                               v -> v);
+
+        assertThat(disk.partialBytesSeen.get()).as("the fixture left N bytes on disk before failing").isEqualTo(1024);
+        assertThat(partialFiles(dir)).as("the partial file is discarded").isEmpty();
+        assertThat(tier.exists(id).await().unwrap()).isFalse();
+        assertThat(tier.usedBytes()).as("reservation released once, nothing else subtracted").isZero();
+        assertThat(instance.get(id).await().unwrap().unwrap()).as("the read reaches the durable copy").isEqualTo(content);
+    }
+
+    /// r3 (c): the previous copy at the block path survives a failed overwrite whatever stage
+    /// failed — after N bytes (mid-write) or before any (open-time) — because the write never
+    /// touches the block path until it is complete; only the partial file is discarded.
+    @Test
+    void localDiskTier_failedOverwrite_keepsThePreviousCopy() {
+        var disk = new FillingDisk();
+        var dir = tempDir.resolve("overwrite");
+        var tier = diskTier(dir, disk);
+        var content = block(4096);
+        var id = BlockId.blockId(content).unwrap();
+
+        tier.put(id, content).await().onFailure(cause -> fail("the first write is healthy: " + cause.message()));
+        assertThat(tier.usedBytes()).isEqualTo(4096);
+
+        for (int bytesBeforeFailure : new int[]{1024, 0}) {
+            disk.bytesBeforeFailure.set(bytesBeforeFailure);
+            tier.put(id, content).await().onSuccess(_ -> fail("the overwrite must fail"));
+            assertThat(disk.partialBytesSeen.get()).isEqualTo(bytesBeforeFailure);
+            assertThat(tier.get(id).await().unwrap().unwrap()).as("previous copy intact after failing at " + bytesBeforeFailure)
+                      .isEqualTo(content);
+            assertThat(partialFiles(dir)).isEmpty();
+            assertThat(tier.usedBytes()).as("the previous copy stays counted, the reservation is released").isEqualTo(4096);
+        }
+    }
+
+    /// SF-2 on the real `LocalDiskTier` with the real writer: a non-empty directory squatting on
+    /// the block path makes the rename fail after the reservation; the reservation must be released
+    /// and nothing left behind.
     @Test
     @SuppressWarnings("JBCT-EX-01")
     void localDiskTier_failedWrite_releasesTheReservation() throws Exception {
-        var tier = LocalDiskTier.localDiskTier(tempDir.resolve("blocks"), 1024 * 1024).unwrap();
+        var dir = tempDir.resolve("blocks");
+        var tier = LocalDiskTier.localDiskTier(dir, 1024 * 1024).unwrap();
         var content = block(2048);
         var id = BlockId.blockId(content).unwrap();
-        var hex = id.hexString();
+        var squat = blockPath(dir, id);
 
-        Files.createDirectories(tempDir.resolve("blocks")
-                                       .resolve(hex.substring(0, 2))
-                                       .resolve(hex.substring(2, 4))
-                                       .resolve(hex));
-        tier.put(id, content).await().onSuccess(_ -> fail("writing over a directory must fail"));
+        Files.createDirectories(squat);
+        Files.writeString(squat.resolve("occupant"), "not a block");
+        tier.put(id, content).await().onSuccess(_ -> fail("writing over a non-empty directory must fail"));
         assertThat(tier.usedBytes()).as("a failed write keeps no reservation").isZero();
+        assertThat(partialFiles(dir)).isEmpty();
+    }
+
+    /// r3 (b): `delete` subtracts only what it removes, and it removes only blocks — a directory
+    /// at the block path is neither, so the delete the instance issues after a failed promotion
+    /// cannot drive `usedBytes` negative.
+    @Test
+    @SuppressWarnings("JBCT-EX-01")
+    void localDiskTier_deleteOfADirectorySquattingTheBlockPath_subtractsNothing() throws Exception {
+        var dir = tempDir.resolve("squat");
+        var tier = LocalDiskTier.localDiskTier(dir, 1024 * 1024).unwrap();
+        var id = BlockId.blockId(block(2048)).unwrap();
+
+        Files.createDirectories(blockPath(dir, id));
+        tier.delete(id).await().onFailure(cause -> fail("nothing to delete is not a failure: " + cause.message()));
+        assertThat(tier.usedBytes()).isZero();
     }
 
     /// SF-1: a tier that is not merely full but broken logs the first failure at WARN and the rest
@@ -151,6 +243,41 @@ class CacheTierPartialWriteTest {
         Arrays.fill(content, (byte) 9);
 
         return content;
+    }
+
+    private static LocalDiskTier diskTier(Path dir, FillingDisk disk) {
+        return LocalDiskTier.localDiskTier(dir, 1024 * 1024, timeSpan(30).seconds(), none(), some(disk::write)).unwrap();
+    }
+
+    private static Path blockPath(Path dir, BlockId id) {
+        var hex = id.hexString();
+
+        return dir.resolve(hex.substring(0, 2)).resolve(hex.substring(2, 4)).resolve(hex);
+    }
+
+    private static List<Path> partialFiles(Path dir) {
+        return FileOps.walk(dir, path -> Files.isRegularFile(path) && path.getFileName().toString().endsWith(".partial"))
+                      .unwrap();
+    }
+
+    /// The tier's write seam: healthy until `bytesBeforeFailure` is set, then writes that many
+    /// bytes of the block to the partial path and fails — a disk that fills mid-block. Records
+    /// what it left on disk so the discard can be proven rather than assumed.
+    private static final class FillingDisk {
+        private final AtomicInteger bytesBeforeFailure = new AtomicInteger(-1);
+        private final AtomicLong partialBytesSeen = new AtomicLong(-1);
+
+        Result<Unit> write(Path partial, byte[] content) {
+            var limit = bytesBeforeFailure.get();
+
+            if (limit < 0) {
+                return FileOps.writeBytes(partial, content);
+            }
+
+            return FileOps.writeBytes(partial, Arrays.copyOf(content, limit))
+                          .onSuccess(_ -> partialBytesSeen.set(FileOps.size(partial).or(-1L)))
+                          .flatMap(_ -> new FileError.WriteFailed(partial, "No space left on device").result());
+        }
     }
 
     /// Stores the first half of the block, then fails — a disk that filled up mid-write.
