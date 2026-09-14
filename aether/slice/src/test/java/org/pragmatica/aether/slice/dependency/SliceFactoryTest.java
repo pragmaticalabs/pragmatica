@@ -282,6 +282,24 @@ class SliceFactoryTest {
         assertServedPackageDiagnosedWithoutChoosingACause(sharedLoader, servedJar, "org.example:provider:1.0.0");
     }
 
+    /// #758: the loaded artifact versions are the evidence that lets an operator tell the two causes
+    /// apart — they are what the slice's own declaration is compared against. Asserted alone here, so
+    /// dropping the evidence reddens a test that the wording of the two causes does not.
+    @Test
+    void names_theLoadedArtifactVersions_whenTheServingLoaderTracksThem() throws Exception {
+        var providerJar = jar("provider", OTHER_PROBE_TYPE);
+        var sharedLoader = sharedLoaderWith(providerJar);
+        var consumerJar = jar("consumer", BUY_TICKET_PROBE_FACTORY);
+
+        try (var sliceLoader = new SliceClassLoader(new URL[]{consumerJar}, sharedLoader)) {
+            var factoryClass = sliceLoader.loadClass(BUY_TICKET_PROBE_FACTORY);
+
+            SliceFactory.createSlice(factoryClass, STUB_CONTEXT, List.of(), List.of()).await().onSuccessRun(Assertions::fail).onFailure(cause -> {
+                assertThat(cause.message()).contains("(that loader has loaded [org.example:provider:1.0.0])");
+            });
+        }
+    }
+
     /// #758 SHOULD-FIX-1: the package is served ONLY by the application loader and the shared loader
     /// holds NO urls. `findResource` asks a loader about its own contents; a parent-first
     /// `getResource` would credit the empty shared loader with its parent's package and name a loader
