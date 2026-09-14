@@ -213,27 +213,27 @@ class MavenProtocolHandlerTest {
     private ArtifactStore testStore() {
         return new ArtifactStore() {
             @Override
-            public Promise<DeployResult> deploy(Artifact artifact, byte[] content) {
-                return Promise.success(new DeployResult(artifact, content.length, "md5", "sha1"));
+            public Promise<DeployResult> deploy(ArtifactFile file, byte[] content) {
+                return Promise.success(new DeployResult(file.artifact(), content.length, "md5", "sha1"));
             }
 
             @Override
-            public Promise<byte[]> resolve(Artifact artifact) {
-                return new ArtifactStoreError.NotFound(artifact).promise();
+            public Promise<byte[]> resolve(ArtifactFile file) {
+                return new ArtifactStoreError.NotFound(file).promise();
             }
 
             @Override
-            public Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact) {
-                return new ArtifactStoreError.NotFound(artifact).promise();
+            public Promise<ResolvedArtifact> resolveWithMetadata(ArtifactFile file) {
+                return new ArtifactStoreError.NotFound(file).promise();
             }
 
             @Override
-            public Promise<Boolean> exists(Artifact artifact) {
+            public Promise<Boolean> exists(ArtifactFile file) {
                 return Promise.success(false);
             }
 
             @Override
-            public Promise<Option<ArtifactMetadata>> metadata(Artifact artifact) {
+            public Promise<Option<ArtifactMetadata>> metadata(ArtifactFile file) {
                 return Promise.success(Option.none());
             }
 
@@ -245,7 +245,7 @@ class MavenProtocolHandlerTest {
             }
 
             @Override
-            public Promise<Unit> delete(Artifact artifact) {
+            public Promise<Unit> delete(ArtifactFile file) {
                 return Promise.success(Unit.unit());
             }
 
@@ -259,27 +259,27 @@ class MavenProtocolHandlerTest {
     private ArtifactStore duplicateStore() {
         return new ArtifactStore() {
             @Override
-            public Promise<DeployResult> deploy(Artifact artifact, byte[] content) {
-                return Promise.success(new DeployResult(artifact, content.length, "fresh-md5", "fresh-sha1"));
+            public Promise<DeployResult> deploy(ArtifactFile file, byte[] content) {
+                return Promise.success(new DeployResult(file.artifact(), content.length, "fresh-md5", "fresh-sha1"));
             }
 
             @Override
-            public Promise<byte[]> resolve(Artifact artifact) {
-                return new ArtifactStoreError.NotFound(artifact).promise();
+            public Promise<byte[]> resolve(ArtifactFile file) {
+                return new ArtifactStoreError.NotFound(file).promise();
             }
 
             @Override
-            public Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact) {
-                return new ArtifactStoreError.NotFound(artifact).promise();
+            public Promise<ResolvedArtifact> resolveWithMetadata(ArtifactFile file) {
+                return new ArtifactStoreError.NotFound(file).promise();
             }
 
             @Override
-            public Promise<Boolean> exists(Artifact artifact) {
+            public Promise<Boolean> exists(ArtifactFile file) {
                 return Promise.success(true);
             }
 
             @Override
-            public Promise<Option<ArtifactMetadata>> metadata(Artifact artifact) {
+            public Promise<Option<ArtifactMetadata>> metadata(ArtifactFile file) {
                 var meta = new ArtifactMetadata(42L, 1, "existing-md5", "existing-sha1", 0L, java.util.List.of("blk"));
                 return Promise.success(Option.some(meta));
             }
@@ -292,7 +292,7 @@ class MavenProtocolHandlerTest {
             }
 
             @Override
-            public Promise<Unit> delete(Artifact artifact) {
+            public Promise<Unit> delete(ArtifactFile file) {
                 return Promise.success(Unit.unit());
             }
 
