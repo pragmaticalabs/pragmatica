@@ -98,9 +98,15 @@ public final class RequestRouter {
         // spacer routes are held to it as well (#764) — and additionally to their spacers being
         // present, so neither the single-candidate shortcut nor the fallback below can hand back a
         // spacer route the path does not name.
+        // #1101: a route that declares parameters consumes exactly that many trailing segments — an
+        // over-length path is a MISS, never a dispatch of the first N (that dispatch, paired with a
+        // weaker prefix authorisation, was a privilege escalation). An arity-0 route keeps its prefix
+        // tolerance: `StaticFileRouteSource` registers `route(GET, urlPrefix, …)` and consumes the
+        // remainder itself, and an arity-0 handler binds nothing positional.
         var viable = candidates.stream()
-                               .filter(route -> route.pathParamCount() <= trailingSegmentCount(route.path(),
-                                                                                               inputPath))
+                               .filter(route -> arityAdmits(route,
+                                                            trailingSegmentCount(route.path(),
+                                                                                 inputPath)))
                                .filter(route -> route.spacers()
                                                      .isEmpty() || routeMatchesPath(route, inputPath))
                                .toList();
@@ -118,6 +124,10 @@ public final class RequestRouter {
         return spacerMatch.isPresent()
                ? spacerMatch
                : findArityMatchingRoute(viable, inputPath);
+    }
+
+    private static boolean arityAdmits(Route<?> route, int trailing) {
+        return route.pathParamCount() == 0 || route.pathParamCount() == trailing;
     }
 
     private Option<Route<?>> findMatchingSpacerRoute(List<Route<?>> candidates, String inputPath) {

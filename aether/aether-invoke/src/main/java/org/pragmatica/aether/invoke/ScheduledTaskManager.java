@@ -472,6 +472,14 @@ public interface ScheduledTaskManager {
         /// the WRONG next match whenever the invocation runs longer than the interval between cron
         /// matches. `0` on parse failure mirrors the pre-existing warn-only defense-in-depth fallback in
         /// [#startCronTimer] — activation-time validation ([NodeDeploymentState]) is the real gate.
+        ///
+        /// **Clock source is NODE-LOCAL (#273 item 3, documented rather than changed).** `Instant.now()`
+        /// is this JVM's wall clock, read as UTC by [CronExpression]; there is no cluster clock and the
+        /// HLC is not consulted. So an ALL-mode cron fires on each node at that node's own reading of
+        /// the boundary — skew between nodes is skew between their fires — and a SINGLE-mode cron uses
+        /// the leader's clock, so a leader change moves the reference clock along with the timer. A
+        /// clock that steps across a minute boundary on one node can fire that boundary twice or skip
+        /// it once on that node; nothing here detects it.
         private static long nextCronFireAt(CronExpression cron) {
             var now = Instant.now();
 

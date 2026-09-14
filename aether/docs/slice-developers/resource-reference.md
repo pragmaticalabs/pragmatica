@@ -657,6 +657,20 @@ Nested under `[notification.retry_config]`:
 | `max_delay` | duration | `30s` | Maximum retry delay |
 | `backoff_multiplier` | `double` | `2.0` | Exponential backoff multiplier |
 
+The schedule applies to **transient** failures only. A failure the backend has classified as
+permanent — SMTP: any **5yz reply on any command** (the greeting, EHLO, STARTTLS, AUTH, MAIL
+FROM, RCPT TO, DATA — every refusal record carries the reply code and RFC 5321 §4.2.1 decides),
+a 3yz where a completion was expected (a challenge this client cannot answer), or a local TLS
+setup failure (`TlsSetupFailed` — in a TLS mode the send fails BEFORE any connection is opened;
+the client never falls back to cleartext); HTTP: `AuthError` (401/403), `VendorNotFound`, or a
+`RequestFailed` with any 4xx status other than 408 and 429 — is not retried: the same request
+would get the same answer, and `DeliveryFailed` is returned after the first attempt (#271).
+SMTP **4yz replies on any command** (`454 Temporary authentication failure`, `454 TLS not
+available due to temporary reason`, `421` at the greeting or EHLO, `451` at MAIL FROM),
+connection failures and timeouts, and HTTP 5xx/408/429 take the full schedule. `DeliveryFailed`
+carries the backend's last cause and its classification (`isTerminal()`/`isTransient()`), so a
+`[retry.<name>]` interceptor on the calling method sees the difference.
+
 ### API
 
 `NotificationSender` provides a single method:
@@ -695,7 +709,7 @@ sender.send(notification)
 |---------|------|
 | `BackendNotConfigured` | Unknown backend or missing backend-specific configuration |
 | `UnsupportedChannel` | Notification type not supported by this backend |
-| `DeliveryFailed` | All retry attempts exhausted |
+| `DeliveryFailed` | Retry attempts exhausted, or a permanent failure on the first attempt (see Retry Configuration) |
 
 ### TOML Examples
 
@@ -1298,6 +1312,25 @@ As of #841, `execution_mode = "all"` tasks accumulate this state **per node** �
 - **Fixed-rate (`interval`) tasks skip a fire while the previous run of the same task is still executing**, rather than allowing concurrent overlapping runs. A skipped fire increments `skippedOverlaps` and does not touch `totalExecutions` or `consecutiveFailures` [verified: `ScheduledTaskManagerTest#fixedRate_overlappingFire_recordsSkipInsteadOfDoubleExecution`].
 - **Cron tasks re-schedule after the previous execution completes**, not after the fire is launched — so a slow execution delays the next cron fire rather than launching two runs concurrently; there is nothing to skip and `skippedOverlaps` never increments for cron tasks.
 - This is a fixed default (skip, not queue or run concurrently); there is no per-task configuration knob.
+
+### Clock Source
+
+Cron next-fire times are computed from the **node's own wall clock** (`Instant.now()`, read as UTC by
+`CronExpression`); there is no cluster clock, and the HLC is not consulted [mechanism:
+`ScheduledTaskManager.TaskOps.nextCronFireAt`, `CronExpression.nextFireTime(Instant)`]. Consequences, stated
+rather than solved:
+
+- `execution_mode = "all"`: each node fires a cron boundary at its own reading of it, so clock skew between
+  nodes is skew between their fires. Nothing aligns them.
+- `execution_mode = "single"`: the leader's clock is the reference; a leader change moves the reference
+  clock along with the timer, so the phase of a boundary can shift by the skew between the two leaders.
+- A clock that steps across a minute boundary on one node can fire that boundary twice or skip it once on that
+  node. Nothing detects or compensates this. Keep node clocks NTP-disciplined if cron boundaries matter.
+
+Interval tasks are affected only in phase, not in period: the interval itself is measured by the node's
+scheduler (`SharedScheduler.scheduleAtFixedRate`), so a clock step does not stretch or shrink the period, but the
+`nextFireAt` reported in state is `System.currentTimeMillis() + interval` — a node-local wall-clock reading that
+shifts with the clock.
 
 ### Schedule Validation
 

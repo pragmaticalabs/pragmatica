@@ -1522,7 +1522,16 @@ public interface AetherNode extends ManageableNode {
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
         var repositories = repositoryFactory.createAll(config.sliceConfig());
         var sharedLibraryLoader = createSharedLibraryLoader(config);
-        var resourceProviderSetup = createResourceProviderFacade(config);
+        // #904: a configured resource provider whose secrets cannot be resolved is a boot failure
+        // naming the secret, propagated exactly like `baseStorageSetupsResult` above -- never a boot
+        // on the no-op facade with provisioning silently disabled.
+        var resourceProviderSetupResult = createResourceProviderFacade(config);
+
+        if (resourceProviderSetupResult.isFailure()) {
+            return resourceProviderSetupResult.map(ignored -> null);
+        }
+
+        var resourceProviderSetup = resourceProviderSetupResult.fold(_ -> null, setup -> setup);
         var sliceStore = SliceStore.sliceStore(sliceRegistry,
                                                repositories,
                                                sharedLibraryLoader,
@@ -5824,6 +5833,10 @@ public interface AetherNode extends ManageableNode {
                                                   .onRemove(AetherKey.VersionRoutingKey.class,
                                                             clusterDeploymentManager::onVersionRoutingRemove)
                                                   .onPut(AetherKey.SliceTargetKey.class, controlLoop::onSliceTargetPut)
+                                                  .onPut(AetherKey.SliceTargetKey.class,
+                                                         nodeDeploymentManager::onSliceTargetPut)
+                                                  .onPut(AetherKey.VersionRoutingKey.class,
+                                                         nodeDeploymentManager::onVersionRoutingPut)
                                                   .onRemove(AetherKey.SliceTargetKey.class,
                                                             controlLoop::onSliceTargetRemove)
                                                   .onPut(AetherKey.AlertThresholdKey.class,
@@ -6228,18 +6241,18 @@ public interface AetherNode extends ManageableNode {
                                  Option<SpiResourceProvider> spiProvider,
                                  Option<Fn1<Promise<String>, String>> secretResolver) {}
 
-    private static ResourceProviderSetup createResourceProviderFacade(AetherNodeConfig config) {
+    private static Result<ResourceProviderSetup> createResourceProviderFacade(AetherNodeConfig config) {
         var log = LoggerFactory.getLogger(AetherNode.class);
 
         return config.configProvider()
                      .fold(() -> {
                                log.debug("No configuration provider configured, resource provisioning disabled");
 
-                               return new ResourceProviderSetup(noOpResourceProviderFacade(),
-                                                                Option.empty(),
-                                                                Option.empty(),
-                                                                Option.empty(),
-                                                                Option.empty());
+                               return Result.success(new ResourceProviderSetup(noOpResourceProviderFacade(),
+                                                                               Option.empty(),
+                                                                               Option.empty(),
+                                                                               Option.empty(),
+                                                                               Option.empty()));
                            },
                            configProvider -> {
                                log.info("Creating ConfigService and ResourceProvider from configuration provider");
@@ -6252,20 +6265,21 @@ public interface AetherNode extends ManageableNode {
                                var secretsProvider = config.environment()
                                                            .flatMap(EnvironmentIntegration::secrets);
                                var secretResolver = secretsProvider.map(sp -> (Fn1<Promise<String>, String>) sp::resolveSecret);
-                               var resolvedProvider = secretsProvider.fold(() -> Result.success(configProvider),
+                               // No SecretsProvider (no `[cloud]` block, or `Main.resolveEnvironment`
+                               // dropped a failed one): a `${secrets:...}` placeholder in node.toml
+                               // can never resolve, so it refuses here too rather than being served
+                               // as the literal value -- the `NoSecretsProviderForStorageEncryption`
+                               // rule applied to the config map. A placeholder-free provider (Ember,
+                               // Forge) is returned as-is.
+                               var resolvedProvider = secretsProvider.fold(() -> ConfigurationProvider.withoutSecretResolution(configProvider),
                                                                            sp -> ConfigurationProvider.withSecretResolution(configProvider,
                                                                                                                             sp::resolveSecret));
-
-                               return resolvedProvider.fold(cause -> {
-                                                                log.error("Failed to resolve secrets in configuration: {}",
-                                                                          cause.message());
-
-                                                                return new ResourceProviderSetup(noOpResourceProviderFacade(),
-                                                                                                 Option.empty(),
-                                                                                                 Option.empty(),
-                                                                                                 Option.empty(),
-                                                                                                 secretResolver);
-                                                            },
+                               // #904: the operator DID configure a provider; the failure is in
+                               // resolving its secrets, and the refusal says so. Booting on the
+                               // no-op facade instead left `nodeComposite` empty, so every
+                               // `ConfigurationSection` slice failed later with a cause that blamed
+                               // the node for having no provider configured.
+                               return resolvedProvider.fold(cause -> secretResolutionRefused(cause),
                                                             provider -> {
                                                                 // KV-overlay layer: holds operator config puts only.
                                                                 // Base is empty — the merged view is composed below via
@@ -6295,13 +6309,22 @@ public interface AetherNode extends ManageableNode {
                                                                 // `Promise.unitPromise()` default and every slice unload
                                                                 // reported a successful release without one reaching
                                                                 // `SpiResourceProvider` (#892).
-                                                                return new ResourceProviderSetup(resourceProvider.facade(),
-                                                                                                 Option.some(dynamicProvider),
-                                                                                                 Option.some(nodeComposite),
-                                                                                                 Option.some(resourceProvider),
-                                                                                                 secretResolver);
+                                                                return Result.success(new ResourceProviderSetup(resourceProvider.facade(),
+                                                                                                                Option.some(dynamicProvider),
+                                                                                                                Option.some(nodeComposite),
+                                                                                                                Option.some(resourceProvider),
+                                                                                                                secretResolver));
                                                             });
                            });
+    }
+
+    private static Result<ResourceProviderSetup> secretResolutionRefused(Cause cause) {
+        return Causes.cause("configured resource provider cannot be built: " + cause.message()
+                           + " — refusing to boot: the node would otherwise start with that configuration"
+                           + " unusable, either with resource provisioning silently disabled or with the"
+                           + " placeholder text served as the value (#904)",
+                            Option.some(cause))
+                     .result();
     }
 
     private static ResourceProviderFacade noOpResourceProviderFacade() {

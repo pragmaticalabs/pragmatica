@@ -19,9 +19,10 @@ class SystemStreamsTest {
     /// here"), and [SystemStreamBootstrap] registers exactly what it iterates. This test hardcodes the
     /// expected engine-key set so a future addition to `ALL` requires a conscious update here too,
     /// rather than silently changing what the management-api write-gate (`ManagementServer`) and
-    /// bootstrap both treat as "framework-internal." Deliberately does NOT include
-    /// `audit.lifecycle.commands` or any other stream not already in `ALL` — whether such streams
-    /// belong in `ALL` at all depends on their own bootstrap mechanism, which is out of scope here.
+    /// bootstrap both treat as "framework-internal." Deliberately does NOT include any stream not
+    /// already in `ALL` — whether such a stream belongs in `ALL` at all depends on its own bootstrap
+    /// mechanism, which is out of scope here (the `audit.lifecycle.commands` constant that once
+    /// described a third creation path was deleted in #734).
     @Test
     void all_engineKeys_matchExpectedEnumeratedSet() {
         var actual = SystemStreams.ALL.stream()
