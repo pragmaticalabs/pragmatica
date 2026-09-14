@@ -3,15 +3,17 @@
 ## Version: 1.0
 ## Status: Implementation-Ready (DESIGN only — see the inert-configuration warning below)
 ## Target Release: Post Passive Worker Pools Phase 1
-## Last Updated: 2026-08-29 (§3.2/§3.3: the #576 inert consumer keys marked rejected-at-deploy)
+## Last Updated: 2026-09-14 (#677: the #576 inert keys descoped from 1.0; their refusal is validation-time and does NOT block a publish)
 
 > **⚠️ NOT EVERY KEY IN THIS SPEC IS WIRED, AND THE UNWIRED ONES ARE REJECTED.** The
 > "Implementation-Ready" status above describes the DESIGN. Several `[streams.X]` configuration keys
 > documented below — the whole per-consumer tuning family in §3.2/§3.3, plus `compression` and a
 > non-default `encryption-key-id` — are read by nothing at runtime, and since **#576** a blueprint
-> declaring them is **rejected at deploy time** rather than silently ignored. Copying an example from
-> those sections into a real `resources.toml` will therefore FAIL the deployment, not merely
-> under-deliver. Every such key is flagged in place. **#677 descoped them for 1.0** (2026-09-14): they
+> declaring them is **refused by blueprint validation** rather than silently accepted. **That refusal
+> does not block the publish today** — `BlueprintService.streamBindings` discards it and writes empty
+> stream bindings — so copying an example from those sections into a real `resources.toml` does NOT
+> fail the deployment; it publishes, and any slice consuming the aliased stream then fails with
+> `StreamAddressError.UnboundStreamAlias`. Every such key is flagged in place. **#677 descoped them for 1.0** (2026-09-14): they
 > stay rejected, `encryption-key-id` waits on #253's production key source, and compression plus the
 > per-consumer tuning family are a post-GA epic — a design target, not a 1.0 promise. The
 > authoritative per-operation statement of what streaming actually guarantees is
@@ -373,16 +375,17 @@ backpressure = "drop-oldest"      # "block", "drop-oldest", "reject" (default: "
 
 Consumer groups are configured inline under the stream section. Each consumer group maps to a consumer annotation's config section.
 
-> **⚠️ EVERY KEY IN THIS EXAMPLE IS CURRENTLY REJECTED AT DEPLOY TIME (#576).** None of the
-> per-consumer tuning keys below is read at runtime, so a blueprint containing this block does not
-> deploy — `StreamResourceValidator.guardInertConfig` fails it as inert configuration. The block is
+> **⚠️ EVERY KEY IN THIS EXAMPLE IS REFUSED BY BLUEPRINT VALIDATION (#576).** None of the
+> per-consumer tuning keys below is read at runtime, and `StreamResourceValidator.guardInertConfig`
+> fails them as inert configuration — but that verdict does not block the publish today (it is dropped
+> by `BlueprintService.streamBindings`), so the blueprint DOES deploy, with empty stream bindings. The block is
 > retained as a post-GA DESIGN target (descoped from 1.0 in #677), not as a working example. `auto-offset-reset` is the sharpest
 > case: the only value the validator accepts is `"earliest"`, because a never-committed consumer always
 > starts at offset 0 **by the #478 ruling, permanently** — so the `"latest"` shown here (and named as
 > the default) is precisely the value that will be refused.
 
 ```toml
-# DESIGN TARGET — does not deploy today; every key below is rejected as inert (#576, #677).
+# DESIGN TARGET — every key below is refused as inert (#576, #677); that refusal does not block the publish today.
 [streams.order-events.consumers.analytics]
 auto-offset-reset = "latest"     # REJECTED: only "earliest" is accepted (#478 makes it permanent)
 checkpoint-interval = "1s"       # REJECTED as inert: not read at runtime
@@ -417,7 +420,8 @@ on-failure = "stall"             # REJECTED as inert
 
 The `Status` column records what the RUNTIME does with each key today, which is not what the `Default`
 column describes — the defaults are the design's, and #576 turned the gap between them into a loud
-deploy-time rejection rather than silence. `Default` is therefore the post-GA design target (#677
+validation-time rejection rather than silence (loud in the validator's verdict only — it does not block
+the publish; see the header). `Default` is therefore the post-GA design target (#677
 descoped the wiring from 1.0), not current behaviour.
 
 | Property | Type | Default | Status today | Description |

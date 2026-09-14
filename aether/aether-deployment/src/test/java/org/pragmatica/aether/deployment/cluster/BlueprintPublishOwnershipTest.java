@@ -998,6 +998,53 @@ class BlueprintPublishOwnershipTest {
                          .flatMap(url -> Location.location(artifact, url));
         }
 
+        /// **ENABLED TRIPWIRE FOR A KNOWN DEFECT (#677 audit, 2026-09-14) — DO NOT SILENCE.**
+        ///
+        /// #576 refuses the descoped `[streams.X]` keys and several documents describe that refusal.
+        /// Nothing acts on it: `BlueprintService.streamBindings` is the only production caller of
+        /// [org.pragmatica.aether.deployment.validation.StreamResourceValidator#validate] and ends
+        /// `.or(List.of())`, which returns the replacement and DISCARDS the `Cause`. So a blueprint
+        /// carrying `compression = "lz4"` PUBLISHES, and the bindings entry written for it is EMPTY.
+        /// That is worse than either a clean refusal or a clean accept: a slice consuming the alias
+        /// then fails with a generic
+        /// [org.pragmatica.aether.slice.stream.StreamAddressError.UnboundStreamAlias], far from the
+        /// offending key and naming neither it nor the reason.
+        ///
+        /// This asserts the CURRENT, WRONG behaviour ON PURPOSE so that it reddens the moment a
+        /// deploy-time gate lands. It is ENABLED rather than `@Disabled` because a disabled test is
+        /// silence, and silence sits forgotten. **WHEN THIS GOES RED the gate exists — delete this test
+        /// and assert instead that the publish FAILS and names the offending key.**
+        @Test
+        void publish_withDescopedStreamKey_stillSucceedsWithEmptyBindings_KNOWN_DEFECT() {
+            var repository = sliceRepository(Map.of(PUBLISHER_SLICE, sliceJar(PUBLISHER_SLICE, descopedCompression()),
+                                                    CONSUMER_SLICE, sliceJar(CONSUMER_SLICE, descopedCompression())));
+
+            var outcome = publishBody(repository);
+
+            assertThat(outcome.isSuccess())
+                    .as("KNOWN DEFECT (#677 audit): a blueprint declaring the descoped `compression` key "
+                        + "publishes successfully, because BlueprintService.streamBindings drops the "
+                        + "StreamResourceValidator failure via `.or(List.of())`. WHEN THIS GOES RED a "
+                        + "deploy-time gate has landed: delete this test and assert the publish FAILS "
+                        + "naming the offending key.")
+                    .isTrue();
+
+            assertThat(boundAddresses(store))
+                    .as("KNOWN DEFECT (#677 audit): the discarded failure leaves an EMPTY bindings entry, so "
+                        + "a slice consuming the alias later fails with a generic UnboundStreamAlias instead "
+                        + "of being told which key is unsupported. WHEN THIS GOES RED, see the assertion above.")
+                    .isEmpty();
+        }
+
+        /// Same shape as [#pinnedOrderEvents], plus the descoped `compression` key #576 refuses.
+        private static String descopedCompression() {
+            return """
+                    [streams.order-events]
+                    partitions = 1
+                    compression = "lz4"
+                    """;
+        }
+
         private static String pinnedOrderEvents(String version) {
             return """
                     [streams.order-events]
