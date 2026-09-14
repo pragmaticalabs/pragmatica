@@ -736,6 +736,25 @@ class SwimProtocolTest {
                 .isEqualTo(afterPing);
         }
 
+        /// #501: the announce loop is a periodic task on the shared scheduler; `stop()` must cancel it
+        /// like the probe tick, or a stopped protocol keeps sending ANNOUNCE for up to 30s.
+        @Test
+        void stop_cancelsTheAnnounceLoop_noAnnounceAfterStop() throws InterruptedException {
+            protocol.start();
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+            assertThat(announceCount(transport)).isGreaterThanOrEqualTo(1);
+
+            protocol.stop();
+
+            var afterStop = announceCount(transport);
+            Thread.sleep(1_200L); // span at least two 500ms announce ticks
+            assertThat(announceCount(transport))
+                .as("a stopped protocol must not keep announcing — stop() cancels the announce loop")
+                .isEqualTo(afterStop);
+        }
+
         private static int announceCount(RecordingTransport transport) {
             return (int) transport.sentMessages.stream()
                                                .filter(m -> m.message() instanceof Announce)
