@@ -174,6 +174,49 @@ class DHTAntiEntropyTest {
             assertThat(antiEntropy.pendingDigestCount()).isEqualTo(0);
         }
 
+        /// #420 round 2 — the complement of the test above. The ring that justified the digest can go
+        /// stale before the answer arrives: a joiner's ring grows one `NodeJoined` at a time, and a
+        /// decision landing mid-round can take a partition away from this node. Ownership is therefore
+        /// re-evaluated when the RESPONSE lands, not only when the request went out, so a diverged
+        /// partition this node no longer replicates is not pulled.
+        @Test
+        void onDigestResponse_doesNotRequestMigration_whenTheRingNoLongerMakesThisNodeAReplica() {
+            var localDigest = DHTNode.computeDigest(List.of());
+            var remoteDigest = DHTNode.computeDigest(List.of(new DHTMessage.KeyValue(key("x"), value("y"), 100L, 0L, 0L)));
+
+            // The ring grows while the digest is in flight — widening only, the same `addNode` the join
+            // path uses. Afterwards some partitions no longer have LOCAL among their replicas.
+            for (int i = 0; i < 8; i++) {
+                node.ring().addNode(new NodeId("grown-" + i));
+            }
+
+            var partitionIndex = firstPartitionWithoutLocal();
+
+            System.out.printf("STALE-RING-PIN grown ring nodeCount=%d first partition without LOCAL=%d owners=%s%n",
+                              node.ring().nodeCount(),
+                              partitionIndex,
+                              partitionIndex < 0 ? "none" : node.ring().nodesFor(Partition.at(partitionIndex), 2));
+            assertThat(partitionIndex).as("control: the grown ring has a partition LOCAL does not replicate").isNotNegative();
+
+            injectPendingDigest("test-req-stale-ring", PEER, partitionIndex, localDigest);
+
+            antiEntropy.onDigestResponse(new DHTMessage.DigestResponse("test-req-stale-ring", PEER, remoteDigest));
+
+            assertThat(network.captured.stream().filter(m -> m.message() instanceof DHTMessage.MigrationDataRequest).toList())
+                .as("a partition this node no longer replicates is not pulled")
+                .isEmpty();
+        }
+
+        private int firstPartitionWithoutLocal() {
+            for (int p = 0; p < Partition.MAX_PARTITIONS; p++) {
+                if (!node.ring().nodesFor(Partition.at(p), 2).contains(LOCAL)) {
+                    return p;
+                }
+            }
+
+            return -1;
+        }
+
         private void injectPendingDigest(String requestId, NodeId peer, int partitionIndex, byte[] localDigest) {
             // Use reflection-free approach: send a digest request and intercept it to get the correlation ID
             // Simpler: directly test via the public onDigestResponse method with known pending state
