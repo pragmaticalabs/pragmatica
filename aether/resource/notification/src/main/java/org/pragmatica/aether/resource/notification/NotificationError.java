@@ -12,5 +12,18 @@ public sealed interface NotificationError extends Cause {
 
     record UnsupportedChannel(String message) implements NotificationError {}
 
-    record DeliveryFailed(String message) implements NotificationError {}
+    /// Delivery failed after the sender's own retry; `origin` is the backend's last cause, and the
+    /// classification travels with it — a terminal `550` and an exhausted `4yz` schedule are not
+    /// the same verdict to a caller's retry policy (review of #1075, NIT-2).
+    record DeliveryFailed(String message, Cause origin) implements NotificationError, Cause.Wrapped {
+        @Override
+        public boolean isTerminal() {
+            return origin.isTerminal();
+        }
+
+        @Override
+        public boolean isTransient() {
+            return origin.isTransient();
+        }
+    }
 }

@@ -17,11 +17,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AppHttpConfigApiKeysTest {
 
     @Test
-    void appHttpConfig_defaultHasEmptyApiKeysAndSecurityDisabled() {
+    void appHttpConfig_defaultHasEmptyApiKeysAndIsFailClosed() {
         var config = AppHttpConfig.appHttpConfig();
 
         assertThat(config.apiKeys()).isEmpty();
-        assertThat(config.securityEnabled()).isFalse();
+        // #665: security is ON with no key -- nothing authenticates until a key exists.
+        assertThat(config.securityEnabled()).isTrue();
         assertThat(config.enabled()).isFalse();
     }
 
@@ -52,10 +53,9 @@ class AppHttpConfigApiKeysTest {
     }
 
     @Test
-    void securityEnabled_returnsFalseWhenApiKeysEmpty() {
-        var config = AppHttpConfig.appHttpConfig(8070);
-
-        assertThat(config.securityEnabled()).isFalse();
+    void securityEnabled_returnsFalseOnlyForTheExplicitInsecureBuilder() {
+        assertThat(AppHttpConfig.appHttpConfig(8070).securityEnabled()).isTrue();
+        assertThat(AppHttpConfig.insecureAppHttpConfig(8070).securityEnabled()).isFalse();
     }
 
     @Test

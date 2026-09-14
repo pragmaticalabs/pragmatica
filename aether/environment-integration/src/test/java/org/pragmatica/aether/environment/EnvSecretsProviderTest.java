@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 class EnvSecretsProviderTest {
 
@@ -51,6 +52,18 @@ class EnvSecretsProviderTest {
                     .await()
                     .onSuccess(_ -> assertThat(true).as("Expected failure").isFalse())
                     .onFailure(cause -> assertThat(cause.message()).contains("Secret resolution failed"));
+        }
+
+        /// #904 round 2 (N-2): the operator has to SET a variable, so the failure names the variable,
+        /// not only the secret path it was derived from.
+        @Test
+        void resolveSecret_missingEnvVar_namesTheEnvVarToSet() {
+            var provider = EnvSecretsProvider.envSecretsProvider();
+
+            provider.resolveSecret("nonexistent/secret")
+                    .await()
+                    .onSuccess(_ -> fail("AETHER_SECRET_NONEXISTENT_SECRET is not set, resolution must fail"))
+                    .onFailure(cause -> assertThat(cause.message()).contains("AETHER_SECRET_NONEXISTENT_SECRET"));
         }
     }
 }

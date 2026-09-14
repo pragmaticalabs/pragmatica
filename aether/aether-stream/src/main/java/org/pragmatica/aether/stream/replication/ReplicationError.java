@@ -8,7 +8,8 @@ import org.pragmatica.lang.Cause;
 
 
 public sealed interface ReplicationError extends Cause {
-    enum General implements ReplicationError {
+    /// Replica availability is a passing condition, like a quorum not yet reached (#280).
+    enum General implements ReplicationError, Cause.Transient {
         NOT_ENOUGH_REPLICAS("Not enough replicas available for requested acknowledgment count"),
         REPLICATION_TIMEOUT("Replication acknowledgment timed out");
         private final String message;

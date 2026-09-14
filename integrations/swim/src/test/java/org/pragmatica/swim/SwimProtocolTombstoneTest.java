@@ -150,7 +150,7 @@ class SwimProtocolTombstoneTest {
         // is cleared so cleanup removes (and tombstones) it on the next tick. The
         // second-hand (gossip) FAULTY needs local transport-down corroboration to drive
         // the death path (P1 death-path co-confirmation).
-        protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down")));
+        protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
         var faultyA = new MembershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
         protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
 
@@ -424,7 +424,7 @@ class SwimProtocolTombstoneTest {
 
         // Second-hand (gossip) FAULTY needs local transport-down corroboration to drive
         // the death path (P1 death-path co-confirmation).
-        protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down")));
+        protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
         var faultyA = new MembershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
         protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
 
@@ -539,7 +539,7 @@ class SwimProtocolTombstoneTest {
         // Transport-down corroboration is set, but the gossiped FAULTY is dropped earlier by the
         // OBSERVED guard (the member is a not-yet-confirmed OBSERVED placeholder), so no FAULTY edge
         // and no tombstone-gate evaluation occurs.
-        coldBoot.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down")));
+        coldBoot.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
         var faultyA = new MembershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A);
         coldBoot.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyA)));
 

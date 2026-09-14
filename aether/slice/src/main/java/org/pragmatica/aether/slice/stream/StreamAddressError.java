@@ -21,7 +21,8 @@ import org.pragmatica.lang.utils.Causes;
 /// quietly reverting to the bare spelling that caused the defect.
 ///
 /// This is classified FATAL rather than intermittent, and that rests on an ordering fact rather than
-/// on optimism: `BlueprintService.buildAllCommands` puts `BlueprintStreamBindingsKey` in the SAME
+/// on optimism: both `BlueprintService` publish paths — `buildAllCommands` (artifact) and
+/// `storeBlueprintWithKey` (TOML body, since #1066) — put `BlueprintStreamBindingsKey` in the SAME
 /// consensus batch as the blueprint itself, and the `SliceTargetKey` that triggers deployment is
 /// written strictly later. A node applying the log in order therefore cannot see the slice-target
 /// without already having the bindings — so "bindings missing" is a misconfiguration, never a
@@ -53,7 +54,9 @@ public sealed interface StreamAddressError extends Cause {
     /// Distinct from [UnboundStreamAlias] because the diagnosis differs: there the blueprint published
     /// bindings and this alias was excluded, here nothing was published for the blueprint. Given the
     /// same-batch ordering above, the reachable cause is a cluster deployed before stream bindings
-    /// existed — an upgrade that needs a redeploy, not a declaration to fix.
+    /// existed — an upgrade that needs a redeploy, not a declaration to fix. Until #1066 there was a
+    /// second, far commoner cause: the TOML body publish (`POST /api/v1/blueprints`, `aether blueprint
+    /// apply`, Forge) wrote no bindings at all.
     record UnresolvedStreamBindings(String alias, BlueprintId blueprintId, String message) implements StreamAddressError {
         static final Fn2<UnresolvedStreamBindings, String, BlueprintId> FACTORY = Causes.forTwoValues("Cannot resolve stream alias '%s': blueprint %s published no stream bindings. "
                                                                                                      + "Redeploy the blueprint so its alias-to-address bindings are written.",

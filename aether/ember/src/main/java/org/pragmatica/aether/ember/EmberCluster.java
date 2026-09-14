@@ -170,12 +170,16 @@ public final class EmberCluster {
     /// [SecurityMode#NONE] with no keys, which is what an in-JVM harness wants: `securityEnabled()` is
     /// false, so the node installs `denyUnlessPublicValidator` and only Public routes answer.
     ///
+    /// This is the harness's EXPLICIT opt-out (#665): the bare `AppHttpConfig` builders default to
+    /// `API_KEY`, so an Ember node that should answer unauthenticated must say NONE here, and the mode
+    /// is passed to the full factory by name below rather than inherited from a convenience default.
+    ///
     /// Forge sets these from the sibling `aether.toml`'s `[app-http]` via [#withAppHttpSecurity] BEFORE
-    /// [#start]. Without that seam a Forge cluster could not authenticate ANY caller — the convenience
-    /// factory hard-codes NONE and an empty key map, so an application declaring `role:admin` or
-    /// `authenticated` routes had every one of them refused with no credential able to satisfy them,
-    /// and no config or environment path could reach the node. That made Aether's own local simulator
-    /// unable to demonstrate the access-control model applications are expected to declare.
+    /// [#start]. Without that seam a Forge cluster could not authenticate ANY caller — NONE with an
+    /// empty key map means an application declaring `role:admin` or `authenticated` routes has every
+    /// one of them refused with no credential able to satisfy them, and no config or environment path
+    /// could reach the node. That made Aether's own local simulator unable to demonstrate the
+    /// access-control model applications are expected to declare.
     private final AtomicReference<SecurityMode> appHttpSecurityMode = new AtomicReference<>(SecurityMode.NONE);
 
     private final AtomicReference<Map<String, ApiKeyEntry>> appHttpApiKeys = new AtomicReference<>(Map.of());

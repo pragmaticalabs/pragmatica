@@ -6,6 +6,8 @@ package org.pragmatica.aether.deployment.validation;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.validation.ConfigSectionPreflightValidator.SliceJar;
 import org.pragmatica.aether.slice.topology.SliceTopology;
 import org.pragmatica.aether.slice.topology.SliceTopology.ResourceDep;
 import org.pragmatica.aether.slice.topology.SliceTopology.TopicPub;
@@ -21,6 +23,8 @@ import static org.assertj.core.api.Assertions.fail;
 
 
 class ConfigSectionPreflightValidatorTest {
+    private static final Artifact ORDERS_ARTIFACT = Artifact.artifact("com.example:app:1.0.0").unwrap();
+    private static final Artifact BILLING_ARTIFACT = Artifact.artifact("com.example:billing:1.0.0").unwrap();
 
     private static SliceTopology topologyWithResources(String sliceName, ResourceDep... resources) {
         return new SliceTopology(sliceName, "com.example:app:1.0.0", List.of(), List.of(), List.of(resources), List.of(), List.of());
@@ -34,6 +38,16 @@ class ConfigSectionPreflightValidatorTest {
         var topicPub = new TopicPub(topicConfigSection, topicConfigSection, "com.example.OrderPlaced");
 
         return new SliceTopology(sliceName, "com.example:app:1.0.0", List.of(), List.of(), List.of(), List.of(topicPub), List.of());
+    }
+
+    /// A slice jar that ships no `META-INF/resources.toml`, so the loader's view is the node composite alone.
+    private static SliceJar jarWithoutResourcesToml(SliceTopology... topologies) {
+        return SliceJar.sliceJar(ORDERS_ARTIFACT, List.of(topologies), Option.none());
+    }
+
+    /// A slice jar shipping the given `META-INF/resources.toml` text (#1067).
+    private static SliceJar jarShipping(Artifact artifact, String resourcesToml, SliceTopology... topologies) {
+        return SliceJar.sliceJar(artifact, List.of(topologies), Option.some(resourcesToml));
     }
 
     /// Builds a [ConfigurationProvider] whose composite view has exactly the given sections defined
@@ -56,7 +70,7 @@ class ConfigSectionPreflightValidatorTest {
         @Test
         void validate_emptyResourceList_succeeds() {
             var topology = topologyWithResources("orders-api");
-            var result = ConfigSectionPreflightValidator.validate(List.of(topology), Option.some(providerWithSections()));
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarWithoutResourcesToml(topology)), Option.some(providerWithSections()));
 
             result.onFailure(cause -> fail("Expected success but got: " + cause.message()));
         }
@@ -67,7 +81,7 @@ class ConfigSectionPreflightValidatorTest {
                                                    new ResourceDep("database", "database.orders"),
                                                    new ResourceDep("cache", "cache.sessions"));
             var provider = providerWithSections("database.orders", "cache.sessions");
-            var result = ConfigSectionPreflightValidator.validate(List.of(topology), Option.some(provider));
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarWithoutResourcesToml(topology)), Option.some(provider));
 
             result.onFailure(cause -> fail("Expected success but got: " + cause.message()));
         }
@@ -75,7 +89,7 @@ class ConfigSectionPreflightValidatorTest {
         @Test
         void validate_noConfigurationProvider_failsOpen() {
             var topology = topologyWithResources("orders-api", new ResourceDep("database", "database.orders"));
-            var result = ConfigSectionPreflightValidator.validate(List.of(topology), Option.none());
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarWithoutResourcesToml(topology)), Option.none());
 
             result.onFailure(cause -> fail("Expected fail-open success but got: " + cause.message()));
         }
@@ -91,7 +105,7 @@ class ConfigSectionPreflightValidatorTest {
         @Test
         void validate_missingPublishTopicSection_isInvisibleToTheCheck() {
             var topology = topologyWithPublishTopic("orders-api", "orders.placed");
-            var result = ConfigSectionPreflightValidator.validate(List.of(topology), Option.some(providerWithSections()));
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarWithoutResourcesToml(topology)), Option.some(providerWithSections()));
 
             result.onFailure(cause -> fail("Publish-topic sections are out of #547's scope — expected success but got: "
                                           + cause.message()));
@@ -103,7 +117,7 @@ class ConfigSectionPreflightValidatorTest {
         @Test
         void validate_missingSection_fails() {
             var topology = topologyWithResources("orders-api", new ResourceDep("database", "database.orders"));
-            var result = ConfigSectionPreflightValidator.validate(List.of(topology), Option.some(providerWithSections()));
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarWithoutResourcesToml(topology)), Option.some(providerWithSections()));
 
             result.onSuccess(_ -> fail("Expected failure for missing [database.orders] section"))
                   .onFailure(cause -> assertThat(cause.message()).contains("orders-api")
@@ -117,7 +131,7 @@ class ConfigSectionPreflightValidatorTest {
                                                    new ResourceDep("database", "database.orders"),
                                                    new ResourceDep("cache", "cache.sessions"),
                                                    new ResourceDep("http", "http.payments"));
-            var result = ConfigSectionPreflightValidator.validate(List.of(topology), Option.some(providerWithSections("cache.sessions")));
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarWithoutResourcesToml(topology)), Option.some(providerWithSections("cache.sessions")));
 
             result.onSuccess(_ -> fail("Expected failure for two missing sections"))
                   .onFailure(cause -> assertThat(cause.message()).contains("database.orders")
@@ -129,12 +143,86 @@ class ConfigSectionPreflightValidatorTest {
         void validate_missingSectionAcrossMultipleSlices_namesTheOffendingSlice() {
             var withGap = topologyWithResources("payments-api", new ResourceDep("http", "http.gateway"));
             var clean = topologyWithResources("orders-api", new ResourceDep("database", "database.orders"));
-            var result = ConfigSectionPreflightValidator.validate(List.of(withGap, clean), Option.some(providerWithSections("database.orders")));
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarWithoutResourcesToml(withGap, clean)), Option.some(providerWithSections("database.orders")));
 
             result.onSuccess(_ -> fail("Expected failure for payments-api's missing section"))
                   .onFailure(cause -> assertThat(cause.message()).contains("payments-api")
                                                                   .contains("http.gateway")
                                                                   .doesNotContain("orders-api"));
+        }
+    }
+
+    /// #1067: the slice jar's own `META-INF/resources.toml` is a layer the loader consults beneath the node
+    /// composite — per slice, and only when it parses.
+    @Nested
+    class SliceJarLayer {
+        private static final String ORDERS_DATABASE_TOML = """
+                [database.orders]
+                url = "postgresql://localhost:5432/orders"
+                """;
+        // An unterminated array is a parse error by TomlParser's own contract, as in SliceStoreTest.
+        private static final String MALFORMED_ORDERS_DATABASE_TOML = """
+                [database.orders]
+                url = [
+                """;
+
+        @Test
+        void validate_sectionOnlyInSliceJar_succeeds() {
+            var topology = topologyWithResources("orders-api", new ResourceDep("database", "database.orders"));
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarShipping(ORDERS_ARTIFACT, ORDERS_DATABASE_TOML, topology)),
+                                                                  Option.some(providerWithSections()));
+
+            result.onFailure(cause -> fail("The loader resolves [database.orders] from the slice jar — expected success but got: "
+                                          + cause.message()));
+        }
+
+        @Test
+        void validate_sectionAbsentFromEveryLayer_failsWithMissingConfigSection() {
+            var topology = topologyWithResources("orders-api", new ResourceDep("cache", "cache.sessions"));
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarShipping(ORDERS_ARTIFACT, ORDERS_DATABASE_TOML, topology)),
+                                                                  Option.some(providerWithSections("http.payments")));
+
+            result.onSuccess(_ -> fail("[cache.sessions] is in neither the node composite nor the slice jar"))
+                  .onFailure(cause -> assertThat(cause.stream().toList()).isNotEmpty()
+                                                                         .allMatch(MissingConfigSection.class::isInstance))
+                  .onFailure(cause -> assertThat(cause.message()).contains("cache.sessions"));
+        }
+
+        /// Each slice's composite closes over its own jar at load (`DependencyResolver.loadingContextFor`), so a
+        /// section one slice ships never satisfies another slice that only declares it.
+        @Test
+        void validate_sectionOnlyInAnotherSlicesJar_namesTheSliceThatLacksIt() {
+            var shipping = topologyWithResources("orders-api", new ResourceDep("database", "database.orders"));
+            var borrowing = topologyWithResources("billing-api", new ResourceDep("database", "database.orders"));
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarShipping(ORDERS_ARTIFACT, ORDERS_DATABASE_TOML, shipping),
+                                                                          SliceJar.sliceJar(BILLING_ARTIFACT, List.of(borrowing), Option.none())),
+                                                                  Option.some(providerWithSections()));
+
+            result.onSuccess(_ -> fail("billing-api's loader never reads orders-api's jar — expected failure"))
+                  .onFailure(cause -> assertThat(cause.message()).contains("billing-api")
+                                                                  .doesNotContain("orders-api"));
+        }
+
+        /// A malformed jar `resources.toml` yields no slice composite at load, and provisioning falls back to the
+        /// node composite alone — so a section only in that file is not available at runtime.
+        @Test
+        void validate_sectionOnlyInMalformedSliceJarToml_fails() {
+            var topology = topologyWithResources("orders-api", new ResourceDep("database", "database.orders"));
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarShipping(ORDERS_ARTIFACT, MALFORMED_ORDERS_DATABASE_TOML, topology)),
+                                                                  Option.some(providerWithSections()));
+
+            result.onSuccess(_ -> fail("A malformed slice resources.toml contributes no layer at runtime — expected failure"))
+                  .onFailure(cause -> assertThat(cause.message()).contains("database.orders"));
+        }
+
+        /// The other half of the fallback: the node composite still answers when the jar's file does not parse.
+        @Test
+        void validate_malformedSliceJarToml_stillAcceptsNodeCompositeSection() {
+            var topology = topologyWithResources("orders-api", new ResourceDep("database", "database.orders"));
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarShipping(ORDERS_ARTIFACT, MALFORMED_ORDERS_DATABASE_TOML, topology)),
+                                                                  Option.some(providerWithSections("database.orders")));
+
+            result.onFailure(cause -> fail("[database.orders] is in the node composite — expected success but got: " + cause.message()));
         }
     }
 }
