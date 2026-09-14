@@ -177,6 +177,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                      ctx.self().id());
             ctx.activeOnEntryCallback().onPresent(Runnable::run);
             seedEpochAckExpectationsFromKvStore();
+            dropStaleDeferredStarts();
             processPendingLoadCommands();
             if (!pendingReactivation.isEmpty()) {
                 log.info("Node {} has {} suspended slices to reactivate",
@@ -791,6 +792,24 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                      sliceKey.artifact());
 
             return false;
+        }
+
+        /// #1068 — `Dormant` ignores every put and removal, so a deferral carried across a quorum cycle can
+        /// outlive its key (the leader's sweep removed the leftover meanwhile) or the state it was refused
+        /// at. Re-driving such an entry would load a slice the leader never allocated. Keep only the
+        /// deferrals the committed store still shows at the deferred state; the rest are dropped here on
+        /// entry, before the LOAD rescan.
+        private void dropStaleDeferredStarts() {
+            deferredStarts.entrySet().removeIf(entry -> !committedStateIs(entry.getKey(), entry.getValue()));
+        }
+
+        private boolean committedStateIs(SliceNodeKey sliceKey, SliceState state) {
+            return ctx.kvStore()
+                      .get(NodeArtifactKey.nodeArtifactKey(ctx.self(), sliceKey.artifact()))
+                      .filter(NodeArtifactValue.class::isInstance)
+                      .map(NodeArtifactValue.class::cast)
+                      .map(value -> value.state() == state)
+                      .or(false);
         }
 
         /// #1068 — a committed `SliceTargetKey` or `VersionRoutingKey` for `base` just arrived: every

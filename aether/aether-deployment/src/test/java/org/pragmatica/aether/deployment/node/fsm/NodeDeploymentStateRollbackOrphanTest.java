@@ -398,6 +398,27 @@ class NodeDeploymentStateRollbackOrphanTest {
             await().atMost(SETTLE).untilAsserted(() -> assertThat(sliceStore.activateRequests).containsExactly(ARTIFACT));
         }
 
+        /// `Dormant` drops every put and removal on the floor, so a deferral can outlive its key: the leader's
+        /// sweep removes the leftover while quorum is lost. Re-driving it afterwards would load a slice the
+        /// leader never allocated, and its LOADING put would re-create the key.
+        @Test
+        void deferralWhoseKeyWasRemovedDuringDormant_isNotRedrivenByALaterTarget() {
+            seedRolledBackOrphan();
+            harness.dispatch(new QuorumEstablished());
+            dispatchNodeArtifactPut(SELF, ARTIFACT, SliceState.ACTIVE);
+            settle();
+
+            harness.dispatch(new QuorumDisappeared());
+            applyToKvStore(new KVCommand.Remove<>(NodeArtifactKey.nodeArtifactKey(SELF, ARTIFACT)));
+            harness.dispatch(new QuorumEstablished());
+            assertThat(kvStore.get(NodeArtifactKey.nodeArtifactKey(SELF, ARTIFACT)).isPresent()).as("control: the key is gone").isFalse();
+
+            targetArrives(BASE, V1);
+
+            settle();
+            assertThat(sliceStore.loadRequests).as("no committed key, nothing the leader allocated — nothing to start").isEmpty();
+        }
+
         /// Control: the LOAD arm already survived through the onEntry rescan of LOAD keys.
         @Test
         void deferredLoad_afterQuorumCycle_isLoadedWhenTargetArrives() {
