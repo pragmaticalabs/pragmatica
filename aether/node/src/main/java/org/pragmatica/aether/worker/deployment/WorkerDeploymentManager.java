@@ -63,6 +63,23 @@ public interface WorkerDeploymentManager {
                                                            MutationForwarder mutationForwarder,
                                                            List<NodeId> initialMembers,
                                                            Supplier<String> communityIdSupplier) {
+        return workerDeploymentManager(self,
+                                       sliceStore,
+                                       mutationForwarder,
+                                       new ConcurrentHashMap<>(),
+                                       initialMembers,
+                                       communityIdSupplier);
+    }
+
+    /// Test seam: injects the deployments map to force the interleaving between
+    /// `computeAndApplyAssignment`'s read and its write (#906); production callers use the other
+    /// overloads.
+    static WorkerDeploymentManager workerDeploymentManager(NodeId self,
+                                                           SliceStore sliceStore,
+                                                           MutationForwarder mutationForwarder,
+                                                           ConcurrentHashMap<Artifact, WorkerSliceDeployment> deployments,
+                                                           List<NodeId> initialMembers,
+                                                           Supplier<String> communityIdSupplier) {
         @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01", "JBCT-STY-05", "JBCT-SEQ-01", "JBCT-LAM-01"})
         record workerDeploymentManager(NodeId self,
                                        SliceStore sliceStore,
@@ -131,7 +148,8 @@ public interface WorkerDeploymentManager {
                     deployments.remove(artifact);
                     teardownSlice(artifact);
                 } else {
-                    current.onPresent(c -> deployments.put(artifact, c.withInstances(assigned)));
+                    // Atomic: a state transition landing after the read above must not be clobbered (#906).
+                    deployments.computeIfPresent(artifact, (_, c) -> c.withInstances(assigned));
                 }
             }
 
@@ -295,7 +313,7 @@ public interface WorkerDeploymentManager {
         return new workerDeploymentManager(self,
                                            sliceStore,
                                            mutationForwarder,
-                                           new ConcurrentHashMap<>(),
+                                           deployments,
                                            new ConcurrentHashMap<>(),
                                            new AtomicReference<>(List.copyOf(initialMembers)),
                                            new AtomicLong(0),
