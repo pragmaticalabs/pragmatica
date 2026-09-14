@@ -136,6 +136,10 @@
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>org.pragmatica.jbct.cli.JbctCommand</mainClass>
+                                    <manifestEntries>
+                                        <!-- #1077: shaded log4j-api is multi-release; see aether/node/pom.xml -->
+                                        <Multi-Release>true</Multi-Release>
+                                    </manifestEntries>
                                 </transformer>
                             </transformers>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
