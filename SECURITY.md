@@ -87,8 +87,7 @@ section now has the same fail-closed posture for its Management API as an `aethe
 `security_mode`. **This is a behaviour change for such nodes, not a wording change:** before #665
 that fallback yielded `NONE`, and under `NONE` the management server dispatches every request
 without consulting any validator [mechanism: `ManagementServerImpl.handleRequest` gates on
-`securityEnabled`; the #573 `denyUnlessPublicValidator` installed for that arm was never reached —
-the probe in `oss` review verify-1114 counted 0 validator calls and a dispatched request], so the
+`securityEnabled`; the #573 `denyUnlessPublicValidator` installed for that arm was never reached], so the
 Management API, forwarded requests, websockets and unauthenticated artifact `PUT`
 (`MavenProtocolRoutes.admitPush` → `SECURITY_DISABLED`) were all open. A node upgraded across #665
 with no `[app-http]` section (or `enabled = false`) refuses those requests until the cluster

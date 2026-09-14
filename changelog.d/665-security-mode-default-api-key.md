@@ -32,8 +32,9 @@
   `ManagementServerImpl.handleRequest` never consults a validator (H1, forwarded and websocket paths alike), and
   `MavenProtocolRoutes.admitPush` returned `SECURITY_DISABLED` (unauthenticated artifact PUT accepted). After #665
   such a node answers 401 until the cluster bootstrap admin key is presented, and `admitPush` yields `DENIED`
-  without an ADMIN key or `AETHER_INSECURE_DEV_MODE` [verified: review probe at e7aa32372 —
-  old fallback shape: 0 validator calls, request dispatched; new shape: 1 validator call, 401]. The #573
+  without an ADMIN key or `AETHER_INSECURE_DEV_MODE` [verified: management path — review probe at e7aa32372,
+  old fallback shape: 0 validator calls, request dispatched; new shape: 1 validator call, 401; artifact path —
+  `MavenProtocolRoutesAuthTest` pins `SECURITY_DISABLED` vs `DENIED` for `admitPush`]. The #573
   `denyUnlessPublicValidator` on the `NONE` arm is therefore inert for its own case — tracked separately.
 - Not changed: `SecurityMode` handling in `AppHttpServer`, the Management API validator chain itself (it is now
   *consulted* where before it was bypassed), `ConfigLoader`.
