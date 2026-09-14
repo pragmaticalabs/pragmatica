@@ -71,9 +71,9 @@ public interface WorkerDeploymentManager {
                                        communityIdSupplier);
     }
 
-    /// Test seam: the deployments map is injectable so a probe can force the interleaving between
-    /// `computeAndApplyAssignment`'s read and its write (#906). Production callers use the
-    /// overloads above.
+    /// Test seam: injects the deployments map to force the interleaving between
+    /// `computeAndApplyAssignment`'s read and its write (#906); production callers use the other
+    /// overloads.
     static WorkerDeploymentManager workerDeploymentManager(NodeId self,
                                                            SliceStore sliceStore,
                                                            MutationForwarder mutationForwarder,
