@@ -249,6 +249,49 @@ membership_int_field() {
 # roster — e.g. an auto-heal replacement that joined and is already
 # strict-core before a kill-detection race was decided.
 # Usage: membership_live_member_ids "$membership_json"
+# ---------------------------------------------------------------------------
+# Answering-node identity (#W5)
+# ---------------------------------------------------------------------------
+# membership_self_node_id <json> — the id of the node that ANSWERED, from the body.
+#
+# /api/v1/cluster/membership is PER-NODE and never leader-forwarded, and its top-level
+# `nodeId` is documented as "the answering survivor" (ManagementApiResponses
+# .ClusterMembershipResponse). That field is the only trustworthy statement of WHO replied:
+# the IP we dialled is not, because cloud providers recycle public IPs across recreated VMs
+# (run 3, 2026-09-14: two IPs hosted SIX distinct VMs each). A read that succeeds from the
+# wrong subject is not suspicious the way a failed read is, so it must be checked explicitly.
+#
+# Every OTHER "nodeId" in this body belongs to an entry of the `members` array, so the body is
+# truncated at `"members"` before matching. Taking the first match over the whole body would
+# silently return a PEER's id if field order ever changed — which is the same class of
+# assumption this function exists to remove.
+membership_self_node_id() {
+    local membership_json="$1"
+    printf '%s' "$membership_json" \
+        | sed -E 's/"members"[[:space:]]*:.*$//' \
+        | grep -oE '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | head -1 \
+        | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/'
+}
+
+# membership_identity_matches <json> <expected_id> — did the EXPECTED node answer?
+#   rc 0 = match; rc 1 = MISMATCH (a different node answered); rc 2 = indeterminate
+#   (no usable id in the body, or no expected id supplied).
+# Prints the observed id on stdout for the caller's diagnostics.
+#
+# rc 1 and rc 2 are deliberately distinct: a mismatch is positive evidence that we polled a
+# stranger, while indeterminate means we cannot tell. Both must VOID a measurement, but only
+# the first proves the recycled-IP failure occurred.
+membership_identity_matches() {
+    local membership_json="$1" expected="${2:-}" observed
+    observed=$(membership_self_node_id "$membership_json")
+    printf '%s' "$observed"
+    [ -z "$expected" ] && return 2
+    [ -z "$observed" ] && return 2
+    [ "$observed" = "$expected" ] && return 0
+    return 1
+}
+
 membership_live_member_ids() {
     local membership_json="$1"
     printf '%s' "$membership_json" \
