@@ -168,14 +168,18 @@ All configurable timeouts in a single table, grouped by TOML section.
 | `slice_cooldown` | `10s` | Minimum time between scaling actions for a single slice |
 | `community_cooldown` | `60s` | Minimum time between scaling actions for a worker community |
 | `auto_heal_startup_cooldown` | `15s` | Delay before the leader's first formation check after activation (`ClusterTopologyManagerRecord.activateWithFormation`). Reaches the runtime via `Main.resolveAutoHeal` (#675). |
+| `auto_heal_provisioning_timeout` | `60s` | Window an auto-heal replacement is granted to boot and join; also the provisioning-circuit backoff once three consecutive provisions fail, the drain grace before the leader reaps a drained node, and the reap re-check interval (`ClusterTopologyManagerRecord`). Reaches the runtime via `Main.resolveAutoHeal` (#675). |
+| `auto_heal_swim_hints_ttl` | `15s` | How long a one-shot SWIM suspect keeps a node SUSPECTED in the quiesce health hint before the hint decays (`MembershipFsm`, #68); the membership state itself is unaffected. Reaches the runtime via `Main.resolveAutoHeal` (#675). |
 
 **`auto_heal_retry` was removed (#675).** It parsed into `TimeoutsConfig` and no code path read it;
 the runtime's auto-heal reconcile cadence is not a configured value. A leftover `auto_heal_retry` line
 is ignored like any other unknown key in `aether.toml` (the node config has no unknown-key gate);
 `[operations.auto_heal]` tunables in the CLUSTER config, by contrast, are refused at bootstrap (PF-26)
-because that parser can. `auto_heal_startup_cooldown` is the one auto-heal timing the runtime honours
-and it is now wired: the mutation `startup_cooldown = "42s"` reaches `AutoHealConfig.startupCooldown()`
-(`MainAutoHealResolutionTest`).
+because that parser can. The three `auto_heal_*` keys above are the three auto-heal timings the runtime
+honours, and all three are wired: `auto_heal_startup_cooldown = "42s"` reaches `AutoHealConfig.startupCooldown()`,
+`auto_heal_provisioning_timeout = "42s"` reaches the provisioning-circuit backoff and
+`auto_heal_swim_hints_ttl = "42s"` reaches the SUSPECTED-hint decay (`MainAutoHealResolutionTest`). Their
+defaults are `AutoHealConfig`'s own constants, so an absent key and the runtime default cannot disagree.
 
 ### `[timeouts.storage_maintenance]`
 
@@ -312,6 +316,8 @@ If any transition exceeds its timeout, the slice transitions to FAILED. The `max
 | `slice_cooldown` (10s) | Prevents rapid scale up/down oscillation per slice |
 | `community_cooldown` (60s) | Prevents rapid scaling across a worker community |
 | `auto_heal_startup_cooldown` (15s) | Formation-check delay after leader activation — see `[timeouts.scaling]` above (#675). |
+| `auto_heal_provisioning_timeout` (60s) | Replacement boot window, provisioning-circuit backoff, drain grace — see `[timeouts.scaling]` above (#675). |
+| `auto_heal_swim_hints_ttl` (15s) | SUSPECTED-hint decay in the quiesce gate — see `[timeouts.scaling]` above (#675). |
 
 ## Data Layer
 
@@ -473,6 +479,8 @@ suspect_timeout = "15s"
 
 [timeouts.scaling]
 auto_heal_startup_cooldown = "30s"
+auto_heal_provisioning_timeout = "90s"
+auto_heal_swim_hints_ttl = "20s"
 
 [timeouts.security]
 cert_renewal_retry = "30m"

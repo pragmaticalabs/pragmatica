@@ -53,12 +53,11 @@ swim = 6100
 
 [operations.auto_heal]
 enabled = true
-
-# @PgSql slices read the FLAT [database] datasource (config="database"). databases.X
-# produces nested [database.X] the connector ignores; inject flat [database] via node_config.
 # #675: the tunables that used to sit here (retry_interval, startup_cooldown,
 # provision_stability_window, provisioning_timeout) never reached a node and are now refused.
 
+# @PgSql slices read the FLAT [database] datasource (config="database"). databases.X
+# produces nested [database.X] the connector ignores; inject flat [database] via node_config.
 [source.hetzner-eu.node_config.database]
 username = "${env:PG_USER}"
 password = "${env:PG_PASSWORD}"

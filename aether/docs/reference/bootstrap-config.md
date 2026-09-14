@@ -64,8 +64,9 @@ swim       = 6100
 
 [operations.auto_heal]
 enabled          = true
-# No other key is accepted here (#675): auto-heal timing lives in the NODE config —
-# [timeouts.scaling] auto_heal_startup_cooldown and [cluster] max_nodes under node_config.
+# No other key is accepted here (#675): auto-heal settings live in the NODE config, under
+# node_config — [timeouts.scaling] auto_heal_startup_cooldown / auto_heal_provisioning_timeout /
+# auto_heal_swim_hints_ttl, and [cluster] max_nodes.
 
 # --- Cost guardrail (#298): refuse provisioning past 12 nodes for this cluster.
 # Opt-in — omit it and provisioning stays unbounded, as it always has. See "Fleet cap" below.
@@ -302,11 +303,13 @@ WARN naming the cluster, the cap, and the observed count.
 > **`[operations.auto_heal]` carries `enabled` and nothing else (#675).** The eight tunables that used
 > to be accepted here parsed into `AutoHealSpec` and reached no node: every running node builds its
 > `AutoHealConfig` from its OWN config — `[cluster] max_nodes` (the fleet cap, via `node_config.cluster`)
-> and `[timeouts.scaling] auto_heal_startup_cooldown` (the formation-check delay) — plus fixed defaults
-> for the two remaining live values (`provisioning_timeout` 60s, `swim_hints_ttl` 15s). The parser now
-> refuses any of the eight with PF-26 rather than parse and discard; the runtime record itself dropped
-> the five fields nothing read (retry interval, stale-observation TTL, QUIC miss threshold, provision
-> stability window, decommissioned retention).
+> and, under `node_config.timeouts.scaling`, `auto_heal_startup_cooldown` (the formation-check delay, 15s),
+> `auto_heal_provisioning_timeout` (the replacement boot window, circuit backoff and drain grace, 60s) and
+> `auto_heal_swim_hints_ttl` (the SUSPECTED-hint decay, 15s). The parser now refuses any of the eight with
+> PF-26 — naming every stale key in the file and, for the three that named a live timing, the node key
+> that sets it — rather than parse and discard; the runtime record itself dropped the five fields nothing
+> read (retry interval, stale-observation TTL, QUIC miss threshold, provision stability window,
+> decommissioned retention).
 >
 > `enabled = false` is **rejected at bootstrap** (error PF-25) rather than silently accepted and ignored
 > — the parsed value is never read by the provisioning path, so a `false` here would falsely promise
