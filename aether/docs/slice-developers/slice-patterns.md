@@ -188,6 +188,16 @@ HTTP_400 = ["*Invalid*"]
 
 Each slice's `routes.toml` inherits from the base. Child settings take precedence.
 
+### Nested Prefixes Across Slices
+
+Two slices may declare prefixes where one is a prefix of the other (`/api/v1/pricing` and
+`/api/v1/pricing/analytics`). A request is dispatched to the route with the **longest matching
+prefix** for its method, so `/api/v1/pricing/analytics/report` goes to the analytics slice and
+`/api/v1/pricing/items/42` to the catalog slice, on every node and after every restart. The rule is
+by prefix length, not by deployment or publication order. Two slices declaring the *same* method and
+prefix are a collision the runtime does not reject at publish time; resolution between them is stable
+(lexically smaller artifact coordinate) but not something to rely on — give them distinct prefixes.
+
 ## Service Slices (Dependencies on Other Slices)
 
 Slices can depend on other slices. Add the dependency's API JAR as a `provided` dependency,

@@ -5,6 +5,7 @@
 package org.pragmatica.aether.http;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.LinkedHashMap;
@@ -574,22 +575,33 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     ///
     /// One `activeOverrides.get()` for the whole scan, so a concurrent `updateSecurityOverrides`
     /// cannot make a single lookup resolve two different routes against two different override sets.
+    ///
+    /// #884: the LONGEST matching prefix wins. `publishedRoutes` is a `ConcurrentHashMap`, so the
+    /// first match in iteration order was decided by the artifacts' hashes — with two slices on one
+    /// node declaring nested prefixes (`/api/v1/pricing/` and `/api/v1/pricing/analytics/`) a
+    /// request under the inner one resolved to whichever slice hashed first, and under #866 that
+    /// picked which security policy applied. Nested prefixes across slices are legal; the more
+    /// specific route owns its subtree. Two routes with the SAME method and prefix from different
+    /// artifacts are a publication collision this method does not adjudicate — it breaks the tie on
+    /// the lexically smaller artifact coordinate so the answer is at least stable across restarts.
     @Override
     public Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path) {
         var normalizedPath = normalizePath(path);
         var overrides = activeOverrides.get();
 
-        for (var routes : publishedRoutes.values()) {
-            for (var route : routes) {
-                if (route.httpMethod().equalsIgnoreCase(httpMethod) && normalizedPath.startsWith(route.pathPrefix())) {
-                    return Option.some(LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(route,
-                                                                                                           overrides)));
-                }
-            }
-        }
-
-        return Option.none();
+        return Option.from(publishedRoutes.values()
+                                          .stream()
+                                          .flatMap(List::stream)
+                                          .filter(route -> route.httpMethod()
+                                                                .equalsIgnoreCase(httpMethod))
+                                          .filter(route -> normalizedPath.startsWith(route.pathPrefix()))
+                                          .max(LONGEST_PREFIX_THEN_ARTIFACT)).map(route -> LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(route,
+                                                                                                                                                               overrides)));
     }
+
+    private static final Comparator<HttpRouteDefinition> LONGEST_PREFIX_THEN_ARTIFACT = Comparator.comparingInt((HttpRouteDefinition route) -> route.pathPrefix()
+                                                                                                                                                    .length()).thenComparing(HttpRouteDefinition::artifactCoord,
+                                                                                                                                                                             Comparator.reverseOrder());
 
     private String normalizePath(String path) {
         if (!Verify.Is.present(path)) {
