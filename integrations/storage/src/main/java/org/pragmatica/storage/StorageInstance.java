@@ -371,7 +371,6 @@ final class DefaultStorageInstance implements StorageInstance {
     /// every re-promotion against a full tier (r3, a).
     private Promise<Unit> discardFailedPromotion(StorageTier tier, BlockId id, Cause cause) {
         logPromotionFailure(tier, id, cause);
-
         if (cause instanceof StorageError.TierFull) {
             return Promise.success(unit());
         }

@@ -40,7 +40,6 @@ public final class LocalDiskTier implements StorageTier {
     /// forcibly resolves the read with `CoreError.Timeout`. Generous: a healthy local-disk
     /// block read completes in milliseconds.
     private static final TimeSpan DEFAULT_READ_TIMEOUT = timeSpan(30).seconds();
-
     /// A block is written to a sibling `<hex>.<n>.partial` file and renamed over the block path
     /// once complete, so the block path only ever holds a whole copy — the previous one until the
     /// rename, the new one after it. Without this the TRUNCATE_EXISTING in-place write destroyed
@@ -195,10 +194,9 @@ public final class LocalDiskTier implements StorageTier {
     /// open failed), N bytes (the disk filled mid-block) or the whole block (the rename failed).
     /// The previous copy at the block path was never touched and stays counted (r3, c).
     private void discardFailedWrite(Path partial) {
-        FileOps.deleteIfExists(partial)
-               .onFailure(cause -> log.warn("Partial block at {} could not be removed after a failed write: {}",
-                                            partial,
-                                            cause.message()));
+        FileOps.deleteIfExists(partial).onFailure(cause -> log.warn("Partial block at {} could not be removed after a failed write: {}",
+                                                                    partial,
+                                                                    cause.message()));
     }
 
     private Path partialPath(Path path) {
@@ -265,12 +263,16 @@ public final class LocalDiskTier implements StorageTier {
     }
 
     private static boolean isPartial(Path path) {
-        return path.getFileName().toString().endsWith(PARTIAL_SUFFIX);
+        return path.getFileName()
+                   .toString()
+                   .endsWith(PARTIAL_SUFFIX);
     }
 
     private static void removeLeftoverPartial(Path partial) {
         FileOps.deleteIfExists(partial)
                .onSuccess(_ -> log.info("Removed leftover partial block {}", partial))
-               .onFailure(cause -> log.warn("Leftover partial block {} could not be removed: {}", partial, cause.message()));
+               .onFailure(cause -> log.warn("Leftover partial block {} could not be removed: {}",
+                                            partial,
+                                            cause.message()));
     }
 }
