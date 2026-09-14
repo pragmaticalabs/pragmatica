@@ -44,17 +44,21 @@ public sealed interface ClusterInitError extends Cause {
         }
     }
 
-    /// #311 — the existing output holds init-generated keys whose values differ from the new
-    /// answers, and batch mode has no operator to ask. Refused with the diff, file untouched:
-    /// `--merge` applies the new answers to exactly these keys, `--force` overwrites the file.
-    record OutputDiffers(String path, List<String> changes) implements ClusterInitError {
+    /// #311 — the existing output needs edits to match the new answers — init-generated keys
+    /// whose values differ, or generated keys and `[[…]]` rules it lacks — and batch mode has no
+    /// operator to ask. Refused with the list, file untouched: `--merge` applies exactly these
+    /// edits, `--force` overwrites the file. A missing rule is listed because appending it can
+    /// re-open a port the operator narrowed or removed.
+    record OutputDiffers(String path, List<String> changes, List<String> additions) implements ClusterInitError {
         @Override
         public String message() {
             return "Output file " + path
-                 + " exists and " + changes.size()
-                 + " init-generated key(s) differ from the new answers:\n  " + String.join("\n  ", changes)
-                 + "\nRe-run with --merge to apply the new answers to these keys, or --force to "
-                 + "overwrite the whole file.";
+                 + " exists: " + changes.size()
+                 + " init-generated key(s) differ from the new answers and " + additions.size()
+                 + " would be added:\n  " + String.join("\n  ", changes) + (changes.isEmpty() || additions.isEmpty()
+                                                                            ? ""
+                                                                            : "\n  ") + String.join("\n  ", additions)
+                 + "\nRe-run with --merge to apply these edits, or --force to overwrite the whole file.";
         }
     }
 

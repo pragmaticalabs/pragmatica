@@ -13,15 +13,25 @@
   (three re-runs, 35 comment lines, section order) and
   `rerun_newAnswers_appendMissingSectionInPlace_keepingHandAddedSection` (insert-only diff,
   `[source.primary.worker]` lands after `[source.primary.core]`)]
-- **A generated key whose value the operator changed is never reverted silently.** It is reported as
-  `section.key: <old> → <new>`; batch mode refuses (`OutputDiffers`, non-zero, file untouched) unless
-  the new `--merge` flag consents, interactive mode lists the diffs and asks with default keep.
+- **Every edit needs consent — a differing value AND a missing key, section or rule.** The plan is
+  listed first (`section.key: <old> → <new>`, `+ section.key`, `+ …allow_ingress[port=…, …]`); batch
+  mode refuses (`OutputDiffers`, non-zero, file untouched) unless the new `--merge` flag consents,
+  interactive mode asks once with default untouched. An appended `[[allow_ingress]]` rule is not
+  harmless: one the operator narrowed from `0.0.0.0/0` or deleted is, to the merge, a missing
+  generated rule, and appending it re-opens the port (verify-1087 r2 B4). Only an empty plan is
+  consent-free, and it writes nothing (`Unchanged <path>`, mtime and mode untouched).
   [verified: `rerun_batch_refusesToRevertAHandTunedValue_namingOldAndNew`,
   `rerun_batch_withMerge_appliesTheNewAnswer_andRewritesOnlyThatLine` (one-line `diff`, the
   operator's comment survives), `rerun_interactive_defaultKeepsTheHandTunedValue`,
   `rerun_interactive_yesAppliesTheNewAnswer`,
   `rerun_withMerge_appliesAChangeAndAnAdditionTogether_eachAtItsOwnLine` (a rewrite and an
-  insertion in one run, each on its own line); mutation: ignoring consent so the existing value
+  insertion in one run, each on its own line),
+  `rerun_cloud_refusesToReopenANarrowedIngressRule_withoutMerge_andNamesItByCidr` (an 8070 rule
+  narrowed to `198.51.100.0/24`: batch refused naming `+ …[port=8070, …, source_cidr="0.0.0.0/0"]`,
+  file byte-identical; with `--merge` appended and reported by CIDR),
+  `rerun_newAnswers_appendMissingSectionInPlace_keepingHandAddedSection` (a missing section is
+  refused without `--merge` too), `rerun_interactive_listsAdditions_andEnterLeavesTheFileUntouched`,
+  `rerun_unchanged_doesNotRewriteTheFile`; mutation: ignoring consent so the existing value
   always wins reddens the three "applies" tests]
 - **An operator-added `[[source.primary.firewall.allow_ingress]]` rule survives a cloud re-run and is
   listed as kept.** Generated elements are matched by their scalar keys but `description`; missing
@@ -49,10 +59,15 @@
 - Assumes #1037 (#1019): the topology is given per tier (`--core-nodes` / `--worker-nodes`); the
   re-run pins add a worker tier with `--worker-nodes 2` against a core-only file.
 - The line index mirrors `TomlParser`'s line rules (multi-line `"""`/`'''`/`[` values, quoted and
-  dotted keys, `[[…]]` sub-tables) so a rewrite lands on the right line past them.
-  [verified: `InPlaceTomlMergeTest`, four cases]
+  dotted keys, `[[…]]` sub-tables) so a rewrite lands on the right line past them. A section the
+  file holds only through dotted keys (`[cluster]` carrying `core.min = 3`) gets a header with ONLY
+  its missing keys after the block holding them — it used to get init's whole block and be refused
+  as a duplicate key (verify-1087 r2 S1). Inserted lines take the file's line ending (CRLF files
+  stay CRLF). [verified: `InPlaceTomlMergeTest`, five cases incl.
+  `dottedKeySection_getsAHeaderWithOnlyTheMissingKeys_afterTheBlockHoldingThem`;
+  `rerun_crlfFile_getsCrlfInsertedLines`]
 - Limits, stated: a multi-line value that is rewritten (with consent) collapses to init's single
   line, losing its trailing comment; `# Topology: …` header comments are comments and are not
-  rewritten; line endings other than `\n` are preserved on existing lines but not used on inserted
-  ones. Batch mode no longer exits non-zero merely because the file exists — it does so only when a
-  generated value differs and `--merge` is absent. [design intent — unverified]
+  rewritten; a UTF-8 BOM is refused by the reader (as it always was for `bootstrap`). Batch mode no
+  longer exits non-zero merely because the file exists — it does so only when the merge would edit
+  the file and `--merge` is absent. [design intent — unverified]

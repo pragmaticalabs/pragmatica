@@ -115,10 +115,14 @@ class ClusterInitCommandRerunTest {
     /// The interactive wizard, answered for a 5-core docker cluster, followed by whatever the merge
     /// prompt is given. `System.in` is what both the wizard and the merge prompt read.
     private static int initInteractive(Path output, String mergeAnswer) {
+        return initInteractive(output, "0", mergeAnswer);
+    }
+
+    private static int initInteractive(Path output, String workerNodes, String mergeAnswer) {
         var input = "test-cluster\n" +    // cluster name
                     "\n" +                // deployment target: default = DOCKER
                     "5\n" +               // core (consensus) node count
-                    "0\n" +               // worker node count
+                    workerNodes + "\n" +  // worker node count
                     "n\n" +               // configure database? no
                     "\n" +                // generate config? default yes
                     mergeAnswer;
@@ -279,8 +283,11 @@ class ClusterInitCommandRerunTest {
         var edited = read(output) + "\n[app-http.api-keys.ops]\nrole = \"admin\"\nkey = \"${env:OPS_KEY}\"\n";
 
         write(output, edited);
-        assertThat(init(output, "2")).as("only additions: no consent needed, no --merge needed: " + stderr())
-                  .isEqualTo(0);
+        assertThat(init(output, "2")).as("an addition is a diff too: batch mode refuses it without --merge")
+                  .isNotEqualTo(0);
+        assertThat(read(output)).as("refused: byte-identical").isEqualTo(edited);
+        assertThat(stderr()).contains("+ source.primary.worker.count").contains("--merge");
+        assertThat(init(output, "2", "--merge")).as(stderr()).isEqualTo(0);
         var merged = read(output);
         var mergedLines = merged.lines().toList();
 
@@ -322,6 +329,76 @@ class ClusterInitCommandRerunTest {
                   .isEqualTo(edited);
         assertThat(merged.lines().filter(line -> line.equals("[[source.primary.firewall.allow_ingress]]")).count()).isEqualTo(generatedRules + 1);
         assertThat(stdout()).as("the kept rule is listed").contains("allow_ingress").contains("9100");
+    }
+
+    /// B4 (verify-1087 r2): a generated `0.0.0.0/0` rule the operator narrowed to their CIDR is, to
+    /// the merge, a missing generated rule. Appending it re-opens the port — so it needs consent
+    /// like any other edit, and batch mode refuses naming the rule by CIDR.
+    @Test
+    void rerun_cloud_refusesToReopenANarrowedIngressRule_withoutMerge_andNamesItByCidr(@TempDir Path tmp) {
+        var output = tmp.resolve("cluster-config.toml");
+
+        assertThat(initCloud(output)).as(stderr()).isEqualTo(0);
+        var generated = read(output);
+        var publicRule = "port = 8070\nprotocol = \"tcp\"\nsource_cidr = \"0.0.0.0/0\"";
+
+        assertThat(generated).as("positive control: the standard preset opens app HTTP to the world").contains(publicRule);
+        var narrowed = generated.replace(publicRule, "port = 8070\nprotocol = \"tcp\"\nsource_cidr = \"198.51.100.0/24\"");
+
+        write(output, narrowed);
+        assertThat(initCloud(output)).as("same answers, one rule narrowed: refused without --merge").isNotEqualTo(0);
+        assertThat(read(output)).as("the narrowed file is untouched").isEqualTo(narrowed);
+        assertThat(stderr()).contains("+ source.primary.firewall.allow_ingress[port=8070, protocol=\"tcp\", source_cidr=\"0.0.0.0/0\"]")
+                  .contains("--merge");
+        assertThat(read(output).lines().filter(line -> line.contains("0.0.0.0/0")).count()).as("no world-open 8070 rule came back")
+                  .isEqualTo(generated.lines().filter(line -> line.contains("0.0.0.0/0")).count() - 1);
+
+        assertThat(initCloud(output, "--merge")).as(stderr()).isEqualTo(0);
+        assertThat(stdout()).as("with consent the appended rule is reported by CIDR")
+                  .contains("added 1 key(s) — source.primary.firewall.allow_ingress[port=8070, protocol=\"tcp\", source_cidr=\"0.0.0.0/0\"]");
+        assertThat(read(output)).contains(publicRule).contains("source_cidr = \"198.51.100.0/24\"");
+    }
+
+    @Test
+    void rerun_interactive_listsAdditions_andEnterLeavesTheFileUntouched(@TempDir Path tmp) {
+        var output = tmp.resolve("cluster-config.toml");
+
+        assertThat(init(output, "0")).isEqualTo(0);
+        var before = read(output);
+
+        assertThat(initInteractive(output, "2", "\n")).as(stderr()).isEqualTo(0);
+        assertThat(read(output)).as("Enter declines: no worker section appended").isEqualTo(before);
+        assertThat(stdout()).contains("+ source.primary.worker.count").contains("[y/N]").contains("left untouched");
+    }
+
+    @Test
+    void rerun_unchanged_doesNotRewriteTheFile(@TempDir Path tmp) throws IOException {
+        var output = tmp.resolve("cluster-config.toml");
+
+        assertThat(init(output, "0")).isEqualTo(0);
+        var stamp = java.nio.file.attribute.FileTime.fromMillis(1_000_000_000_000L);
+
+        Files.setLastModifiedTime(output, stamp);
+        out.reset();
+        assertThat(init(output, "0")).isEqualTo(0);
+        assertThat(Files.getLastModifiedTime(output)).as("nothing to change, nothing written").isEqualTo(stamp);
+        assertThat(stdout()).contains("Unchanged " + output).doesNotContain("Wrote ");
+    }
+
+    @Test
+    void rerun_crlfFile_getsCrlfInsertedLines(@TempDir Path tmp) {
+        var output = tmp.resolve("cluster-config.toml");
+
+        assertThat(init(output, "0")).isEqualTo(0);
+        var crlf = read(output).replace("\n", "\r\n");
+
+        write(output, crlf);
+        assertThat(init(output, "2", "--merge")).as(stderr()).isEqualTo(0);
+        var merged = read(output);
+
+        assertThat(merged).contains("[source.primary.worker]\r\ncount = 2\r\n");
+        assertThat(merged.chars().filter(c -> c == '\n').count()).as("every line ends in CRLF")
+                  .isEqualTo(merged.split("\r\n", -1).length - 1);
     }
 
     // ---- interactive: the prompt lists the diff and defaults to keeping the operator's value ----

@@ -30,10 +30,10 @@ import static org.pragmatica.lang.Option.some;
 /// written is the operator's text, with exactly these edits:
 ///
 /// - an init-owned key (one the generated config carries) whose parsed value differs is a
-///   [Change], rewritten in place — value only, key spelling and trailing comment kept — and only
-///   when the caller applies changes (batch `--merge`, or the operator's yes);
-/// - an init-owned key the file lacks is appended into its section, and a section the file lacks
-///   is inserted after the nearest preceding generated block the file has (else at the end);
+///   [Change], rewritten in place — value only, key spelling and trailing comment kept;
+/// - an init-owned key the file lacks is appended into its section (under a new header when the
+///   section exists only through dotted keys), and a section the file lacks is inserted after the
+///   nearest preceding generated block the file has (else at the end);
 /// - a generated `[[…]]` element the file lacks is appended after the file's last element of that
 ///   array; an element is "present" when an existing one matches it on every scalar key but
 ///   `description`, so an operator's re-described rule is not duplicated;
@@ -44,6 +44,12 @@ import static org.pragmatica.lang.Option.some;
 /// Nothing is ever removed. A changed answer that used to generate an element (a different
 /// `--admin-cidr`) therefore ADDS the new rule and keeps the old one listed; removing it is the
 /// operator's edit or `--force`.
+///
+/// A [Plan] is computed, never applied here: EVERY edit — a rewrite or an addition — is a diff to
+/// the file the operator will bootstrap from, so the caller applies it only with consent (batch
+/// `--merge`, or the operator's yes). An "addition" is not harmless: an ingress rule the operator
+/// narrowed from `0.0.0.0/0` to their CIDR is, to this merge, a missing generated rule, and
+/// appending it re-opens the port. Only an empty plan is consent-free, and it changes no byte.
 public sealed interface InPlaceTomlMerge {
     /// An init-owned key whose value in the existing file differs from the new answer.
     record Change(String path, String oldValue, String newValue) {
@@ -53,15 +59,18 @@ public sealed interface InPlaceTomlMerge {
         }
     }
 
-    /// The merge, computed but not applied. `changes` need consent; `added` and `kept` do not.
+    /// The merge, computed but not applied. `changes` and `added` both need consent; `kept` is a
+    /// listing. [#isEmpty] means the file already matches the answers.
     record Plan(List<Change> changes, List<String> added, List<String> kept, List<String> lines, List<Edit> edits) {
-        /// The merged text. Without `applyChanges`, the in-place rewrites are skipped and the
-        /// existing values stay; additions are applied either way.
-        public String render(boolean applyChanges) {
+        public boolean isEmpty() {
+            return changes.isEmpty() && added.isEmpty();
+        }
+
+        /// The merged text with every edit applied.
+        public String render() {
             var result = new ArrayList<>(lines);
 
             edits.stream()
-                 .filter(edit -> applyChanges || !edit.rewrite())
                  .sorted(Comparator.comparingInt(Edit::start).thenComparingInt(Edit::end).reversed())
                  .forEach(edit -> {
                               result.subList(edit.start(),
@@ -75,9 +84,8 @@ public sealed interface InPlaceTomlMerge {
         }
     }
 
-    /// Replace lines `[start, end)` with `replacement`; `start == end` inserts. A rewrite carries a
-    /// [Change]; an addition does not.
-    record Edit(int start, int end, List<String> replacement, boolean rewrite) {}
+    /// Replace lines `[start, end)` with `replacement`; `start == end` inserts.
+    record Edit(int start, int end, List<String> replacement) {}
 
     /// Plans the merge of `generated` (init's own output, always parseable) into `existingText`,
     /// whose parse is `existing`. The result parses again — checked here — or the plan is refused.
@@ -107,16 +115,21 @@ public sealed interface InPlaceTomlMerge {
                 planSection(name, lines, genLines, index, genIndex, existing, fresh, changes, added, edits, insertions);
             }
         }
+        // An inserted line takes the file's line ending; a rewritten line keeps its own.
+        var newline = existingText.contains("\r\n")
+                      ? "\r"
+                      : "";
 
-        insertions.forEach((at, block) -> edits.add(new Edit(at, at, block, false)));
+        insertions.forEach((at, block) -> edits.add(new Edit(at,
+                                                             at,
+                                                             block.stream().map(line -> line + newline).toList())));
         var plan = new Plan(List.copyOf(changes),
                             List.copyOf(added),
                             kept(index, existing, fresh),
                             lines,
                             List.copyOf(edits));
 
-        return TomlParser.parse(plan.render(true))
-                         .flatMap(_ -> TomlParser.parse(plan.render(false)))
+        return TomlParser.parse(plan.render())
                          .mapError(cause -> new ClusterInitError.MergeError("the merged text does not parse: " + cause.message()))
                          .map(_ -> plan);
     }
@@ -165,7 +178,7 @@ public sealed interface InPlaceTomlMerge {
                             : lines.get(line.start()).substring(0, line.valueStart()) + newValue;
 
             changes.add(new Change(path, oldValue, newValue));
-            edits.add(new Edit(line.start(), line.end() + 1, List.of(rewritten), true));
+            edits.add(new Edit(line.start(), line.end() + 1, List.of(rewritten)));
         }
 
         if (missing.isEmpty()) {
@@ -190,13 +203,28 @@ public sealed interface InPlaceTomlMerge {
             return;
         }
 
-        var genBlock = genIndex.sections.get(name);
+        var dottedKeys = index.keys.getOrDefault(name, new LinkedHashMap<>());
 
         block.add("");
-        block.addAll(genLines.subList(genBlock.header, genBlock.lastContent + 1));
-        insertions.computeIfAbsent(index.insertionPointAfter(name, genIndex, lines),
-                                   _ -> new ArrayList<>())
-                  .addAll(block);
+        if (dottedKeys.isEmpty()) {
+            // The section is absent altogether: init's own block, its comments included.
+            var genBlock = genIndex.sections.get(name);
+
+            block.addAll(genLines.subList(genBlock.header, genBlock.lastContent + 1));
+            insertions.computeIfAbsent(index.insertionPointAfter(name, genIndex, lines),
+                                       _ -> new ArrayList<>())
+                      .addAll(block);
+
+            return;
+        }
+        // The section exists only through dotted keys (`[cluster]` carrying `core.min = 3`): a
+        // header with ONLY the missing keys, after the block that holds them — re-inserting the
+        // present keys would be a duplicate-key refusal.
+        var holder = dottedKeys.values().stream().mapToInt(KeyLine::end).max().orElse(0);
+
+        block.add("[" + name + "]");
+        block.addAll(missing);
+        insertions.computeIfAbsent(index.blockEndAfter(holder, lines), _ -> new ArrayList<>()).addAll(block);
     }
 
     private static void planArray(String name,
@@ -453,6 +481,16 @@ public sealed interface InPlaceTomlMerge {
             }
 
             return endOfFile(lines);
+        }
+
+        /// The line after the end of the block (section or array element) holding `line`.
+        int blockEndAfter(int line, List<String> lines) {
+            return java.util.stream.Stream.concat(sections.values().stream(),
+                                                  arrays.values().stream().flatMap(List::stream))
+                                          .filter(block -> block.header <= line && line <= block.lastContent)
+                                          .mapToInt(block -> block.lastContent + 1)
+                                          .max()
+                                          .orElse(endOfFile(lines));
         }
 
         /// Root keys go after the file's existing root keys, else before its first header (after

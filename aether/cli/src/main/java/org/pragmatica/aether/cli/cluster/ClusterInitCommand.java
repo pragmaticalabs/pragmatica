@@ -485,14 +485,15 @@ class ClusterInitCommand implements Callable<Integer> {
         var generated = ClusterConfigGenerator.generate(answers);
 
         if (!Files.exists(output) || force) {
-            return write(generated);
+            return write(generated).onSuccess(path -> System.out.println("Wrote " + path));
         }
 
         return readExisting().flatMap(existing -> InPlaceTomlMerge.plan(existing.text(),
                                                                         existing.document(),
-                                                                        generated))
-                           .flatMap(this::consented)
-                           .flatMap(this::write);
+                                                                        generated)
+                                                                  .flatMap(plan -> consented(plan,
+                                                                                             existing.text())))
+                           .flatMap(this::writeIfChanged);
     }
 
     private record Existing(String text, TomlDocument document) {}
@@ -512,42 +513,59 @@ class ClusterInitCommand implements Callable<Integer> {
         }
     }
 
-    /// #311 — the merge rewrites only the lines of init-generated keys, and a key whose value the
-    /// operator changed is rewritten only with consent: `--merge`, or a yes at the prompt (default
-    /// keep). Batch mode with neither refuses, naming every `section.key: old → new`, and writes
-    /// nothing. Absent keys are appended and everything else is preserved byte-for-byte either
-    /// way; kept keys init does not generate are listed, because a merge cannot tell a hand-added
-    /// key from one init used to generate and no longer does.
-    private Result<String> consented(InPlaceTomlMerge.Plan plan) {
+    /// #311 — the merge rewrites only the lines of init-generated keys, and EVERY edit — a value
+    /// the operator changed, or a generated key, section or `[[…]]` rule the file lacks — is
+    /// applied only with consent: `--merge`, or a yes at the prompt (default keep). Batch mode with
+    /// neither refuses, naming every `section.key: old → new` and every `+ key`, and writes nothing.
+    /// An appended rule is not harmless: one the operator narrowed from `0.0.0.0/0` is, to the
+    /// merge, a missing generated rule, and appending it re-opens the port. An empty plan is the
+    /// only consent-free case, and it writes nothing. Kept keys init does not generate are listed,
+    /// because a merge cannot tell a hand-added key from one init used to generate and no longer does.
+    private Result<String> consented(InPlaceTomlMerge.Plan plan, String existing) {
         var diffs = plan.changes().stream().map(InPlaceTomlMerge.Change::toString).toList();
+        var additions = plan.added().stream().map(path -> "+ " + path).toList();
 
-        if (!diffs.isEmpty() && !merge && isBatchMode()) {
-            return new ClusterInitError.OutputDiffers(output.toString(), diffs).result();
+        if (plan.isEmpty()) {
+            report(plan, true);
+
+            return Result.success(existing);
         }
 
-        var apply = diffs.isEmpty() || merge || confirmChanges(diffs);
+        if (!merge && isBatchMode()) {
+            return new ClusterInitError.OutputDiffers(output.toString(), diffs, additions).result();
+        }
+
+        var apply = merge || confirmEdits(diffs, additions);
 
         report(plan, apply);
 
-        return Result.success(plan.render(apply));
+        return Result.success(apply
+                              ? plan.render()
+                              : existing);
     }
 
-    private boolean confirmChanges(List<String> diffs) {
+    private boolean confirmEdits(List<String> diffs, List<String> additions) {
         System.out.println("Output file " + output
-                          + " exists and " + diffs.size()
-                          + " init-generated key(s) differ from the new answers:");
+                          + " exists: " + diffs.size()
+                          + " init-generated key(s) differ from the new answers and " + additions.size()
+                          + " would be added:");
         diffs.forEach(diff -> System.out.println("  " + diff));
+        additions.forEach(addition -> System.out.println("  " + addition));
 
-        return prompt.confirm("Apply the new answers to these keys? (No keeps the existing values)", false);
+        return prompt.confirm("Apply these edits? (No leaves the file untouched)", false);
     }
 
     private void report(InPlaceTomlMerge.Plan plan, boolean applied) {
         var parts = new java.util.ArrayList<String>();
 
-        if (!plan.changes().isEmpty()) {
-            parts.add((applied
-                       ? "updated "
-                       : "kept the existing value of ") + plan.changes().size()
+        if (!applied) {
+            parts.add("left untouched — " + plan.changes().size()
+                     + " differing and " + plan.added().size()
+                     + " missing key(s) not applied");
+        }
+
+        if (applied && !plan.changes().isEmpty()) {
+            parts.add("updated " + plan.changes().size()
                      + " key(s) — " + String.join(", ",
                                                   plan.changes()
                                                       .stream()
@@ -555,7 +573,7 @@ class ClusterInitCommand implements Callable<Integer> {
                                                       .toList()));
         }
 
-        if (!plan.added().isEmpty()) {
+        if (applied && !plan.added().isEmpty()) {
             parts.add("added " + plan.added().size() + " key(s) — " + String.join(", ", plan.added()));
         }
 
@@ -567,6 +585,22 @@ class ClusterInitCommand implements Callable<Integer> {
         System.out.println("Merged into " + output + (parts.isEmpty()
                                                       ? ": already matches the answers, nothing changed"
                                                       : ": " + String.join("; ", parts)));
+    }
+
+    /// A text identical to the file is not written: no mtime move, no mode change, on a re-run
+    /// that changed nothing — and no "Wrote" for a write that did not happen.
+    private Result<Path> writeIfChanged(String toml) {
+        try {
+            if (Files.readString(output).equals(toml)) {
+                System.out.println("Unchanged " + output);
+
+                return Result.success(output);
+            }
+
+            return write(toml).onSuccess(path -> System.out.println("Wrote " + path));
+        } catch (IOException e) {
+            return new ClusterInitError.IoFailure(output.toString(), e.getMessage()).result();
+        }
     }
 
     private Result<Path> write(String toml) {
@@ -584,7 +618,6 @@ class ClusterInitCommand implements Callable<Integer> {
     }
 
     private int onSuccess(Path written) {
-        System.out.println("Wrote " + written);
         System.out.println("Next: review the file, then run `aether cluster bootstrap " + written + "`.");
 
         return ExitCode.SUCCESS;

@@ -59,8 +59,8 @@ class InPlaceTomlMergeTest {
                   .containsExactly("cluster.name: \"old-name\" → \"new-name\"", "runtime.default.jvm_args: 'old' → \"new\"");
         assertThat(plan.added()).isEmpty();
         assertThat(plan.kept()).containsExactly("runtime.default.extra", "runtime.default.note");
-        assertThat(plan.render(false)).as("without consent nothing moves").isEqualTo(existing);
-        assertThat(plan.render(true)).isEqualTo(existing.replace("cluster.name = \"old-name\"", "cluster.name = \"new-name\"")
+        assertThat(plan.isEmpty()).isFalse();
+        assertThat(plan.render()).isEqualTo(existing.replace("cluster.name = \"old-name\"", "cluster.name = \"new-name\"")
                                                         .replace("\"jvm_args\" = 'old'   # trailing comment stays",
                                                                  "\"jvm_args\" = \"new\"   # trailing comment stays"));
     }
@@ -85,7 +85,7 @@ class InPlaceTomlMergeTest {
         assertThat(plan.changes()).isEmpty();
         assertThat(plan.added()).containsExactly("runtime.default.jvm_args");
         assertThat(plan.kept()).containsExactly("ops.owner");
-        assertThat(plan.render(false)).isEqualTo(existing.replace("aether-node:1.0.0\"\n", "aether-node:1.0.0\"\njvm_args = \"new\"\n"));
+        assertThat(plan.render()).isEqualTo(existing.replace("aether-node:1.0.0\"\n", "aether-node:1.0.0\"\njvm_args = \"new\"\n"));
     }
 
     @Test
@@ -100,7 +100,7 @@ class InPlaceTomlMergeTest {
         var plan = plan(existing);
 
         assertThat(plan.added()).containsExactly("runtime.default.type", "runtime.default.image", "runtime.default.jvm_args");
-        assertThat(plan.render(false)).isEqualTo("""
+        assertThat(plan.render()).isEqualTo("""
             [cluster]
             name = "new-name"
 
@@ -136,6 +136,44 @@ class InPlaceTomlMergeTest {
         assertThat(plan.changes()).isEmpty();
         assertThat(plan.added()).isEmpty();
         assertThat(plan.kept()).containsExactly("rules[port=1]");
-        assertThat(plan.render(true)).isEqualTo(existing);
+        assertThat(plan.isEmpty()).as("nothing to do: consent-free").isTrue();
+        assertThat(plan.render()).isEqualTo(existing);
+    }
+
+    /// verify-1087 r2 S1: a section present only through dotted keys got the WHOLE generated block
+    /// inserted, duplicating the present keys, and the pre-write parse refused with "report this".
+    @Test
+    void dottedKeySection_getsAHeaderWithOnlyTheMissingKeys_afterTheBlockHoldingThem() {
+        var existing = """
+            [cluster]
+            name = "new-name"
+
+            [runtime]
+            default.type = "docker"
+            default.image = "ghcr.io/pragmaticalabs/aether-node:1.0.0"
+            # keep this comment on the runtime block
+
+            [ops]
+            owner = "me"
+            """;
+        var plan = plan(existing);
+
+        assertThat(plan.changes()).isEmpty();
+        assertThat(plan.added()).containsExactly("runtime.default.jvm_args");
+        assertThat(plan.render()).isEqualTo("""
+            [cluster]
+            name = "new-name"
+
+            [runtime]
+            default.type = "docker"
+            default.image = "ghcr.io/pragmaticalabs/aether-node:1.0.0"
+
+            [runtime.default]
+            jvm_args = "new"
+            # keep this comment on the runtime block
+
+            [ops]
+            owner = "me"
+            """);
     }
 }

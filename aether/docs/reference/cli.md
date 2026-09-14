@@ -1917,7 +1917,7 @@ aether cluster init --non-interactive --name test-cluster --core-nodes 5 --outpu
 |--------|-------------|
 | `--output` | Output path (default `cluster-config.toml`) |
 | `--force` | Overwrite an existing output file wholesale. Without it, an existing file is **merged into in place** — see "Re-running against an existing file" below. |
-| `--merge` | Consent, given up front, to rewrite `init`-generated keys whose value in the existing file differs from the new flags/answers. Batch mode refuses without it (non-zero exit, file untouched); interactive mode asks instead. |
+| `--merge` | Consent, given up front, to every edit the merge would make to an existing file — rewriting `init`-generated keys whose value differs from the new flags/answers, and appending generated keys, sections or firewall rules the file lacks. Batch mode refuses without it (non-zero exit, file untouched); interactive mode asks instead. |
 | `--non-interactive` | Force non-interactive mode; default `--target=docker` if absent, fail fast on missing required flags (P-NEW-G, 2026-05-21). Required for CI/integration test usage (TC-07-J3). |
 | `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
 | `--target` | Deployment target: `docker`, `ssh`, `cloud`, or `forge` |
@@ -1940,20 +1940,24 @@ The file is the operator's. Without `--force`, `init` rewrites **only the lines 
 generates**, and every other line — comments, blank lines, section order, value spelling, hand-added
 keys, sections and `[[…]]` tables — is left byte-for-byte. Concretely:
 
-- **Same answers → byte-identical file.** Re-running with unchanged flags changes nothing
-  (`Merged into <path>: already matches the answers, nothing changed`).
-- **A generated key whose value you changed by hand** is reported as `section.key: <old> → <new>`
-  and rewritten only with consent. Batch mode (`--non-interactive` or `--target`) **refuses** with
-  the list and exits non-zero unless `--merge` is given; interactive mode prints the list and asks
-  (`[y/N]`, default keeps your values). With consent, only the value on that line changes — the
-  key's spelling and any trailing `# comment` stay.
-- **A generated key or section the file lacks** (a new answer, e.g. `--worker-nodes 2` adding
-  `[source.primary.worker]`) is appended into its section, or inserted as a new section after the
-  nearest preceding generated section the file has. No consent is needed: nothing existing moves.
-- **Generated `[[source.primary.firewall.allow_ingress]]` rules** are matched by port, protocol and
-  CIDR (a rule you re-described is not duplicated). Missing ones are appended after the file's last
-  rule; rules `init` does not generate are kept. **Nothing is ever removed:** a changed
-  `--admin-cidr` adds the new admin rules and keeps the old ones, listed as kept — remove them by
+- **Same answers → byte-identical file, not rewritten.** Re-running with unchanged flags changes
+  nothing (`Merged into <path>: already matches the answers, nothing changed` / `Unchanged <path>`);
+  the file is not written, so its mtime and mode stay.
+- **Every other edit needs consent.** The merge first lists what it would do — `section.key: <old>
+  → <new>` for a generated key whose value you changed by hand, `+ section.key` or
+  `+ …allow_ingress[port=…, protocol=…, source_cidr=…]` for a generated key, section or rule the
+  file lacks. Batch mode (`--non-interactive` or `--target`) **refuses** with that list and exits
+  non-zero unless `--merge` is given; interactive mode prints it and asks once (`[y/N]`, default
+  leaves the file untouched). With consent, a differing value is rewritten on its own line — the
+  key's spelling and any trailing `# comment` stay — and missing keys are appended into their
+  section (under a new header when the section exists only through dotted keys), missing sections
+  after the nearest preceding generated section the file has.
+- **Why an addition needs consent:** generated `[[source.primary.firewall.allow_ingress]]` rules are
+  matched by port, protocol and CIDR (a rule you re-described is not duplicated). A rule you
+  narrowed from `0.0.0.0/0` to your CIDR, or deleted, is to the merge a *missing* generated rule,
+  and appending it would re-open the port — so it is listed by CIDR and refused without consent.
+  Rules `init` does not generate are kept. **Nothing is ever removed:** a changed `--admin-cidr`
+  adds the new admin rules (with consent) and keeps the old ones, listed as kept — remove them by
   hand, or use `--force`.
 - **Keys `init` does not generate are listed** (`kept N key(s) init does not generate — …`), because
   a merge cannot tell a hand-added key from one `init` used to generate and no longer does.
