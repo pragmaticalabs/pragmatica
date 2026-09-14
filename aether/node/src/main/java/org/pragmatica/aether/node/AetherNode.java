@@ -4838,7 +4838,9 @@ public interface AetherNode extends ManageableNode {
     /// - transportConnected — the leader's own cluster-transport view;
     /// - in-flight — this leader's reconciler in-flight keys plus the set retained from the previous leader's
     ///   pings;
-    /// - configured — the committed `ClusterConfigValue.coreCount`, else the bootstrap topology size.
+    /// - configured — the committed `ClusterConfigValue.coreCount`, else the bootstrap topology size;
+    /// - advertisedRole (#689) — the FSM's `memberDescriptor(id).role()`, the self-asserted role the projector
+    ///   classified the node's join by; `none()` for an untracked id or before the FSM is published.
     ///
     /// Before the FSM, detector or reconciler is published, its projection reads empty or false, which every
     /// reap gate treats as not quorum-safe (fail-closed). `DrainGraceLivenessSeamTest` pins this method.
@@ -4858,7 +4860,14 @@ public interface AetherNode extends ManageableNode {
                                                      () -> inFlightProvisioning(leaderReconciler.get(),
                                                                                 retainedDispatched.get()),
                                                      () -> configuredCoreCount(clusterConfigReader.get(),
-                                                                               topologyCoreNodes));
+                                                                               topologyCoreNodes),
+                                                     nodeId -> advertisedRole(membershipFsm.get(), nodeId));
+    }
+
+    private static Option<String> advertisedRole(MembershipFsm membershipFsm, NodeId nodeId) {
+        return Option.option(membershipFsm)
+                     .flatMap(fsm -> fsm.memberDescriptor(nodeId))
+                     .map(MemberDescriptor::role);
     }
 
     private static Set<NodeId> fsmProjection(MembershipFsm membershipFsm,

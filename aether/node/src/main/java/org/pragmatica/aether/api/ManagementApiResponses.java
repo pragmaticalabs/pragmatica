@@ -654,9 +654,10 @@ public sealed interface ManagementApiResponses {
 
     record AutoHealStatusResponse(boolean enabled) {}
 
-    /// #689: one provisioned node per entry whose advertised `role` label (raw, `""` when absent)
-    /// disagrees with the role the leader provisioned it with; `classifiedAs` is what membership
-    /// made of the label. Leader-scoped, like the intents it is derived from.
+    /// #689: one provisioned node per entry whose advertised role — as membership holds it after the
+    /// blank-downgrade merge, `""` when no label ever arrived — disagreed with the role the leader
+    /// provisioned it with at the node's last observed join; `classifiedAs` is what membership made
+    /// of the label. Leader-scoped, like the intents it is derived from.
     record RoleMismatchEntry(String nodeId, String intendedRole, String advertisedRole, String classifiedAs) {}
 
     record RoleMismatchesResponse(List<RoleMismatchEntry> mismatches) {}

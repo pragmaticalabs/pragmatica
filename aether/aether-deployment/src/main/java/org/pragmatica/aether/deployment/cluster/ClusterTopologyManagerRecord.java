@@ -53,6 +53,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
@@ -459,15 +460,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // A rejoin under the same id ends the parked episode: the new incarnation's death, if it comes, arrives
         // as its own `NodeRemoved` (verify-1057-r3 NIT-1 — a stale park would run a second chain beside it).
         abandonedReaps.remove(joined.nodeId());
-        // #689: `NodeJoined` is the CORE channel, so whatever label this node carries was classified
-        // core — read the raw label back from the observer, since the decision does not carry it.
-        checkAdvertisedRole(joined.nodeId(), advertisedRoleLabel(joined.nodeId()), "CORE");
+        // #689: `NodeJoined` is the CORE channel and carries no role — read the role the FSM classified
+        // this join by (`MembershipFsm.memberDescriptor`), never the observer's frozen first sighting.
+        checkAdvertisedRole(joined.nodeId(),
+                            liveness.advertisedRole().apply(joined.nodeId()),
+                            "NodeJoined");
         onNodeReady(joined.nodeId());
     }
 
     /// #689 — the non-core join channel (#728), routed here in addition to the deployment manager so
     /// a core-intended replacement that booted labelled `worker` is compared as well; such a node
-    /// never appears in `MembershipDecision`. Leader-gated like every other decision receiver.
+    /// never appears in `MembershipDecision`. The decision carries the role the projector classified
+    /// by. Leader-gated like every other decision receiver.
     @Contract
     @Override
     public void onWorkerJoin(WorkerJoinDecision decision) {
@@ -475,7 +479,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        checkAdvertisedRole(decision.nodeId(), decision.role(), "WORKER");
+        checkAdvertisedRole(decision.nodeId(),
+                            Option.some(decision.role()),
+                            "WorkerJoinDecision");
     }
 
     @Override
@@ -484,9 +490,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     /// #689 — compares the role this leader PROVISIONED `nodeId` with against the role the node
-    /// ADVERTISES, once per provisioned node (the intent is consumed here). No intent on record —
-    /// a bootstrap node, a node provisioned by an earlier leader, an operator's hand-started node —
-    /// is not a mismatch: absence of intent is silence by design, not a finding.
+    /// ADVERTISES, on EVERY join observation of that id: the intent is retained, not consumed, so an
+    /// in-place restart of a mislabelled node (crash, OOM, operator restart — same id, since a
+    /// replacement boots from a rendered config carrying `context.nodeId()`) is re-compared and
+    /// re-reported, and a rejoin that now carries the right label clears the entry (verify-1120
+    /// BLOCKING-1). The intent lives until [#handleNodeDecommissioned] forgets the id. No intent on
+    /// record — a bootstrap node, a node provisioned by an earlier leader, an operator's hand-started
+    /// node — is not a mismatch: absence of intent is silence by design, not a finding. No advertised
+    /// role at all (the FSM does not track the id — unreachable behind a decision the FSM itself
+    /// emitted, reachable for an unwired host) is not compared either: a fabricated blank would be a
+    /// fabricated finding.
     ///
     /// The classification is deliberately NOT touched. `MemberDescriptor.isCoreRole` counts a blank
     /// or unknown label as core, and that is the right failure direction for the core tier (acting
@@ -494,17 +507,56 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// silent non-fence for a spurious fence on any node whose label is merely late. What was
     /// missing is the signal: an intended worker that boots unlabelled joins the core set and every
     /// community-tier mechanism gated on "positively not a core" — the #590 core-absence fence
-    /// first among them — is suppressed on it with nothing anywhere saying why.
+    /// first among them — is suppressed on it with nothing anywhere saying why. `classifiedAs` is
+    /// derived from that same predicate, so the ledger says what membership actually made of the label.
     @Contract
-    private void checkAdvertisedRole(NodeId nodeId, String advertisedRole, String classifiedAs) {
-        Option.option(provisionedRoleIntents.remove(nodeId))
-              .filter(intended -> !intended.value()
-                                           .equals(advertisedRole))
-              .onPresent(intended -> recordRoleMismatch(nodeId, intended, advertisedRole, classifiedAs));
+    private void checkAdvertisedRole(NodeId nodeId, Option<String> advertisedRole, String channel) {
+        var intended = Option.option(provisionedRoleIntents.get(nodeId));
+
+        if (intended.isEmpty()) {
+            log.debug("CTM: node {} observed on {} — no provisioning intent on record, role not compared",
+                      nodeId.id(),
+                      channel);
+
+            return;
+        }
+
+        if (advertisedRole.isEmpty()) {
+            log.debug("CTM: node {} observed on {} — no advertised role known to membership, role not compared",
+                      nodeId.id(),
+                      channel);
+
+            return;
+        }
+
+        compareRole(nodeId, intended.unwrap(), advertisedRole.unwrap());
     }
 
     @Contract
-    private void recordRoleMismatch(NodeId nodeId, NodeRole intended, String advertisedRole, String classifiedAs) {
+    private void compareRole(NodeId nodeId, NodeRole intended, String advertisedRole) {
+        if (intended.value().equals(advertisedRole)) {
+            clearRoleMismatch(nodeId, advertisedRole);
+
+            return;
+        }
+
+        recordRoleMismatch(nodeId, intended, advertisedRole);
+    }
+
+    @Contract
+    private void clearRoleMismatch(NodeId nodeId, String advertisedRole) {
+        Option.option(roleMismatchLedger.remove(nodeId)).onPresent(cleared -> log.info("CTM: node {} now advertises role '{}' matching its provisioning intent — "
+                                                                                      + "role mismatch cleared (was advertised '{}')",
+                                                                                       nodeId.id(),
+                                                                                       advertisedRole,
+                                                                                       cleared.advertisedRole()));
+    }
+
+    @Contract
+    private void recordRoleMismatch(NodeId nodeId, NodeRole intended, String advertisedRole) {
+        var classifiedAs = MemberDescriptor.isCoreRole(advertisedRole)
+                           ? "CORE"
+                           : "WORKER";
         var mismatch = new RoleMismatch(nodeId, intended.value(), advertisedRole, classifiedAs);
 
         roleMismatchLedger.put(nodeId, mismatch);
@@ -512,7 +564,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                 + "classified as {} — its role label never arrived or is wrong (AETHER_ROLE / aether-role label). "
                 + "Classification is unchanged (blank counts as core); every community-tier mechanism gated on a "
                 + "known role is suppressed on this node until it is relaunched with the right label. "
-                + "Visible at GET /api/v1/cluster/topology/role-mismatches.",
+                + "Visible at GET /api/v1/cluster/topology/role-mismatches (aether cluster topology role-mismatches).",
                  nodeId.id(),
                  intended.value(),
                  advertisedRole,
@@ -522,10 +574,22 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                  classifiedAs);
     }
 
-    private String advertisedRoleLabel(NodeId nodeId) {
-        return observer.get(nodeId)
-                       .flatMap(info -> Option.option(info.labels().get(NodeInfo.LABEL_ROLE)))
-                       .or("");
+    /// #689 (verify-1120 SF-2) — a deposed CTM drops every decision at its `active` gate, so a node that
+    /// restarted with the right label (or without it) while this node was not leading was never
+    /// re-compared. Re-derive on activation from what membership holds NOW for every retained intent
+    /// whose node the FSM still tracks: a still-mismatched node is re-reported (the WARN re-fires on this
+    /// activation), a now-agreeing one is cleared. An untracked id keeps whatever the ledger held — its
+    /// departure, not this activation, is the event that owns it.
+    @Contract
+    private void rederiveRoleMismatches() {
+        var tracked = liveness.trackedMembers().get();
+
+        provisionedRoleIntents.keySet()
+                              .stream()
+                              .filter(tracked::contains)
+                              .forEach(nodeId -> checkAdvertisedRole(nodeId,
+                                                                     liveness.advertisedRole().apply(nodeId),
+                                                                     "activation replay"));
     }
 
     /// #166 — on confirmed membership-view removal the leader actively reaps the departed node's
@@ -541,8 +605,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void handleNodeRemoved(NodeRemoved removed) {
         log.info("CTM: Node {} removed — reaping container to prevent phantom resurrection", removed.nodeId());
-        // #689: a departed node's mismatch is no longer live; a relaunch arrives under a fresh id.
-        roleMismatchLedger.remove(removed.nodeId());
+        // #689: intent and ledger entry deliberately survive removal — a restart in place rejoins under the
+        // SAME id and is re-compared by `handleNodeJoined`; only decommissioning forgets the id.
         reapDepartedNode(removed.nodeId());
     }
 
@@ -551,6 +615,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void handleNodeDecommissioned(NodeDecommissioned decommissioned) {
         log.warn("CTM: Node {} decommissioned — reaping container", decommissioned.nodeId());
+        // #689: decommissioning is the CTM's own forget point for a provisioned id — the node is retired for
+        // good, so its provisioning intent and any mismatch entry go with it.
+        provisionedRoleIntents.remove(decommissioned.nodeId());
         roleMismatchLedger.remove(decommissioned.nodeId());
         reapDepartedNode(decommissioned.nodeId());
     }
@@ -1759,6 +1826,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         reconcileWorkerTopology();
         // #1050 R4 — one-shot activation replay: reap orphaned core instances that nothing else replays.
         scheduleActivationReplay();
+        // #689 — re-compare every retained provisioning intent against what membership holds now.
+        rederiveRoleMismatches();
     }
 
     @Contract

@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -58,18 +59,23 @@ import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #689 — the leader holds both halves of the role comparison: the role it PROVISIONED a node with
-/// (`provisionReplacement(..., intendedRole)`) and the role that node ADVERTISES once observed
-/// (`NodeInfo.LABEL_ROLE`, read through the `TopologyObserver`). A provisioned node whose label
-/// never arrives is classified CORE by `MemberDescriptor.isCoreRole` — deliberately, and unchanged
-/// here — so an intended worker that boots unlabelled silently joins the core set and every
-/// community-tier mechanism gated on "not a core" is suppressed on it with nothing saying so.
+/// (`provisionReplacement(..., intendedRole)`) and the role that node ADVERTISES as membership holds
+/// it (`MembershipFsm.memberDescriptor(id).role()`, reached through `MembershipLiveness.advertisedRole`
+/// — here a test-side descriptor map, exactly the projection `AetherNode.drainGraceLiveness` wires).
+/// A provisioned node whose label never arrives is classified CORE by `MemberDescriptor.isCoreRole` —
+/// deliberately, and unchanged here — so an intended worker that boots unlabelled silently joins the
+/// core set and every community-tier mechanism gated on "not a core" is suppressed on it with nothing
+/// saying so.
 ///
-/// The two tests below are a PAIR with mutually exclusive expectations over the same capture, so
-/// the WARN cannot pass vacuously: one node was provisioned and must warn; the other was not and
-/// must not.
+/// The first two tests are a PAIR with mutually exclusive expectations over the same capture, so the
+/// WARN cannot pass vacuously: one node was provisioned and must warn; the other was not and must not.
+/// The lifetime tests (verify-1120 BLOCKING-1 / SF-2) pin that the intent is RETAINED: every rejoin
+/// of a provisioned id is re-compared, a relabelled rejoin clears the entry, and only decommissioning
+/// forgets the id.
 class ClusterTopologyManagerRoleMismatchTest {
     private static final String LOGGER_NAME = "org.pragmatica.aether.deployment.cluster.ClusterTopologyManager";
     private static final String MISMATCH_MARKER = "advertised role";
+    private static final String CLEARED_MARKER = "role mismatch cleared";
 
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId PEER_A = nodeId("node-a").unwrap();
@@ -81,6 +87,10 @@ class ClusterTopologyManagerRoleMismatchTest {
     private static final NodeInfo INFO_A = NodeInfo.nodeInfo(PEER_A, NodeAddress.nodeAddress("10.0.0.2", 6000).unwrap());
     private static final NodeInfo INFO_B = NodeInfo.nodeInfo(PEER_B, NodeAddress.nodeAddress("10.0.0.3", 6000).unwrap());
 
+    /// The FSM's descriptor projection: what membership holds as each node's self-asserted role.
+    private final Map<NodeId, String> descriptors = new ConcurrentHashMap<>();
+    /// The FSM's not-DEAD set — what an activation replay re-compares.
+    private final Set<NodeId> tracked = ConcurrentHashMap.newKeySet();
     private TopologyObserver observer;
     private ClusterTopologyManager ctm;
     private CapturingAppender appender;
@@ -103,6 +113,13 @@ class ClusterTopologyManagerRoleMismatchTest {
                                                      AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
                                                      timeSpan(0).millis())
                                      .unwrap();
+        var liveness = MembershipLiveness.membershipLiveness(Set::of,
+                                                             () -> Set.copyOf(tracked),
+                                                             _ -> false,
+                                                             _ -> false,
+                                                             Set::of,
+                                                             () -> 3,
+                                                             id -> Option.option(descriptors.get(id)));
         ctm = ClusterTopologyManager.clusterTopologyManager(observer,
                                                             new StubLifecycleManager(),
                                                             autoHeal,
@@ -110,7 +127,11 @@ class ClusterTopologyManagerRoleMismatchTest {
                                                             snapshotSource,
                                                             Option::none,
                                                             ClusterTopologyManagerRoleMismatchTest::applyNothing,
-                                                            () -> ClusterPhase.NORMAL);
+                                                            () -> ClusterPhase.NORMAL,
+                                                            _ -> {},
+                                                            _ -> {},
+                                                            Option::none,
+                                                            liveness);
         ctm.activate();
 
         appender = CapturingAppender.create("CtmRoleMismatchCapture");
@@ -119,8 +140,8 @@ class ClusterTopologyManagerRoleMismatchTest {
         var configuration = ctx.getConfiguration();
         loggerConfig = getOrCreateLoggerConfig(configuration);
         originalLevel = loggerConfig.getLevel();
-        loggerConfig.addAppender(appender, Level.WARN, null);
-        loggerConfig.setLevel(Level.WARN);
+        loggerConfig.addAppender(appender, Level.INFO, null);
+        loggerConfig.setLevel(Level.INFO);
         ctx.updateLoggers();
     }
 
@@ -138,9 +159,9 @@ class ClusterTopologyManagerRoleMismatchTest {
     @Test
     void provisionedWorker_joiningWithNoRoleLabel_warnsNamingNodeIntendedAndAdvertised() {
         provision(PROVISIONED, NodeRole.WORKER);
-        observe(PROVISIONED, Map.of());
+        describe(PROVISIONED, "");
 
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PROVISIONED, List.of(SELF, PEER_A, PEER_B)));
+        join(PROVISIONED);
 
         var mismatchWarns = appender.capturedWarns()
                                     .stream()
@@ -159,9 +180,9 @@ class ClusterTopologyManagerRoleMismatchTest {
     /// the same capture that must hold one WARN above must hold none here.
     @Test
     void unprovisionedNode_joiningWithNoRoleLabel_doesNotWarn() {
-        observe(STRANGER, Map.of());
+        describe(STRANGER, "");
 
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(STRANGER, List.of(SELF, PEER_A, PEER_B)));
+        join(STRANGER);
 
         assertThat(appender.capturedWarns()).as("#689: no intent on record, so no mismatch to report")
                                             .noneMatch(msg -> msg.contains(MISMATCH_MARKER));
@@ -171,11 +192,47 @@ class ClusterTopologyManagerRoleMismatchTest {
     @Test
     void provisionedCore_advertisingCore_doesNotWarn() {
         provision(PROVISIONED, NodeRole.CORE);
-        observe(PROVISIONED, Map.of(NodeInfo.LABEL_ROLE, "core"));
+        describe(PROVISIONED, "core");
 
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PROVISIONED, List.of(SELF, PEER_A, PEER_B)));
+        join(PROVISIONED);
 
         assertThat(appender.capturedWarns()).noneMatch(msg -> msg.contains(MISMATCH_MARKER));
+    }
+
+    /// verify-1120 SF-1 — the leader learns a node by GOSSIP before its direct ANNOUNCE: the
+    /// `TopologyObserver` keeps the label-less first sighting forever (`putIfAbsent`), while the FSM
+    /// merges the later labelled announce under its blank-downgrade guard and classifies `core`. The
+    /// comparison must read what the FSM holds; reading the observer here is a false WARN for a
+    /// correctly-labelled core, self-contradicting the classification it reports.
+    @Test
+    void gossipFirstSighting_ofACorrectlyLabelledCore_doesNotWarn() {
+        provision(PROVISIONED, NodeRole.CORE);
+        observe(PROVISIONED, Map.of());
+        observe(PROVISIONED, Map.of(NodeInfo.LABEL_ROLE, "core"));
+        assertThat(observer.get(PROVISIONED)
+                           .flatMap(info -> Option.option(info.labels()
+                                                              .get(NodeInfo.LABEL_ROLE)))
+                           .isPresent()).as("premise: the observer's first (label-less) sighting is the one it keeps")
+                                        .isFalse();
+        describe(PROVISIONED, "core");
+
+        join(PROVISIONED);
+
+        assertThat(appender.capturedWarns()).as("#689 SF-1: membership classified this node core from its label; no mismatch")
+                                            .noneMatch(msg -> msg.contains(MISMATCH_MARKER));
+        assertThat(ctm.roleMismatches()).isEmpty();
+    }
+
+    /// A host with no membership wiring (`MembershipLiveness.UNWIRED`-shaped) has no advertised role to
+    /// offer — the comparison is skipped, never run against a fabricated blank.
+    @Test
+    void noAdvertisedRoleKnownToMembership_isNotCompared() {
+        provision(PROVISIONED, NodeRole.WORKER);
+
+        join(PROVISIONED);
+
+        assertThat(appender.capturedWarns()).noneMatch(msg -> msg.contains(MISMATCH_MARKER));
+        assertThat(ctm.roleMismatches()).isEmpty();
     }
 
     /// The other direction: provisioned as CORE, booted labelled `worker`. Such a node never
@@ -199,23 +256,103 @@ class ClusterTopologyManagerRoleMismatchTest {
                                         .containsExactly(new ClusterTopologyManager.RoleMismatch(PROVISIONED, "core", "worker", "WORKER"));
     }
 
-    /// The operator surface reads the same ledger the WARN writes; a node that departs takes its
-    /// entry with it (a relaunch with the right label arrives under a fresh id), and the intent is
-    /// consumed on first observation so a rejoin under the same id is not re-reported.
+    /// verify-1120 BLOCKING-1 — an in-place restart of a mislabelled node (crash, OOM, operator
+    /// restart: same id, since a replacement boots from a rendered config carrying its node id). The
+    /// entry survives `NodeRemoved`, the rejoin is compared AGAIN, and the WARN re-fires: the node's
+    /// condition survived the restart, so must the operator's signals. Reviewer probe B, inverted.
     @Test
-    void ledger_listsTheMismatch_andDropsItWhenTheNodeIsRemoved() {
+    void restartInPlace_ofAMislabelledNode_keepsTheEntry_andReWarnsOnRejoin() {
         provision(PROVISIONED, NodeRole.WORKER);
-        observe(PROVISIONED, Map.of());
-
+        describe(PROVISIONED, "");
         assertThat(ctm.roleMismatches()).as("control: nothing listed before the node is observed").isEmpty();
 
-        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PROVISIONED, List.of(SELF, PEER_A, PEER_B)));
-
+        join(PROVISIONED);
+        assertThat(mismatchWarns()).hasSize(1);
         assertThat(ctm.roleMismatches()).containsExactly(new ClusterTopologyManager.RoleMismatch(PROVISIONED, "worker", "", "CORE"));
 
         ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PROVISIONED, List.of(SELF, PEER_A, PEER_B)));
+        assertThat(ctm.roleMismatches()).as("the entry survives the node's departure — a restart may follow")
+                                        .containsExactly(new ClusterTopologyManager.RoleMismatch(PROVISIONED, "worker", "", "CORE"));
 
-        assertThat(ctm.roleMismatches()).isEmpty();
+        join(PROVISIONED);
+
+        assertThat(ctm.roleMismatches()).as("ledger-after-rejoin")
+                                        .containsExactly(new ClusterTopologyManager.RoleMismatch(PROVISIONED, "worker", "", "CORE"));
+        assertThat(mismatchWarns()).as("total-mismatch-warns: the rejoin is compared again and re-reported")
+                                   .hasSize(2);
+    }
+
+    /// The other half of the retained intent: a rejoin that NOW carries the right label clears the
+    /// entry (and says so at INFO). Relabelled `worker`, the node rejoins on the worker channel.
+    @Test
+    void rejoin_nowCorrectlyLabelled_clearsTheEntry() {
+        provision(PROVISIONED, NodeRole.WORKER);
+        describe(PROVISIONED, "");
+        join(PROVISIONED);
+        assertThat(ctm.roleMismatches()).hasSize(1);
+
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PROVISIONED, List.of(SELF, PEER_A, PEER_B)));
+        describe(PROVISIONED, "worker");
+        ctm.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(PROVISIONED, "worker", new HlcTimestamp(HlcTimestamp.pack(2L, 0), SELF)));
+
+        assertThat(ctm.roleMismatches()).as("a correctly relabelled rejoin clears the entry").isEmpty();
+        assertThat(mismatchWarns()).as("no second WARN — the halves now agree").hasSize(1);
+        assertThat(appender.capturedInfos()).filteredOn(msg -> msg.contains(CLEARED_MARKER))
+                                            .hasSize(1)
+                                            .first()
+                                            .asString()
+                                            .contains(PROVISIONED.id())
+                                            .contains("was advertised ''");
+    }
+
+    /// The CTM's own forget point: `NodeDecommissioned` retires the id for good, so the intent and the
+    /// entry go with it and a later join under that id is a stranger — not compared, not listed.
+    @Test
+    void decommission_forgetsTheIntent_soALaterJoinUnderThatIdIsNotCompared() {
+        provision(PROVISIONED, NodeRole.WORKER);
+        describe(PROVISIONED, "");
+        join(PROVISIONED);
+        assertThat(ctm.roleMismatches()).hasSize(1);
+
+        ctm.onMembershipDecision(MembershipDecision.nodeDecommissioned(PROVISIONED, List.of(SELF, PEER_A, PEER_B)));
+        assertThat(ctm.roleMismatches()).as("decommissioning drops the entry").isEmpty();
+
+        join(PROVISIONED);
+
+        assertThat(ctm.roleMismatches()).as("the intent was forgotten with the id").isEmpty();
+        assertThat(mismatchWarns()).hasSize(1);
+    }
+
+    /// verify-1120 SF-2 — a deposed CTM drops decisions at its `active` gate, so a node that restarted
+    /// while this node was not leading was never re-compared. Re-activation re-derives every retained
+    /// intent against what membership holds NOW: the still-mislabelled node is re-reported, the one
+    /// relabelled in the meantime is cleared.
+    @Test
+    void reactivation_reDerivesTheLedger_fromWhatMembershipHoldsNow() {
+        provision(PROVISIONED, NodeRole.WORKER);
+        provision(STRANGER, NodeRole.WORKER);
+        describe(PROVISIONED, "");
+        describe(STRANGER, "");
+        join(PROVISIONED);
+        join(STRANGER);
+        assertThat(ctm.roleMismatches()).hasSize(2);
+        assertThat(mismatchWarns()).hasSize(2);
+
+        ctm.deactivate();
+        describe(STRANGER, "worker");
+        ctm.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(STRANGER, "worker", new HlcTimestamp(HlcTimestamp.pack(3L, 0), SELF)));
+        assertThat(ctm.roleMismatches()).as("control: the deposed CTM dropped the rejoin at its gate")
+                                        .hasSize(2);
+
+        ctm.activate();
+
+        assertThat(ctm.roleMismatches()).as("re-derived on activation: the relabelled node is cleared, the other stays")
+                                        .containsExactly(new ClusterTopologyManager.RoleMismatch(PROVISIONED, "worker", "", "CORE"));
+        assertThat(mismatchWarns()).filteredOn(msg -> msg.contains(PROVISIONED.id()))
+                                   .as("the still-mismatched node is re-reported on this activation")
+                                   .hasSize(2);
+        assertThat(mismatchWarns()).filteredOn(msg -> msg.contains(STRANGER.id()))
+                                   .hasSize(1);
     }
 
     private void provision(NodeId nodeId, NodeRole intendedRole) {
@@ -226,14 +363,31 @@ class ClusterTopologyManagerRoleMismatchTest {
         assertThat(result.unwrap()).isInstanceOf(ProvisionDisposition.Dispatched.class);
     }
 
-    /// The node becomes known to the observer with exactly these labels — what SWIM/discovery
-    /// would deliver for a node that booted with (or without) `AETHER_ROLE`.
+    /// Membership's view of the node: the FSM tracks it with exactly this self-asserted role — what a
+    /// node that booted with (or without) `AETHER_ROLE` advertises after the descriptor merge.
+    private void describe(NodeId nodeId, String role) {
+        descriptors.put(nodeId, role);
+        tracked.add(nodeId);
+    }
+
+    /// A SWIM/discovery sighting as the `TopologyObserver` records it — first sighting wins.
     private void observe(NodeId nodeId, Map<String, String> labels) {
         var info = NodeInfo.nodeInfo(nodeId, NodeAddress.nodeAddress("10.0.0.9", 6000).unwrap(), labels);
 
         observer.handleDiscoveredNodes(new NetworkMessage.DiscoveredNodes(SELF, List.of(info)));
         assertThat(observer.get(nodeId).isPresent()).as("fixture: the observer must hold the node's NodeInfo")
                                                     .isTrue();
+    }
+
+    private void join(NodeId nodeId) {
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(nodeId, List.of(SELF, PEER_A, PEER_B)));
+    }
+
+    private List<String> mismatchWarns() {
+        return appender.capturedWarns()
+                       .stream()
+                       .filter(msg -> msg.contains(MISMATCH_MARKER))
+                       .toList();
     }
 
     private static Promise<List<Object>> applyNothing(List<KVCommand<AetherKey>> commands) {
@@ -249,7 +403,7 @@ class ClusterTopologyManagerRoleMismatchTest {
     private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
         var existing = configuration.getLoggerConfig(LOGGER_NAME);
         if (LOGGER_NAME.equals(existing.getName())) {return existing;}
-        var fresh = new LoggerConfig(LOGGER_NAME, Level.WARN, false);
+        var fresh = new LoggerConfig(LOGGER_NAME, Level.INFO, false);
         configuration.addLogger(LOGGER_NAME, fresh);
         return fresh;
     }
@@ -296,7 +450,9 @@ class ClusterTopologyManagerRoleMismatchTest {
     }
 
     private static final class CapturingAppender extends AbstractAppender {
-        private final List<String> messages = new CopyOnWriteArrayList<>();
+        private record Captured(Level level, String message) {}
+
+        private final List<Captured> messages = new CopyOnWriteArrayList<>();
 
         private CapturingAppender(String name, Layout<?> layout) {
             super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
@@ -307,13 +463,21 @@ class ClusterTopologyManagerRoleMismatchTest {
         }
 
         @Override public void append(LogEvent event) {
-            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
-                messages.add(event.getMessage().getFormattedMessage());
-            }
+            messages.add(new Captured(event.getLevel(), event.getMessage().getFormattedMessage()));
         }
 
         List<String> capturedWarns() {
-            return List.copyOf(messages);
+            return messages.stream()
+                           .filter(captured -> captured.level().isMoreSpecificThan(Level.WARN))
+                           .map(Captured::message)
+                           .toList();
+        }
+
+        List<String> capturedInfos() {
+            return messages.stream()
+                           .filter(captured -> captured.level().equals(Level.INFO))
+                           .map(Captured::message)
+                           .toList();
         }
     }
 }

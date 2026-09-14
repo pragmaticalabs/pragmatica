@@ -62,17 +62,20 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// `worker` would be invisible to the comparison. Default no-op so test fakes are untouched.
     default void onWorkerJoin(WorkerJoinDecision decision) {}
 
-    /// #689 — every provisioned node observed advertising a role other than the one it was
-    /// provisioned with (including none), leader-scoped: intents live with the leader that minted
-    /// the node id, so a new leader reports none — absence of intent is not a mismatch. The
+    /// #689 — every provisioned node whose LAST observed join advertised a role other than the one it
+    /// was provisioned with (including none), leader-scoped: intents live with the leader that minted
+    /// the node id, so a new leader reports none — absence of intent is not a mismatch. The intent is
+    /// retained for the id until the node is decommissioned, so every rejoin under that id is
+    /// re-compared: a still-mislabelled restart re-reports, a correctly relabelled one clears the
+    /// entry. A departed node's entry stays listed until decommission or leader change. The
     /// classification itself is unchanged (blank counts as core); this is the record that says so.
     default List<RoleMismatch> roleMismatches() {
         return List.of();
     }
 
     /// One provisioned node whose advertised role label disagrees with its provisioning intent.
-    /// `advertisedRole` is the raw `NodeInfo.LABEL_ROLE` value, `""` when the label is absent;
-    /// `classifiedAs` is what `MemberDescriptor.isCoreRole` made of it.
+    /// `advertisedRole` is the role the membership FSM holds for the node (`MemberDescriptor.role`,
+    /// `""` when no label ever arrived); `classifiedAs` is what `MemberDescriptor.isCoreRole` made of it.
     record RoleMismatch(NodeId nodeId, String intendedRole, String advertisedRole, String classifiedAs) {}
 
     /// #1050 (verify-1057-r2 S1) — raw SWIM declared `nodeId` FAULTY: positive death evidence, delivered by the

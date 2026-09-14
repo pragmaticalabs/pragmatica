@@ -5,11 +5,13 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import java.util.Set;
+import java.util.function.Function;
 import java.util.function.IntSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 
 
 /// #1050 / #1062 — the membership and liveness evidence the CTM consults before any IRREVERSIBLE reap: the
@@ -26,33 +28,42 @@ import org.pragmatica.consensus.NodeId;
 ///   in-flight set plus the set retained from the previous leader's pings.
 /// - `configuredCoreCount` — the configured core size; below 1 means unknown, and every consumer treats an
 ///   unknown size as NOT quorum-safe (fail-closed).
+/// - `advertisedRole` (#689) — `MembershipFsm.memberDescriptor(id).role()`: the role the node SELF-ASSERTS,
+///   as the FSM holds it after its blank-downgrade merge — the same value the projector classified the
+///   node's join by. `none()` when the FSM does not track the id at all. Never the `TopologyObserver`'s
+///   first sighting, which is frozen (`putIfAbsent`) and label-less when the node was learned by gossip.
 public record MembershipLiveness(Supplier<Set<NodeId>> coreCountedMembers,
                                  Supplier<Set<NodeId>> trackedMembers,
                                  Predicate<NodeId> swimAlive,
                                  Predicate<NodeId> transportConnected,
                                  Supplier<Set<NodeId>> inFlightProvisioning,
-                                 IntSupplier configuredCoreCount) {
+                                 IntSupplier configuredCoreCount,
+                                 Function<NodeId, Option<String>> advertisedRole) {
     /// No evidence at all — for hosts and tests without membership wiring. Every reap gate that needs quorum
-    /// safety refuses (configured size unknown), and nothing is reported live.
+    /// safety refuses (configured size unknown), nothing is reported live, and no node has an advertised role
+    /// to compare (#689: no comparison, never a fabricated blank).
     public static final MembershipLiveness UNWIRED = new MembershipLiveness(Set::of,
                                                                             Set::of,
                                                                             _ -> false,
                                                                             _ -> false,
                                                                             Set::of,
-                                                                            () -> 0);
+                                                                            () -> 0,
+                                                                            _ -> Option.none());
 
     public static MembershipLiveness membershipLiveness(Supplier<Set<NodeId>> coreCountedMembers,
                                                         Supplier<Set<NodeId>> trackedMembers,
                                                         Predicate<NodeId> swimAlive,
                                                         Predicate<NodeId> transportConnected,
                                                         Supplier<Set<NodeId>> inFlightProvisioning,
-                                                        IntSupplier configuredCoreCount) {
+                                                        IntSupplier configuredCoreCount,
+                                                        Function<NodeId, Option<String>> advertisedRole) {
         return new MembershipLiveness(coreCountedMembers,
                                       trackedMembers,
                                       swimAlive,
                                       transportConnected,
                                       inFlightProvisioning,
-                                      configuredCoreCount);
+                                      configuredCoreCount,
+                                      advertisedRole);
     }
 
     /// R1′(a), refined after verify-1058: LIVE by liveness EVIDENCE, never by membership projection. A node is live

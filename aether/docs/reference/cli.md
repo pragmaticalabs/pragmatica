@@ -2141,6 +2141,32 @@ Example output:
 {"enabled": true, "previousState": false}
 ```
 
+### `aether cluster topology role-mismatches`
+
+List provisioned nodes whose advertised role label disagrees with the role the leader provisioned them with (#689). A node's role is a self-asserted label (`AETHER_ROLE` → `aether-role`); a blank or unknown label is classified **CORE** by every peer, deliberately, so an intended worker whose label never arrived silently joins the core set and every community-tier mechanism gated on "positively not a core" is suppressed on it. This is that fact without log access; the leader also logs it at WARN on every join of such a node. Leader-scoped and intent-based: only nodes this leader provisioned are compared, the intent is kept until the node is decommissioned, a still-mislabelled restart under the same id is re-listed and a correctly relabelled rejoin clears the entry. See `GET /api/v1/cluster/topology/role-mismatches` in `management-api.md` for the full scope statement.
+
+```bash
+aether cluster topology role-mismatches
+```
+
+| Option | Description |
+|--------|-------------|
+| `--format` | Output format: `table` (default), `json`, `value`, `csv` |
+
+Example:
+```bash
+aether cluster topology role-mismatches
+
+# Output (table):
+# NODE                      INTENDED    ADVERTISED    CLASSIFIED
+# worker-3                  worker                    CORE
+```
+
+Example output (`--format json`):
+```json
+{"mismatches": [{"nodeId": "worker-3", "intendedRole": "worker", "advertisedRole": "", "classifiedAs": "CORE"}]}
+```
+
 ### `aether cluster governors`
 
 Show the per-slice governor assignment across the cluster — which node currently owns the governor role for each slice. Wraps `GET /api/cluster/governors`.

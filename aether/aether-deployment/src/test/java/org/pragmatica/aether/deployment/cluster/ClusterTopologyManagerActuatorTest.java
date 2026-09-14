@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster;
 
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.ClusterName;
@@ -159,7 +160,8 @@ class ClusterTopologyManagerActuatorTest {
                                                      this::swimAlive,
                                                      this::transportConnected,
                                                      inFlightNodes::get,
-                                                     configuredCoreCount::get);
+                                                     configuredCoreCount::get,
+                                                     _ -> Option.none());
     }
 
     private boolean transportConnected(NodeId nodeId) {
@@ -835,7 +837,8 @@ class ClusterTopologyManagerActuatorTest {
                                                                          _ -> false,
                                                                          _ -> false,
                                                                          Set::of,
-                                                                         () -> countRead(membershipReads).size());
+                                                                         () -> countRead(membershipReads).size(),
+                                                                         _ -> Option.none());
             var zombieCtm = ctmWithDrainGrace(timeSpan(150).millis(), drainCommandSinkCalls::add, countingLiveness);
 
             zombieCtm.drainNode(PEER_D, DrainReason.JOIN_GRACE_REAP).await();
@@ -1076,7 +1079,9 @@ class ClusterTopologyManagerActuatorTest {
                                                      id -> swimAliveNodes.get().contains(id),
                                                      id -> transportConnectedNodes.get().contains(id),
                                                      inFlightNodes::get,
-                                                     configuredCoreCount::get);
+                                                     configuredCoreCount::get,
+                                                     id -> membershipFsm.memberDescriptor(id)
+                                                                        .map(MemberDescriptor::role));
     }
 
     /// verify-1057 B1, committed. A refused surplus reap must never leave a billed orphan, even when leadership or
