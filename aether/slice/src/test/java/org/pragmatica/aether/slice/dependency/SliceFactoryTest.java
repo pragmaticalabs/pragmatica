@@ -167,19 +167,43 @@ class SliceFactoryTest {
         });
     }
 
+    /// #758: the same reflective failure for an APPLICATION type — another slice's class that never
+    /// reached this slice's classloader — must not be diagnosed as a removed runtime class. That
+    /// message sent seven investigations after a rebuild that could not have helped. The cause must
+    /// name the missing class, say it is not on the slice's classloader, list what that loader
+    /// holds, and point at the declared dependencies; it must not say "rebuild".
+    @Test
+    void fails_namingTheClassloaderGap_whenAnApplicationTypeIsMissing() throws ClassNotFoundException {
+        var hiddenType = com.example.ghost.GhostProviderType.class.getName();
+        var loader = new HidingClassLoader(hiddenType, com.example.ghost.GhostConsumerFactory.class.getName());
+        var factoryClass = loader.loadClass(com.example.ghost.GhostConsumerFactory.class.getName());
+
+        SliceFactory.createSlice(factoryClass, STUB_CONTEXT, List.of(), List.of()).await().onSuccessRun(Assertions::fail).onFailure(cause -> {
+            assertThat(cause.message()).contains("GhostProviderType")
+                                       .contains("not on this slice's classloader")
+                                       .contains("[slices]")
+                                       .doesNotContain("rebuild")
+                                       .doesNotContain("removed class");
+        });
+    }
+
     /// Test classloader implementing the JDK {@link ClassLoader} SPI: it defines the ghost factory
     /// from parent bytes (so the factory's defining loader is this one) while refusing to load the
     /// hidden parameter type, forcing a {@link ClassNotFoundException} during reflective inspection.
     /// try/catch/throw here satisfy the {@code loadClass}/{@code findClass} contract, mirroring the
     /// production SliceClassLoader boundary.
     private static final class HidingClassLoader extends ClassLoader {
-        private static final String GHOST_PREFIX = GhostParamFactory.class.getName();
-
         private final String hiddenType;
+        private final String definedHere;
 
         private HidingClassLoader(String hiddenType) {
+            this(hiddenType, GhostParamFactory.class.getName());
+        }
+
+        private HidingClassLoader(String hiddenType, String definedHere) {
             super(HidingClassLoader.class.getClassLoader());
             this.hiddenType = hiddenType;
+            this.definedHere = definedHere;
         }
 
         @Override
@@ -188,7 +212,7 @@ class SliceFactoryTest {
                 throw new ClassNotFoundException(name);
             }
 
-            if (name.equals(GHOST_PREFIX)) {
+            if (name.equals(definedHere)) {
                 return defineFromParentBytes(name, resolve);
             }
 
