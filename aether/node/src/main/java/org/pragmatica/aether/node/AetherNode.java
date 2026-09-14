@@ -6260,7 +6260,13 @@ public interface AetherNode extends ManageableNode {
                                var secretsProvider = config.environment()
                                                            .flatMap(EnvironmentIntegration::secrets);
                                var secretResolver = secretsProvider.map(sp -> (Fn1<Promise<String>, String>) sp::resolveSecret);
-                               var resolvedProvider = secretsProvider.fold(() -> Result.success(configProvider),
+                               // No SecretsProvider (no `[cloud]` block, or `Main.resolveEnvironment`
+                               // dropped a failed one): a `${secrets:...}` placeholder in node.toml
+                               // can never resolve, so it refuses here too rather than being served
+                               // as the literal value -- the `NoSecretsProviderForStorageEncryption`
+                               // rule applied to the config map. A placeholder-free provider (Ember,
+                               // Forge) is returned as-is.
+                               var resolvedProvider = secretsProvider.fold(() -> ConfigurationProvider.withoutSecretResolution(configProvider),
                                                                            sp -> ConfigurationProvider.withSecretResolution(configProvider,
                                                                                                                             sp::resolveSecret));
                                // #904: the operator DID configure a provider; the failure is in
@@ -6309,9 +6315,9 @@ public interface AetherNode extends ManageableNode {
 
     private static Result<ResourceProviderSetup> secretResolutionRefused(Cause cause) {
         return Causes.cause("configured resource provider cannot be built: " + cause.message()
-                           + " — refusing to boot: the node would otherwise start with resource provisioning"
-                           + " silently disabled and every ConfigurationSection slice failing as if no provider"
-                           + " had been configured (#904)",
+                           + " — refusing to boot: the node would otherwise start with that configuration"
+                           + " unusable, either with resource provisioning silently disabled or with the"
+                           + " placeholder text served as the value (#904)",
                             Option.some(cause))
                      .result();
     }
