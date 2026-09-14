@@ -7,6 +7,7 @@ package org.pragmatica.aether.slice;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.lang.Option;
 
 import javax.tools.ToolProvider;
 
@@ -210,6 +211,27 @@ class SliceClassLoaderTest {
         assertThat(classLoader.getURLs()[0]).isEqualTo(url);
 
         classLoader.close();
+    }
+
+    @Test
+    void sliceJarUrl_isTheFirstUrl_andDependencyUrlsAppendAfterIt() throws Exception {
+        var ownJar = tempDir.resolve("own.jar");
+        var dependencyJar = tempDir.resolve("dependency.jar");
+        Files.createFile(ownJar);
+        Files.createFile(dependencyJar);
+
+        try (var classLoader = new SliceClassLoader(new URL[]{ownJar.toUri().toURL()}, getClass().getClassLoader())) {
+            classLoader.addSliceDependencyUrl(dependencyJar.toUri().toURL());
+
+            assertThat(classLoader.sliceJarUrl()).isEqualTo(Option.some(ownJar.toUri().toURL()));
+        }
+    }
+
+    @Test
+    void sliceJarUrl_isNone_forALoaderBuiltWithoutAJar() throws Exception {
+        try (var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader())) {
+            assertThat(classLoader.sliceJarUrl()).isEqualTo(Option.none());
+        }
     }
 
     // === Class Loading Lock Tests ===

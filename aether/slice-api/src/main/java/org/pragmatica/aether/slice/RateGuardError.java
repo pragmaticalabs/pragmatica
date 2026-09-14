@@ -8,7 +8,7 @@ import org.pragmatica.lang.Cause;
 
 
 public sealed interface RateGuardError extends Cause {
-    record LimitExceeded(long retryAfterMs, long limit, long remaining, long resetAtEpochMs) implements RateGuardError {
+    record LimitExceeded(long retryAfterMs, long limit, long remaining, long resetAtEpochMs) implements RateGuardError, Cause.Transient {
         public static LimitExceeded limitExceeded(long retryAfterMs, long limit, long remaining, long resetAtEpochMs) {
             return new LimitExceeded(retryAfterMs, limit, remaining, resetAtEpochMs);
         }

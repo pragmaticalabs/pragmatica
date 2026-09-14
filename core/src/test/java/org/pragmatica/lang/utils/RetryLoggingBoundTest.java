@@ -237,6 +237,34 @@ class RetryLoggingBoundTest {
             .isEmpty();
     }
 
+    /// #280: a give-up line names the cause's TYPE, never its message — the message is where a
+    /// business cause carries personal data, and this WARN is the one line that reaches INFO.
+    @Test
+    void giveUpLines_nameTheCauseType_neverItsMessage() {
+        useLevel(Level.DEBUG);
+
+        var secret = "card 4111 1111 1111 1111 declined";
+        var result = Retry.retry()
+                          .attempts(2)
+                          .strategy(Retry.BackoffStrategy.fixed().interval(timeSpan(1).millis()))
+                          .execute(() -> Causes.cause(secret).promise())
+                          .await();
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(warnsContaining(GAVE_UP_FRAGMENT)).hasSize(1);
+        assertThat(messagesContaining("4111")).describedAs("no line at any level carries the message").isEmpty();
+        assertThat(messagesContaining("simpleCause")).describedAs("the type is what is named").isNotEmpty();
+
+        var terminal = Retry.retry()
+                            .attempts(2)
+                            .strategy(Retry.BackoffStrategy.fixed().interval(timeSpan(1).millis()))
+                            .execute(() -> Causes.terminal(secret).promise())
+                            .await();
+
+        assertThat(terminal.isFailure()).isTrue();
+        assertThat(messagesContaining("4111")).isEmpty();
+    }
+
     private static int exhaustBudget(int maxAttempts) {
         var attempts = new AtomicInteger();
         var result = Retry.retry()

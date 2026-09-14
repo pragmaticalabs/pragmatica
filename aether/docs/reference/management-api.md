@@ -5607,7 +5607,9 @@ management security is disabled. The check runs ahead of the role/auth pipeline 
 `ManagementServer`, so it short-circuits before role evaluation.
 
 Each identity-bearing write route — the catalog-form
-`STREAMS_PUBLISH`/`STREAMS_DELETE`/`STREAMS_GROUP_CREATE`/`STREAMS_GROUP_DELETE` —
+`STREAMS_PUBLISH`/`STREAMS_PUBLISH_BATCH`/`STREAMS_DELETE`/`STREAMS_GROUP_CREATE`/`STREAMS_GROUP_DELETE`
+(`STREAMS_PUBLISH_BATCH` joined the set with #742; until then the batch form wrote where the single
+form was refused) —
 resolves its target through the same `ManagementRoute` route-match the real dispatch path uses
 (never a raw path-segment scan), reduces the match to an engine key, and rejects when that key
 names one of `SystemStreams.ALL`. A route match whose params fail to resolve to a valid identity
@@ -5628,11 +5630,16 @@ body is rejected the same as anyone else), but it is not the same short-circuit-
 guarantee the path-based gate above gives the other write routes.
 
 `CONSUMER_GROUP_JOIN`/`CONSUMER_GROUP_LEAVE` carry their target
-stream name in the request body rather than the path — a known, currently open gap this path-only
-gate cannot see, closed once these routes gain path-resolvable identity via the catalog-form
-reshape (management-api-versioning-spec.md §3.3). Tracked as its own ticket (rc4 provisional,
-cross-referencing #300), pending an evidence-based answer to whether joining/leaving a consumer
-group on a framework stream actually mutates state or is merely untidy.
+stream name in the request body rather than the path, so this path-only gate cannot see them. Since
+#742 they are protected the same way `STREAM_CREATE` is: a post-auth, handler-level guard in
+`StreamRoutes#joinGroup`/`#leaveGroup` that refuses a reserved system stream name before the
+coordinator is called (`405 Cannot join or leave a consumer group on a reserved system stream` — the
+same status this gate answers with). The body name is canonicalized the way this gate canonicalizes
+a path — the catalog spelling `system:cluster-events:1.0.0` reduces to the engine key
+`cluster-events` before the predicate — so both spellings are refused; a missing name is
+`Missing stream name`. The evidence question that ticket was filed on was answered: joining/leaving
+does mutate state — both call `rebalance`, which proposes replicated KV assignment records under the
+named stream.
 
 Reads of `system:*` streams (e.g. `system:cluster-events`) are unaffected; only writes are gated.
 The compile-time SPI split already blocks application code from producing into system streams;

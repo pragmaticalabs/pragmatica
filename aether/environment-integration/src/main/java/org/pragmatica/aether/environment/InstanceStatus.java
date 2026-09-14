@@ -34,10 +34,21 @@ public sealed interface InstanceStatus {
         }
     }
 
+    /// #1049 — the provider reported a status that says neither "coming" nor "going": a documented
+    /// indeterminate value (Hetzner `unknown`, GCP `REPAIRING`, Azure `PowerState/unknown`) or any value the
+    /// provider's mapping does not recognise. Never read as stopping or terminated: readiness keeps polling it
+    /// until its timeout, and the auto-heal in-flight tracker keeps the replacement until its ceiling.
+    record Unknown() implements InstanceStatus {
+        public static Result<Unknown> unknown() {
+            return success(new Unknown());
+        }
+    }
+
     InstanceStatus PROVISIONING = Provisioning.provisioning().unwrap();
     InstanceStatus RUNNING = Running.running().unwrap();
     InstanceStatus STOPPING = Stopping.stopping().unwrap();
     InstanceStatus TERMINATED = Terminated.terminated().unwrap();
+    InstanceStatus UNKNOWN = Unknown.unknown().unwrap();
 
     record unused() implements InstanceStatus {
         public static Result<unused > unused() {

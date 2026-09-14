@@ -90,7 +90,7 @@ public sealed interface StreamError extends Cause {
     /// is visible (via the owner's KV apply or this node's own lazy materialization from the committed
     /// `StreamConfigKey`). Not a capacity shortage, so it does NOT implement
     /// {@link org.pragmatica.aether.slice.ResourceCapacityExhausted}.
-    record StreamConfigNotYetVisible(String streamName) implements StreamError {
+    record StreamConfigNotYetVisible(String streamName) implements StreamError, Cause.Transient {
         @Override
         public String message() {
             return "Stream config not yet visible on this node: " + streamName;
@@ -244,7 +244,7 @@ public sealed interface StreamError extends Cause {
     /// CAUGHT_UP signal lags the committed handover), so serving now could miss events the prior owner
     /// committed. The read is rejected (NOT blocked) so the client retries once the new owner has caught
     /// up — the new owner reuses the EXISTING failover-recovery catch-up machinery to close the gap.
-    record OwnerCatchupPending(String streamName, int partition) implements StreamError {
+    record OwnerCatchupPending(String streamName, int partition) implements StreamError, Cause.Transient {
         @Override
         public String message() {
             return "Linearizable read rejected for %s[%d]: the committed owner has not yet caught up to the handover offset".formatted(streamName,
@@ -258,7 +258,7 @@ public sealed interface StreamError extends Cause {
     /// unavailable, paused, or the owner is mid-churn. The read is rejected (NOT served from a
     /// pre-round view) so the client retries once the round can complete; serving without the round
     /// would forfeit linearizability.
-    record LinearizableRoundTimeout(String streamName, int partition) implements StreamError {
+    record LinearizableRoundTimeout(String streamName, int partition) implements StreamError, Cause.Transient {
         @Override
         public String message() {
             return "Linearizable read rejected for %s[%d]: the no-op consensus round did not apply within the read timeout budget".formatted(streamName,

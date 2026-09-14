@@ -75,6 +75,20 @@ public sealed interface Causes {
         return new terminalCause(message);
     }
 
+    /// A cause marked TRANSIENT: a retry policy that retries only classified causes admits it (see
+    /// [Cause#isTransient]). The mirror of [#terminal]; use for a passing condition — a timeout, a
+    /// busy peer — rather than spelling "(transient)" into message text no policy reads (#280).
+    static Cause transientCause(String message) {
+        record transientCause(String message) implements SimpleCause {
+            @Override
+            public boolean isTransient() {
+                return true;
+            }
+        }
+
+        return new transientCause(message);
+    }
+
     static Cause cause(String message, Option<Cause> source) {
         record simpleCause(String message, Option<Cause> source) implements SimpleCause {
             @Override
