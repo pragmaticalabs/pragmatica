@@ -71,6 +71,20 @@ n=$(find "${INTEG_DIR}/suites/02-chaos" -name 'test-*.sh' | wc -l | tr -d ' ')
 [ "$n" = "7" ] && ok "R6 02-chaos still holds its 7 test files" \
                || fail "R6 02-chaos holds ${n} test files, expected 7 — the full suite changed size"
 
+echo "suites/ — no symlink ANYWHERE, because the hazard is the class not the location"
+# R5/R5b cover 02s's own entry. This covers the next one: a future 03s (or anything else) reached by
+# symlink would reintroduce BOTH double-counts — lint counting a file's findings twice, and
+# test-chaos-harness W1 seeing more gate call sites than the invariant allows — and the per-path pins
+# above would not see it. Cheap to check tree-wide, so checked tree-wide.
+links=$(find "${INTEG_DIR}/suites" -type l 2>/dev/null)
+n=$(printf '%s' "$links" | grep -c '^' || true)
+if [ "$n" = "0" ]; then
+    ok "R9 no symlinks under suites/ (use an exec wrapper to share a test between suites)"
+else
+    fail "R9 ${n} symlink(s) under suites/ — each is a second PATH to the same bytes and will be double-counted by lint and by test-chaos-harness W1:
+$(printf '%s\n' "$links" | sed 's|^|        |')"
+fi
+
 echo "lint gate — a symlinked suite is not counted twice"
 # The find-based rules (R1/R3/R5) enumerate a symlink as a second path to the same bytes, so before
 # `-type f` every finding in the S19 file was counted under BOTH paths and the baseline would have
