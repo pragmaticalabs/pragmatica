@@ -648,7 +648,9 @@ public final class ClusterBootstrapConfigValidator {
         return source.roles()
                      .values()
                      .stream()
-                     .flatMap(sub -> sub.hosts().stream().flatMap(List::stream))
+                     .flatMap(sub -> sub.hosts()
+                                        .stream()
+                                        .flatMap(List::stream))
                      .distinct()
                      .toList();
     }

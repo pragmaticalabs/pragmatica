@@ -238,7 +238,7 @@ class BootstrapPhaseDeploySshSourceTest {
 
         assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
         assertThat(startCommands.get("10.0.0.1")).contains("-e AETHER_API_KEYS=\"k1,k2\"")
-                                                 .doesNotContain("NOT_ON_THE_LIST");
+                  .doesNotContain("NOT_ON_THE_LIST");
     }
 
     @Test
