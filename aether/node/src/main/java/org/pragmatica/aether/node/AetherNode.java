@@ -5909,6 +5909,8 @@ public interface AetherNode extends ManageableNode {
                                                                       lbm::onNodeRoutesRemove));
         dynamicConfigManager.onPresent(dcm -> kvRouterBuilder.onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
                                                              .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));
+        // #381: push each applied config change to the registered slices' notifyConfigUpdate.
+        dynamicConfigManager.onPresent(dcm -> dcm.onApplied(nodeDeploymentManager::onConfigChanged));
         kvRouterBuilder.onPut(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupPut);
         kvRouterBuilder.onRemove(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupRemove);
         // #345 1b: feed the per-ownership-domain epoch high-water table from committed EpochBearing puts.

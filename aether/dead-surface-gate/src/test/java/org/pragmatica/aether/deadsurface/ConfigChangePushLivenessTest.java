@@ -6,7 +6,9 @@ package org.pragmatica.aether.deadsurface;
 
 import java.util.List;
 
+import org.pragmatica.aether.api.DynamicConfigManager;
 import org.pragmatica.aether.deployment.config.ConfigNotificationManager;
+import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 
 import org.junit.jupiter.api.Test;
 
@@ -39,8 +41,17 @@ class ConfigChangePushLivenessTest {
 
         assertTrue(reachability.isReachable(MethodRef.of(ConfigNotificationManager.class.getDeclaredMethod("notifyChange",
                                                                                                            String.class,
-                                                                                                           org.pragmatica.aether.slice.ConfigFacade.class))),
-                   "#381: ConfigNotificationManager.notifyChange must be called by production code; with no "
-                   + "caller the slice notifyConfigUpdate callbacks never fire after activation");
+                                                                                                           org.pragmatica.lang.Functions.Fn1.class))),
+                   "#381: ConfigNotificationManager.notifyChange must be called by production code "
+                   + "(NodeDeploymentState.Active on a ConfigChanged event); with no caller the slice "
+                   + "notifyConfigUpdate callbacks never fire after activation");
+        assertTrue(reachability.isReachable(MethodRef.of(NodeDeploymentManager.class.getDeclaredMethod("onConfigChanged",
+                                                                                                       String.class))),
+                   "#381: NodeDeploymentManager.onConfigChanged must be the DynamicConfigManager listener "
+                   + "registered by AetherNode.collectRouteEntries");
+        assertTrue(reachability.isReachable(MethodRef.of(DynamicConfigManager.class.getDeclaredMethod("onApplied",
+                                                                                                      java.util.function.Consumer.class))),
+                   "#381: DynamicConfigManager.onApplied must be registered by production code "
+                   + "(AetherNode.collectRouteEntries), or the KV change never leaves the overlay provider");
     }
 }

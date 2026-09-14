@@ -12,6 +12,7 @@ import java.util.concurrent.Executors;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.ConfigFacade;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -27,9 +28,14 @@ public sealed interface ConfigNotificationManager {
     Result<Unit> register(Artifact artifact,
                           Object sliceInstance,
                           ClassLoader sliceClassLoader,
-                          String factoryClassName);
+                          String factoryClassName,
+                          List<String> sections);
 
-    Result<Unit> notifyChange(String section, ConfigFacade config);
+    /// #381 — a runtime config change, keyed as the KV `ConfigKey` (`section.key`, any depth). Every
+    /// registered slice whose declared section is a prefix of the key is notified for that section,
+    /// with ITS OWN facade (`facadeFor`), since each slice reads its config through its own composite
+    /// provider. Dispatch is asynchronous on the notification thread, like [#notifyInitial].
+    Result<Unit> notifyChange(String changedKey, Fn1<ConfigFacade, Artifact> facadeFor);
     Result<Unit> notifyInitial(Artifact artifact, List<String> sections, ConfigFacade config);
     Result<Unit> unregister(Artifact artifact);
     Result<Unit> shutdown();
@@ -38,15 +44,13 @@ public sealed interface ConfigNotificationManager {
         return new DefaultConfigNotificationManager();
     }
 
-    record SliceRegistration(Artifact artifact, Object sliceInstance, Method notifyMethod) {}
+    record SliceRegistration(Artifact artifact, Object sliceInstance, Method notifyMethod, List<String> sections) {}
 
     final class DefaultConfigNotificationManager implements ConfigNotificationManager {
         private static final Logger log = LoggerFactory.getLogger(ConfigNotificationManager.class);
         private static final String NOTIFY_METHOD_NAME = "notifyConfigUpdate";
 
         private final ConcurrentHashMap<Artifact, SliceRegistration> registrations = new ConcurrentHashMap<>();
-        private final ConcurrentHashMap<String, Object> lastParsedConfig = new ConcurrentHashMap<>();
-
         private final ExecutorService executor = Executors.newSingleThreadExecutor(DefaultConfigNotificationManager::createDaemonThread);
 
         private static Thread createDaemonThread(Runnable r) {
@@ -61,17 +65,19 @@ public sealed interface ConfigNotificationManager {
         public Result<Unit> register(Artifact artifact,
                                      Object sliceInstance,
                                      ClassLoader sliceClassLoader,
-                                     String factoryClassName) {
+                                     String factoryClassName,
+                                     List<String> sections) {
             findNotifyMethod(sliceClassLoader, factoryClassName).onPresent(method -> registerSlice(artifact,
                                                                                                    sliceInstance,
-                                                                                                   method));
+                                                                                                   method,
+                                                                                                   sections));
 
             return unitResult();
         }
 
         @Override
-        public Result<Unit> notifyChange(String section, ConfigFacade config) {
-            executor.execute(() -> dispatchNotification(section, config));
+        public Result<Unit> notifyChange(String changedKey, Fn1<ConfigFacade, Artifact> facadeFor) {
+            executor.execute(() -> dispatchChange(changedKey, facadeFor));
 
             return unitResult();
         }
@@ -92,9 +98,6 @@ public sealed interface ConfigNotificationManager {
         @Override
         public Result<Unit> unregister(Artifact artifact) {
             registrations.remove(artifact);
-            var prefix = artifact.asString() + ":";
-
-            lastParsedConfig.keySet().removeIf(key -> key.startsWith(prefix));
 
             return unitResult();
         }
@@ -106,9 +109,9 @@ public sealed interface ConfigNotificationManager {
             return unitResult();
         }
 
-        private void registerSlice(Artifact artifact, Object sliceInstance, Method method) {
-            registrations.put(artifact, new SliceRegistration(artifact, sliceInstance, method));
-            log.debug("Registered slice {} for config update notifications", artifact);
+        private void registerSlice(Artifact artifact, Object sliceInstance, Method method, List<String> sections) {
+            registrations.put(artifact, new SliceRegistration(artifact, sliceInstance, method, List.copyOf(sections)));
+            log.debug("Registered slice {} for config update notifications on {}", artifact, sections);
         }
 
         private Option<Method> findNotifyMethod(ClassLoader classLoader, String factoryClassName) {
@@ -123,9 +126,13 @@ public sealed interface ConfigNotificationManager {
                          .option();
         }
 
-        private void dispatchNotification(String section, ConfigFacade config) {
+        private void dispatchChange(String changedKey, Fn1<ConfigFacade, Artifact> facadeFor) {
             for (var registration : registrations.values()) {
-                invokeNotifyMethod(registration, section, config);
+                for (var section : registration.sections()) {
+                    if (changedKey.startsWith(section + ".")) {
+                        invokeNotifyMethod(registration, section, facadeFor.apply(registration.artifact()));
+                    }
+                }
             }
         }
 

@@ -22,4 +22,8 @@ public interface NodeDeploymentEvents extends ClusterFsmEvent {
     record NodeRoutesPutReceived(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) implements NodeDeploymentEvents {}
 
     record LeavingRequested(DrainReason reason) implements NodeDeploymentEvents {}
+
+    /// #381 — a `ConfigKey` change applied to this node's dynamic config overlay; `changedKey` is the
+    /// dotted config key (`section.key`).
+    record ConfigChanged(String changedKey) implements NodeDeploymentEvents {}
 }

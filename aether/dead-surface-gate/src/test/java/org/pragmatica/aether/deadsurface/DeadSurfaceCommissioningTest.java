@@ -7,11 +7,9 @@ package org.pragmatica.aether.deadsurface;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.Type;
-import org.pragmatica.aether.deployment.config.ConfigNotificationManager;
 import org.pragmatica.aether.resource.ScheduleConfig;
 import org.pragmatica.aether.resource.TopicConfig;
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
-import org.pragmatica.aether.slice.ConfigFacade;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.worker.WorkerCodecs;
 import org.pragmatica.serialization.SliceCodec;
@@ -25,12 +23,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// classify known-dead and known-reflectively-bound code correctly, run once against real production
 /// history before the permanent gate ([ConfigKeyLivenessTest]) was trusted to bind on it.
 ///
-/// `@Disabled` deliberately, and NOT part of the CI gate — main's condition: #503 and #381 are open
-/// tickets, and coupling CI to their eventual resolution (this test would start failing the moment
-/// either is fixed, for reasons that have nothing to do with #519) is wrong. Re-run by hand whenever
+/// `@Disabled` deliberately, and NOT part of the CI gate — main's condition: #503 is an open ticket
+/// (#381's control was retired when #381 wired `notifyChange`), and coupling CI to its eventual
+/// resolution (this test would start failing the moment it is fixed, for reasons that have nothing to
+/// do with #519) is wrong. Re-run by hand whenever
 /// the scanner's core logic changes, to make sure a "simplification" didn't quietly reopen a
 /// false-DEAD or false-LIVE gap.
-@Disabled("Commissioning-time only — #503 and #381 are open tickets and must not gate CI on their resolution (#519)")
+@Disabled("Commissioning-time only — #503 is an open ticket and must not gate CI on its resolution (#519); the #381 control was retired when #381 wired notifyChange")
 class DeadSurfaceCommissioningTest {
     private static final List<java.nio.file.Path> PRODUCTION_ROOTS = ReactorRoots.productionRoots();
 
@@ -42,16 +41,6 @@ class DeadSurfaceCommissioningTest {
         assertFalse(reachability.isReachable(target),
                    "#503: WorkerCodecs.workerCodecs(SliceCodec) has no caller outside SystemCodecPinningTest " +
                    "(a test), so with the corpus restricted to production roots it must be flagged dead");
-    }
-
-    @Test
-    void positiveControl_configNotificationManagerNotifyChange_hasNoProductionCaller_isFlaggedDead() throws Exception {
-        var reachability = BytecodeReachability.scan(PRODUCTION_ROOTS);
-        var interfaceTarget = MethodRef.of(ConfigNotificationManager.class.getDeclaredMethod("notifyChange", String.class, ConfigFacade.class));
-
-        assertFalse(reachability.isReachable(interfaceTarget),
-                   "#381: ConfigNotificationManager.notifyChange(String, ConfigFacade) has zero callers " +
-                   "anywhere and must be flagged dead");
     }
 
     @Test
