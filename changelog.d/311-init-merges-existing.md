@@ -1,6 +1,6 @@
 ### Fixed (2026-09-14 — #311: `cluster init` was overwrite-or-abort against an existing config)
-- **Re-running `cluster init` against an existing output aborted a batch run (`OutputExists`) and,
-  with `--force`, replaced the file wholesale** — a hand-added section or a tuned value was either
+- **Re-running `cluster init` against an existing output aborted a batch run (`OutputExists`, now
+  removed — no path returns it) and, with `--force`, replaced the file wholesale** — a hand-added section or a tuned value was either
   a blocker or a casualty, so the generator could not be re-run to change one answer. Without
   `--force` the generated config is now **merged into the existing file in place**
   (`InPlaceTomlMerge`): the parsers only LOCATE and COMPARE, and the text written is the operator's
@@ -19,8 +19,10 @@
   [verified: `rerun_batch_refusesToRevertAHandTunedValue_namingOldAndNew`,
   `rerun_batch_withMerge_appliesTheNewAnswer_andRewritesOnlyThatLine` (one-line `diff`, the
   operator's comment survives), `rerun_interactive_defaultKeepsTheHandTunedValue`,
-  `rerun_interactive_yesAppliesTheNewAnswer`; mutation: ignoring consent so the existing value
-  always wins reddens the two "applies" tests]
+  `rerun_interactive_yesAppliesTheNewAnswer`,
+  `rerun_withMerge_appliesAChangeAndAnAdditionTogether_eachAtItsOwnLine` (a rewrite and an
+  insertion in one run, each on its own line); mutation: ignoring consent so the existing value
+  always wins reddens the three "applies" tests]
 - **An operator-added `[[source.primary.firewall.allow_ingress]]` rule survives a cloud re-run and is
   listed as kept.** Generated elements are matched by their scalar keys but `description`; missing
   ones are appended after the file's last element; nothing is removed, so a changed `--admin-cidr`
