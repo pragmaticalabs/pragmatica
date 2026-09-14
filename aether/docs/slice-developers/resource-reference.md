@@ -1327,8 +1327,10 @@ rather than solved:
 - A clock that steps across a minute boundary on one node can fire that boundary twice or skip it once on that
   node. Nothing detects or compensates this. Keep node clocks NTP-disciplined if cron boundaries matter.
 
-Interval tasks are unaffected in the same way only in phase: the interval is measured on the node's monotonic
-scheduler, but `nextFireAt` reported in state is `System.currentTimeMillis() + interval`, also node-local.
+Interval tasks are affected only in phase, not in period: the interval itself is measured by the node's
+scheduler (`SharedScheduler.scheduleAtFixedRate`), so a clock step does not stretch or shrink the period, but the
+`nextFireAt` reported in state is `System.currentTimeMillis() + interval` — a node-local wall-clock reading that
+shifts with the clock.
 
 ### Schedule Validation
 
