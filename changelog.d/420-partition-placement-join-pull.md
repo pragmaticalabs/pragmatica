@@ -1,4 +1,4 @@
-### Fixed (2026-09-14 — #420: DHT-backed artifacts lost under topology churn — the repair machinery repaired the wrong replica sets, and a joiner counted toward RF while holding nothing)
+### Fixed (2026-09-14 — #1136, #420: DHT anti-entropy and rebalance repaired partition-placed replica sets that ~90% of keys are not placed in; a joiner counted toward RF while holding nothing)
 - **`ConsistentHashRing` placed a key at its own hash position while `DHTAntiEntropy` and
   `DHTRebalancer.rebalancePartition` placed the key's PARTITION at `hash("partition:<p>")` — a
   different position.** Measured on a 5-node ring over 2,000 keys, RF=3: the two owner sets agreed
@@ -12,9 +12,14 @@
   `nodesFor(byte[] key, …)` and `primaryFor(byte[] key)` resolve through the new
   `nodesFor(Partition, …)`/`primaryFor(Partition)`, and the five `"partition:<p>"` string sites
   (`DHTAntiEntropy`, `DHTRebalancer`, `LocalPartitionMap` ×3) use the typed lookup, so both ends of
-  every repair exchange name the same nodes. Every key-placed caller (`DistributedDHTClient` incl.
-  the C2 fallback and read-repair, `DHTNode`, `ReplicationPolicyImpl`, the C1 departure push,
-  `DhtRoutes`) moves at once through the one function. **Replica placement changes cluster-wide:**
+  every repair exchange name the same nodes. Every key-placed caller moves at once through the one
+  function — space: `grep -rn 'nodesFor(\|primaryFor(' integrations/dht/src/main aether/*/src/main`
+  excluding the ring and the partition-map classes = 11 hits: 9 key-typed, all through the ring's
+  `byte[]` overloads (`DHTNode` ×2, `DistributedDHTClient` incl. the C2 fallback and read-repair,
+  `ReplicationPolicyImpl` ×3, `DHTRebalancer.departureTargets` ×2 (C1), `DhtRoutes`) and 2
+  already `Partition`-typed (`DHTAntiEntropy`, `DHTRebalancer.rebalancePartition`); control:
+  `grep -rn '"partition:'` over the same space finds only `ConsistentHashRing.positionOf`, so no
+  caller computes a partition position on its own. **Replica placement changes cluster-wide:**
   pre-GA, the DHT engine is in-memory and its contents carry no data promise (the same basis as
   #281's key change); a mixed-version cluster is not supported across this change.
   [verified: `integrations/dht/src/test/java/org/pragmatica/dht/PartitionPlacementTest.java` —
