@@ -28,6 +28,7 @@ import java.util.stream.Stream;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -205,6 +206,21 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// #501: the join-announce loop's handle, retained so [#stop] can cancel it. Before this it was
     /// local to [#announceJoin] and a stopped protocol kept announcing for up to 30 s.
     private final AtomicReference<Option<ScheduledFuture<?>>> announceFuture = new AtomicReference<>(none());
+
+    /// #501: `true` from [#stop] until the next [#start]. Cancelling [#announceFuture] is not on its
+    /// own enough to tie the announce loop's lifetime to [#stop], because two announces can still
+    /// escape a stopped protocol: an [#announceJoin] that resolved this protocol before the stop and
+    /// calls in after it (arming a loop no later `stop()` will ever see — the shape #501 was filed
+    /// about), and a `runAnnounceAttempt` already executing, which `cancel(false)` does not interrupt.
+    /// This latch is the code that REFUSES both: checked in [#announceJoin] before arming and at the
+    /// head of [#runAnnounceAttempt] before sending, where a stopped loop also cancels itself.
+    ///
+    /// A latch rather than holding [#lifecycleLock] across the attempt: `runAnnounceAttempt` sends to
+    /// every seed, and `NettySwimTransport.resolveAndSend` falls back to SYNCHRONOUS DNS resolution
+    /// for an unresolved seed host — under that lock an unresolvable seed would block `stop()` for the
+    /// resolver timeout. The residual window is one attempt that passed the check before `stop()` set
+    /// the latch; it sends once and never re-arms.
+    private final AtomicBoolean announceStopped = new AtomicBoolean(false);
 
     /// Per-member last-probe ORDINAL (a strictly-monotonic `probeOrdinal` value), keyed by
     /// `NodeId` so probe scheduling is identity-stable under churn. Stamped in [#probeTarget]
@@ -398,6 +414,8 @@ public final class SwimProtocol implements SwimMessageHandler {
             if (tickFuture.get().isPresent()) {
                 return SwimError.General.PROTOCOL_ALREADY_RUNNING.result();
             }
+            // #501: a restarted protocol may announce again; the stop-latch is per stop/start cycle.
+            announceStopped.set(false);
             // Light jitter (±20%) on the startup offset only — period is intentionally fixed to keep
             // failure-detection latency predictable. The jitter de-syncs simultaneous starts after a
             // shared quorum-formation event so probe traffic is not thundering-herd.
@@ -419,12 +437,18 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Stop the protocol.
     public Result<SwimProtocol> stop() {
         synchronized (lifecycleLock) {
+            // #501: the announce loop's lifetime is stop()'s, NOT the probe tick's. Both statements
+            // run BEFORE the running-check, or a protocol whose tick was never armed (announceJoin
+            // without start(), or a join that raced a stop) returns PROTOCOL_NOT_RUNNING while its
+            // announce loop runs on to the 60-attempt cap — 30 s of ANNOUNCE from a stopped node.
+            announceStopped.set(true);
+            announceFuture.getAndSet(none()).onPresent(f -> f.cancel(false));
+
             if (!tickFuture.get().isPresent()) {
                 return SwimError.General.PROTOCOL_NOT_RUNNING.result();
             }
 
             tickFuture.getAndSet(none()).onPresent(f -> f.cancel(false));
-            announceFuture.getAndSet(none()).onPresent(f -> f.cancel(false));
             LOG.info("SWIM protocol stopped for node {}", selfId.id());
 
             return Result.success(this);
@@ -1673,23 +1697,33 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Runs on the shared scheduler. Stops once this node is acknowledged by a peer (inbound probe) or after 60 attempts (30s).
     @Contract
     public void announceJoin(NodeInfo self, String clusterName, long incarnation, List<InetSocketAddress> seeds) {
-        // Seed the durable self-incarnation from the boot incarnation BEFORE the
-        // announce loop runs. Monotonic max so a re-announce (or a refutation that
-        // already advanced the value) never regresses it.
-        selfIncarnation.updateAndGet(cur -> Math.max(cur, incarnation));
-        var attempts = new AtomicInteger(0);
-        var future = new AtomicReference<ScheduledFuture<?>>();
-        var task = SharedScheduler.scheduleAtFixedRate(() -> runAnnounceAttempt(self,
-                                                                                clusterName,
-                                                                                incarnation,
-                                                                                seeds,
-                                                                                attempts,
-                                                                                future),
-                                                       TimeSpan.timeSpan(500).millis());
+        // #501: arming is lifecycle state, so it is serialized against start()/stop() by the same
+        // lock. Without it the announce loop can be installed after a concurrent stop() has already
+        // read announceFuture, leaving a live loop no stop() can reach.
+        synchronized (lifecycleLock) {
+            if (announceStopped.get()) {
+                LOG.info("SWIM ANNOUNCE join refused for node {} — protocol is stopped", self.id().id());
 
-        future.set(task);
-        // A re-announce supersedes the previous loop; stop() cancels whichever is current.
-        announceFuture.getAndSet(option(task)).onPresent(f -> f.cancel(false));
+                return;
+            }
+            // Seed the durable self-incarnation from the boot incarnation BEFORE the
+            // announce loop runs. Monotonic max so a re-announce (or a refutation that
+            // already advanced the value) never regresses it.
+            selfIncarnation.updateAndGet(cur -> Math.max(cur, incarnation));
+            var attempts = new AtomicInteger(0);
+            var future = new AtomicReference<ScheduledFuture<?>>();
+            var task = SharedScheduler.scheduleAtFixedRate(() -> runAnnounceAttempt(self,
+                                                                                    clusterName,
+                                                                                    incarnation,
+                                                                                    seeds,
+                                                                                    attempts,
+                                                                                    future),
+                                                           TimeSpan.timeSpan(500).millis());
+
+            future.set(task);
+            // A re-announce supersedes the previous loop; stop() cancels whichever is current.
+            announceFuture.getAndSet(option(task)).onPresent(f -> f.cancel(false));
+        }
     }
 
     /// Per-peer health view used by transport-side gates (e.g. `swimHealthGate`
@@ -1717,6 +1751,14 @@ public final class SwimProtocol implements SwimMessageHandler {
                                     List<InetSocketAddress> seeds,
                                     AtomicInteger attempts,
                                     AtomicReference<ScheduledFuture<?>> future) {
+        // #501: cancel(false) never interrupts an attempt already running, and an orphan loop armed
+        // in the stop race has no handle anyone holds. Both die here, before a single seed is sent.
+        if (announceStopped.get()) {
+            cancelAnnounce(future, self, "protocol stopped");
+
+            return;
+        }
+
         if (inboundProbeReceived) {
             cancelAnnounce(future, self, "self acknowledged by peer");
 
@@ -1729,7 +1771,13 @@ public final class SwimProtocol implements SwimMessageHandler {
                  attempt,
                  self.id().id(),
                  seeds.size());
-        seeds.forEach(seed -> transport.send(seed, Announce.announce(self, clusterName, incarnation)));
+        // #501: re-checked per seed, not once per attempt. cancel(false) does not interrupt an
+        // attempt already inside its sends, and a seed whose host needs resolving can hold one there
+        // for the resolver timeout — without this, a stop() during an attempt still announces this
+        // node to every remaining seed.
+        seeds.stream()
+             .takeWhile(_ -> !announceStopped.get())
+             .forEach(seed -> transport.send(seed, Announce.announce(self, clusterName, incarnation)));
         if (attempt >= 60) {
             cancelAnnounce(future, self, "max attempts reached");
         }
