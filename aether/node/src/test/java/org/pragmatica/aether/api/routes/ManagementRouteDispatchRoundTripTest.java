@@ -150,5 +150,34 @@ class ManagementRouteDispatchRoundTripTest {
                                                                      path,
                                                                      found.name())
                                                     .isEqualTo(route.name()));
+
+        // #1101: the registration must declare the trailing LITERAL as a spacer, not as one more
+        // param — a param would give the right arity and still admit any word in that slot.
+        lastLiteralIsASpacer(requestRouter, route, path);
+    }
+
+    private static void lastLiteralIsASpacer(RequestRouter requestRouter, ManagementRoute route, String path) {
+        var lastSlash = path.lastIndexOf('/');
+        var lastSegment = path.substring(lastSlash + 1);
+
+        if (!route.prefix().endsWith("/" + lastSegment) && !isTrailingSpacer(route, lastSegment)) {
+            return;
+        }
+
+        var wrongLiteral = path.substring(0, lastSlash + 1) + "not-" + lastSegment;
+
+        requestRouter.findRoute(route.method(), wrongLiteral)
+                     .onPresent(found -> assertThat(found.name()).as("%s registered its trailing literal \"%s\" as a "
+                                                                     + "positional param: \"%s\" still dispatched to it",
+                                                                     route.name(),
+                                                                     lastSegment,
+                                                                     wrongLiteral)
+                                                    .isNotEqualTo(route.name()));
+    }
+
+    /// True when the assembled path's last segment is a literal the enum declares (a trailing
+    /// spacer such as `publish`), as opposed to a param value the test supplied.
+    private static boolean isTrailingSpacer(ManagementRoute route, String lastSegment) {
+        return route.paramCount() == 0 || !List.of("myns", "mystream", "1.0.0", "3", "g1").contains(lastSegment);
     }
 }
