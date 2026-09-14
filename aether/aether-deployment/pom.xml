@@ -37,7 +37,8 @@
         </dependency>
         <!-- @Codec processor: generates the system-level codec registry for this module's
              @Codec types (CommandLifecycleEvent). Aggregated into the node serializer via
-             NodeCodecs/WorkerCodecs so the audit StreamPublisher can serialize the events. -->
+             NodeCodecs so the audit StreamPublisher can serialize the events (WorkerCodecs was
+             removed in #503: it composed five message types nothing ever routed). -->
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>serialization-codec-processor</artifactId>
