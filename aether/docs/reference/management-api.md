@@ -4835,16 +4835,19 @@ with `400 Bad Request`.
 > underlying physical database and IS reachable from `migrate`/`undo`/`baseline` alike, via the
 > shared ownership claim) is in the table above.
 
-> **Known limitation — `acquireLock`'s cross-node lock check is not atomic (#766, not fixed by
-> #543).** Both `undo` and `baseline` share `SchemaOrchestratorService.acquireLock` with `migrate`.
-> Its cross-node lock (`SchemaMigrationLockKey`) is read (`isLockHeld`) and then written
-> (`Put<SchemaMigrationLockValue>`) as two separate steps, not an atomic compare-and-set; two
-> concurrent dispatches can both observe the lock free before either writes it. #766 reproduced
-> this live on a 5-node Forge run (two dispatches within two seconds, the second reaching
-> `aether_schema_history` and failing on a duplicate-key constraint, which marked the datasource
-> `FAILED`). Recovery when it happens: `aether schema retry` after the false-`FAILED` record is
-> observed. The fix needs an atomic compare-and-set on the lock key rather than read-then-write;
-> tracked in #766, not addressed here.
+> **Fixed in #766 — `acquireLock`'s cross-node lock claim is a fenced compare-and-set.** Both
+> `undo` and `baseline` share `SchemaOrchestratorService.acquireLock` with `migrate`. The lock
+> (`SchemaMigrationLockKey`) carries a `lockVersion`; a claim writes committed+1 (or the first
+> version) and the KV applier refuses a stale successor, so two concurrent dispatches cannot both
+> hold it [mechanism: `SchemaMigrationLockValue implements VersionFenced`, `KVStore` stale-successor
+> refusal]. Before #766 the claim was a read followed by a separate write, reproduced live on a
+> 5-node Forge run (two dispatches within two seconds, the second failing on `aether_schema_history`'s
+> duplicate-key constraint and marking the datasource `FAILED`; recovery was `aether schema retry`).
+> **Still open — #806:** the lock TTL (5 min) is shorter than the migration timeout (15 min), so an
+> expired lock can be taken over while its holder is still migrating, and `releaseLock` is an
+> unfenced Remove; a holder that times out after a takeover can delete the taker's lock and re-claim.
+> Until #806 lands, a migration, undo or baseline that runs longer than 5 minutes loses its lock while
+> still running (concurrent dispatch itself is refused with `LockAcquisitionFailed` since #766).
 >
 > The leader check above `undo`/`baseline` is also check-then-act, undisclosed until now:
 > `requireLeader` reads `node.isLeader()` once and lets the manager call proceed with no re-check,

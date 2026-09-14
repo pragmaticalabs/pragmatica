@@ -7,9 +7,11 @@ package org.pragmatica.aether.api;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -1694,10 +1696,65 @@ class ManagementServerImpl implements ManagementServer {
     /// that a boot-window request is refused by AUTHENTICATION must show, in the same run, that the
     /// route it aimed at resolves to a permission the refused caller would otherwise have satisfied
     /// -- otherwise "denied" is indistinguishable from "never matched a route" (#908).
+    ///
+    /// #1101 — the prefix fallback must never resolve WEAKER than an exact route the path extends.
+    /// `DELETE /api/v1/config/nodes/<id>/<key>/junk` has no exact match (one segment too many), the
+    /// prefix `/api/v1/config` is OPERATOR, and the exact `CONFIG_NODE_DELETE` it extends is ADMIN —
+    /// so an OPERATOR key authorised for a request the router then dispatched to the ADMIN handler.
+    /// The fallback is now the STRICTEST of the prefix rule and every same-method exact route in the
+    /// same resource family (the path up to and including the first segment after `/api/v1` — or
+    /// `/repository`): deny-by-default for an unmatched mutation wherever a stricter exact route
+    /// lives. The routing half (an over-length path is a miss) lives in
+    /// `RequestRouter.selectBestRoute`, and neither half alone is the fix.
     static RoutePermission resolvePermission(String methodName, String path) {
-        return parseRoutingMethod(methodName).flatMap(m -> ManagementRoute.match(m, path).option())
-                                 .map(matched -> ManagementRoutePermissions.permissionFor(matched.route()))
-                                 .or(RoutePermissionRegistry.resolve(methodName, path));
+        var method = parseRoutingMethod(methodName);
+        var exact = method.flatMap(m -> ManagementRoute.match(m, path).option())
+                          .map(matched -> ManagementRoutePermissions.permissionFor(matched.route()));
+
+        if (exact.isPresent()) {
+            return exact.unwrap();
+        }
+
+        var fallback = RoutePermissionRegistry.resolve(methodName, path);
+
+        return method.map(m -> strictestOf(fallback,
+                                           extendedExactRoutes(m, path)))
+                     .or(fallback);
+    }
+
+    /// Exact routes of the same method in the request's resource family — every route an unmatched
+    /// request under that family could be aiming at, however the extra segments are placed.
+    private static List<ManagementRoute> extendedExactRoutes(org.pragmatica.http.HttpMethod method, String path) {
+        var family = resourceFamily(path);
+
+        return Stream.of(ManagementRoute.values())
+                     .filter(route -> route.method() == method)
+                     .filter(route -> resourceFamily(route.prefix()).equals(family))
+                     .toList();
+    }
+
+    /// `/api/v1/config/nodes/x` → `/api/v1/config`; `/repository/org/x` → `/repository`; anything
+    /// else → its first segment.
+    private static String resourceFamily(String path) {
+        var segments = path.split("/");
+        var depth = path.startsWith("/api/v1/")
+                    ? 4
+                    : 2;
+
+        return String.join("/",
+                           Arrays.copyOfRange(segments, 0, Math.min(depth, segments.length)));
+    }
+
+    /// ADMIN(0) outranks OPERATOR(1) outranks VIEWER(2): the smallest ordinal is the strictest.
+    private static RoutePermission strictestOf(RoutePermission fallback, List<ManagementRoute> extended) {
+        return extended.stream()
+                       .map(ManagementRoutePermissions::permissionFor)
+                       .reduce(fallback,
+                               (a, b) -> a.minimumRole()
+                                          .ordinal() <= b.minimumRole()
+                                                         .ordinal()
+                                         ? a
+                                         : b);
     }
 
     private Result<SecurityContext> enforceAndAuditDenial(SecurityContext sc,
