@@ -1174,7 +1174,9 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// built here is the same key the old scan produced for the route it happened to pick.
     private Option<HttpNodeRouteKey> resolveLocalRoute(HttpRoutePublisher pub, String method, String normalizedPath) {
         return pub.findLocalRoute(method, normalizedPath)
-                  .map(route -> HttpNodeRouteKey.httpNodeRouteKey(route.httpMethod(), route.pathPrefix(), selfNodeId));
+                  .map(route -> HttpNodeRouteKey.httpNodeRouteKey(route.httpMethod(),
+                                                                  route.pathPrefix(),
+                                                                  selfNodeId));
     }
 
     private Option<HttpRouteRegistry.RouteInfo> findMatchingRemoteRoute(List<HttpRouteRegistry.RouteInfo> remoteRoutes,

@@ -33,7 +33,6 @@ public record HttpRouteDefinition(String httpMethod,
         Objects.requireNonNull(artifactCoord, "artifactCoord");
         Objects.requireNonNull(sliceMethod, "sliceMethod");
         Objects.requireNonNull(security, "security");
-
         pathPrefix = normalizePrefix(pathPrefix);
     }
 

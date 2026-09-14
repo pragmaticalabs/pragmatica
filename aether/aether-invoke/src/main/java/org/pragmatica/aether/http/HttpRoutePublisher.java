@@ -144,9 +144,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     /// String-derived, so the winner depends on nothing that varies between JVMs or between nodes.
     /// Two distinct prefixes that both match one path and share a length are the same string, so a
     /// length tie means identical prefixes and the coordinate decides.
-    private static final Comparator<HttpRouteDefinition> LONGEST_PREFIX_THEN_ARTIFACT =
-            Comparator.comparingInt((HttpRouteDefinition route) -> route.pathPrefix().length())
-                      .thenComparing(HttpRouteDefinition::artifactCoord, Comparator.reverseOrder());
+    private static final Comparator<HttpRouteDefinition> LONGEST_PREFIX_THEN_ARTIFACT = Comparator.comparingInt((HttpRouteDefinition route) -> route.pathPrefix()
+                                                                                                                                                    .length()).thenComparing(HttpRouteDefinition::artifactCoord,
+                                                                                                                                                                             Comparator.reverseOrder());
 
     private final NodeId selfNodeId;
     private final ClusterNode<KVCommand<AetherKey>> cluster;
@@ -620,7 +620,8 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                                           .flatMap(entry -> entry.getValue()
                                                                  .stream()
                                                                  .filter(matches)
-                                                                 .map(route -> Map.entry(entry.getKey(), route)))
+                                                                 .map(route -> Map.entry(entry.getKey(),
+                                                                                         route)))
                                           .max(Map.Entry.comparingByValue(LONGEST_PREFIX_THEN_ARTIFACT)));
     }
 
@@ -631,8 +632,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     /// request would have been authorized under one slice's policy and served by the other's.
     @Override
     public Option<SliceRouter> findLocalRouter(String httpMethod, String pathPrefix) {
-        return selectRoute(route -> route.httpMethod().equalsIgnoreCase(httpMethod) && route.pathPrefix().equals(pathPrefix))
-                .flatMap(entry -> Option.option(sliceRouters.get(entry.getKey())));
+        return selectRoute(route -> route.httpMethod()
+                                         .equalsIgnoreCase(httpMethod) && route.pathPrefix()
+                                                                               .equals(pathPrefix)).flatMap(entry -> Option.option(sliceRouters.get(entry.getKey())));
     }
 
     /// #887: the matched route's security policy is resolved against the CURRENT overrides here,
@@ -656,8 +658,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         var normalizedPath = normalizePath(path);
         var overrides = activeOverrides.get();
 
-        return selectRoute(route -> route.httpMethod().equalsIgnoreCase(httpMethod) && normalizedPath.startsWith(route.pathPrefix()))
-                .map(entry -> LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(entry.getValue(), overrides)));
+        return selectRoute(route -> route.httpMethod()
+                                         .equalsIgnoreCase(httpMethod) && normalizedPath.startsWith(route.pathPrefix())).map(entry -> LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(entry.getValue(),
+                                                                                                                                                                                                          overrides)));
     }
 
     private String normalizePath(String path) {
