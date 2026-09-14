@@ -40,9 +40,9 @@ class ConfigServiceConfigFacadeNumericTest {
 
         assertThat(result.isFailure()).as("a malformed long must be a failed Result").isTrue();
         result.onFailure(cause -> assertThat(cause.message()).as("the cause names the key and the value, not a stack trace")
-                                                             .contains("twelve")
-                                                             .contains("pool.size")
-                                                             .doesNotContain("\n"));
+                                            .contains("twelve")
+                                            .contains("pool.size")
+                                            .doesNotContain("\n"));
     }
 
     @Test
@@ -50,7 +50,8 @@ class ConfigServiceConfigFacadeNumericTest {
         var result = callWithoutThrowing(() -> FACADE.requireDouble("pool", "ratio"));
 
         assertThat(result.isFailure()).as("a malformed double must be a failed Result").isTrue();
-        result.onFailure(cause -> assertThat(cause.message()).contains("half").contains("pool.ratio"));
+        result.onFailure(cause -> assertThat(cause.message()).contains("half")
+                                            .contains("pool.ratio"));
     }
 
     @Test
