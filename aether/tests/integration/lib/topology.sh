@@ -249,6 +249,92 @@ membership_int_field() {
 # roster — e.g. an auto-heal replacement that joined and is already
 # strict-core before a kill-detection race was decided.
 # Usage: membership_live_member_ids "$membership_json"
+# ---------------------------------------------------------------------------
+# Arm D — auto-heal suppression (#W3)
+# ---------------------------------------------------------------------------
+# arm_d_requested — is the Arm D (auto-heal disabled) variant explicitly requested?
+#
+# DEFAULT IS OFF, and that matters structurally: the S19 file is SYMLINKED into both 02-chaos and
+# 02s-selfdrain, so an ungated hook would silently change 02-chaos — the suite the acceptance
+# record rests on. Only the literal string "true" turns it on; anything else, including a typo'd
+# value, leaves the stock path untouched. A gate that fails open is not a gate.
+arm_d_requested() {
+    [ "${S19_ARM_D_DISABLE_AUTOHEAL:-false}" = "true" ]
+}
+
+# autoheal_enabled_field <json> — parse `{"enabled":true|false}` from the auto-heal status body.
+# Echoes "true"/"false", or nothing when the body carries no usable field.
+autoheal_enabled_field() {
+    printf '%s' "$1" \
+        | grep -oE '"enabled"[[:space:]]*:[[:space:]]*(true|false)' \
+        | head -1 \
+        | sed -E 's/.*:[[:space:]]*(true|false)/\1/'
+}
+
+# GET /api/v1/cluster/topology/auto-heal is LEADER-scoped (ManagementRoute
+# .CLUSTER_AUTO_HEAL_STATUS), so it forwards to the leader and CANNOT be answered while quorum is
+# lost. That is a property of the route, not a flake — and it is why Arm D can never confirm its
+# own precondition during the window it measures. Contrast CLUSTER_MEMBERSHIP_GET, which is
+# deliberately LOCAL precisely so it can be read by a node whose isolation is in question.
+AUTOHEAL_STATUS_PATH="/api/v1/cluster/topology/auto-heal"
+AUTOHEAL_DISABLE_PATH="/api/v1/cluster/topology/auto-heal/disable"
+AUTOHEAL_ENABLE_PATH="/api/v1/cluster/topology/auto-heal/enable"
+
+# ---------------------------------------------------------------------------
+# Answering-node identity (#W5)
+# ---------------------------------------------------------------------------
+# membership_self_node_id <json> — the id of the node that ANSWERED, from the body.
+#
+# /api/v1/cluster/membership is PER-NODE and never leader-forwarded, and its top-level
+# `nodeId` is documented as "the answering survivor" (ManagementApiResponses
+# .ClusterMembershipResponse). That field is the only trustworthy statement of WHO replied:
+# the IP we dialled is not, because cloud providers recycle public IPs across recreated VMs
+# (run 3, 2026-09-14: two IPs hosted SIX distinct VMs each). A read that succeeds from the
+# wrong subject is not suspicious the way a failed read is, so it must be checked explicitly.
+#
+# Every OTHER "nodeId" in this body belongs to an entry of the `members` array, so the body is
+# truncated at `"members"` before matching. Taking the first match over the whole body would
+# silently return a PEER's id if field order ever changed — which is the same class of
+# assumption this function exists to remove.
+# [verified: 2026-09-14 run 4 — live cloud round, 0 identity violations / 0 indeterminate across the whole
+#   arbitration; rc2 fires on an EMPTY observed id and rc1 on a DIFFERING one, so rc0 on every poll positively
+#   proves top-level `nodeId` was present, non-empty and exactly equal to the addressed survivor.]
+#
+# [unverified: THE TRUNCATION. Run 4 did NOT exercise it. The live body serialises `nodeId` BEFORE `members`,
+#   so a naive first-match-over-the-whole-body extractor would have returned the identical value and passed
+#   that run unchanged. **The live validation is FIELD-ORDER-DEPENDENT and covers presence and equality, NOT
+#   the truncation.** A `members`-first body has never been seen. Consequence: a refactor to first-match would
+#   pass a repeat of run 4 SILENTLY. The only thing standing between that refactor and a recycled-IP impostor
+#   being accepted is the OFFLINE mutation pin `I6` in test/test-s19-identity-guard.sh — which asserts the
+#   DIRECTION of failure (a reordered body must yield nothing and VOID, never fall through to a peer id).
+#   Do not delete I6 on the grounds that a live round passed; the live round cannot see what I6 sees.]
+membership_self_node_id() {
+    local membership_json="$1"
+    printf '%s' "$membership_json" \
+        | sed -E 's/"members"[[:space:]]*:.*$//' \
+        | grep -oE '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | head -1 \
+        | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/'
+}
+
+# membership_identity_matches <json> <expected_id> — did the EXPECTED node answer?
+#   rc 0 = match; rc 1 = MISMATCH (a different node answered); rc 2 = indeterminate
+#   (no usable id in the body, or no expected id supplied).
+# Prints the observed id on stdout for the caller's diagnostics.
+#
+# rc 1 and rc 2 are deliberately distinct: a mismatch is positive evidence that we polled a
+# stranger, while indeterminate means we cannot tell. Both must VOID a measurement, but only
+# the first proves the recycled-IP failure occurred.
+membership_identity_matches() {
+    local membership_json="$1" expected="${2:-}" observed
+    observed=$(membership_self_node_id "$membership_json")
+    printf '%s' "$observed"
+    [ -z "$expected" ] && return 2
+    [ -z "$observed" ] && return 2
+    [ "$observed" = "$expected" ] && return 0
+    return 1
+}
+
 membership_live_member_ids() {
     local membership_json="$1"
     printf '%s' "$membership_json" \
