@@ -33,10 +33,18 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #667 added `responder` to `SyncResponse`. The wire-assignment gates (`SystemCodecPinningTest`,
-/// `WireAssignmentTripwireTest`) pin tags and enum ordinals, not record shape (#1147), so the
-/// component's survival across the real generated codec is pinned here, bytes in and out, along
-/// with the #964 sentinel: an ordinal this node cannot name decodes to UNKNOWN with the rest of
-/// the response intact.
+/// `WireAssignmentTripwireTest`) pin tags and enum ordinals, not record SHAPE (#1147), so shape is
+/// pinned here — but by exactly one of the two tests below, and not the one the #667 ruling named.
+///
+/// **`ordinalBeyondThisNode_decodesToUnknown_withTheRestOfTheResponseIntact` is the shape pin.** It
+/// hand-frames the bytes, so it fails the moment the record's component list changes. The round-trip
+/// test cannot: it writes and reads with the SAME regenerated codec, which agrees with itself for any
+/// shape. Measured — adding a fourth component to `SyncResponse` leaves the round-trip GREEN and
+/// reddens the hand-framed test with `IndexOutOfBounds readerIndex(35) + length(1) exceeds
+/// writerIndex(35)`.
+///
+/// Do not trim the hand-framed test as redundant with the round-trip. Trimming it the other way round
+/// would leave a test that LOOKS like a shape pin and pins nothing.
 class SyncResponseResponderStateCodecTest {
     private static final SliceCodec CODEC = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), allCodecs());
     private static final NodeId SENDER = NodeId.nodeId("node-7").unwrap();
@@ -51,6 +59,9 @@ class SyncResponseResponderStateCodecTest {
         return all;
     }
 
+    /// Pins the VALUE round-trip: each responder state survives encode/decode through the real
+    /// generated codec. It does NOT pin the record's shape — same codec on both sides — see the class
+    /// doc.
     @Test
     void responderState_roundTrips_throughTheGeneratedCodec() {
         for (var responder : List.of(ResponderState.LIVE, ResponderState.COLD)) {
@@ -69,6 +80,10 @@ class SyncResponseResponderStateCodecTest {
 
     /// Frames a SyncResponse exactly as the generated `writeBody` does, with the responder ordinal
     /// supplied by the caller — the bytes a node with an extra constant would emit.
+    ///
+    /// Doubles as the record's SHAPE pin: the framing here is written out by hand, so any added,
+    /// removed or reordered component of `SyncResponse` desynchronizes it from the generated reader
+    /// and this test fails. Nothing else in the tree does that (#1147).
     @Test
     void ordinalBeyondThisNode_decodesToUnknown_withTheRestOfTheResponseIntact() {
         var buf = Unpooled.buffer();

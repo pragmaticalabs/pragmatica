@@ -27,8 +27,13 @@
   `RabiaPausedSyncResponseTest` (Active → LIVE, Stopped → COLD)]
 - **Wire format.** `SyncResponse` gained a record component and `ResponderState` a tag (112, in the
   one-byte window the hot-prefix gate demands for `org.pragmatica.consensus.*`). The wire-assignment
-  gates pin tags and ordinals, not record shape (#1147); the component's survival across the real
-  generated codec and the UNKNOWN decode are pinned in `SyncResponseResponderStateCodecTest`, and the
+  gates pin tags and ordinals, not record shape (#1147). Both pins live in
+  `SyncResponseResponderStateCodecTest`, and only ONE of them pins the SHAPE:
+  `ordinalBeyondThisNode_decodesToUnknown_withTheRestOfTheResponseIntact` hand-frames the bytes and so
+  reddens on any component change, while `responderState_roundTrips_throughTheGeneratedCodec` writes
+  and reads with the same regenerated codec and stays green through an added fourth component
+  (measured). The class doc now says which is which, because the earlier claim credited the round-trip.
+  [mechanism: hand-framed bytes vs a codec agreeing with itself for any shape] The
   baseline gained exactly the two new lines. rc4 promises no cross-rc wire compatibility (#434/#666);
   a pre-#667 peer's `SyncResponse` does not decode, the same posture as #766/#805.
 - Even cluster sizes: `⌊n/2⌋+1` LIVE peers is 3 of 3 at n=4 and unreachable at n=2 (one peer), where
