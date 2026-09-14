@@ -42,14 +42,17 @@
   excluded and the added nodes are inside the 30 s drain-safety grace, so the reversed-id mature seeds — the leader among
   them — are chosen first), and the command is delivered only on the leader's broadcast `ClusterSyncPing`, which
   `ClusterSyncState.dispatchPing` never sends to `self`. The leader never runs its `DrainProcedure`; it marks itself
-  `Departing`, #1058 withdraws it to MEMBER when no acknowledgement arrives, and it is selected again — until an added node
-  passes the grace and is drained instead, so the churn completes ~45 s late (before #1058 the leader wedged and the edge
-  was unreachable; in cloud the CTM's 60 s grace-terminate kills the leader ungracefully, no departure push — the #427 loss
-  mode). No product change here (ruling C). `ArtifactChurnSurvival5to7to5ProbeTest` therefore carries an ENABLED tripwire,
+  `Departing`, #1058 withdraws it to MEMBER when no acknowledgement arrives after the 15 s DEPARTING window, and it is
+  selected again — until an added node passes the grace and is drained instead. Measured in-JVM at the merged head (n=3):
+  `drainNode requested` for the leader **twice**, `DrainProcedure` for it **zero** times, **two** self-`Departing`→MEMBER
+  withdrawals (~15 s each), the second victim (`churn-7`) requested only at ~+44 s, terminal edge at
+  **49,972 / 50,853 / 51,213 ms** — a ~45 s detour against the ~5 s the non-leader victim needs. Before #1058 the leader
+  wedged in DEPARTING and the edge was unreachable; in cloud the CTM's 60 s grace-terminate kills the leader ungracefully,
+  no departure push — the #427 loss mode. No product change here (ruling C). `ArtifactChurnSurvival5to7to5ProbeTest` therefore carries an ENABLED tripwire,
   `leaderSelectedAsDrainVictim_neverDrains_tripwireUntil1089`, asserting that behaviour precisely (the leader listed ITSELF
   as `Departing` during the down-leg and is still a survivor at the terminal edge; its failure message says "#1089 landed —
   delete me") beside the enabled terminal-edge probe; both read one churn cycle
   `[verified: with the leader shielded from selection in the clone (shape B simulated, not the real fix) the tripwire
   reddens on "must have marked ITSELF Departing" while the probe stays green; at head both are green, down-leg terminal at
-  50.0–50.9 s with victims churn-2 and churn-7 Dead and the leader intact]`. `ScaleUpFiveToSevenProbeTest` is unaffected
+  50.0–51.2 s with victims churn-2 and churn-7 Dead and the leader intact]`. `ScaleUpFiveToSevenProbeTest` is unaffected
   and stays strict.
