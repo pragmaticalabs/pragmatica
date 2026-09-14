@@ -4,7 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.ArrayList;
@@ -45,6 +47,7 @@ import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.rabia.ParticipationMarker;
 import org.pragmatica.consensus.rabia.ProtocolConfig;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
@@ -190,6 +193,14 @@ public final class EmberCluster {
     /// JUnit `@TempDir`) via [#withDataBaseDir] BEFORE [#start] to turn the disk tier and the
     /// per-partition stream WAL on; see [#perNodeStorageConfig].
     private final AtomicReference<Option<Path>> dataBaseDir = new AtomicReference<>(Option.none());
+    /// #1212 — where this instance's nodes keep their durable first-boot markers when the test did
+    /// not opt into [#withDataBaseDir]. Created ONCE per `EmberCluster` instance and deliberately
+    /// NOT cleaned by [#stop], because that is exactly what gives the marker its meaning here:
+    /// `stop()` followed by `start()` rebuilds every node through [#createNode] under the same node
+    /// ids, and those rebuilt nodes must read `PARTICIPATED` rather than re-asserting newness. A
+    /// fresh `EmberCluster` — a new test — gets a fresh dir and therefore genuinely new nodes.
+    /// Harness-scoped; production nodes get their marker from the deployment path instead.
+    private final Option<Path> participationMarkerBaseDir = createParticipationMarkerBaseDir();
     /// #491 pinned convergence variant — when set (via [#withRaisedSwimTimeouts]) every node is created
     /// with raised SWIM / transport / membership timeouts so a single graceful owner-kill does not trip
     /// the transient QuorumLost→PASSIVE false-removal cascade that falsely marks LIVE survivors DEAD.
@@ -1195,7 +1206,7 @@ public final class EmberCluster {
         var certificateProvider = SelfSignedCertificateProvider.selfSignedCertificateProvider(clusterSecret.get()).unwrap();
         var quicTls = buildForgeQuicTls(nodeId, certificateProvider);
         var config = new AetherNodeConfig(topology,
-                                          ProtocolConfig.testConfig(),
+                                          ProtocolConfig.testConfig(participationMarker(nodeId)),
                                           SliceActionConfig.sliceActionConfig(),
                                           SliceConfig.sliceConfig(),
                                           mgmtPort,
@@ -1270,6 +1281,36 @@ public final class EmberCluster {
     /// dir is restart-stable: [#start] after [#stop] regenerates the same `<nodeIdPrefix>-<i>` ids, so
     /// each node reuses its dir and the WAL/segments survive the restart. Empty map ⇒ default
     /// behaviour (read-only `/data` fallback → WAL off), so non-opted-in callers are unaffected.
+    /// #1212 — the durable first-boot marker for one node.
+    ///
+    /// `creationAsserted` is unconditionally TRUE, and that is correct rather than lazy: [#createNode]
+    /// is the ONLY construction path in this harness, and every node reaching it is being created now.
+    /// The assertion is consulted ONLY when no marker file exists — an existing marker always wins —
+    /// so a rebuilt node under an old node id reads its previous `PARTICIPATED` and stays on the
+    /// conservative bound. Prefers the opt-in [#withDataBaseDir] location when a test set one, so a
+    /// node's marker sits with the rest of its durable state.
+    private Option<ParticipationMarker> participationMarker(NodeId nodeId) {
+        var configured = dataBaseDir.get();
+        var base = configured.isPresent()
+                   ? configured
+                   : participationMarkerBaseDir;
+
+        return base.map(dir -> dir.resolve(nodeId.id())
+                                  .resolve(".aether-participation"))
+                   .map(path -> ParticipationMarker.fileBacked(path, true));
+    }
+
+    /// [Option#none] when the temp dir cannot be created — the nodes then get no marker at all and
+    /// fall back to the amnesiac's adoption bound, which is #1171's behaviour. A harness that cannot
+    /// write to the temp dir should degrade to "slower to form quorum", never to "unsafe".
+    private static Option<Path> createParticipationMarkerBaseDir() {
+        try {
+            return Option.some(Files.createTempDirectory("ember-participation-"));
+        } catch (IOException e) {
+            return Option.none();
+        }
+    }
+
     private Map<String, StorageConfig> perNodeStorageConfig(NodeId nodeId) {
         return dataBaseDir.get()
                           .map(base -> artifactsStorageConfig(base, nodeId))

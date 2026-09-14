@@ -34,11 +34,16 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///                             Without it the returned promise has no timeout and a batch that
 ///                             is never answered (e.g. the engine pauses mid-flight, or the
 ///                             correlation answer is dropped) hangs the caller forever.
+/// @param participationMarker #1212 — this node's durable first-boot marker, when the deployment
+///                             supplies one. `Option.none()` means the node's history is UNKNOWN and
+///                             it is held to the amnesiac's adoption bound, which is exactly #1171's
+///                             behaviour. Absence NEVER relaxes anything; see [ParticipationMarker].
 public record ProtocolConfig(TimeSpan cleanupInterval,
                              TimeSpan syncRetryInterval,
                              long removeOlderThanPhases,
                              int maxPendingBatches,
-                             TimeSpan applyTimeout) {
+                             TimeSpan applyTimeout,
+                             Option<ParticipationMarker> participationMarker) {
     /// Validates and creates a ProtocolConfig.
     public static Result<ProtocolConfig> protocolConfig(TimeSpan cleanupInterval,
                                                         TimeSpan syncRetryInterval,
@@ -65,7 +70,8 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
                                                                                                                                                sync,
                                                                                                                                                phases,
                                                                                                                                                maxPending.intValue(),
-                                                                                                                                               apply));
+                                                                                                                                               apply,
+                                                                                                                                               Option.none()));
     }
 
     private static Result<TimeSpan> validatePositive(TimeSpan value, String name) {
@@ -110,7 +116,8 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
                                   syncRetry,
                                   DEFAULT_REMOVE_OLDER_THAN_PHASES,
                                   DEFAULT_MAX_PENDING_BATCHES,
-                                  DEFAULT_APPLY_TIMEOUT);
+                                  DEFAULT_APPLY_TIMEOUT,
+                                  Option.none());
     }
 
     /// Creates a configuration from explicit values, with defaults for unspecified parameters.
@@ -120,16 +127,25 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
                                   syncRetryInterval,
                                   DEFAULT_REMOVE_OLDER_THAN_PHASES,
                                   DEFAULT_MAX_PENDING_BATCHES,
-                                  DEFAULT_APPLY_TIMEOUT);
+                                  DEFAULT_APPLY_TIMEOUT,
+                                  Option.none());
     }
 
     /// Creates a test configuration with faster intervals.
     public static ProtocolConfig testConfig() {
+        return testConfig(Option.none());
+    }
+
+    /// #1212 — a test configuration carrying a durable first-boot marker. The in-JVM harness
+    /// (`EmberCluster`) is the only caller that has one to supply: it CREATES the nodes, and only
+    /// whatever creates a node can know that it is new.
+    public static ProtocolConfig testConfig(Option<ParticipationMarker> participationMarker) {
         return new ProtocolConfig(timeSpan(60).seconds(),
                                   timeSpan(100).millis(),
                                   100,
                                   DEFAULT_MAX_PENDING_BATCHES,
-                                  DEFAULT_APPLY_TIMEOUT);
+                                  DEFAULT_APPLY_TIMEOUT,
+                                  participationMarker);
     }
 
     /// Configuration validation errors.

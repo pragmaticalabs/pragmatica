@@ -99,6 +99,9 @@ public class RabiaEngine<C extends Command> {
     private final ClusterNetwork network;
     private final StateMachine<C> stateMachine;
     private final ProtocolConfig config;
+    /// #1212 — this node's durable first-boot marker. Defaults to [ParticipationMarker#unknown] when
+    /// the deployment supplies none, which denies the relaxation: absence is WIPED, never NEW.
+    private final ParticipationMarker participationMarker;
     private final ConsensusMetrics metrics;
     private final boolean activationGated;
     private final TimeSpan phaseStallCheck;
@@ -363,6 +366,8 @@ public class RabiaEngine<C extends Command> {
         this.network = network;
         this.stateMachine = stateMachine;
         this.config = config;
+        this.participationMarker = config.participationMarker()
+                                         .or(ParticipationMarker::unknown);
         this.metrics = Option.option(metrics).or(ConsensusMetrics.noop());
         this.activationGated = activationGated;
         this.activationAuthorized = !activationGated;
@@ -1071,7 +1076,9 @@ public class RabiaEngine<C extends Command> {
                  responsesRequiredWithALiveResponder(topologyManager.clusterSize()),
                  selfCanVouchForItsOwnHistory()
                  ? "counts (it holds durable state)"
-                 : "does NOT count (no durable state)",
+                 : selfProvablyNeverVoted()
+                   ? "counts (marker proves it never participated, #1212)"
+                   : "does NOT count (no durable state, and no marker proving it is new)",
                  syncPeerResponsesRequired());
     }
 
@@ -1313,7 +1320,35 @@ public class RabiaEngine<C extends Command> {
 
     /// Activate node and adjust phase, if necessary.
     /// In observer mode, transitions to Observing state instead of Idle and does not start phases.
+    /// #1212 — durably record that this node has participated, BEFORE it leaves `Syncing`.
+    ///
+    /// Ordering is the whole point: a node cannot vote before it activates, so recording here is
+    /// strictly stronger than recording on the vote path, and it has ONE choke point instead of
+    /// several. Deliberately ahead of the `observerMode` branch — whether an observer can ever vote
+    /// is not a property this gate should depend on, and recording for it costs only conservatism.
+    ///
+    /// Returns false when the node must NOT activate. That happens only when this node currently
+    /// claims never to have participated and the marker could not record otherwise: activating there
+    /// would let it vote and then present itself as new on its next boot, which is the exact property
+    /// #667 and #1212 exist to prevent. The retry tick re-enters `doSynchronize`, so a transient
+    /// write failure resolves itself rather than wedging the node permanently.
+    private boolean recordParticipation() {
+        return participationMarker.recordParticipation()
+                                  .onFailure(cause -> log.error("Node {} refusing to activate: could not durably record "
+                                                                + "consensus participation ({}). This node claims to have "
+                                                                + "never participated, and activating without recording "
+                                                                + "would let it vote and later rejoin presenting itself "
+                                                                + "as new (#1212).",
+                                                                self,
+                                                                cause))
+                                  .isSuccess();
+    }
+
     private void activate() {
+        if (!recordParticipation()) {
+            return;
+        }
+
         if (observerMode) {
             activateAsObserver();
 
@@ -1633,10 +1668,30 @@ public class RabiaEngine<C extends Command> {
     /// discard a commit only when self was in a commit quorum whose every OTHER member is currently
     /// unreachable AND self lost its own record of it. A genuinely new node was never in a prior
     /// quorum, so for it that branch is unreachable.
+    ///
+    /// **#1212 — the second way to reach the cold bound.** The sentence above ("a genuinely new node
+    /// was never in a prior quorum, so for it that branch is unreachable") is an argument this rule
+    /// could not previously ACT on, because nothing durable recorded that a node had never
+    /// participated. [ParticipationMarker] supplies exactly that observation, and nothing else: a
+    /// node that provably never voted was in no commit quorum, so every commit quorum intersecting
+    /// `{responders} ∪ {self}` intersects at a RESPONDER that holds the commit. Admitting it on
+    /// `clusterSize / 2` spends nothing.
+    ///
+    /// The two disjuncts are independent and neither subsumes the other: a returning node with
+    /// durable state vouches for its own history, a brand-new node has no history TO vouch for. Both
+    /// reach the cold bound, for opposite reasons.
     private int responsesRequiredWithALiveResponder(int clusterSize) {
-        return selfCanVouchForItsOwnHistory()
+        return selfCanVouchForItsOwnHistory() || selfProvablyNeverVoted()
                ? clusterSize / 2
                : clusterSize / 2 + 1;
+    }
+
+    /// #1212 — whether this node's durable marker proves it has never participated in consensus, and
+    /// therefore never voted. UNKNOWN and PARTICIPATED both answer false; only a marker written
+    /// BEFORE the node first participated can answer true.
+    private boolean selfProvablyNeverVoted() {
+        return participationMarker.resolve()
+                                  .provablyNeverVoted();
     }
 
     /// Whether self brings history of its own to the adoption majority — the same quantity
