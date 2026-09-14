@@ -4,9 +4,11 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.pragmatica.lang.io.FileOps.*;
 
 class FileOpsTest {
@@ -139,6 +141,41 @@ class FileOpsTest {
             move(source, target);
             assertThat(exists(source)).isFalse();
             assertThat(readString(target).unwrap()).isEqualTo("moving");
+        }
+
+        @Test
+        void moveAtomic_replacesTarget() {
+            var source = tempDir.resolve("atomic-src.txt");
+            var target = tempDir.resolve("atomic-dst.txt");
+            writeString(source, "new");
+            writeString(target, "old");
+            assertThat(moveAtomic(source, target).isSuccess()).isTrue();
+            assertThat(exists(source)).isFalse();
+            assertThat(readString(target).unwrap()).isEqualTo("new");
+        }
+
+        /// #676: the target must survive a rename that fails. Source and target sit in sibling
+        /// directories and the source's directory is made read-only, so `rename(2)` fails on the
+        /// source side while an `unlink(2)` of the target would still succeed — which is exactly
+        /// what a non-atomic move does first. Skipped where the chmod has no effect (root).
+        @Test
+        void moveAtomic_renameFails_targetSurvives() {
+            var sourceDir = tempDir.resolve("locked");
+            var source = sourceDir.resolve("src.txt");
+            var target = tempDir.resolve("dst.txt");
+            createDirectories(sourceDir);
+            writeString(source, "new");
+            writeString(target, "old");
+            setPosixPermissions(sourceDir, "r-xr-xr-x");
+
+            try {
+                assumeTrue(!Files.isWritable(sourceDir), "read-only directory has no effect here (root?)");
+                assertThat(moveAtomic(source, target).isFailure()).isTrue();
+                assertThat(exists(target)).as("the old target survives the failed rename").isTrue();
+                assertThat(readString(target).unwrap()).isEqualTo("old");
+            } finally {
+                setPosixPermissions(sourceDir, "rwxr-xr-x");
+            }
         }
 
         @Test
