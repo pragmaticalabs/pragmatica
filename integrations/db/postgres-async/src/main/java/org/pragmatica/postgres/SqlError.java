@@ -1,5 +1,7 @@
 package org.pragmatica.postgres;
 
+import java.util.Set;
+
 import org.pragmatica.lang.Cause;
 
 
@@ -35,6 +37,12 @@ public sealed interface SqlError extends Cause {
 
     record ServerResponse(String code, String level, String message) {}
 
+    /// SQLSTATEs a retry may outlive (RFC-free but PostgreSQL-documented): connection not made or
+    /// lost before resolution (08001, 08004, 08006), server going away or not yet up (57P01,
+    /// 57P02, 57P03). Everything else in classes 08 and 57 is settled or unknowable.
+    Set<String> TRANSIENT_CONNECTION_STATES = Set.of("08001", "08004", "08006");
+    Set<String> TRANSIENT_OPERATOR_STATES = Set.of("57P01", "57P02", "57P03");
+
     @SuppressWarnings("unused")
     sealed interface ServerError extends SqlError {
         ServerResponse response();
@@ -51,7 +59,16 @@ public sealed interface SqlError extends Cause {
 
     record ServerErrorSQLStatementNotYetComplete(ServerResponse response, String readableCode) implements ServerError {}
 
-    record ServerConnectionException(ServerResponse response, String readableCode) implements ServerError, Cause.Transient {}
+    /// Transience is decided PER SQLSTATE, not per class (#280, review of #1088 S8): a class-wide mark
+    /// would admit `08007 transaction_resolution_unknown` — a COMMIT whose reply was lost, which a
+    /// retry would re-run — and `08P01 protocol_violation`. Retryable here: the connection could not
+    /// be made or was lost before the statement was resolved.
+    record ServerConnectionException(ServerResponse response, String readableCode) implements ServerError {
+        @Override
+        public boolean isTransient() {
+            return TRANSIENT_CONNECTION_STATES.contains(response.code());
+        }
+    }
 
     record ServerTriggeredActionException(ServerResponse response, String readableCode) implements ServerError {}
 
@@ -115,7 +132,15 @@ public sealed interface SqlError extends Cause {
 
     record ServerErrorObjectNotInPrerequisiteState(ServerResponse response, String readableCode) implements ServerError {}
 
-    record ServerErrorOperatorIntervention(ServerResponse response, String readableCode) implements ServerError, Cause.Transient {}
+    /// `57P01 admin_shutdown`, `57P02 crash_shutdown`, `57P03 cannot_connect_now` pass; `57P04
+    /// database_dropped` does not, and `57014 query_canceled` — a statement_timeout or an
+    /// explicit cancel — is ruled NOT transient: a cancel should surface, not be re-driven.
+    record ServerErrorOperatorIntervention(ServerResponse response, String readableCode) implements ServerError {
+        @Override
+        public boolean isTransient() {
+            return TRANSIENT_OPERATOR_STATES.contains(response.code());
+        }
+    }
 
     record ServerSystemError(ServerResponse response, String readableCode) implements ServerError {}
 

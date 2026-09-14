@@ -59,7 +59,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///     the busiest caller already documents for its own per-retry lines
 ///     (`QuicClusterNetwork#retryBackpressuredWrite`), so WARN here was overriding a level the call
 ///     site had already chosen.
-///   - **Giving up is WARN, and carries the attempt count.** Both terminal paths — an unretryable
+///   - **Giving up is WARN, and carries the attempt count and the cause's TYPE — never its
+///     message, which is where personal data lives (#280).** Both terminal paths — an unretryable
 ///     `Cause` and a spent attempt budget — emit exactly one line. This is what keeps a retry burst
 ///     discoverable after the demotion: the count IS the aggregate. Before #718 the spent-budget
 ///     path logged nothing at all.
@@ -125,7 +126,7 @@ public interface Retry {
                         log.warn("Operation failed with a TERMINAL cause (attempt {}/{}), not retrying: {}",
                                  attempt,
                                  maxAttempts,
-                                 failure.cause().message());
+                                 failure.cause().getClass().getName());
                         yield output.fail(failure.cause());
                     }
                     case Result.Failure<T> failure when!retryable.test(failure.cause()) -> {
@@ -139,7 +140,7 @@ public interface Retry {
                         log.warn("Operation failed after {} of {} attempts, giving up: {}",
                                  attempt,
                                  maxAttempts,
-                                 failure.cause().message());
+                                 failure.cause().getClass().getName());
                         yield output.fail(failure.cause());
                     }
                     case Result.Failure<T> failure -> {
@@ -149,7 +150,7 @@ public interface Retry {
                                   attempt,
                                   maxAttempts,
                                   delay,
-                                  failure.cause().message());
+                                  failure.cause().getClass().getName());
                         SharedScheduler.schedule(() -> executeWithLoop(operation, retryable, attempt + 1, output), delay);
                         yield output;
                     }
