@@ -267,16 +267,27 @@ Artifacts are stored as fixed-size chunks for efficient DHT distribution:
 
 ### Key Format
 
-```
-# Chunk content
-artifacts/{groupId}/{artifactId}/{version}/content/{chunkIndex}
+Every file of a Maven coordinate is its own entry — the jar, the pom and each classified file
+(`-sources.jar`, `-javadoc.jar`, …) are keyed separately, so they never collide:
 
-# Artifact metadata (hash, size, chunk count)
-artifacts/{groupId}/{artifactId}/{version}/meta
+```
+# Metadata of one file (hashes, size, chunk ids); {file} is [{classifier}.]{extension}
+artifacts/{groupId}/{artifactId}/{version}/{file}/meta
+#   e.g. …/1.0.0/jar/meta, …/1.0.0/pom/meta, …/1.0.0/sources.jar/meta
+
+# Files deployed for a version (a version is listed while any of them exists)
+artifacts/{groupId}/{artifactId}/{version}/files
 
 # Version list per artifact
 artifacts/{groupId}/{artifactId}/versions
 ```
+
+Chunk content is not keyed by coordinate: each 64KB chunk is stored in the node's `artifacts`
+storage instance under its content hash (`BlockId`), and the file's `meta` entry lists the chunk
+ids in order. Identical chunks are shared between files; deleting a file removes its `meta` entry
+and file-list entry but does not release its chunks (see the artifact-repo changelog for #281).
+A timestamped SNAPSHOT deploy (`lib-1.0.0-20260914.010203-1-sources.jar` under `1.0.0-SNAPSHOT/`)
+keys under the directory's version, so the plain `lib-1.0.0-SNAPSHOT-sources.jar` name reads it.
 
 ### Example
 

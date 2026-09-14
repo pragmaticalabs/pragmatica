@@ -240,16 +240,18 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         validateRewrittenSql(execElement, methodName, rewritten.sql(), schemaOpt);
         var mapperColumns = boundMapperColumns(execElement, resolved, resolveMapperColumns(execElement, resolved));
         var bodyParams = reorderedParams(boundBody, rewritten.parameterOrder());
-        var signatureParams = expansion.hasExpansion()
-                              ? originalParams
-                              : reorderedParams(originalParams, rewritten.parameterOrder());
+        // #648: the generated method OVERRIDES the interface method, so its signature is the
+        // declaration order, always. Only the bind list follows placeholder order — it is emitted by
+        // parameter NAME, so declaration order and placeholder order are independent. Reordering
+        // the signature too was "does not override" for a differently typed pair and, for a
+        // same-typed pair, compiled and bound the caller's arguments to the wrong placeholders.
         return new FactoryGenerator.MethodInfo(methodName,
                                                FactoryGenerator.toSqlConstantName(methodName),
                                                rewritten.sql(),
                                                resolved.kind(),
                                                resolved.innerTypeName(),
                                                resolved.innerTypeName(),
-                                               signatureParams,
+                                               originalParams,
                                                bodyParams,
                                                mapperColumns,
                                                resolved.needsMapper(),

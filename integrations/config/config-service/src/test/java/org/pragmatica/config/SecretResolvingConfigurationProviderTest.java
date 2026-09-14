@@ -124,6 +124,38 @@ class SecretResolvingConfigurationProviderTest {
         }
     }
 
+    /// #904: the no-resolver counterpart. A placeholder nothing can resolve is refused up front,
+    /// naming key and path; a placeholder-free provider is returned as the SAME instance.
+    @Nested
+    class NoResolver {
+
+        @Test
+        void withoutSecretResolution_noPlaceholder_returnsTheSameProvider() {
+            var provider = providerWith(Map.of("db.host", "localhost", "db.password", "plain"));
+
+            var result = ConfigurationProvider.withoutSecretResolution(provider);
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(result.unwrap()).isSameAs(provider);
+        }
+
+        @Test
+        void withoutSecretResolution_placeholderPresent_failsNamingKeyAndPath() {
+            var provider = providerWith(Map.of("db.host", "localhost", "db.password", "${secrets:db/password}"));
+
+            var result = ConfigurationProvider.withoutSecretResolution(provider);
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> {
+                assertThat(cause).isInstanceOf(ConfigError.SecretResolutionFailed.class);
+                var error = (ConfigError.SecretResolutionFailed) cause;
+                assertThat(error.key()).isEqualTo("db.password");
+                assertThat(error.secretPath()).isEqualTo("db/password");
+                assertThat(error.message()).contains("no secrets provider");
+            });
+        }
+    }
+
     private static ConfigurationProvider providerWith(Map<String, String> values) {
         return ConfigurationProvider.configurationProvider(
             MapConfigSource.mapConfigSource("test", values).unwrap());
