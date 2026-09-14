@@ -174,13 +174,15 @@ class WireAssignmentTripwireTest {
         assertTrue(baseline().size() > 100,
                    "The recorded baseline has only %d lines — it cannot be pinning the registry".formatted(baseline().size()));
 
-        // The number that caught the gap: 26 enum codecs are generated across the repository, and
-        // deriving from the node registries alone pinned 24. Stated as a floor with the space named,
-        // because a count with no stated space is not checkable.
+        // The number that caught the gap: 26 enum codecs were generated across the repository, and
+        // deriving from the node registries alone pinned 24. 25 since #722 deleted `GenerationReason`
+        // (counted as `*Codec.java` under every module's generated-sources carrying the enum
+        // sentinel). Stated as a floor with the space named, because a count with no stated space
+        // is not checkable.
         var pinnedEnums = current.stream().filter(line -> line.startsWith("ENUM ")).count();
 
-        assertTrue(pinnedEnums >= 26,
-                   ("Only %d enums are pinned. 26 enum codecs are generated under aether/ and integrations/;"
+        assertTrue(pinnedEnums >= 25,
+                   ("Only %d enums are pinned. 25 enum codecs are generated under aether/ and integrations/;"
                     + " an enum with a generated codec and no pin is exactly what this test exists to catch.")
                    .formatted(pinnedEnums));
     }

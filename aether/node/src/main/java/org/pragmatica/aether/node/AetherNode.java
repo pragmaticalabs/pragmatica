@@ -6129,8 +6129,6 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onBlueprintDeployed));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeleted.class,
                                               eventAggregator::onBlueprintDeleted));
-        entries.add(MessageRouter.Entry.route(OperationalEvent.GenerationChanged.class,
-                                              eventAggregator::onGenerationChanged));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));
         entries.add(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardRequest.class,
