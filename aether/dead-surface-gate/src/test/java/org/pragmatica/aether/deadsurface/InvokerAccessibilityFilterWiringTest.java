@@ -45,9 +45,10 @@ class InvokerAccessibilityFilterWiringTest {
 
         assertTrue(missing.isEmpty(),
                    "Corpus incomplete: these module(s) have src/main/java but no target/classes, so a "
-                   + "call site living there would read as unreachable and fail this assertion for the "
-                   + "wrong reason: " + missing + ". Run a full reactor build "
-                   + "(`mvn -pl aether install -DskipTests`) before trusting this gate's result.");
+                  + "call site living there would read as unreachable and fail this assertion for the "
+                  + "wrong reason: " + missing
+                  + ". Run a full reactor build "
+                  + "(`mvn -pl aether install -DskipTests`) before trusting this gate's result.");
     }
 
     /// Pinned call site: `AetherNode.assembleNode` -> `sliceInvoker.setAccessibilityFilter(accessibilityFilter)`.
@@ -59,15 +60,14 @@ class InvokerAccessibilityFilterWiringTest {
     @Test
     void sliceInvokerAccessibilityFilterIsWiredByProductionCode() throws Exception {
         assertCorpusIsComplete();
-
         var reachability = BytecodeReachability.scan(PRODUCTION_ROOTS);
 
         assertTrue(reachability.isReachable(MethodRef.of(SliceInvoker.class.getDeclaredMethod("setAccessibilityFilter",
                                                                                               AccessibilityFilter.class))),
                    "#275: SliceInvoker.setAccessibilityFilter(AccessibilityFilter) must be called by production "
-                   + "code (AetherNode.assembleNode). Unreachable here means the invoker keeps its default "
-                   + "AccessibilityFilter.IDENTITY, every slice-to-slice call is round-robined onto co-confirmed-"
-                   + "DEAD nodes again, and it hangs for the invoker timeout -- while every aether/node test and "
-                   + "every invoker-level liveness test stays green, because they set the filter themselves");
+                  + "code (AetherNode.assembleNode). Unreachable here means the invoker keeps its default "
+                  + "AccessibilityFilter.IDENTITY, every slice-to-slice call is round-robined onto co-confirmed-"
+                  + "DEAD nodes again, and it hangs for the invoker timeout -- while every aether/node test and "
+                  + "every invoker-level liveness test stays green, because they set the filter themselves");
     }
 }
