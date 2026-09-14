@@ -160,7 +160,8 @@ public sealed interface StreamResourceValidator {
                                                                          RULE_INERT_STREAM_CONFIG,
                                                                          "compression '" + config.compression()
                                                                         + "' has no runtime effect — segments are always written uncompressed "
-                                                                        + "regardless of this setting. Remove the key or set it to 'none'."));
+                                                                        + "regardless of this setting. Remove the key or set it to 'none'; stream "
+                                                                        + "compression is not supported in 1.0 (descoped in #677)."));
         }
 
         if (!"earliest".equalsIgnoreCase(config.autoOffsetReset())) {
@@ -236,7 +237,8 @@ public sealed interface StreamResourceValidator {
                                                               + "' has no runtime effect — per-consumer TOML config (`[streams.X.consumers.Y]`) is "
                                                               + "parsed but never reaches the runtime consumer (StreamConfigParser#parseConsumers has "
                                                               + "no production caller, per #576); every declarative consumer runs with hardcoded "
-                                                              + "defaults regardless of this key. Remove it until #576's runtime wiring lands.");
+                                                              + "defaults regardless of this key. Remove it: per-consumer tuning is not supported "
+                                                              + "in 1.0 (descoped in #677; post-GA wiring is its own epic).");
     }
 
     private static String extractField(String message) {
