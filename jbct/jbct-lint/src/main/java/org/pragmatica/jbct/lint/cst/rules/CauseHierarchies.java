@@ -19,7 +19,7 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// Extracted from JBCT-SEAL-02 (retired by absorption into JBCT-CAUSE-01) and extended two ways:
 /// interface collection runs to a same-file FIXPOINT (`E2 extends E1 extends Cause` is now
 /// recognized where SEAL-02 stopped at direct `extends Cause`), and the `Cause.Terminal` /
-/// `Cause.Wrapped` mixins mark a variant through their QUALIFIED spelling on the raw header —
+/// `Cause.Wrapped` / `Cause.Transient` mixins mark a variant through their QUALIFIED spelling on the raw header —
 /// deliberately not through [DeclSupport#implementedHeadNames], which strips qualifiers and would
 /// reduce `Cause.Wrapped` to a collision-prone simple name.
 ///
@@ -39,7 +39,7 @@ final class CauseHierarchies {
     }
     private static final Pattern INTERFACE_NAME = Pattern.compile("\\binterface\\s+([A-Za-z_$][A-Za-z0-9_$]*)");
     private static final Pattern EXTENDS_CLAUSE = Pattern.compile("\\bextends\\b([^{]*)");
-    private static final Pattern QUALIFIED_MIXIN = Pattern.compile("\\bCause\\s*\\.\\s*(Terminal|Wrapped)\\b");
+    private static final Pattern QUALIFIED_MIXIN = Pattern.compile("\\bCause\\s*\\.\\s*(Terminal|Wrapped|Transient)\\b");
     private static final Pattern IDENTIFIER_TAIL = Pattern.compile("([A-Za-z_$][A-Za-z0-9_$]*)\\s*$");
     private static final Pattern FACTORY_CALL = Pattern.compile("\\b(forOneValue|forTwoValues|forThreeValues)\\s*\\(");
 

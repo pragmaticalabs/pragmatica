@@ -16,8 +16,10 @@
  */
 package org.pragmatica.lang.utils;
 
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
@@ -57,7 +59,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///     the busiest caller already documents for its own per-retry lines
 ///     (`QuicClusterNetwork#retryBackpressuredWrite`), so WARN here was overriding a level the call
 ///     site had already chosen.
-///   - **Giving up is WARN, and carries the attempt count.** Both terminal paths — an unretryable
+///   - **Giving up is WARN, and carries the attempt count and the cause's TYPE — never its
+///     message, which is where personal data lives (#280).** Both terminal paths — an unretryable
 ///     `Cause` and a spent attempt budget — emit exactly one line. This is what keeps a retry burst
 ///     discoverable after the demotion: the count IS the aggregate. Before #718 the spent-budget
 ///     path logged nothing at all.
@@ -73,21 +76,47 @@ public interface Retry {
     /// @return A Promise containing the result of the successful operation
     <T> Promise<T> execute(Supplier<Promise<T>> operation);
 
+    /// Executes an asynchronous operation with retry logic, retrying a failure ONLY while
+    /// `retryable` admits its cause — evaluated on EVERY failure, not only the first. A cause the
+    /// predicate refuses ends the loop at once, at DEBUG: the caller's policy declined it, which
+    /// is not the loop giving up (WARN) and not a terminal verdict (WARN). A terminal cause is
+    /// refused before the predicate is consulted, whatever the predicate says.
+    ///
+    /// This is what a retry POLICY needs and [#execute(Supplier)] cannot give: with the predicate
+    /// applied outside the loop, only the first failure is classified and a non-retryable cause on
+    /// attempt two is re-driven to the budget (#280).
+    ///
+    /// @param operation The async operation to retry
+    /// @param retryable Whether a failure with this cause may be retried
+    /// @param <T>       The type of result returned by the operation
+    ///
+    /// @return A Promise containing the result of the successful operation
+    <T> Promise<T> execute(Supplier<Promise<T>> operation, Predicate<Cause> retryable);
+
     /// Create Retry with specified maximal number of attempts and delay calculation strategy.
     static RetryStageMaxAttempts retry() {
         record retry(int maxAttempts, BackoffStrategy backoffStrategy) implements Retry {
             @Override
             public <T> Promise<T> execute(Supplier<Promise<T>> operation) {
-                return executeWithLoop(operation, 1, Promise.promise());
+                return execute(operation, _ -> true);
             }
 
-            private <T> Promise<T> executeWithLoop(Supplier<Promise<T>> operation, int attempt, Promise<T> output) {
-                operation.get().fold(result -> handle(operation, attempt, output, result));
+            @Override
+            public <T> Promise<T> execute(Supplier<Promise<T>> operation, Predicate<Cause> retryable) {
+                return executeWithLoop(operation, retryable, 1, Promise.promise());
+            }
+
+            private <T> Promise<T> executeWithLoop(Supplier<Promise<T>> operation,
+                                                   Predicate<Cause> retryable,
+                                                   int attempt,
+                                                   Promise<T> output) {
+                operation.get().fold(result -> handle(operation, retryable, attempt, output, result));
 
                 return output;
             }
 
             private <T> Promise<T> handle(Supplier<Promise<T>> operation,
+                                          Predicate<Cause> retryable,
                                           int attempt,
                                           Promise<T> output,
                                           Result<T> result) {
@@ -97,14 +126,21 @@ public interface Retry {
                         log.warn("Operation failed with a TERMINAL cause (attempt {}/{}), not retrying: {}",
                                  attempt,
                                  maxAttempts,
-                                 failure.cause().message());
+                                 failure.cause().getClass().getName());
+                        yield output.fail(failure.cause());
+                    }
+                    case Result.Failure<T> failure when!retryable.test(failure.cause()) -> {
+                        log.debug("Operation failed with a cause the retry policy declines (attempt {}/{}), not retrying: {}",
+                                  attempt,
+                                  maxAttempts,
+                                  failure.cause().getClass().getName());
                         yield output.fail(failure.cause());
                     }
                     case Result.Failure<T> failure when(attempt >= maxAttempts) -> {
                         log.warn("Operation failed after {} of {} attempts, giving up: {}",
                                  attempt,
                                  maxAttempts,
-                                 failure.cause().message());
+                                 failure.cause().getClass().getName());
                         yield output.fail(failure.cause());
                     }
                     case Result.Failure<T> failure -> {
@@ -114,8 +150,8 @@ public interface Retry {
                                   attempt,
                                   maxAttempts,
                                   delay,
-                                  failure.cause().message());
-                        SharedScheduler.schedule(() -> executeWithLoop(operation, attempt + 1, output), delay);
+                                  failure.cause().getClass().getName());
+                        SharedScheduler.schedule(() -> executeWithLoop(operation, retryable, attempt + 1, output), delay);
                         yield output;
                     }
                 };

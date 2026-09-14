@@ -38,6 +38,13 @@ public interface NodeLifecycleManager {
         return EnvironmentError.operationNotSupported("listInstances: no ComputeProvider").promise();
     }
 
+    /// #1049 — the instances the provider lists for `nodeId` (selected by the node-id tag every provider
+    /// stamps at create). Default refusal for the same reason as [#listInstances]: a fake that answered
+    /// an empty list would read as "the replacement was deleted" and trigger a duplicate mint.
+    default Promise<List<InstanceInfo>> instancesForNode(NodeId nodeId) {
+        return EnvironmentError.operationNotSupported("instancesForNode: no ComputeProvider").promise();
+    }
+
     @Contract
     default void resetProvisionerState(Option<ClusterName> clusterName) {}
 
@@ -163,6 +170,12 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
     public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
         return computeProvider.fold(() -> EnvironmentError.operationNotSupported("listInstances: no ComputeProvider").promise(),
                                     provider -> provider.listInstances(tagFilter));
+    }
+
+    @Override
+    public Promise<List<InstanceInfo>> instancesForNode(NodeId nodeId) {
+        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("instancesForNode: no ComputeProvider").promise(),
+                                    provider -> provider.listInstances(Map.of(NODE_ID_TAG, nodeId.id())));
     }
 
     @Override

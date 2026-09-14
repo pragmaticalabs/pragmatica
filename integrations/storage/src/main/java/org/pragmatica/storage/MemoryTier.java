@@ -50,7 +50,7 @@ public final class MemoryTier implements StorageTier {
             // Overcount is corrected after the actual put.
             updated = current + content.length;
             if (updated > maxBytes) {
-                return StorageError.TierFull.tierFull(TierLevel.MEMORY, current, maxBytes).promise();
+                return StorageError.TierFull.tierFull(level(), current, maxBytes).promise();
             }
         } while (!usedBytes.compareAndSet(current, updated));
         // Now we have reserved space atomically. Perform the actual put.

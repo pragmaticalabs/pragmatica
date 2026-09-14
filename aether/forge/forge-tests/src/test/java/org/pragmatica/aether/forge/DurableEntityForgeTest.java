@@ -769,26 +769,26 @@ class DurableEntityForgeTest {
 
     private String create(int port, String key, String status, int amount) {
         return httpPost(port,
-                        "/api/v1/entity/create",
+                        "/api/entity/create",
                         "{\"orderId\":\"" + key + "\",\"status\":\"" + status + "\",\"amount\":" + amount + "}");
     }
 
     private String get(int port, String key) {
-        return httpPost(port, "/api/v1/entity/get", "{\"orderId\":\"" + key + "\"}");
+        return httpPost(port, "/api/entity/get", "{\"orderId\":\"" + key + "\"}");
     }
 
     private String update(int port, String key, int amount) {
-        return httpPost(port, "/api/v1/entity/update", "{\"orderId\":\"" + key + "\",\"amount\":" + amount + "}");
+        return httpPost(port, "/api/entity/update", "{\"orderId\":\"" + key + "\",\"amount\":" + amount + "}");
     }
 
     private String delete(int port, String key) {
-        return httpPost(port, "/api/v1/entity/delete", "{\"orderId\":\"" + key + "\"}");
+        return httpPost(port, "/api/entity/delete", "{\"orderId\":\"" + key + "\"}");
     }
 
     /// Schedules a timer with the fixture's default delay and no caller token — the entity mints one per
     /// call, so N calls are N timers.
     private String scheduleTimer(int port, String key) {
-        return httpPost(port, "/api/v1/entity/schedule-timer", "{\"orderId\":\"" + key + "\"}");
+        return httpPost(port, "/api/entity/schedule-timer", "{\"orderId\":\"" + key + "\"}");
     }
 
     /// Schedules a timer under a CALLER-minted token and an explicit delay. Re-sending the same token is
@@ -796,7 +796,7 @@ class DurableEntityForgeTest {
     /// appends nothing, so the schedule — and its effect — happen once.
     private String scheduleTimer(int port, String key, long delayMillis, String token) {
         return httpPost(port,
-                        "/api/v1/entity/schedule-timer",
+                        "/api/entity/schedule-timer",
                         "{\"orderId\":\"" + key + "\",\"delayMillis\":" + delayMillis + ",\"token\":\"" + token + "\"}");
     }
 

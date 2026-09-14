@@ -163,6 +163,8 @@ public interface ComputeProvider {
         return switch (observed.status()) {
             case InstanceStatus.Running ignored -> Promise.success(created.withStatus(InstanceStatus.RUNNING));
             case InstanceStatus.Provisioning ignored -> retryPoll(created, policy);
+            // #1049 — a status the provider could not state is not a crash; keep polling until the timeout.
+            case InstanceStatus.Unknown ignored -> retryPoll(created, policy);
             default -> ComputeProviderLog.bootCrashed(created.id(), observed.status()).promise();
         };
     }
