@@ -21,8 +21,10 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
+import org.pragmatica.aether.worker.metrics.PerMethodMetrics;
 import org.pragmatica.lang.Option;
 
+import org.awaitility.core.ConditionTimeoutException;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -36,6 +38,8 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
@@ -90,12 +94,7 @@ class ScheduledSingleFireHostingTest {
                                                   .withEnvironment("AETHER_")
                                                   .build();
 
-        cluster = emberCluster(NODES,
-                               BASE_PORT,
-                               BASE_MGMT_PORT,
-                               BASE_APP_HTTP_PORT,
-                               "sched",
-                               Option.some(configProvider));
+        cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "sched", some(configProvider));
         cluster.withDataBaseDir(baseDir);
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader()
@@ -109,7 +108,7 @@ class ScheduledSingleFireHostingTest {
 
     @AfterAll
     void tearDown() {
-        Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
+        option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
     @Test
@@ -177,7 +176,7 @@ class ScheduledSingleFireHostingTest {
                  .pollInterval(POLL)
                  .until(() -> heartbeatCallsOn(host) >= EXPECTED_FIRES || taskState().map(ScheduledTaskStateValue::consecutiveFailures)
                                                                                    .or(0) >= EXPECTED_FIRES);
-        } catch (org.awaitility.core.ConditionTimeoutException timeout) {
+        } catch (ConditionTimeoutException timeout) {
             log.warn("SSF: neither {} fires nor {} failures within {}s",
                      EXPECTED_FIRES,
                      EXPECTED_FIRES,
@@ -214,7 +213,7 @@ class ScheduledSingleFireHostingTest {
                                                               .stream())
                                        .filter(method -> method.method()
                                                                .equals(METHOD.name()))
-                                       .mapToLong(method -> method.totalCalls())
+                                       .mapToLong(PerMethodMetrics::totalCalls)
                                        .sum())
                       .or(0L);
     }
