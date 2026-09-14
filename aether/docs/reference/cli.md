@@ -2532,6 +2532,22 @@ retires it and names it in the output. With several, it refuses and lists the ca
 with `--key-id` naming the one to retire. A key listing that cannot be read fails the rotation
 rather than resolving to some key.
 
+### `aether cluster rotate-gossip-key`
+
+Rotate the SWIM gossip encryption key in place (#683). ADMIN only.
+
+```bash
+aether cluster rotate-gossip-key
+```
+
+The leader generates 32 bytes of fresh key material and publishes it through consensus
+(`POST /api/v1/cluster/gossip-key/rotate`); every node switches to the new key and keeps accepting
+the previous one for the overlap, and a node that joins later adopts the current key on replay. Use it
+after a suspected `cluster_secret` or gossip-key leak: the daily key is derived from `cluster_secret`,
+so this is the only mitigation that does not require reconfiguring and restarting every node. The
+output carries key ids only, never key material. See SECURITY.md for what the rotation does and does
+not change.
+
 ### `aether cluster revoke-key`
 
 Revoke an API key by ID.

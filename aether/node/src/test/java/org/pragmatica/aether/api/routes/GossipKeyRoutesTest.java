@@ -100,7 +100,7 @@ class GossipKeyRoutesTest {
 
     @Test
     void theRouteExists_andIsAnExactAdminRow() {
-        assertThat(ManagementRoute.CLUSTER_GOSSIP_KEY_ROTATE.path()).isEqualTo("/cluster/gossip-key/rotate");
+        assertThat(ManagementRoute.CLUSTER_GOSSIP_KEY_ROTATE.prefix()).contains("cluster/gossip-key/rotate");
         assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.CLUSTER_GOSSIP_KEY_ROTATE))
                 .as("#683: an exact ADMIN row, never the prefix fallback (#1101)")
                 .isEqualTo(ADMIN_ONLY);

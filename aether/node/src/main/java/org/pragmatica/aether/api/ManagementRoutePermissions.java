@@ -139,6 +139,7 @@ public sealed interface ManagementRoutePermissions {
                        ManagementRoute.CONFIG_NODE_DELETE,
                        ManagementRoute.CLUSTER_KEYS_CREATE,
                        ManagementRoute.CLUSTER_KEYS_REVOKE,
+                       ManagementRoute.CLUSTER_GOSSIP_KEY_ROTATE,
                        ManagementRoute.CERT_CONFIGURE_SHORT_VALIDITY,
                        ManagementRoute.SCHEDULED_TASK_INJECT,
                        ManagementRoute.ALERTS_INJECT,

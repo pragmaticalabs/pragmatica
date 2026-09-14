@@ -132,6 +132,8 @@ public enum ManagementRoute {
     CLUSTER_KEYS_LIST(GET, "/cluster/keys", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_KEYS_REVOKE(POST, "/cluster/keys/revoke", List.of("id"), taskGroup(DEPLOYMENT)),
     CLUSTER_KEYS_AUDIT(GET, "/cluster/keys/audit", List.of(), taskGroup(DEPLOYMENT)),
+    // #683: emergency in-place gossip-key rotation — the producer for GossipKeyRotationKey.
+    CLUSTER_GOSSIP_KEY_ROTATE(POST, "/cluster/gossip-key/rotate", List.of(), LEADER),
     REPOSITORY_ARTIFACTS_LIST(GET, raw("/repository/artifacts"), List.of(), taskGroup(DEPLOYMENT)),
     MAVEN_METADATA(GET, raw("/repository"), List.of("groupPath", "artifactId", "file"), taskGroup(DEPLOYMENT)),
     NODE_LIFECYCLE_LIST(GET, "/nodes/lifecycle", List.of(), LEADER),

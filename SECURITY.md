@@ -37,7 +37,15 @@ Two consequences follow directly:
 - **All nodes in a cluster trust each other completely.** Any node that can complete the join
   handshake is a full member — able to reach every slice, every KV key, and (if storage encryption
   is enabled) every data key in that cluster. There is currently no per-node revocation short of
-  removing the node and rotating the shared secret.
+  removing the node and rotating the shared secret. For the gossip layer specifically there is one
+  in-place mitigation, `aether cluster rotate-gossip-key` (`POST /api/v1/cluster/gossip-key/rotate`,
+  ADMIN), which pushes a fresh, non-derived gossip key through consensus without a restart (#683).
+  Two facts about it, accepted and stated: **the key material lives in the consensus log and its
+  snapshots, readable by any KV reader** — accepted by the §5.8 delivery design because a per-node
+  out-of-band channel would need a second trust root, and every KV reader is already a full member;
+  and **after the first rotation the `cluster_secret`-derived daily key is permanently superseded on
+  that cluster** — the delivered key is what every node encrypts under from then on, and a rebooted
+  node derives its boot-day key only until the record replays to it.
 - **The runtime/slice boundary is an accident boundary, not a security sandbox.** Each slice loads
   in its own `SliceClassLoader` [mechanism: `aether/slice/src/main/java/org/pragmatica/aether/slice/SliceClassLoader.java`],
   which isolates classpaths across slices/versions. This is **not** a hardened security boundary:

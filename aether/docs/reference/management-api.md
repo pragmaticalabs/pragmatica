@@ -3561,6 +3561,28 @@ entry) and restart the node.
 }
 ```
 
+### POST /api/v1/cluster/gossip-key/rotate
+
+Rotate the SWIM gossip encryption key in place (#683). The leader generates 32 bytes of fresh key
+material and writes one `GossipKeyRotationKey` record through consensus: `currentKeyId` is the previous
+id plus one, and the previous key rides along so nodes mid-rotation keep decrypting each other. Every
+node applies it through its existing `GossipKeyRotationHandler`; a late joiner receives the record on
+replay before it sends its first SWIM datagram. The response carries ids only — the key is never
+returned or logged. Consequences an operator must know: the key material is stored in the consensus log
+and its snapshots (readable by any KV reader), and after the first rotation the `cluster_secret`-derived
+daily key scheme is superseded on that cluster for good; see SECURITY.md.
+
+**RBAC:** ADMIN (exact route; an appended path segment is 404, never a weaker permission) · **Routing:** LEADER
+
+**Response:**
+```json
+{
+  "currentKeyId": 2,
+  "previousKeyId": 1,
+  "rotatedAt": 1757800000000
+}
+```
+
 ### GET /api/v1/cluster/keys/audit
 
 List API key audit trail (create, rotate, revoke, expire events).
