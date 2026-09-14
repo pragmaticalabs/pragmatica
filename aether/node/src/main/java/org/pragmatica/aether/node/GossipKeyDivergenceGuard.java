@@ -82,6 +82,13 @@ public final class GossipKeyDivergenceGuard implements GossipEncryptor {
     /// restarted member, probed continuously by peers that still hold it in their seed set)
     /// accumulates its datagrams within seconds of arming, while the case it cannot detect receives
     /// nothing at all and would never have fired however long it stayed armed.
+    /// **Both numbers are CHOSEN, not measured, and are recorded as such so a later reader does not
+    /// defend them as derived.** 60 seconds clears a healthy node's first-decrypt latency — seconds
+    /// after SWIM starts — by roughly an order of magnitude. 10 minutes clears, by a similar margin,
+    /// the time a probed restarted member takes to accumulate [#UNKNOWN_KEY_THRESHOLD] datagrams,
+    /// while still ending the interval in which the process can be killed. Both are wide margins
+    /// rather than tuned values; neither is close to its edge, which is why deriving them from a
+    /// measured distribution would change the numbers without changing the behaviour.
     static final long ARMING_DELAY_NANOS = TimeUnit.SECONDS.toNanos(60);
     static final long ARMING_WINDOW_END_NANOS = TimeUnit.MINUTES.toNanos(10);
 
