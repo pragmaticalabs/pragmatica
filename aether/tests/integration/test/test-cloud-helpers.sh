@@ -16,6 +16,9 @@ FIXTURE="${SCRIPT_DIR}/fixtures/bootstrap-state.json"
 export TARGET_HOST="cloud-helpers-test"
 export ENV_TYPE="cloud"
 export CLOUD_SOURCE_NAME="hetzner-eu"
+# cloud_ssh reads AETHER_SSH_KEY under `set -u`; a CI runner or container has none, so
+# the jvm_unit_* tests (ssh stubbed) must not depend on the caller's environment (#1051).
+export AETHER_SSH_KEY="${AETHER_SSH_KEY:-/nonexistent/cloud-helpers-test-key}"
 
 # Stage the fixture under a throwaway cluster name to avoid clobbering real state.
 TEST_CLUSTER="cloud-helpers-test-$$"
@@ -182,7 +185,107 @@ else
     fail "cloud_server_id provider 'aws' expected rc=2, got rc=${rc}"
 fi
 
-unset -f hcloud api_get
+# ---------------------------------------------------------------------------
+# H1/H2 (#1051): jvm_unit_show / jvm_unit_field / jvm_unit_is_drain_halt /
+# jvm_unit_assert_drain_halt (lib/common.sh). On --runtime jvm there is no
+# docker daemon on the cloud VM — the node runs as systemd unit `aether-node` —
+# so the self-drain halt reason is read via
+# `systemctl show aether-node --property=...` over SSH instead of
+# `docker inspect`. These tests stub `ssh` (cloud_ssh's underlying command;
+# node-id -> IP resolution reuses the CTM-replacement `api_get` stub above —
+# NOT yet unset, see the combined `unset -f hcloud api_get ssh` below — so no
+# new fixture is needed). Every negative case asserts the failure MESSAGE, so a
+# missing helper (rc 127) cannot satisfy it. The same functions, driven through
+# the suite's own _confirm_survivor_departure and test_survivor_exit_codes_are_two,
+# are covered in test/test-chaos-harness.sh.
+# ---------------------------------------------------------------------------
+
+# Stub `ssh`: cloud_ssh invokes `ssh "${SSH_OPTS[@]}" -i "$KEY" user@ip "$cmd"`
+# — the remote command is always the LAST argument. Branch on which
+# `systemctl show --property=...` was requested and on $STUB_SSH_RC to
+# simulate a transport failure independent of the property set.
+ssh() {
+    local remote_cmd="${@: -1}"
+    if [ -n "${STUB_SSH_RC:-}" ] && [ "${STUB_SSH_RC}" != "0" ]; then
+        return "$STUB_SSH_RC"
+    fi
+    case "$remote_cmd" in
+        *"--property=ExecMainStatus"*)
+            printf 'ExecMainStatus=%s\n' "${STUB_EXEC_MAIN_STATUS:-2}" ;;
+        *"--property=ActiveState,ExecMainStatus"*)
+            printf 'ActiveState=%s\nExecMainStatus=%s\n' \
+                "${STUB_ACTIVE_STATE:-failed}" "${STUB_EXEC_MAIN_STATUS:-2}" ;;
+        *) return 127 ;;   # unrecognized command — "systemctl: command not found" shape
+    esac
+}
+
+# 15) jvm_unit_show + jvm_unit_field: parse a canned systemctl-show reading.
+STUB_SSH_RC=0 STUB_ACTIVE_STATE=failed STUB_EXEC_MAIN_STATUS=2
+show=$(jvm_unit_show "$CTM_NODE" "ActiveState,ExecMainStatus")
+got_active=$(jvm_unit_field "$show" "ActiveState")
+got_exec=$(jvm_unit_field "$show" "ExecMainStatus")
+[ "$got_active" = "failed" ] && [ "$got_exec" = "2" ] \
+    && ok "jvm_unit_show/jvm_unit_field parse ActiveState=failed, ExecMainStatus=2" \
+    || fail "jvm_unit_show/jvm_unit_field expected failed/2, got '${got_active}'/'${got_exec}'"
+
+# 16) jvm_unit_assert_drain_halt: ActiveState=failed, ExecMainStatus=2 -> PASS
+# (the positive control for 17-19: the same call can pass).
+STUB_SSH_RC=0 STUB_ACTIVE_STATE=failed STUB_EXEC_MAIN_STATUS=2
+out=$(jvm_unit_assert_drain_halt "$CTM_NODE" "test-node" 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF "[PASS]" \
+    && printf '%s' "$out" | grep -qF "test-node systemd unit ActiveState=failed ExecMainStatus=2"; then
+    ok "jvm_unit_assert_drain_halt: failed/2 -> PASS"
+else
+    fail "jvm_unit_assert_drain_halt: failed/2 should PASS (rc=${rc}): ${out}"
+fi
+
+# 17) ExecMainStatus=0 (graceful shutdown, NOT a self-drain) -> FAIL, for that reason.
+STUB_SSH_RC=0 STUB_ACTIVE_STATE=failed STUB_EXEC_MAIN_STATUS=0
+out=$(jvm_unit_assert_drain_halt "$CTM_NODE" "test-node" 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "got ActiveState='failed' ExecMainStatus='0'" \
+    && [ "${out#*command not found}" = "$out" ]; then
+    ok "jvm_unit_assert_drain_halt: ExecMainStatus=0 -> FAIL naming the value read"
+else
+    fail "jvm_unit_assert_drain_halt: ExecMainStatus=0 should FAIL naming ExecMainStatus='0' (rc=${rc}): ${out}"
+fi
+
+# 18) An SSH/transport error must FAIL as unreadable, never pass on an empty read.
+STUB_SSH_RC=255
+out=$(jvm_unit_assert_drain_halt "$CTM_NODE" "test-node" 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "test-node systemd unit unreadable: SSH/systemctl failed (rc=255)"; then
+    ok "jvm_unit_assert_drain_halt: SSH error (rc=255) -> FAIL as unreadable"
+else
+    fail "jvm_unit_assert_drain_halt: SSH error should FAIL as unreadable (rc=${rc}): ${out}"
+fi
+STUB_SSH_RC=0
+
+# 19) ActiveState=active with ExecMainStatus=2 -> FAIL: a still-running unit is never a
+# drain halt, whatever a stale ExecMainStatus reads (the exit-code step and S19 tier 2
+# share this predicate).
+STUB_SSH_RC=0 STUB_ACTIVE_STATE=active STUB_EXEC_MAIN_STATUS=2
+out=$(jvm_unit_assert_drain_halt "$CTM_NODE" "test-node" 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "got ActiveState='active' ExecMainStatus='2'" \
+    && [ "${out#*command not found}" = "$out" ]; then
+    ok "jvm_unit_assert_drain_halt: ActiveState=active, ExecMainStatus=2 -> FAIL naming the state read"
+else
+    fail "jvm_unit_assert_drain_halt: ActiveState=active should FAIL naming ActiveState='active' (rc=${rc}): ${out}"
+fi
+
+# 20) jvm_unit_is_drain_halt truth table: only failed/2 is the drain halt.
+table=""
+for pair in "failed 2" "active 2" "failed 0" "inactive 2" "failed 20" " "; do
+    set -- $pair
+    if jvm_unit_is_drain_halt "${1:-}" "${2:-}"; then table="${table}[${1:-}/${2:-}=halt]"; else table="${table}[${1:-}/${2:-}=no]"; fi
+done
+if [ "$table" = "[failed/2=halt][active/2=no][failed/0=no][inactive/2=no][failed/20=no][/=no]" ]; then
+    ok "jvm_unit_is_drain_halt: only failed/2 is the drain halt"
+else
+    fail "jvm_unit_is_drain_halt truth table wrong: ${table}"
+fi
+set --
+
+unset -f hcloud api_get ssh
+unset STUB_SSH_RC STUB_ACTIVE_STATE STUB_EXEC_MAIN_STATUS
 
 echo ""
 echo "  ----"

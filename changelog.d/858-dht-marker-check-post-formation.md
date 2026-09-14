@@ -22,6 +22,9 @@
   A DHT tier serves no reads until its own check completes (gated internally on `DhtStorageTier`, not
   a separate config knob). A boot that fails either cause stops the node the same way any other
   `start()` failure does: exit code `1` (`Main#exitWithError`).
+  **Superseded in part by #1052, same release:** `DhtMarkerCheckTimedOut` no longer fails `start()`. It
+  is retried with backoff while the tier stays gated and the node stays not-ready. Only
+  `EncryptedTierRequiresKeyring` still exits.
 - [verified: `StorageFactoryEncryptionTest#createAll_leavesNoDhtMarker_whenDiskGuardRefusesBeforeDhtEncryptionIsApplied`,
   `#verifyDhtMarker_fails_whenDhtCarriesEncryptionMarker_andDiskUnavailable_andNoKeyringSupplied`,
   `#verifyDhtMarker_fails_withDhtMarkerCheckTimedOut_whenDhtClientNeverResponds` (pins a DHT client

@@ -57,6 +57,11 @@ public sealed interface MembershipEvent {
     /// This member stopped (confirmed terminal stop of the local process / explicit shutdown).
     record Stopped() implements MembershipEvent {}
 
+    /// The DEPARTING timeout expired on a drain-initiated departure that the target never
+    /// acknowledged and that no death evidence corroborates (#1054) — the DRAIN never reached a
+    /// live target, so the drain is withdrawn from the membership view instead of terminalized.
+    record DrainUnacknowledged() implements MembershipEvent {}
+
     /// The join-grace window expired without the member ever reaching healthy — never silently
     /// counted; goes terminal.
     record JoinGraceExpiredNeverHealthy() implements MembershipEvent {}

@@ -286,6 +286,87 @@ class ClusterSyncPongSignalFanTest {
         }
     }
 
+    /// #1054 — the drain ACKNOWLEDGEMENT callback. The membership FSM latches a drain acknowledgement from it, so
+    /// it must fire for exactly the pongs the readiness view records as `DRAINING`: leader only, current incarnation
+    /// only, every such pong.
+    @Nested
+    class DrainingReported {
+        private ClusterSyncPong pong(NodeId sender, String state, long incarnation) {
+            return new ClusterSyncPong(sender, java.util.Map.of(), 0L, 0L, 0L, state,
+                                       List.of(), List.of(), List.of(), Option.none(), incarnation);
+        }
+
+        private ClusterSyncPongSignalFan fan(LeaderManager leaderManager) {
+            return ClusterSyncPongSignalFan.clusterSyncPongSignalFan(leaderManager,
+                                                                     ClusterSyncPongSignalFan.ReadyCandidateSink.NOOP,
+                                                                     new AtomicLong(0L)::get);
+        }
+
+        @Test
+        void fan_drainingPongsWhileLeader_reportSenderOnEveryPong() {
+            var reported = new ArrayList<NodeId>();
+            var f = fan(new TestLeaderManager(true));
+            f.onDrainingReported(reported::add);
+
+            f.fan(pong(PEER_A, "DRAINING", 1L));
+            f.fan(pong(PEER_A, "DRAINING", 1L));
+
+            assertThat(reported).containsExactly(PEER_A, PEER_A);
+        }
+
+        @Test
+        void fan_readyPong_doesNotReport() {
+            var reported = new ArrayList<NodeId>();
+            var f = fan(new TestLeaderManager(true));
+            f.onDrainingReported(reported::add);
+
+            f.fan(pong(PEER_A, "READY", 1L));
+
+            assertThat(reported).isEmpty();
+        }
+
+        @Test
+        void fan_drainingPongWhenNotLeader_doesNotReport() {
+            var reported = new ArrayList<NodeId>();
+            var f = fan(new TestLeaderManager(false));
+            f.onDrainingReported(reported::add);
+
+            f.fan(pong(PEER_A, "DRAINING", 1L));
+
+            assertThat(reported).isEmpty();
+        }
+
+        /// A lower-incarnation pong is stale and leaves the newer entry in place; its `DRAINING` must not be
+        /// reported as an acknowledgement on behalf of the newer tenure.
+        @Test
+        void fan_staleLowerIncarnationDrainingPong_doesNotReport() {
+            var reported = new ArrayList<NodeId>();
+            var f = fan(new TestLeaderManager(true));
+            f.onDrainingReported(reported::add);
+
+            f.fan(pong(PEER_A, "READY", 5L));
+            f.fan(pong(PEER_A, "DRAINING", 4L));
+
+            assertThat(f.readinessSnapshot()).as("arming: the stale pong was fenced out")
+                                             .containsEntry(PEER_A, NodeReportedState.READY);
+            assertThat(reported).isEmpty();
+        }
+
+        @Test
+        void onDrainingReported_null_resetsToNoop() {
+            var reported = new ArrayList<NodeId>();
+            var f = fan(new TestLeaderManager(true));
+            f.onDrainingReported(reported::add);
+
+            f.onDrainingReported(null);
+            f.fan(pong(PEER_A, "DRAINING", 1L));
+
+            assertThat(reported).as("the replaced callback is no longer invoked").isEmpty();
+            assertThat(f.readinessSnapshot()).as("and the pong is still recorded, so the reset did not throw")
+                                             .containsEntry(PEER_A, NodeReportedState.DRAINING);
+        }
+    }
+
     /// Controllable LeaderManager stub for SSOT testing.
     static final class TestLeaderManager implements LeaderManager {
         private volatile boolean leader;

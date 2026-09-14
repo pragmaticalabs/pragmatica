@@ -819,8 +819,8 @@ Custom vendors can be added via `VendorMapping` SPI (ServiceLoader in `integrati
 |-------|------|---------|-------------|
 | `cache_name` | `String` | `"default"` | Logical cache name (shared name = shared cache instance) |
 | `strategy` | `CacheStrategy` | `CACHE_ASIDE` | Caching strategy (see table below) |
-| `ttl_seconds` | `int` | `300` | Time-to-live for cached entries |
-| `max_entries` | `int` | `10000` | Maximum number of entries |
+| `ttl_seconds` | `int` | `300` | Time-to-live for cached entries — honoured by the local store (`LOCAL`, and the L1 of `TIERED`) only. The DHT has no expiry primitive, so `DISTRIBUTED` entries (and `TIERED`'s L2) do not expire; tracked in #279 |
+| `max_entries` | `int` | `10000` | Maximum number of entries in the local store — a hard cap with least-recently-used eviction (#279); `DISTRIBUTED` storage is bounded by the DHT, not by this field |
 | `mode` | `CacheMode` | `LOCAL` | Cache storage mode |
 
 ### Cache Strategies
@@ -838,7 +838,7 @@ Custom vendors can be added via `VendorMapping` SPI (ServiceLoader in `integrati
 | Mode | Storage | Description |
 |------|---------|-------------|
 | `LOCAL` | In-memory on local node | Fastest, no network overhead |
-| `DISTRIBUTED` | DHT across the cluster | Shared cache, survives node loss |
+| `DISTRIBUTED` | DHT across the cluster | Shared cache, survives node loss. A backend failure reads as a miss and the method runs — the cache is fail-open, so a DHT outage slows the slice rather than failing it (#279) |
 | `TIERED` | Local L1 + distributed L2 | Best of both: fast local reads, falls back to the distributed L2 on a local miss [gap: no cross-node invalidation yet, so a write on one node can leave a stale L1 entry on another — tracked in #279; don't rely on cross-node consistency] |
 
 ### TOML Example

@@ -25,6 +25,13 @@ public sealed interface CoreError extends Cause {
 
     record Timeout(String message) implements CoreError, Cause.Transient {}
 
+    /// The waiting thread was interrupted before the awaited value arrived (#914). The interrupt
+    /// flag is left set: the interrupt addressed the thread, not this one wait. Terminal: an
+    /// interrupt is a supervisor's stop signal to that thread, and a retry that re-drives the
+    /// operation — on the scheduler's thread from the second attempt — would escape exactly the
+    /// thread the supervisor addressed.
+    record Interrupted(String message) implements CoreError, Cause.Terminal {}
+
     record Fault(String message) implements CoreError {}
 
     record Exception(String message, Throwable cause) implements CoreError {
