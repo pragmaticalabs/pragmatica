@@ -336,9 +336,26 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private Promise<Unit> sendFireAndForget(Endpoint endpoint, Artifact slice, MethodName method, Object request) {
+        return encodeFireAndForgetRequest(slice, request).flatMap(payload -> sendFireAndForgetPayload(endpoint,
+                                                                                                      slice,
+                                                                                                      method,
+                                                                                                      payload));
+    }
+
+    /// #272 R12: a `Unit` request needs no slice bridge. Its wire form is fixed — the single VLQ byte
+    /// `TAG_UNIT` (0) with an empty body, registered by `FrameworkCodecs` in the node codec that every
+    /// slice codec layers over (`SliceStore` → `slice.codec(nodeCodec)`), so the callee's
+    /// `DefaultSliceBridge.invoke` → `codec.decode(input)` reads it back as `Unit` for a zero-argument
+    /// method. The node serializer this invoker already holds IS that codec, so the SINGLE-mode
+    /// scheduled fire from a leader that does not host the slice encodes exactly what a hosting
+    /// sender would have. Any other request type still needs a bridge that knows it.
+    private Promise<byte[]> encodeFireAndForgetRequest(Artifact slice, Object request) {
+        if (request instanceof Unit) {
+            return Promise.lift(Causes::fromThrowable, () -> serializer.encode(request));
+        }
+
         return findSenderBridge(slice, request).async(SENDER_BRIDGE_NOT_FOUND)
-                               .flatMap(senderBridge -> senderBridge.encode(request))
-                               .flatMap(payload -> sendFireAndForgetPayload(endpoint, slice, method, payload));
+                               .flatMap(senderBridge -> senderBridge.encode(request));
     }
 
     private Promise<Unit> sendFireAndForgetPayload(Endpoint endpoint,

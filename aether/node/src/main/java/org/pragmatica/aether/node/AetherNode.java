@@ -5974,6 +5974,11 @@ public interface AetherNode extends ManageableNode {
                                                                                                .map(NodeId::id))));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               scheduledTaskManager::onLeaderChange));
+        // #273 item 1: ALL-mode scheduled tasks stop on this node's own drain and resume if it fails.
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDraining.class,
+                                              scheduledTaskManager::onMembershipDecision));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeFailedDrain.class,
+                                              scheduledTaskManager::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               rollbackManager::onAllInstancesFailed));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,

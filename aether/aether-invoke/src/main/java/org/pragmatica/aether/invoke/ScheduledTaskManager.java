@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -27,6 +28,7 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions;
@@ -54,6 +56,14 @@ public interface ScheduledTaskManager {
 
     @MessageReceiver
     void onQuorumStateChange(ClusterStateNotification notification);
+
+    /// #273 item 1: ALL-mode eligibility is hosting AND not draining. `NodeDraining(self)` cancels this
+    /// node's ALL-mode timers (a draining node must not keep firing), `NodeFailedDrain(self)` restarts
+    /// them. SINGLE-mode is leader-owned and untouched. Other nodes' edges are ignored here. Default
+    /// no-op so the route-test stubs that implement this interface stay compilable; the production
+    /// adapter overrides it.
+    @MessageReceiver
+    default void onMembershipDecision(MembershipDecision decision) {}
 
     int activeTimerCount();
     void stop();
@@ -116,6 +126,8 @@ public interface ScheduledTaskManager {
         final Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers = new ConcurrentHashMap<>();
         final Set<ScheduledTaskKey> inFlight = ConcurrentHashMap.newKeySet();
         final AtomicLong quorumSequence = new AtomicLong(0);
+        /// #273: set on `NodeDraining(self)`, cleared on `NodeFailedDrain(self)`; gates ALL-mode only.
+        final AtomicBoolean draining = new AtomicBoolean(false);
         final Dormant dormant;
         final Following following;
         final Leading leading;
@@ -258,20 +270,13 @@ public interface ScheduledTaskManager {
         }
 
         private boolean shouldRunInCurrentState(ScheduledTask task) {
-            if (task.paused()) {
+            var state = fsm.current();
+
+            if (! (state instanceof Following || state instanceof Leading)) {
                 return false;
             }
 
-            var state = fsm.current();
-
-            return switch (task.executionMode()) {
-                case ALL -> state instanceof Following || state instanceof Leading;
-                case SINGLE -> state instanceof Leading;
-                // #964, fail closed: an execution mode this node cannot read must not be guessed into
-                // either leader-only or run-everywhere. Running nowhere is recoverable once the mode is
-                // legible; running everywhere is not.
-                case UNKNOWN -> false;
-            };
+            return TaskOps.eligible(ctx, task, state instanceof Leading);
         }
     }
 
@@ -280,11 +285,38 @@ public interface ScheduledTaskManager {
 
         private TaskOps() {}
 
+        /// Where a task runs (#272 R12, #273 item 1). ALL-mode = every node that HOSTS the slice and is
+        /// not draining — a non-hosting node has no bridge to fire through and used to write a failure
+        /// state every interval; a draining node must stop firing. SINGLE-mode = the leader, hosting or
+        /// not: the fire is a `Unit` fire-and-forget the invoker can encode without a local bridge.
+        /// An execution mode this node cannot read runs nowhere (#964, fail closed).
+        static boolean eligible(Context ctx, ScheduledTask task, boolean leader) {
+            if (task.paused()) {
+                return false;
+            }
+
+            return switch (task.executionMode()) {
+                case ALL -> hostingAndNotDraining(ctx, task);
+                case SINGLE -> leader;
+                case UNKNOWN -> false;
+            };
+        }
+
+        static boolean hostingAndNotDraining(Context ctx, ScheduledTask task) {
+            return ! ctx.draining.get() && ctx.invoker.hasLocalSlice(task.artifact());
+        }
+
+        /// Fire-time re-check for ALL-mode: hosting can end (the slice unloaded while other replicas keep
+        /// the cluster-scoped task key alive) and draining can begin between timer registration and a
+        /// tick. A tick that is no longer eligible is skipped without any state write.
+        private static boolean shouldFire(Context ctx, ScheduledTask task) {
+            return task.executionMode() != ExecutionMode.ALL || hostingAndNotDraining(ctx, task);
+        }
+
         static void startEligibleTasks(Context ctx, boolean leader) {
             ctx.registry.allTasks()
                         .stream()
-                        .filter(task -> !task.paused())
-                        .filter(task -> task.executionMode() == ExecutionMode.ALL || (leader && task.executionMode() == ExecutionMode.SINGLE))
+                        .filter(task -> eligible(ctx, task, leader))
                         .forEach(task -> {
                                      var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(),
                                                                                  task.artifact(),
@@ -329,6 +361,10 @@ public interface ScheduledTaskManager {
         /// claimed skips this fire (recording the skip in state) instead of running concurrently with
         /// the in-progress invocation.
         private static void fireFixedRate(Context ctx, ScheduledTaskKey key, ScheduledTask task, TimeSpan interval) {
+            if (!shouldFire(ctx, task)) {
+                return;
+            }
+
             if (!ctx.inFlight.add(key)) {
                 recordSkippedOverlap(ctx, task);
 
@@ -409,6 +445,12 @@ public interface ScheduledTaskManager {
         /// real `Context` and `CronExpression` — cron's minute-granularity `delayUntilNext` makes
         /// waiting on a real timer tick impractically slow for a unit test.
         static void executeCronTask(Context ctx, ScheduledTaskKey key, ScheduledTask task, CronExpression cron) {
+            if (!shouldFire(ctx, task)) {
+                scheduleNextCronFire(ctx, key, task, cron);
+
+                return;
+            }
+
             if (!ctx.inFlight.add(key)) {
                 recordSkippedOverlap(ctx, task);
                 scheduleNextCronFire(ctx, key, task, cron);
@@ -484,6 +526,17 @@ public interface ScheduledTaskManager {
             ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
         }
 
+        /// #273: drop this node's ALL-mode timers (SINGLE-mode timers, leader-owned, stay).
+        static void cancelAllModeTimers(Context ctx) {
+            ctx.registry.allTasks()
+                        .stream()
+                        .filter(task -> task.executionMode() == ExecutionMode.ALL)
+                        .map(task -> ScheduledTaskKey.scheduledTaskKey(task.configSection(),
+                                                                       task.artifact(),
+                                                                       task.methodName()))
+                        .forEach(key -> cancelTimer(ctx, key));
+        }
+
         static void cancelTimer(Context ctx, ScheduledTaskKey key) {
             Option.option(ctx.activeTimers.remove(key)).onPresent(future -> {
                 future.cancel(false);
@@ -527,6 +580,27 @@ public interface ScheduledTaskManager {
                 fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());
             } else {
                 fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+            }
+        }
+
+        @Override
+        public void onMembershipDecision(MembershipDecision decision) {
+            switch (decision) {
+                case MembershipDecision.NodeDraining(var node, _, _, _) when node.equals(ctx.self) -> enterDraining();
+                case MembershipDecision.NodeFailedDrain(var node, _, _, _) when node.equals(ctx.self) -> leaveDraining();
+                default -> {}
+            }
+        }
+
+        private void enterDraining() {
+            if (ctx.draining.compareAndSet(false, true)) {
+                TaskOps.cancelAllModeTimers(ctx);
+            }
+        }
+
+        private void leaveDraining() {
+            if (ctx.draining.compareAndSet(true, false) && (fsm.current() instanceof Following || fsm.current() instanceof Leading)) {
+                TaskOps.startEligibleTasks(ctx, fsm.current() instanceof Leading);
             }
         }
 
