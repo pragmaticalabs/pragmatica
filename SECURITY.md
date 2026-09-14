@@ -76,13 +76,30 @@ yourself, the first elected leader generates one random `ADMIN` key on first sta
 Capture that key — it is not retrievable afterward except by rotating it via `/api/cluster/keys`.
 
 An operator can still explicitly set `security_mode = "none"` in `aether.toml` to disable
-authentication entirely (an explicit setting always wins over the default) — appropriate only for a
+authentication entirely (an explicit setting wins over the default, with the `enabled = false` exception below) — appropriate only for a
 single-node local/dev instance, never for anything reachable over an untrusted network.
 
-Note: this default applies to nodes started from `aether.toml` via the normal CLI/bootstrap path.
-The bare in-process config builders used by test harnesses (`AppHttpConfig.appHttpConfig()` and
-friends, used by Ember/Forge) still default to `NONE` — that is a test-harness convenience, not the
-production default, and those harnesses are not meant to be exposed to a network.
+The same default holds for the in-process config builders (`AppHttpConfig.appHttpConfig()` and
+friends) since #665: with no `SecurityMode` named they yield `API_KEY`, and with no key configured
+that is fail-closed — the cluster bootstrap admin key is the only credential accepted. `Main`'s
+fallback when `[app-http]` is absent or disabled uses the same builder, so a node with no app-HTTP
+section now has the same fail-closed posture for its Management API as an `aether.toml` with no
+`security_mode`. **This is a behaviour change for such nodes, not a wording change:** before #665
+that fallback yielded `NONE`, and under `NONE` the management server dispatches every request
+without consulting any validator [mechanism: `ManagementServerImpl.handleRequest` gates on
+`securityEnabled`; the #573 `denyUnlessPublicValidator` installed for that arm was never reached], so the
+Management API, forwarded requests, websockets and unauthenticated artifact `PUT`
+(`MavenProtocolRoutes.admitPush` → `SECURITY_DISABLED`) were all open. A node upgraded across #665
+with no `[app-http]` section (or `enabled = false`) refuses those requests until the cluster
+bootstrap admin key is presented; present that key, or declare `[app-http]` with the mode you
+mean. Note the one case where an explicit setting does NOT win: `[app-http] enabled = false` with an
+explicit `security_mode = "none"` is discarded whole by `Main`'s fallback (one flag governs two
+planes — #573) and the fail-closed default applies. The only way
+to `NONE` without naming the mode is
+`AppHttpConfig.insecureAppHttpConfig(port)`, and its name is the opt-in: Ember passes `NONE`
+explicitly (`EmberCluster.withAppHttpSecurity` overrides it, which is how Forge authenticates), and
+unit tests that need an open listener call the insecure builder by name. Those harnesses are not
+meant to be exposed to a network.
 
 **To configure roles**, give each API key an `authorization_role` (default `VIEWER` if omitted):
 
