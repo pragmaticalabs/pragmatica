@@ -41,7 +41,7 @@ class ClusterScaffoldCommandTest {
 
     @Test
     void call_dockerComposeTemplate_everyClusterSecretLineIsARequiredShellReference() {
-        var exitCode = runScaffold("--name", "us-prod", "--template", "docker-compose", "--nodes", "3");
+        var exitCode = runScaffold("--name", "us-prod", "--template", "docker-compose", "--nodes", "5");
 
         assertThat(exitCode).isZero();
 
@@ -56,7 +56,7 @@ class ClusterScaffoldCommandTest {
 
     @Test
     void call_dockerComposeTemplate_emitsClusterSecretAsRequiredShellReference() {
-        var exitCode = runScaffold("--name", "us-prod", "--template", "docker-compose", "--nodes", "3");
+        var exitCode = runScaffold("--name", "us-prod", "--template", "docker-compose", "--nodes", "5");
 
         assertThat(exitCode).isZero();
         assertThat(out.toString())
@@ -77,6 +77,23 @@ class ClusterScaffoldCommandTest {
 
         assertThat(optionNames).contains("--template")
                                 .doesNotContain("--format");
+    }
+
+    /// #1019 round-1 review, M6. `ClusterScaffoldCommand#render` floors `--nodes` at the supported
+    /// minimum, and NOTHING pinned it: the round-1 mutation putting the floor back to `< 3` left every
+    /// test in the module green. A scaffolded compose file is a single tier of fixed nodes, so the
+    /// consensus minimum is the right floor for it — and 4 is the value that discriminates, since it
+    /// is refused by the supported minimum and accepted by the structural one.
+    @Test
+    void call_nodesBelowTheSupportedMinimum_isRefused() {
+        assertThat(runScaffold("--name", "us-prod", "--template", "docker-compose", "--nodes", "4")).isNotZero();
+        assertThat(runScaffold("--name", "us-prod", "--template", "docker-compose", "--nodes", "3")).isNotZero();
+    }
+
+    /// The positive half of the boundary, so the test above cannot pass by refusing everything.
+    @Test
+    void call_nodesAtTheSupportedMinimum_isAccepted() {
+        assertThat(runScaffold("--name", "us-prod", "--template", "docker-compose", "--nodes", "5")).isZero();
     }
 
     private static int runScaffold(String... args) {

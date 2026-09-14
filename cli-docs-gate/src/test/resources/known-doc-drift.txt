@@ -54,9 +54,15 @@
 #     exist. The gate reads the inline span as an invocation and cannot tell a proposal from an
 #     instruction.
 #
-# Current composition: 87 entries - 32 absent commands, 55 absent options - across
-# 36 files, of which 15 are under aether/docs/specs/** (MAILBOX.md and
-# management-api-versioning-spec.md cite the backup commands removed in #676).
+# Current composition: 86 entries - 32 absent commands, 54 absent options - across
+# 36 files, of which 15 are under aether/docs/specs/**.
+#
+# #676 added waivers for the backup commands it removed (MAILBOX.md and
+# management-api-versioning-spec.md still cite them).
+#
+# #1019 removed `option: --cores on aether cluster init`: that spec line described a per-tier
+# flag the CLI did not have, and `aether cluster init` now ships --core-nodes/--worker-nodes,
+# so the document was corrected rather than the waiver kept.
 
 
 # --- MAILBOX.md ---
@@ -155,7 +161,6 @@ aether/docs/specs/cluster-bootstrap-spec.md	option: --dry-run on aether cluster 
 aether/docs/specs/cluster-bootstrap-spec.md	option: --file on aether cluster export
 
 # --- aether/docs/specs/cluster-init-wizard-spec.md ---
-aether/docs/specs/cluster-init-wizard-spec.md	option: --cores on aether cluster init
 aether/docs/specs/cluster-init-wizard-spec.md	option: --lb on aether cluster init
 
 # --- aether/docs/specs/cluster-management-spec.md ---

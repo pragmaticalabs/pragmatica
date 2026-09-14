@@ -43,7 +43,8 @@ class ConfigValidatorTest {
         ConfigValidator.validate(config)
             .onSuccessRun(Assertions::fail)
             .onFailure(cause -> assertThat(cause.message())
-                .contains("Minimum 3 nodes required"));
+                .contains("below the structural minimum of 3")
+                .contains("no majority quorum at all"));
     }
 
     @Test
@@ -56,25 +57,28 @@ class ConfigValidatorTest {
         ConfigValidator.validate(config)
             .onSuccessRun(Assertions::fail)
             .onFailure(cause -> assertThat(cause.message())
-                .contains("Node count must be odd"));
+                .contains("which is even"));
     }
 
     @Test
     void validate_fails_whenNodeCountTooHigh() {
+        // 11, not 9: the 2026-09-12 ruling makes 9 legal. The message must also say the bound is on
+        // the CONSENSUS tier rather than the fleet, since the remedy is to add workers.
         var config = AetherConfig.builder()
             .withEnvironment(Environment.DOCKER)
-            .nodes(9)
+            .nodes(11)
             .build();
 
         ConfigValidator.validate(config)
             .onSuccessRun(Assertions::fail)
             .onFailure(cause -> assertThat(cause.message())
-                .contains("Maximum recommended node count is 7"));
+                .contains("above the maximum consensus tier of 9")
+                .contains("add further capacity as workers"));
     }
 
     @Test
     void validate_succeeds_withValidNodeCounts() {
-        for (int nodes : new int[]{3, 5, 7}) {
+        for (int nodes : new int[]{3, 5, 7, 9}) {
             var config = AetherConfig.builder()
                 .withEnvironment(Environment.DOCKER)
                 .nodes(nodes)
@@ -191,7 +195,7 @@ class ConfigValidatorTest {
             .onSuccessRun(Assertions::fail)
             .onFailure(cause -> {
                 var message = cause.message();
-                assertThat(message).contains("Minimum 3 nodes");
+                assertThat(message).contains("below the structural minimum of 3");
                 assertThat(message).contains("Invalid heap format");
                 assertThat(message).contains("Invalid GC");
             });

@@ -781,4 +781,80 @@ class ClusterBootstrapConfigValidatorTest {
             assertThat(result).anyMatch(w -> w.contains("CL-13"));
         }
     }
+
+    /// #1019 — the consensus maximum at the BOOTSTRAP validator.
+    ///
+    /// Round 1 bounded the consensus tier at `aether cluster init` alone. The round-1 review (S2)
+    /// showed what that left: this validator ACCEPTED a hand-written config with a derived core count
+    /// of 11, and `[cluster.core] max = 15` besides — so the operator route the ticket itself calls a
+    /// working alternative ("writing the config directly … DOES provision five core nodes") had no
+    /// ceiling at all. The cap is now a property of the config, not of one command that writes configs.
+    ///
+    /// Both ends are asserted per rule rather than by "validate fails": `validateDerivedCoreCount` and
+    /// `validateCoreMax` are separate checks that this class would otherwise conflate, and a config
+    /// with an over-cap derived count also trips REQ-3.3.3 if `max` is left at the default.
+    @Nested
+    class ConsensusTierMaximum {
+
+        private static ClusterBootstrapConfig configWithCoreCount(int count) {
+            var coreRole = roleSubTable(NodeRole.CORE, some(count), none(), none(), "ember");
+            var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
+                                       none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                       none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+
+            return clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
+                                          defaultCoreTopology(), Map.of("local", source), Map.of(),
+                                          infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+        }
+
+        private static ClusterBootstrapConfig configWithCoreMax(int max) {
+            var coreRole = roleSubTable(NodeRole.CORE, some(5), none(), none(), "ember");
+            var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
+                                       none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                       none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+
+            return clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
+                                          coreTopology(some(5), some(max), 1), Map.of("local", source), Map.of(),
+                                          infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+        }
+
+        private static String messageOf(ClusterBootstrapConfig config) {
+            return validate(config).fold(cause -> cause.message(), _ -> "");
+        }
+
+        @Test
+        void validate_fails_whenDerivedCoreCountExceedsTheMaximum() {
+            assertThat(validate(configWithCoreCount(11)).isFailure()).isTrue();
+            assertThat(messageOf(configWithCoreCount(11))).contains("CL-04")
+                                                          .contains("must be <= 9");
+        }
+
+        /// The boundary, both sides. Without this, a cap set one too low or one too high still passes
+        /// the test above.
+        @Test
+        void validate_succeeds_atTheMaximumAndFailsJustAbove() {
+            assertThat(validate(configWithCoreCount(9)).isSuccess()).isTrue();
+            assertThat(validate(configWithCoreCount(11)).isFailure()).isTrue();
+        }
+
+        /// The STRUCTURAL floor stays at 3 here — an existing 3-node cluster must still re-bootstrap.
+        /// This is deliberately NOT `CoreWorkerSplit`'s supported minimum of 5, and pinning it stops a
+        /// later reader "harmonising" the two.
+        @Test
+        void validate_succeeds_atTheStructuralFloorOfThree() {
+            assertThat(validate(configWithCoreCount(3)).isSuccess()).isTrue();
+        }
+
+        @Test
+        void validate_fails_whenCoreMaxExceedsTheMaximum() {
+            assertThat(validate(configWithCoreMax(15)).isFailure()).isTrue();
+            assertThat(messageOf(configWithCoreMax(15))).contains("REQ-3.3.3")
+                                                        .contains("must be <= 9");
+        }
+
+        @Test
+        void validate_succeeds_whenCoreMaxIsAtTheMaximum() {
+            assertThat(validate(configWithCoreMax(9)).isSuccess()).isTrue();
+        }
+    }
 }

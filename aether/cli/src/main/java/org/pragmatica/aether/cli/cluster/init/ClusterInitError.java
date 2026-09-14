@@ -8,12 +8,28 @@ import org.pragmatica.lang.Cause;
 
 
 public sealed interface ClusterInitError extends Cause {
-    record TooFewNodes(int got) implements ClusterInitError {
+    /// Names the CORE tier specifically. The old wording said "nodes", ambiguous in exactly the way
+    /// #1019 was about: the number that matters for quorum is the consensus tier, not the fleet, and
+    /// workers are not bounded by it.
+    ///
+    /// The message offers NO escape hatch, deliberately. Round 1 ended it with "For local
+    /// single-process dev/test, use --target forge." — which the round-1 review refuted (S3):
+    /// `ClusterInitCommand#buildAnswersForTarget` routes `case DOCKER, FORGE` through the same
+    /// `requestedSplit()` and so through this same minimum, and `init --target forge --core-nodes 3`
+    /// exits 1 quoting this very sentence. A remedy that re-triggers the error it is printed under is
+    /// worse than none: it sends the reader round a loop and costs them the trust to believe the rest
+    /// of the message. There is no supported sub-5 topology to point at (see `ClusterSizeGate` for the
+    /// structural floor of 3, which is not a creation-time option), so the message stops at the real
+    /// remedies — raise `--core-nodes`, or add the capacity as workers.
+    record TooFewCoreNodes(int got) implements ClusterInitError {
         @Override
         public String message() {
-            return "Aether requires at least 3 nodes for consensus quorum (got " + got
-                 + "). "
-                 + "For local single-process dev/test, use --target forge.";
+            return "Aether requires at least " + CoreWorkerSplit.MINIMUM_CORE_NODES
+                 + " core nodes (got " + got
+                 + "). A smaller core has no fault budget during maintenance: a rolling restart takes "
+                 + "one node down and any further fault then loses quorum. Use --core-nodes " + CoreWorkerSplit.MINIMUM_CORE_NODES
+                 + ", 7 (recommended) or " + CoreWorkerSplit.MAXIMUM_CORE_NODES
+                 + "; add further capacity with --worker-nodes, which this limit does not bound.";
         }
     }
 

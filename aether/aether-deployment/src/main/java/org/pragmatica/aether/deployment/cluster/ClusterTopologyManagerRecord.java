@@ -24,6 +24,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.config.ConsensusTierBounds;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.NodeRole;
@@ -247,10 +248,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Override
     public Promise<Unit> setDesiredCount(SourceName sourceName, NodeRole role, int count) {
-        // The quorum floor is a property of the CORE tier only; worker and spot tiers may legitimately
-        // scale to zero.
+        // Both bounds are properties of the CORE tier only; worker and spot tiers may legitimately
+        // scale to zero and are deliberately unbounded above.
         if (role == NodeRole.CORE && count < MINIMUM_CLUSTER_SIZE) {
             return Causes.cause("Cluster size cannot be below " + MINIMUM_CLUSTER_SIZE + " (quorum requirement)").promise();
+        }
+        // #1019 — this had a floor and no ceiling, so a scale could grow the consensus tier past the
+        // supported maximum that `aether cluster init` refuses to author. Every consensus round is
+        // broadcast across this tier; the FLEET is unbounded, so capacity beyond the cap is added by
+        // scaling a worker role instead.
+        if (role == NodeRole.CORE && count > ConsensusTierBounds.MAXIMUM_CORE_NODES) {
+            return Causes.cause("Cluster size cannot exceed " + ConsensusTierBounds.MAXIMUM_CORE_NODES
+                               + " core nodes (consensus broadcast bound); scale a worker role for further capacity").promise();
         }
 
         resetProvisioningCircuit("setDesiredCount " + sourceName + "/" + role.value() + "=" + count);

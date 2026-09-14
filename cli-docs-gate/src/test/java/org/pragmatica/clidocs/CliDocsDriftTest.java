@@ -61,8 +61,8 @@ class CliDocsDriftTest {
     /// bound leaves headroom behind every fix, so five repaired documents would quietly license five
     /// future waivers. Changing either list therefore costs an edit here, in the same commit, where it
     /// is read.
-    private static final int WAIVED_FINDINGS = 87;
-    private static final String WAIVED_FINDINGS_DIGEST = "4a742ba94a4dcd72";
+    private static final int WAIVED_FINDINGS = 86;
+    private static final String WAIVED_FINDINGS_DIGEST = "d0ef0890c85d220a";
     private static final int BASELINED_COMMANDS = 11;
     private static final String BASELINED_COMMANDS_DIGEST = "19561c9ce5583edd";
 

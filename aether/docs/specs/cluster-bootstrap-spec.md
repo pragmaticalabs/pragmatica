@@ -1330,7 +1330,7 @@ version = "1.0.0"
 
 [cluster.core]
 min = 3
-max = 15
+max = 9
 
 [source.hetzner-eu-fsn1-dc14]
 type = "cloud"
@@ -1528,7 +1528,7 @@ version = "1.0.0"
 
 [cluster.core]
 min = 3
-max = 15
+max = 9
 max_unavailable = 1
 
 [cluster.workers]
