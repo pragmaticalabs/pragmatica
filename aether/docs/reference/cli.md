@@ -2510,10 +2510,16 @@ applicable through `apply` in rc4.** `apply` performs scale-only plans via the l
 desired-count write that the leader's reconciler actuates); a rollout of the other changes needs a
 new cluster. There is no first-time path to a wave rollout: the terraform-style plan and the
 wave-based executor (`ApplyOrchestrator` → `WaveExecutor`, actuating from the operator's machine
-through the cloud provider) are reachable only through `--resume`/`--rollback` after an apply has
-halted, and they are deliberately not wired to plain `apply` — a client-side rollout would be a
-second actuation authority over the same fleet next to the leader's reconciler (#686; the
-server-side wave design is a separate ticket).
+through the cloud provider) are entered only through `--resume`/`--rollback`, and they are
+deliberately not wired to plain `apply` — a client-side rollout would be a second actuation
+authority over the same fleet next to the leader's reconciler (#686; the server-side wave design
+is a separate ticket).
+
+**In rc4 `--resume` and `--rollback` have nothing to act on.** Both begin by loading the apply
+state for the cluster and abort without it (`No apply state found for cluster '<name>'. Nothing to
+resume.` / `... Nothing to rollback.`). That state is written only by the unwired client-side
+rollout itself, so no rc4 command creates it: unless a pre-rc4 CLI left a state file behind, both
+options report that message and the wave executor is unreachable end to end.
 
 ### `aether cluster rotate-key`
 
