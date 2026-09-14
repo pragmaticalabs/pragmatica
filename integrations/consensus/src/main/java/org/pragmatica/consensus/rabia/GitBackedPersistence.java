@@ -15,7 +15,9 @@
  */
 package org.pragmatica.consensus.rabia;
 
+import java.nio.channels.FileChannel;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
@@ -32,7 +34,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
+import static org.pragmatica.lang.io.FileOps.deleteIfExists;
 import static org.pragmatica.lang.io.FileOps.exists;
+import static org.pragmatica.lang.io.FileOps.moveReplace;
 import static org.pragmatica.lang.io.FileOps.readString;
 import static org.pragmatica.lang.io.FileOps.writeString;
 import static org.pragmatica.consensus.rabia.RabiaPersistence.SavedState.savedState;
@@ -42,6 +46,9 @@ import static org.pragmatica.consensus.rabia.RabiaPersistence.SavedState.savedSt
 /// Writes state snapshots as TOML files in a local git repository.
 class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     private static final String STATE_FILE = "state.toml";
+    /// The snapshot is written here, fsynced and renamed over [#STATE_FILE], so the state file only
+    /// ever holds a complete snapshot — an interrupted save leaves the previous one intact (#676).
+    private static final String PARTIAL_FILE = "state.toml.partial";
     private static final Pattern PHASE_PATTERN = Pattern.compile("^# Phase: (\\d+)$", Pattern.MULTILINE);
     /// Default git operation timeout.
     static final TimeSpan DEFAULT_GIT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
@@ -135,12 +142,27 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     }
 
     private Result<Unit> writeTomlFile(String toml) {
-        return fileWriter.apply(backupDir.resolve(STATE_FILE), toml)
+        var partial = backupDir.resolve(PARTIAL_FILE);
+
+        return fileWriter.apply(partial, toml)
+                         .flatMap(_ -> moveReplace(partial, backupDir.resolve(STATE_FILE)))
+                         .onFailure(_ -> deleteIfExists(partial))
+                         .mapToUnit()
                          .mapError(e -> PersistenceError.ioFailure(new RuntimeException(e.message())));
     }
 
     private static Result<Unit> writeDurably(Path path, String content) {
-        return writeString(path, content);
+        return writeString(path, content).flatMap(_ -> fsync(path));
+    }
+
+    private static Result<Unit> fsync(Path path) {
+        return Result.lift(PersistenceError::ioFailure, () -> {
+            try (var channel = FileChannel.open(path, StandardOpenOption.WRITE)) {
+                channel.force(true);
+            }
+
+            return Unit.unit();
+        });
     }
 
     private Result<Unit> ensureGitInitialized() {
