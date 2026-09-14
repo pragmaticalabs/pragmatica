@@ -17,7 +17,6 @@
 package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -89,13 +88,16 @@ class PiggybackBufferConcurrencyTest {
             buffer.addUpdate(new MembershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A));
             buffer.addUpdate(new MembershipUpdate(NODE_B, MemberState.ALIVE, 1, ADDR_B));
 
-            var go = new CountDownLatch(1);
+            // Spin-start rather than a latch: a latch wake-up is microseconds, the peek window is
+            // nanoseconds, and the pin has to land inside it.
+            var start = new AtomicBoolean();
             var peeker = Thread.ofPlatform().start(() -> {
-                awaitStart(go);
+                while (!start.get()) {
+                    Thread.onSpinWait();
+                }
                 buffer.peekUpdates(8);
             });
-            go.countDown();
-            Thread.onSpinWait();
+            start.set(true);
 
             var dropped = buffer.expireFaultyUpdates();
 
@@ -116,13 +118,5 @@ class PiggybackBufferConcurrencyTest {
                            .isZero();
         assertThat(droppedNotOne).as("expireFaultyUpdates reported a count other than 1 (of %d rounds)", ROUNDS)
                                  .isZero();
-    }
-
-    private static void awaitStart(CountDownLatch go) {
-        try {
-            go.await();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
     }
 }
