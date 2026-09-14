@@ -10,6 +10,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DownHysteresisMet;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DrainRequested;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DrainUnacknowledged;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.JoinGraceExpiredNeverHealthy;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.LivenessGone;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.PeerConnected;
@@ -319,6 +320,38 @@ class MembershipStateTest {
 
             assertThat(h.state()).isInstanceOf(MembershipState.Departing.class);
         }
+
+        /// #1054: `DrainUnacknowledged` — the manager's verdict that a drain-initiated departure's
+        /// DRAIN never reached a live target — withdraws DEPARTING back to MEMBER, counted again.
+        @Test
+        void departing_drainUnacknowledged_withdrawsToMember() {
+            var h = departingHarness();
+
+            h.dispatch(new DrainUnacknowledged());
+
+            assertThat(h.state()).isInstanceOf(MembershipState.Member.class);
+            assertThat(h.state().countsTowardEffective()).isTrue();
+        }
+
+        /// #1054 fence: the withdrawal verdict means something only in DEPARTING. Every other state
+        /// absorbs it, so a verdict racing a death or a recovery can neither resurrect nor promote.
+        @Test
+        void drainUnacknowledged_outsideDeparting_neverTransitions() {
+            var observed = observedHarness();
+            var member = harnessInMember();
+            var suspect = suspectHarness();
+            var dead = harnessInDead(1);
+
+            observed.dispatch(new DrainUnacknowledged());
+            member.dispatch(new DrainUnacknowledged());
+            suspect.dispatch(new DrainUnacknowledged());
+            dead.dispatch(new DrainUnacknowledged());
+
+            assertThat(observed.state()).isInstanceOf(MembershipState.Observed.class);
+            assertThat(member.state()).isInstanceOf(MembershipState.Member.class);
+            assertThat(suspect.state()).isInstanceOf(MembershipState.Suspect.class);
+            assertThat(dead.state()).isInstanceOf(MembershipState.Dead.class);
+        }
     }
 
     @Nested
@@ -405,6 +438,7 @@ class MembershipStateTest {
                        new DownHysteresisMet(),
                        new DrainRequested(),
                        new Stopped(),
+                       new DrainUnacknowledged(),
                        new JoinGraceExpiredNeverHealthy());
     }
 }

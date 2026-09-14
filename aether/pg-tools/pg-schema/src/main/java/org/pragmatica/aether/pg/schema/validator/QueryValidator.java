@@ -195,73 +195,97 @@ public final class QueryValidator {
     /// lexically and with no `EXCLUDED` in scope, which is how #649's four hard errors were emitted.
     private ValidationResult validateRoot(CstNavigator nav) {
         var errors = new ArrayList<ValidationError>();
-        var cteScopeIndex = buildCteScopeIndex(nav);
 
-        for (var select : nav.findAll("SelectCore")) {
-            var preScope = cteScopeIndex.getOrDefault(select.span(), new Scope());
-
-            validateSelect(select, preScope, errors);
-        }
-
-        for (var insert : nav.findAll("InsertStmt")) {
-            validateInsert(insert, errors);
-        }
-
-        for (var update : nav.findAll("UpdateStmt")) {
-            validateUpdate(update, errors);
-        }
-
-        for (var delete : nav.findAll("DeleteStmt")) {
-            validateDelete(delete, errors);
-        }
+        validateStatementsIn(nav.node(), Option.empty(), errors);
 
         return new ValidationResult(errors);
     }
 
-    private Map<SourceSpan, Scope> buildCteScopeIndex(CstNavigator root) {
-        var index = new HashMap<SourceSpan, Scope>();
+    /// Statements are validated by STRUCTURE, each in the scope that encloses it, and each
+    /// statement's validator owns everything beneath it. The previous `findAll("SelectCore")`
+    /// sweep validated every core standalone, so a correlated subquery — `WHERE EXISTS (SELECT 1
+    /// FROM bookings b WHERE b.reservation_claim_id = reservations.claim_id)` — reported the outer
+    /// name as a missing alias (#651).
+    ///
+    /// Positions PostgreSQL does not correlate with the statement they belong to get only what
+    /// lies OUTSIDE that statement: a CTE body (see `validateCteBodies`), an `INSERT` source query
+    /// (the WITH names, never the target), and a derived table without `LATERAL` (nothing — a
+    /// `LATERAL` derived table arrives as `LateralRef` and is chained by the default branch).
+    private void validateStatementsIn(CstNode node, Option<Scope> enclosing, List<ValidationError> errors) {
+        if (! (node instanceof CstNode.NonTerminal nt)) return;
 
-        collectCteScopes(root, index);
+        var nav = new CstNavigator(nt);
 
-        return index;
-    }
-
-    private void collectCteScopes(CstNavigator nav, Map<SourceSpan, Scope> index) {
-        var withClauses = nav.allChildren("WithClause");
-
-        if (!withClauses.isEmpty()) {
-            var cteScope = new Scope();
-
-            for (var wc : withClauses) {
-                registerCtes(wc, cteScope);
-            }
-
-            for (var core : ownedSelectCores(nav)) {
-                index.put(core.span(), cteScope);
-            }
-
-            var anyRecursive = withClauses.stream().anyMatch(w -> w.has("RecursiveKW"));
-
-            if (anyRecursive) {
-                for (var wc : withClauses) {
-                    indexRecursiveCteBodies(wc, cteScope, index);
-                }
-            }
-        }
-
-        for (var child : nav.children()) {
-            if (child instanceof CstNode.NonTerminal nt) {
-                collectCteScopes(new CstNavigator(nt), index);
-            }
+        switch (nt.ruleName()) {
+            case "SelectStmt" -> validateSelectStmt(nav, enclosing, errors);
+            case "InsertStmt" -> validateInsert(nav, errors);
+            case "UpdateStmt" -> validateUpdate(nav, errors);
+            case "DeleteStmt" -> validateDelete(nav, errors);
+            case "SubqueryRef" -> validateChildrenIn(nt, Option.empty(), errors);
+            default -> validateChildrenIn(nt, enclosing, errors);
         }
     }
 
-    private void indexRecursiveCteBodies(CstNavigator withClause, Scope cteScope, Map<SourceSpan, Scope> index) {
-        for (var cteDef : withClause.findAll("CteDef")) {
-            for (var innerStmt : cteDef.findAll("SelectStmt")) {
-                for (var core : ownedSelectCores(innerStmt)) {
-                    index.putIfAbsent(core.span(), cteScope);
+    private void validateChildrenIn(CstNode.NonTerminal nt, Option<Scope> enclosing, List<ValidationError> errors) {
+        for (var child : nt.children()) {
+            validateStatementsIn(child, enclosing, errors);
+        }
+    }
+
+    private void validateSelectStmt(CstNavigator stmt, Option<Scope> enclosing, List<ValidationError> errors) {
+        var scope = withScope(stmt, enclosing);
+
+        validateCteBodies(stmt, enclosing, scope, errors);
+        for (var child : stmt.children()) {
+            if (! (child instanceof CstNode.NonTerminal nt)) continue;
+
+            var childNav = new CstNavigator(nt);
+
+            switch (nt.ruleName()) {
+                case "WithClause" -> {}
+                case "SelectCore" -> validateSelect(childNav, scope, errors);
+                case "SetOp" -> {
+                    for (var core : childNav.allChildren("SelectCore")) {
+                        validateSelect(core, scope, errors);
+                    }
                 }
+                case "SelectStmt" -> validateSelectStmt(childNav, scope, errors);
+                default -> validateStatementsIn(nt, scope, errors);
+            }
+        }
+    }
+
+    /// The statement's own `WITH` names, chained to the scope enclosing the statement — or that
+    /// scope unchanged when there is no `WITH`.
+    private Option<Scope> withScope(CstNavigator stmt, Option<Scope> enclosing) {
+        var withClauses = stmt.allChildren("WithClause");
+
+        if (withClauses.isEmpty()) return enclosing;
+
+        var scope = Scope.nestedIn(enclosing);
+
+        for (var wc : withClauses) {
+            registerCtes(wc, scope);
+        }
+
+        return Option.present(scope);
+    }
+
+    /// CTE bodies see what lies OUTSIDE their statement — the enclosing scope, so a CTE inside a
+    /// subquery correlates with the outer query (PostgreSQL accepts that) while a top-level
+    /// statement's body sees nothing of the statement's own FROM. A `RECURSIVE` body additionally
+    /// sees the `WITH` names (its own self-reference among them).
+    private void validateCteBodies(CstNavigator stmt,
+                                   Option<Scope> enclosing,
+                                   Option<Scope> withScope,
+                                   List<ValidationError> errors) {
+        for (var wc : stmt.allChildren("WithClause")) {
+            var bodyScope = wc.has("RecursiveKW")
+                            ? withScope
+                            : enclosing;
+
+            for (var child : wc.children()) {
+                validateStatementsIn(child, bodyScope, errors);
             }
         }
     }
@@ -386,15 +410,12 @@ public final class QueryValidator {
         return Option.empty();
     }
 
-    private void validateSelect(CstNavigator select, Scope parentScope, List<ValidationError> errors) {
-        var scope = new Scope(parentScope);
-        var fromClauses = select.findAll("FromClause");
+    private void validateSelect(CstNavigator select, Option<Scope> enclosing, List<ValidationError> errors) {
+        var scope = Scope.nestedIn(enclosing);
 
-        for (var from : fromClauses) {
-            resolveFromClause(from, scope, errors);
-        }
-
+        resolveJoinedTables(select.child("FromClause"), scope, errors);
         validateColumnRefs(select, scope, BareRefPolicy.SKIP, errors);
+        validateStatementsIn(select.node(), Option.present(scope), errors);
     }
 
     private void validateInsert(CstNavigator insert, List<ValidationError> errors) {
@@ -412,11 +433,15 @@ public final class QueryValidator {
         }
 
         var table = tableOpt.unwrap();
-        var scope = targetScope(insert, tableName, table);
+        var withScope = withScope(insert, Option.empty());
+        var scope = targetScope(insert, withScope, tableName, table);
 
         validateColumnList(insert.child("ColumnList"), tableName, table, insert.span(), errors);
         validateOnConflict(insert, tableName, table, scope, errors);
         validateReturning(insert, scope, errors);
+        validateCteBodies(insert, Option.empty(), withScope, errors);
+        validateInsertSource(insert, withScope, errors);
+        validateNestedStatements(insert, scope, errors);
     }
 
     private void validateUpdate(CstNavigator update, List<ValidationError> errors) {
@@ -434,12 +459,15 @@ public final class QueryValidator {
         }
 
         var table = tableOpt.unwrap();
-        var scope = targetScope(update, tableName, table);
+        var withScope = withScope(update, Option.empty());
+        var scope = targetScope(update, withScope, tableName, table);
 
         resolveJoinedTables(update.child("FromClause"), scope, errors);
         validateSetItems(update, tableName, table, errors);
         validateColumnRefsIn(update.child("WhereClause"), scope, errors);
         validateReturning(update, scope, errors);
+        validateCteBodies(update, Option.empty(), withScope, errors);
+        validateNestedStatements(update, scope, errors);
     }
 
     private void validateDelete(CstNavigator delete, List<ValidationError> errors) {
@@ -456,12 +484,41 @@ public final class QueryValidator {
             return;
         }
 
-        var scope = targetScope(delete, tableName, tableOpt.unwrap());
+        var withScope = withScope(delete, Option.empty());
+        var scope = targetScope(delete, withScope, tableName, tableOpt.unwrap());
 
         resolveJoinedTables(delete.child("UsingClauseDelete"), scope, errors);
         validateColumnRefsIn(delete.child("WhereClause"), scope, errors);
         validateReturning(delete, scope, errors);
+        validateCteBodies(delete, Option.empty(), withScope, errors);
+        validateNestedStatements(delete, scope, errors);
     }
+
+    /// The source query (`INSERT ... SELECT`, or subqueries in `VALUES`) sees the statement's `WITH`
+    /// names but never its target relation.
+    private void validateInsertSource(CstNavigator insert, Option<Scope> withScope, List<ValidationError> errors) {
+        var source = insert.child("InsertSource");
+
+        if (source.isEmpty()) return;
+
+        validateStatementsIn(source.unwrap().node(),
+                             withScope,
+                             errors);
+    }
+
+    /// Subqueries in a DML statement's own clauses (`SET` values, `WHERE`, `RETURNING`, `USING`)
+    /// resolve through the statement's scope. `ON CONFLICT` is walked by `validateOnConflict`,
+    /// whose `DO UPDATE` scope also carries `EXCLUDED`; the `WITH` bodies and the `INSERT` source
+    /// are walked by the statement's validator with their own scopes.
+    private void validateNestedStatements(CstNavigator stmt, Scope scope, List<ValidationError> errors) {
+        for (var child : stmt.children()) {
+            if (child instanceof CstNode.NonTerminal nt && !OWN_SCOPE_CLAUSES.contains(nt.ruleName())) {
+                validateStatementsIn(nt, Option.present(scope), errors);
+            }
+        }
+    }
+
+    private static final Set<String> OWN_SCOPE_CLAUSES = Set.of("OnConflictClause", "WithClause", "InsertSource");
 
     /// The relation a DML statement targets, taken from the statement's OWN structure — the
     /// `QualifiedName` that is a direct child of `InsertStmt`/`UpdateStmt`/`DeleteStmt`. The previous
@@ -477,15 +534,8 @@ public final class QueryValidator {
     /// written name, under its bare name when written schema-qualified, and under its alias.
     /// Parented by the statement's own `WITH` names so a `FROM`/`USING` reference to a CTE resolves
     /// instead of reporting a missing table.
-    private Scope targetScope(CstNavigator stmt, String tableName, Table table) {
-        var cteScope = new Scope();
-        var withClause = stmt.child("WithClause");
-
-        if (withClause.isPresent()) {
-            registerCtes(withClause.unwrap(), cteScope);
-        }
-
-        var scope = new Scope(cteScope);
+    private Scope targetScope(CstNavigator stmt, Option<Scope> withScope, String tableName, Table table) {
+        var scope = Scope.nestedIn(withScope);
 
         scope.registerTable(tableName, table);
         scope.registerTable(tableName.substring(tableName.lastIndexOf('.') + 1),
@@ -526,6 +576,7 @@ public final class QueryValidator {
         scope.registerTable(EXCLUDED_RELATION, table);
         validateSetItems(action, tableName, table, errors);
         validateColumnRefsIn(actionOpt, scope, errors);
+        validateStatementsIn(action.node(), Option.present(scope), errors);
     }
 
     private void validateSetItems(CstNavigator owner, String tableName, Table table, List<ValidationError> errors) {
@@ -605,33 +656,33 @@ public final class QueryValidator {
         validateColumnRefs(clause.unwrap(), scope, BareRefPolicy.CHECK, errors);
     }
 
+    /// Registers the relations this FROM list OWNS. The walk stops at a nested `SelectStmt`, so a
+    /// derived table's or a subquery's relations never land in the enclosing scope — with scopes
+    /// chained (#651) that leak would have let a sibling subquery resolve the other's alias. The
+    /// previous three overlapping `findAll` passes also resolved each relation up to three times,
+    /// reporting an unknown table twice.
     private void resolveFromClause(CstNavigator from, Scope scope, List<ValidationError> errors) {
-        var baseRefs = from.findAll("BaseTableRef");
+        var refs = new ArrayList<CstNavigator>();
 
-        if (!baseRefs.isEmpty()) {
-            for (var ref : baseRefs) {
-                resolveTableRef(ref, scope, errors);
-            }
-        }
-
-        var tableRefs = from.findAll("TableRef");
-
-        for (var ref : tableRefs) {
-            var qnames = ref.allChildren("QualifiedName");
-
-            if (!qnames.isEmpty() && !ref.has("SelectStmt")) {
-                resolveTableRef(ref, scope, errors);
-            }
-        }
-
-        var joinTableRefs = from.findAll("TableRefBase");
-
-        for (var ref : joinTableRefs) {
+        collectOwnedBaseTableRefs(from.node(), refs);
+        for (var ref : refs) {
             resolveTableRef(ref, scope, errors);
         }
+    }
 
-        if (baseRefs.isEmpty() && tableRefs.isEmpty()) {
-            resolveTableRef(from, scope, errors);
+    private static void collectOwnedBaseTableRefs(CstNode node, List<CstNavigator> refs) {
+        if (! (node instanceof CstNode.NonTerminal nt)) return;
+
+        if ("SelectStmt".equals(nt.ruleName())) return;
+
+        if ("BaseTableRef".equals(nt.ruleName())) {
+            refs.add(CstNavigator.of(nt));
+
+            return;
+        }
+
+        for (var child : nt.children()) {
+            collectOwnedBaseTableRefs(child, refs);
         }
     }
 
@@ -714,8 +765,8 @@ public final class QueryValidator {
     }
 
     /// Column references OWNED by `node` — the walk stops at a nested `SelectStmt`, so a subquery's
-    /// names are never resolved against the ENCLOSING statement's scope. Subqueries keep validating
-    /// their own scopes: `validateRoot` reaches every `SelectCore` independently.
+    /// names are never resolved against the ENCLOSING statement's scope alone. Subqueries validate
+    /// in their own scopes, chained to the enclosing one: `validateStatementsIn` reaches them.
     ///
     /// Only `ColRef` counts as a column reference. The previous walk resolved every `QualifiedName`
     /// in the subtree, which also swept up the FROM clause's table names and function names — so a
@@ -813,6 +864,11 @@ public final class QueryValidator {
 
         Scope(Scope parent) {
             this.parent = Option.present(parent);
+        }
+
+        static Scope nestedIn(Option<Scope> enclosing) {
+            return enclosing.map(parent -> new Scope(parent))
+                            .or(Scope::new);
         }
 
         @Contract

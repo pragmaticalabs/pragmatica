@@ -284,7 +284,8 @@ No authentication required.
   "components": [
     {"name": "consensus", "status": "UP", "detail": "Cluster active"},
     {"name": "routes", "status": "UP", "detail": "Route sync received"},
-    {"name": "quorum", "status": "UP", "detail": "Reachable core members: 3 / required: 2"}
+    {"name": "quorum", "status": "UP", "detail": "Reachable core members: 3 / required: 2"},
+    {"name": "dht-admission", "status": "UP", "detail": "No DHT-backed storage instance awaiting its encryption-marker check"}
   ]
 }
 ```
@@ -295,6 +296,10 @@ Components checked:
 - **quorum** — Does the node hold quorum? True iff its counted strict core-member set meets the
   consensus simple-majority threshold (`coreCount / 2 + 1`), sourced from the same per-node
   quorum-loss signal the minority self-drain uses. A minority partition (e.g. 2 of 5) reports DOWN.
+- **dht-admission** — Has every DHT-backed storage instance passed its post-formation
+  encryption-marker check? DOWN names the instances still pending (`#1052`). The check retries while
+  the DHT cannot answer, for example while the ring is still converging after a join. The node stays
+  `JOINING` until it completes, so the overall status is DOWN (503) for as long as this is DOWN.
 
 ### GET /health/ready/{id}
 
@@ -4876,16 +4881,19 @@ with `400 Bad Request`.
 > underlying physical database and IS reachable from `migrate`/`undo`/`baseline` alike, via the
 > shared ownership claim) is in the table above.
 
-> **Known limitation — `acquireLock`'s cross-node lock check is not atomic (#766, not fixed by
-> #543).** Both `undo` and `baseline` share `SchemaOrchestratorService.acquireLock` with `migrate`.
-> Its cross-node lock (`SchemaMigrationLockKey`) is read (`isLockHeld`) and then written
-> (`Put<SchemaMigrationLockValue>`) as two separate steps, not an atomic compare-and-set; two
-> concurrent dispatches can both observe the lock free before either writes it. #766 reproduced
-> this live on a 5-node Forge run (two dispatches within two seconds, the second reaching
-> `aether_schema_history` and failing on a duplicate-key constraint, which marked the datasource
-> `FAILED`). Recovery when it happens: `aether schema retry` after the false-`FAILED` record is
-> observed. The fix needs an atomic compare-and-set on the lock key rather than read-then-write;
-> tracked in #766, not addressed here.
+> **Fixed in #766 — `acquireLock`'s cross-node lock claim is a fenced compare-and-set.** Both
+> `undo` and `baseline` share `SchemaOrchestratorService.acquireLock` with `migrate`. The lock
+> (`SchemaMigrationLockKey`) carries a `lockVersion`; a claim writes committed+1 (or the first
+> version) and the KV applier refuses a stale successor, so two concurrent dispatches cannot both
+> hold it [mechanism: `SchemaMigrationLockValue implements VersionFenced`, `KVStore` stale-successor
+> refusal]. Before #766 the claim was a read followed by a separate write, reproduced live on a
+> 5-node Forge run (two dispatches within two seconds, the second failing on `aether_schema_history`'s
+> duplicate-key constraint and marking the datasource `FAILED`; recovery was `aether schema retry`).
+> **Still open — #806:** the lock TTL (5 min) is shorter than the migration timeout (15 min), so an
+> expired lock can be taken over while its holder is still migrating, and `releaseLock` is an
+> unfenced Remove; a holder that times out after a takeover can delete the taker's lock and re-claim.
+> Until #806 lands, a migration, undo or baseline that runs longer than 5 minutes loses its lock while
+> still running (concurrent dispatch itself is refused with `LockAcquisitionFailed` since #766).
 >
 > The leader check above `undo`/`baseline` is also check-then-act, undisclosed until now:
 > `requireLeader` reads `node.isLeader()` once and lets the manager call proceed with no re-check,
@@ -5602,7 +5610,9 @@ management security is disabled. The check runs ahead of the role/auth pipeline 
 `ManagementServer`, so it short-circuits before role evaluation.
 
 Each identity-bearing write route — the catalog-form
-`STREAMS_PUBLISH`/`STREAMS_DELETE`/`STREAMS_GROUP_CREATE`/`STREAMS_GROUP_DELETE` —
+`STREAMS_PUBLISH`/`STREAMS_PUBLISH_BATCH`/`STREAMS_DELETE`/`STREAMS_GROUP_CREATE`/`STREAMS_GROUP_DELETE`
+(`STREAMS_PUBLISH_BATCH` joined the set with #742; until then the batch form wrote where the single
+form was refused) —
 resolves its target through the same `ManagementRoute` route-match the real dispatch path uses
 (never a raw path-segment scan), reduces the match to an engine key, and rejects when that key
 names one of `SystemStreams.ALL`. A route match whose params fail to resolve to a valid identity
@@ -5623,11 +5633,16 @@ body is rejected the same as anyone else), but it is not the same short-circuit-
 guarantee the path-based gate above gives the other write routes.
 
 `CONSUMER_GROUP_JOIN`/`CONSUMER_GROUP_LEAVE` carry their target
-stream name in the request body rather than the path — a known, currently open gap this path-only
-gate cannot see, closed once these routes gain path-resolvable identity via the catalog-form
-reshape (management-api-versioning-spec.md §3.3). Tracked as its own ticket (rc4 provisional,
-cross-referencing #300), pending an evidence-based answer to whether joining/leaving a consumer
-group on a framework stream actually mutates state or is merely untidy.
+stream name in the request body rather than the path, so this path-only gate cannot see them. Since
+#742 they are protected the same way `STREAM_CREATE` is: a post-auth, handler-level guard in
+`StreamRoutes#joinGroup`/`#leaveGroup` that refuses a reserved system stream name before the
+coordinator is called (`405 Cannot join or leave a consumer group on a reserved system stream` — the
+same status this gate answers with). The body name is canonicalized the way this gate canonicalizes
+a path — the catalog spelling `system:cluster-events:1.0.0` reduces to the engine key
+`cluster-events` before the predicate — so both spellings are refused; a missing name is
+`Missing stream name`. The evidence question that ticket was filed on was answered: joining/leaving
+does mutate state — both call `rebalance`, which proposes replicated KV assignment records under the
+named stream.
 
 Reads of `system:*` streams (e.g. `system:cluster-events`) are unaffected; only writes are gated.
 The compile-time SPI split already blocks application code from producing into system streams;

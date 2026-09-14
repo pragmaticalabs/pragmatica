@@ -632,6 +632,24 @@ class KVStoreSerializerTest {
                              });
         }
 
+        /// #766: the lock's fence version is part of the text form (the `schema-lock` section is
+        /// ephemeral, so the pair is exercised directly, as `storage-status` is above).
+        @Test
+        void roundTrip_schemaMigrationLock_preservesLockVersion() {
+            var key = SchemaMigrationLockKey.schemaMigrationLockKey("database.orders");
+            var value = new SchemaMigrationLockValue("database.orders", new NodeId("node-1"), 1_000L, 2_000L, 7L);
+            var identity = key.asString()
+                              .substring("schema-lock/".length());
+
+            KVStoreSerializer.parseSchemaMigrationLockEntry(identity, KVStoreSerializer.serializeSchemaMigrationLock(value))
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entry -> {
+                                 assertThat(entry.getKey()).isEqualTo(key);
+                                 assertThat(entry.getValue()).isEqualTo(value);
+                                 assertThat(((SchemaMigrationLockValue) entry.getValue()).fenceVersion()).isEqualTo(7L);
+                             });
+        }
+
         @Test
         void roundTrip_workerDirectiveNoCommunity_preservesFields() {
             var entries = new LinkedHashMap<AetherKey, AetherValue>();

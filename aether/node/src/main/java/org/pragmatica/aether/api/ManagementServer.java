@@ -7,9 +7,11 @@ package org.pragmatica.aether.api;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -1594,15 +1596,16 @@ class ManagementServerImpl implements ManagementServer {
     /// privileges naming a framework stream in the body — auth level does not matter here because
     /// the check runs regardless of it.
     ///
-    /// [ManagementRoute#CONSUMER_GROUP_JOIN]/[ManagementRoute#CONSUMER_GROUP_LEAVE] are a known,
-    /// currently open gap, not covered here: their target stream name travels in the request body
+    /// [ManagementRoute#CONSUMER_GROUP_JOIN]/[ManagementRoute#CONSUMER_GROUP_LEAVE] are likewise not
+    /// covered here: their target stream name travels in the request body
     /// (`JoinGroupRequest`/`LeaveGroupRequest`), not the path, and this gate only inspects
-    /// method+path. It closes once these routes gain path-resolvable identity per the catalog-form
-    /// reshape (management-api-versioning-spec.md §3.3) — deliberately deferred (ruled 2026-08-30,
-    /// #754), not merely untidy: catalog `deleteGroup` evicts every consumer at a stream address,
-    /// so a naive fold of `LEAVE` onto it would be a destructive semantic inversion under the same
-    /// user-facing verb (legacy `LEAVE` removes one named consumer). Closing this gap requires that
-    /// design fix first, not just a path-identity reshape — see #754.
+    /// method+path. Since #742 they carry the same post-auth, handler-level guard as CREATE —
+    /// `StreamRoutes#joinGroup`/`#leaveGroup`, first statement, same predicate, pinned by
+    /// `StreamRoutesGroupSystemStreamTest`. The path-identity reshape (management-api-versioning-spec.md
+    /// §3.3) remains deferred (ruled 2026-08-30, #754), not merely untidy: catalog `deleteGroup`
+    /// evicts every consumer at a stream address, so a naive fold of `LEAVE` onto it would be a
+    /// destructive semantic inversion under the same user-facing verb (legacy `LEAVE` removes one
+    /// named consumer). That design fix is #754's, independent of the guard.
     ///
     /// A route match whose params fail to resolve to a [ResourceAddress] (malformed namespace or
     /// version) fails closed — treated as forbidden, not passed through.
@@ -1650,20 +1653,22 @@ class ManagementServerImpl implements ManagementServer {
     /// [#resolvePermission] are.
     static Option<String> resolveEngineKey(MatchedRoute matched) {
         return switch (matched.route()) {
-            case STREAMS_PUBLISH, STREAMS_DELETE, STREAMS_GROUP_CREATE, STREAMS_GROUP_DELETE, STREAM_REPLICAS -> matched.param("namespace").flatMap(ns -> matched.param("stream")
-                                                                                                                                                                 .flatMap(stream -> matched.param("version")
-                                                                                                                                                                                           .flatMap(ver -> ResourceAddress.resourceAddress(ns,
-                                                                                                                                                                                                                                           stream,
-                                                                                                                                                                                                                                           ver).option()))).map(StreamManager::engineKey);
+            case STREAMS_PUBLISH, STREAMS_PUBLISH_BATCH, STREAMS_DELETE, STREAMS_GROUP_CREATE, STREAMS_GROUP_DELETE, STREAM_REPLICAS -> matched.param("namespace").flatMap(ns -> matched.param("stream")
+                                                                                                                                                                                        .flatMap(stream -> matched.param("version")
+                                                                                                                                                                                                                  .flatMap(ver -> ResourceAddress.resourceAddress(ns,
+                                                                                                                                                                                                                                                                  stream,
+                                                                                                                                                                                                                                                                  ver).option()))).map(StreamManager::engineKey);
             default -> Option.empty();
         };
     }
 
     /// Identity-bearing write routes this pre-auth path gate covers — see
-    /// [#rejectSystemStreamWrite]'s doc for why [ManagementRoute#STREAM_CREATE] (covered instead by
-    /// a separate, post-auth, handler-level guard) and the `CONSUMER_GROUP_*` routes (an open gap)
-    /// are excluded.
+    /// [#rejectSystemStreamWrite]'s doc for why [ManagementRoute#STREAM_CREATE] and the
+    /// `CONSUMER_GROUP_*` routes are covered instead by a post-auth, handler-level guard (body-carried
+    /// identity). `STREAMS_PUBLISH_BATCH` was missing from this set until #742's review: the batch
+    /// form wrote to the framework's own ring while the single form was refused.
     private static final Set<ManagementRoute> STREAM_IDENTITY_WRITE_ROUTES = Set.of(ManagementRoute.STREAMS_PUBLISH,
+                                                                                    ManagementRoute.STREAMS_PUBLISH_BATCH,
                                                                                     ManagementRoute.STREAMS_DELETE,
                                                                                     ManagementRoute.STREAMS_GROUP_CREATE,
                                                                                     ManagementRoute.STREAMS_GROUP_DELETE);
@@ -1695,10 +1700,65 @@ class ManagementServerImpl implements ManagementServer {
     /// that a boot-window request is refused by AUTHENTICATION must show, in the same run, that the
     /// route it aimed at resolves to a permission the refused caller would otherwise have satisfied
     /// -- otherwise "denied" is indistinguishable from "never matched a route" (#908).
+    ///
+    /// #1101 — the prefix fallback must never resolve WEAKER than an exact route the path extends.
+    /// `DELETE /api/v1/config/nodes/<id>/<key>/junk` has no exact match (one segment too many), the
+    /// prefix `/api/v1/config` is OPERATOR, and the exact `CONFIG_NODE_DELETE` it extends is ADMIN —
+    /// so an OPERATOR key authorised for a request the router then dispatched to the ADMIN handler.
+    /// The fallback is now the STRICTEST of the prefix rule and every same-method exact route in the
+    /// same resource family (the path up to and including the first segment after `/api/v1` — or
+    /// `/repository`): deny-by-default for an unmatched mutation wherever a stricter exact route
+    /// lives. The routing half (an over-length path is a miss) lives in
+    /// `RequestRouter.selectBestRoute`, and neither half alone is the fix.
     static RoutePermission resolvePermission(String methodName, String path) {
-        return parseRoutingMethod(methodName).flatMap(m -> ManagementRoute.match(m, path).option())
-                                 .map(matched -> ManagementRoutePermissions.permissionFor(matched.route()))
-                                 .or(RoutePermissionRegistry.resolve(methodName, path));
+        var method = parseRoutingMethod(methodName);
+        var exact = method.flatMap(m -> ManagementRoute.match(m, path).option())
+                          .map(matched -> ManagementRoutePermissions.permissionFor(matched.route()));
+
+        if (exact.isPresent()) {
+            return exact.unwrap();
+        }
+
+        var fallback = RoutePermissionRegistry.resolve(methodName, path);
+
+        return method.map(m -> strictestOf(fallback,
+                                           extendedExactRoutes(m, path)))
+                     .or(fallback);
+    }
+
+    /// Exact routes of the same method in the request's resource family — every route an unmatched
+    /// request under that family could be aiming at, however the extra segments are placed.
+    private static List<ManagementRoute> extendedExactRoutes(org.pragmatica.http.HttpMethod method, String path) {
+        var family = resourceFamily(path);
+
+        return Stream.of(ManagementRoute.values())
+                     .filter(route -> route.method() == method)
+                     .filter(route -> resourceFamily(route.prefix()).equals(family))
+                     .toList();
+    }
+
+    /// `/api/v1/config/nodes/x` → `/api/v1/config`; `/repository/org/x` → `/repository`; anything
+    /// else → its first segment.
+    private static String resourceFamily(String path) {
+        var segments = path.split("/");
+        var depth = path.startsWith("/api/v1/")
+                    ? 4
+                    : 2;
+
+        return String.join("/",
+                           Arrays.copyOfRange(segments, 0, Math.min(depth, segments.length)));
+    }
+
+    /// ADMIN(0) outranks OPERATOR(1) outranks VIEWER(2): the smallest ordinal is the strictest.
+    private static RoutePermission strictestOf(RoutePermission fallback, List<ManagementRoute> extended) {
+        return extended.stream()
+                       .map(ManagementRoutePermissions::permissionFor)
+                       .reduce(fallback,
+                               (a, b) -> a.minimumRole()
+                                          .ordinal() <= b.minimumRole()
+                                                         .ordinal()
+                                         ? a
+                                         : b);
     }
 
     private Result<SecurityContext> enforceAndAuditDenial(SecurityContext sc,

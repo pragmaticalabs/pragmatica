@@ -862,7 +862,9 @@ class StorageFactoryEncryptionTest {
     /// whether a marker exists at all -- fails on `EncryptionError.DhtMarkerCheckTimedOut`. That is
     /// the opposite situation from `EncryptedTierRequiresKeyring` (the marker WAS read successfully
     /// and named a key id absent from the keyring): a never-resolving DHT client must never be
-    /// misreported as that cause. Uses the package-private `verifyDhtMarker(..., timeout)` test seam
+    /// misreported as that cause. #1052: this pins ONE attempt's cause; the retrying check around it treats
+    /// the cause as transient (`StorageFactoryDhtMarkerRetryTest`). Uses the package-private
+    /// `attemptDhtMarker(..., timeout)` test seam
     /// (mirrors `MavenProtocolRoutesTimeoutTest`'s injected `SHORT_TIMEOUT`) so this proves the bound
     /// in milliseconds rather than waiting out the real 30s `DHT_MARKER_TIMEOUT`.
     @Test
@@ -878,7 +880,7 @@ class StorageFactoryEncryptionTest {
                                          + "AetherNode.start() to verify post-formation")
                                      .isTrue();
 
-        check.onPresent(c -> StorageFactory.verifyDhtMarker(neverRespondingClient, c, SHORT_MARKER_TIMEOUT)
+        check.onPresent(c -> StorageFactory.attemptDhtMarker(neverRespondingClient, c, SHORT_MARKER_TIMEOUT)
                                            .await()
                                            .onSuccess(_ -> fail("a marker check whose DHT round trip never resolves must "
                                                                 + "not succeed"))

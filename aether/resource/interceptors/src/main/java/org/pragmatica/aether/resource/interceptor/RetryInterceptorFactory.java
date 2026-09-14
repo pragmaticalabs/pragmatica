@@ -28,6 +28,6 @@ public final class RetryInterceptorFactory implements ResourceFactory<RetryMetho
     private static RetryMethodInterceptor interceptor(RetryConfig config) {
         var retry = Retry.retry().attempts(config.maxAttempts()).strategy(config.backoffStrategy());
 
-        return new RetryMethodInterceptor(retry);
+        return new RetryMethodInterceptor(retry, config.retryOn());
     }
 }

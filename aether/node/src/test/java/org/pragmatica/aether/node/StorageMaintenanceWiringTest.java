@@ -68,8 +68,9 @@ class StorageMaintenanceWiringTest {
     /// Sized so exactly [#CONTENT_MEMORY_BLOCKS] blocks of [#CONTENT_BLOCK_BYTES] fill the memory
     /// tier to 100% of its budget -- above `DefaultDemotionManager`'s 0.9 high watermark, so a single
     /// pass demotes down toward the 0.7 low watermark. `MemoryTier.put` REFUSES any write that would
-    /// exceed `maxBytes` (returning `StorageError.TierFull`, which `writeToAllTiers` swallows for a
-    /// cache tier), so the budget must be an exact multiple of the block size or the last write would
+    /// exceed `maxBytes` (returning `StorageError.TierFull`, which `writeToAllTiers` absorbs for a
+    /// cache tier — true since #910; before it the put FAILED), so the budget must be an exact
+    /// multiple of the block size or the last write would
     /// silently skip the memory tier instead of filling it.
     private static final int CONTENT_BLOCK_BYTES = 1024;
     private static final int CONTENT_MEMORY_BLOCKS = 8;

@@ -90,6 +90,14 @@ public final class PeriodicTasks {
         state = State.CANCELLED;
     }
 
+    /// #1052: whether [#cancel] has run. This is the stop signal for this node's recurring work that is
+    /// not a fixed-rate timer: the post-formation DHT encryption-marker retry loop reads it before each
+    /// attempt, so a stopped node stops retrying. Same contract as [#defer]: a stopped node never gains
+    /// work.
+    synchronized boolean isCancelled() {
+        return state == State.CANCELLED;
+    }
+
     /// Observation seam for the never-started contract test: thunks accumulated but not yet armed.
     public synchronized int deferredCount() {
         return deferred.size();

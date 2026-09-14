@@ -5,6 +5,8 @@
 package org.pragmatica.aether.resource.notification;
 
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Retry;
+import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -24,5 +26,18 @@ public record RetryConfig(int maxAttempts, TimeSpan initialDelay, TimeSpan maxDe
                                timeSpan(initialDelayMs).millis(),
                                timeSpan(maxDelayMs).millis(),
                                backoffMultiplier);
+    }
+
+    /// The core [Retry] this config describes: exponential backoff on the shared scheduler, stopping
+    /// early on a terminal cause. Both senders retry through this rather than each carrying its own
+    /// loop, delay arithmetic and a virtual thread per sleep (#271 R9/R10).
+    public Retry retry() {
+        return Retry.retry()
+                    .attempts(maxAttempts)
+                    .strategy(BackoffStrategy.exponential()
+                                             .initialDelay(initialDelay)
+                                             .maxDelay(maxDelay)
+                                             .factor(backoffMultiplier)
+                                             .withoutJitter());
     }
 }

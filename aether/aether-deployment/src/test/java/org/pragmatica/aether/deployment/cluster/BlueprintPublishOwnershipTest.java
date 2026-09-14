@@ -14,6 +14,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import java.util.jar.Attributes;
 import java.util.jar.JarOutputStream;
@@ -26,24 +27,34 @@ import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.schema.SchemaError;
+import org.pragmatica.aether.deployment.validation.MissingConfigSection;
+import org.pragmatica.aether.resource.artifact.ArtifactFile;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.slice.SliceManifest;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.repository.Location;
+import org.pragmatica.aether.slice.stream.BlueprintStreamAddresses;
+import org.pragmatica.aether.slice.stream.StreamAddressError;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.LayeredConfigProvider;
+import org.pragmatica.config.NamedConfigProvider;
 import org.pragmatica.config.source.MapConfigSource;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine.Batch;
@@ -587,23 +598,23 @@ class BlueprintPublishOwnershipTest {
 
     private static ArtifactStore artifactStore(byte[] blueprintJar) {
         return new ArtifactStore() {
-            @Override public Promise<DeployResult> deploy(Artifact artifact, byte[] content) {
+            @Override public Promise<DeployResult> deploy(ArtifactFile file, byte[] content) {
                 return NOT_IN_STORE.promise();
             }
 
-            @Override public Promise<byte[]> resolve(Artifact artifact) {
+            @Override public Promise<byte[]> resolve(ArtifactFile file) {
                 return Promise.success(blueprintJar);
             }
 
-            @Override public Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact) {
+            @Override public Promise<ResolvedArtifact> resolveWithMetadata(ArtifactFile file) {
                 return NOT_IN_STORE.promise();
             }
 
-            @Override public Promise<Boolean> exists(Artifact artifact) {
+            @Override public Promise<Boolean> exists(ArtifactFile file) {
                 return Promise.success(false);
             }
 
-            @Override public Promise<Option<ArtifactMetadata>> metadata(Artifact artifact) {
+            @Override public Promise<Option<ArtifactMetadata>> metadata(ArtifactFile file) {
                 return Promise.success(Option.none());
             }
 
@@ -611,7 +622,7 @@ class BlueprintPublishOwnershipTest {
                 return Promise.success(List.of());
             }
 
-            @Override public Promise<Unit> delete(Artifact artifact) {
+            @Override public Promise<Unit> delete(ArtifactFile file) {
                 return Promise.unitPromise();
             }
 
@@ -798,6 +809,253 @@ class BlueprintPublishOwnershipTest {
         }
     }
 
+    /// #1066 — the TOML body publish stores the stream bindings the artifact publish does.
+    ///
+    /// `publish(String)` — `POST /api/v1/blueprints`, `aether blueprint apply`, Forge — wrote no
+    /// `BlueprintStreamBindingsKey`, and since #1040 `BlueprintStreamAddresses` refuses an owning
+    /// blueprint without one: stream publisher slices failed to load and declarative consumers were never
+    /// subscribed. The fixtures reproduce the layout that broke: the body TOML is a bare slice list and
+    /// every `[streams.*]` declaration lives only inside the slice jars, each shipping the same module
+    /// `resources.toml`, as `aether/tests/blueprints/test-stream-consumer` and the ticketing demo do.
+    @Nested
+    class StreamBindings {
+        private static final String STREAM_APP_COORDS = "org.example:stream-app:1.0.0";
+        private static final BlueprintId STREAM_APP = BlueprintId.blueprintId(STREAM_APP_COORDS).unwrap();
+        private static final Artifact PUBLISHER_SLICE = Artifact.artifact("org.example:stream-app-publisher:1.0.0").unwrap();
+        private static final Artifact CONSUMER_SLICE = Artifact.artifact("org.example:stream-app-consumer:1.0.0").unwrap();
+        private static final String STREAM_SLICE_CLASS = "org.example.stream.StreamSlice";
+        private static final String ORDER_EVENTS = "order-events";
+        private static final String CONSUMER_EVENTS = "consumer-events";
+        private static final String NAMESPACE = "org.example.stream-app";
+        private static final Cause UNREADABLE_JAR = Causes.cause("Slice jar became unreadable after expansion");
+
+        private static final String STREAM_APP_DSL = """
+                id = "org.example:stream-app:1.0.0"
+
+                [[slices]]
+                artifact = "org.example:stream-app-publisher:1.0.0"
+                instances = 1
+
+                [[slices]]
+                artifact = "org.example:stream-app-consumer:1.0.0"
+                instances = 1
+                """;
+
+        private static final String MODULE_STREAMS = """
+                [streams.order-events]
+                partitions = 1
+                retention = "count"
+                retention-value = "100000"
+                max-event-size = "64KB"
+
+                [streams.consumer-events]
+                partitions = 1
+                retention = "count"
+                retention-value = "100000"
+                max-event-size = "64KB"
+                """;
+
+        @Test
+        void publish_storesBindingsForStreamsDeclaredOnlyInsideSliceJars() {
+            publishBody(streamAppRepository()).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(boundAddresses(store))
+                    .as("the body TOML declares no streams; both aliases must be bound from the slice jars' "
+                        + "META-INF/resources.toml, under the blueprint's namespace at the producer-default version")
+                    .containsExactlyInAnyOrder(ORDER_EVENTS + "=" + NAMESPACE + ":" + ORDER_EVENTS + ":1.0.0",
+                                               CONSUMER_EVENTS + "=" + NAMESPACE + ":" + CONSUMER_EVENTS + ":1.0.0");
+        }
+
+        /// The ordering `StreamAddressError` relies on to treat missing bindings as fatal: the FSM writes
+        /// slice targets only after applying the blueprint, so bindings in the blueprint's own batch can
+        /// never trail a slice target. An effect-only assertion stays green if they land in a later apply.
+        @Test
+        void publish_putsStreamBindingsInTheSameBatchAsTheBlueprint() {
+            publishBody(streamAppRepository()).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(landedInSameBatch(AppBlueprintKey.appBlueprintKey(STREAM_APP),
+                                         BlueprintStreamBindingsKey.blueprintStreamBindingsKey(STREAM_APP)))
+                    .as("the bindings Put must ride the blueprint Put's cluster.apply batch")
+                    .isTrue();
+        }
+
+        /// The acceptance path. A deployed stream slice resolves its alias twice — the publisher factory
+        /// through `StreamAddressResolver`, the declarative consumer registration through
+        /// `NodeDeploymentState.resolveStreamName` — and both call `BlueprintStreamAddresses.engineKeyFor`
+        /// against the owning blueprint the FSM stamps on the slice target. At the rc4 tip both refused
+        /// with `UnresolvedStreamBindings`: the publisher slice failed to load, the consumer never
+        /// subscribed.
+        @Test
+        void publish_letsPublisherAndDeclarativeConsumerResolveTheirStreams() {
+            publishBody(streamAppRepository()).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+            seedOwnedSliceTarget(PUBLISHER_SLICE);
+            seedOwnedSliceTarget(CONSUMER_SLICE);
+
+            BlueprintStreamAddresses.engineKeyFor(store, PUBLISHER_SLICE, ORDER_EVENTS)
+                                    .onFailure(cause -> Assertions.fail("publisher alias must resolve: " + cause.message()))
+                                    .onSuccess(key -> assertThat(key).isEqualTo(NAMESPACE + ":" + ORDER_EVENTS + ":1.0.0"));
+            BlueprintStreamAddresses.engineKeyFor(store, CONSUMER_SLICE, CONSUMER_EVENTS)
+                                    .onFailure(cause -> Assertions.fail("consumer alias must resolve: " + cause.message()))
+                                    .onSuccess(key -> assertThat(key).isEqualTo(NAMESPACE + ":" + CONSUMER_EVENTS + ":1.0.0"));
+        }
+
+        /// The fix is that bindings exist, not that resolution got lenient: an alias no slice declares
+        /// must still be refused, naming the alias, once the body publish HAS written bindings.
+        @Test
+        void publish_leavesAnUndeclaredAliasFailingLoudly() {
+            publishBody(streamAppRepository()).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+            seedOwnedSliceTarget(CONSUMER_SLICE);
+
+            BlueprintStreamAddresses.engineKeyFor(store, CONSUMER_SLICE, "undeclared-events")
+                                    .onSuccess(key -> Assertions.fail("an undeclared alias must be refused, not resolved to " + key))
+                                    .onFailure(cause -> assertThat(cause).isInstanceOf(StreamAddressError.UnboundStreamAlias.class)
+                                                                         .extracting(Cause::message)
+                                                                         .asString()
+                                                                         .contains("undeclared-events"));
+        }
+
+        @Test
+        void publish_andPublishFromArtifact_storeIdenticalBindings_forTheSameBlueprint() {
+            var artifactPathStore = new TestKVStore();
+
+            BlueprintService.blueprintService(new TestClusterNode(artifactPathStore),
+                                              artifactPathStore,
+                                              streamAppRepository(),
+                                              artifactStore(streamAppBlueprintJar()))
+                            .publishFromArtifact(STREAM_APP_COORDS + ":blueprint")
+                            .await()
+                            .onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+            publishBody(streamAppRepository()).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+
+            assertThat(boundAddresses(artifactPathStore))
+                    .as("instrument check: the artifact path must bind both streams, or the equality below is vacuous")
+                    .hasSize(2);
+            assertThat(bindingsIn(store))
+                    .as("the body path must store exactly the BlueprintStreamBindingsValue the artifact path stores")
+                    .isEqualTo(bindingsIn(artifactPathStore));
+        }
+
+        /// Slices from different modules can ship different declarations, a case the artifact path never
+        /// sees. One alias bound to two addresses must refuse the publish before any command lands:
+        /// `BlueprintStreamBindingsValue.addressFor` would otherwise answer with the first and silently
+        /// point the other slice at a ring it did not declare.
+        @Test
+        void publish_isRefused_whenSlicesBindOneAliasToDifferentAddresses() {
+            var repository = sliceRepository(Map.of(PUBLISHER_SLICE, sliceJar(PUBLISHER_SLICE, pinnedOrderEvents("1.0.0")),
+                                                    CONSUMER_SLICE, sliceJar(CONSUMER_SLICE, pinnedOrderEvents("2.0.0"))));
+
+            publishBody(repository).onSuccess(_ -> Assertions.fail("conflicting declarations of one alias must refuse the publish"))
+                                   .onFailure(cause -> assertThat(cause.message()).contains("conflicting-stream-declaration")
+                                                                                  .contains(NAMESPACE + ":" + ORDER_EVENTS + ":1.0.0")
+                                                                                  .contains(NAMESPACE + ":" + ORDER_EVENTS + ":2.0.0"));
+            assertThat(cluster.batches).as("the refusal must come before any batch is applied").isEmpty();
+        }
+
+        /// A slice jar the expander read but the bindings derivation cannot must fail the publish, never
+        /// bind a subset: a subset turns into a silent `UnboundStreamAlias` on whichever slice lost.
+        /// The expander and the pub/sub topology read each locate the consumer jar once, so the third
+        /// locate is the bindings read.
+        @Test
+        void publish_isRefused_whenASliceJarCannotBeReadForBindings() {
+            var calls = new AtomicInteger();
+            var delegate = streamAppRepository();
+            Repository repository = artifact -> CONSUMER_SLICE.equals(artifact) && calls.incrementAndGet() >= 3
+                                                ? UNREADABLE_JAR.promise()
+                                                : delegate.locate(artifact);
+
+            publishBody(repository).onSuccess(_ -> Assertions.fail("an unreadable slice jar must refuse the publish"))
+                                   .onFailure(cause -> assertThat(cause.message()).contains(UNREADABLE_JAR.message()));
+            assertThat(calls.get()).as("instrument check: the failing locate must be the bindings read, the third")
+                                   .isEqualTo(3);
+            assertThat(cluster.batches).as("nothing may be applied when the bindings cannot be derived").isEmpty();
+        }
+
+        private Result<ExpandedBlueprint> publishBody(Repository repository) {
+            return BlueprintService.blueprintService(cluster, store, repository)
+                                   .publish(STREAM_APP_DSL)
+                                   .await();
+        }
+
+        private void seedOwnedSliceTarget(Artifact slice) {
+            store.processCommand(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(slice.base()),
+                                                     SliceTargetValue.sliceTargetValue(slice.version(), 1, Option.some(STREAM_APP))));
+        }
+
+        private Repository streamAppRepository() {
+            return sliceRepository(Map.of(PUBLISHER_SLICE, sliceJar(PUBLISHER_SLICE, MODULE_STREAMS),
+                                          CONSUMER_SLICE, sliceJar(CONSUMER_SLICE, MODULE_STREAMS)));
+        }
+
+        private static Repository sliceRepository(Map<Artifact, Path> jars) {
+            return artifact -> Option.option(jars.get(artifact))
+                                     .toResult(NOT_IN_REPOSITORY)
+                                     .flatMap(jar -> jarLocation(artifact, jar))
+                                     .async();
+        }
+
+        private static Result<Location> jarLocation(Artifact artifact, Path jar) {
+            return Result.lift(Causes::fromThrowable, () -> jar.toUri().toURL())
+                         .flatMap(url -> Location.location(artifact, url));
+        }
+
+        private static String pinnedOrderEvents(String version) {
+            return """
+                    [streams.order-events]
+                    version = "%s"
+                    partitions = 1
+                    """.formatted(version);
+        }
+
+        private Path sliceJar(Artifact slice, String resourcesToml) {
+            var manifest = new Manifest();
+            var attributes = manifest.getMainAttributes();
+
+            attributes.put(Attributes.Name.MANIFEST_VERSION, "1.0");
+            attributes.putValue(SliceManifest.SLICE_ARTIFACT_ATTR, slice.asString());
+            attributes.putValue(SliceManifest.SLICE_CLASS_ATTR, STREAM_SLICE_CLASS);
+            attributes.putValue(SliceManifest.ENVELOPE_VERSION_ATTR, "1000");
+
+            var target = tempDir.resolve(slice.artifactId().id() + ".jar");
+
+            try (var out = new JarOutputStream(Files.newOutputStream(target), manifest)) {
+                out.putNextEntry(new ZipEntry("org/example/stream/"));
+                out.closeEntry();
+                writeEntry(out, "META-INF/resources.toml", resourcesToml);
+            } catch (IOException e) {
+                throw new IllegalStateException("Failed to build test slice jar", e);
+            }
+
+            return target;
+        }
+
+        private static byte[] streamAppBlueprintJar() {
+            var bytes = new ByteArrayOutputStream();
+
+            try (var zip = new ZipOutputStream(bytes)) {
+                writeEntry(zip, "META-INF/blueprint.toml", STREAM_APP_DSL);
+                writeEntry(zip, "META-INF/resources.toml", MODULE_STREAMS);
+            } catch (IOException e) {
+                throw new IllegalStateException("Failed to build test blueprint jar", e);
+            }
+
+            return bytes.toByteArray();
+        }
+
+        private static Option<BlueprintStreamBindingsValue> bindingsIn(TestKVStore target) {
+            return target.get(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(STREAM_APP))
+                         .filter(BlueprintStreamBindingsValue.class::isInstance)
+                         .map(BlueprintStreamBindingsValue.class::cast);
+        }
+
+        private static List<String> boundAddresses(TestKVStore target) {
+            return bindingsIn(target).map(value -> value.bindings()
+                                                        .stream()
+                                                        .map(binding -> binding.alias() + "=" + binding.address().asString())
+                                                        .toList())
+                                     .or(List.of());
+        }
+    }
+
     /// #547 — deploy-time pre-flight for generic resource config sections. Reuses this class's
     /// on-disk JAR-building harness (unrelated to the #542 migration-ownership scenarios above)
     /// because it is the one fixture in this module that already builds a real slice jar readable
@@ -807,6 +1065,19 @@ class BlueprintPublishOwnershipTest {
         private static final String PREFLIGHT_COORDS = "org.example:preflight-app:1.0.0";
         private static final String BLUEPRINT_SERVICE_LOGGER_NAME =
                 "org.pragmatica.aether.deployment.cluster.BlueprintServiceInstance";
+        private static final String PAYMENTS_SECTION_TOML = """
+                [payments]
+                base_url = "https://payments.example"
+                """;
+        private static final String UNRELATED_SECTION_TOML = """
+                [shipping]
+                base_url = "https://shipping.example"
+                """;
+        // An unterminated array is a parse error by TomlParser's own contract, as in SliceStoreTest.
+        private static final String MALFORMED_PAYMENTS_TOML = """
+                [payments]
+                base_url = [
+                """;
 
         private FailOpenLogCapture failOpenLogCapture;
 
@@ -882,16 +1153,108 @@ class BlueprintPublishOwnershipTest {
                                                                   .doesNotContain("order-placed"));
         }
 
+        /// #1067: the `POST /api/v1/blueprints` path (`SliceRoutes.handleBlueprint` → `publish(String)`)
+        /// for a slice that declares its section ONLY in its own jar's `META-INF/resources.toml`. The
+        /// loader layers that file under the node composite (`SliceStore.assembleSliceComposite`), so the
+        /// runtime resolves the section; a pre-flight that consulted the node composite alone refused the
+        /// deploy with HTTP 500 — the shape that failed `DurableEntityForgeTest` in the Heavy job.
+        @Test
+        void publish_succeeds_whenDeclaredSectionShipsOnlyInTheSliceJar() throws IOException {
+            var jar = writeSliceJarWithResource("http", "payments", Option.some(PAYMENTS_SECTION_TOML));
+            var result = publishDslWithComposite(jar, Option.some(providerWithSections()));
+
+            result.onFailure(cause -> Assertions.fail("The loader resolves [payments] from the slice jar, so the pre-flight must accept it: "
+                                                      + cause.message()));
+        }
+
+        /// #1067, same property through the artifact path, which shares `validatePubSub` with the DSL path.
+        @Test
+        void publishFromArtifact_succeeds_whenDeclaredSectionShipsOnlyInTheSliceJar() throws IOException {
+            var jar = writeSliceJarWithResource("http", "payments", Option.some(PAYMENTS_SECTION_TOML));
+            var result = publishWithComposite(jar, Option.some(providerWithSections()));
+
+            result.onFailure(cause -> Assertions.fail("The loader resolves [payments] from the slice jar, so the pre-flight must accept it: "
+                                                      + cause.message()));
+        }
+
+        /// #1067 guarantee, refusal half: the slice jar DOES ship a `resources.toml` and the node composite
+        /// does carry a section, but neither is `[payments]`. Absent from every layer the loader would
+        /// consult, so the deploy is still refused — and refused with [MissingConfigSection] specifically.
+        @Test
+        void publish_failsWithMissingConfigSection_whenSectionIsAbsentFromEveryLayer() throws IOException {
+            var jar = writeSliceJarWithResource("http", "payments", Option.some(UNRELATED_SECTION_TOML));
+            var result = publishDslWithComposite(jar, Option.some(providerWithSections("inventory")));
+
+            result.onSuccess(_ -> Assertions.fail("[payments] is in neither the node composite nor the slice jar — the deploy must be refused"))
+                  .onFailure(ConfigPreflight::assertOnlyPaymentsSectionMissing);
+        }
+
+        /// #1067: a malformed slice `resources.toml` makes the loader drop the slice composite whole
+        /// (`SliceStoreTest.buildSliceCompositeFromClassLoader_dropsWholeComposite_whenResourcesTomlIsMalformed`),
+        /// and provisioning then falls back to the node-wide `ConfigService` — the node composite alone. A
+        /// section that appears only in the malformed file is not available at runtime, so the pre-flight
+        /// must not count it.
+        @Test
+        void publish_failsWithMissingConfigSection_whenSectionShipsOnlyInAMalformedSliceToml() throws IOException {
+            var jar = writeSliceJarWithResource("http", "payments", Option.some(MALFORMED_PAYMENTS_TOML));
+            var result = publishDslWithComposite(jar, Option.some(providerWithSections()));
+
+            result.onSuccess(_ -> Assertions.fail("A malformed slice resources.toml contributes no layer at runtime — the deploy must be refused"))
+                  .onFailure(ConfigPreflight::assertOnlyPaymentsSectionMissing);
+        }
+
+        /// #1067 no-regression: a section configured only in the node's `node.toml` layer is accepted.
+        @Test
+        void publish_succeeds_whenSectionIsConfiguredOnlyInNodeToml() throws IOException {
+            var jar = writeSliceJarWithResource("http", "payments");
+            var result = publishDslWithComposite(jar, Option.some(nodeComposite(providerWithSections(), providerWithSections("payments"))));
+
+            result.onFailure(cause -> Assertions.fail("[payments] is configured in node.toml: " + cause.message()));
+        }
+
+        /// #1067 no-regression: a section configured only in the operator KV overlay is accepted.
+        @Test
+        void publish_succeeds_whenSectionIsConfiguredOnlyInKvOverlay() throws IOException {
+            var jar = writeSliceJarWithResource("http", "payments");
+            var result = publishDslWithComposite(jar, Option.some(nodeComposite(providerWithSections("payments"), providerWithSections())));
+
+            result.onFailure(cause -> Assertions.fail("[payments] is configured in the KV overlay: " + cause.message()));
+        }
+
+        private static void assertOnlyPaymentsSectionMissing(Cause cause) {
+            assertThat(cause.stream().toList()).as("every aggregated failure is a MissingConfigSection")
+                                               .isNotEmpty()
+                                               .allMatch(MissingConfigSection.class::isInstance);
+            assertThat(cause.message()).contains("[payments]")
+                                       .contains("orders-api");
+        }
+
         private Result<ExpandedBlueprint> publishWithComposite(Path jar, Option<ConfigurationProvider> nodeComposite) {
+            return preflightService(jar, nodeComposite).publishFromArtifact(PREFLIGHT_COORDS + ":blueprint")
+                                                       .await();
+        }
+
+        /// The DSL path `SliceRoutes.handleBlueprint` serves for `POST /api/v1/blueprints`.
+        private Result<ExpandedBlueprint> publishDslWithComposite(Path jar, Option<ConfigurationProvider> nodeComposite) {
+            return preflightService(jar, nodeComposite).publish("id = \"" + PREFLIGHT_COORDS + "\"\n" + SLICE_STANZA)
+                                                       .await();
+        }
+
+        private BlueprintService preflightService(Path jar, Option<ConfigurationProvider> nodeComposite) {
             Repository repository = artifact -> SLICE.equals(artifact)
                                                  ? Result.lift(Causes::fromThrowable, () -> jar.toUri().toURL())
                                                          .flatMap(url -> Location.location(artifact, url))
                                                          .async()
                                                  : NOT_IN_REPOSITORY.promise();
 
-            return BlueprintService.blueprintService(cluster, store, repository, artifactStore(withoutMigrations(PREFLIGHT_COORDS)), nodeComposite)
-                                   .publishFromArtifact(PREFLIGHT_COORDS + ":blueprint")
-                                   .await();
+            return BlueprintService.blueprintService(cluster, store, repository, artifactStore(withoutMigrations(PREFLIGHT_COORDS)), nodeComposite);
+        }
+
+        /// The node composite exactly as `AetherNode.createResourceProviderFacade` layers it: the operator KV
+        /// overlay first, the node's own `node.toml` beneath.
+        private ConfigurationProvider nodeComposite(ConfigurationProvider kvOverlay, ConfigurationProvider nodeToml) {
+            return LayeredConfigProvider.layered(List.of(NamedConfigProvider.namedConfigProvider("KV", kvOverlay),
+                                                         NamedConfigProvider.namedConfigProvider("node.toml", nodeToml)));
         }
 
         private ConfigurationProvider providerWithSections(String... sections) {
@@ -910,6 +1273,15 @@ class BlueprintPublishOwnershipTest {
         /// `META-INF/slice/*.manifest` properties entry declaring a single generic resource
         /// dependency, in the exact key format `TopologyParser.parseFromJar` expects.
         private Path writeSliceJarWithResource(String resourceType, String resourceSection) throws IOException {
+            return writeSliceJarWithResource(resourceType, resourceSection, Option.none());
+        }
+
+        /// Same as [#writeSliceJarWithResource(String, String)] plus, when given, the slice's own
+        /// `META-INF/resources.toml` — the entry the loader reads through the slice classloader and layers
+        /// under the node composite (#1067).
+        private Path writeSliceJarWithResource(String resourceType,
+                                               String resourceSection,
+                                               Option<String> resourcesToml) throws IOException {
             var manifest = new Manifest();
             var attributes = manifest.getMainAttributes();
 
@@ -934,6 +1306,10 @@ class BlueprintPublishOwnershipTest {
                 out.putNextEntry(new ZipEntry("org/example/orders/"));
                 out.closeEntry();
                 writeEntry(out, "META-INF/slice/OrdersApi.manifest", topology);
+
+                if (resourcesToml.isPresent()) {
+                    writeEntry(out, "META-INF/resources.toml", resourcesToml.unwrap());
+                }
             }
 
             return target;

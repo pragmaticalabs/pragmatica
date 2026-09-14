@@ -25,6 +25,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
+import org.pragmatica.aether.deployment.CommittedSliceTarget;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.ReconciliationAdjustment;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
@@ -2298,7 +2299,20 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                     .contains(dependency);
         }
 
+        /// #1068 — the leader's half of "a rolled-back version never starts again": a LOADED slice
+        /// whose version no committed target names (the blueprint rolled back or was superseded
+        /// between LOAD and LOADED) is UNLOADed instead of activated. Same predicate as the node-side
+        /// gate and the orphan sweep, read from the committed store, never from `blueprints`.
         private void issueActivateCommand(SliceNodeKey sliceKey) {
+            if (!CommittedSliceTarget.permits(ctx.kvStore(), sliceKey.artifact())) {
+                log.warn("No committed SliceTarget names {} — issuing UNLOAD instead of ACTIVATE for {} (#1068)",
+                         sliceKey.artifact(),
+                         sliceKey.nodeId());
+                issueUnloadCommand(sliceKey);
+
+                return;
+            }
+
             log.debug("Issuing ACTIVATE command for {}", sliceKey);
             applyStateWrite(sliceKey, SliceState.ACTIVATE).onFailure(cause -> log.error("Failed to issue ACTIVATE command for {}: {}",
                                                                                         sliceKey,
@@ -2580,8 +2594,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             // A schema sweep does NOT belong here. It was added and reverted on 2026-08-31: sweeping
             // PENDING records on every reconcile re-dispatches a migration that is already running —
             // reconcile() is driven from many call sites, so three dispatches landed within two
-            // seconds, and `SchemaOrchestratorService.acquireLock` is check-then-act (`isLockHeld`
-            // then `cluster.apply(Put)`), not atomic across nodes. The second runner reached
+            // seconds, and at the time `SchemaOrchestratorService.acquireLock` was check-then-act
+            // (a read then a separate `cluster.apply(Put)`), not atomic across nodes. Since #766 the
+            // claim is a fenced CAS (`lockVersion` + `VersionFenced`, refused by the applier when
+            // stale) — but a sweep is STILL blocked by #806: the lock TTL (5 min) is shorter than the
+            // migration timeout (15 min), so an expired lock can be taken over while the holder still
+            // runs, and `releaseLock` is an unfenced Remove. The second runner reached
             // `aether_schema_history` and died on `23505 duplicate key`, marking the whole datasource
             // FAILED and holding every slice in the blueprint — the exact outage the sweep was meant
             // to prevent, caused by the sweep.
