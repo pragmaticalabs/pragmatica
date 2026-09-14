@@ -63,6 +63,16 @@ public record AutoHealConfig(TimeSpan startupCooldown,
         return new AutoHealConfig(startupCooldown, provisioningTimeout, swimHintsTtl, maxNodes);
     }
 
+    /// #675 — `[timeouts.scaling] auto_heal_provisioning_timeout` reaches the runtime through here.
+    public AutoHealConfig withProvisioningTimeout(TimeSpan provisioningTimeout) {
+        return new AutoHealConfig(startupCooldown, provisioningTimeout, swimHintsTtl, maxNodes);
+    }
+
+    /// #675 — `[timeouts.scaling] auto_heal_swim_hints_ttl` reaches the runtime through here.
+    public AutoHealConfig withSwimHintsTtl(TimeSpan swimHintsTtl) {
+        return new AutoHealConfig(startupCooldown, provisioningTimeout, swimHintsTtl, maxNodes);
+    }
+
     /// #298 — operator-set ceiling on the number of nodes this cluster may have provisioned.
     /// Enforced at the single provisioning chokepoint (`NodeLifecycleManager.provisionNode`), which
     /// every path funnels through: the auto-heal reconciler, bootstrap, and CLI wave reprovision.

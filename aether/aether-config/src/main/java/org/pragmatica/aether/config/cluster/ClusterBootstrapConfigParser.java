@@ -10,6 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.environment.SourceName;
@@ -612,8 +613,9 @@ public final class ClusterBootstrapConfigParser {
 
     /// #675: every `[operations.auto_heal]` key other than `enabled` parsed into `AutoHealSpec` and
     /// reached no node — the runtime's `AutoHealConfig` is built from the NODE config (`[cluster]
-    /// max_nodes`, `[timeouts.scaling] auto_heal_startup_cooldown`), never from this document. A
-    /// tunable that changes nothing is refused loudly, mirroring PF-25 (`enabled = false`) and PF-23.
+    /// max_nodes`, `[timeouts.scaling] auto_heal_*`), never from this document. A tunable that changes
+    /// nothing is refused loudly, mirroring PF-25 (`enabled = false`) and PF-23, and the refusal names
+    /// EVERY stale key at once so one bootstrap attempt reports them all.
     private static final List<String> REMOVED_AUTO_HEAL_KEYS = List.of("retry_interval",
                                                                        "startup_cooldown",
                                                                        "stale_observation_ttl",
@@ -622,6 +624,14 @@ public final class ClusterBootstrapConfigParser {
                                                                        "provision_stability_window",
                                                                        "decommissioned_retention",
                                                                        "swim_hints_ttl");
+    /// The three removed keys that named a timing the runtime DOES read, and the node-config key
+    /// (`[timeouts.scaling]`) that sets it now. The other five named nothing that is read anywhere.
+    private static final Map<String, String> AUTO_HEAL_NODE_KEYS = Map.of("startup_cooldown",
+                                                                          "auto_heal_startup_cooldown",
+                                                                          "provisioning_timeout",
+                                                                          "auto_heal_provisioning_timeout",
+                                                                          "swim_hints_ttl",
+                                                                          "auto_heal_swim_hints_ttl");
 
     private static Result<AutoHealSpec> parseAutoHealSpec(TomlDocument doc) {
         if (doc.hasSection(OPERATIONS_AUTO_HEAL_SECTION)) {
@@ -636,20 +646,30 @@ public final class ClusterBootstrapConfigParser {
     }
 
     private static Result<Unit> refuseRemovedAutoHealKeys(TomlDocument doc) {
-        return firstRemovedAutoHealKey(doc).fold(Result::unitResult, ClusterBootstrapConfigParser::removedAutoHealKey);
-    }
-
-    private static Option<String> firstRemovedAutoHealKey(TomlDocument doc) {
         var present = doc.keys(OPERATIONS_AUTO_HEAL_SECTION);
+        var removed = REMOVED_AUTO_HEAL_KEYS.stream().filter(present::contains).toList();
 
-        return Option.from(REMOVED_AUTO_HEAL_KEYS.stream().filter(present::contains).findFirst());
+        return removed.isEmpty() ? Result.unitResult() : removedAutoHealKeys(removed);
     }
 
-    private static Result<Unit> removedAutoHealKey(String key) {
-        return parseFailed("PF-26: [operations.auto_heal] " + key
-                          + " has no runtime effect — the node builds its auto-heal settings from its own config"
-                          + " ([cluster] max_nodes, [timeouts.scaling] auto_heal_startup_cooldown) and never reads"
-                          + " this key. Remove it (#675).").result();
+    private static Result<Unit> removedAutoHealKeys(List<String> keys) {
+        return parseFailed("PF-26: [operations.auto_heal] " + String.join(", ", keys)
+                          + " never took effect — the node builds its auto-heal settings from its own aether.toml"
+                          + " and never reads this document. Remove " + (keys.size() == 1 ? "it" : "them")
+                          + " (#675)." + relocatedAutoHealKeys(keys)).result();
+    }
+
+    /// Where each live timing is set now, so the refusal is not a dead end for an operator who tuned one.
+    private static String relocatedAutoHealKeys(List<String> keys) {
+        var relocated = keys.stream()
+                            .filter(AUTO_HEAL_NODE_KEYS::containsKey)
+                            .map(key -> key + " -> [timeouts.scaling] " + AUTO_HEAL_NODE_KEYS.get(key))
+                            .collect(Collectors.joining(", "));
+
+        return relocated.isEmpty()
+               ? ""
+               : " Set the live timing in the NODE config instead: " + relocated
+                 + " (from this file: [source.<name>.node_config.timeouts.scaling]).";
     }
 
     private static TlsDeploymentConfig parseTlsConfig(TomlDocument doc) {
