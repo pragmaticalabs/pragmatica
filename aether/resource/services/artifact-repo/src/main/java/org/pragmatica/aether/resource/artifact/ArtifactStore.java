@@ -529,12 +529,14 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     private Promise<Unit> updateVersionsList(Artifact artifact) {
         return rewriteList(versionsKey(artifact.groupId(), artifact.artifactId()),
-                           versions -> addIfAbsent(versions, artifact.version().withQualifier())).map(Unit::unit);
+                           versions -> addIfAbsent(versions,
+                                                   artifact.version().withQualifier())).map(Unit::unit);
     }
 
     private Promise<Unit> removeFromVersionsList(Artifact artifact) {
         return rewriteList(versionsKey(artifact.groupId(), artifact.artifactId()),
-                           versions -> without(versions, artifact.version().withQualifier())).map(Unit::unit);
+                           versions -> without(versions,
+                                               artifact.version().withQualifier())).map(Unit::unit);
     }
 
     private Promise<Unit> registerFile(ArtifactFile file) {
@@ -543,10 +545,14 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     /// Drops the file from the version's file list; an emptied list delists the version.
     private Promise<Unit> unregisterFile(ArtifactFile file) {
-        return rewriteList(filesKey(file.artifact()), files -> without(files, file.fileName()))
-                          .flatMap(remaining -> remaining.isEmpty()
-                                                ? removeFromVersionsList(file.artifact())
-                                                : Promise.unitPromise());
+        return rewriteList(filesKey(file.artifact()), files -> without(files, file.fileName())).flatMap(remaining -> delistIfNoFilesLeft(file.artifact(),
+                                                                                                                                         remaining));
+    }
+
+    private Promise<Unit> delistIfNoFilesLeft(Artifact artifact, List<String> remainingFiles) {
+        return remainingFiles.isEmpty()
+               ? removeFromVersionsList(artifact)
+               : Promise.unitPromise();
     }
 
     /// Get-then-put on a comma-separated list key, yielding the list as written; an emptied list
@@ -556,8 +562,10 @@ class ArtifactStoreImpl implements ArtifactStore {
         return dht.get(key)
                   .map(opt -> change.apply(opt.map(ArtifactStoreImpl::parseList).or(List.of())))
                   .flatMap(items -> items.isEmpty()
-                                    ? dht.remove(key).map(_ -> items)
-                                    : dhtPutWithRetry(key, serializeList(items)).map(_ -> items));
+                                    ? dht.remove(key)
+                                         .map(_ -> items)
+                                    : dhtPutWithRetry(key,
+                                                      serializeList(items)).map(_ -> items));
     }
 
     private Promise<Unit> dhtPutWithRetry(byte[] key, byte[] value) {
@@ -726,7 +734,9 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     private static List<String> without(List<String> existing, String item) {
-        return existing.stream().filter(i -> !i.equals(item)).toList();
+        return existing.stream()
+                       .filter(i -> !i.equals(item))
+                       .toList();
     }
 
     private static List<String> parseList(byte[] data) {

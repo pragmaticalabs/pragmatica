@@ -438,7 +438,8 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
 
         if (!version.toUpperCase(Locale.ROOT).endsWith(SNAPSHOT_SUFFIX)) return -1;
 
-        var base = artifactId + "-" + version.substring(0, version.length() - SNAPSHOT_SUFFIX.length());
+        var base = artifactId + "-" + version.substring(0,
+                                                        version.length() - SNAPSHOT_SUFFIX.length());
 
         if (!fileName.startsWith(base)) return -1;
 

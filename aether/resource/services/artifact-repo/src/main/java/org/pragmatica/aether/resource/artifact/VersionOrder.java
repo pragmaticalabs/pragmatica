@@ -2,13 +2,13 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.resource.artifact;
-
-import org.pragmatica.aether.artifact.Version;
 
 import java.util.Comparator;
 import java.util.Locale;
+
+import org.pragmatica.aether.artifact.Version;
+
 
 /// Orders versions for `maven-metadata.xml`'s `<latest>`/`<release>` (#281): numeric
 /// `major.minor.patch` first, then the qualifier as Maven's `ComparableVersion` ranks it —
@@ -21,16 +21,15 @@ import java.util.Locale;
 /// algorithm (no dotted qualifier lists, no digit/letter splitting inside a token).
 enum VersionOrder implements Comparator<Version> {
     INSTANCE;
-
     private static final int SNAPSHOT_RANK = 5;
     private static final int RELEASE_RANK = 6;
     private static final int UNKNOWN_RANK = 8;
     private static final String SNAPSHOT = "snapshot";
-
     static boolean isSnapshot(Version version) {
-        return version.qualifier().toLowerCase(Locale.ROOT).contains(SNAPSHOT);
+        return version.qualifier()
+                      .toLowerCase(Locale.ROOT)
+                      .contains(SNAPSHOT);
     }
-
     @Override
     public int compare(Version a, Version b) {
         var numeric = Comparator.comparingInt(Version::major)
@@ -42,7 +41,6 @@ enum VersionOrder implements Comparator<Version> {
                ? numeric
                : compareQualifiers(a.qualifier(), b.qualifier());
     }
-
     private static int compareQualifiers(String a, String b) {
         var qa = Qualifier.parse(a);
         var qb = Qualifier.parse(b);
@@ -60,7 +58,6 @@ enum VersionOrder implements Comparator<Version> {
                ? byRest
                : Boolean.compare(qb.snapshotOf(), qa.snapshotOf());
     }
-
     /// `snapshotOf` marks `<token>-SNAPSHOT`: the same rank/number/rest as `<token>`, ordered below it.
     private record Qualifier(int rank, long number, String rest, boolean snapshotOf) {
         static Qualifier parse(String qualifier) {
@@ -70,7 +67,8 @@ enum VersionOrder implements Comparator<Version> {
 
             var snapshotOf = lower.endsWith("-" + SNAPSHOT);
             var body = snapshotOf
-                       ? lower.substring(0, lower.length() - SNAPSHOT.length() - 1)
+                       ? lower.substring(0,
+                                         lower.length() - SNAPSHOT.length() - 1)
                        : lower;
             var tokenEnd = 0;
 
@@ -89,7 +87,6 @@ enum VersionOrder implements Comparator<Version> {
             var rank = rankOf(token, numberEnd > 0);
 
             if (rank == UNKNOWN_RANK) return new Qualifier(rank, -1L, body, snapshotOf);
-
             // A digit run past `long` (a 30-digit stamp) saturates rather than throws; ties there
             // fall to the lexical `rest` comparison.
             var number = numberEnd == 0
@@ -107,11 +104,17 @@ enum VersionOrder implements Comparator<Version> {
         private static int rankOf(String token, boolean numbered) {
             return switch (token) {
                 case "alpha" -> 0;
-                case "a" -> numbered ? 0 : UNKNOWN_RANK;
+                case "a" -> numbered
+                            ? 0
+                            : UNKNOWN_RANK;
                 case "beta" -> 1;
-                case "b" -> numbered ? 1 : UNKNOWN_RANK;
+                case "b" -> numbered
+                            ? 1
+                            : UNKNOWN_RANK;
                 case "milestone" -> 2;
-                case "m" -> numbered ? 2 : UNKNOWN_RANK;
+                case "m" -> numbered
+                            ? 2
+                            : UNKNOWN_RANK;
                 case "rc", "cr" -> 3;
                 case SNAPSHOT -> SNAPSHOT_RANK;
                 case "", "ga", "final", "release" -> RELEASE_RANK;
