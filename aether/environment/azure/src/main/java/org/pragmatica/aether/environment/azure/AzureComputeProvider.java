@@ -6,6 +6,7 @@ package org.pragmatica.aether.environment.azure;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -260,7 +261,7 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         var tags = safeTags(row);
 
         return new InstanceInfo(new InstanceId(row.name()),
-                                InstanceStatus.RUNNING,
+                                mapRowStatus(row),
                                 List.of(),
                                 InstanceType.ON_DEMAND,
                                 tags,
@@ -275,18 +276,38 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         return option(row.tags()).or(Map.of());
     }
 
+    /// Provider-agnostic node-id key upper layers select by (`NodeLifecycleManager.NODE_ID_TAG`). This
+    /// provider STAMPS the hyphenated [#NODE_ID_TAG], so a lookup written as `Map.of("aether.node-id", id)`
+    /// must be rewritten here or it matches nothing and an existing VM reads as ABSENT — which the
+    /// auto-heal in-flight tracker would take as a deletion (#1049). Mirrors
+    /// `HetznerComputeProvider.translateKeys`.
+    static final String UPPER_LAYER_NODE_ID_TAG = "aether.node-id";
+
     static String buildTagFilterQuery(Map<String, String> tagFilter) {
         var baseQuery = "Resources | where type == \"microsoft.compute/virtualmachines\"";
-        var tagClauses = tagFilter.entrySet()
-                                  .stream()
-                                  .map(AzureComputeProvider::toTagClause)
-                                  .collect(Collectors.joining(" "));
+        var tagClauses = translateKeys(tagFilter).entrySet()
+                                      .stream()
+                                      .map(AzureComputeProvider::toTagClause)
+                                      .collect(Collectors.joining(" "));
 
         return baseQuery + tagClauses;
     }
 
     private static String toTagClause(Map.Entry<String, String> entry) {
         return " | where tags[\"" + entry.getKey() + "\"] == \"" + entry.getValue() + "\"";
+    }
+
+    static Map<String, String> translateKeys(Map<String, String> tagFilter) {
+        if (!tagFilter.containsKey(UPPER_LAYER_NODE_ID_TAG)) {
+            return tagFilter;
+        }
+
+        var translated = new LinkedHashMap<>(tagFilter);
+        var value = translated.remove(UPPER_LAYER_NODE_ID_TAG);
+
+        translated.put(NODE_ID_TAG, value);
+
+        return translated;
     }
 
     private static List<InstanceInfo> toInstanceInfoList(List<VirtualMachine> vms) {
@@ -299,6 +320,45 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         return rows.stream()
                    .map(AzureComputeProvider::toInstanceInfoFromRow)
                    .toList();
+    }
+
+    /// #1049 — status of a VM as Resource Graph lists it. Previously hard-coded RUNNING, which made every
+    /// stopped, deallocated or failed VM read as present to the auto-heal tracker. Power state first, then
+    /// provisioning state, exactly as [#mapStatus] reads a VM: provisioning state reflects only the last
+    /// control-plane operation, so a running VM whose last tag update failed is still running. Neither
+    /// present → [InstanceStatus#UNKNOWN].
+    static InstanceStatus mapRowStatus(ResourceRow row) {
+        var properties = Option.<Map<?, ?>> option(row.properties()).or(Map.of());
+
+        return rowPowerStateCode(properties).map(AzureComputeProvider::powerStateToStatus)
+                                .or(() -> rowProvisioningStatus(properties));
+    }
+
+    /// The row's provisioning state, mapped; [InstanceStatus#UNKNOWN] when the row carries none.
+    private static InstanceStatus rowProvisioningStatus(Map<?, ?> properties) {
+        return rowProvisioningState(properties).map(AzureComputeProvider::provisioningStateToStatus)
+                                   .or(InstanceStatus.UNKNOWN);
+    }
+
+    /// Resource Graph carries a VM's power state at `properties.extended.instanceView.powerState.code`.
+    private static Option<String> rowPowerStateCode(Map<?, ?> properties) {
+        return nestedMap(properties, "extended").flatMap(extended -> nestedMap(extended, "instanceView"))
+                        .flatMap(instanceView -> nestedMap(instanceView, "powerState"))
+                        .flatMap(powerState -> text(powerState, "code"));
+    }
+
+    private static Option<String> rowProvisioningState(Map<?, ?> properties) {
+        return text(properties, "provisioningState");
+    }
+
+    private static Option<Map<?, ?>> nestedMap(Map<?, ?> map, String key) {
+        return option(map.get(key)).filter(Map.class::isInstance)
+                     .map(value -> (Map<?, ?>) value);
+    }
+
+    private static Option<String> text(Map<?, ?> map, String key) {
+        return option(map.get(key)).filter(String.class::isInstance)
+                     .map(String.class::cast);
     }
 
     static InstanceStatus mapStatus(VirtualMachine vm) {
@@ -327,18 +387,25 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
             case "PowerState/deallocated", "PowerState/stopped" -> InstanceStatus.STOPPING;
             case "PowerState/starting" -> InstanceStatus.PROVISIONING;
             case "PowerState/deallocating", "PowerState/stopping" -> InstanceStatus.STOPPING;
-            default -> InstanceStatus.TERMINATED;
+            default -> InstanceStatus.UNKNOWN;
         };
     }
 
     private static InstanceStatus provisioningStateToStatus(VirtualMachine vm) {
-        var state = option(vm.properties()).map(VirtualMachine.VmProperties::provisioningState).or("Unknown");
+        return option(vm.properties()).flatMap(properties -> option(properties.provisioningState()))
+                     .map(AzureComputeProvider::provisioningStateToStatus)
+                     .or(InstanceStatus.UNKNOWN);
+    }
 
+    /// Azure's documented VM provisioning states. `Failed` reads as stopping, which the auto-heal tracker
+    /// classifies as a failed replacement. Any state not listed here (e.g. `Canceled`) maps to
+    /// [InstanceStatus#UNKNOWN] (#1049).
+    private static InstanceStatus provisioningStateToStatus(String state) {
         return switch (state) {
             case "Succeeded" -> InstanceStatus.RUNNING;
             case "Creating", "Updating" -> InstanceStatus.PROVISIONING;
             case "Deleting", "Failed" -> InstanceStatus.STOPPING;
-            default -> InstanceStatus.TERMINATED;
+            default -> InstanceStatus.UNKNOWN;
         };
     }
 

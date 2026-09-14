@@ -2632,6 +2632,97 @@ class SliceProcessorTest {
         assertCompilation(compilation).hadErrorContaining("Multiple @Key annotations");
     }
 
+    /// #279 (2): two methods sharing one interceptor config section were deduplicated into ONE
+    /// provision, and that provision captured the FIRST method's `@Key` extractor — so the second
+    /// method's calls were keyed with a `Fn1` written for the first method's request type
+    /// (`ClassCastException` at the first call, or a wrong key when the types happen to coincide).
+    /// A key-bearing method must get its own provision carrying its own extractor.
+    @Test
+    void should_provision_a_key_bearing_interceptor_per_method_when_the_config_section_is_shared() throws Exception {
+        var userId = JavaFileObjects.forSourceString("test.dto.UserId",
+                                                     """
+            package test.dto;
+            public record UserId(String value) {}
+            """);
+        var orderId = JavaFileObjects.forSourceString("test.dto.OrderId",
+                                                      """
+            package test.dto;
+            public record OrderId(long value) {}
+            """);
+        var userRequest = JavaFileObjects.forSourceString("test.dto.GetUserRequest",
+                                                          """
+            package test.dto;
+            import org.pragmatica.aether.resource.aspect.Key;
+            public record GetUserRequest(@Key UserId userId, boolean includeDetails) {}
+            """);
+        var orderRequest = JavaFileObjects.forSourceString("test.dto.GetOrderRequest",
+                                                           """
+            package test.dto;
+            import org.pragmatica.aether.resource.aspect.Key;
+            public record GetOrderRequest(@Key OrderId orderId, boolean includeLines) {}
+            """);
+        var withCache = JavaFileObjects.forSourceString("test.annotation.WithCache",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.MethodInterceptor;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = MethodInterceptor.class, config = "cache.shared")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface WithCache {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.LookupService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.dto.GetUserRequest;
+            import test.dto.GetOrderRequest;
+            import test.annotation.WithCache;
+            @Slice
+            public interface LookupService {
+                @WithCache
+                Promise<String> getUser(GetUserRequest request);
+                @WithCache
+                Promise<String> getOrder(GetOrderRequest request);
+                static LookupService lookupService() { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(userId);
+        sources.add(orderId);
+        sources.add(userRequest);
+        sources.add(orderRequest);
+        sources.add(withCache);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.LookupServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("GetUserRequest::userId");
+        // the second method must carry ITS OWN key extractor
+        assertThat(factoryContent).contains("GetOrderRequest::orderId");
+        // one provision per key-bearing method, both under the shared section
+        assertThat(countOccurrences(factoryContent, "provide(MethodInterceptor.class, \"cache.shared\"")).isEqualTo(2);
+    }
+
+    private static int countOccurrences(String text, String needle) {
+        var count = 0;
+        var index = text.indexOf(needle);
+
+        while (index >= 0) {
+            count++;
+            index = text.indexOf(needle, index + needle.length());
+        }
+
+        return count;
+    }
+
     @Test
     void should_generate_interceptor_with_key_extractor() throws Exception {
         var userId = JavaFileObjects.forSourceString("test.dto.UserId",

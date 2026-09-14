@@ -1,11 +1,14 @@
 package org.pragmatica.storage;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -38,21 +41,31 @@ public final class LocalDiskTier implements StorageTier {
     /// forcibly resolves the read with `CoreError.Timeout`. Generous: a healthy local-disk
     /// block read completes in milliseconds.
     private static final TimeSpan DEFAULT_READ_TIMEOUT = timeSpan(30).seconds();
+    /// A block is written to a sibling `<hex>.<n>.partial` file and renamed over the block path
+    /// once complete, so the block path only ever holds a whole copy — the previous one until the
+    /// rename, the new one after it. Without this the TRUNCATE_EXISTING in-place write destroyed
+    /// the previous copy at open and left a truncated file that the read waterfall would serve and
+    /// then fail on its integrity check (review of #1095, B-1, reproduced under a real ENOSPC).
+    private static final String PARTIAL_SUFFIX = ".partial";
 
     private final Path basePath;
     private final AtomicLong usedBytes = new AtomicLong(0);
+    private final AtomicLong writeSequence = new AtomicLong(0);
     private final long maxBytes;
     private final TimeSpan readTimeout;
     private final Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride;
+    private final Fn2<Result<Unit>, Path, byte[]> writer;
 
     private LocalDiskTier(Path basePath,
                           long maxBytes,
                           TimeSpan readTimeout,
-                          Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride) {
+                          Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride,
+                          Option<Fn2<Result<Unit>, Path, byte[]>> writerOverride) {
         this.basePath = basePath;
         this.maxBytes = maxBytes;
         this.readTimeout = readTimeout;
         this.readerOverride = readerOverride;
+        this.writer = writerOverride.or(FileOps::writeBytes);
     }
 
     public static Result<LocalDiskTier> localDiskTier(Path basePath, long maxBytes) {
@@ -66,8 +79,20 @@ public final class LocalDiskTier implements StorageTier {
                                                       long maxBytes,
                                                       TimeSpan readTimeout,
                                                       Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride) {
+        return localDiskTier(basePath, maxBytes, readTimeout, readerOverride, none());
+    }
+
+    /// Variant with an injectable partial-file write, for tests that need a write to fail after
+    /// N bytes (a disk that fills mid-block) without a real ENOSPC. The override receives the
+    /// partial path, never the block path; everything after the failure — discard, rename,
+    /// accounting — is the production path.
+    static Result<LocalDiskTier> localDiskTier(Path basePath,
+                                               long maxBytes,
+                                               TimeSpan readTimeout,
+                                               Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride,
+                                               Option<Fn2<Result<Unit>, Path, byte[]>> writerOverride) {
         return FileOps.createDirectories(basePath)
-                      .map(_ -> new LocalDiskTier(basePath, maxBytes, readTimeout, readerOverride))
+                      .map(_ -> new LocalDiskTier(basePath, maxBytes, readTimeout, readerOverride, writerOverride))
                       .onSuccess(LocalDiskTier::calculateUsedBytes);
     }
 
@@ -89,8 +114,15 @@ public final class LocalDiskTier implements StorageTier {
                                                   maxBytes)
                                         .promise();
         }
-
-        return Promise.lift(WRITE_ERROR, () -> writeBlock(id, content)).flatMap(Promise::resolved);
+        // A write that failed after reserveCapacity keeps no reservation: the tier would otherwise
+        // over-count by the whole block until restart (review of #1095, SF-2 — reproduced under a
+        // real ENOSPC). Released here, exactly once, whatever stage failed; the on-disk state is
+        // writeBlock's, and it is either the previous copy or nothing — so a later `delete` of the
+        // id subtracts only what it finds there and the count never goes negative (r3, b).
+        return Promise.lift(WRITE_ERROR,
+                            () -> writeBlock(id, content))
+                      .flatMap(Promise::resolved)
+                      .onFailure(_ -> usedBytes.addAndGet(-content.length));
     }
 
     /// Atomic CAS capacity reservation — prevents TOCTOU race.
@@ -148,14 +180,38 @@ public final class LocalDiskTier implements StorageTier {
 
     private Result<Unit> writeBlock(BlockId id, byte[] content) {
         var path = blockPath(id);
+        var partial = partialPath(path);
 
         return FileOps.createDirectories(path.getParent())
                       .flatMap(_ -> existingSize(path))
-                      .flatMap(previousSize -> FileOps.writeBytes(path, content).onSuccess(_ -> correctUsedBytes(previousSize)));
+                      .flatMap(previousSize -> writeThenRename(partial, path, content, previousSize));
     }
 
+    private Result<Unit> writeThenRename(Path partial, Path path, byte[] content, long previousSize) {
+        return writer.apply(partial, content)
+                     .flatMap(_ -> FileOps.moveReplace(partial, path))
+                     .onSuccess(_ -> correctUsedBytes(previousSize))
+                     .onFailure(_ -> discardFailedWrite(partial))
+                     .mapToUnit();
+    }
+
+    /// Only what THIS write created is discarded: the partial file, whether it holds nothing (the
+    /// open failed), N bytes (the disk filled mid-block) or the whole block (the rename failed).
+    /// The previous copy at the block path was never touched and stays counted (r3, c).
+    private void discardFailedWrite(Path partial) {
+        FileOps.deleteIfExists(partial).onFailure(cause -> log.warn("Partial block at {} could not be removed after a failed write: {}",
+                                                                    partial,
+                                                                    cause.message()));
+    }
+
+    private Path partialPath(Path path) {
+        return path.resolveSibling(path.getFileName() + "." + writeSequence.incrementAndGet() + PARTIAL_SUFFIX);
+    }
+
+    /// Only a regular file at the block path is a previous copy; a directory squatting there is
+    /// not counted, so the failed write that follows leaves nothing to correct for.
     private Result<Long> existingSize(Path path) {
-        return FileOps.exists(path)
+        return Files.isRegularFile(path)
                ? FileOps.size(path)
                : Result.success(0L);
     }
@@ -170,7 +226,7 @@ public final class LocalDiskTier implements StorageTier {
     private Result<Unit> deleteBlock(BlockId id) {
         var path = blockPath(id);
 
-        if (!FileOps.exists(path)) {
+        if (!Files.isRegularFile(path)) {
             return Result.success(unit());
         }
 
@@ -185,11 +241,12 @@ public final class LocalDiskTier implements StorageTier {
                        .resolve(hex);
     }
 
+    /// A partial file left by a write the process did not survive is removed here rather than
+    /// counted: it is never served (reads use the block path) and nothing else would ever delete it.
     private void calculateUsedBytes() {
         FileOps.walk(basePath, FileOps::isRegularFile)
-               .map(paths -> paths.stream()
-                                  .mapToLong(LocalDiskTier::fileSizeOrZero)
-                                  .sum())
+               .onSuccess(LocalDiskTier::removeLeftoverPartials)
+               .map(LocalDiskTier::blockBytes)
                .onSuccess(this::recordUsedBytes)
                .onFailure(cause -> log.warn("Failed to calculate used bytes at {}: {}",
                                             basePath,
@@ -203,5 +260,30 @@ public final class LocalDiskTier implements StorageTier {
 
     private static long fileSizeOrZero(Path path) {
         return FileOps.size(path).or(0L);
+    }
+
+    private static void removeLeftoverPartials(List<Path> paths) {
+        paths.stream().filter(LocalDiskTier::isPartial).forEach(LocalDiskTier::removeLeftoverPartial);
+    }
+
+    private static long blockBytes(List<Path> paths) {
+        return paths.stream()
+                    .filter(path -> !isPartial(path))
+                    .mapToLong(LocalDiskTier::fileSizeOrZero)
+                    .sum();
+    }
+
+    private static boolean isPartial(Path path) {
+        return path.getFileName()
+                   .toString()
+                   .endsWith(PARTIAL_SUFFIX);
+    }
+
+    private static void removeLeftoverPartial(Path partial) {
+        FileOps.deleteIfExists(partial)
+               .onSuccess(_ -> log.info("Removed leftover partial block {}", partial))
+               .onFailure(cause -> log.warn("Leftover partial block {} could not be removed: {}",
+                                            partial,
+                                            cause.message()));
     }
 }

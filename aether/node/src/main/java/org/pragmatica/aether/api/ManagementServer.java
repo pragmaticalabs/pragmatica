@@ -1594,15 +1594,16 @@ class ManagementServerImpl implements ManagementServer {
     /// privileges naming a framework stream in the body — auth level does not matter here because
     /// the check runs regardless of it.
     ///
-    /// [ManagementRoute#CONSUMER_GROUP_JOIN]/[ManagementRoute#CONSUMER_GROUP_LEAVE] are a known,
-    /// currently open gap, not covered here: their target stream name travels in the request body
+    /// [ManagementRoute#CONSUMER_GROUP_JOIN]/[ManagementRoute#CONSUMER_GROUP_LEAVE] are likewise not
+    /// covered here: their target stream name travels in the request body
     /// (`JoinGroupRequest`/`LeaveGroupRequest`), not the path, and this gate only inspects
-    /// method+path. It closes once these routes gain path-resolvable identity per the catalog-form
-    /// reshape (management-api-versioning-spec.md §3.3) — deliberately deferred (ruled 2026-08-30,
-    /// #754), not merely untidy: catalog `deleteGroup` evicts every consumer at a stream address,
-    /// so a naive fold of `LEAVE` onto it would be a destructive semantic inversion under the same
-    /// user-facing verb (legacy `LEAVE` removes one named consumer). Closing this gap requires that
-    /// design fix first, not just a path-identity reshape — see #754.
+    /// method+path. Since #742 they carry the same post-auth, handler-level guard as CREATE —
+    /// `StreamRoutes#joinGroup`/`#leaveGroup`, first statement, same predicate, pinned by
+    /// `StreamRoutesGroupSystemStreamTest`. The path-identity reshape (management-api-versioning-spec.md
+    /// §3.3) remains deferred (ruled 2026-08-30, #754), not merely untidy: catalog `deleteGroup`
+    /// evicts every consumer at a stream address, so a naive fold of `LEAVE` onto it would be a
+    /// destructive semantic inversion under the same user-facing verb (legacy `LEAVE` removes one
+    /// named consumer). That design fix is #754's, independent of the guard.
     ///
     /// A route match whose params fail to resolve to a [ResourceAddress] (malformed namespace or
     /// version) fails closed — treated as forbidden, not passed through.
@@ -1650,20 +1651,22 @@ class ManagementServerImpl implements ManagementServer {
     /// [#resolvePermission] are.
     static Option<String> resolveEngineKey(MatchedRoute matched) {
         return switch (matched.route()) {
-            case STREAMS_PUBLISH, STREAMS_DELETE, STREAMS_GROUP_CREATE, STREAMS_GROUP_DELETE, STREAM_REPLICAS -> matched.param("namespace").flatMap(ns -> matched.param("stream")
-                                                                                                                                                                 .flatMap(stream -> matched.param("version")
-                                                                                                                                                                                           .flatMap(ver -> ResourceAddress.resourceAddress(ns,
-                                                                                                                                                                                                                                           stream,
-                                                                                                                                                                                                                                           ver).option()))).map(StreamManager::engineKey);
+            case STREAMS_PUBLISH, STREAMS_PUBLISH_BATCH, STREAMS_DELETE, STREAMS_GROUP_CREATE, STREAMS_GROUP_DELETE, STREAM_REPLICAS -> matched.param("namespace").flatMap(ns -> matched.param("stream")
+                                                                                                                                                                                        .flatMap(stream -> matched.param("version")
+                                                                                                                                                                                                                  .flatMap(ver -> ResourceAddress.resourceAddress(ns,
+                                                                                                                                                                                                                                                                  stream,
+                                                                                                                                                                                                                                                                  ver).option()))).map(StreamManager::engineKey);
             default -> Option.empty();
         };
     }
 
     /// Identity-bearing write routes this pre-auth path gate covers — see
-    /// [#rejectSystemStreamWrite]'s doc for why [ManagementRoute#STREAM_CREATE] (covered instead by
-    /// a separate, post-auth, handler-level guard) and the `CONSUMER_GROUP_*` routes (an open gap)
-    /// are excluded.
+    /// [#rejectSystemStreamWrite]'s doc for why [ManagementRoute#STREAM_CREATE] and the
+    /// `CONSUMER_GROUP_*` routes are covered instead by a post-auth, handler-level guard (body-carried
+    /// identity). `STREAMS_PUBLISH_BATCH` was missing from this set until #742's review: the batch
+    /// form wrote to the framework's own ring while the single form was refused.
     private static final Set<ManagementRoute> STREAM_IDENTITY_WRITE_ROUTES = Set.of(ManagementRoute.STREAMS_PUBLISH,
+                                                                                    ManagementRoute.STREAMS_PUBLISH_BATCH,
                                                                                     ManagementRoute.STREAMS_DELETE,
                                                                                     ManagementRoute.STREAMS_GROUP_CREATE,
                                                                                     ManagementRoute.STREAMS_GROUP_DELETE);

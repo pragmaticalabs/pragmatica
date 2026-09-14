@@ -569,13 +569,16 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return new InstanceInfo(instanceId, mapDockerState(state), List.of(name), InstanceType.ON_DEMAND, Map.of());
     }
 
+    /// Docker's documented `ContainerState.Status` values. Any value not listed here maps to
+    /// [InstanceStatus#UNKNOWN] (#1049): reading it as terminated drops an auto-heal replacement that may
+    /// still exist.
     static InstanceStatus mapDockerState(String dockerState) {
         return switch (dockerState) {
             case "created", "restarting" -> InstanceStatus.PROVISIONING;
             case "running" -> InstanceStatus.RUNNING;
             case "paused", "removing", "exited" -> InstanceStatus.STOPPING;
             case "dead" -> InstanceStatus.TERMINATED;
-            default -> InstanceStatus.TERMINATED;
+            default -> InstanceStatus.UNKNOWN;
         };
     }
 

@@ -166,20 +166,31 @@ The `type` prefix determines which `ResourceFactory` handles provisioning. The `
 Deploying a blueprint runs a pre-flight check over every slice's generic resource dependencies
 (`[type.qualifier]` sections — database, cache, HTTP client, idempotency store, and any other
 resource declared via `@ResourceQualifier`) before any node activates a slice. If one or more
-declared sections have no matching config anywhere in the target cluster, the deploy fails up front
-with the complete list of missing sections, naming the slice, the resource type, and the section —
-not one node at a time, discovered only when that node's `SpiResourceProvider` tries to load the
-resource [mechanism: `ConfigSectionPreflightValidator`, aggregated via `Result.allOf`].
+declared sections are in none of the layers the slice loader would consult for that slice — the
+operator KV-Store overlay, `aether.toml`, and the slice jar's own `META-INF/resources.toml` — the deploy
+fails up front with the complete list of missing sections, naming the slice, the resource type, and the
+section — not one node at a time, discovered only when that node's `SpiResourceProvider` tries to load
+the resource [mechanism: `ConfigSectionPreflightValidator` over `SliceStore.layerSliceComposite`, aggregated
+via `Result.allOf`]. A section shipped only in the slice's own jar passes, because the loader resolves it
+there (#1067) [verified: `BlueprintPublishOwnershipTest.ConfigPreflight.publish_succeeds_whenDeclaredSectionShipsOnlyInTheSliceJar`].
 
 **Scope and honest limits:**
 - Only generic resources are checked. Pub-sub topics (publishers and subscribers) are exempt from
   this pre-flight — see the fallback note below and [Pub-Sub Messaging](#pub-sub-messaging-subscriber).
 - The check verifies *presence*, not environmental correctness — a `[database.orders]` section that
   resolves but points at an unreachable host still passes. It checks the **leader's** composite
-  configuration view (KV-Store operator overlay layered over the leader's own `aether.toml`),
-  checked once at deploy time — a section present there but absent from a *different* node's local
-  config file is not caught here `[design intent — unverified]`. A failing check's message names
-  this exact view so it is not mistaken for a cross-node homogeneity guarantee.
+  configuration view (KV-Store operator overlay layered over the leader's own `aether.toml`) plus each
+  slice jar's own `resources.toml`, checked once at deploy time — a section present there but absent
+  from a *different* node's local config file is not caught here `[design intent — unverified]`. A
+  failing check's message names this exact view so it is not mistaken for a cross-node homogeneity
+  guarantee.
+- The view is per slice: a section one slice ships in its jar does not satisfy another slice. A slice
+  `resources.toml` that does not parse contributes nothing, as at load, where provisioning then answers
+  from the node's own configuration alone
+  [verified: `ConfigSectionPreflightValidatorTest.SliceJarLayer`].
+- `${secrets:...}` placeholders in a slice's `resources.toml` are not resolved by the check. At load, one
+  secret that fails to resolve drops that slice's whole file on that node, so a section present only
+  there passes this check and still fails at provisioning `[unverified: no test drives that path]`.
 - If the node has no configuration provider at all, the check fails **open** — deploy proceeds
   unchanged, since absence of a provider means "not checkable," not "not configured." This is a
   quiet gate by construction, so the skip itself is not: the node logs a warning naming how many
@@ -646,6 +657,20 @@ Nested under `[notification.retry_config]`:
 | `max_delay` | duration | `30s` | Maximum retry delay |
 | `backoff_multiplier` | `double` | `2.0` | Exponential backoff multiplier |
 
+The schedule applies to **transient** failures only. A failure the backend has classified as
+permanent — SMTP: any **5yz reply on any command** (the greeting, EHLO, STARTTLS, AUTH, MAIL
+FROM, RCPT TO, DATA — every refusal record carries the reply code and RFC 5321 §4.2.1 decides),
+a 3yz where a completion was expected (a challenge this client cannot answer), or a local TLS
+setup failure (`TlsSetupFailed` — in a TLS mode the send fails BEFORE any connection is opened;
+the client never falls back to cleartext); HTTP: `AuthError` (401/403), `VendorNotFound`, or a
+`RequestFailed` with any 4xx status other than 408 and 429 — is not retried: the same request
+would get the same answer, and `DeliveryFailed` is returned after the first attempt (#271).
+SMTP **4yz replies on any command** (`454 Temporary authentication failure`, `454 TLS not
+available due to temporary reason`, `421` at the greeting or EHLO, `451` at MAIL FROM),
+connection failures and timeouts, and HTTP 5xx/408/429 take the full schedule. `DeliveryFailed`
+carries the backend's last cause and its classification (`isTerminal()`/`isTransient()`), so a
+`[retry.<name>]` interceptor on the calling method sees the difference.
+
 ### API
 
 `NotificationSender` provides a single method:
@@ -684,7 +709,7 @@ sender.send(notification)
 |---------|------|
 | `BackendNotConfigured` | Unknown backend or missing backend-specific configuration |
 | `UnsupportedChannel` | Notification type not supported by this backend |
-| `DeliveryFailed` | All retry attempts exhausted |
+| `DeliveryFailed` | Retry attempts exhausted, or a permanent failure on the first attempt (see Retry Configuration) |
 
 ### TOML Examples
 
@@ -805,8 +830,8 @@ Custom vendors can be added via `VendorMapping` SPI (ServiceLoader in `integrati
 |-------|------|---------|-------------|
 | `cache_name` | `String` | `"default"` | Logical cache name (shared name = shared cache instance) |
 | `strategy` | `CacheStrategy` | `CACHE_ASIDE` | Caching strategy (see table below) |
-| `ttl_seconds` | `int` | `300` | Time-to-live for cached entries |
-| `max_entries` | `int` | `10000` | Maximum number of entries |
+| `ttl_seconds` | `int` | `300` | Time-to-live for cached entries — honoured by the local store (`LOCAL`, and the L1 of `TIERED`) only. The DHT has no expiry primitive, so `DISTRIBUTED` entries (and `TIERED`'s L2) do not expire; tracked in #279 |
+| `max_entries` | `int` | `10000` | Maximum number of entries in the local store — a hard cap with least-recently-used eviction (#279); `DISTRIBUTED` storage is bounded by the DHT, not by this field |
 | `mode` | `CacheMode` | `LOCAL` | Cache storage mode |
 
 ### Cache Strategies
@@ -824,7 +849,7 @@ Custom vendors can be added via `VendorMapping` SPI (ServiceLoader in `integrati
 | Mode | Storage | Description |
 |------|---------|-------------|
 | `LOCAL` | In-memory on local node | Fastest, no network overhead |
-| `DISTRIBUTED` | DHT across the cluster | Shared cache, survives node loss |
+| `DISTRIBUTED` | DHT across the cluster | Shared cache, survives node loss. A backend failure reads as a miss and the method runs — the cache is fail-open, so a DHT outage slows the slice rather than failing it (#279) |
 | `TIERED` | Local L1 + distributed L2 | Best of both: fast local reads, falls back to the distributed L2 on a local miss [gap: no cross-node invalidation yet, so a write on one node can leave a stale L1 entry on another — tracked in #279; don't rely on cross-node consistency] |
 
 ### TOML Example
@@ -857,8 +882,9 @@ Aspects are cross-cutting concerns applied to slice method invocations via confi
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `max_attempts` | `int` | required | Maximum retry attempts (must be positive) |
+| `max_attempts` | `int` | required | Maximum attempts at the method, the first one included (must be positive; `1` means no retry — and a transient failure under a budget of 1 still logs the loop's one "giving up" WARN per call, since the budget was spent) |
 | `backoff_strategy` | `BackoffStrategy` | exponential (3 attempts) | Backoff strategy between retries |
+| `retry_on` | `RetryOn` | `TRANSIENT` | Which failures are retried. `TRANSIENT`: only a cause that implements `Cause.Transient` (timeouts, refused connections, exhausted pools — what infrastructure failures classify as); an unclassified cause, which is what every business verdict is, is returned after the first attempt, so a non-idempotent method is never re-driven on its own verdict (#280). `NON_TERMINAL`: retry anything that is not `Cause.Terminal` — the behaviour before #280; opt in for a method whose failures are all infrastructural but not yet classified |
 
 `backoff_strategy` is a **discriminated sub-section**: `[retry.<name>.backoff_strategy]` with a
 `type` key selecting the shape. A **wholly absent** `[retry.<name>]` section fails loud
@@ -880,6 +906,7 @@ intent; don't conflate them
 ```toml
 [retry.payment-calls]
 max_attempts = 3
+retry_on = "TRANSIENT"
 
 [retry.payment-calls.backoff_strategy]
 type = "exponential"
@@ -975,8 +1002,8 @@ Provisioned by `RateGuardFactory` (`ResourceFactory<RateGuard, RateGuardConfig>`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | `String` | required | Metric name prefix |
-| `record_timing` | `boolean` | `true` | Record execution timing |
-| `record_counts` | `boolean` | `true` | Record success/failure counts |
+| `record_timing` | `boolean` | `true` | Record a timer `<name>.success` / `<name>.failure` per call |
+| `record_counts` | `boolean` | `true` | Record a counter `<name>.success.count` / `<name>.failure.count` per call (a separate meter: Micrometer refuses two meter types under one id) |
 | `tags` | `List<String>` | empty | Additional metric tags (key-value pairs) |
 
 The `MeterRegistry` is not a config field — it is resolved from the node's real, Management-API-backed
@@ -1012,14 +1039,20 @@ tags = "region=eu,tier=gold"
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name` | `String` | required | Logger name prefix |
+| `name` | `String` | required | Logger name — each injection point logs through `LoggerFactory.getLogger(name)`, so its level is tuned per method in the logging configuration (#280) |
 | `level` | `LogLevel` | required | Log level (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`) |
-| `log_args` | `boolean` | required | Log method arguments |
-| `log_result` | `boolean` | required | Log method results |
+| `log_args` | `boolean` | required | Log method arguments — the request's `toString()`, unredacted. Treat it as personal data: leave `false` unless the request type is known to carry none |
+| `log_result` | `boolean` | required | Log method results — the result's `toString()`, truncated to 100 characters, unredacted. Same caution as `log_args` |
 | `log_duration` | `boolean` | required | Log execution duration |
 
 `LogConfig` declares no `DEFAULT` static field, so the generic config binder treats every key above
-as mandatory — there is no config-level fallback to `INFO`/`true` if a key is omitted from TOML.
+as mandatory — there is no config-level fallback if a key is omitted from TOML. The programmatic
+factories (`LogConfig.logConfig(name[, level])`) default `log_args` and `log_result` to `false`
+(#280). Both lines carry the request-id the invocation put in the SLF4J MDC (`requestId`, rendered
+as `[rid=…]` by the node's log4j layout): the entry line always did, and the exit line now
+re-applies the entry's MDC around itself, because the promise usually resolves on a thread whose
+MDC is empty (#280). Under the privacy defaults the exit line still names the OUTCOME — `ok`, or
+`failed <CauseType>` (the cause's type, never its message).
 
 ```toml
 [logging.payment-flow]
