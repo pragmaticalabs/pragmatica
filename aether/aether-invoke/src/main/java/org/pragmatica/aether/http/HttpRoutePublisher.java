@@ -25,6 +25,7 @@ import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.ObservabilityStrategyCell;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -241,6 +242,25 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                   artifact,
                   factory.getClass().getName());
         var typedFactory = (SliceRouterFactory<Object>) factory;
+        // #198 §7: compose the routes ONCE for this node's detection mode and feed the SAME
+        // composed paths to the wire route-table extractor that the SliceRouter dispatches over,
+        // so both consumers agree on the exposed paths (path mode `/v{N}/` or header mode bare).
+        List<HttpRouteDefinition> routes = factory instanceof RouteSource routeSource
+                                           ? routeMetadataExtractor.extract(RouteMounting.compose(routeSource, mountMode),
+                                                                            artifact.asString())
+                                           : List.of();
+        // #882: a factory generated before the #763 contract has every no-[security] route
+        // baked in as PUBLIC; refuse it here, which fails the activation chain, rather than let
+        // the route table carry an exposure the runtime upgrade could never have closed. Decided
+        // BEFORE the router and its observability cells are registered, so a refused slice leaves
+        // nothing behind for the activation-failure cleanup to race against.
+        var stale = staleContractRefusal(artifact, factory, routes);
+
+        if (stale.isPresent()) {
+            return stale.unwrap()
+                        .promise();
+        }
+
         var baseRouter = typedFactory.create(sliceInstance, JsonMapper.defaultJsonMapper(), mountMode);
         // #198 §11.1: bind the slice identity + lazy metrics sink so the router emits the versioned /
         // deprecated / missing-header counters at dispatch. The sink forwards to the live backend the
@@ -255,13 +275,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
 
         routeCells.put(artifact, List.copyOf(cells));
         sliceRouters.put(artifact, router);
-        if (factory instanceof RouteSource routeSource) {
-            // #198 §7: compose the routes ONCE for this node's detection mode and feed the SAME
-            // composed paths to the wire route-table extractor that the SliceRouter dispatches over,
-            // so both consumers agree on the exposed paths (path mode `/v{N}/` or header mode bare).
-            var composed = RouteMounting.compose(routeSource, mountMode);
-            var routes = routeMetadataExtractor.extract(composed, artifact.asString());
-
+        if (factory instanceof RouteSource) {
             log.debug("Route extraction: {} routes found for slice {} via SliceRouterFactory", routes.size(), artifact);
             if (routes.isEmpty()) {
                 log.debug("No HTTP routes defined for slice {}, skipping publication", artifact);
@@ -278,6 +292,33 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                  factory.getClass().getName());
 
         return Promise.unitPromise();
+    }
+
+    private static Option<SliceLoadingFailure.Fatal.RouteSecurityContractStale> staleContractRefusal(Artifact artifact,
+                                                                                                     SliceRouterFactory<?> factory,
+                                                                                                     List<HttpRouteDefinition> routes) {
+        var contract = factory.routeSecurityContract();
+
+        if (contract >= SliceRouterFactory.ROUTE_SECURITY_CONTRACT) {
+            return Option.none();
+        }
+
+        var publicRoutes = routes.stream()
+                                 .filter(route -> route.security() instanceof SecurityPolicy.Public)
+                                 .map(route -> route.httpMethod() + " " + route.pathPrefix())
+                                 .toList();
+
+        if (publicRoutes.isEmpty()) {
+            return Option.none();
+        }
+
+        var refusal = new SliceLoadingFailure.Fatal.RouteSecurityContractStale(artifact.asString(),
+                                                                               contract,
+                                                                               publicRoutes);
+
+        log.error(refusal.message());
+
+        return Option.some(refusal);
     }
 
     @Override

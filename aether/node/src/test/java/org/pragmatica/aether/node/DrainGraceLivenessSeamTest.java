@@ -5,12 +5,14 @@
 package org.pragmatica.aether.node;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.statemachine.FsmObserver;
@@ -21,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 /// The #1050 / #1062 wiring pin, at the REAL seam. `AetherNode.drainGraceLiveness` builds every piece of
 /// membership and liveness evidence the CTM consults before an irreversible reap, plus the configured core
@@ -92,6 +95,36 @@ class DrainGraceLivenessSeamTest {
 
         assertThat(liveness.coreCountedMembers()
                            .get()).containsExactlyInAnyOrder(SELF, PEER_B, PEER_C);
+    }
+
+    /// #689 (verify-1120 SF-1): the advertised role is the FSM's descriptor role — merged under the
+    /// blank-downgrade guard, so a label-less later sighting does not erase it — and `none()` for an id the
+    /// FSM does not track, never a fabricated blank. Armed by feeding the same node a labelled then a
+    /// label-less descriptor, the order the gossip-first race produces in reverse: only a read of the merged
+    /// FSM value answers `worker`.
+    @Test
+    void drainGraceLiveness_advertisedRole_readsTheFsmDescriptor() {
+        var fsm = bootSeededFsm();
+
+        fsm.onMemberDescriptor(NodeInfo.nodeInfo(PEER_B, nodeAddress("10.0.0.2", 6000).unwrap(), Map.of(NodeInfo.LABEL_ROLE, "worker")));
+        fsm.onMemberDescriptor(NodeInfo.nodeInfo(PEER_B, nodeAddress("10.0.0.2", 6000).unwrap()));
+
+        var liveness = AetherNode.drainGraceLiveness(() -> fsm, Option::none, TOPOLOGY_CORE_NODES, () -> null, _ -> false, () -> null, Set::of);
+
+        assertThat(liveness.advertisedRole()
+                           .apply(PEER_B)).isEqualTo(Option.some("worker"));
+        assertThat(liveness.advertisedRole()
+                           .apply(BOOTING)).as("an untracked id has no advertised role — not a blank")
+                                           .isEqualTo(Option.none());
+    }
+
+    /// Before the FSM is published the projection answers `none()` for every id (fail-closed: no comparison).
+    @Test
+    void drainGraceLiveness_advertisedRole_beforeFsmPublished_isNone() {
+        var liveness = AetherNode.drainGraceLiveness(() -> null, Option::none, TOPOLOGY_CORE_NODES, () -> null, _ -> false, () -> null, Set::of);
+
+        assertThat(liveness.advertisedRole()
+                           .apply(PEER_B)).isEqualTo(Option.none());
     }
 
     /// S2: the configured count is the committed `ClusterConfigValue.coreCount` when present, never 0.

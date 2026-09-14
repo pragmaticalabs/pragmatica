@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config;
 
+import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -226,19 +227,24 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
         }
     }
 
+    /// #675: the three `auto_heal_*` keys are the operator surface of the three auto-heal timings the
+    /// runtime reads (`AutoHealConfig`); `Main.resolveAutoHeal` carries them across. Their defaults ARE
+    /// `AutoHealConfig`'s, so an absent key and `AutoHealConfig.DEFAULT` cannot disagree.
     public record ScalingTimeouts(TimeSpan evaluationInterval,
                                   TimeSpan warmupPeriod,
                                   TimeSpan sliceCooldown,
                                   TimeSpan communityCooldown,
-                                  TimeSpan autoHealRetry,
-                                  TimeSpan autoHealStartupCooldown) {
+                                  TimeSpan autoHealStartupCooldown,
+                                  TimeSpan autoHealProvisioningTimeout,
+                                  TimeSpan autoHealSwimHintsTtl) {
         public static ScalingTimeouts scalingTimeouts() {
             return new ScalingTimeouts(timeSpan(1).seconds(),
                                        timeSpan(30).seconds(),
                                        timeSpan(10).seconds(),
                                        timeSpan(60).seconds(),
-                                       timeSpan(10).seconds(),
-                                       timeSpan(15).seconds());
+                                       AutoHealConfig.DEFAULT_STARTUP_COOLDOWN,
+                                       AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
+                                       AutoHealConfig.DEFAULT_SWIM_HINTS_TTL);
         }
     }
 

@@ -266,14 +266,9 @@ TAG  org.pragmatica.aether.stream.replication.ReplicationMessage$ReplicateAck 10
 TAG  org.pragmatica.aether.stream.replication.ReplicationMessage$ReplicateEvents 101
 TAG  org.pragmatica.aether.stream.topic.DlqEnvelope 111
 TAG  org.pragmatica.aether.stream.topic.TopicEventEnvelope 110
-TAG  org.pragmatica.aether.worker.bootstrap.SnapshotRequest 128
-TAG  org.pragmatica.aether.worker.bootstrap.SnapshotResponse 129
-TAG  org.pragmatica.aether.worker.heartbeat.FollowerHeartbeat 85
 TAG  org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot 86
 TAG  org.pragmatica.aether.worker.metrics.PerMethodMetrics 87
 TAG  org.pragmatica.aether.worker.metrics.PerSliceMetrics 88
-TAG  org.pragmatica.aether.worker.mutation.WorkerMutation 89
-TAG  org.pragmatica.aether.worker.network.DHTRelayMessage 90
 TAG  org.pragmatica.cluster.metrics.ClusterSyncMessage$ClusterSyncPing 75
 TAG  org.pragmatica.cluster.metrics.ClusterSyncMessage$ClusterSyncPong 76
 TAG  org.pragmatica.cluster.metrics.CommunityReport 77
