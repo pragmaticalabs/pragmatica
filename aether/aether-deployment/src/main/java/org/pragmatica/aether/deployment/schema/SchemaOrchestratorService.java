@@ -634,8 +634,17 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     /// KV status write can re-enter here while attempt N is still fenced, and that re-entrant call must
     /// fail fast on the fence without ever touching the retry it is itself part of.
     ///
+    /// #766: the KV claim is a compare-and-put, not a read-then-write. The fence above is per
+    /// orchestrator INSTANCE and serialises nothing across nodes, and two nodes that both read the lock
+    /// free (absent or expired) before either write commits used to both proceed and duplicate-key
+    /// `aether_schema_history`. `SchemaMigrationLockValue` is [VersionFenced]: the claim carries the
+    /// committed value's successor version (`FIRST_VERSION` against an absent key), the applier
+    /// rejects any other, and — because a rejected write is silent — the acquirer confirms by
+    /// re-reading the committed value after its apply resolves and comparing it to what it wrote.
+    /// Exactly one of two racing claims survives that comparison.
+    ///
     /// #760/#724 review round 3 BLOCKING 1: `inFlightMigrations` maps to a per-attempt token, not a
-    /// bare presence marker, so every release (`finalizeAttempt`, the `isLockHeld` short-circuit below,
+    /// bare presence marker, so every release (`finalizeAttempt`, the held-lock short-circuit below,
     /// and [#releaseFenceOnLockFailure]) is a `remove(key, token)` compare-and-remove — an attempt can
     /// only ever clear the ONE fence entry it itself claimed, never a later attempt's. That matters here
     /// specifically because the lock Put below is now bounded by a timeout: a lock write that fails or
@@ -648,14 +657,19 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
         cancelScheduledRetry(datasourceName);
         var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
+        var committed = committedLock(lockKey);
 
-        if (isLockHeld(lockKey)) {
+        if (committed.filter(lock -> !lock.isExpired()).isPresent()) {
             inFlightMigrations.remove(datasourceName, attemptToken);
 
             return SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(datasourceName).promise();
         }
 
-        var lockValue = SchemaMigrationLockValue.schemaMigrationLockValue(datasourceName, self, LOCK_TTL_MS);
+        var lockValue = SchemaMigrationLockValue.schemaMigrationLockValue(datasourceName,
+                                                                          self,
+                                                                          LOCK_TTL_MS,
+                                                                          committed.map(SchemaMigrationLockValue::nextVersion)
+                                                                                   .or(SchemaMigrationLockValue.FIRST_VERSION));
         KVCommand<AetherKey> command = new Put<>(lockKey, lockValue);
         // #760/#724 review round 3 BLOCKING 1: bounded the same way as the migration itself
         // (schemaManager.policy().migrationTimeout(), read once per attempt) — before this, a lock Put
@@ -666,8 +680,19 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         // failure must see the fence already released, not race an async cleanup callback.
         return cluster.apply(List.of(command))
                       .timeout(schemaManager.policy().migrationTimeout())
-                      .mapToUnit()
+                      .flatMap(_ -> confirmLockClaim(datasourceName, lockKey, lockValue))
                       .mapError(cause -> releaseFenceOnLockFailure(datasourceName, attemptToken, cause));
+    }
+
+    /// The claim landed iff the committed value IS the one this attempt wrote (the applier drops a
+    /// fenced-out write without a result the submitter can attribute — see [VersionFenced]). An
+    /// absent key also fails here: the winner may already have released by the time the loser reads.
+    private Promise<Unit> confirmLockClaim(String datasourceName,
+                                           SchemaMigrationLockKey lockKey,
+                                           SchemaMigrationLockValue lockValue) {
+        return committedLock(lockKey).filter(lockValue::equals)
+                            .map(_ -> Promise.unitPromise())
+                            .or(() -> SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(datasourceName).promise());
     }
 
     private Cause releaseFenceOnLockFailure(String datasourceName, Object attemptToken, Cause cause) {
@@ -684,12 +709,10 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         future.cancel(false);
     }
 
-    private boolean isLockHeld(SchemaMigrationLockKey lockKey) {
+    private Option<SchemaMigrationLockValue> committedLock(SchemaMigrationLockKey lockKey) {
         return kvStore.get(lockKey)
                       .filter(SchemaMigrationLockValue.class::isInstance)
-                      .map(SchemaMigrationLockValue.class::cast)
-                      .filter(lock -> !lock.isExpired())
-                      .isPresent();
+                      .map(SchemaMigrationLockValue.class::cast);
     }
 
     private Promise<Unit> releaseLock(String datasourceName) {
