@@ -23,6 +23,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.io.CoreError;
+import org.pragmatica.lang.utils.Retry;
+import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -114,6 +116,27 @@ class PromiseAwaitInterruptionTest {
         outcome.result().onFailure(cause -> assertThat(cause).isInstanceOf(CoreError.Interrupted.class));
         assertThat(elapsedMillis).as("the interrupt, not the 30 s deadline, must end the wait").isLessThan(5_000);
         assertThat(outcome.flagStillSet()).isTrue();
+    }
+
+    /// Review of #1099, SF-1: an interrupt is the supervisor's stop signal to a THREAD. A retry that
+    /// re-drives the operation — on `SharedScheduler`'s thread from attempt 2 — escapes exactly the
+    /// thread the supervisor addressed. `Interrupted` is therefore `Cause.Terminal`: `Retry` stops on it.
+    @Test
+    void interrupted_isTerminal_soRetryNeverReDrivesIt() {
+        var attempts = new java.util.concurrent.atomic.AtomicInteger();
+        var result = Retry.retry()
+                          .attempts(3)
+                          .strategy(BackoffStrategy.fixed().interval(timeSpan(1).millis()))
+                          .execute(() -> {
+                              attempts.incrementAndGet();
+
+                              return Promise.<Unit>failure(new CoreError.Interrupted("stop"));
+                          })
+                          .await(timeSpan(5).seconds());
+
+        assertThat(new CoreError.Interrupted("x").isTerminal()).isTrue();
+        assertThat(attempts.get()).as("a terminal cause is not re-driven").isEqualTo(1);
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(CoreError.Interrupted.class));
     }
 
     @Test

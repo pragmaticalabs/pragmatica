@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
@@ -23,6 +24,8 @@ final class WriteBehindQueue {
 
     private final ArrayBlockingQueue<PendingWrite> queue;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicInteger flushFailures = new AtomicInteger();
+    private final AtomicInteger interruptedInFlight = new AtomicInteger();
     private volatile Thread drainThread;
 
     private WriteBehindQueue(int capacity) {
@@ -67,6 +70,16 @@ final class WriteBehindQueue {
 
     int pendingCount() {
         return queue.size();
+    }
+
+    /// Flushes that failed with a real tier error (an interrupted wait is not one).
+    int flushFailures() {
+        return flushFailures.get();
+    }
+
+    /// Stop signals that landed while a put was in flight.
+    int interruptedInFlight() {
+        return interruptedInFlight.get();
     }
 
     boolean isActive() {
@@ -127,10 +140,10 @@ final class WriteBehindQueue {
              .put(entry.id(),
                   entry.content())
              .await()
-             .onFailure(c -> log.warn("Write-behind flush failed for {} to {}: {}",
-                                      entry.id(),
-                                      entry.tier().level(),
-                                      c.message()));
+             .onFailure(c -> {
+                 flushFailures.incrementAndGet();
+                 log.warn("Write-behind flush failed for {} to {}: {}", entry.id(), entry.tier().level(), c.message());
+             });
     }
 
     private record PendingWrite(BlockId id, byte[] content, StorageTier tier) {
