@@ -704,16 +704,19 @@ public final class ProviderBasedConfigService implements ConfigService {
         var typeArgs = paramType.getActualTypeArguments();
 
         if (typeArgs.length != 1 || !(typeArgs[0] instanceof Class<?> innerClass)) {
-            return unsupportedOptionError(fullKey, typeArgs.length == 1
-                                                   ? typeArgs[0]
-                                                   : genericType);
+            return unsupportedOptionError(fullKey,
+                                          typeArgs.length == 1
+                                          ? typeArgs[0]
+                                          : genericType);
         }
 
         return extractOptionalPrimitive(fullKey, innerClass);
     }
 
     private static Result<Object> unsupportedOptionError(String fullKey, Type innerType) {
-        return ConfigError.unsupportedType(fullKey, "Option<" + innerType.getTypeName() + ">").result();
+        return ConfigError.unsupportedType(fullKey,
+                                           "Option<" + innerType.getTypeName() + ">")
+                          .result();
     }
 
     private Result<Object> extractOptionalPrimitive(String fullKey, Class<?> innerClass) {

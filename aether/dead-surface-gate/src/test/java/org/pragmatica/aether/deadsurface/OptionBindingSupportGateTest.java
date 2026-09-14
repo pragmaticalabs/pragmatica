@@ -15,7 +15,6 @@ import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.TreeSet;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.resource.ScheduleConfig;
 import org.pragmatica.aether.resource.TopicConfig;
@@ -23,8 +22,11 @@ import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.lang.Option;
 
+import org.junit.jupiter.api.Test;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
 
 /// #761 — the enumeration the ticket required before any binder change, kept as a gate so it stays
 /// true: every `Option<X>` component reachable from every record `ProviderBasedConfigService` is
@@ -41,10 +43,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class OptionBindingSupportGateTest {
     /// Mirror of `ProviderBasedConfigService.primitiveParser`'s accepted set (package-private there).
     private static final Set<Class<?>> BINDER_PRIMITIVES = Set.of(String.class,
-                                                                  int.class, Integer.class,
-                                                                  long.class, Long.class,
-                                                                  boolean.class, Boolean.class,
-                                                                  double.class, Double.class,
+                                                                  int.class,
+                                                                  Integer.class,
+                                                                  long.class,
+                                                                  Long.class,
+                                                                  boolean.class,
+                                                                  Boolean.class,
+                                                                  double.class,
+                                                                  Double.class,
                                                                   org.pragmatica.lang.io.TimeSpan.class,
                                                                   org.pragmatica.lang.parse.TimeSpan.class,
                                                                   Duration.class);
@@ -58,23 +64,22 @@ class OptionBindingSupportGateTest {
         var roots = binderRoots();
 
         assertTrue(roots.size() >= MINIMUM_FACTORY_ROOTS,
-                   "Corpus incomplete: only " + roots.size() + " binder roots discovered (" + roots
-                   + "); the ResourceFactory ServiceLoader set on this classpath is smaller than when this gate was written");
-
+                   "Corpus incomplete: only " + roots.size()
+                  + " binder roots discovered (" + roots
+                  + "); the ResourceFactory ServiceLoader set on this classpath is smaller than when this gate was written");
         var visited = new HashSet<Class<?>>();
         var unsupported = new TreeSet<String>();
         var optionComponents = new ArrayList<String>();
 
         roots.forEach(root -> walk(root, visited, optionComponents, unsupported));
-
         assertTrue(optionComponents.size() >= 20,
                    "Instrument check: the walk found only " + optionComponents.size()
-                   + " Option components; 26 were enumerated when this gate was written");
+                  + " Option components; 26 were enumerated when this gate was written");
         assertEquals(Set.of(),
                      unsupported,
                      "#761: these Option<X> config components have an X the binder cannot bind and will be "
-                     + "refused at bind time with ConfigError.UnsupportedType — declare a primitive, enum or "
-                     + "record inner type, or teach the binder the new one");
+                    + "refused at bind time with ConfigError.UnsupportedType — declare a primitive, enum or "
+                    + "record inner type, or teach the binder the new one");
     }
 
     private static List<Class<?>> binderRoots() {
@@ -96,7 +101,9 @@ class OptionBindingSupportGateTest {
 
         for (RecordComponent component : type.getRecordComponents()) {
             if (component.getType() == Option.class) {
-                var where = type.getSimpleName() + "." + component.getName() + " : " + component.getGenericType().getTypeName();
+                var where = type.getSimpleName()
+                          + "." + component.getName()
+                          + " : " + component.getGenericType().getTypeName();
 
                 options.add(where);
                 if (!innerTypeIsBindable(component.getGenericType())) {
@@ -118,7 +125,7 @@ class OptionBindingSupportGateTest {
     /// Exactly `extractOptionValue`'s dispatch: a raw or nested-generic `Option` is case (a); a
     /// plain class that is neither primitive, enum nor record is case (b); both are refused.
     private static boolean innerTypeIsBindable(Type genericType) {
-        if (!(genericType instanceof ParameterizedType parameterized)) {
+        if (! (genericType instanceof ParameterizedType parameterized)) {
             return false;
         }
 

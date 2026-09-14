@@ -183,7 +183,8 @@ public sealed interface ConfigError extends Cause {
 
         @Override
         public String message() {
-            return "Config key '" + key + "' is declared as " + declaredType
+            return "Config key '" + key
+                 + "' is declared as " + declaredType
                  + ", which this binder cannot bind (supported inside Option: primitive, enum or record types); "
                  + "this is a declaration error, not an absent or malformed value";
         }
