@@ -68,9 +68,11 @@ class ClusterDeploymentStateDrainEvictionTest {
     private static final NodeId NODE_A = new NodeId("node-a");
     private static final NodeId NODE_D = new NodeId("node-drain");
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:slice-a:1.0.0").unwrap();
+    /// `Active.onEntry` schedules a ONE-SHOT `deferredTopologyRecheck` 2s out; 3.5s waits it out.
+    private static final long DEFERRED_RECHECK_WINDOW_MS = 3_500L;
     /// `deployReplacementForDrain` parks `checkReplacementAndUnload` 3s out on the real
-    /// `SharedScheduler`; 8s is ~2.7x that, and overshooting only costs wall time.
-    private static final long PARKED_CHECK_WINDOW_MS = 8_000L;
+    /// `SharedScheduler`, and it re-parks itself every 3s while it proceeds; 6s covers two firings.
+    private static final long PARKED_CHECK_WINDOW_MS = 6_000L;
 
     private InMemoryKvStore kvStore;
     private RecordingClusterNode cluster;
@@ -157,23 +159,38 @@ class ClusterDeploymentStateDrainEvictionTest {
     /// #688 round 2, SF-1 — the guard leaked from the OTHER abandon path. The loop parks for 3s in
     /// `checkReplacementAndUnload` waiting for the replacement to go ACTIVE; if the drain is withdrawn
     /// while it is parked, that early return used to leave `drainEvictionsInProgress` holding the node.
-    /// Nothing then cleared it before the node drained again, so `startDrainEviction`'s `add` refused
-    /// the whole SECOND episode — permanently, since only a reconcile tick that observes the node
-    /// ABSENT from the draining set clears it.
+    /// `startDrainEviction`'s `add` is then what REFUSES the node's whole SECOND drain episode, and
+    /// nothing clears the guard except a reconcile tick that observes the node absent from the
+    /// draining set — up to `reconciliationInterval` (30s) away, and never at all if the node
+    /// re-drains first.
     ///
-    /// The test therefore calls `reconcile()` NOWHERE: `resumeDrainEvictions`' `retainAll(draining)`
-    /// is the masking path, and `drainWithdrawn_thenReported_again_startsAFreshEviction` above passes
-    /// through it — which is exactly why that test stayed green with this defect present.
+    /// Two masking paths have to be kept out of the window, and both were found by measurement rather
+    /// than by reading:
     ///
-    /// A too-short withdrawal window fails RED (the parked check has not fired, the loop legitimately
-    /// still holds the guard), never green: with no ACTIVE replacement in `sliceStates` a late-firing
-    /// check only reschedules itself, so it cannot manufacture the replacement LOAD asserted below.
+    ///  1. `reconcile()` — `resumeDrainEvictions`' `retainAll(draining)` clears the guard silently
+    ///     (no log line). `drainWithdrawn_thenReported_again_startsAFreshEviction` above goes through
+    ///     it, which is precisely why that test stayed green with this defect present. This one calls
+    ///     `reconcile()` nowhere.
+    ///  2. `Active.onEntry`'s ONE-SHOT `deferredTopologyRecheck`, 2s out, which calls `reconcile()`
+    ///     on its own timer. A first draft withdrew the drain immediately and was masked by it: the
+    ///     probe read `guard=[]` after the window with the fix REVERTED. It is waited out here while
+    ///     the node is still draining, where `retainAll` is a no-op.
+    ///
+    /// Overshooting either window only costs wall time. Undershooting the parked-check window fails
+    /// RED (the loop legitimately still holds the guard): with no ACTIVE replacement in `sliceStates`
+    /// a late-firing check only re-parks itself, so it cannot manufacture the LOAD asserted below.
     @Test
     void drainWithdrawnWhileTheReplacementCheckIsParked_thenRedrained_startsAFreshEviction() throws InterruptedException {
         draining.set(Set.of(NODE_D));
         harness.dispatch(new NodeDrainingReported(NODE_D));
         assertThat(replacementLoads()).as("arming: episode one issued its replacement and parked the 3s check")
                                       .hasSize(1);
+
+        Thread.sleep(DEFERRED_RECHECK_WINDOW_MS);
+        assertThat(activeState().drainEvictionsInProgress())
+                .as("arming: the deferred recheck fired while the node was still draining, so it cleared "
+                    + "nothing, and the loop is genuinely parked holding the guard")
+                .containsExactly(NODE_D);
 
         draining.set(Set.of());
         Thread.sleep(PARKED_CHECK_WINDOW_MS);
