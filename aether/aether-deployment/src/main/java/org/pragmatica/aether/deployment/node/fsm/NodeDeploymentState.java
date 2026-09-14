@@ -249,7 +249,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// #381 — a committed `ConfigKey` change (cluster-wide or scoped to this node) is pushed to every
         /// registered slice whose declared section the key falls under; each slice reads through its own
         /// composite facade, which already layers the KV overlay the change landed in.
-        private void handleConfigChanged(String changedKey, TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
+        private void handleConfigChanged(String changedKey,
+                                         TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
             tx.handle(() -> configNotificationManager.notifyChange(changedKey, this::buildConfigFacade));
         }
 

@@ -51,6 +51,7 @@ public sealed interface ConfigNotificationManager {
         private static final String NOTIFY_METHOD_NAME = "notifyConfigUpdate";
 
         private final ConcurrentHashMap<Artifact, SliceRegistration> registrations = new ConcurrentHashMap<>();
+
         private final ExecutorService executor = Executors.newSingleThreadExecutor(DefaultConfigNotificationManager::createDaemonThread);
 
         private static Thread createDaemonThread(Runnable r) {
@@ -130,7 +131,9 @@ public sealed interface ConfigNotificationManager {
             for (var registration : registrations.values()) {
                 for (var section : registration.sections()) {
                     if (changedKey.startsWith(section + ".")) {
-                        invokeNotifyMethod(registration, section, facadeFor.apply(registration.artifact()));
+                        invokeNotifyMethod(registration,
+                                           section,
+                                           facadeFor.apply(registration.artifact()));
                     }
                 }
             }
