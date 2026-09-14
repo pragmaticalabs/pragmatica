@@ -55,6 +55,13 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// untouched.
     default void reconcileWorkerTopology() {}
 
+    /// #1050 (verify-1057-r2 S1) — raw SWIM declared `nodeId` FAULTY: positive death evidence, delivered by the
+    /// SWIM observation listener at the FAULTY edge. A departed-node reap that ran out of liveness re-checks while
+    /// SWIM still reported the node SUSPECTED (the suspicion window is LHM-scaled and can outlast the whole re-check
+    /// budget) is re-armed by this evidence; nothing else is. Default no-op so test fakes and non-provisioning
+    /// implementations are untouched.
+    default void onSwimFaulty(NodeId nodeId) {}
+
     void onClusterPhaseChanged(ClusterPhase newPhase);
     void activate();
     void deactivate();
@@ -122,7 +129,9 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                        NodeRole intendedRole);
 
     /// Membership v2 / E2 — drain a specific node. Targets either the operator/scale-down
-    /// flow or the overprovision-drain path. `reason` is observability-only at this layer.
+    /// flow or the overprovision-drain path. `reason` is observability-only at this layer except for
+    /// [`DrainReason#isSurplusTrim`], which makes the grace-terminate backstop re-check before reaping
+    /// (#1050).
     /// Returns a `Promise<Unit>` resolving once the drain has been initiated (the target node
     /// observes the `DRAIN` command on the leader↔node heartbeat and self-drains per spec §8).
     ///
@@ -174,8 +183,8 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// Membership v2 / B5b production factory. Wires the leader's DRAIN command channel:
     /// `drainCommandSink` enqueues a drain target into the `DrainCommandRegistry` (so the leader's
     /// cluster-sync ping carries the target in its global `drainNodes` set, and the target self-drains via its
-    /// `DrainProcedure`); `drainCommandClear` removes the target after the CTM grace-terminate
-    /// backstop reaps the container. `AetherNode` wires these to
+    /// `DrainProcedure`); `drainCommandClear` removes the target when the CTM grace-terminate
+    /// backstop fires, whether or not it reaps (#1050). `AetherNode` wires these to
     /// `DrainCommandRegistry::requestDrain` / `::clearDrain`.
     ///
     /// #685 review round 1 NOTE 4 — `autoHealStateReader` is REQUIRED here, not defaulted: a
@@ -192,7 +201,8 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          Supplier<ClusterPhase> phaseSupplier,
                                                          Consumer<NodeId> drainCommandSink,
                                                          Consumer<NodeId> drainCommandClear,
-                                                         Supplier<Option<AutoHealStateValue>> autoHealStateReader) {
+                                                         Supplier<Option<AutoHealStateValue>> autoHealStateReader,
+                                                         MembershipLiveness liveness) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
                                                                          lifecycleManager,
                                                                          config,
@@ -204,7 +214,8 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          System::currentTimeMillis,
                                                                          drainCommandSink,
                                                                          drainCommandClear,
-                                                                         autoHealStateReader);
+                                                                         autoHealStateReader,
+                                                                         liveness);
     }
 
     /// #336 production factory — additionally wires the leader's OWN RESOLVED config as
@@ -221,6 +232,10 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// `autoHealStateReader` (#685) is the durable KV read for the operator's auto-heal
     /// enable/disable flag — a direct local lookup against `AetherKey.AutoHealStateKey.SINGLETON`,
     /// never a separately-maintained cache. `AetherNode` wires it to the production `KVStore`.
+    ///
+    /// `liveness` (#1050 / #1062) is the membership and liveness evidence consulted before every irreversible
+    /// reap — the drain-grace backstop, the departed-node reap and the activation replay
+    /// ([MembershipLiveness]). REQUIRED for the same fail-open reason as `autoHealStateReader`.
     static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
                                                          NodeLifecycleManager lifecycleManager,
                                                          AutoHealConfig config,
@@ -232,7 +247,8 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          Consumer<NodeId> drainCommandSink,
                                                          Consumer<NodeId> drainCommandClear,
                                                          Supplier<Option<TomlDocument>> resolvedLocalConfig,
-                                                         Supplier<Option<AutoHealStateValue>> autoHealStateReader) {
+                                                         Supplier<Option<AutoHealStateValue>> autoHealStateReader,
+                                                         MembershipLiveness liveness) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
                                                                          lifecycleManager,
                                                                          config,
@@ -245,6 +261,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          drainCommandSink,
                                                                          drainCommandClear,
                                                                          resolvedLocalConfig,
-                                                                         autoHealStateReader);
+                                                                         autoHealStateReader,
+                                                                         liveness);
     }
 }

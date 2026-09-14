@@ -21,6 +21,7 @@ import java.util.stream.Collectors;
 
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DownHysteresisMet;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DrainRequested;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DrainUnacknowledged;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.JoinGraceExpiredNeverHealthy;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.LivenessGone;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.PeerConnected;
@@ -584,10 +585,23 @@ public final class MembershipFsm {
     /// Wave 7 — the drain command is routed THROUGH the FSM instead of bypassing it). Drives
     /// OBSERVED/MEMBER/SUSPECT → DEPARTING: the target stops counting toward effective and the
     /// DEPARTING timeout (H2) terminalizes it if it goes silent; a `SwimHealthy` at a strictly
-    /// higher incarnation recovers it mid-drain. Ignored in DEPARTING/DEAD.
+    /// higher incarnation recovers it mid-drain. When the timeout finds the DRAIN unacknowledged and no
+    /// death evidence, it withdraws the drain back to MEMBER instead (#1054). Ignored in DEPARTING/DEAD.
     @Contract
     public void onDrainRequested(NodeId id) {
         withMember(id, tracking -> tracking.dispatch(new DrainRequested()));
+    }
+
+    /// The leader observed `id` reporting `DRAINING` on its pong: the target received the DRAIN and acted on it
+    /// (#1054). LATCHED for the member's current drain episode ([`MemberTracking#drainAcknowledged`]): a drainee
+    /// that acknowledged and then halted stops ponging, and the leader's readiness sweep forgets it within
+    /// `pingInterval × 3` — long before the DEPARTING timeout — so the acknowledgement cannot be a live read at
+    /// expiry. An acknowledged drain terminalizes at expiry; only a never-acknowledged drain with no death evidence
+    /// is withdrawn. Never creates tracking for an id this FSM has not observed: a pong alone is not membership
+    /// evidence. Idempotent — production calls it on every `DRAINING` pong.
+    @Contract
+    public void onDrainAcknowledged(NodeId id) {
+        Option.option(members.get(id)).onPresent(tracking -> tracking.inTransition(tracking::latchDrainAcknowledgement));
     }
 
     /// The presence sampler down-hysteresis threshold was crossed for `id` (sustained absence over the
@@ -1187,6 +1201,21 @@ public final class MembershipFsm {
         /// fenced rejoin (DEAD→OBSERVED→MEMBER) re-fires JOINED because the flag was cleared.
         /// Mutated only under this monitor, like the co-confirmation flags.
         private boolean everJoined = false;
+        /// Whether the CURRENT tenure in DEPARTING was entered on [`DrainRequested`] (#1054). Assigned on
+        /// every fresh edge INTO `Departing` ([`#enteredDeparting`]), so a later sustained-absence or
+        /// graceful-leave departure never inherits a previous drain's flag. Only a drain-initiated
+        /// departure has a DRAIN whose delivery can be in doubt, so only it can be withdrawn at expiry.
+        /// Mutated only under this monitor.
+        private boolean drainInitiated = false;
+        /// Whether the target acknowledged THIS drain episode's DRAIN (#1054 round 2): latched by
+        /// [`#latchDrainAcknowledgement`] when the leader records a `DRAINING` pong, and never cleared by a later
+        /// silence — a drainee that acknowledged and then halted must still terminalize after the readiness view
+        /// has forgotten it. RESET RULE: cleared on every fresh edge INTO `Departing` ([`#enteredDeparting`]), so
+        /// each drain episode starts unacknowledged and an acknowledgement observed before the drain can never
+        /// pre-arm it. A newer incarnation cannot carry a latch forward either: in DEPARTING the only
+        /// newer-incarnation edge is the `SwimHealthy` recovery to MEMBER, which ends the episode, so the next drain
+        /// re-enters DEPARTING and resets. Read only by [`#isWithdrawableDrain`]. Mutated only under this monitor.
+        private boolean drainAcknowledged = false;
         /// Transport-connectivity flag for the join-grace reaper gate (gate RCA fix,
         /// 2026-06-11): flipped by the [`PeerConnected`] / [`PeerDisconnected`] events already
         /// dispatched into this FSM (the flag is bookkeeping ONLY — the state table's handling
@@ -1366,7 +1395,7 @@ public final class MembershipFsm {
             }
 
             if (!wasDeparting && isDeparting()) {
-                enteredDeparting(emissions);
+                enteredDeparting(event, emissions);
             }
 
             if (wasDeparting && !isDeparting()) {
@@ -1435,8 +1464,12 @@ public final class MembershipFsm {
         /// drain-command edge. Reached only via the deliberate-departure transitions
         /// (`DrainRequested` / `SwimDeparted` / `DownHysteresisMet`) — the transport-doubt flaps
         /// never reach DEPARTING in the [`MembershipState`] table — so this can never storm per
-        /// QUIC flap. The ring prune it actuates is idempotent with the later DEAD-edge prune.
-        private synchronized void enteredDeparting(List<Runnable> emissions) {
+        /// QUIC flap. The ring prune it actuates is idempotent with the later DEAD-edge prune. Also
+        /// records whether this DEPARTING tenure was drain-initiated and starts it unacknowledged (#1054,
+        /// [`#drainInitiated`], [`#drainAcknowledged`]).
+        private synchronized void enteredDeparting(MembershipEvent triggeringEvent, List<Runnable> emissions) {
+            drainInitiated = triggeringEvent instanceof DrainRequested;
+            drainAcknowledged = false;
             armDepartureTimeout();
             emissions.add(() -> onEnteredDeparting.accept(id));
         }
@@ -1602,12 +1635,57 @@ public final class MembershipFsm {
         /// `Stopped` would kill a recovered MEMBER. The `Stopped` dispatch routes through the
         /// central chokepoint, so the resulting DEAD edge journals, fires the death hook, and
         /// emits the REMOVED delta exactly like any other death.
+        ///
+        /// #1054: the firing first re-validates a drain-initiated departure. The DRAIN reaches the
+        /// target only on the issuer's next ping, so a delayed or lost delivery leaves a live, serving
+        /// target in DEPARTING here. When [`#isWithdrawableDrain`] holds — the target never acknowledged
+        /// this episode's DRAIN and no death evidence arrived — the firing dispatches
+        /// `DrainUnacknowledged` instead, which withdraws the member to MEMBER: no DEAD edge, no REMOVED
+        /// delta, so no `NodeRemoved` and no container reap. An ACKNOWLEDGED drain terminalizes here
+        /// whether or not the target still pongs: the acknowledgement is latched, never re-read, so a
+        /// drainee that halted after acknowledging still dies at expiry. A drain delivered after a
+        /// withdrawal still ends in exactly one death, through SWIM's FAULTY edge.
         private void terminalizeIfStillDeparting() {
             synchronized (transitionGuard) {
-                if (isDeparting()) {
-                    dispatch(new Stopped());
+                if (!isDeparting()) {
+                    return;
                 }
+
+                if (isWithdrawableDrain()) {
+                    log.warn("DEPARTING timeout for {}: DRAIN never acknowledged and no death evidence — withdrawing the drain, member returns to MEMBER (window={})",
+                             id,
+                             departureTimeout);
+                    dispatch(new DrainUnacknowledged());
+
+                    return;
+                }
+
+                dispatch(new Stopped());
             }
+        }
+
+        /// Latch this episode's drain acknowledgement (#1054 round 2) — see [`#drainAcknowledged`]. The caller
+        /// holds the transition guard, so a latch cannot land between a firing expiry's read of
+        /// [`#isWithdrawableDrain`] and its dispatch. Harmless outside a drain-initiated DEPARTING: the flag is
+        /// read only there, and every entry into DEPARTING clears it.
+        @Contract
+        private synchronized void latchDrainAcknowledgement() {
+            drainAcknowledged = true;
+        }
+
+        /// The withdrawal predicate (#1054), all reads under ONE monitor acquisition: this DEPARTING
+        /// tenure was drain-initiated, its DRAIN was never acknowledged ([`#drainAcknowledged`]), the
+        /// member had joined (MEMBER is where it counted before the drain, so a never-joined member is
+        /// never withdrawn INTO the counted set), and no death evidence arrived. Death evidence is
+        /// SWIM-FAULTY, or a liveness loss the transport has not since contradicted: transport may VETO
+        /// a death with a re-established link, exactly as in [`#joinGraceReapDeferred`], and never
+        /// supplies life.
+        private synchronized boolean isWithdrawableDrain() {
+            return drainInitiated
+                   && !drainAcknowledged
+                   && everJoined
+                   && !swimFaultySeen
+                   && (!livenessGoneSeen || transportConnected);
         }
 
         /// Arm the join-grace reaper (M10, Wave 7): after [`#joinGrace`] the member is reaped

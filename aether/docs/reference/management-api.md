@@ -284,7 +284,8 @@ No authentication required.
   "components": [
     {"name": "consensus", "status": "UP", "detail": "Cluster active"},
     {"name": "routes", "status": "UP", "detail": "Route sync received"},
-    {"name": "quorum", "status": "UP", "detail": "Reachable core members: 3 / required: 2"}
+    {"name": "quorum", "status": "UP", "detail": "Reachable core members: 3 / required: 2"},
+    {"name": "dht-admission", "status": "UP", "detail": "No DHT-backed storage instance awaiting its encryption-marker check"}
   ]
 }
 ```
@@ -295,6 +296,10 @@ Components checked:
 - **quorum** — Does the node hold quorum? True iff its counted strict core-member set meets the
   consensus simple-majority threshold (`coreCount / 2 + 1`), sourced from the same per-node
   quorum-loss signal the minority self-drain uses. A minority partition (e.g. 2 of 5) reports DOWN.
+- **dht-admission** — Has every DHT-backed storage instance passed its post-formation
+  encryption-marker check? DOWN names the instances still pending (`#1052`). The check retries while
+  the DHT cannot answer, for example while the ring is still converging after a join. The node stays
+  `JOINING` until it completes, so the overall status is DOWN (503) for as long as this is DOWN.
 
 ### GET /health/ready/{id}
 

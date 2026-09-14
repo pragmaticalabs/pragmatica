@@ -164,6 +164,9 @@ class MembershipFsmTest {
                                                LONG_TIMEOUT);
         }
 
+        /// A drainer that went SILENT: the liveness plane reported it gone while it was DEPARTING.
+        /// #1054 corrected this fixture — it used to drain and then feed NO silence evidence at all,
+        /// so it specified that a target nobody had heard from was dead, which is the defect itself.
         @Test
         void departingSilence_pastTimeout_terminalizesToDeadWithSingleRemovedDelta() {
             var manager = departureTimeoutManager(FIRING_TIMEOUT);
@@ -172,6 +175,7 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
+            manager.onLivenessGone(A);
             assertThat(manager.memberStates()).containsEntry(A, "Departing");
 
             awaitDead(manager, A);
@@ -214,6 +218,220 @@ class MembershipFsmTest {
                     .as("mere liveness at the known incarnation does not cancel a drain")
                     .containsEntry(A, "Departing");
             assertThat(manager.countedMembers()).doesNotContain(A);
+        }
+
+        /// #1054 — THE acceptance pin. The DRAIN was issued (target DEPARTING on the issuer's FSM) but
+        /// never reached the target: the leader never recorded it reporting DRAINING and no death
+        /// evidence arrived, so the target is a live, serving node. Expiry must withdraw the drain
+        /// from the membership view — back to MEMBER, still counted — and must emit NO REMOVED edge,
+        /// because REMOVED is what becomes `NodeRemoved` and the active CTM's container reap.
+        @Test
+        void undeliveredDrain_pastTimeoutWithNoDeathEvidence_returnsToMemberWithoutRemovedDelta() {
+            var manager = departureTimeoutManager(FIRING_TIMEOUT);
+            var deltas = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(deltas::add);
+
+            promoteToMember(manager, A);
+            manager.onDrainRequested(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Departing");
+
+            await().pollDelay(FIRING_TIMEOUT.millis() * 3, TimeUnit.MILLISECONDS)
+                   .atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(manager.memberStates())
+                           .as("an unacknowledged drain on a target with no death evidence is withdrawn, never terminalized")
+                           .containsEntry(A, "Member"));
+            assertThat(deltas.stream()
+                             .filter(edge -> edge.kind() == MembershipDeltaEdge.Kind.REMOVED)
+                             .toList())
+                    .as("no REMOVED edge — so no NodeRemoved and no container reap for a live target")
+                    .isEmpty();
+            assertThat(manager.countedMembers()).contains(A);
+        }
+
+        /// #1054 no-regression: a DELIVERED drain (the target acknowledged it) still terminalizes at
+        /// expiry with exactly one REMOVED edge — and the halted target's later SWIM FAULTY pair lands
+        /// on DEAD and adds nothing, so the departure is reaped once.
+        @Test
+        void acknowledgedDrain_pastTimeout_terminalizesOnceEvenAfterSwimDeathPair() {
+            var manager = departureTimeoutManager(FIRING_TIMEOUT);
+            var deltas = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(deltas::add);
+
+            promoteToMember(manager, A);
+            manager.onDrainRequested(A);
+            manager.onDrainAcknowledged(A);
+
+            awaitDead(manager, A);
+            manager.onSwimFaulty(A, 1L);
+            manager.onSwimDeparted(A, 1L);
+
+            assertThat(removedEdges(deltas)).as("an acknowledged drain is reaped exactly once").hasSize(1);
+        }
+
+        /// H2 spec pin, restored (#1054 round 2, review S6): "a node that started draining but went silent still
+        /// terminalizes". The drainee acknowledged the DRAIN once and then went silent — no further pong, no
+        /// liveness loss, no SWIM verdict, exactly what a halted drainee looks like to the leader before death
+        /// evidence lands. The latched acknowledgement is what separates it from a DRAIN that never arrived.
+        @Test
+        void acknowledgedThenSilentDrainer_pastTimeout_terminalizesToDeadWithSingleRemovedDelta() {
+            var manager = departureTimeoutManager(FIRING_TIMEOUT);
+            var deltas = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(deltas::add);
+
+            promoteToMember(manager, A);
+            manager.onDrainRequested(A);
+            manager.onDrainAcknowledged(A);
+
+            awaitDead(manager, A);
+            assertThat(removedEdges(deltas)).as("an acknowledged, silent drainer is removed exactly once").hasSize(1);
+        }
+
+        /// Latch reset rule, new incarnation: the acknowledgement belongs to ONE drain episode. A drainee that
+        /// acknowledged, then refuted the drain at a newer incarnation (DEPARTING → MEMBER ends the episode), and
+        /// is drained again with no fresh acknowledgement must be withdrawn — not reaped on the old episode's latch.
+        @Test
+        void drainAcknowledgement_afterNewerIncarnationRecovery_doesNotCarryIntoNextEpisode() {
+            var manager = departureTimeoutManager(FIRING_TIMEOUT);
+            var deltas = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(deltas::add);
+
+            promoteToMember(manager, A);
+            manager.onDrainRequested(A);
+            manager.onDrainAcknowledged(A);
+            manager.onSwimHealthy(A, 2L);
+            assertThat(manager.memberStates()).as("arming: the newer incarnation ended the first episode")
+                                              .containsEntry(A, "Member");
+
+            manager.onDrainRequested(A);
+
+            await().pollDelay(FIRING_TIMEOUT.millis() * 3, TimeUnit.MILLISECONDS)
+                   .atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(manager.memberStates())
+                           .as("the second, unacknowledged episode is withdrawn")
+                           .containsEntry(A, "Member"));
+            assertThat(removedEdges(deltas)).isEmpty();
+        }
+
+        /// Latch reset rule, new episode: an acknowledgement observed BEFORE the drain (a target already
+        /// reporting DRAINING for another reason, or a stale report) cannot pre-arm the episode that follows.
+        @Test
+        void drainAcknowledgement_observedBeforeTheDrain_doesNotPreArmTheEpisode() {
+            var manager = departureTimeoutManager(FIRING_TIMEOUT);
+            var deltas = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(deltas::add);
+
+            promoteToMember(manager, A);
+            manager.onDrainAcknowledged(A);
+            manager.onDrainRequested(A);
+
+            await().pollDelay(FIRING_TIMEOUT.millis() * 3, TimeUnit.MILLISECONDS)
+                   .atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
+            assertThat(removedEdges(deltas)).isEmpty();
+        }
+
+        /// A `DRAINING` pong alone is not membership evidence: acknowledging an id this FSM never observed must
+        /// not create tracking for it (which would arm a join-grace reaper for a node nobody saw).
+        @Test
+        void onDrainAcknowledged_untrackedId_createsNoTracking() {
+            var manager = departureTimeoutManager(FIRING_TIMEOUT);
+
+            manager.onDrainAcknowledged(B);
+
+            assertThat(manager.memberStates()).doesNotContainKey(B);
+        }
+
+        /// #1054 — a withdrawn drain whose DRAIN is delivered LATER (the link recovered): the target
+        /// drains, halts, and SWIM's FAULTY pair takes it MEMBER → DEAD with exactly one REMOVED edge.
+        /// Withdrawal moves the reap to SWIM's death edge; it never loses or duplicates it.
+        @Test
+        void withdrawnDrain_laterDeliveredAndHalted_reachesDeadWithSingleRemovedDelta() {
+            var manager = departureTimeoutManager(FIRING_TIMEOUT);
+            var deltas = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(deltas::add);
+
+            promoteToMember(manager, A);
+            manager.onDrainRequested(A);
+            await().atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
+
+            manager.onSwimFaulty(A, 1L);
+            manager.onSwimDeparted(A, 1L);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+            assertThat(removedEdges(deltas)).as("the late SWIM death is the single removal").hasSize(1);
+        }
+
+        /// #1054 — SWIM FAULTY observed while DEPARTING is death evidence: the unacknowledged drain is
+        /// terminalized, not withdrawn.
+        @Test
+        void unacknowledgedDrain_swimFaultyWhileDeparting_terminalizesToDead() {
+            var manager = departureTimeoutManager(FIRING_TIMEOUT);
+
+            promoteToMember(manager, A);
+            manager.onDrainRequested(A);
+            manager.onSwimFaulty(A, 2L);
+            assertThat(manager.memberStates()).containsEntry(A, "Departing");
+
+            awaitDead(manager, A);
+        }
+
+        /// #1054 — transport may VETO a death, never promote (the join-grace reaper's rule): a
+        /// liveness loss followed by a re-established link is NOT death evidence, so an
+        /// unacknowledged drain on a reconnected target is still withdrawn.
+        @Test
+        void unacknowledgedDrain_livenessLostThenReconnected_returnsToMember() {
+            var manager = departureTimeoutManager(FIRING_TIMEOUT);
+            var deltas = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(deltas::add);
+
+            promoteToMember(manager, A);
+            manager.onDrainRequested(A);
+            manager.onLivenessGone(A);
+            manager.onPeerConnected(A);
+
+            await().pollDelay(FIRING_TIMEOUT.millis() * 3, TimeUnit.MILLISECONDS)
+                   .atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
+            assertThat(removedEdges(deltas)).isEmpty();
+        }
+
+        /// #1054 scope: withdrawal returns a member to where it counted, so a drain issued BEFORE the
+        /// member ever joined is never withdrawn into MEMBER — it terminalizes as before (and, never
+        /// having joined, emits no REMOVED edge).
+        @Test
+        void drainBeforePromotion_pastTimeout_neverWithdrawnIntoMember() {
+            var manager = departureTimeoutManager(FIRING_TIMEOUT);
+
+            manager.onDrainRequested(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Departing");
+
+            awaitDead(manager, A);
+            assertThat(manager.countedMembers()).doesNotContain(A);
+        }
+
+        /// #1054 scope: only a DRAIN-initiated departure can be withdrawn. A sustained-absence
+        /// departure (SUSPECT → DEPARTING on `DownHysteresisMet`) carries no DRAIN to acknowledge and
+        /// still terminalizes at expiry with exactly one REMOVED edge.
+        @Test
+        void sustainedAbsenceDeparture_pastTimeout_stillTerminalizesWithSingleRemovedDelta() {
+            var manager = departureTimeoutManager(FIRING_TIMEOUT);
+            var deltas = new ArrayList<MembershipDeltaEdge>();
+            manager.onMembershipDelta(deltas::add);
+
+            promoteToMember(manager, A);
+            manager.onSwimSuspect(A, 2L);
+            manager.onDownHysteresisMet(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Departing");
+
+            awaitDead(manager, A);
+            assertThat(removedEdges(deltas)).hasSize(1);
+        }
+
+        private static List<MembershipDeltaEdge> removedEdges(List<MembershipDeltaEdge> deltas) {
+            return deltas.stream()
+                         .filter(edge -> edge.kind() == MembershipDeltaEdge.Kind.REMOVED)
+                         .toList();
         }
     }
 

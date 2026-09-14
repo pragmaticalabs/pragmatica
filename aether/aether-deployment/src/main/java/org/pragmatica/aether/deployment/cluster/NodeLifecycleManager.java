@@ -232,6 +232,17 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
                                                     instanceId.value()));
         }
 
+        if (instances.isEmpty()) {
+            // Terminate is idempotent (#1050 R4 / S1): an instance that is already gone is the requested end
+            // state, so a repeat reap, or a replay racing a departure reap, completes quietly.
+            log.debug("terminate of {}: no cloud instance with tag {}={} — already gone, treated as done",
+                      nodeId.id(),
+                      NODE_ID_TAG,
+                      nodeId.id());
+
+            return Promise.unitPromise();
+        }
+
         return logMismatch("terminate", nodeId, instances.size());
     }
 
