@@ -136,7 +136,7 @@ CDM (leader only)                    KV-Store (consensus)                   NDM 
 4. Track state transitions via `NodeArtifactKey` put notifications
 5. Issue `ACTIVATE` when slice reaches `LOADED` and dependencies are met
 6. Issue `UNLOAD` for scale-down, node removal, or failure cleanup
-7. Run periodic reconciliation (default: 30s)
+7. Run periodic reconciliation (default: 5s — `TimeoutsConfig.ClusterTimeouts.reconciliationInterval`; this line said 30s until #1068)
 8. Gate activation on schema migration completion
 
 #### 2.4 NDM Responsibilities (Every Node)

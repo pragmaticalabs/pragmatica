@@ -13,8 +13,10 @@ import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.SliceStore.LoadedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -52,6 +54,10 @@ class NodeDeploymentManagerTest {
         sliceStore = new TestSliceStore();
         clusterNode = new TestClusterNode(self);
         kvStore = new TestKVStore();
+        // #1068: every start here is a LIVE deployment, so the committed SliceTarget names the test
+        // artifact's version; a start with no target is a rollback leftover and is refused.
+        kvStore.put(SliceTargetKey.sliceTargetKey(createTestArtifact().base()),
+                    SliceTargetValue.sliceTargetValue(createTestArtifact().version(), 1));
         invocationHandler = new TestInvocationHandler();
         manager = NodeDeploymentManager.nodeDeploymentManager(
                 self, router, sliceStore, clusterNode, kvStore, invocationHandler
