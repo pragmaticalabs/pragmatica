@@ -195,6 +195,31 @@ class CacheTierPartialWriteTest {
         assertThat(partialFiles(dir)).isEmpty();
     }
 
+    /// #1144: the release is a dependent action on the put's promise, so it has run by the time the
+    /// caller sees the failure. As an `onFailure` handler it ran on an executor thread after
+    /// `await` had returned, and CI read the reservation still counted. The seam holds every
+    /// virtual-thread carrier until this thread has read `usedBytes`, so a handler could not land
+    /// first on any box; a dependent action needs no carrier and is unaffected.
+    @Test
+    void localDiskTier_failedWrite_releasesTheReservation_beforeTheFailureIsDelivered() {
+        var dir = tempDir.resolve("ordered");
+        var carriers = new CarrierStarver();
+        var tier = LocalDiskTier.localDiskTier(dir, 1024 * 1024, timeSpan(30).seconds(), none(), some(carriers::writeThenFail))
+                                .unwrap();
+        var content = block(2048);
+        var id = BlockId.blockId(content).unwrap();
+
+        try {
+            tier.put(id, content).await().onSuccess(_ -> fail("the write must fail"));
+            assertThat(tier.usedBytes()).as("released before the failure is delivered, not on a handler thread after it")
+                      .isZero();
+        } finally {
+            carriers.release();
+        }
+
+        assertThat(partialFiles(dir)).isEmpty();
+    }
+
     /// r3 (b): `delete` subtracts only what it removes, and it removes only blocks — a directory
     /// at the block path is neither, so the delete the instance issues after a failed promotion
     /// cannot drive `usedBytes` negative.
@@ -313,6 +338,41 @@ class CacheTierPartialWriteTest {
             return FileOps.writeBytes(partial, Arrays.copyOf(content, limit))
                           .onSuccess(_ -> partialBytesSeen.set(FileOps.size(partial).or(-1L)))
                           .flatMap(_ -> new FileError.WriteFailed(partial, "No space left on device").result());
+        }
+    }
+
+    /// The write seam for the ordering pin: writes the block, queues two spinning virtual threads
+    /// per scheduler carrier, then fails. Whatever the tier hands to the virtual-thread executor
+    /// after that (an `onFailure` handler, for one) sits behind them in the FIFO queue and cannot
+    /// run before `release()` — two per carrier, because a carrier blocked in the partial-file
+    /// delete makes the scheduler add a spare, which must find a spinner too. The deadline keeps
+    /// a red run from hanging the carriers.
+    private static final class CarrierStarver {
+        private static final int SPINNERS = 2 * Integer.getInteger("jdk.virtualThreadScheduler.parallelism",
+                                                                   Runtime.getRuntime().availableProcessors());
+        private static final long DEADLINE_NANOS = 5_000_000_000L;
+        private volatile boolean released;
+
+        Result<Unit> writeThenFail(Path partial, byte[] content) {
+            return FileOps.writeBytes(partial, content)
+                          .onSuccess(_ -> starveCarriers())
+                          .flatMap(_ -> new FileError.WriteFailed(partial, "No space left on device").result());
+        }
+
+        private void starveCarriers() {
+            var deadline = System.nanoTime() + DEADLINE_NANOS;
+
+            for (int i = 0; i < SPINNERS; i++) {
+                Thread.ofVirtual().start(() -> {
+                    while (!released && System.nanoTime() < deadline) {
+                        Thread.onSpinWait();
+                    }
+                });
+            }
+        }
+
+        void release() {
+            released = true;
         }
     }
 

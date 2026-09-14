@@ -28,7 +28,6 @@ public sealed interface RoutePermissionRegistry {
 
         static final List<String> ADMIN = List.of("/api/v1/blueprints",
                                                   "/api/v1/nodes/shutdown",
-                                                  "/api/v1/backups/restore",
                                                   "/api/v1/logging/levels",
                                                   "/api/v1/observability/depth");
 
@@ -39,7 +38,6 @@ public sealed interface RoutePermissionRegistry {
                                                      "/api/v1/blue-green",
                                                      "/api/v1/rolling-update",
                                                      "/api/v1/ab-tests",
-                                                     "/api/v1/backups",
                                                      "/api/v1/scale",
                                                      "/api/v1/scheduled-tasks",
                                                      "/api/v1/controller",
@@ -49,6 +47,9 @@ public sealed interface RoutePermissionRegistry {
                                                      "/api/v1/streams",
                                                      "/repository/");
 
+        /// ADMIN is consulted before OPERATOR. Since #676 removed `/api/v1/backups[/restore]` no
+        /// production path is in both lists, so that precedence is exercised by no test — the next
+        /// overlapping pair needs one.
         static RoutePermission resolveMutationPermission(String path) {
             if (matchesAny(path, ADMIN)) {
                 return resolveAdminOverrides(path);

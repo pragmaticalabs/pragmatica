@@ -16,8 +16,6 @@ import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.api.ClusterEvent.AccessDenied;
-import org.pragmatica.aether.api.ClusterEvent.BackupCreated;
-import org.pragmatica.aether.api.ClusterEvent.BackupRestored;
 import org.pragmatica.aether.api.ClusterEvent.BlueprintDeleted;
 import org.pragmatica.aether.api.ClusterEvent.BlueprintDeployed;
 import org.pragmatica.aether.api.ClusterEvent.ConfigChanged;
@@ -961,22 +959,6 @@ public final class ClusterEventAggregator {
                                       event.action(),
                                       "requestedBy",
                                       event.requestedBy())));
-    }
-
-    @Contract
-    public void onBackupCreated(OperationalEvent.BackupCreated event) {
-        emit(new BackupCreated(hlcClock.now(),
-                               Severity.INFO,
-                               "Backup created: " + event.commitId(),
-                               Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
-    }
-
-    @Contract
-    public void onBackupRestored(OperationalEvent.BackupRestored event) {
-        emit(new BackupRestored(hlcClock.now(),
-                                Severity.WARNING,
-                                "Backup restored: " + event.commitId(),
-                                Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
     }
 
     @Contract

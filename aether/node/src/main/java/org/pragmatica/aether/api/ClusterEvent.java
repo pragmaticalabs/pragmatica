@@ -121,6 +121,8 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
 
     record ConfigChanged(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
 
+    /// No producer since the backup API was removed (#676); kept because wire tags 258/259 pin the
+    /// types and retiring a tag is a codec-table change, not a route change.
     record BackupCreated(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
 
     record BackupRestored(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {}
