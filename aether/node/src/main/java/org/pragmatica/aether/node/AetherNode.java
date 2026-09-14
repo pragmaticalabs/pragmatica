@@ -2971,7 +2971,6 @@ public interface AetherNode extends ManageableNode {
         // without quorum there is no sync/activate/replay — so the record that would install the
         // cluster key never arrives. GossipKeyRotationBootDivergenceTest pins both directions of
         // the key divergence this rests on.
-
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
 
         allEntries.addAll(aetherEntries);

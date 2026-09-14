@@ -92,15 +92,13 @@ public final class GossipKeyRoutes implements RouteSource {
                                                                     GossipKeyRotationValue intended) {
         return committedRotation(node).filter(committed -> committed.currentKey()
                                                                     .equals(intended.currentKey()))
-                                      .map(GossipKeyRoutes::rotationResponse)
-                                      .map(Promise::success)
-                                      .or(() -> new GossipKeyRotationError.Superseded(intended.currentKeyId()).promise());
+                                .map(GossipKeyRoutes::rotationResponse)
+                                .map(Promise::success)
+                                .or(() -> new GossipKeyRotationError.Superseded(intended.currentKeyId()).promise());
     }
 
     private static GossipKeyRotationResponse rotationResponse(GossipKeyRotationValue value) {
-        return new GossipKeyRotationResponse(value.currentKeyId(),
-                                             value.previousKeyId(),
-                                             value.rotatedAt());
+        return new GossipKeyRotationResponse(value.currentKeyId(), value.previousKeyId(), value.rotatedAt());
     }
 
     private static Option<GossipKeyRotationValue> committedRotation(ManageableNode node) {
@@ -117,11 +115,10 @@ public final class GossipKeyRoutes implements RouteSource {
             @Override
             public String message() {
                 return "Gossip key rotation " + attemptedKeyId
-                       + " was superseded by a concurrent rotation and did not land; re-read the current key id and retry";
+                     + " was superseded by a concurrent rotation and did not land; re-read the current key id and retry";
             }
         }
     }
-
 
     private static GossipKeyRotationValue nextRotation(Option<GossipKeyRotationValue> previous) {
         var key = new byte[KEY_BYTES];
