@@ -284,6 +284,13 @@ public class RouteSourceGenerator {
         out.println("        return " + sliceName + ".class;");
         out.println("    }");
         out.println();
+        // #882: stamp the route-security contract this generator implements, so a node can tell a
+        // JAR built before #763 (no stamp, unspecified security baked in as public) from a current one.
+        out.println("    @Override");
+        out.println("    public int routeSecurityContract() {");
+        out.println("        return SliceRouterFactory.ROUTE_SECURITY_CONTRACT;");
+        out.println("    }");
+        out.println();
         // SliceRouterFactory: create(slice)
         out.println("    @Override");
         out.println("    public SliceRouter create(" + sliceName + " slice) {");

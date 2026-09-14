@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.http.adapter.SliceRouterFactory;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -37,6 +38,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class HttpRoutePublisherStaleContractTest {
     private static final NodeId SELF = NodeId.nodeId("self").unwrap();
     private static final Artifact STALE = Artifact.artifact("org.example:stale-slice:1.0.0").unwrap();
+    private static final Artifact CURRENT = Artifact.artifact("org.example:current-slice:1.0.0").unwrap();
 
     private CountingCluster cluster;
     private HttpRoutePublisher publisher;
@@ -60,10 +62,28 @@ class HttpRoutePublisherStaleContractTest {
             assertThat(cause.message()).contains(STALE.asString())
                                        .contains("GET /stale/items")
                                        .doesNotContain("/stale/admin")
-                                       .contains("recompile");
+                                       .containsIgnoringCase("recompile");
         });
         assertThat(cluster.applyCount()).as("no route table entry reaches consensus for a refused slice")
                                         .isZero();
+    }
+
+    /// Control: the same public route from a factory carrying the stamp publishes — the stamp, not
+    /// the policy, is what the refusal keys on.
+    @Test
+    void factoryWithTheContract_declaringAPublicRoute_isPublished() {
+        publisher.publishRoutes(CURRENT, getClass().getClassLoader(), new CurrentRouteContractSlice(), stubInvokerFacade())
+                 .await(timeSpan(10).seconds())
+                 .onFailure(cause -> Assertions.fail("a current build's declared-public route must publish: " + cause.message()));
+
+        assertThat(cluster.applyCount()).isEqualTo(1);
+    }
+
+    /// `slice-api` cannot see `http-routing-adapter`, so the cause carries its own copy of the
+    /// current contract number for its message; this is the only place both are visible.
+    @Test
+    void theCauseAndTheFactory_agreeOnTheCurrentContract() {
+        assertThat(SliceLoadingFailure.CURRENT_ROUTE_SECURITY_CONTRACT).isEqualTo(SliceRouterFactory.ROUTE_SECURITY_CONTRACT);
     }
 
     private static SliceInvokerFacade stubInvokerFacade() {

@@ -25,6 +25,7 @@ import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.ObservabilityStrategyCell;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -268,6 +269,15 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
 
                 return Promise.unitPromise();
             }
+            // #882: a factory generated before the #763 contract has every no-[security] route
+            // baked in as PUBLIC; refuse it here, which fails the activation chain, rather than let
+            // the route table carry an exposure the runtime upgrade could never have closed.
+            var stale = staleContractRefusal(artifact, factory, routes);
+
+            if (stale.isPresent()) {
+                return stale.unwrap()
+                            .promise();
+            }
 
             publishedRoutes.put(artifact, routes);
 
@@ -278,6 +288,33 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                  factory.getClass().getName());
 
         return Promise.unitPromise();
+    }
+
+    private static Option<SliceLoadingFailure.Fatal.RouteSecurityContractStale> staleContractRefusal(Artifact artifact,
+                                                                                                     SliceRouterFactory<?> factory,
+                                                                                                     List<HttpRouteDefinition> routes) {
+        var contract = factory.routeSecurityContract();
+
+        if (contract >= SliceRouterFactory.ROUTE_SECURITY_CONTRACT) {
+            return Option.none();
+        }
+
+        var publicRoutes = routes.stream()
+                                 .filter(route -> route.security() instanceof SecurityPolicy.Public)
+                                 .map(route -> route.httpMethod() + " " + route.pathPrefix())
+                                 .toList();
+
+        if (publicRoutes.isEmpty()) {
+            return Option.none();
+        }
+
+        var refusal = new SliceLoadingFailure.Fatal.RouteSecurityContractStale(artifact.asString(),
+                                                                               contract,
+                                                                               publicRoutes);
+
+        log.error(refusal.message());
+
+        return Option.some(refusal);
     }
 
     @Override
