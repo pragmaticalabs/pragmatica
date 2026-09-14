@@ -52,11 +52,24 @@ public interface EndpointRegistry {
 
     Option<Endpoint> selectEndpointByAffinity(Artifact artifact, MethodName methodName, NodeId affinityNode);
 
+    /// #275: `excludeNodes` are removed from the candidate set BEFORE the old/new split, so a node the
+    /// caller considers unusable cannot be handed out by either arm of the weighted pick. The pick spans
+    /// every version of the base, so its exclusion set must be computed over the same rows — a set scoped
+    /// to one version cannot name a node that hosts only the other one.
     Option<Endpoint> selectEndpointWithRouting(ArtifactBase artifactBase,
                                                MethodName methodName,
                                                VersionRouting routing,
                                                Version oldVersion,
-                                               Version newVersion);
+                                               Version newVersion,
+                                               java.util.Set<NodeId> excludeNodes);
+
+    default Option<Endpoint> selectEndpointWithRouting(ArtifactBase artifactBase,
+                                                       MethodName methodName,
+                                                       VersionRouting routing,
+                                                       Version oldVersion,
+                                                       Version newVersion) {
+        return selectEndpointWithRouting(artifactBase, methodName, routing, oldVersion, newVersion, java.util.Set.of());
+    }
 
     List<Endpoint> findEndpointsForBase(ArtifactBase artifactBase, MethodName methodName);
     List<Endpoint> allEndpoints();
@@ -206,8 +219,11 @@ public interface EndpointRegistry {
                                                               MethodName methodName,
                                                               VersionRouting routing,
                                                               Version oldVersion,
-                                                              Version newVersion) {
-                var allEndpoints = findEndpointsForBase(artifactBase, methodName);
+                                                              Version newVersion,
+                                                              java.util.Set<NodeId> excludeNodes) {
+                var allEndpoints = findEndpointsForBase(artifactBase, methodName).stream()
+                                                                                 .filter(e -> !excludeNodes.contains(e.nodeId()))
+                                                                                 .toList();
 
                 if (allEndpoints.isEmpty()) {
                     return Option.none();
