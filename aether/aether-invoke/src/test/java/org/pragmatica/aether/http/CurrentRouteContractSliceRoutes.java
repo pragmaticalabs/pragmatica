@@ -24,9 +24,11 @@ public final class CurrentRouteContractSliceRoutes implements RouteSource, Slice
         return CurrentRouteContractSlice.class;
     }
 
+    /// Literal, exactly as `RouteSourceGenerator` emits it — the stamp is the generator's number
+    /// frozen at generation time, never a symbol resolved against the slice's compile classpath.
     @Override
     public int routeSecurityContract() {
-        return SliceRouterFactory.ROUTE_SECURITY_CONTRACT;
+        return 1;
     }
 
     @Override
