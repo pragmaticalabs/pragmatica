@@ -146,6 +146,25 @@ class SliceInvokerRoutingLivenessFilterTest {
                   .contains(LIVE_NEW);
     }
 
+    /// The FAILOVER arm reaches the weighted pick by its own route (`selectEndpointWithFailover`), so it
+    /// needs its own base-scoped exclusion — the plain arm's is a different call site. Routing is ALL_NEW
+    /// and the only new-version host is DEAD, so a version-scoped exclusion computed from the invoked OLD
+    /// artifact is empty and the very FIRST failover send went to the dead node. With the base-scoped set
+    /// the new arm is empty and the pick falls back to the reachable old host.
+    @Test
+    void weightedRouting_failoverFirstAttempt_neverSelectsDeadNodeHostingOnlyTheOtherVersion() {
+        registerEndpoint(OLD, 0, LIVE_OLD);
+        registerEndpoint(NEW, 0, DEAD);
+        startInvoker(routing("1:0"), rejecting(DEAD));
+
+        var _ = invoker.invokeWithRetry(OLD, METHOD, "request", new TypeToken<String>() {}, 3).await();
+
+        assertThat(network.targets()).as("#275: the failover arm's first attempt must not go to a node the filter rejects, "
+                                         + "even when that node hosts only the version the caller did not name")
+                  .isNotEmpty()
+                  .containsOnly(LIVE_OLD);
+    }
+
     /// The filter leaves NOTHING. A silent empty pick, or a fallback onto the unfiltered set, would both be
     /// defects: the call must fail without a single send.
     @Test
