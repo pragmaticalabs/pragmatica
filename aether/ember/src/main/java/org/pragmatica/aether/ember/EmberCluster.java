@@ -667,10 +667,18 @@ public final class EmberCluster {
                                                  .recover(_ -> Unit.unit()))
                                 .toList();
 
-        return Promise.allOf(stopPromises)
-                      .mapToUnit()
-                      .onSuccess(this::clearClusterStateOnFailure)
-                      .flatMap(_ -> cause.promise());
+        return clearThenSettle(Promise.allOf(stopPromises).mapToUnit(), this::clearClusterStateOnFailure, cause::promise);
+    }
+
+    /// The registry clear between the stops settling and the outcome the caller sees (#913 contract:
+    /// a start failure empties the registry BEFORE the failure reaches the caller; [#stop] likewise
+    /// before its own resolution). One chain for all three paths, package-visible so the ordering is
+    /// pinned on the exact chain the product runs (`EmberClusterClearBeforeOutcomeTest`).
+    static Promise<Unit> clearThenSettle(Promise<Unit> stopsSettled,
+                                         Functions.Fn1<Unit, Unit> clear,
+                                         Functions.Fn0<Promise<Unit>> outcome) {
+        return stopsSettled.onSuccess(clear::apply)
+                           .flatMap(_ -> outcome.apply());
     }
 
     private void captureStartFailure(Map<String, String> startFailures) {
@@ -775,16 +783,15 @@ public final class EmberCluster {
                                                     .or(Promise.success(Unit.unit())))
                                     .toList();
 
-        return Promise.allOf(stopPromises)
-                      .mapToUnit()
-                      .onSuccess(this::clearClusterStateOnFailure)
-                      .flatMap(_ -> failed.getFirst()
-                                          .failure()
-                                          .<Promise<Unit>> map(Cause::promise)
-                                          .or(Promise.success(Unit.unit())));
+        return clearThenSettle(Promise.allOf(stopPromises).mapToUnit(),
+                               this::clearClusterStateOnFailure,
+                               () -> failed.getFirst()
+                                           .failure()
+                                           .<Promise<Unit>> map(Cause::promise)
+                                           .or(Promise.success(Unit.unit())));
     }
 
-    private void clearClusterStateOnFailure(Unit unit) {
+    private Unit clearClusterStateOnFailure(Unit unit) {
         nodes.clear();
         // Held-back instances were never started, so dropping the references disposes them fully.
         heldBackNodes.clear();
@@ -793,6 +800,8 @@ public final class EmberCluster {
         slotsByNodeId.clear();
         availableSlots.clear();
         nodeCounter.set(0);
+
+        return unit;
     }
 
     public Promise<Unit> stop() {
@@ -801,9 +810,7 @@ public final class EmberCluster {
         rollingRestartActive.set(false);
         var stopPromises = nodes.values().stream().map(EmberCluster::submitStop).toList();
 
-        return Promise.allOf(stopPromises)
-                      .map(_ -> Unit.unit())
-                      .onSuccess(this::clearClusterState);
+        return clearThenSettle(Promise.allOf(stopPromises).mapToUnit(), this::clearClusterState, Promise::unitPromise);
     }
 
     /// Run one node's stop OFF the caller's thread so [`#NODE_TIMEOUT`] can actually see it (#929).
@@ -825,7 +832,7 @@ public final class EmberCluster {
                                                      .onResult(promise::resolve)).timeout(NODE_TIMEOUT);
     }
 
-    private void clearClusterState(Unit unit) {
+    private Unit clearClusterState(Unit unit) {
         nodes.clear();
         // Still-held instances were never started — nothing to stop, dropping them disposes them.
         heldBackNodes.clear();
@@ -834,6 +841,8 @@ public final class EmberCluster {
         slotsByNodeId.clear();
         availableSlots.clear();
         log.info("Ember cluster stopped");
+
+        return unit;
     }
 
     /// Adds a node with NO role label — production-default shape, and byte-identical to the behaviour
