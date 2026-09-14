@@ -820,9 +820,18 @@ class SwimProtocolTest {
             Thread.sleep(200L);
 
             var afterStop = announceCount(transport);
+            // Nothing advances the self-incarnation once the protocol is stopped, so it is a stable
+            // witness for whether announceJoin ran AT ALL — independent of the per-seed send guard,
+            // which reads the same latch and would otherwise mask a missing refusal here.
+            var incarnationBefore = protocol.selfIncarnation();
 
             // The call that raced the stop. Nothing cancels what it arms, so only a refusal helps.
-            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", incarnationBefore + 1_000L, List.of(ADDR_A));
+
+            assertThat(protocol.selfIncarnation())
+                .as("announceJoin must be refused before it does anything at all — a seeded incarnation "
+                    + "proves it armed a loop instead")
+                .isEqualTo(incarnationBefore);
 
             var ticks = observeSchedulerTicks(1_200L);
 
