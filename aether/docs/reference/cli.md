@@ -2554,6 +2554,13 @@ that would hand it the cluster key. **Auto-heal replacements and scale-up nodes 
 emergency rotation leaves the cluster unable to self-heal** until new nodes are given the rotated key
 material out of band. Existing running nodes keep working.
 
+**Troubleshooting a node that will not join after a rotation — check the SEED nodes' logs, not the
+new node's.** Look for `Failed to decrypt gossip from <id>` on the seeds. A node the cluster has
+never heard of logs nothing about the cause: it prints `Aether node <id> started, cluster forming...`
+and then stays quiet, because an unreachable quorum is retried and never exits. A **restarted
+existing member** is the exception — it refuses to boot with a `FATAL` line naming gossip-key
+divergence, because its peers still probe it and it can see the mismatched key id.
+
 ### `aether cluster revoke-key`
 
 Revoke an API key by ID.

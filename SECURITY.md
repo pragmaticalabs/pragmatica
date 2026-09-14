@@ -48,23 +48,34 @@ Two consequences follow directly:
     that cluster.** The delivered key is what every node encrypts under from then on. The first
     rotation carries NO decrypt overlap (there is no prior record to carry), so boot-key ciphertext
     is rejected from the moment it lands; subsequent rotations carry the previous key.
-  - **A ROTATED CLUSTER CANNOT GROW UNTIL AN OPERATOR ACTS — INCLUDING AUTO-HEAL.** This is the
-    operational cost of the mitigation and it is severe enough to plan for before invoking it. A node
-    booting after a rotation derives its gossip key from `cluster_secret`, which the rotated cluster
-    no longer accepts; its SWIM datagrams are dropped and it cannot decrypt the cluster's either. SWIM
-    therefore discovers no peers, the QUIC dial set stays self-only, no quorum forms, and the
-    consensus replay that carries the rotation record — the only way to obtain the cluster key —
-    never runs. The node cannot join, and the cycle cannot resolve itself. **So an emergency rotation,
-    performed precisely because something was compromised, leaves the cluster unable to self-heal:
-    auto-heal replacements, scale-up and re-provisioned nodes all fail to join until they are given
-    the rotated key material out of band.** Existing running nodes are unaffected.
-    - A **restarted existing member** detects this and refuses to boot with a `FATAL` line naming
-      gossip-key divergence (#683), because its peers still probe it and it can see gossip arriving
-      under a key id it does not hold.
+  - **A ROTATED CLUSTER CANNOT GROW UNTIL AN OPERATOR ACTS — INCLUDING AUTO-HEAL.**
+
+    **If a node will not join after a rotation, CHECK THE SEED NODES' LOGS, NOT THE NEW NODE'S.**
+    Look for `Failed to decrypt gossip from <id>` on the seeds. This is the first thing to know
+    because it inverts where you will instinctively look: a node the cluster has never heard of
+    logs **nothing** about the cause — worse, it logs `Aether node <id> started, cluster forming...`
+    and then stays quiet, because an unreachable quorum is retried and never exits. The only
+    evidence is on the healthy machines you have no reason to suspect.
+
+    The mechanism: a node booting after a rotation derives its gossip key from `cluster_secret`,
+    which the rotated cluster no longer accepts; its SWIM datagrams are dropped and it cannot decrypt
+    the cluster's either. SWIM therefore discovers no peers, the QUIC dial set stays self-only, no
+    quorum forms, and the consensus replay that carries the rotation record — the only way to obtain
+    the cluster key — never runs. The node cannot join, and the cycle cannot resolve itself.
+    **So an emergency rotation, performed precisely because something was compromised, leaves the
+    cluster unable to self-heal: auto-heal replacements, scale-up and re-provisioned nodes all fail
+    to join until they are given the rotated key material out of band.** Existing running nodes are
+    unaffected.
+
+    Which nodes say so for themselves:
+    - A **restarted existing member** refuses to boot with a `FATAL` line naming gossip-key
+      divergence (#683) — its peers still hold it in their configured seed set, so they probe it and
+      it can see gossip arriving under a key id it does not hold.
     - A **node the cluster has never heard of** — an auto-heal replacement or scale-up node — cannot
-      detect it: nobody probes an address they do not know, so it receives nothing at all and its
-      silence is indistinguishable from a partition. In that case the only signal is the
-      `Failed to decrypt gossip from ...` WARN on the **healthy seeds**, not on the stranded node.
+      detect it at all. Nobody probes an address they do not know, so it receives nothing, and its
+      silence is indistinguishable from a partition, down seeds, or a wrong advertise address. Hence
+      the instruction above.
+
     A general key-delivery path for joining nodes is not in rc4; it is an architecture change (it
     needs either a second trust root or a deliberately weakened revocation) and is tracked separately.
 - **The runtime/slice boundary is an accident boundary, not a security sandbox.** Each slice loads

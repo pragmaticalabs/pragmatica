@@ -62,15 +62,21 @@
   [verified: `GossipKeyDivergenceGuardTest` — 7 tests: fires at the threshold, fires once not per
   datagram, one successful decrypt disarms it permanently, varied junk does not trip it, a differing
   key id resets the run, encrypt is passed through unchanged].
-  **Detection is partial by construction, and the blast radius differs from the symptom.** The guard
-  fires only if the cluster SENDS to the node. A RESTARTED member is still in its peers' configured
-  seed set, so it is probed and the divergence is detected precisely. A node the cluster has never
-  heard of — the auto-heal replacement case — is probed by nobody, receives nothing at all, and cannot
-  distinguish this from a partition; there the only signal is the `Failed to decrypt gossip from ...`
-  WARN on the healthy seeds, not on the stranded node. Note also that CTM sets `AETHER_ADVERTISE_HOST`
-  (`NodeUserDataRenderer`, via `ip route get`), so auto-heal and scale-up skip `SelfAddressResolver`'s
-  reflection probe entirely — they skip the *symptom* while their live SWIM transport still cannot
-  talk. A reader who learns only "reflection breaks" would wrongly conclude auto-heal is safe.
+  **Detection is partial by construction, and the operator instruction that follows from it is the
+  most important line here: IF A NODE WILL NOT JOIN AFTER A ROTATION, CHECK THE SEED NODES' LOGS, NOT
+  THE NEW NODE'S** — `Failed to decrypt gossip from <id>`, already logged by `NettySwimTransport`.
+  This inverts where an operator will instinctively look. The guard fires only if the cluster SENDS to
+  the node: a RESTARTED member is still in its peers' configured seed set, so it is probed and the
+  divergence is detected precisely; a node the cluster has never heard of — the auto-heal case — is
+  probed by nobody, receives nothing at all, and logs nothing about the cause. Worse than silent, it
+  prints `Aether node <id> started, cluster forming...` and then stays quiet, because an unreachable
+  quorum is retried and never exits. Naming divergence as a candidate in a no-quorum boot diagnostic
+  was considered and rejected: no such diagnostic exists to extend, and inventing one is new machinery
+  in a security-adjacent path — the gap is disclosed instead.
+  Note also that CTM sets `AETHER_ADVERTISE_HOST` (`NodeUserDataRenderer`, via `ip route get`), so
+  auto-heal and scale-up skip `SelfAddressResolver`'s reflection probe entirely — **that skips the
+  SYMPTOM only; their live SWIM transport is still mute, so they still cannot join.** A reader who
+  learns only "reflection breaks" would wrongly conclude auto-heal is safe.
   `[unverified: no multi-node run — the cycle is established from the code that enforces each step
   (`TopologyObserverTest.SwimOnlyDialSet` pins the self-only dial set; `NettySwimTransport` drops on
   decrypt failure) plus an in-process test of the key divergence itself, not from an observed cluster]`
