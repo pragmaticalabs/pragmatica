@@ -16,6 +16,7 @@ import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapE
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
+import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.RuntimeProfile;
 import org.pragmatica.aether.config.cluster.RuntimeType;
 import org.pragmatica.aether.config.cluster.SourceProfile;
@@ -753,6 +754,14 @@ sealed interface BootstrapPhaseDeploy {
         return Result.unitResult();
     }
 
+    /// #1090 — the SSH source's launch, brought level with the cloud re-launch it used to be a
+    /// hand-rolled copy of: only THIS source's hosts (exact id attribution, not every `ssh` node
+    /// in the context), each with its OWN role (label + `AETHER_ROLE`, else the node classifies
+    /// itself as CORE), the image the runtime profile resolves to (never `:latest`), and the
+    /// identity allow-list the cloud path emits. The container is the only runtime this path can
+    /// launch: a JVM or Ember profile on an SSH source is refused by name rather than silently
+    /// run as a container — installing a JVM unit over SSH is the cloud-init script's job and has
+    /// no SSH equivalent yet.
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
     static Result<Unit> deploySshSource(BootstrapContext ctx,
                                         SourceProfile source,
@@ -762,37 +771,41 @@ sealed interface BootstrapPhaseDeploy {
                                         Fn1<String, String> envLookup) {
         var sshConfig = buildSshConfig(source);
         var clusterName = ctx.config().cluster().name();
-        var peers = buildThreePartPeers(ctx);
-        var peersValue = String.join(",", peers);
+        var peersValue = String.join(",", buildThreePartPeers(ctx));
         var clusterSecret = ctx.clusterSecret();
         var clusterPort = ctx.config().operations().ports().cluster();
         var managementPort = ctx.config().operations().ports().management();
         var nodeIndex = 0;
 
         for (var node : ctx.nodes()) {
-            if (!node.serverId().equals("ssh")) {
+            if (!node.serverId().equals("ssh") || !BootstrapPhaseProvision.belongsTo(node.nodeId(), sourceName)) {
                 nodeIndex++;
                 continue;
             }
 
-            var nodeIdValue = node.nodeId();
-            var result = NodeConfigBuilder.compose(ctx,
-                                                   source,
-                                                   nodeIndex,
-                                                   NodeRole.CORE,
-                                                   Option.empty(),
-                                                   Option.some(clusterSecret))
-                                          .flatMap(doc -> deploySshNode(node,
-                                                                        TomlWriter.toToml(doc),
-                                                                        sshConfig,
-                                                                        clusterName,
-                                                                        nodeIdValue,
-                                                                        clusterPort,
-                                                                        managementPort,
-                                                                        peersValue,
-                                                                        clusterSecret,
-                                                                        sshExec,
-                                                                        scpExec));
+            var index = nodeIndex;
+            var result = BootstrapPhaseProvision.nodeRole(node.nodeId(), sourceName)
+                                                .flatMap(role -> sshContainerImage(ctx, source, role, node.nodeId())
+                                                                    .flatMap(image -> NodeConfigBuilder.compose(ctx,
+                                                                                                                source,
+                                                                                                                index,
+                                                                                                                role,
+                                                                                                                Option.empty(),
+                                                                                                                Option.some(clusterSecret))
+                                                                                                       .flatMap(doc -> deploySshNode(node,
+                                                                                                                                     TomlWriter.toToml(doc),
+                                                                                                                                     sshConfig,
+                                                                                                                                     buildSshStartCommand(image,
+                                                                                                                                                          clusterName,
+                                                                                                                                                          node.nodeId(),
+                                                                                                                                                          role,
+                                                                                                                                                          clusterPort,
+                                                                                                                                                          managementPort,
+                                                                                                                                                          peersValue,
+                                                                                                                                                          clusterSecret,
+                                                                                                                                                          envLookup),
+                                                                                                                                     sshExec,
+                                                                                                                                     scpExec))));
 
             if (result.isFailure()) {
                 return result;
@@ -806,45 +819,62 @@ sealed interface BootstrapPhaseDeploy {
         return Result.unitResult();
     }
 
-    static List<String> buildThreePartPeers(BootstrapContext ctx) {
-        var nodes = ctx.nodes();
-        var addresses = ctx.addresses();
-        var clusterPort = ctx.config().operations().ports().cluster();
-        var size = Math.min(nodes.size(), addresses.size());
+    /// The image for THIS role's runtime profile — the same resolution the cloud path makes, per
+    /// role rather than for CORE only, and refusing a non-container runtime instead of ignoring it.
+    private static Result<String> sshContainerImage(BootstrapContext ctx, SourceProfile source, NodeRole role, String nodeId) {
+        var profile = Option.option(source.roles().get(role))
+                            .map(RoleSubTable::runtimeRef)
+                            .flatMap(ref -> Option.option(ctx.config().runtimes().get(ref)));
+        var type = profile.map(RuntimeProfile::type).or(RuntimeType.CONTAINER);
 
-        return IntStream.range(0, size)
-                        .mapToObj(i -> nodes.get(i)
-                                            .nodeId() + ":" + addresses.get(i)
-                                                                       .publicIp() + ":" + clusterPort)
-                        .toList();
+        if (type != RuntimeType.CONTAINER) {
+            return new BootstrapError.DeploymentFailed(nodeId,
+                                                       "SSH source '" + sourceNameOf(source)
+                                                      + "' declares runtime '" + profile.map(RuntimeProfile::name).or("?")
+                                                      + "' of type " + type
+                                                      + "; only CONTAINER can be launched over SSH in this release (#1090)").result();
+        }
+
+        return Result.success(profile.flatMap(RuntimeProfile::image).or(derivedImage(ctx)));
+    }
+
+    private static String sourceNameOf(SourceProfile source) {
+        return source.name().value();
+    }
+
+    /// One launch line, built from the SAME builder the cloud re-launch uses ([#buildRestartCommand]),
+    /// so role label, `AETHER_ROLE`, node id, identity allow-list and image are threaded once. The
+    /// prefix creates the config dir (the scp before it needs it) and pulls the resolved image; the
+    /// `docker rm -f … || true` inside the builder makes a re-run on the same host idempotent.
+    static String buildSshStartCommand(String image,
+                                       ClusterName clusterName,
+                                       String nodeId,
+                                       NodeRole role,
+                                       int clusterPort,
+                                       int managementPort,
+                                       String peers,
+                                       String clusterSecret,
+                                       Fn1<String, String> envLookup) {
+        return "mkdir -p /opt/aether/config && docker pull " + image
+             + " && " + buildRestartCommand(image, clusterName, nodeId, role, clusterPort, managementPort, peers, clusterSecret, envLookup);
     }
 
     @SuppressWarnings("JBCT-EX-01")
     private static Result<Unit> deploySshNode(ProvisionedNode node,
                                               String nodeConfig,
                                               SshConfig sshConfig,
-                                              ClusterName clusterName,
-                                              String nodeId,
-                                              int clusterPort,
-                                              int managementPort,
-                                              String peers,
-                                              String clusterSecret,
+                                              String startCommand,
                                               Fn3<Result<String>, String, String, SshConfig> sshExec,
                                               Fn4<Result<Unit>, String, String, String, SshConfig> scpExec) {
-        return writeNodeConfigToTemp(node.nodeId(),
-                                     nodeConfig).flatMap(tempPath -> scpExec.apply(tempPath.toString(),
-                                                                                   node.publicIp(),
-                                                                                   "/opt/aether/config/aether.toml",
-                                                                                   sshConfig))
-                                    .flatMap(_ -> startRuntimeViaSsh(node.publicIp(),
-                                                                     sshConfig,
-                                                                     clusterName,
-                                                                     nodeId,
-                                                                     clusterPort,
-                                                                     managementPort,
-                                                                     peers,
-                                                                     clusterSecret,
-                                                                     sshExec));
+        // The config dir must exist before the scp lands in it; the launch line recreates it harmlessly.
+        return sshExec.apply(node.publicIp(), "mkdir -p /opt/aether/config", sshConfig)
+                      .flatMap(_ -> writeNodeConfigToTemp(node.nodeId(), nodeConfig))
+                      .flatMap(tempPath -> scpExec.apply(tempPath.toString(),
+                                                         node.publicIp(),
+                                                         "/opt/aether/config/aether.toml",
+                                                         sshConfig))
+                      .flatMap(_ -> sshExec.apply(node.publicIp(), startCommand, sshConfig))
+                      .mapToUnit();
     }
 
     private static Result<Path> writeNodeConfigToTemp(String nodeId, String content) {
@@ -863,42 +893,25 @@ sealed interface BootstrapPhaseDeploy {
         return new BootstrapError.DeploymentFailed(nodeId, "Failed to write temp config: " + message);
     }
 
-    private static Result<Unit> startRuntimeViaSsh(String host,
-                                                   SshConfig sshConfig,
-                                                   ClusterName clusterName,
-                                                   String nodeId,
-                                                   int clusterPort,
-                                                   int managementPort,
-                                                   String peers,
-                                                   String clusterSecret,
-                                                   Fn3<Result<String>, String, String, SshConfig> sshExec) {
-        var peersEnv = peers.isEmpty()
-                       ? ""
-                       : " -e PEERS=\"" + peers + "\"";
-        var startCommand = "mkdir -p /opt/aether/config"
-                         + " && docker pull ghcr.io/pragmaticalabs/aether-node:latest"
-                         + " && docker run -d --name aether-node --restart no --network host"
-                         + " -l aether-cluster=" + clusterName.value()
-                         + " -e NODE_ID=\"" + nodeId
-                         + "\""
-                         + " -e CLUSTER_PORT=\"" + clusterPort
-                         + "\""
-                         + " -e MANAGEMENT_PORT=\"" + managementPort
-                         + "\"" + peersEnv
-                         + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret
-                         + "\""
-                         + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro"
-                         + " ghcr.io/pragmaticalabs/aether-node:latest";
-
-        return sshExec.apply(host, startCommand, sshConfig).mapToUnit();
-    }
-
     private static SshConfig buildSshConfig(SourceProfile source) {
         var user = source.user().or("root");
         var keyPath = source.key().or("~/.ssh/id_rsa");
         var port = source.sshPort().or(22);
 
         return SshConfig.sshConfig(user, keyPath, port);
+    }
+
+    static List<String> buildThreePartPeers(BootstrapContext ctx) {
+        var nodes = ctx.nodes();
+        var addresses = ctx.addresses();
+        var clusterPort = ctx.config().operations().ports().cluster();
+        var size = Math.min(nodes.size(), addresses.size());
+
+        return IntStream.range(0, size)
+                        .mapToObj(i -> nodes.get(i)
+                                            .nodeId() + ":" + addresses.get(i)
+                                                                       .publicIp() + ":" + clusterPort)
+                        .toList();
     }
 
     static Result<TomlDocument> composeNodeConfig(BootstrapContext ctx,
