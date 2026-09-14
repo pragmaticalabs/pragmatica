@@ -112,6 +112,17 @@ public interface ConfigurationProvider extends ConfigSource {
         return SecretResolvingConfigurationProvider.resolve(provider, secretResolver);
     }
 
+    /// The no-resolver counterpart of [#withSecretResolution]: refuse a provider that carries a
+    /// `${secrets:path}` placeholder nothing can resolve, instead of serving the placeholder text
+    /// as the value (#904).
+    ///
+    /// @param provider The configuration provider to check
+    /// @return `provider` itself when no value carries a placeholder, or
+    ///         [ConfigError.SecretResolutionFailed] naming the first offending key and path
+    static Result<ConfigurationProvider> withoutSecretResolution(ConfigurationProvider provider) {
+        return SecretResolvingConfigurationProvider.requireNoPlaceholders(provider);
+    }
+
     /// Builder for creating layered ConfigurationProvider instances.
     final class Builder {
         private final List<ConfigSource> sources = new ArrayList<>();

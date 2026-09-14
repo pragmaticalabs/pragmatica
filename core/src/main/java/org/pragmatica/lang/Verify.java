@@ -1,5 +1,6 @@
 package org.pragmatica.lang;
 
+import java.math.BigDecimal;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
@@ -467,7 +468,7 @@ public sealed interface Verify {
         ///
         /// @return true if the value is positive, false otherwise
         static <T extends Number> boolean positive(T value) {
-            return value.doubleValue() > 0;
+            return signum(value) > 0;
         }
 
         /// Checks if a number is negative (less than zero).
@@ -477,7 +478,7 @@ public sealed interface Verify {
         ///
         /// @return true if the value is negative, false otherwise
         static <T extends Number> boolean negative(T value) {
-            return value.doubleValue() < 0;
+            return signum(value) < 0;
         }
 
         /// Checks if a number is non-negative (greater than or equal to zero).
@@ -487,7 +488,7 @@ public sealed interface Verify {
         ///
         /// @return true if the value is non-negative, false otherwise
         static <T extends Number> boolean nonNegative(T value) {
-            return value.doubleValue() >= 0;
+            return signum(value) >= 0;
         }
 
         /// Checks if a number is non-positive (less than or equal to zero).
@@ -497,7 +498,19 @@ public sealed interface Verify {
         ///
         /// @return true if the value is non-positive, false otherwise
         static <T extends Number> boolean nonPositive(T value) {
-            return value.doubleValue() <= 0;
+            return signum(value) <= 0;
+        }
+
+        /// Sign of the value taken in its own domain. `doubleValue()` collapses a BigDecimal below
+        /// double precision to +/-0.0 (`-1E-400` reads as non-negative), so BigDecimal reports its
+        /// own `signum()`. Every other JDK `Number` is sign-exact under `doubleValue()`: an integral
+        /// value (BigInteger included) never rounds to zero or changes sign, and float/double convert
+        /// losslessly, keeping the `-0.0` and NaN semantics of a primitive comparison.
+        private static double signum(Number value) {
+            return switch (value) {
+                case BigDecimal decimal -> decimal.signum();
+                default -> Math.signum(value.doubleValue());
+            };
         }
 
         /// Checks if a value is greater than a boundary.
