@@ -28,10 +28,11 @@ import org.slf4j.LoggerFactory;
 
 
 /// Stale-entry cleanup seam extracted (move-only) from {@link Active}. Diffs KV-Store node-routes,
-/// slice-state, and node-artifact entries against the resolved core membership and removes entries
-/// for departed nodes; also unloads/removes orphaned slice entries that have no matching blueprint.
-/// All cleanups gate on {@link Active#coreMembershipResolved()} so a sweep racing the membership
-/// wiring never mass-classifies KV-known members as departed.
+/// slice-state, and node-artifact entries against the nodes that still own placements — the
+/// resolved core membership plus the registered workers ({@link #placementNodes()}) — and removes
+/// entries for departed nodes; also unloads/removes orphaned slice entries that have no matching
+/// blueprint. All cleanups gate on {@link Active#coreMembershipResolved()} so a sweep racing the
+/// membership wiring never mass-classifies KV-known members as departed.
 record StaleEntryCleaner(Active active) {
     private static final Logger log = LoggerFactory.getLogger(StaleEntryCleaner.class);
 
@@ -45,7 +46,7 @@ record StaleEntryCleaner(Active active) {
             return;
         }
 
-        var currentNodes = new HashSet<>(active.activeNodes());
+        var currentNodes = placementNodes();
         var commands = new ArrayList<KVCommand<AetherKey>>();
 
         active.ctx()
@@ -61,6 +62,20 @@ record StaleEntryCleaner(Active active) {
                   .onFailure(cause -> log.error("Failed to clean up stale node routes: {}",
                                                 cause.message()));
         }
+    }
+
+    /// The nodes whose KV rows are NOT stale: counted core members plus registered workers (#850).
+    /// `activeNodes()` is core-scoped by construction, so diffing against it alone classified every
+    /// LIVE worker's rows as stale on every reconcile tick — its `NodeArtifactKey` was removed, which
+    /// the worker's own NDM answers with a force-unload of a serving slice. A worker leaves
+    /// `workerNodes` only through `handleNodeRemoval` (worker-leave channel or the dead-restored
+    /// sweep), the same path that clears its rows directly, so a registered worker's rows are owned.
+    private Set<NodeId> placementNodes() {
+        var nodes = new HashSet<>(active.activeNodes());
+
+        nodes.addAll(active.workerNodes());
+
+        return nodes;
     }
 
     private void collectStaleNodeRoutesKey(List<KVCommand<AetherKey>> commands,
@@ -79,7 +94,7 @@ record StaleEntryCleaner(Active active) {
             return;
         }
 
-        var currentNodes = new HashSet<>(active.activeNodes());
+        var currentNodes = placementNodes();
         var staleKeys = active.sliceStates()
                               .keySet()
                               .stream()
@@ -111,7 +126,7 @@ record StaleEntryCleaner(Active active) {
             return;
         }
 
-        var currentNodes = new HashSet<>(active.activeNodes());
+        var currentNodes = placementNodes();
         var staleKeys = new ArrayList<NodeArtifactKey>();
 
         active.ctx()

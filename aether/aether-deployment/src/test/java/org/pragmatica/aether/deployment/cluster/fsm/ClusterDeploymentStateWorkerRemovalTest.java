@@ -357,11 +357,10 @@ class ClusterDeploymentStateWorkerRemovalTest {
                     .contains(restoredWorker);
             assertThat(kvStore.get(directiveKey)).as("kept worker's ActivationDirectiveKey survives").isNotEqualTo(Option.empty());
             // NodeArtifactKey/NodeRoutesKey/SliceNodeKey are deliberately NOT asserted here: the same
-            // rebuildStateFromKVStore() call that just ran this sweep also unconditionally runs
-            // cleanupStaleNodeRoutes/SliceEntries/NodeArtifactEntries, which diff against activeNodes()
-            // (core-only) and so scrub ANY worker's rows regardless of liveness — a pre-existing gap
-            // this fix does not touch (tracked separately as #850, see changelog). workerNodes and
-            // ActivationDirectiveKey are the only footprint round 2's sweep itself controls.
+            // rebuildStateFromKVStore() call that just ran this sweep also runs
+            // cleanupStaleNodeRoutes/SliceEntries/NodeArtifactEntries, whose liveness set is pinned by
+            // LiveWorkerFootprint (#850). workerNodes and ActivationDirectiveKey are the only footprint
+            // round 2's sweep itself controls.
         }
 
         @Test
