@@ -105,7 +105,7 @@ authorization_role = "VIEWER"
 | Role | CLI Access |
 |------|-----------|
 | **ADMIN** | All commands |
-| **OPERATOR** | Status, scaling, drain, deploy from artifact, schema, updates, backup, config, alerts |
+| **OPERATOR** | Status, scaling, drain, deploy from artifact, schema, updates, config, alerts |
 | **VIEWER** | Read-only commands: `status`, `nodes`, `slices`, `nodes slices`, `routes`, `nodes routes`, `metrics`, `events`, `health` |
 
 When `authorization_role` is omitted, the key defaults to `ADMIN`. See [Management API - Authorization](management-api.md#authorization-rbac) for the full permission mapping.
@@ -1375,43 +1375,11 @@ aether scheduled-tasks inject \
 
 ### backup
 
-Manage cluster backups. Two surfaces are available: the **singular** `aether backup` parent
-with verb-style subcommands (`create`, `restore`, `list`) introduced for operator-facing
-workflows in P-NEW-C, and the legacy **plural** `aether backups` parent with the original
-`trigger`/`list`/`restore` subcommands. Both call the same REST routes
-(`POST /api/backups`, `POST /api/backups/restore`, `GET /api/backups`) — pick whichever
-reads more naturally for your scripts.
-
-```bash
-# Singular surface (P-NEW-C, recommended for new scripts)
-aether backup create                   # create a new backup (synchronous)
-aether backup create --wait            # create + poll /api/backups until the new entry appears
-aether backup create --wait --timeout 120
-aether backup restore <commit-id>      # restore from a specific backup commit (prompts for confirmation)
-aether backup restore <commit-id> --yes  # skip confirmation (required in non-interactive shells)
-aether backup list                     # list available backups
-
-# Plural surface (legacy alias, identical routes)
-aether backups trigger
-aether backups list
-aether backups restore <commit-id>
-```
-
-#### `aether backup` subcommands
-
-| Subcommand | Description |
-|------------|-------------|
-| `create [--wait] [--timeout N]` | Create a new backup (`POST /api/backups`). With `--wait`, polls `GET /api/backups` until the new entry appears or `--timeout` (default 60s) elapses. |
-| `restore <commit> [--yes\|--force]` | Restore the cluster KV-Store from the named backup commit (`POST /api/backups/restore`). Destructive — overwrites current state, so it prompts for confirmation; `--yes`/`--force` skips the prompt (required in non-interactive shells). |
-| `list` | List available backups (`GET /api/backups`). |
-
-#### `aether backups` subcommands (legacy)
-
-| Subcommand | Description |
-|------------|-------------|
-| `trigger` | Trigger a manual backup |
-| `list` | List available backups |
-| `restore <commit>` | Restore from backup |
+Removed (#676). The `backup` and `backups` command trees and `POST|GET /api/v1/backups` were wired to a
+service whose only implementation was `disabled()`, so every call returned `backup-disabled` in every
+configuration. Declared-state durability is `[backup]` git-backed persistence — see
+[backup-recovery](../operators/runbooks/backup-recovery.md); it has no CLI or API surface and is
+inspected with `git log` in the configured `path`.
 
 ---
 
@@ -2139,6 +2107,32 @@ aether cluster topology auto-heal enable
 Example output:
 ```json
 {"enabled": true, "previousState": false}
+```
+
+### `aether cluster topology role-mismatches`
+
+List provisioned nodes whose advertised role label disagrees with the role the leader provisioned them with (#689). A node's role is a self-asserted label (`AETHER_ROLE` → `aether-role`); a blank or unknown label is classified **CORE** by every peer, deliberately, so an intended worker whose label never arrived silently joins the core set and every community-tier mechanism gated on "positively not a core" is suppressed on it. This is that fact without log access; the leader also logs it at WARN on every join of such a node. Leader-scoped and intent-based: only nodes this leader provisioned are compared, the intent is kept until the node is decommissioned, a still-mislabelled restart under the same id is re-listed and a correctly relabelled rejoin clears the entry. See `GET /api/v1/cluster/topology/role-mismatches` in `management-api.md` for the full scope statement.
+
+```bash
+aether cluster topology role-mismatches
+```
+
+| Option | Description |
+|--------|-------------|
+| `--format` | Output format: `table` (default), `json`, `value`, `csv` |
+
+Example:
+```bash
+aether cluster topology role-mismatches
+
+# Output (table):
+# NODE                      INTENDED    ADVERTISED    CLASSIFIED
+# worker-3                  worker                    CORE
+```
+
+Example output (`--format json`):
+```json
+{"mismatches": [{"nodeId": "worker-3", "intendedRole": "worker", "advertisedRole": "", "classifiedAs": "CORE"}]}
 ```
 
 ### `aether cluster governors`

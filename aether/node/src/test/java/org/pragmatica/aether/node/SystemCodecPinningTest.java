@@ -7,7 +7,6 @@ package org.pragmatica.aether.node;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.worker.WorkerCodecs;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.serialization.SystemTags;
@@ -24,11 +23,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// matters, too short. The registries themselves are the only authority on what a system type is, and
 /// building one is the only way to ask them.
 ///
-/// Both registries matter and only one of them is otherwise exercised: `WorkerCodecs` has no
-/// production caller today, and it registers four sub-registries `NodeCodecs` does not
-/// (`MutationCodecsNode`, `BootstrapCodecsNode`, `HeartbeatCodecsNode`, `NetworkCodecsNode`). Without
-/// the assertion below, those types would go unpinned and nothing would say so until the registry was
-/// wired up.
+/// `NodeCodecs` is the one registry: the orphaned `WorkerCodecs` was deleted in #503 (no production
+/// caller; the four sub-registries only it composed — `MutationCodecsNode`, `BootstrapCodecsNode`,
+/// `HeartbeatCodecsNode`, `NetworkCodecsNode` — hold wire types no live path sends).
 class SystemCodecPinningTest {
 
     /// Package prefixes whose traffic the one-byte window was bought for — consensus rounds, membership
@@ -50,11 +47,6 @@ class SystemCodecPinningTest {
     @Test
     void nodeCodecs_everySystemType_hasAHandAssignedTag() {
         assertDoesNotThrow(() -> NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs()));
-    }
-
-    @Test
-    void workerCodecs_everySystemType_hasAHandAssignedTag() {
-        assertDoesNotThrow(() -> WorkerCodecs.workerCodecs(FrameworkCodecs.frameworkCodecs()));
     }
 
     /// The wire win, stated as a property rather than as 89 numbers. Tags are VLQ-encoded, so a hot type

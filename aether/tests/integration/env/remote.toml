@@ -36,8 +36,8 @@ swim = 6100
 
 [operations.auto_heal]
 enabled = true
-retry_interval = "30s"
-startup_cooldown = "15s"
+# #675: the tunables that used to sit here (retry_interval, startup_cooldown,
+# provision_stability_window, provisioning_timeout) never reached a node and are now refused.
 
 [runtime.default]
 type = "docker"
