@@ -21,6 +21,18 @@
   after), plus the ticket's `CONFIG_NODE_DELETE …/anything` cell by name;
   `integrations/http-routing/src/test/java/org/pragmatica/http/routing/OverLengthPathTest.java` — a
   two-param route with three segments is a miss, an arity-0 route still matches `/static/css/site.css`]
+- **What the exact-arity rule exposed, and fixed on the way:** eight `StreamApiRoutes` catalog
+  registrations were one spacer short of their `ManagementRoute` token declaration
+  (`STREAMS_LATEST`/`TAIL`/`EVENTS`/`GROUPS_LIST`/`PUBLISH`/`PUBLISH_BATCH`/`GROUP_CREATE`/`GROUP_DELETE`
+  omitted their trailing `latest`/`tail`/`events`/`groups`/`publish`/`publish-batch` literal) — the
+  same one-slot-short shape the #742 fold fixed for `STREAM_GET`. They dispatched through
+  `RequestRouter` only by over-length tolerance (and, in production, by `ManagementRouter`'s
+  first-layer token match); with exact arity they fell to the arity-0 sibling in the bucket
+  (`STREAM_CREATE`). Each now declares its spacer (`PathQueryBuilder4_2` added to `Route` for
+  `STREAMS_EVENTS`'s 4 path + 2 query shape, same pattern as `4_3`), and the #742 round-trip guard
+  (`ManagementRouteDispatchRoundTripTest`) now pins every catalog registration, not six.
+  [verified: `ManagementRouteDispatchRoundTripTest.foldedCatalogRoutes_assembleThenDispatch_resolveToSameRouteAtBothLayers`
+  — red on `STREAMS_PUBLISH → STREAM_CREATE` the moment exact arity landed, green with the spacers]
 - Consequence to state: `ARTIFACT_INFO` with a dotted group (`/repository/info/org/example/hello/1.0.0`,
   4 segments for 3 params) was dispatched with mis-split params (#1102); it is now a routing miss —
   a 404 instead of a wrong answer, and #1102 remains the fix. Stacked on #1076 (the spacer-route
