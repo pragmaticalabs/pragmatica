@@ -32,6 +32,7 @@ import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.NodeAddress;
 import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Functions.Fn4;
 import org.pragmatica.lang.Option;
@@ -57,10 +58,16 @@ class BootstrapPhaseDeploySshSourceTest {
 
     private final Map<String, String> startCommands = new ConcurrentHashMap<>();
     private final ConcurrentLinkedQueue<String> scpTargets = new ConcurrentLinkedQueue<>();
+    // Every ssh/scp call in arrival order: `ssh:<host>:<command>` (the launch line abbreviated to
+    // `launch`) and `scp:<host>` — so the ORDER of what reaches a host is assertable, not only the set.
+    private final ConcurrentLinkedQueue<String> calls = new ConcurrentLinkedQueue<>();
 
     private final Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
         if (command.contains("docker run") || command.contains("systemctl")) {
             startCommands.put(host, command);
+            calls.add("ssh:" + host + ":launch");
+        } else {
+            calls.add("ssh:" + host + ":" + command);
         }
 
         return Result.success("");
@@ -68,6 +75,7 @@ class BootstrapPhaseDeploySshSourceTest {
 
     private final Fn4<Result<Unit>, String, String, String, SshConfig> scpExec = (local, host, remote, config) -> {
         scpTargets.add(host + ":" + remote);
+        calls.add("scp:" + host);
 
         return Result.unitResult();
     };
@@ -147,12 +155,16 @@ class BootstrapPhaseDeploySshSourceTest {
     }
 
     private Result<Unit> deploy(BootstrapContext ctx, String sourceName) {
+        return deploy(ctx, sourceName, name -> null);
+    }
+
+    private Result<Unit> deploy(BootstrapContext ctx, String sourceName, Fn1<String, String> envLookup) {
         return BootstrapPhaseDeploy.deploySshSource(ctx,
                                                     ctx.config().sources().get(sourceName),
                                                     sourceNameOrDefault(sourceName),
                                                     sshExec,
                                                     scpExec,
-                                                    name -> null);
+                                                    envLookup);
     }
 
     @Test
@@ -174,6 +186,59 @@ class BootstrapPhaseDeploySshSourceTest {
         assertThat(cmd).as("the host runs the image the operator bootstrapped, not whatever :latest points at")
                   .contains("aether-node:1.0.0-rc4")
                   .doesNotContain(":latest");
+    }
+
+    /// Review SF-1: the case #1090 was filed on — `[source.x.core] hosts = […]` with no `[runtime.*]`
+    /// table at all. The image is then derived from the cluster version; it must never be `:latest`.
+    @Test
+    void sshSource_withoutARuntimeProfile_launchesTheVersionDerivedImage_neverLatest() {
+        var ctx = context(Map.of("dc",
+                                 sshSource("dc", List.of("10.0.0.1"), List.of(), "default")),
+                          Map.of(),
+                          List.of(ssh("dc-core-0", "10.0.0.1")));
+        var result = deploy(ctx, "dc");
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        assertThat(startCommands.get("10.0.0.1")).as("no profile → the tag is the version being bootstrapped")
+                  .contains("docker pull ghcr.io/pragmaticalabs/aether-node:" + VERSION + " ")
+                  .contains(" ghcr.io/pragmaticalabs/aether-node:" + VERSION)
+                  .doesNotContain(":latest");
+    }
+
+    /// Review N-1: the config dir is created by its own ssh call BEFORE the scp that lands in it —
+    /// the launch line's `mkdir -p` prefix runs too late to help the scp.
+    @Test
+    void sshSource_createsTheConfigDirBeforeTheScpLandsInIt() {
+        var ctx = context(Map.of("dc",
+                                 sshSource("dc", List.of("10.0.0.1"), List.of("10.0.0.2"), "default")),
+                          Map.of(),
+                          List.of(ssh("dc-core-0", "10.0.0.1"), ssh("dc-worker-0", "10.0.0.2")));
+        var result = deploy(ctx, "dc");
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        assertThat(calls).containsExactly("ssh:10.0.0.1:mkdir -p /opt/aether/config",
+                                          "scp:10.0.0.1",
+                                          "ssh:10.0.0.1:launch",
+                                          "ssh:10.0.0.2:mkdir -p /opt/aether/config",
+                                          "scp:10.0.0.2",
+                                          "ssh:10.0.0.2:launch");
+    }
+
+    /// Review N-2: the "identity allow-list" is `ClusterIdentityEnv.IDENTITY_VARS` — env-var NAMES
+    /// forwarded from the operator's host env into the container. A listed name present on the host
+    /// reaches the launch line; an unlisted one never does.
+    @Test
+    void sshSource_forwardsListedIdentityEnvFromTheOperatorHost_andNothingElse() {
+        var hostEnv = Map.of("AETHER_API_KEYS", "k1,k2", "NOT_ON_THE_LIST", "leak");
+        var ctx = context(Map.of("dc",
+                                 sshSource("dc", List.of("10.0.0.1"), List.of(), "default")),
+                          Map.of(),
+                          List.of(ssh("dc-core-0", "10.0.0.1")));
+        var result = deploy(ctx, "dc", hostEnv::get);
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        assertThat(startCommands.get("10.0.0.1")).contains("-e AETHER_API_KEYS=\"k1,k2\"")
+                                                 .doesNotContain("NOT_ON_THE_LIST");
     }
 
     @Test
