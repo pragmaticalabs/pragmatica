@@ -12,10 +12,10 @@
   `UNKNOWN` sentinel last. Adoption, re-evaluated on every arriving response (and on the existing
   retry tick), never on a timer of its own, now thresholds on RESPONSES and uses liveness only to
   choose the source:
-  - **any LIVE responder:** adopt once `clusterSize/2+1` RESPONSES have arrived, whatever their mix.
-    The response quorum is what carries the argument — the responders are a majority on their own, so
-    they intersect every majority that could have committed anything **without** leaning on self's
-    history, which is precisely what the amnesiac self could not supply.
+  - **any LIVE responder:** adopt once a majority of `{responders} ∪ {self}` has answered — but self
+    is counted ONLY when it holds durable state. So `clusterSize/2` responses for a node that can
+    vouch for its own history, and `clusterSize/2+1` for an amnesiac one, whose floor is `Phase.ZERO`
+    and which therefore sits inside that majority contributing nothing. That is #667's hole exactly.
   - **the source within that quorum:** the most advanced LIVE state when LIVE responders are
     themselves a majority, otherwise the most advanced of ALL the responses. Filtering to LIVE inside
     a mere response quorum is unsafe — the responder that intersects the commit quorum may be the COLD
@@ -39,14 +39,15 @@
   rule unreachable; it and `candidateResponses` are replaced by a single `adoptionCandidates`, which
   also closes the round-1 review's finding that the decision was computed twice from independently
   re-read state]
-- **Known limit, stated because the previous wording overclaimed it.** "A COLD snapshot cannot outrank
-  what the live cluster holds" has **no implementation on the arrival path**: adoption fires at exactly
-  `clusterSize/2+1` responses, and the live-majority branch needs that many LIVE among exactly that
-  many responses — so it is taken if and only if the whole quorum is already LIVE, where filtering
-  removes nothing. Measured at n=5 across all four arrival orders of {3 LIVE, 1 COLD}: the decision
-  fired at 3 responses every time. The filter is kept because it becomes load-bearing the moment a
-  bounded collection window exists; until then it is inert.
-  [unverified: whether a collection window is wanted — open question, not implemented]
+- **The LIVE filter is narrow, and where it bites is now pinned rather than assumed.** Adoption fires
+  on the arrival that first meets the requirement, so the collected set is normally exactly the
+  requirement and "a live majority among them" reduces to "all of them are LIVE", where filtering
+  removes nothing — measured at n=5 across all four arrival orders of {3 LIVE, 1 COLD}, the decision
+  fired at 3 responses every time. The filter SELECTS only when the collected set outgrows the
+  requirement, which happens when `clusterSize()` falls mid-round.
+  [verified: `RabiaSyncAdoptionResponseQuorumTest.AShrinkingClusterExercisesTheLiveFilter` — the same
+  three responses adopt the LIVE maximum when the cluster shrinks 5→3 and the COLD one at phase 500
+  when it does not; same inputs, opposite outcomes]
 - **Adoption now fires at the quorum and does not wait for a later, more advanced response.** That is
   safe rather than merely different: the adopted state is at or past every committed value (the
   maximum over a response quorum), and a node that activates behind the cluster's frontier catches up
@@ -54,13 +55,25 @@
   Decision, and a gap beyond `MAX_PHASE_AHEAD` buffers the Decision and calls `triggerResync`. No
   consumer of the adopted state requires it to be the maximum available.
   [mechanism: `RabiaEngine.advancePhase` / `isFarFuturePhase` / `triggerResync`]
-- **Still open (not fixed here):** at n=3 with one node permanently down and the survivor LIVE, a
-  restarting node collects one response, never reaches `clusterSize/2+1`, and cannot rejoin — although
-  self plus the survivor would be a quorum. Pre-#667 it activated. Same shape as the deadlock above,
-  narrower; closing it needs a threshold keyed on whether self can vouch for its own history, which
-  probing showed is unsafe in the form tried (self's persisted snapshot lags what self witnessed —
-  `persistence.save` is called only from pause, reconfigure, shutdown and restore, never on commit).
-  [unverified: no fix attempted; the same exposure already exists in #660's cold arm]
+- **An accepted, owner-ruled cost — read this before tightening the rule again.** At n=3 with one node
+  down at most ONE responder exists, and one is never a majority of three. Closing #667's hole requires
+  the responders to be a majority **alone**, because an amnesiac self contributes nothing. So in a
+  degraded 3-node cluster **#667's safety property and joiner liveness are mathematically
+  incompatible**, and the owner chose liveness: a self holding durable state counts toward the
+  majority.
+  What that spends is a property the system **does not in fact hold**. #660's cold rule — shipping
+  today, untouched by every version of #667 — already activates a self whose durable snapshot is STALE
+  relative to a commit it witnessed, because `persistence.save` has four call sites
+  (`doPauseForQuorumLoss`, `doReconfigure`, `shutdownAndReset`, `applyRestoredState`) and **none is a
+  commit path**, so a crashed node's snapshot lags what it voted for by an unbounded amount and the
+  engine cannot tell a clean stop from a crash.
+  [verified: probed against the rc4 tip `4af02125c` — n=5, self durable at phase 10 having witnessed a
+  commit at 500, two minority responders at 10: **activates and installs the stale state**; positive
+  control at 1 of 5 responses stays inactive, so the fixture does observe the threshold]
+  The residual risk is narrower than "self is stale": a commit can be discarded only when self was in a
+  commit quorum whose every OTHER member is currently unreachable AND self lost its own record of it. A
+  genuinely new node was never in a prior quorum, so for it that branch is unreachable.
+  [unverified: the cold arm's own exposure is not fixed here — it is pre-existing and out of #667's scope]
 - **Wire format.** `SyncResponse` gained a record component and `ResponderState` a tag (112, in the
   one-byte window the hot-prefix gate demands for `org.pragmatica.consensus.*`). The wire-assignment
   gates pin tags and ordinals, not record shape (#1147). Both pins live in
