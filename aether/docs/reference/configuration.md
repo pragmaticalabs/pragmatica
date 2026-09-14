@@ -493,14 +493,13 @@ var config = AetherNodeConfig.builder()
 [worker]
 group_name = "default"
 zone = "local"
-max_group_size = 100
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `group_name` | string | `"default"` | Logical group name for this worker pool |
 | `zone` | string | `"local"` | Zone identifier for zone-aware grouping. Workers in the same zone auto-cluster |
-| `max_group_size` | int | `100` | **Inert today** — `GroupMembershipTracker` is constructed at boot (`AetherNode.activateWorkerMode`, `AetherNode.java:5152`) but never fed membership events and never read again: repo-wide, `.updateMember(`/`.removeMember(` have zero callers, so `recomputeGroups()`/`GroupAssignment.computeGroups` never run. Group splitting is dead code (#673: wire-or-delete decision still open). Parsed and validated (`< 2` refuses at parse); changes no behavior today. Community size in the shipping product is the per-source worker count. |
+| `max_group_size` | — | — | **Removed (#673, 2026-09-14).** A present key is refused at parse: worker group splitting was never wired, and communities are one per source (`<source>-w-0`). Remove the key from any `[worker]` table. |
 
 Zone is also extracted from the NodeId: everything before the last dash (e.g., `us-east-worker-1` → zone `us-east-worker`). The explicit `zone` config takes precedence for group computation.
 

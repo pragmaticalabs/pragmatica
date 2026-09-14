@@ -231,7 +231,6 @@ import org.pragmatica.aether.worker.governor.DecisionRelay;
 import org.pragmatica.aether.worker.governor.GovernorAnnouncer;
 import org.pragmatica.aether.worker.isolation.CoreAbsenceDetector;
 import org.pragmatica.aether.worker.governor.GovernorMesh;
-import org.pragmatica.aether.worker.group.GroupMembershipTracker;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.worker.metrics.SpokesmanPingLoop;
 import org.pragmatica.aether.worker.metrics.WorkerMetricsAggregator;
@@ -243,7 +242,6 @@ import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.ReadLinearizationMode;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.StorageEncryptionConfig;
-import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage;
 import org.pragmatica.cluster.metrics.ConnectivityState;
@@ -5459,13 +5457,6 @@ public interface AetherNode extends ManageableNode {
         var mutationForwarder = MutationForwarder.mutationForwarder(selfId, delegateRouter);
         var workerBootstrap = WorkerBootstrap.workerBootstrap(selfId, delegateRouter, kvStore);
         var governorMesh = GovernorMesh.governorMesh(delegateRouter);
-        var groupMembershipTracker = GroupMembershipTracker.groupMembershipTracker(selfId,
-                                                                                   config.workerConfig()
-                                                                                         .map(WorkerConfig::groupName)
-                                                                                         .or(WorkerConfig.DEFAULT_GROUP_NAME),
-                                                                                   config.workerConfig()
-                                                                                         .map(WorkerConfig::maxGroupSize)
-                                                                                         .or(WorkerConfig.DEFAULT_MAX_GROUP_SIZE));
         var workerDeploymentManager = WorkerDeploymentManager.workerDeploymentManager(selfId,
                                                                                       sliceStore,
                                                                                       mutationForwarder,
