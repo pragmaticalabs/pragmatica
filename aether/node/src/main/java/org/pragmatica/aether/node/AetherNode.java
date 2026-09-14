@@ -2742,6 +2742,10 @@ public interface AetherNode extends ManageableNode {
         AccessibilityFilter accessibilityFilter = candidates -> Option.option(membershipFsmRef.get())
                                                                       .map(fsm -> fsm.reachableMembers(candidates))
                                                                       .or(candidates);
+        // #275: the same narrowing for slice-to-slice invocation — a co-confirmed-DEAD node's endpoints
+        // stay registered until the CDM's removal cleanup lands, and without this a new invocation
+        // was round-robined onto it and hung for the invoker timeout.
+        sliceInvoker.setAccessibilityFilter(accessibilityFilter);
         var appHttpServer = AppHttpServer.appHttpServer(config.appHttp(),
                                                         config.timeouts().forwarding(),
                                                         config.self(),

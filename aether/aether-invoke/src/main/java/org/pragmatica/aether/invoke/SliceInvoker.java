@@ -4,11 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -234,6 +236,9 @@ class SliceInvokerImpl implements SliceInvoker {
     private final java.util.concurrent.atomic.AtomicBoolean stopped = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     private volatile Option<SliceFailureListener> failureListener = Option.none();
+    /// #275: liveness narrowing for endpoint selection, `IDENTITY` until `AetherNode` wires the
+    /// membership-backed filter (the same one the HTTP forward path uses).
+    private volatile AccessibilityFilter accessibilityFilter = AccessibilityFilter.IDENTITY;
 
     record PendingInvocation(Promise<Object> promise,
                              long createdAtMs,
@@ -556,7 +561,9 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private Option<Endpoint> selectEndpointWithFailover(Artifact slice,
                                                         MethodName method,
-                                                        java.util.Set<NodeId> exclude) {
+                                                        java.util.Set<NodeId> failedNodes) {
+        var exclude = excludedNodes(slice, method, failedNodes);
+
         if (exclude.isEmpty()) {
             var artifactBase = ArtifactBase.artifactBase(slice.groupId(), slice.artifactId());
             var strategyEndpoint = deploymentManager.activeRouting(artifactBase)
@@ -736,6 +743,13 @@ class SliceInvokerImpl implements SliceInvoker {
     @Override
     public Unit setFailureListener(SliceFailureListener listener) {
         this.failureListener = Option.some(listener);
+
+        return unit();
+    }
+
+    @Override
+    public Unit setAccessibilityFilter(AccessibilityFilter filter) {
+        this.accessibilityFilter = filter;
 
         return unit();
     }
@@ -959,6 +973,15 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private Promise<Endpoint> selectEndpoint(Artifact slice, MethodName method) {
+        var inaccessible = inaccessibleNodes(slice, method);
+        // #275: an endpoint on a node membership no longer counts reachable is skipped even while its
+        // KV row is still registered. Same precedent as the failover arm: once anything is excluded,
+        // selection is the plain excluding round-robin rather than the weighted-routing pick.
+        if (!inaccessible.isEmpty()) {
+            return endpointRegistry.selectEndpointExcluding(slice, method, inaccessible)
+                                   .async(NO_ENDPOINT_FOUND);
+        }
+
         var artifactBase = ArtifactBase.artifactBase(slice.groupId(), slice.artifactId());
 
         return deploymentManager.activeRouting(artifactBase)
@@ -969,14 +992,48 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private Promise<Endpoint> selectEndpointWithAffinity(Artifact slice, MethodName method, Object request) {
         var resolver = Option.option(affinityResolvers.get(affinityLookupKey(slice, method)));
+        var inaccessible = inaccessibleNodes(slice, method);
+        // #275: affinity to an inaccessible node yields to the filtered plain selection below.
         var affinityEndpoint = resolver.flatMap(r -> r.resolveAffinityNode(request))
-                                       .flatMap(node -> endpointRegistry.selectEndpointByAffinity(slice, method, node));
+                                       .filter(node -> !inaccessible.contains(node))
+                                       .flatMap(node -> endpointRegistry.selectEndpointByAffinity(slice, method, node))
+                                       .filter(endpoint -> !inaccessible.contains(endpoint.nodeId()));
 
         if (affinityEndpoint.isPresent()) {
             return affinityEndpoint.async(NO_ENDPOINT_FOUND);
         }
 
         return selectEndpoint(slice, method);
+    }
+
+    /// #275: the registered endpoint nodes for `slice.method` that the accessibility filter rejects.
+    /// Computed per selection from the registry's current rows, so a node's return to membership is
+    /// seen on the next call with no extra bookkeeping.
+    private Set<NodeId> inaccessibleNodes(Artifact slice, MethodName method) {
+        var candidates = endpointRegistry.findEndpoints(slice, method)
+                                         .stream()
+                                         .map(Endpoint::nodeId)
+                                         .distinct()
+                                         .toList();
+        var accessible = Set.copyOf(accessibilityFilter.keepOnlyAccessible(candidates));
+
+        return candidates.stream()
+                         .filter(node -> !accessible.contains(node))
+                         .collect(Collectors.toSet());
+    }
+
+    private Set<NodeId> excludedNodes(Artifact slice, MethodName method, Set<NodeId> failedNodes) {
+        var inaccessible = inaccessibleNodes(slice, method);
+
+        if (inaccessible.isEmpty()) {
+            return failedNodes;
+        }
+
+        var excluded = new HashSet<>(failedNodes);
+
+        excluded.addAll(inaccessible);
+
+        return excluded;
     }
 
     private Promise<Endpoint> selectEndpointWithWeightedRouting(Artifact slice,

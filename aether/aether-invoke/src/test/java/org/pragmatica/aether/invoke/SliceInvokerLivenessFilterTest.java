@@ -38,7 +38,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///
 /// The observable is the target node of the `InvokeRequest` the invoker hands to the transport —
 /// selection itself is private. Both endpoints are remote so every path takes the send arm; the
-/// sender bridge is the local-slice registry's, as `InvocationDeadlineCapTest` does it.
+/// sender bridge is the local-slice registry's, as `InvocationDeadlineCapTest` does it. Each call is
+/// awaited (nothing answers, so a request/response call settles at the 200ms timeout) so the send
+/// count is exact rather than a race with the encode continuation.
 class SliceInvokerLivenessFilterTest {
     private static final NodeId SELF = new NodeId("self-node");
     private static final NodeId DEAD = new NodeId("dead-node");
@@ -83,7 +85,7 @@ class SliceInvokerLivenessFilterTest {
     @Test
     void invoke_requestResponse_neverSelectsAnInaccessibleNode() {
         for (int i = 0; i < ROUNDS; i++) {
-            var _ = invoker.invoke(ARTIFACT, METHOD, "request-" + i, new TypeToken<String>() {});
+            var _ = invoker.invoke(ARTIFACT, METHOD, "request-" + i, new TypeToken<String>() {}).await();
         }
 
         assertThat(network.targets()).as("#275: every request/response send must target a node the accessibility filter keeps")
@@ -95,7 +97,7 @@ class SliceInvokerLivenessFilterTest {
     @Test
     void invoke_fireAndForget_neverSelectsAnInaccessibleNode() {
         for (int i = 0; i < ROUNDS; i++) {
-            var _ = invoker.invoke(ARTIFACT, METHOD, "request-" + i);
+            var _ = invoker.invoke(ARTIFACT, METHOD, "request-" + i).await();
         }
 
         assertThat(network.targets()).as("#275: every fire-and-forget send must target a node the accessibility filter keeps")
@@ -108,7 +110,7 @@ class SliceInvokerLivenessFilterTest {
     void invoke_affinityToInaccessibleNode_fallsBackToAnAccessibleOne() {
         invoker.registerAffinityResolver(ARTIFACT, METHOD, _ -> org.pragmatica.lang.Option.some(DEAD));
         for (int i = 0; i < ROUNDS; i++) {
-            var _ = invoker.invoke(ARTIFACT, METHOD, "request-" + i, new TypeToken<String>() {});
+            var _ = invoker.invoke(ARTIFACT, METHOD, "request-" + i, new TypeToken<String>() {}).await();
         }
 
         assertThat(network.targets()).as("#275: affinity to an inaccessible node must yield to an accessible endpoint")
