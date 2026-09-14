@@ -1,4 +1,4 @@
-### Fixed (2026-09-14 — the SMTP greeting could arrive before the session had a channel to answer on)
+### Fixed (2026-09-14 — #1185: the SMTP greeting could arrive before the session had a channel to answer on)
 
 - **`SmtpSession.sendCommand` dereferenced a null `channel` when the server greeting won a race with
   the connect listener.** `SmtpClientImpl.connectWithTimeout` assigned the channel from
@@ -22,7 +22,10 @@
 - **The race needs an IDLE event loop, not a busy one** — 3200 sends across 16 concurrent senders at
   load 100 produced zero failures, because a backlogged loop delays connect completion and lets the
   caller register its listener in time. Sequential sends against a fast server is the worst case.
-  [mechanism: the caller only loses when the loop is quick]
+  **So a pass on a loaded machine is not evidence of correctness here — it is the condition under
+  which the defect hides.** A 145-module reactor passing `resource-notification` on a busy 16-core
+  box and CI failing it are not in contradiction, and neither run says anything about correctness.
+  [mechanism: the caller only loses the race when the loop is quick]
 - **`SmtpReplyCodeClassificationTest`'s two CI failures were this one defect, not a second retry
   bug.** An attempt killed by the NPE fails as `ConnectionFailed`, which is `Cause.Transient`, so it
   is retried — and it abandons its socket right after the greeting. The test's scripted server
@@ -35,6 +38,10 @@
   accept loop with `Broken pipe`; timing-dependent, one run in six saw it accept once more first]
 - **`SmtpSession.channel` is now `volatile`.** It is written on the event loop and read off it by
   `onTimeout` → `closeChannel`, whose stated purpose is to close the socket of a timed-out session;
-  a plain field permits that read to see `null` and skip the close.
-  [design intent — unverified: no test pins this, and a mutation removing `volatile` left all 28
-  module tests green. A visibility window is not reliably observable from a test.]
+  a plain field permits that read to see `null` and skip the close. It cannot be pinned by a test:
+  a missing `volatile` is a Java Memory Model violation that correct hardware is free to hide, so a
+  test that fails to redden is evidence about the test, not about the field. Reverting it left all
+  28 module tests green on **arm64**, which is weakly ordered and therefore the *more* likely of the
+  two architectures here to expose it; CI's x86_64 hides it more thoroughly still. Keep it.
+  [mechanism: cross-thread visibility of the channel field; not pinned by a test — a missing
+  volatile is unobservable in practice on both arm64 and x86_64]
