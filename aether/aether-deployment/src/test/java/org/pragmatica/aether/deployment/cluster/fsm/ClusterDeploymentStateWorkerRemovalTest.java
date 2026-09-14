@@ -527,6 +527,45 @@ class ClusterDeploymentStateWorkerRemovalTest {
             assertFootprintIntact("cleanupStaleNodeRoutes()");
         }
 
+        /// Reviewer probe (verify-1127): with the rows kept, the reconcile count must also see the
+        /// worker's instance, or `instances=1` held by a live worker gets a SECOND instance allocated
+        /// on core — a permanent 2-ACTIVE steady state where the base at least churned.
+        @Test
+        void reconcile_liveWorkerHoldsTheOnlyInstance_placesNoSecondCoreInstance() {
+            cluster.commands.clear();
+
+            activeState().reconcile();
+
+            assertThat(activeState().sliceStates().keySet())
+                    .as("#850: an RF=1 slice held by a LIVE worker must not be allocated a second instance on core")
+                    .containsExactly(sliceKey);
+            assertThat(cluster.commands.stream()
+                                       .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                            && put.key() instanceof NodeArtifactKey nak
+                                                            && nak.artifact().equals(ARTIFACT)
+                                                            && !nak.nodeId().equals(WORKER_1)))
+                    .as("#850: no LOAD may be issued for the artifact on any node but the worker that holds it")
+                    .isFalse();
+        }
+
+        /// The inverse of the probe above: once the worker has LEFT, its instance no longer counts and
+        /// the shortfall is re-placed onto core (the #731 path, seen from this fixture).
+        @Test
+        void reconcile_departedWorkersInstance_isReplacedOnCore() {
+            cluster.commands.clear();
+
+            leaveWorker(WORKER_1);
+
+            assertThat(activeState().sliceStates()).doesNotContainKey(sliceKey);
+            assertThat(cluster.commands.stream()
+                                       .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                            && put.key() instanceof NodeArtifactKey nak
+                                                            && nak.artifact().equals(ARTIFACT)
+                                                            && nak.nodeId().equals(SELF)))
+                    .as("#850: a DEPARTED worker's instance must be replaced on the remaining core")
+                    .isTrue();
+        }
+
         /// Control for the fix: a worker that HAS departed (left `workerNodes` through the leave
         /// channel) is still swept. Without this the fix could pass by never sweeping anything.
         @Test
