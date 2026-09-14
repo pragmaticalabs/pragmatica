@@ -164,6 +164,9 @@ class EmberClusterTeardownWiringTest {
             case "self" -> id;
             case "isReady" -> false;
             case "leader" -> Option.empty();
+            // #1070 review B1 made EmberCluster.currentLeader filter nodes by isLeader; this fake
+            // predates that change. No node claims leadership here, matching `leader` above.
+            case "isLeader" -> false;
             case "toString" -> "fake(" + id.id() + ")";
             case "hashCode" -> System.identityHashCode(proxy);
             case "equals" -> proxy == args[0];
