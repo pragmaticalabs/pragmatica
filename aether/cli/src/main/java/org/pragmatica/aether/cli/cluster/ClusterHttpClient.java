@@ -96,9 +96,24 @@ public sealed interface ClusterHttpClient {
     AtomicReference<String> API_KEY_OVERRIDE = new AtomicReference<>();
     AtomicReference<Duration> REQUEST_TIMEOUT = new AtomicReference<>(DEFAULT_REQUEST_TIMEOUT);
 
+    /// #584 — the credential follows the endpoint's SOURCE. `true` only while the endpoint in force
+    /// was supplied by the registry's active context (set by `AetherCli.main` through
+    /// [#setContextEndpoint]); every other override — `--connect`, `--cluster`, destroy's fallback
+    /// candidates — clears it, so the context's `api_key_env` never travels to a host the context
+    /// did not name. A typo'd or hostile `--connect` used to receive the active cluster's key.
+    AtomicReference<Boolean> ENDPOINT_FROM_CONTEXT = new AtomicReference<>(false);
+
     @Contract
     static void setEndpointOverride(String endpointUrl) {
         ENDPOINT_OVERRIDE.set(endpointUrl);
+        ENDPOINT_FROM_CONTEXT.set(false);
+    }
+
+    /// The one setter that keeps the context's credential in play: the endpoint IS the context's.
+    @Contract
+    static void setContextEndpoint(String endpointUrl) {
+        ENDPOINT_OVERRIDE.set(endpointUrl);
+        ENDPOINT_FROM_CONTEXT.set(true);
     }
 
     @Contract
@@ -256,11 +271,22 @@ public sealed interface ClusterHttpClient {
             return option(override);
         }
 
-        return ClusterRegistry.load()
-                              .option()
-                              .flatMap(ClusterRegistry::current)
-                              .flatMap(ClusterRegistry.ClusterEntry::apiKeyEnv)
-                              .flatMap(envName -> option(System.getenv(envName)));
+        return contextSuppliedTheEndpoint()
+               ? ClusterRegistry.load()
+                                .option()
+                                .flatMap(ClusterRegistry::current)
+                                .flatMap(ClusterRegistry.ClusterEntry::apiKeyEnv)
+                                .flatMap(envName -> option(System.getenv(envName)))
+               : Option.empty();
+    }
+
+    /// The context's key is legitimate only for the context's endpoint: either `main` installed
+    /// the context endpoint explicitly, or no override is set at all and [#resolveEndpoint] itself
+    /// falls through to `registry.current()`.
+    private static boolean contextSuppliedTheEndpoint() {
+        var override = ENDPOINT_OVERRIDE.get();
+
+        return ENDPOINT_FROM_CONTEXT.get() || override == null || override.isBlank();
     }
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})

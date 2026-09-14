@@ -66,6 +66,11 @@ public class AetherCli implements Runnable {
     @CommandLine.Option(names = {"-c", "--connect", "--endpoint"}, description = "Node address to connect to (host:port)")
     private String nodeAddress;
 
+    /// #584 — true only when [#setAddressFromContextOrDefault] took the endpoint from the active
+    /// context; the context's `api_key_env` is consulted only then (the credential follows the
+    /// endpoint's source, never the other way round).
+    private boolean endpointFromContext;
+
     @CommandLine.Option(names = {"--config"}, description = "Path to aether.toml config file")
     private Path configPath;
 
@@ -110,7 +115,11 @@ public class AetherCli implements Runnable {
         cli.lookupConnection(args);
         cli.tlsSkipVerify = containsTlsSkipVerify(args);
         cli.httpOps = cli.buildHttpOperations();
-        org.pragmatica.aether.cli.cluster.ClusterHttpClient.setEndpointOverride(cli.resolveEndpointUrl());
+        if (cli.endpointFromContext) {
+            org.pragmatica.aether.cli.cluster.ClusterHttpClient.setContextEndpoint(cli.resolveEndpointUrl());
+        } else {
+            org.pragmatica.aether.cli.cluster.ClusterHttpClient.setEndpointOverride(cli.resolveEndpointUrl());
+        }
         extractApiKeyArg(args).orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()))
                         .onPresent(org.pragmatica.aether.cli.cluster.ClusterHttpClient::setApiKeyOverride);
         org.pragmatica.aether.cli.cluster.ClusterHttpClient.setRequestTimeout(resolveRequestTimeoutDuration(args));
@@ -272,9 +281,21 @@ public class AetherCli implements Runnable {
     }
 
     private void setAddressFromConfigOrDefault(Option<Path> configArg) {
-        configArg.filter(Files::exists)
-                 .onPresent(this::readConfigFromPath)
-                 .onEmpty(this::setAddressFromContextOrDefault);
+        configArg.onPresent(this::readConfigIfPresent).onEmpty(this::setAddressFromContextOrDefault);
+    }
+
+    /// A `--config` the operator named is an explicit, LOCAL choice: a path that does not exist takes
+    /// the config-failure branch (warn, localhost default) — never the active context, or a mistyped
+    /// local file would run the command against the cloud (#584 review SF-3).
+    private void readConfigIfPresent(Path path) {
+        if (Files.exists(path)) {
+            readConfigFromPath(path);
+
+            return;
+        }
+
+        System.err.println("Warning: config file not found: " + path + " — using " + DEFAULT_ADDRESS);
+        nodeAddress = DEFAULT_ADDRESS;
     }
 
     /// #584 — endpoint precedence: explicit `--connect`/`--endpoint` or `--config` > the registry's
@@ -286,13 +307,32 @@ public class AetherCli implements Runnable {
     /// context is set. A registry that cannot be read is treated as no context — the same fallback
     /// as no registry — since a corrupt file must not stop `aether --connect …` from working.
     private void setAddressFromContextOrDefault() {
-        nodeAddress = activeContext().map(ClusterRegistry.ClusterEntry::endpoint).or(DEFAULT_ADDRESS);
+        var context = activeContext();
+
+        endpointFromContext = context.isPresent();
+        nodeAddress = context.map(ClusterRegistry.ClusterEntry::endpoint).or(DEFAULT_ADDRESS);
     }
 
+    /// The active context, if it is usable. Each way it can be unusable is said on stderr rather
+    /// than silently becoming the localhost default: a registry that does not parse, a
+    /// `[current] context` naming no entry, an entry with a blank `endpoint` (a hand-edited or
+    /// legacy line — the product never writes one).
     private static Option<ClusterRegistry.ClusterEntry> activeContext() {
-        return ClusterRegistry.load()
-                              .option()
-                              .flatMap(ClusterRegistry::current);
+        var registry = ClusterRegistry.load()
+                                      .onFailure(cause -> System.err.println("Warning: cannot read ~/.aether/clusters.toml (" + cause.message()
+                                                                              + ") — using " + DEFAULT_ADDRESS))
+                                      .option();
+        var current = registry.flatMap(ClusterRegistry::current);
+
+        registry.filter(r -> r.currentContext().isPresent() && current.isEmpty())
+                .onPresent(r -> System.err.println("Warning: active cluster context '" + r.currentContext().or("")
+                                                   + "' names no registered cluster — using " + DEFAULT_ADDRESS));
+        current.filter(entry -> entry.endpoint() == null || entry.endpoint().isBlank())
+               .onPresent(entry -> System.err.println("Warning: active cluster context '" + entry.name()
+                                                      + "' has no endpoint — using " + DEFAULT_ADDRESS
+                                                      + "; fix ~/.aether/clusters.toml or pass --connect"));
+
+        return current.filter(entry -> entry.endpoint() != null && !entry.endpoint().isBlank());
     }
 
     @Contract
@@ -618,8 +658,14 @@ public class AetherCli implements Runnable {
     private Option<String> resolveApiKey() {
         return option(apiKey).filter(k -> !k.isBlank())
                      .orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()))
-                     .orElse(() -> activeContext().flatMap(ClusterRegistry.ClusterEntry::apiKeyEnv)
-                                                .flatMap(envName -> option(System.getenv(envName))));
+                     .orElse(this::contextApiKey);
+    }
+
+    private Option<String> contextApiKey() {
+        return endpointFromContext
+               ? activeContext().flatMap(ClusterRegistry.ClusterEntry::apiKeyEnv)
+                                .flatMap(envName -> option(System.getenv(envName)))
+               : Option.empty();
     }
 
     private void attachApiKey(HttpRequest.Builder builder) {
