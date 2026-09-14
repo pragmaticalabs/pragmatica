@@ -14,8 +14,12 @@
   on an interrupted thread; resolution still wins for an uninterrupted waiter]
 - **Policy chosen: interruption ENDS the wait with a typed failure and PRESERVES the flag.** New
   `CoreError.Interrupted` (additive to the sealed interface; every `switch` over `CoreError` in the
-  tree carries a `default`). The promise itself stays unresolved, exactly as on a timeout, so a
-  later `await` by an uninterrupted thread still gets the value. The flag is preserved because the
+  tree carries a `default`), **and it is `Cause.Terminal`**: an interrupt is a supervisor's stop signal
+  to a thread, and `Retry` re-driving the operation on the scheduler's thread would escape exactly
+  that thread (the review caught `Retry.retry().attempts(3)` running an `Interrupted` operation three
+  times). A resolution that lands between the loop condition and the interrupt check still wins —
+  the same re-read the timed variant makes. The promise itself stays unresolved, exactly as on a
+  timeout, so a later `await` by an uninterrupted thread still gets the value. The flag is preserved because the
   interrupt addressed the thread, not this wait — an outer loop that checks `isInterrupted()` must
   stop too. The alternative the ticket allows, "uninterruptible but non-spinning", was rejected:
   every test backstop and executor shutdown in this repository relies on interrupt actually ending
@@ -25,9 +29,25 @@
   threads folding failure to a logged no-op, or startup waits; none retries on failure in a loop).
   Consequence to state: a thread that is interrupted and keeps calling `await()` now gets an
   immediate `Interrupted` failure each time instead of an immediate return-and-spin — the same
-  contract as `Future.get` throwing, minus the exception.
+  contract as `Future.get` throwing, minus the exception. The stronger consequence, which the
+  count above does not capture: unbounded callers were written under "await returned ⇒ the work
+  finished", and that no longer holds under interruption. The one in-tree site that interrupts a
+  thread parked in `await()` on purpose is `WriteBehindQueue` (its stop signal): a put in flight
+  when the stop landed now comes back `Interrupted` — unfinished, not failed — so the queue clears
+  the flag, waits up to its own join budget for the put to settle, restores the flag, and counts
+  it separately from a real flush failure (`interruptedInFlight()` vs `flushFailures()`). The outer
+  half — the queue is never deactivated at node stop at all — is #1078. The two transaction
+  wrappers (`JdbcSqlConnector.runTransaction`, `JooqTransactional.withTransaction`) would roll back
+  and return a connection a still-running callback may hold; nothing in the tree interrupts those
+  threads, a user executor or JUnit `@Timeout` can — named here as the follow-up, not changed.
+  [verified: `integrations/storage/src/test/java/org/pragmatica/storage/WriteBehindQueueStopTest.java`
+  — a gated tier, `deactivate` while the put is in flight, the put released afterwards: deactivate
+  returns, `flushFailures() == 0`, `interruptedInFlight() == 1`, one put issued;
+  `PromiseAwaitInterruptionTest.interrupted_isTerminal_soRetryNeverReDrivesIt`]
   [mechanism: `PromiseImpl.await` checks `thread.isInterrupted()` before each park; no flag is
-  cleared anywhere]
+  cleared anywhere in `core`]
 - Not changed: the `CompletionJoin` pushed for the waiter stays on the promise's completion stack
-  after an interrupted return, exactly as after a timed-out return — the eventual `unpark` of a
-  thread that has moved on is a documented no-op.
+  after an interrupted return, exactly as after a timed-out return — its eventual `unpark` grants
+  the thread one permit, i.e. one spurious wakeup at its next park, which every `j.u.c` primitive
+  tolerates. Count space for "91 unbounded call sites": `command grep -rn '\.await(' --include='*.java'`
+  over `src/main` outside `target/` = 115 lines, 91 `.await()` + 24 bounded.

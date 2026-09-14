@@ -128,10 +128,10 @@ class PromiseAwaitInterruptionTest {
                           .attempts(3)
                           .strategy(BackoffStrategy.fixed().interval(timeSpan(1).millis()))
                           .execute(() -> {
-                              attempts.incrementAndGet();
+                                       attempts.incrementAndGet();
 
-                              return Promise.<Unit>failure(new CoreError.Interrupted("stop"));
-                          })
+                                       return Promise.<Unit> failure(new CoreError.Interrupted("stop"));
+                                   })
                           .await(timeSpan(5).seconds());
 
         assertThat(new CoreError.Interrupted("x").isTerminal()).isTrue();

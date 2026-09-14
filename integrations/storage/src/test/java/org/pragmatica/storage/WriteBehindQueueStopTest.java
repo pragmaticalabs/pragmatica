@@ -1,15 +1,17 @@
 package org.pragmatica.storage;
 
-import org.junit.jupiter.api.Test;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
-
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// Review of #1099, SF-2 (and #1078's territory): `WriteBehindQueue.deactivate` interrupts the drain
 /// thread as its stop signal, which is the ONE in-tree site that interrupts a thread parked in
@@ -68,21 +70,24 @@ class WriteBehindQueueStopTest {
         var queue = WriteBehindQueue.writeBehindQueue();
 
         queue.activate();
-        queue.enqueue(BlockId.blockId(new byte[]{1, 2, 3}).unwrap(), new byte[]{1, 2, 3}, tier).await();
-        assertThat(tier.putStarted.await(5, TimeUnit.SECONDS)).as("precondition: the drain thread is parked in await() on the put").isTrue();
-
+        queue.enqueue(BlockId.blockId(new byte[]{1, 2, 3}).unwrap(),
+                      new byte[]{1, 2, 3},
+                      tier).await();
+        assertThat(tier.putStarted.await(5, TimeUnit.SECONDS)).as("precondition: the drain thread is parked in await() on the put")
+                  .isTrue();
         var deactivated = new CountDownLatch(1);
         var stopper = new Thread(() -> {
-            queue.deactivate();
-            deactivated.countDown();
-        }, "stopper");
+                                     queue.deactivate();
+                                     deactivated.countDown();
+                                 },
+                                 "stopper");
 
         stopper.start();
         // The stop signal lands while the put is in flight; give it time to be observed, then settle the put.
         Thread.sleep(200);
         tier.inFlight.succeed(Unit.unit());
-
-        assertThat(deactivated.await(10, TimeUnit.SECONDS)).as("deactivate returns once the in-flight put settled").isTrue();
+        assertThat(deactivated.await(10, TimeUnit.SECONDS)).as("deactivate returns once the in-flight put settled")
+                  .isTrue();
         assertThat(queue.flushFailures()).as("an interrupted wait is not a failed flush").isZero();
         assertThat(queue.interruptedInFlight()).as("the stop-while-in-flight case is observable, by count").isEqualTo(1);
         assertThat(tier.puts.get()).as("the put was issued once — no re-drive").isEqualTo(1);

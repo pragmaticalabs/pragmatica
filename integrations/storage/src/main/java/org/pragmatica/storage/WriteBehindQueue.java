@@ -143,7 +143,10 @@ final class WriteBehindQueue {
 
         settle(put, entry).onFailure(c -> {
             flushFailures.incrementAndGet();
-            log.warn("Write-behind flush failed for {} to {}: {}", entry.id(), entry.tier().level(), c.message());
+            log.warn("Write-behind flush failed for {} to {}: {}",
+                     entry.id(),
+                     entry.tier().level(),
+                     c.message());
         });
     }
 
