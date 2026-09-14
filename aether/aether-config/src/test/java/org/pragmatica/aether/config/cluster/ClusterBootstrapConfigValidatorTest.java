@@ -318,7 +318,7 @@ class ClusterBootstrapConfigValidatorTest {
         void validate_autoHealDisabled_returnsPf25() {
             // Positive control for enabled=true already exists: HappyPath.validate_validForgeConfig_succeeds
             // uses defaultOperationsConfig(), which defaults autoHeal to enabled=true and must not trip PF-25.
-            var autoHeal = AutoHealSpec.autoHealSpec(false, "60s", "15s");
+            var autoHeal = AutoHealSpec.autoHealSpec(false);
             var ops = operationsConfig(autoHeal, defaultOperationsConfig().tls(),
                                        defaultOperationsConfig().timeouts(), defaultOperationsConfig().ports());
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),

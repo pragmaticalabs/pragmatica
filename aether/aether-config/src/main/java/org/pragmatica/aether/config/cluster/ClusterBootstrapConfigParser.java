@@ -18,6 +18,7 @@ import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.Number;
 
@@ -79,15 +80,15 @@ public final class ClusterBootstrapConfigParser {
         var sources = parseSources(doc);
         var runtimes = parseRuntimes(doc);
         var infrastructure = parseInfrastructure(doc);
-        var operations = parseOperations(doc);
 
-        return sources.map(s -> ClusterBootstrapConfig.clusterBootstrapConfig(version,
-                                                                              cluster,
-                                                                              coreTopology,
-                                                                              s,
-                                                                              runtimes,
-                                                                              infrastructure,
-                                                                              operations));
+        return Result.all(sources, parseOperations(doc))
+                     .map((s, operations) -> ClusterBootstrapConfig.clusterBootstrapConfig(version,
+                                                                                           cluster,
+                                                                                           coreTopology,
+                                                                                           s,
+                                                                                           runtimes,
+                                                                                           infrastructure,
+                                                                                           operations));
     }
 
     /// W6 — document-level format gate (RFC-0016 §3.5). `config_version` is the version of the whole
@@ -598,59 +599,50 @@ public final class ClusterBootstrapConfigParser {
         return multiple;
     }
 
-    private static OperationsConfig parseOperations(TomlDocument doc) {
+    private static Result<OperationsConfig> parseOperations(TomlDocument doc) {
         if (!doc.hasSection(OPERATIONS_SECTION) && !doc.hasSection(OPERATIONS_AUTO_HEAL_SECTION) && !doc.hasSection(OPERATIONS_TLS_SECTION) && !doc.hasSection(OPERATIONS_TIMEOUTS_SECTION) && !doc.hasSection(OPERATIONS_PORTS_SECTION)) {
-            return OperationsConfig.defaultOperationsConfig();
+            return success(OperationsConfig.defaultOperationsConfig());
         }
 
-        return OperationsConfig.operationsConfig(parseAutoHealSpec(doc),
-                                                 parseTlsConfig(doc),
-                                                 parseTimeoutsConfig(doc),
-                                                 parsePortMapping(doc));
+        return parseAutoHealSpec(doc).map(autoHeal -> OperationsConfig.operationsConfig(autoHeal,
+                                                                                        parseTlsConfig(doc),
+                                                                                        parseTimeoutsConfig(doc),
+                                                                                        parsePortMapping(doc)));
     }
 
-    private static AutoHealSpec parseAutoHealSpec(TomlDocument doc) {
+    /// #675: every `[operations.auto_heal]` key other than `enabled` parsed into `AutoHealSpec` and
+    /// reached no node — the runtime's `AutoHealConfig` is built from the NODE config (`[cluster]
+    /// max_nodes`, `[timeouts.scaling] auto_heal_startup_cooldown`), never from this document. A
+    /// tunable that changes nothing is refused loudly, mirroring PF-25 (`enabled = false`) and PF-23.
+    private static final List<String> REMOVED_AUTO_HEAL_KEYS = List.of("retry_interval",
+                                                                       "startup_cooldown",
+                                                                       "stale_observation_ttl",
+                                                                       "quic_miss_promotion_threshold",
+                                                                       "provisioning_timeout",
+                                                                       "provision_stability_window",
+                                                                       "decommissioned_retention",
+                                                                       "swim_hints_ttl");
+
+    private static Result<AutoHealSpec> parseAutoHealSpec(TomlDocument doc) {
         if (doc.hasSection(OPERATIONS_AUTO_HEAL_SECTION)) {
-            return parseAutoHealFromSection(doc);
+            return refuseRemovedAutoHealKeys(doc)
+                   .map(_ -> AutoHealSpec.autoHealSpec(doc.getBoolean(OPERATIONS_AUTO_HEAL_SECTION, "enabled").or(true)));
         }
 
-        return doc.getBoolean(OPERATIONS_SECTION, "auto_heal")
-                  .map(ClusterBootstrapConfigParser::autoHealFromShortcut)
-                  .or(AutoHealSpec.defaultAutoHealSpec());
+        return success(doc.getBoolean(OPERATIONS_SECTION, "auto_heal")
+                          .map(AutoHealSpec::autoHealSpec)
+                          .or(AutoHealSpec.defaultAutoHealSpec()));
     }
 
-    private static AutoHealSpec autoHealFromShortcut(boolean enabled) {
-        var defaults = AutoHealSpec.defaultAutoHealSpec();
+    private static Result<Unit> refuseRemovedAutoHealKeys(TomlDocument doc) {
+        var present = doc.keys(OPERATIONS_AUTO_HEAL_SECTION);
 
-        return AutoHealSpec.autoHealSpec(enabled, defaults.retryInterval(), defaults.startupCooldown());
-    }
-
-    private static AutoHealSpec parseAutoHealFromSection(TomlDocument doc) {
-        var enabled = doc.getBoolean(OPERATIONS_AUTO_HEAL_SECTION, "enabled").or(true);
-        var retryInterval = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "retry_interval").or("60s");
-        var startupCooldown = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "startup_cooldown").or("15s");
-        var staleObservationTtl = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "stale_observation_ttl")
-                                     .or(AutoHealSpec.DEFAULT_STALE_OBSERVATION_TTL);
-        var quicMissPromotionThreshold = doc.getInt(OPERATIONS_AUTO_HEAL_SECTION, "quic_miss_promotion_threshold")
-                                            .or(AutoHealSpec.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD);
-        var provisioningTimeout = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "provisioning_timeout")
-                                     .or(AutoHealSpec.DEFAULT_PROVISIONING_TIMEOUT);
-        var provisionStabilityWindow = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "provision_stability_window")
-                                          .or(AutoHealSpec.DEFAULT_PROVISION_STABILITY_WINDOW);
-        var decommissionedRetention = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "decommissioned_retention")
-                                         .or(AutoHealSpec.DEFAULT_DECOMMISSIONED_RETENTION);
-        var swimHintsTtl = doc.getString(OPERATIONS_AUTO_HEAL_SECTION, "swim_hints_ttl")
-                              .or(AutoHealSpec.DEFAULT_SWIM_HINTS_TTL);
-
-        return AutoHealSpec.autoHealSpec(enabled,
-                                         retryInterval,
-                                         startupCooldown,
-                                         staleObservationTtl,
-                                         quicMissPromotionThreshold,
-                                         provisioningTimeout,
-                                         provisionStabilityWindow,
-                                         decommissionedRetention,
-                                         swimHintsTtl);
+        return option(REMOVED_AUTO_HEAL_KEYS.stream().filter(present::contains).findFirst().orElse(null))
+                   .fold(Result::unitResult,
+                         key -> parseFailed("PF-26: [operations.auto_heal] " + key + " has no runtime effect — the node"
+                                            + " builds its auto-heal settings from its own config ([cluster] max_nodes,"
+                                            + " [timeouts.scaling] auto_heal_startup_cooldown) and never reads this"
+                                            + " key. Remove it (#675).").result());
     }
 
     private static TlsDeploymentConfig parseTlsConfig(TomlDocument doc) {

@@ -906,10 +906,6 @@ public final class ConfigLoader {
                                                                 d.communityCooldown()),
                                                   parseTimeSpan(doc,
                                                                 "timeouts.scaling",
-                                                                "auto_heal_retry",
-                                                                d.autoHealRetry()),
-                                                  parseTimeSpan(doc,
-                                                                "timeouts.scaling",
                                                                 "auto_heal_startup_cooldown",
                                                                 d.autoHealStartupCooldown()));
     }

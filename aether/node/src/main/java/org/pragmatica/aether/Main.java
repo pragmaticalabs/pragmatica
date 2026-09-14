@@ -34,6 +34,7 @@ import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.MembershipConfigBinding;
 import org.pragmatica.aether.config.StreamingConfig;
+import org.pragmatica.aether.config.TimeoutsConfig;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.StorageEncryptionConfig;
 import org.pragmatica.config.ConfigurationProvider;
@@ -446,15 +447,23 @@ public record Main(String[] args) {
     /// #298 — carry `[cluster] max_nodes` into the auto-heal config the node runs with. Until this
     /// existed the builder fell through to `AutoHealConfig.DEFAULT`, so no auto-heal setting was
     /// operator-tunable at all and the fleet cap had no way to be set outside a test.
+    /// #675 — `[timeouts.scaling] auto_heal_startup_cooldown` is carried the same way; it parsed into
+    /// `TimeoutsConfig` and stopped there while the runtime honoured only `DEFAULT`'s 15s.
     ///
     /// `UNBOUNDED` (0, the same "unset" sentinel `coreMax` uses) leaves the cap absent, which is
     /// what every existing config gets — provisioning stays unbounded until an operator opts in.
     static AutoHealConfig resolveAutoHeal(Option<AetherConfig> aetherConfig) {
+        var withCooldown = aetherConfig.map(AetherConfig::timeouts)
+                                       .map(TimeoutsConfig::scaling)
+                                       .map(TimeoutsConfig.ScalingTimeouts::autoHealStartupCooldown)
+                                       .map(AutoHealConfig.DEFAULT::withStartupCooldown)
+                                       .or(AutoHealConfig.DEFAULT);
+
         return aetherConfig.map(AetherConfig::cluster)
                            .map(ClusterConfig::maxNodes)
                            .filter(maxNodes -> maxNodes > ClusterConfig.UNBOUNDED)
-                           .map(AutoHealConfig.DEFAULT::withMaxNodes)
-                           .or(AutoHealConfig.DEFAULT);
+                           .map(withCooldown::withMaxNodes)
+                           .or(withCooldown);
     }
 
     private static MembershipConfig liftMembershipBinding(MembershipConfigBinding binding) {

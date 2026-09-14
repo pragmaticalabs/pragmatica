@@ -230,14 +230,12 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
                                   TimeSpan warmupPeriod,
                                   TimeSpan sliceCooldown,
                                   TimeSpan communityCooldown,
-                                  TimeSpan autoHealRetry,
                                   TimeSpan autoHealStartupCooldown) {
         public static ScalingTimeouts scalingTimeouts() {
             return new ScalingTimeouts(timeSpan(1).seconds(),
                                        timeSpan(30).seconds(),
                                        timeSpan(10).seconds(),
                                        timeSpan(60).seconds(),
-                                       timeSpan(10).seconds(),
                                        timeSpan(15).seconds());
         }
     }
