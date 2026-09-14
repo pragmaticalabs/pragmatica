@@ -211,8 +211,7 @@ public interface SliceFactory {
                                                                "slice references class " + missingClass
                                                               + ", whose package " + packageOf(missingClass)
                                                               + " is served by " + loaderLabel(owner)
-                                                              + " but the class is not"
-                                                              + loadedArtifacts(owner)
+                                                              + " but the class is not" + loadedArtifacts(owner)
                                                               + ". Two causes are indistinguishable from here: the class was"
                                                               + " REMOVED by a runtime or artifact upgrade, in which case"
                                                               + " rebuild against this runtime version; or that loader serves"
@@ -227,14 +226,15 @@ public interface SliceFactory {
     /// to tell a version skew from an upgrade, since only they hold the slice's own declaration. No
     /// other loader tracks versions, and an empty set says nothing, so both stay silent.
     private static String loadedArtifacts(ClassLoader owner) {
-        if (!(owner instanceof SharedLibraryClassLoader sharedLoader)) {
+        if (! (owner instanceof SharedLibraryClassLoader sharedLoader)) {
             return "";
         }
 
         var versions = sharedLoader.getLoadedArtifacts()
                                    .entrySet()
                                    .stream()
-                                   .map(entry -> entry.getKey() + ":" + entry.getValue().withQualifier())
+                                   .map(entry -> entry.getKey() + ":" + entry.getValue()
+                                                                             .withQualifier())
                                    .sorted()
                                    .toList();
 
