@@ -619,6 +619,39 @@ class QueryValidatorTest {
             assertThat(result.isValid()).as(messages(result)).isTrue();
         }
 
+        // The control for the clean ON CONFLICT case above: the subquery IS reached, so a bogus
+        // inner column is reported rather than the clause going unvalidated.
+        @Test void validate_onConflictWhereSubqueryBogusColumn_errors() {
+            var result = validate(
+                "INSERT INTO orders (id, user_id, total) VALUES (1, 1, 0) "
+                + "ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status "
+                + "WHERE EXISTS (SELECT 1 FROM users u WHERE u.nope = EXCLUDED.user_id)"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message)
+                                       .containsExactly("Column 'nope' not found in table 'u'");
+        }
+
+        // A subquery's own WITH names chain to the enclosing scope, so its body sees both.
+        @Test void validate_subqueryWithOwnCte_seesCteAndOuterScope() {
+            var result = validate(
+                "SELECT u.id FROM users u WHERE EXISTS (WITH c AS (SELECT id FROM orders) "
+                + "SELECT 1 FROM c WHERE c.id = u.id)"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        // A derived table's relations belong to the derived table, not to the enclosing FROM list.
+        @Test void validate_derivedTableRelations_doNotLeakIntoOuterScope() {
+            var result = validate(
+                "SELECT u.id FROM users u, (SELECT o.id FROM orders o) d WHERE o.user_id = u.id"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message)
+                                       .contains("Table or alias not found: o");
+        }
+
         // A derived table without LATERAL does not see the enclosing FROM list.
         @Test void validate_nonLateralDerivedTable_doesNotSeeOuterScope() {
             var result = validate(
