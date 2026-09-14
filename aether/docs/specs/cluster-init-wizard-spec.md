@@ -482,11 +482,6 @@ swim = 8190
 
 # Advanced configuration (uncomment as needed):
 #
-# [operations.auto_heal]
-# enabled = true
-# retry_interval = "60s"
-# startup_cooldown = "15s"
-#
 # [operations.timeouts]
 # health_check = "300s"
 # quorum_formation = "600s"

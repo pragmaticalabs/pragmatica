@@ -108,13 +108,7 @@ class ClusterTopologyManagerZoneRotationTest {
         observer = TopologyObserver.topologyObserver(config, quietRouter(), snapshotSource).unwrap();
         lifecycleManager = new RecordingLifecycleManager();
         clusterStore = new RecordingClusterStore();
-        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
-                                                     timeSpan(1).millis(),
-                                                     AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
-                                                     AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
-                                                     AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
-                                                     timeSpan(0).millis())
-                                     .unwrap();
+        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(1).millis(), AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT).unwrap();
         ctm = ClusterTopologyManager.clusterTopologyManager(observer,
                                                             lifecycleManager,
                                                             autoHeal,
