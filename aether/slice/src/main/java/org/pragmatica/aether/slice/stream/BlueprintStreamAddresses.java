@@ -51,9 +51,10 @@ public sealed interface BlueprintStreamAddresses {
     /// EXACTLY ONE STATE FALLS BACK TO THE BARE ALIAS, and the rest fail. The distinction is whether a
     /// catalog spelling exists for this slice at all:
     ///
-    ///  - **no owning blueprint** — a unit test, Forge/Ember, a programmatic stream, or a slice not
-    ///    deployed under a blueprint. There is no second spelling to disagree with and the bare name is
-    ///    the only identity in play, so this returns it and says nothing.
+    ///  - **no owning blueprint** — a unit test, a programmatic stream, or a slice not deployed under a
+    ///    blueprint. There is no second spelling to disagree with and the bare name is the only identity
+    ///    in play, so this returns it and says nothing. Forge/Ember is NOT this case: it deploys through
+    ///    a blueprint publish, so its slices have an owning blueprint and need its bindings (#1066).
     ///  - **owning blueprint present, alias unresolvable** — [StreamAddressError], which fails
     ///    provisioning. Falling back here would hand the caller the bare key while every management
     ///    route addressed the qualified one: a consumer polling a ring no producer writes to, forever,
