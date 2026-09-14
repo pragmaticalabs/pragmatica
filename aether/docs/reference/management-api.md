@@ -48,7 +48,6 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 |-------------------|-------------|----------|
 | Blueprint management | ADMIN | `POST /api/v1/blueprints`, `DELETE /api/v1/blueprints/{id}` |
 | Node shutdown | ADMIN | `POST /api/v1/nodes/shutdown/{id}` |
-| Backup restore | ADMIN | `POST /api/v1/backups/restore/{id}` |
 | Log level changes | ADMIN | `PUT /api/v1/logging/levels` |
 | Observability depth | ADMIN | `PUT /api/v1/observability/depth` |
 | Observability config (write) | ADMIN | `POST`/`DELETE /api/v1/observability/config` |
@@ -58,7 +57,6 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 | Scaling | OPERATOR | `POST /api/v1/scale` |
 | Schema operations | OPERATOR | `POST /api/v1/schema/*` |
 | Deployment strategies | OPERATOR | `POST /api/v1/deploy`, `POST /api/v1/deploy/promote/*`, `POST /api/v1/deploy/rollback/*`, `POST /api/v1/deploy/complete/*`, `POST /api/v1/ab-tests/*` |
-| Backup trigger | OPERATOR | `POST /api/v1/backups` |
 | Config overrides | OPERATOR | `PUT /api/v1/config/*` |
 | Alert management | OPERATOR | `POST /api/v1/alerts/inject` |
 | Scheduled tasks | OPERATOR | `POST /api/v1/scheduled-tasks/*` |
@@ -427,8 +425,7 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `ACCESS_DENIED` -- an operation was denied by RBAC (`details` carries `principal`, `method`, `path`, `requiredRole`, `actualRole`). Severity WARNING.
 - `NODE_LIFECYCLE_CHANGED` -- a node lifecycle transition was requested/applied (leader-gated). Severity INFO.
 - `CONFIG_CHANGED` -- dynamic config was added, updated, or removed. Severity INFO.
-- `BACKUP_CREATED` -- a KV backup/commit was created. Severity INFO.
-- `BACKUP_RESTORED` -- a KV backup was restored. Severity WARNING.
+- `BACKUP_CREATED` / `BACKUP_RESTORED` -- no producer since the backup API was removed (#676); the types stay wire-pinned (tags 258/259) and never appear.
 - `BLUEPRINT_DEPLOYED` -- a blueprint was deployed. Severity INFO.
 - `BLUEPRINT_DELETED` -- a blueprint was deleted. Severity INFO.
 - `GENERATION_CHANGED` -- the cluster generation epoch advanced (leader-gated; see below). Severity INFO.
@@ -4512,53 +4509,10 @@ Surface per-node execution attribution for a scheduled task. Used by `TC-08-F3` 
 
 ## Backup Management
 
-### POST /api/v1/backups
-
-Trigger a manual backup of the KV-Store state.
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Backup completed"
-}
-```
-
-### GET /api/v1/backups
-
-List available backups.
-
-**Response:**
-```json
-[
-  {
-    "commitId": "abc123",
-    "message": "Backup phase 42 at 2026-03-10T12:00:00Z",
-    "timestamp": "2026-03-10T12:00:00Z"
-  }
-]
-```
-
-### POST /api/v1/backups/restore
-
-Restore from a specific backup.
-
-**Request body:**
-```json
-{
-  "commit": "abc123"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Restore completed"
-}
-```
-
----
+Removed (#676). `POST /api/v1/backups`, `GET /api/v1/backups` and `POST /api/v1/backups/restore` were
+served by `BackupService.disabled()` in every configuration — no other implementation ever existed —
+so each returned `backup-disabled`. Declared-state durability is `[backup]` git-backed persistence,
+which has no API: see the [backup-recovery runbook](../operators/runbooks/backup-recovery.md).
 
 ## Error Responses
 
