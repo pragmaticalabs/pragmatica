@@ -23,7 +23,9 @@
 #   R1: warn-then-pass demotion (log_warn ... log_pass in same control flow)
 #   R2: 2>/dev/null || true inside suites/** (silent stderr trap)
 #
-# `-type f` on the find-based rules (R1/R3/R5) is load-bearing, not tidiness. A suite directory may
+# `-type f` on the find-based rules (R1/R3/R5) is defence in depth, kept even though the 02s suite
+# now uses an exec WRAPPER rather than a symlink — the next person to add one should not have to
+# rediscover this. It is not tidiness: A suite directory may
 # reach a test through a SYMLINK (suites/02s-selfdrain/ links the S19 file that lives in 02-chaos/),
 # and `find` enumerates the link as a second path to the same bytes — so every finding in that file
 # was counted twice, under two paths, and the baseline would have recorded 8 R1 findings in a file

@@ -49,10 +49,22 @@ fi
 echo "suite resolution — one file, and it is the SAME file as 02-chaos's"
 n=$(find "${INTEG_DIR}/suites/02s-selfdrain" -name 'test-*.sh' | wc -l | tr -d ' ')
 [ "$n" = "1" ] && ok "R4 02s holds exactly one test file" || fail "R4 02s holds ${n} test files — it exists to hold one"
-link=$(readlink "${INTEG_DIR}/suites/02s-selfdrain/test-self-drain-quorum-loss.sh" 2>/dev/null)
-[ "$link" = "../02-chaos/test-self-drain-quorum-loss.sh" ] \
-    && ok "R5 it is a symlink to 02-chaos's copy (single source of truth)" \
-    || fail "R5 not the expected symlink (got '${link:-<not a symlink>}') — a copy would drift from 02-chaos"
+# R5: 02s must reach 02-chaos's file, and must do so WITHOUT being a second path to those bytes.
+# A copy drifts; a SYMLINK is enumerated by tree-walkers as a second path (it made lint count the
+# file's findings twice and made test-chaos-harness W1 see SIX gate call sites where the invariant is
+# five). An exec wrapper is a real file with no findings and no gate calls.
+W="${INTEG_DIR}/suites/02s-selfdrain/test-self-drain-quorum-loss.sh"
+if [ -L "$W" ]; then
+    fail "R5 02s's entry is a SYMLINK — tree-walking checks will count 02-chaos's file twice (lint findings, W1 gate call sites)"
+elif ! { grep -q '^exec ' "$W" && grep -q '02-chaos' "$W" && grep -q 'test-self-drain-quorum-loss.sh' "$W"; }; then
+    fail "R5 02s's entry neither execs 02-chaos's file nor is a symlink — it may be a COPY, which drifts"
+else
+    ok "R5 02s execs 02-chaos's file (one implementation, and not a second path to it)"
+fi
+# The wrapper must carry no gate call of its own, or W1's invariant of 5 breaks again.
+g=$(grep -c '_cloud_reap_after_confirmed_drain[[:space:]]*"' "$W" || true)
+[ "$g" = "0" ] && ok "R5b the wrapper contributes no gate call site (W1 invariant intact)" \
+               || fail "R5b the wrapper carries ${g} gate call site(s) — W1 expects exactly 5 tree-wide"
 
 echo "suite resolution — 02-chaos is unchanged by all this"
 n=$(find "${INTEG_DIR}/suites/02-chaos" -name 'test-*.sh' | wc -l | tr -d ' ')
@@ -73,8 +85,8 @@ n=$(grep -c 'find "$SUITES_DIR" -type f' "$LINT")
 # Behavioural, not just structural: no finding may be attributed to the symlinked path.
 lint_out=$(bash "$LINT" 2>&1 || true)
 dupes=$(printf '%s\n' "$lint_out" | grep -c '02s-selfdrain' || true)
-[ "$dupes" = "0" ] && ok "R8 lint attributes no finding to the symlinked 02s path" \
-                   || fail "R8 ${dupes} finding(s) attributed to 02s-selfdrain — the same file counted twice"
+[ "$dupes" = "0" ] && ok "R8 lint attributes no finding to the 02s path" \
+                   || fail "R8 ${dupes} finding(s) attributed to 02s-selfdrain — 02-chaos\x27s file is being counted twice"
 
 echo ""
 echo "  ----"
