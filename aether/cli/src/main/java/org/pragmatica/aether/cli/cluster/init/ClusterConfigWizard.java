@@ -657,9 +657,8 @@ public class ClusterConfigWizard {
     /// the minimum, the odd rule and the maximum in [CoreWorkerSplit] as the single source — a second
     /// copy here would be free to drift.
     private static StepResult coreOrRetry(ClusterConfigAnswers state, Prompt prompt, int core) {
-        return CoreWorkerSplit.coreWorkerSplit(core, 0)
-                              .fold(cause -> reportCoreFailure(state, prompt, cause),
-                                    _ -> promptedWorker(state, prompt, core));
+        return CoreWorkerSplit.coreWorkerSplit(core, 0).fold(cause -> reportCoreFailure(state, prompt, cause),
+                                                             _ -> promptedWorker(state, prompt, core));
     }
 
     private static StepResult reportCoreFailure(ClusterConfigAnswers state, Prompt prompt, Cause cause) {

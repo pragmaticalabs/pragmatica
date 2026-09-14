@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.config;
 
-
 /// The upper bound on the CONSENSUS tier, in ONE place because three modules enforce it (#1019).
 ///
 /// Round 1 of #1019 put the figure in `CoreWorkerSplit` (`aether/cli`) and again in
