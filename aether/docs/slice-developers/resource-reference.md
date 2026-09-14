@@ -857,8 +857,9 @@ Aspects are cross-cutting concerns applied to slice method invocations via confi
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `max_attempts` | `int` | required | Maximum retry attempts (must be positive) |
+| `max_attempts` | `int` | required | Maximum attempts at the method, the first one included (must be positive; `1` means no retry — and a transient failure under a budget of 1 still logs the loop's one "giving up" WARN per call, since the budget was spent) |
 | `backoff_strategy` | `BackoffStrategy` | exponential (3 attempts) | Backoff strategy between retries |
+| `retry_on` | `RetryOn` | `TRANSIENT` | Which failures are retried. `TRANSIENT`: only a cause that implements `Cause.Transient` (timeouts, refused connections, exhausted pools — what infrastructure failures classify as); an unclassified cause, which is what every business verdict is, is returned after the first attempt, so a non-idempotent method is never re-driven on its own verdict (#280). `NON_TERMINAL`: retry anything that is not `Cause.Terminal` — the behaviour before #280; opt in for a method whose failures are all infrastructural but not yet classified |
 
 `backoff_strategy` is a **discriminated sub-section**: `[retry.<name>.backoff_strategy]` with a
 `type` key selecting the shape. A **wholly absent** `[retry.<name>]` section fails loud
@@ -880,6 +881,7 @@ intent; don't conflate them
 ```toml
 [retry.payment-calls]
 max_attempts = 3
+retry_on = "TRANSIENT"
 
 [retry.payment-calls.backoff_strategy]
 type = "exponential"
@@ -975,8 +977,8 @@ Provisioned by `RateGuardFactory` (`ResourceFactory<RateGuard, RateGuardConfig>`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | `String` | required | Metric name prefix |
-| `record_timing` | `boolean` | `true` | Record execution timing |
-| `record_counts` | `boolean` | `true` | Record success/failure counts |
+| `record_timing` | `boolean` | `true` | Record a timer `<name>.success` / `<name>.failure` per call |
+| `record_counts` | `boolean` | `true` | Record a counter `<name>.success.count` / `<name>.failure.count` per call (a separate meter: Micrometer refuses two meter types under one id) |
 | `tags` | `List<String>` | empty | Additional metric tags (key-value pairs) |
 
 The `MeterRegistry` is not a config field — it is resolved from the node's real, Management-API-backed
@@ -1012,14 +1014,20 @@ tags = "region=eu,tier=gold"
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name` | `String` | required | Logger name prefix |
+| `name` | `String` | required | Logger name — each injection point logs through `LoggerFactory.getLogger(name)`, so its level is tuned per method in the logging configuration (#280) |
 | `level` | `LogLevel` | required | Log level (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`) |
-| `log_args` | `boolean` | required | Log method arguments |
-| `log_result` | `boolean` | required | Log method results |
+| `log_args` | `boolean` | required | Log method arguments — the request's `toString()`, unredacted. Treat it as personal data: leave `false` unless the request type is known to carry none |
+| `log_result` | `boolean` | required | Log method results — the result's `toString()`, truncated to 100 characters, unredacted. Same caution as `log_args` |
 | `log_duration` | `boolean` | required | Log execution duration |
 
 `LogConfig` declares no `DEFAULT` static field, so the generic config binder treats every key above
-as mandatory — there is no config-level fallback to `INFO`/`true` if a key is omitted from TOML.
+as mandatory — there is no config-level fallback if a key is omitted from TOML. The programmatic
+factories (`LogConfig.logConfig(name[, level])`) default `log_args` and `log_result` to `false`
+(#280). Both lines carry the request-id the invocation put in the SLF4J MDC (`requestId`, rendered
+as `[rid=…]` by the node's log4j layout): the entry line always did, and the exit line now
+re-applies the entry's MDC around itself, because the promise usually resolves on a thread whose
+MDC is empty (#280). Under the privacy defaults the exit line still names the OUTCOME — `ok`, or
+`failed <CauseType>` (the cause's type, never its message).
 
 ```toml
 [logging.payment-flow]

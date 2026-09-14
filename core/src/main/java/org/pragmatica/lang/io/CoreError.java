@@ -23,7 +23,7 @@ import org.pragmatica.lang.Cause;
 public sealed interface CoreError extends Cause {
     record Cancelled(String message) implements CoreError {}
 
-    record Timeout(String message) implements CoreError {}
+    record Timeout(String message) implements CoreError, Cause.Transient {}
 
     /// The waiting thread was interrupted before the awaited value arrived (#914). The interrupt
     /// flag is left set: the interrupt addressed the thread, not this one wait. Terminal: an

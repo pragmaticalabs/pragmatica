@@ -63,7 +63,7 @@ public interface RateLimiter {
     }
 
     sealed interface RateLimiterError extends Cause {
-        record LimitExceeded(TimeSpan retryAfter) implements RateLimiterError {
+        record LimitExceeded(TimeSpan retryAfter) implements RateLimiterError, Cause.Transient {
             @Override
             public String message() {
                 return "Rate limit exceeded. Retry after " + retryAfter;
