@@ -3382,6 +3382,25 @@ The toggle is a durable cluster fact (#685): it is stored as a typed record (`Au
 }
 ```
 
+### GET /api/v1/cluster/topology/role-mismatches
+
+Provisioned nodes whose advertised role label disagrees with the role the leader provisioned them with (#689). A node's role is a self-asserted SWIM label (`AETHER_ROLE` → `aether-role` → `NodeInfo` `role` label); a blank or unknown label is classified **CORE** by every peer, deliberately — acting on an unresolved view is the dangerous direction for the core tier. So an intended worker whose label never arrived (env not threaded, user-data lost it, image booted without it) silently joins the core set, and every community-tier mechanism gated on "positively not a core" — the core-absence fence first — is suppressed on it. This route is where that becomes visible without log access; the same fact is logged at WARN by the leader when the node is first observed.
+
+**Scope, stated:** leader-scoped and intent-based. The leader compares only nodes it provisioned itself (auto-heal replacements and worker reconcile); bootstrap nodes, nodes provisioned by an earlier leader and hand-started nodes have no intent on record and are never listed — absence of intent is not a mismatch. The intent is retained for the node id until the node is **decommissioned**, and every join of that id is compared: an in-place restart (crash, OOM, operator restart — same id) that is still mislabelled is re-reported (the WARN fires again) and stays listed; a rejoin that now carries the right label clears the entry. A listed node that departs (`NodeRemoved`) **stays listed** — a restart may follow — until it is decommissioned or leadership changes; a replacement provisioned under a fresh id gets its own comparison. On re-activation of the same leader the ledger is re-derived from membership's current view for every still-tracked provisioned node. `advertisedRole` is the role membership holds for the node (`MemberDescriptor.role`, the self-asserted label after the blank-downgrade merge — never the observer's first sighting, which can be label-less when the node was learned by gossip), `""` when no label ever arrived; `classifiedAs` is what membership made of it. The classification itself is unchanged.
+
+CLI: `aether cluster topology role-mismatches`.
+
+**RBAC:** VIEWER · **Routing:** LEADER
+
+**Response:**
+```json
+{
+  "mismatches": [
+    { "nodeId": "worker-3", "intendedRole": "worker", "advertisedRole": "", "classifiedAs": "CORE" }
+  ]
+}
+```
+
 ### POST /api/v1/cluster/topology/auto-heal/enable
 
 Re-enable CTM auto-heal. Writes `AutoHealStateValue(enabled=true, reason)` through the same consensus-backed command path as other topology mutations; every node converges on it once it applies the committed Put (see the staleness note under `GET .../auto-heal`). If a deficit exists at the time of the call, the next reconcile picks it up immediately (no scheduled poll wait) on the node applying the write. Returns the prior `enabled` state, as observed by this node's local (possibly stale) view, for the audit log. A same-state call (already enabled, by that local view) still writes through unconditionally — the write is never skipped on a local-read shortcut, since that read can lag the durable value (#685 review round 1).

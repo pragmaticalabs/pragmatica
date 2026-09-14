@@ -1147,7 +1147,15 @@ public record Main(String[] args) {
         envLookup.apply("AETHER_INSTANCE_TYPE").onPresent(t -> labels.put(NodeInfo.LABEL_INSTANCE_TYPE, t));
         envLookup.apply("AETHER_POOL").onPresent(p -> labels.put(NodeInfo.LABEL_POOL, p));
         envLookup.apply("AETHER_SOURCE").onPresent(s -> labels.put(NodeInfo.LABEL_SOURCE, s));
-        envLookup.apply("AETHER_ROLE").onPresent(r -> labels.put(NodeInfo.LABEL_ROLE, r));
+        // #689: the default is deliberate (blank counts as core — the safe failure direction for
+        // the core tier) and unchanged; what was missing is the node saying so. A worker started
+        // without this label joins the core set on every peer and nothing else reports why.
+        envLookup.apply("AETHER_ROLE")
+                 .onPresent(r -> labels.put(NodeInfo.LABEL_ROLE, r))
+                 .onEmpty(() -> log.warn("AETHER_ROLE is not set: this node advertises no role label and every peer will "
+                                        + "classify it as CORE (blank counts as core). Intended workers must be launched "
+                                        + "with AETHER_ROLE=worker (aether-role=worker label); a core node may leave it "
+                                        + "unset. See #689."));
 
         return Map.copyOf(labels);
     }

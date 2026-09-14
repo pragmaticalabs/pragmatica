@@ -114,6 +114,7 @@ Covers all 181 enum entries. HTTP methods and path parameters are unchanged unle
 | `/api/cluster/topology/auto-heal` | `/api/v1/cluster/topology/auto-heal` |
 | `/api/cluster/topology/auto-heal/disable` | `/api/v1/cluster/topology/auto-heal/disable` |
 | `/api/cluster/topology/auto-heal/enable` | `/api/v1/cluster/topology/auto-heal/enable` |
+| `/api/cluster/topology/role-mismatches` | `/api/v1/cluster/topology/role-mismatches` |
 | `/api/cluster/topology/circuit-breaker` | `/api/v1/cluster/topology/circuit-breaker` |
 | `/api/cluster/topology/circuit-breaker/reset` | `/api/v1/cluster/topology/circuit-breaker/reset` |
 | `/api/cluster/upgrade` | `/api/v1/cluster/upgrade` |
