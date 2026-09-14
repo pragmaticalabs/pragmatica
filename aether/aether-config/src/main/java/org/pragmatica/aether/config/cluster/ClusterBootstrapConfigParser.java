@@ -80,15 +80,15 @@ public final class ClusterBootstrapConfigParser {
         var sources = parseSources(doc);
         var runtimes = parseRuntimes(doc);
         var infrastructure = parseInfrastructure(doc);
+        var operations = parseOperations(doc);
 
-        return Result.all(sources, parseOperations(doc))
-                     .map((s, operations) -> ClusterBootstrapConfig.clusterBootstrapConfig(version,
-                                                                                           cluster,
-                                                                                           coreTopology,
-                                                                                           s,
-                                                                                           runtimes,
-                                                                                           infrastructure,
-                                                                                           operations));
+        return Result.all(sources, operations).map((s, ops) -> ClusterBootstrapConfig.clusterBootstrapConfig(version,
+                                                                                                             cluster,
+                                                                                                             coreTopology,
+                                                                                                             s,
+                                                                                                             runtimes,
+                                                                                                             infrastructure,
+                                                                                                             ops));
     }
 
     /// W6 — document-level format gate (RFC-0016 §3.5). `config_version` is the version of the whole
@@ -625,8 +625,9 @@ public final class ClusterBootstrapConfigParser {
 
     private static Result<AutoHealSpec> parseAutoHealSpec(TomlDocument doc) {
         if (doc.hasSection(OPERATIONS_AUTO_HEAL_SECTION)) {
-            return refuseRemovedAutoHealKeys(doc)
-                   .map(_ -> AutoHealSpec.autoHealSpec(doc.getBoolean(OPERATIONS_AUTO_HEAL_SECTION, "enabled").or(true)));
+            var enabled = doc.getBoolean(OPERATIONS_AUTO_HEAL_SECTION, "enabled").or(true);
+
+            return refuseRemovedAutoHealKeys(doc).map(_ -> AutoHealSpec.autoHealSpec(enabled));
         }
 
         return success(doc.getBoolean(OPERATIONS_SECTION, "auto_heal")
@@ -635,14 +636,20 @@ public final class ClusterBootstrapConfigParser {
     }
 
     private static Result<Unit> refuseRemovedAutoHealKeys(TomlDocument doc) {
+        return firstRemovedAutoHealKey(doc).fold(Result::unitResult, ClusterBootstrapConfigParser::removedAutoHealKey);
+    }
+
+    private static Option<String> firstRemovedAutoHealKey(TomlDocument doc) {
         var present = doc.keys(OPERATIONS_AUTO_HEAL_SECTION);
 
-        return option(REMOVED_AUTO_HEAL_KEYS.stream().filter(present::contains).findFirst().orElse(null))
-                   .fold(Result::unitResult,
-                         key -> parseFailed("PF-26: [operations.auto_heal] " + key + " has no runtime effect — the node"
-                                            + " builds its auto-heal settings from its own config ([cluster] max_nodes,"
-                                            + " [timeouts.scaling] auto_heal_startup_cooldown) and never reads this"
-                                            + " key. Remove it (#675).").result());
+        return Option.from(REMOVED_AUTO_HEAL_KEYS.stream().filter(present::contains).findFirst());
+    }
+
+    private static Result<Unit> removedAutoHealKey(String key) {
+        return parseFailed("PF-26: [operations.auto_heal] " + key
+                          + " has no runtime effect — the node builds its auto-heal settings from its own config"
+                          + " ([cluster] max_nodes, [timeouts.scaling] auto_heal_startup_cooldown) and never reads"
+                          + " this key. Remove it (#675).").result();
     }
 
     private static TlsDeploymentConfig parseTlsConfig(TomlDocument doc) {
