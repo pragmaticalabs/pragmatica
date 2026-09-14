@@ -26,7 +26,7 @@ import org.pragmatica.aether.cli.cluster.init.ClusterInitError;
 import org.pragmatica.aether.cli.cluster.init.FirewallPreset;
 import org.pragmatica.aether.cli.cluster.init.FirewallPresets;
 import org.pragmatica.aether.cli.cluster.init.InputValidators;
-import org.pragmatica.aether.cli.cluster.init.TopologyDeriver;
+import org.pragmatica.aether.cli.cluster.init.CoreWorkerSplit;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.lang.Cause;
@@ -92,8 +92,15 @@ class ClusterInitCommand implements Callable<Integer> {
     @Option(names = "--ssh-port", description = "SSH port (ssh target only)", defaultValue = "22")
     private Integer sshPort;
 
-    @Option(names = "--nodes", description = "Total node count (>= 3 required for non-SSH targets)")
-    private Integer nodes;
+    /// #1019 — the config models the two tiers as independent quantities (`[cluster.core]`,
+    /// `[source.X.core]`, `[source.X.worker]`); a single `--nodes` collapsed them into a total and the
+    /// round trip lost information. They are now stated, never inferred.
+    @Option(names = "--core-nodes", description = "Consensus tier size: 5 (minimum), 7 (recommended) or 9 (maximum). Must be odd.")
+    private Integer coreNodes;
+
+    @Option(names = "--worker-nodes", description = "Worker tier size (default 0). Not bounded by the consensus-tier maximum. "
+                                                  + "For an ssh target this is the remainder of --hosts after --core-nodes and must not be given.")
+    private Integer workerNodes;
 
     @Option(names = "--db-host", description = "Database host (optional)")
     private String dbHost;
@@ -192,17 +199,15 @@ class ClusterInitCommand implements Callable<Integer> {
                                                           "cloud VMs are provisioned with a PUBLIC key — use --ssh-public-key").result();
         }
 
-        if (nodes == null) return new ClusterInitError.MissingField("--nodes").result();
-
-        return parseCloudProvider(provider).flatMap(p -> InputValidators.validateEnvVarName(credentialEnv).flatMap(envOk -> TopologyDeriver.derive(nodes).flatMap(split -> assembleAnswers(clusterName,
-                                                                                                                                                                                           SourceType.CLOUD,
-                                                                                                                                                                                           org.pragmatica.lang.Option.some(new CloudAnswers(p,
-                                                                                                                                                                                                                                            region,
-                                                                                                                                                                                                                                            instanceType,
-                                                                                                                                                                                                                                            envOk,
-                                                                                                                                                                                                                                            sshPublicKey.trim())),
-                                                                                                                                                                                           org.pragmatica.lang.Option.none(),
-                                                                                                                                                                                           split))));
+        return parseCloudProvider(provider).flatMap(p -> InputValidators.validateEnvVarName(credentialEnv).flatMap(envOk -> requestedSplit().flatMap(split -> assembleAnswers(clusterName,
+                                                                                                                                                                              SourceType.CLOUD,
+                                                                                                                                                                              org.pragmatica.lang.Option.some(new CloudAnswers(p,
+                                                                                                                                                                                                                               region,
+                                                                                                                                                                                                                               instanceType,
+                                                                                                                                                                                                                               envOk,
+                                                                                                                                                                                                                               sshPublicKey.trim())),
+                                                                                                                                                                              org.pragmatica.lang.Option.none(),
+                                                                                                                                                                              split))));
     }
 
     private Result<ClusterConfigAnswers> buildSshAnswers(String clusterName) {
@@ -222,24 +227,59 @@ class ClusterInitCommand implements Callable<Integer> {
             }
         }
 
-        return TopologyDeriver.derive(hosts.size()).flatMap(split -> assembleAnswers(clusterName,
-                                                                                     SourceType.SSH,
-                                                                                     org.pragmatica.lang.Option.none(),
-                                                                                     org.pragmatica.lang.Option.some(new SshAnswers(hosts,
-                                                                                                                                    sshUser,
-                                                                                                                                    Path.of(sshKey),
-                                                                                                                                    sshPort)),
-                                                                                     split));
+        return sshSplit().flatMap(split -> assembleAnswers(clusterName,
+                                                           SourceType.SSH,
+                                                           org.pragmatica.lang.Option.none(),
+                                                           org.pragmatica.lang.Option.some(new SshAnswers(hosts,
+                                                                                                          sshUser,
+                                                                                                          Path.of(sshKey),
+                                                                                                          sshPort)),
+                                                           split));
     }
 
     private Result<ClusterConfigAnswers> buildLocalAnswers(String clusterName, SourceType t) {
-        if (nodes == null) return new ClusterInitError.MissingField("--nodes").result();
+        return requestedSplit().flatMap(split -> assembleAnswers(clusterName,
+                                                                 t,
+                                                                 org.pragmatica.lang.Option.none(),
+                                                                 org.pragmatica.lang.Option.none(),
+                                                                 split));
+    }
 
-        return TopologyDeriver.derive(nodes).flatMap(split -> assembleAnswers(clusterName,
-                                                                              t,
-                                                                              org.pragmatica.lang.Option.none(),
-                                                                              org.pragmatica.lang.Option.none(),
-                                                                              split));
+    /// Both tiers as given. An absent `--worker-nodes` means zero workers — the honest default for an
+    /// unstated tier, and the reason nothing needs to derive a split any more.
+    private Result<CoreWorkerSplit> requestedSplit() {
+        if (coreNodes == null) {
+            return new ClusterInitError.MissingField("--core-nodes").result();
+        }
+
+        return CoreWorkerSplit.coreWorkerSplit(coreNodes,
+                                               workerNodes == null
+                                               ? 0
+                                               : workerNodes);
+    }
+
+    /// An ssh target's fleet size is the host list, so the worker tier is its remainder rather than a
+    /// separate answer. `--worker-nodes` is refused rather than silently ignored — the same treatment
+    /// `--ssh-key` gets on a cloud target — because accepting a value that cannot take effect only
+    /// looks like it worked.
+    private Result<CoreWorkerSplit> sshSplit() {
+        if (coreNodes == null) {
+            return new ClusterInitError.MissingField("--core-nodes").result();
+        }
+
+        if (workerNodes != null) {
+            return new ClusterInitError.FlagNotApplicable("--worker-nodes",
+                                                          "ssh",
+                                                          "the worker tier is whatever --hosts holds beyond --core-nodes").result();
+        }
+
+        if (hosts.size() < coreNodes) {
+            return new ClusterInitError.InvalidTopology("--core-nodes " + coreNodes
+                                                       + " exceeds the " + hosts.size()
+                                                       + " host(s) given in --hosts").result();
+        }
+
+        return CoreWorkerSplit.coreWorkerSplit(coreNodes, hosts.size() - coreNodes);
     }
 
     private Result<ClusterConfigAnswers> assembleAnswers(String clusterName,

@@ -30,6 +30,22 @@ class ClusterConfigWizardTest {
         return new ClusterConfigWizard(new Prompt(in, out));
     }
 
+    /// A wizard whose PROMPT TEXT is readable afterwards, so a test can assert which questions were
+    /// asked and in what order — not only what the answers produced.
+    private record Session(ClusterConfigWizard wizard, ByteArrayOutputStream prompts) {
+        String promptText() {
+            return prompts.toString(StandardCharsets.UTF_8);
+        }
+    }
+
+    private static Session sessionFor(String input) {
+        var in = new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8));
+        var captured = new ByteArrayOutputStream();
+        var out = new PrintStream(captured, true, StandardCharsets.UTF_8);
+
+        return new Session(new ClusterConfigWizard(new Prompt(in, out)), captured);
+    }
+
     @Nested
     class HappyPath {
 
@@ -39,7 +55,8 @@ class ClusterConfigWizardTest {
             //        database (no) -> firewall/security skipped (Docker) -> review (yes)
             var input = "my-cluster\n" +    // cluster name
                         "\n" +              // deployment target: default = DOCKER
-                        "3\n" +             // total node count
+                        "5\n" +             // core (consensus) node count
+                        "0\n" +             // worker node count
                         "n\n" +             // configure database? no
                         "\n";               // generate config? default yes
             var wizard = wizardFor(input);
@@ -49,7 +66,7 @@ class ClusterConfigWizardTest {
                   .onSuccess(answers -> {
                       assertThat(answers.clusterName()).isEqualTo("my-cluster");
                       assertThat(answers.target()).isEqualTo(SourceType.DOCKER);
-                      assertThat(answers.topology().core()).isEqualTo(3);
+                      assertThat(answers.topology().core()).isEqualTo(5);
                       assertThat(answers.topology().worker()).isEqualTo(0);
                       assertThat(answers.database().isEmpty()).isTrue();
                       assertThat(answers.tls()).isInstanceOf(TlsAnswers.Skipped.class);
@@ -71,7 +88,8 @@ class ClusterConfigWizardTest {
                         "cpx32\n" +         // instance type: no default — must be typed
                         "\n" +              // credential env var: default HCLOUD_TOKEN
                         "~/.ssh/id_ed25519.pub\n" + // SSH public key: required for cloud
-                        "3\n" +             // total node count
+                        "5\n" +             // core (consensus) node count
+                        "0\n" +             // worker node count
                         "n\n" +             // configure database? no
                         "\n" +              // firewall preset: default STANDARD
                         "203.0.113.0/24\n" + // admin CIDR: STANDARD needs one too
@@ -94,7 +112,7 @@ class ClusterConfigWizardTest {
                           assertThat(cloud.sshPublicKeyPath()).isEqualTo("~/.ssh/id_ed25519.pub");
                       });
                       assertThat(answers.adminCidr()).isEqualTo(Option.some("203.0.113.0/24"));
-                      assertThat(answers.topology().core()).isEqualTo(3);
+                      assertThat(answers.topology().core()).isEqualTo(5);
                       assertThat(answers.firewallPreset()).isEqualTo(FirewallPreset.STANDARD);
                       assertThat(answers.tls()).isInstanceOf(TlsAnswers.AutoGenerate.class);
                       assertThat(answers.secret()).isInstanceOf(SecretAnswers.AutoGenerate.class);
@@ -126,7 +144,8 @@ class ClusterConfigWizardTest {
                         "cpx32\n" +         // instance type: the actual answer
                         "\n" +              // credential env var: default HCLOUD_TOKEN
                         "~/.ssh/id_ed25519.pub\n" + // SSH public key
-                        "3\n" +             // total node count
+                        "5\n" +             // core (consensus) node count
+                        "0\n" +             // worker node count
                         "n\n" +             // configure database? no
                         "\n" +              // firewall preset: default STANDARD
                         "203.0.113.0/24\n" + // admin CIDR
@@ -147,7 +166,7 @@ class ClusterConfigWizardTest {
         /// written into `instance_type` and reach the provider verbatim.
         @Test
         void run_cloudBlankInstanceType_reprompts_andAcceptsTheNextAnswer() {
-            var input = "prod-eu\n1\n\nhel1\n   \ncpx32\n\n~/.ssh/id_ed25519.pub\n3\nn\n\n203.0.113.0/24\n\n\n\n";
+            var input = "prod-eu\n1\n\nhel1\n   \ncpx32\n\n~/.ssh/id_ed25519.pub\n5\n0\nn\n\n203.0.113.0/24\n\n\n\n";
             var wizard = wizardFor(input);
 
             wizard.run()
@@ -184,7 +203,7 @@ class ClusterConfigWizardTest {
             var input = "prod-eu\n1\n\n" +   // name, CLOUD, default provider
                         "\n" +                 // region: EMPTY -> rejected, re-prompts
                         "nbg1\n" +             // region: the actual answer
-                        "cpx32\n\n~/.ssh/id_ed25519.pub\n3\nn\n\n203.0.113.0/24\n\n\n\n";
+                        "cpx32\n\n~/.ssh/id_ed25519.pub\n5\n0\nn\n\n203.0.113.0/24\n\n\n\n";
             var wizard = wizardFor(input);
 
             wizard.run()
@@ -215,7 +234,7 @@ class ClusterConfigWizardTest {
 
         @Test
         void run_cloudStandardPreset_collectsAdminCidr_andEmitsAdminScopedRules() {
-            var input = "prod-eu\n1\n\nhel1\ncpx32\n\n~/.ssh/id_ed25519.pub\n3\nn\n" +
+            var input = "prod-eu\n1\n\nhel1\ncpx32\n\n~/.ssh/id_ed25519.pub\n5\n0\nn\n" +
                         "\n" +                  // firewall preset: default STANDARD
                         "203.0.113.0/24\n" +    // admin CIDR — STANDARD must ask
                         "\n\n\n";
@@ -229,7 +248,7 @@ class ClusterConfigWizardTest {
         /// An empty answer re-prompts rather than falling through to "no admin rules".
         @Test
         void run_cloudStandardEmptyAdminCidr_reprompts() {
-            var input = "prod-eu\n1\n\nhel1\ncpx32\n\n~/.ssh/id_ed25519.pub\n3\nn\n\n" +
+            var input = "prod-eu\n1\n\nhel1\ncpx32\n\n~/.ssh/id_ed25519.pub\n5\n0\nn\n\n" +
                         "\n" +                  // admin CIDR: EMPTY -> rejected
                         "198.51.100.0/24\n" +   // the actual answer
                         "\n\n\n";
@@ -252,7 +271,7 @@ class ClusterConfigWizardTest {
             var input = "prod-eu\n1\n\nhel1\ncpx32\n\n" +
                         "\n" +                          // SSH public key: EMPTY -> rejected
                         "/tmp/example_key.pub\n" +      // the actual answer
-                        "3\nn\n\n203.0.113.0/24\n\n\n\n";
+                        "5\n0\nn\n\n203.0.113.0/24\n\n\n\n";
             var wizard = wizardFor(input);
 
             wizard.run()
@@ -312,7 +331,7 @@ class ClusterConfigWizardTest {
         /// this class exists to enforce. The gap the first EOF fix left.
         @Test
         void run_dockerInputEndsBeforeReview_failsCleanly_insteadOfGeneratingFromDefaults() {
-            var wizard = wizardFor("c\n4\n3\n");
+            var wizard = wizardFor("c\n4\n5\n0\n");
 
             wizard.run()
                   .onSuccess(a -> fail("Expected failure but generated a config from defaults: " + a))
@@ -338,7 +357,7 @@ class ClusterConfigWizardTest {
         /// not notice.
         @Test
         void run_dockerCompleteInput_stillSucceeds() {
-            var wizard = wizardFor("my-cluster\n\n3\nn\n\n");
+            var wizard = wizardFor("my-cluster\n\n5\n0\nn\n\n");
 
             wizard.run()
                   .onFailure(c -> fail("Expected success but got " + c.message()))
@@ -376,5 +395,97 @@ class ClusterConfigWizardTest {
                   .onSuccess(a -> fail("Expected failure but got " + a))
                   .onFailure(cause -> assertThat(cause).isInstanceOf(ClusterInitError.Aborted.class));
         }
+    }
+
+    /// #1019 — the wizard is the other entry point to `CoreWorkerSplit`, and round 1 left both of its
+    /// topology answers unpinned. The round-1 review's M4 (replace the worker answer with 0) and the
+    /// N2 ordering defect both survived the whole module's suite.
+    @Nested
+    class Topology {
+
+        /// M4. Every pre-existing wizard fixture answers the worker question with `0`, which is also
+        /// what a wizard that IGNORED the answer would produce — so the suite could not tell the two
+        /// apart. A non-zero worker count is the discriminator.
+        @Test
+        void run_workerAnswer_reachesTheCollectedTopology() {
+            var input = "my-cluster\n" +   // cluster name
+                        "\n" +             // deployment target: default = DOCKER
+                        "7\n" +            // core (consensus) node count
+                        "3\n" +            // worker node count — NOT zero, on purpose
+                        "n\n" +            // configure database? no
+                        "\n";              // generate config? default yes
+
+            wizardFor(input).run()
+                            .onFailure(c -> fail("Expected success but got " + c.message()))
+                            .onSuccess(answers -> {
+                                assertThat(answers.topology().core()).isEqualTo(7);
+                                assertThat(answers.topology().worker()).isEqualTo(3);
+                            });
+        }
+
+        /// N2 — the core answer is refused BEFORE the worker question is asked.
+        ///
+        /// The input is the discriminator and needs no output inspection to work: `3` is refused, so a
+        /// wizard that validates first re-asks for the core and consumes `7` as the core, `2` as the
+        /// worker, and completes. A wizard that asks for workers first consumes `7` as a WORKER count,
+        /// fails the split, and the remaining answers desync — it cannot reach a 7+2 topology from this
+        /// input at all. The prompt-count assertion then says WHY, rather than leaving a reader to infer
+        /// it from a desync.
+        @Test
+        void run_coreBelowMinimum_reAsksForCoreWithoutAskingForWorkers() {
+            var input = "my-cluster\n" +   // cluster name
+                        "\n" +             // deployment target: default = DOCKER
+                        "3\n" +            // core: below the supported minimum — must be refused HERE
+                        "7\n" +            // core, corrected
+                        "2\n" +            // worker
+                        "n\n" +            // configure database? no
+                        "\n";              // generate config? default yes
+            var session = sessionFor(input);
+
+            session.wizard()
+                   .run()
+                   .onFailure(c -> fail("Expected success but got " + c.message()))
+                   .onSuccess(answers -> {
+                       assertThat(answers.topology().core()).isEqualTo(7);
+                       assertThat(answers.topology().worker()).isEqualTo(2);
+                   });
+
+            // Asked for the core twice (rejected, then corrected) and for workers exactly once. Asking
+            // for workers twice is the defect: it means the rejected core was carried past this step.
+            assertThat(countOf(session.promptText(), "Core (consensus) node count")).isEqualTo(2);
+            assertThat(countOf(session.promptText(), "Worker node count")).isEqualTo(1);
+        }
+
+        /// The maximum is reachable from the wizard too, not only from the flags.
+        @Test
+        void run_coreAboveMaximum_isRefusedAndReAsked() {
+            var input = "my-cluster\n" +
+                        "\n" +
+                        "11\n" +           // above the consensus maximum
+                        "9\n" +            // corrected to the maximum
+                        "0\n" +
+                        "n\n" +
+                        "\n";
+            var session = sessionFor(input);
+
+            session.wizard()
+                   .run()
+                   .onFailure(c -> fail("Expected success but got " + c.message()))
+                   .onSuccess(answers -> assertThat(answers.topology().core()).isEqualTo(9));
+
+            assertThat(countOf(session.promptText(), "Worker node count")).isEqualTo(1);
+        }
+    }
+
+    private static int countOf(String haystack, String needle) {
+        var count = 0;
+        var index = haystack.indexOf(needle);
+
+        while (index >= 0) {
+            count++;
+            index = haystack.indexOf(needle, index + needle.length());
+        }
+
+        return count;
     }
 }

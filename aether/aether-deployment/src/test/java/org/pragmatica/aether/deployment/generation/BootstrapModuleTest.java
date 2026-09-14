@@ -149,6 +149,31 @@ class BootstrapModuleTest {
             assertThat(seeded.coreCount()).isEqualTo(3);
         }
 
+        /// #1019 — pins `SEED_CORE_MIN`, which nothing else reaches. It is the floor applied to the
+        /// `coreMin` written into the seeded `ClusterConfigValue`
+        /// (`Math.max(SEED_CORE_MIN, baseline.coreMin())`), and that value is what a later scale-down
+        /// is checked against.
+        ///
+        /// The existing coreMin assertion uses a baseline of 5, where `max(3, 5)` and `max(5, 5)` are
+        /// both 5 — so raising the constant leaves it green. A baseline BELOW the floor is the only
+        /// shape that can discriminate: a mutation probe found this unpinned and this test is the fix.
+        @Test
+        void seedCoreMin_isFlooredAtTheSeedMinimum_whenBaselineIsLower() {
+            var baseline = new BootstrapModule.ClusterConfigBaseline(/* coreCount */ 3, /* coreMin */ 1, /* coreMax */ 0);
+            var fixture = newFixture(baseline);
+            fixture.module.onLeaderGained();
+
+            var clusterConfigPuts = collectPuts(fixture.cluster.batches).stream()
+                                                                          .filter(p -> p.key() instanceof ClusterConfigKey)
+                                                                          .toList();
+            assertThat(clusterConfigPuts).hasSize(1);
+            var seeded = (ClusterConfigValue) clusterConfigPuts.getFirst().value();
+            assertThat(seeded.coreMin())
+                    .as("a baseline coreMin below the seed floor is raised to it, and the floor is the "
+                       + "STRUCTURAL 3 rather than the authoring minimum of 5")
+                    .isEqualTo(3);
+        }
+
         @Test
         void seedClusterName_matchesEnvClusterName() {
             // The seed now sources clusterName from AETHER_CLUSTER_NAME so KV and the
