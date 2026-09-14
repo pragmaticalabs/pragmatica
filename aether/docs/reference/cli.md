@@ -2505,10 +2505,15 @@ a valid scale with an unsupported action is rejected in full; the scale is not a
 Recovery: split the file so scale changes go through plain `apply` and everything else is handled
 separately, or wait for the change to be supported.
 
-**The terraform-style plan (`[+]`/`[~]`/`[-]`) and wave-based rollout (additions → modifications →
-removals, respecting `maxUnavailable` for core nodes) is the `--resume`/`--rollback` path**
-(`ApplyOrchestrator` → `WaveExecutor`), not plain `apply` — reachable only by first halting an
-apply and then resuming or rolling it back.
+**Non-scale changes — sources, roles, runtime, source fields, cluster-level fields — are not
+applicable through `apply` in rc4.** `apply` performs scale-only plans via the leader (a fenced
+desired-count write that the leader's reconciler actuates); a rollout of the other changes needs a
+new cluster. There is no first-time path to a wave rollout: the terraform-style plan and the
+wave-based executor (`ApplyOrchestrator` → `WaveExecutor`, actuating from the operator's machine
+through the cloud provider) are reachable only through `--resume`/`--rollback` after an apply has
+halted, and they are deliberately not wired to plain `apply` — a client-side rollout would be a
+second actuation authority over the same fleet next to the leader's reconciler (#686; the
+server-side wave design is a separate ticket).
 
 ### `aether cluster rotate-key`
 
