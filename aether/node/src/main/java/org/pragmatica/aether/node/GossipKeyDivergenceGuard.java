@@ -63,7 +63,6 @@ public final class GossipKeyDivergenceGuard implements GossipEncryptor {
     private static final Logger log = LoggerFactory.getLogger(GossipKeyDivergenceGuard.class);
     /// Unknown-keyId datagrams tolerated before the gate fires, given zero successful decrypts.
     static final int UNKNOWN_KEY_THRESHOLD = 8;
-
     /// The gate is ARMED only inside `[ARMING_DELAY, ARMING_WINDOW_END]` after construction, and both
     /// bounds close a hole that the threshold alone does not.
     ///
@@ -111,8 +110,8 @@ public final class GossipKeyDivergenceGuard implements GossipEncryptor {
     /// Clock seam: monotonic nanos, so the arming window cannot be moved by a wall-clock adjustment,
     /// and so tests can cross a 60-second boundary without sleeping through it.
     static GossipKeyDivergenceGuard gossipKeyDivergenceGuard(GossipEncryptor delegate,
-                                                              Runnable onDivergence,
-                                                              LongSupplier nanoClock) {
+                                                             Runnable onDivergence,
+                                                             LongSupplier nanoClock) {
         return new GossipKeyDivergenceGuard(delegate, onDivergence, nanoClock);
     }
 
