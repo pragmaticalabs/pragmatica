@@ -5,21 +5,29 @@
 package org.pragmatica.aether.ember;
 
 import java.io.IOException;
-import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.nio.channels.DatagramChannel;
+import java.util.List;
+import java.util.stream.IntStream;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
+
 
 /// #1070 review B1 — pins [EmberCluster#currentLeader] to the node whose own `isLeader()` holds.
 ///
@@ -35,7 +43,9 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// have not changed across releases; verified on JDK 25). That is a fixture precondition, not an assumption
 /// — the test asserts it, and asserts the newborn holds no leader view, before it asserts anything about the
 /// code under test. If either control fails the test says so instead of passing on a fixture that no longer
-/// reaches the defect. Reverting `currentLeader()` to `findFirst()` + [AetherNode#leader] turns the pin red.
+/// reaches the defect; the second control is time-sensitive (a join faster than the assertions would trip
+/// it), and it can only fail in the red direction. Reverting `currentLeader()` to `findFirst()` +
+/// [AetherNode#leader] turns the pin red.
 class EmberClusterCurrentLeaderTest {
     private static final int CLUSTER_SIZE = 3;
     /// `EmberCluster.start` builds a slot pool of `2 * clusterSize`; the newborn takes the fourth slot.
@@ -51,116 +61,115 @@ class EmberClusterCurrentLeaderTest {
     private static final String NEWBORN_ID = PREFIX + "-" + (CLUSTER_SIZE + 1);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
-    private static final long LEADER_ELECTION_BUDGET_MS = 60_000L;
     private static final long POLL_INTERVAL_MS = 250L;
+    private static final int LEADER_ELECTION_POLLS = 240;
 
-    private EmberCluster cluster;
+    private Option<EmberCluster> cluster = none();
 
     @AfterEach
     void tearDown() {
-        if (cluster != null) {
-            assertThat(cluster.stop().await(STOP_BOUND).fold(Cause::message, _ -> "stopped"))
-                .describedAs("cluster stop must complete within %s", STOP_BOUND)
-                .isEqualTo("stopped");
-        }
+        cluster.onPresent(EmberClusterCurrentLeaderTest::stopWithinBound);
+    }
+
+    private static void stopWithinBound(EmberCluster running) {
+        var outcome = running.stop().await(STOP_BOUND).fold(Cause::message, _ -> "stopped");
+
+        assertThat(outcome).describedAs("cluster stop must complete within %s", STOP_BOUND).isEqualTo("stopped");
     }
 
     @Test
     @Timeout(300)
     void currentLeader_isTheNodeClaimingLeadership_notTheFirstMapEntry() {
         var basePort = freeBasePort();
+        var running = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, PREFIX);
 
-        cluster = emberCluster(CLUSTER_SIZE,
-                               basePort,
-                               basePort + MGMT_OFFSET,
-                               basePort + APP_HTTP_OFFSET,
-                               PREFIX);
+        cluster = some(running);
+        assertThat(running.start().await(START_BOUND).fold(Cause::message, _ -> "started")).describedAs("a three-node cluster on a verified-free port block at %d must form within %s",
+                                                                                                        basePort,
+                                                                                                        START_BOUND)
+                  .isEqualTo("started");
+        var leaderId = awaitLeader(running).or("none");
 
-        assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started"))
-            .describedAs("a three-node cluster on a verified-free port block at %d must form within %s",
-                         basePort,
-                         START_BOUND)
-            .isEqualTo("started");
-
-        var leaderBefore = awaitLeader();
-
-        assertThat(leaderBefore.isPresent())
-            .describedAs("a formed cluster must elect a leader within %dms; without one there is nothing to pin",
-                         LEADER_ELECTION_BUDGET_MS)
-            .isTrue();
-
-        var leaderId = leaderBefore.unwrap();
-
-        assertThat(cluster.allNodes().stream().filter(AetherNode::isLeader).map(node -> node.self().id()).toList())
-            .describedAs("currentLeader() must name the one running node whose own isLeader() holds")
-            .containsExactly(leaderId);
-
+        assertThat(leaderId).describedAs("a formed cluster must elect a leader within %d polls of %dms; without one there is nothing to pin",
+                                         LEADER_ELECTION_POLLS,
+                                         POLL_INTERVAL_MS)
+                  .isNotEqualTo("none");
+        assertThat(claimants(running)).describedAs("currentLeader() must name the one running node whose own isLeader() holds")
+                  .containsExactly(leaderId);
         // Registers the newborn in the running-node map synchronously, BEFORE its start() completes.
-        var joining = cluster.addNode();
-
+        var joining = running.addNode();
         // Fixture control 1: the map now iterates the newborn first — the entry the old findFirst() read.
-        assertThat(cluster.allNodes().getFirst().self().id())
-            .describedAs("FIXTURE PRECONDITION: the newborn must be the first ConcurrentHashMap entry, or this "
-                         + "test cannot reach the defect it pins (pick a prefix for which it is)")
-            .isEqualTo(NEWBORN_ID);
-
+        assertThat(running.allNodes().getFirst().self().id()).describedAs("FIXTURE PRECONDITION: the newborn must be the first ConcurrentHashMap entry, or this "
+                                                                         + "test cannot reach the defect it pins (pick a prefix for which it is)")
+                  .isEqualTo(NEWBORN_ID);
         // Fixture control 2: the newborn has no leader view yet, so the old code answered "none" from it.
-        var newborn = cluster.getNode(NEWBORN_ID);
-
-        assertThat(newborn.flatMap(AetherNode::leader).isEmpty())
-            .describedAs("FIXTURE PRECONDITION: the newborn must hold no leader view at this instant; if it "
-                         + "already learned the leader the old findFirst() would have answered correctly too")
-            .isTrue();
-
+        assertThat(running.getNode(NEWBORN_ID).flatMap(AetherNode::leader).isEmpty()).describedAs("FIXTURE PRECONDITION: the newborn must hold no leader view at this instant; if it "
+                                                                                                 + "already learned the leader the old findFirst() would have answered correctly too")
+                  .isTrue();
         // The pin: every leader accessor still answers from the node that claims leadership.
-        assertThat(cluster.currentLeader())
-            .describedAs("currentLeader() must still name %s while the newborn is the first map entry", leaderId)
-            .isEqualTo(Option.some(leaderId));
-        assertThat(cluster.status().leaderId())
-            .describedAs("status().leaderId() derives from currentLeader()")
-            .isEqualTo(leaderId);
-        assertThat(cluster.status()
-                          .nodes()
-                          .stream()
-                          .filter(EmberCluster.NodeStatus::isLeader)
-                          .map(EmberCluster.NodeStatus::id)
-                          .toList())
-            .describedAs("status() must flag exactly the claiming node as leader")
-            .containsExactly(leaderId);
-        assertThat(cluster.getLeaderManagementPort())
-            .describedAs("getLeaderManagementPort() must resolve the claiming node's management port")
-            .isEqualTo(Option.some(MGMT_OFFSET + leaderClusterPort(leaderId)));
+        assertThat(running.currentLeader()).describedAs("currentLeader() must still name %s while the newborn is the first map entry",
+                                                        leaderId)
+                  .isEqualTo(some(leaderId));
+        assertThat(running.status().leaderId()).describedAs("status().leaderId() derives from currentLeader()")
+                  .isEqualTo(leaderId);
+        assertThat(flaggedLeaders(running)).describedAs("status() must flag exactly the claiming node as leader")
+                  .containsExactly(leaderId);
+        assertThat(running.getLeaderManagementPort()).describedAs("getLeaderManagementPort() must resolve the claiming node's management port")
+                  .isEqualTo(some(MGMT_OFFSET + leaderClusterPort(running, leaderId)));
+        assertThat(joining.await(START_BOUND).fold(Cause::message, NodeId::id)).describedAs("the newborn must join within %s so teardown stops a formed cluster",
+                                                                                            START_BOUND)
+                  .isEqualTo(NEWBORN_ID);
+    }
 
-        assertThat(joining.await(START_BOUND).fold(Cause::message, id -> id.id()))
-            .describedAs("the newborn must join within %s so teardown stops a formed cluster", START_BOUND)
-            .isEqualTo(NEWBORN_ID);
+    private static List<String> claimants(EmberCluster running) {
+        return running.allNodes()
+                      .stream()
+                      .filter(AetherNode::isLeader)
+                      .map(EmberClusterCurrentLeaderTest::selfId)
+                      .toList();
+    }
+
+    private static String selfId(AetherNode node) {
+        return node.self()
+                   .id();
+    }
+
+    private static List<String> flaggedLeaders(EmberCluster running) {
+        var nodes = running.status().nodes();
+
+        return nodes.stream()
+                    .filter(EmberCluster.NodeStatus::isLeader)
+                    .map(EmberCluster.NodeStatus::id)
+                    .toList();
     }
 
     /// The leader's cluster port; the management port is that plus [#MGMT_OFFSET] by construction of the fixture.
-    private int leaderClusterPort(String leaderId) {
-        return cluster.getNodeInfos()
-                      .stream()
-                      .filter(info -> info.id().id().equals(leaderId))
-                      .findFirst()
-                      .map(info -> info.address().port())
-                      .orElse(-1);
+    private static int leaderClusterPort(EmberCluster running, String leaderId) {
+        var info = running.getNodeInfos()
+                          .stream()
+                          .filter(candidate -> candidate.id()
+                                                        .id()
+                                                        .equals(leaderId))
+                          .findFirst();
+
+        return info.map(found -> found.address()
+                                      .port())
+                   .orElse(-1);
     }
 
     /// Leadership is not established at the instant `start()` returns (see
     /// `EmberBootstrapAdminKeyAuthTest`), so this polls rather than asserting immediately.
-    private Option<String> awaitLeader() {
-        var deadline = System.currentTimeMillis() + LEADER_ELECTION_BUDGET_MS;
+    private static Option<String> awaitLeader(EmberCluster running) {
+        return IntStream.range(0, LEADER_ELECTION_POLLS)
+                        .mapToObj(_ -> pollLeader(running))
+                        .filter(Option::isPresent)
+                        .findFirst()
+                        .orElse(none());
+    }
 
-        while (System.currentTimeMillis() < deadline) {
-            var leader = cluster.currentLeader();
-
-            if (leader.isPresent()) {
-                return leader;
-            }
-            sleepQuietly();
-        }
-
-        return cluster.currentLeader();
+    private static Option<String> pollLeader(EmberCluster running) {
+        return running.currentLeader()
+                      .onEmpty(EmberClusterCurrentLeaderTest::sleepQuietly);
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -176,32 +185,29 @@ class EmberClusterCurrentLeaderTest {
     /// management ports and app-HTTP ports — binds free right now. Same helper and rationale as
     /// `EmberClusterObservedNodeStateTest`, on a disjoint candidate range.
     private static int freeBasePort() {
-        for (int base = FIRST_CANDIDATE_BASE; base <= LAST_CANDIDATE_BASE; base += CANDIDATE_STEP) {
-            if (blockIsFree(base)) {
-                return base;
-            }
-        }
-        throw new AssertionError("no free block of " + SLOTS + " consecutive ports found between "
-                                 + FIRST_CANDIDATE_BASE + " and " + LAST_CANDIDATE_BASE
-                                 + "; this box is too busy to run a cluster test");
+        return IntStream.iterate(FIRST_CANDIDATE_BASE,
+                                 base -> base <= LAST_CANDIDATE_BASE,
+                                 base -> base + CANDIDATE_STEP)
+                        .filter(EmberClusterCurrentLeaderTest::blockIsFree)
+                        .findFirst()
+                        .orElseGet(() -> fail("no free block of " + SLOTS
+                                             + " consecutive ports found between " + FIRST_CANDIDATE_BASE
+                                             + " and " + LAST_CANDIDATE_BASE
+                                             + "; this box is too busy to run a cluster test"));
     }
 
     private static boolean blockIsFree(int base) {
-        for (int slot = 0; slot < SLOTS; slot++) {
-            if (!udpFree(base + slot)
-                || !tcpFree(base + slot)
-                || !tcpFree(base + MGMT_OFFSET + slot)
-                || !tcpFree(base + APP_HTTP_OFFSET + slot)) {
-                return false;
-            }
-        }
-        return true;
+        return IntStream.range(0, SLOTS).allMatch(slot -> udpFree(base + slot)
+                                                          && tcpFree(base + slot)
+                                                          && tcpFree(base + MGMT_OFFSET + slot)
+                                                          && tcpFree(base + APP_HTTP_OFFSET + slot));
     }
 
     private static boolean tcpFree(int port) {
         try (var socket = new ServerSocket()) {
             socket.setReuseAddress(false);
             socket.bind(loopback(port));
+
             return true;
         } catch (IOException e) {
             return false;
@@ -209,9 +215,10 @@ class EmberClusterCurrentLeaderTest {
     }
 
     private static boolean udpFree(int port) {
-        try (var socket = new DatagramSocket(null)) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
+        try (var channel = DatagramChannel.open()) {
+            channel.socket().setReuseAddress(false);
+            channel.bind(loopback(port));
+
             return true;
         } catch (IOException e) {
             return false;

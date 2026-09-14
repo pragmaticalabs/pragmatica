@@ -30,5 +30,25 @@
   both fail "counted 7 cores on scale-7 … the node claiming leadership (scale-1) counts 5"; with that guard also removed
   the ScaleUp probe passes 279 ms after addNode() with leader=none, which is the pass the head shipped]`. With the leader
   read, 5→7 completes on the leader's FSM in 17.2–18.1 s in-JVM (n=2) and the churn's 7→5 down-leg is accepted (HTTP 200).
+- **The churn probe's 7→5 leg was then accepted at the DEPARTING edge** (~0.5 s after the POST): `MembershipFsm` prunes a
+  drainer from `coreCountedMembers()` the instant `drainNode` is requested, before its departure push has moved a chunk, and
+  the count was read on the leader — itself a drain victim. A #427 regression would have stayed green. The down-leg is now
+  accepted only at the terminal edge (both victims stopped and removed by `EmberCluster.handleSelfDrain`, a surviving leader
+  counting exactly the survivor set, every victim `Dead` in its view, nothing `Departing`), with the survival read taken from
+  that named survivor `[verified: with the terminal clauses removed the tripwire `requireTerminalOnSurvivor` fails at 511 ms —
+  "accepted at the DEPARTING edge … churn-1 still sees departing=[churn-2, churn-1]"]`.
+- **That terminal edge is unreachable today (#1089): the reconciler drains the LEADER and the DRAIN command never reaches it.**
+  `LeaderReconciler.selectDrainVictims` does not exclude the leader (in Ember no id is ephemeral, the slice owners are
+  excluded and the added nodes are inside the drain-safety grace, so the reversed-id mature seeds — the leader among them —
+  are chosen), and the command is delivered only on the leader's broadcast `ClusterSyncPing`, which
+  `ClusterSyncState.dispatchPing` never sends to `self`. The leader never runs its `DrainProcedure`, stays a member, keeps
+  leadership, prunes itself from its own count; the CTM's 60 s grace-terminate is the only backstop — ungraceful, no departure
+  push, the #427 loss mode — and unsupported in Ember. So the churn leg ships as a tripwire until #1089:
+  `leaderInDrainSet_neverDrains_tripwireUntil1089` is ENABLED and asserts that behaviour precisely (its failure message says
+  "#1089 landed — delete me and enable the terminal-edge probe below"), and the real probe
+  `seededArtifact_survivesManagedFiveToSevenToFiveChurn` is `@Disabled("#1089")`. The control is enabled and the real one
+  disabled because, until #1089, the real one would fail for the product reason rather than pass vacuously — a known-red
+  probe is one readers learn to ignore, while an enabled tripwire guarantees it is re-enabled. `ScaleUpFiveToSevenProbeTest`
+  is unaffected and stays strict.
 - `readConfigVersion` returned 0 on a failed GET, which the route treats as the CAS-bypass sentinel
   (`checkVersionAsync`); both probes now refuse to POST a fencing version below 1.
