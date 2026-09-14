@@ -245,9 +245,10 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         // #198 §7: compose the routes ONCE for this node's detection mode and feed the SAME
         // composed paths to the wire route-table extractor that the SliceRouter dispatches over,
         // so both consumers agree on the exposed paths (path mode `/v{N}/` or header mode bare).
-        var routes = factory instanceof RouteSource routeSource
-                     ? routeMetadataExtractor.extract(RouteMounting.compose(routeSource, mountMode), artifact.asString())
-                     : List.<HttpRouteDefinition>of();
+        List<HttpRouteDefinition> routes = factory instanceof RouteSource routeSource
+                                           ? routeMetadataExtractor.extract(RouteMounting.compose(routeSource, mountMode),
+                                                                            artifact.asString())
+                                           : List.of();
         // #882: a factory generated before the #763 contract has every no-[security] route
         // baked in as PUBLIC; refuse it here, which fails the activation chain, rather than let
         // the route table carry an exposure the runtime upgrade could never have closed. Decided
