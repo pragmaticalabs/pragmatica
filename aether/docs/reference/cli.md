@@ -2449,6 +2449,16 @@ aether cluster destroy --cluster=my-cluster --yes
 > addressable while its VMs may still be billing. Just re-run the command. From a repo
 > checkout, `tools/cloud-reaper.sh --cluster <name>` (dry-run; add `--destroy` to delete)
 > is the label-driven safety net that finds resources no local state knows about.
+>
+> **The exit code is a retry signal (#587).** Non-zero means the registry entry was **kept** and a
+> re-run has work to do — and if the VMs were already deleted when it failed (the registry save
+> after cleanup), that re-run needs `--force-undrained`, because enumeration finds no nodes. When
+> cloud cleanup completes, `destroy` exits `0` even if some drains or shutdowns failed first: the
+> VMs are gone, the entry is removed, and a retry would find nothing — the failures are reported by
+> node with their reason on stderr (`Warning: 2 of 3 drain operations failed (core-2: refused with
+> HTTP 409; core-3: timed out after 120s waiting for DECOMMISSIONED) … nothing is left to retry`).
+> The drain phase prints each node's start and outcome as it happens. Draining a whole cluster necessarily hits the disruption budget below the quorum
+> floor; that refusal is tracked as #1032 and is not overridden by `destroy`.
 
 ### `aether cluster apply`
 
