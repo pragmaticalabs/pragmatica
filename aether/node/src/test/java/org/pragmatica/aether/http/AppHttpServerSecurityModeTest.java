@@ -140,6 +140,70 @@ class AppHttpServerSecurityModeTest {
         }
     }
 
+    /// #665: a server built from the bare builder -- no mode named, no keys -- must REFUSE a
+    /// route whose policy is unspecified. Before the flip the builder yielded `NONE`, whose global
+    /// policy is `publicRoute()`, so this request was served. `/health` stays open in every mode.
+    @Nested
+    class BareBuilderIsFailClosedTests {
+        private static final int BARE_PORT = 19098;
+        private static AppHttpServer server;
+        private static HttpClient httpClient;
+
+        @BeforeAll
+        static void startServer() {
+            httpClient = HttpClient.newBuilder()
+                                   .connectTimeout(Duration.ofSeconds(5))
+                                   .build();
+            var config = AppHttpConfig.appHttpConfig(BARE_PORT);
+            server = AppHttpServer.appHttpServer(config,
+                                                 ForwardingTimeouts.forwardingTimeouts(),
+                                                 SELF_NODE,
+                                                 HttpRouteRegistry.httpRouteRegistry(),
+                                                 Option.none(),
+                                                 Option.none(),
+                                                 Option.none(),
+                                                 Option.none(),
+                                                 Option.none(),
+                                                 Option.none(),
+                                                 Option.none(),
+                                                 Option.none(),
+                                                 Option.none());
+            server.start().await();
+        }
+
+        @AfterAll
+        static void stopServer() {
+            server.stop().await();
+        }
+
+        @Test
+        void bareBuilder_refusesUnspecifiedPolicyRoute_withoutCredentials() throws Exception {
+            var request = HttpRequest.newBuilder()
+                                     .uri(URI.create("http://localhost:" + BARE_PORT + "/api/anything"))
+                                     .GET()
+                                     .build();
+
+            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            assertThat(response.statusCode())
+                    .as("#665: no mode named and no key configured must be API_KEY with nothing able to "
+                        + "authenticate -- 401, never a served route")
+                    .isEqualTo(401);
+        }
+
+        @Test
+        void bareBuilder_stillServesHealth() throws Exception {
+            var request = HttpRequest.newBuilder()
+                                     .uri(URI.create("http://localhost:" + BARE_PORT + "/health"))
+                                     .GET()
+                                     .build();
+
+            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            assertThat(response.statusCode()).isEqualTo(200);
+        }
+    }
+
     @Nested
     class NoSecurityServerTests {
         private static final int OPEN_PORT = 19092;
