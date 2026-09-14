@@ -1,6 +1,9 @@
 package org.pragmatica.storage;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Map;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Cause;
@@ -131,12 +134,15 @@ public interface StorageInstance {
 
 final class DefaultStorageInstance implements StorageInstance {
     private static final Logger log = LoggerFactory.getLogger(DefaultStorageInstance.class);
+    private static final long PROMOTION_FAILURE_WARN_EVERY = 1_000;
 
     private final String name;
     private final List<StorageTier> tiers;
     private final MetadataStore metadataStore;
     private final WritePolicy writePolicy;
     private final Option<WriteBehindQueue> writeBehindQueue;
+    /// Non-capacity promotion failures per cache tier, for the WARN-once-then-every-N policy (#910).
+    private final Map<TierLevel, AtomicLong> promotionFailures = new ConcurrentHashMap<>();
     private final SingleFlightCache readCache = SingleFlightCache.singleFlightCache();
 
     DefaultStorageInstance(String name, List<StorageTier> tiers, MetadataStore metadataStore, WritePolicy writePolicy) {
@@ -344,23 +350,63 @@ final class DefaultStorageInstance implements StorageInstance {
         }
 
         var tier = cacheTiers.get(index);
+
         // The durable write has already succeeded by the time a cache tier is asked; a cache-tier
         // failure is recovered, not propagated, or the caller is told its durably stored data
         // failed (#910). The old chain logged "skipped" and then flatMapped the failure through.
         return tier.put(id, content)
                    .onSuccess(_ -> recordTierPresence(id,
                                                       tier.level()))
-                   .recover(cause -> promotionFailed(tier, id, cause))
+                   .fold(result -> result.fold(cause -> discardFailedPromotion(tier, id, cause),
+                                               Promise::success))
                    .flatMap(_ -> promoteToNextCacheTier(id, content, cacheTiers, index + 1));
     }
 
-    private static Unit promotionFailed(StorageTier tier, BlockId id, Cause cause) {
-        log.debug("Cache promotion to {} failed for {} (the block stays durable and is served from the durable tier): {}",
-                  tier.level(),
-                  id,
-                  cause.message());
+    /// A cache tier that failed MID-WRITE can hold a truncated copy, and the read waterfall stops
+    /// at the first tier that returns bytes — the corrupt copy would then fail every read with
+    /// `IntegrityError` while the durable copy sits unreachable behind it (review of #1095, B-1,
+    /// reproduced on a real `LocalDiskTier` under ENOSPC). So the failed promotion is followed by a
+    /// best-effort `delete` on that tier, itself absorbed, before the chain moves on.
+    private Promise<Unit> discardFailedPromotion(StorageTier tier, BlockId id, Cause cause) {
+        logPromotionFailure(tier, id, cause);
+
+        return tier.delete(id)
+                   .recover(deleteCause -> discardFailed(tier, id, deleteCause));
+    }
+
+    private static Unit discardFailed(StorageTier tier, BlockId id, Cause cause) {
+        log.warn("Cache tier {} could not discard the failed write of {}; a partial copy may remain and reads of it will fail their integrity check: {}",
+                 tier.level(),
+                 id,
+                 cause.message());
 
         return unit();
+    }
+
+    /// `TierFull` is steady state on a hot tier and logs at DEBUG (a per-put WARN there is the
+    /// #718 flood). Any OTHER cause means the tier is not working: the FIRST such failure per
+    /// tier logs at WARN, then every `PROMOTION_FAILURE_WARN_EVERY`th with the running count, the
+    /// rest at DEBUG — a dead cache tier is visible at INFO without flooding it (review of #1095,
+    /// SF-1).
+    private void logPromotionFailure(StorageTier tier, BlockId id, Cause cause) {
+        if (cause instanceof StorageError.TierFull) {
+            log.debug("Cache promotion to {} skipped for {}: tier full ({})", tier.level(), id, cause.message());
+
+            return;
+        }
+
+        var failures = promotionFailures.computeIfAbsent(tier.level(), _ -> new AtomicLong()).incrementAndGet();
+
+        if (failures == 1 || failures % PROMOTION_FAILURE_WARN_EVERY == 0) {
+            log.warn("Cache promotion to {} FAILED for {} (failure #{} on this tier; the block is durable and reads fall through to the durable tier; further failures at DEBUG, next WARN at #{}): {}",
+                     tier.level(),
+                     id,
+                     failures,
+                     failures + PROMOTION_FAILURE_WARN_EVERY - failures % PROMOTION_FAILURE_WARN_EVERY,
+                     cause.message());
+        } else {
+            log.debug("Cache promotion to {} failed for {} (failure #{}): {}", tier.level(), id, failures, cause.message());
+        }
     }
 
     /// Finalizes the record that [#handlePut]'s claim already created -- an UPDATE, never a re-create.

@@ -1,5 +1,6 @@
 package org.pragmatica.storage;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -90,7 +91,12 @@ public final class LocalDiskTier implements StorageTier {
                                         .promise();
         }
 
-        return Promise.lift(WRITE_ERROR, () -> writeBlock(id, content)).flatMap(Promise::resolved);
+        // A write that failed after reserveCapacity keeps no reservation: the tier would otherwise
+        // over-count by the whole block until restart (review of #1095, SF-2 — reproduced under a
+        // real ENOSPC). Released here, once, whatever stage failed; the partial file is writeBlock's.
+        return Promise.lift(WRITE_ERROR, () -> writeBlock(id, content))
+                      .flatMap(Promise::resolved)
+                      .onFailure(_ -> usedBytes.addAndGet(-content.length));
     }
 
     /// Atomic CAS capacity reservation — prevents TOCTOU race.
@@ -151,7 +157,24 @@ public final class LocalDiskTier implements StorageTier {
 
         return FileOps.createDirectories(path.getParent())
                       .flatMap(_ -> existingSize(path))
-                      .flatMap(previousSize -> FileOps.writeBytes(path, content).onSuccess(_ -> correctUsedBytes(previousSize)));
+                      .flatMap(previousSize -> FileOps.writeBytes(path, content)
+                                                      .onSuccess(_ -> correctUsedBytes(previousSize))
+                                                      .onFailure(_ -> discardFailedWrite(path, previousSize)));
+    }
+
+    /// `Files.write` is TRUNCATE_EXISTING with no temp-and-rename, so a write that fails mid-way
+    /// leaves a partial file that the read waterfall would serve and then fail on its integrity
+    /// check (review of #1095, B-1). Whatever regular file is at the path after the failure is
+    /// removed — it is either the truncated new content (never counted, only reserved) or what is
+    /// left of the previous copy (counted, and now gone either way), so `previousSize` leaves the
+    /// count exactly when a regular file was there to overwrite.
+    private void discardFailedWrite(Path path, long previousSize) {
+        if (!Files.isRegularFile(path)) {
+            return;
+        }
+
+        FileOps.delete(path).onFailure(cause -> log.warn("Partial block at {} could not be removed after a failed write: {}", path, cause.message()));
+        correctUsedBytes(previousSize);
     }
 
     private Result<Long> existingSize(Path path) {
