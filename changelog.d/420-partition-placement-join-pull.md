@@ -38,21 +38,60 @@
   DEPARTING→MEMBER `onNodeRecovered` re-add now run one anti-entropy round right after the ring
   update (`DHTAntiEntropy.synchronizeNow`, the same pull the cycle runs; no new state, no new wire
   message — `SystemCodecPinningTest` unchanged and green). Guarantee: **a joiner (or a recovered
-  node) is backfilled at join time or within one interval of it** — a refused join-time send
-  (`WriteOutcome` BackpressureRefused / ConnectionDead / NoPeerState, previously discarded silently
-  by the fire-and-forget `send`) is logged at WARN naming the peer and the outcome, and the next
-  scheduled round repeats the exchange. Per the owner's 2026-07-18 arm-B ruling this is not a new
+  node) is backfilled by the join-time round, and failing that the exchange is retried every
+  interval until a round completes** — the earlier "within one interval of it" held only for a
+  single refused send, and the sustained backpressure that refuses one can refuse the next. A
+  refused send (`WriteOutcome` BackpressureRefused / ConnectionDead / NoPeerState, previously
+  discarded silently by the fire-and-forget `send`) is logged at WARN naming the peer and the
+  outcome, and its correlation entry is dropped rather than left in `pendingDigests` — without that
+  the refusing condition added one entry per owned partition per peer per round with nothing to
+  remove them; an accepted-but-unanswered digest is expired at the start of the round one interval
+  later. Per the owner's 2026-07-18 arm-B ruling this is not a new
   migration mechanism; it is the existing one run when it is needed.
   [verified: `DHTChurnSurvivalTest#recoveredNode_pullsWhatItMissedWhilePruned` (red with the
   recovery trigger removed); `DHTAntiEntropySendOutcomeTest` — a BackpressureRefused transport
   yields one WARN per refused send naming `node-1`, the outcome and "next round"; an accepted send
-  logs nothing (red with the fire-and-forget send restored)]
+  logs nothing (red with the fire-and-forget send restored);
+  `#refusedDigestSend_leavesNoPendingCorrelation` and `#unansweredDigests_areExpiredByTheFollowingRound`]
   [verified: `DHTChurnSurvivalTest#joinerHoldsItsPartitions_beforeTheFirstPeriodicRound_
   soTwoCrashesInsideTheWindowKeepTheReplicaSetStocked` — after the join the responsible set holds
   3/3 copies and survives the crash of both pre-join holders that stayed in it; red at `2005ea7d2`,
   red with the trigger removed, and red with the trigger present but the old placement (the pull
   asked the wrong nodes); `#withoutTheJoinTimeRound_twoCrashesInsideTheWindowEmptyTheReplicaSet`
   pins the pre-fix shape (RF=3 claimed, 2 held)]
+- **A joiner asked for the whole keyspace, because on a PARTIAL ring it is a replica of every
+  partition.** `AetherNode` creates the DHT ring empty and `MembershipDeltaProjector.emitJoin` emits
+  one `NodeJoined` per member as the joiner's own FSM promotes it, so the joiner's ring grows one
+  node per event and every event fired a full round on a ring of 2, 3, … nodes — on which
+  `nodesFor(partition, effectiveRF)` returns the joiner for all 1,024 partitions. Nothing in this
+  module deletes an unowned copy, so everything such a round pulled stayed. **Ownership is now
+  settled by the node that HOLDS the data:** `DHTNode.handleMigrationDataRequest` returns an empty
+  response to a requester that is not a replica of that partition in the HOLDER's ring, and
+  `DHTAntiEntropy.handleDigestComparison` re-checks the local view when the digest response lands
+  rather than only when the request went out — so a replica is acquired only where the two views
+  agree. On a partial ring the joiner cannot refuse anything itself, which is why the refusal lives
+  at the holder. **What a joiner does when it cannot yet know whether it owns something: it asks,
+  and it WAITS for a holder to agree** — it never acquires-then-reconciles, because the only
+  reconciliation available would be deleting a copy against a possibly-partial ring, which can drop
+  the last one. A holder whose own ring is stale refuses a legitimate owner; that costs a delay,
+  never a copy, because the next round repeats the exchange. Rejected alternative: reconciling the
+  ring to the decision's `topology()` snapshot — it lags the DEPARTING prune that
+  `DHTTopologyListener.onNodeDeparting` deliberately runs AHEAD of `NodeRemoved` (seed-500 part 2),
+  so a later join's snapshot would re-add a node already halting.
+  [verified: `DHTChurnSurvivalTest#productionShapedJoin_pullsEveryPartitionItOwns_andNothingElse` —
+  the joiner's ring built the way `AetherNode` builds it (empty, filled by the events), 600 keys on
+  5 nodes RF=3: it holds every key it owns and 0 it does not; red at the parent commit]
+- **The survivor-side rebalance's placement is now pinned.** `DHTRebalancer.rebalancePartition`
+  reverting to `nodesFor("partition:" + partitionIndex, rf)` left the whole module green before
+  this — the half of #1136 that actually ran in production was unpinned.
+  [verified: `DHTChurnSurvivalTest#survivorRebalance_stocksTheNewlyResponsibleNonHolder` — a key
+  whose post-crash owner set gains exactly one never-holder is stocked by the primary's push]
+- **After a rolling upgrade** (not supported, but worth stating): keys written under the old
+  placement are repaired into the new owner set only where an old holder is also a new owner. On 5
+  nodes all 2,000 probe keys stayed resolvable but 2,372 copies sat on non-owners; on 7 nodes 239 of
+  2,000 keys (12%) had disjoint old/new owner sets and were reachable only through the C2 fallback.
+  Stranded copies are never reclaimed — they persist until restart.
+  [mechanism: verify-1142 probe `#p4`, two full cycles]
 - A drain that races the joiner's pull still excludes the joiner from the departure push (the push
   excludes current MEMBERS, not holders): the key survives on the push's newcomer target and the
   joiner's round then pulls it from there, so membership stays the exclusion criterion — a per-key

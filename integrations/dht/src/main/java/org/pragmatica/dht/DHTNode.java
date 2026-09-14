@@ -27,11 +27,16 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 
 /// Local DHT node that handles storage operations.
 /// Provides local data access and can be integrated with MessageRouter
 /// for handling remote requests.
 public final class DHTNode {
+    private static final Logger log = LoggerFactory.getLogger(DHTNode.class);
+
     private final NodeId nodeId;
     private final StorageEngine storage;
     private final ConsistentHashRing<NodeId> ring;
@@ -250,11 +255,38 @@ public final class DHTNode {
                                                                                     new byte[0])));
     }
 
-    /// Handle a migration data request: return all entries for the requested partition range.
+    /// Handle a migration data request: return the partition's entries, but ONLY to a node that this
+    /// node — the HOLDER of the data — considers an owner of that partition (issue #420).
+    ///
+    /// Ownership is settled here rather than by the requester because on a PARTIAL ring the requester
+    /// cannot refuse anything. `AetherNode` creates a joiner's ring empty and
+    /// `MembershipDeltaProjector.emitJoin` fills it one `NodeJoined` at a time, so during the join
+    /// burst the joiner sees a ring on which it is a replica of every partition; asked against its own
+    /// view it would pull the whole keyspace, and no path in this module ever releases an unowned copy.
+    /// The holder's ring is the view that HAS the data, so it is the view that answers the question.
+    ///
+    /// A holder whose own ring is stale refuses a legitimate owner: the requester then keeps nothing
+    /// and the next anti-entropy round repeats the exchange, so a wrong refusal costs a delay, never a
+    /// copy. Refusing to hand out is the only safe correction available — DELETING an unowned copy
+    /// against a ring that may be partial could drop the last one.
     @Contract
     public void handleMigrationDataRequest(DHTMessage.MigrationDataRequest request,
                                            Consumer<DHTMessage.MigrationDataResponse> responseHandler) {
         var partition = Partition.at(request.partitionStart());
+
+        if (!isReplicaOf(request.sender(), partition)) {
+            // One per partition the requester over-asked for: DEBUG, because a join burst produces
+            // hundreds of these by design and a louder level would be a log storm, not a signal.
+            log.debug("Refusing migration of partition {} to {}: not a replica in this node's ring",
+                      request.partitionStart(),
+                      request.sender().id());
+            responseHandler.accept(new DHTMessage.MigrationDataResponse(request.requestId(),
+                                                                        nodeId,
+                                                                        java.util.List.of(),
+                                                                        false));
+
+            return;
+        }
 
         storage.entriesForPartition(ring, partition)
                .onSuccess(entries -> responseHandler.accept(new DHTMessage.MigrationDataResponse(request.requestId(),
@@ -265,6 +297,13 @@ public final class DHTNode {
                                                                                            nodeId,
                                                                                            java.util.List.of(),
                                                                                            false)));
+    }
+
+    /// Whether `candidate` is one of the partition's replicas in THIS node's ring — the same single
+    /// placement function every other caller uses (issue #420).
+    private boolean isReplicaOf(NodeId candidate, Partition partition) {
+        return ring.nodesFor(partition, config.effectiveReplicationFactor(ring.nodeCount()))
+                   .contains(candidate);
     }
 
     /// Apply migration data by merging received entries into local storage using versioned puts,

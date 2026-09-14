@@ -184,7 +184,7 @@ class DHTAntiEntropyTest {
                 field.setAccessible(true);
                 @SuppressWarnings("unchecked")
                 var map = (java.util.concurrent.ConcurrentHashMap<String, DHTAntiEntropy.PendingDigest>) field.get(antiEntropy);
-                map.put(requestId, new DHTAntiEntropy.PendingDigest(peer, partitionIndex, localDigest));
+                map.put(requestId, new DHTAntiEntropy.PendingDigest(peer, partitionIndex, localDigest, System.nanoTime()));
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }

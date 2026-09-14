@@ -252,13 +252,13 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
         return ring.get(key);
     }
 
-    /// MurmurHash3-like hash function.
-    /// Provides good distribution for consistent hashing.
     /// The ring position of a partition — the one place the partition-to-position mapping lives.
     private static int positionOf(Partition partition) {
         return hash("partition:" + partition.value());
     }
 
+    /// FNV-1a over the bytes with a MurmurHash3 finaliser.
+    /// Provides good distribution for consistent hashing.
     private static int hash(byte[] data) {
         int h = 0x811c9dc5;
 

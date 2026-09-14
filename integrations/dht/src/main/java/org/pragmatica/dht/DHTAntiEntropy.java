@@ -42,8 +42,9 @@ public final class DHTAntiEntropy {
     /// Default anti-entropy synchronization interval.
     public static final TimeSpan DEFAULT_ANTI_ENTROPY_INTERVAL = TimeSpan.timeSpan(30).seconds();
 
-    /// Tracks a pending digest comparison: local digest + partition for a remote peer.
-    record PendingDigest(NodeId peer, int partitionIndex, byte[] localDigest) {}
+    /// Tracks a pending digest comparison: local digest + partition for a remote peer, stamped with
+    /// the monotonic time it was registered so an unanswered one can be expired.
+    record PendingDigest(NodeId peer, int partitionIndex, byte[] localDigest, long createdAtNanos) {}
 
     private final DHTNode node;
     private final DHTNetwork network;
@@ -130,6 +131,8 @@ public final class DHTAntiEntropy {
     }
 
     private void synchronizePartitions() {
+        expireStalePendingDigests();
+
         var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
         var owned = 0;
 
@@ -172,30 +175,48 @@ public final class DHTAntiEntropy {
 
             var correlationId = IdGenerator.generate();
 
-            pendingDigests.put(correlationId, new PendingDigest(peer, partitionIndex, localDigest));
+            pendingDigests.put(correlationId,
+                               new PendingDigest(peer, partitionIndex, localDigest, System.nanoTime()));
             sendLoudly(peer,
                        new DHTMessage.DigestRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex),
-                       "digest request");
+                       "digest request",
+                       () -> pendingDigests.remove(correlationId));
         }
     }
 
-    /// A refused send is never silent (issue #420): the transport's refusal is logged at WARN and
-    /// the round is not retried — the next scheduled round repeats the exchange, which is the
-    /// guarantee: a joiner is backfilled at join time or within one interval of it.
-    private void sendLoudly(NodeId peer, ProtocolMessage message, String what) {
+    /// A refused send is never silent (issue #420): the transport's refusal is logged at WARN and the
+    /// round is not retried — the exchange is repeated every interval until a round completes.
+    /// `onNotSent` runs on any outcome that did not reach the peer, so a caller that registered
+    /// per-send state can drop it again; without that, sustained backpressure — the very condition
+    /// that refuses the send — adds one `pendingDigests` entry per owned partition per peer, every
+    /// round, with nothing to remove them.
+    private void sendLoudly(NodeId peer, ProtocolMessage message, String what, Runnable onNotSent) {
         network.sendOutcome(peer, message)
                .onSuccess(outcome -> {
-                              if (!outcome.isSent()) {
-                              log.warn("DHT anti-entropy {} to {} not sent ({}); the next round repeats it",
-                                       what,
-                                       peer.id(),
-                                       outcome);
-                          }
-                          })
-               .onFailure(cause -> log.warn("DHT anti-entropy {} to {} failed ({}); the next round repeats it",
-                                            what,
-                                            peer.id(),
-                                            cause.message()));
+                   if (!outcome.isSent()) {
+                       log.warn("DHT anti-entropy {} to {} not sent ({}); the next round repeats it",
+                                what,
+                                peer.id(),
+                                outcome);
+                       onNotSent.run();
+                   }
+               })
+               .onFailure(cause -> {
+                   log.warn("DHT anti-entropy {} to {} failed ({}); the next round repeats it",
+                            what,
+                            peer.id(),
+                            cause.message());
+                   onNotSent.run();
+               });
+    }
+
+    /// Drop correlations whose response never came. One interval after a digest was sent the peer is
+    /// not going to answer that round's question, and the next round asks it again with a fresh
+    /// correlation; keeping the old entry only grows the map.
+    private void expireStalePendingDigests() {
+        var deadline = System.nanoTime() - antiEntropyInterval.nanos();
+
+        pendingDigests.values().removeIf(pending -> pending.createdAtNanos() - deadline <= 0);
     }
 
     /// Handle a digest response from a remote peer.
@@ -215,10 +236,31 @@ public final class DHTAntiEntropy {
             return;
         }
 
+        if (!isLocalReplicaOf(pending.partitionIndex())) {
+            log.debug("Partition {} diverged from {} but is no longer a local replica; not pulling",
+                      pending.partitionIndex(),
+                      pending.peer().id());
+
+            return;
+        }
+
         log.info("Partition {} diverged from {}, requesting migration data",
                  pending.partitionIndex(),
                  pending.peer().id());
         requestMigrationData(pending.peer(), pending.partitionIndex());
+    }
+
+    /// Whether this node is still a replica of the partition, re-evaluated when the digest RESPONSE
+    /// lands rather than only when the request went out: a joiner's ring grows one `NodeJoined` at a
+    /// time, so the view that justified the digest can already be stale by the time it is answered.
+    /// The holder applies the same test against ITS ring ([DHTNode#handleMigrationDataRequest]) — a
+    /// replica is acquired only where the two views agree (issue #420).
+    private boolean isLocalReplicaOf(int partitionIndex) {
+        var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
+
+        return node.ring()
+                   .nodesFor(Partition.at(partitionIndex), replicationFactor)
+                   .contains(node.nodeId());
     }
 
     /// Handle migration data response: merge received entries into local storage, then acknowledge
@@ -249,7 +291,8 @@ public final class DHTAntiEntropy {
 
         sendLoudly(peer,
                    new DHTMessage.MigrationDataRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex),
-                   "migration request");
+                   "migration request",
+                   () -> {});
     }
 
     /// Get the count of pending digest comparisons (for testing).
