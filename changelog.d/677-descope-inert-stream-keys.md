@@ -23,13 +23,18 @@
   `StreamConfigParser` is the one parser. No consolidation was needed.
 - Post-GA wiring epic (compression sink, per-consumer tuning through `StreamConsumerManager`, encryption
   once #253 lands) is a ticket draft in the report; the CTO files it.
-- **Feature-catalog rows 141/142 now state the descope.** Row 141 (consumer read-preference) and row 142
+- **Feature-catalog rows 141 and 142 now state the descope** (143 deliberately not touched — see below). Row 141 (consumer read-preference) and row 142
   (segment compression) both read as *accepted-but-partial* while their `[streams.X]` TOML keys are refused;
   each now says so and names the refusing symbol. Two stale citations in row 141 were corrected in passing
   because the row is in this diff: `selectReplicaAndRead()` has **zero declarations** in `src/main` (15 test
   method names and 2 comments keep the old name; `readWithPreference` is the live symbol), and the enum list
   omitted `LINEARIZABLE`. The bare line number `PartitionedStreamAccess.java:278` pointed at unrelated javadoc
   and was replaced by the symbol. Row 207 already carried the #576 statement for `encryption-key-id`.
+  **Row 143 (segment encryption) carries the same missing clause and is deliberately LEFT ALONE:** its own
+  neighbouring claim — "`.encrypt(` has zero callers in `src/main`" — is false (there are 4, incl.
+  `StorageSegmentSink.applyEncryption` and `EncryptingStorageTier`; positive control `.decrypt(` = 4), so
+  adding a true clause beside it would have implicitly blessed the false half. Filed as its own ticket to be
+  fixed whole by someone who has checked the whole row.
 - **Found while checking the inverse (documented-as-refused but still reachable): THE REFUSAL DOES NOT FAIL A
   DEPLOY.** `StreamResourceValidator.validate` has exactly one production caller — `BlueprintService.streamBindings`
   — which ends `.or(List.<NamedAddress>of())`, discarding the `Cause` and publishing an EMPTY bindings entry.
@@ -37,12 +42,17 @@
   operator; a slice consuming that alias fails later with the generic `StreamAddressError.UnboundStreamAlias`,
   and if nothing consumes it the key is silently ignored. This is pre-existing and by design as documented at
   `BlueprintService` ("rc1's deploy chain has no stream-resource validation gate … the gate that would HTTP-422
-  on bad stream config is a separate stage") — it is NOT introduced here, and it is filed separately.
-  **Consequence for the specs:** `known-limitations.md`, `streaming-spec.md` and `in-memory-streams-spec.md`
-  say these keys are "REJECTED AT DEPLOY TIME", which overstates it — the validator returns that verdict but
-  nothing acts on it (4 passages across those 3 files, one of them the line this PR itself added at
-  `known-limitations.md:143`). Correcting that wording is held pending a scope ruling rather
-  than silently widened into this PR `[verified: one production call site of `validate`; `Result.or(T)` returns
-  the replacement and drops the Cause]`
+  on bad stream config is a separate stage") — it is NOT introduced here. **Filed as #1181**, and pinned here
+  by an ENABLED TRIPWIRE, `BlueprintPublishOwnershipTest$StreamBindings`
+  `.publish_withDescopedStreamKey_stillSucceedsWithEmptyBindings_KNOWN_DEFECT`, which asserts the current
+  wrong behaviour on purpose so it reddens the moment #1181's gate lands and tells the reader to delete it.
+  **Spec wording corrected with it:** `known-limitations.md`, `streaming-spec.md` and `in-memory-streams-spec.md`
+  said these keys are "REJECTED AT DEPLOY TIME", which overstates it — the validator returns that verdict but
+  nothing acts on it. **8 passages across those 3 files** were corrected, not the 4 an initial phrase-grep
+  found: `does not deploy today` (×2, in the TOML examples), `deploy-time rejection` (§3.3) and the
+  `## Last Updated` header carried the same claim in other words. Re-enumerated over every line citing
+  #576/#677 in the three files (19 lines, all read); residual sweep now 0
+  `[verified: one production call site of `validate`; `Result.or(T)` returns the replacement and drops the
+  Cause; tripwire green with in-run controls both ways]`
 - [unverified: no deploy run — the rejection behaviour is unchanged and pinned by the existing validator
   tests; only message text and docs moved]

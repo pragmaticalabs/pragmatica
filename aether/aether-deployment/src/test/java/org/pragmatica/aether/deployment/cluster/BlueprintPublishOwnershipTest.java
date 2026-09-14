@@ -998,7 +998,7 @@ class BlueprintPublishOwnershipTest {
                          .flatMap(url -> Location.location(artifact, url));
         }
 
-        /// **ENABLED TRIPWIRE FOR A KNOWN DEFECT (#677 audit, 2026-09-14) — DO NOT SILENCE.**
+        /// **ENABLED TRIPWIRE FOR A KNOWN DEFECT — #1181, found in the #677 audit. DO NOT SILENCE.**
         ///
         /// #576 refuses the descoped `[streams.X]` keys and several documents describe that refusal.
         /// Nothing acts on it: `BlueprintService.streamBindings` is the only production caller of
@@ -1011,7 +1011,7 @@ class BlueprintPublishOwnershipTest {
         /// offending key and naming neither it nor the reason.
         ///
         /// This asserts the CURRENT, WRONG behaviour ON PURPOSE so that it reddens the moment a
-        /// deploy-time gate lands. It is ENABLED rather than `@Disabled` because a disabled test is
+        /// deploy-time gate lands (that is #1181's fix). It is ENABLED rather than `@Disabled` because a disabled test is
         /// silence, and silence sits forgotten. **WHEN THIS GOES RED the gate exists — delete this test
         /// and assert instead that the publish FAILS and names the offending key.**
         @Test
@@ -1022,7 +1022,7 @@ class BlueprintPublishOwnershipTest {
             var outcome = publishBody(repository);
 
             assertThat(outcome.isSuccess())
-                    .as("KNOWN DEFECT (#677 audit): a blueprint declaring the descoped `compression` key "
+                    .as("KNOWN DEFECT #1181: a blueprint declaring the descoped `compression` key "
                         + "publishes successfully, because BlueprintService.streamBindings drops the "
                         + "StreamResourceValidator failure via `.or(List.of())`. WHEN THIS GOES RED a "
                         + "deploy-time gate has landed: delete this test and assert the publish FAILS "
@@ -1030,7 +1030,7 @@ class BlueprintPublishOwnershipTest {
                     .isTrue();
 
             assertThat(boundAddresses(store))
-                    .as("KNOWN DEFECT (#677 audit): the discarded failure leaves an EMPTY bindings entry, so "
+                    .as("KNOWN DEFECT #1181: the discarded failure leaves an EMPTY bindings entry, so "
                         + "a slice consuming the alias later fails with a generic UnboundStreamAlias instead "
                         + "of being told which key is unsupported. WHEN THIS GOES RED, see the assertion above.")
                     .isEmpty();
