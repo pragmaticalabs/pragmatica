@@ -4,7 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.deployment;
 
-import org.junit.jupiter.api.Test;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.SliceStore.LoadedSlice;
@@ -15,11 +20,7 @@ import org.pragmatica.aether.worker.mutation.MutationForwarder;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Promise;
 
-import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -29,6 +30,7 @@ import static org.mockito.Mockito.when;
 
 /// Interleaving probe for #906: a state transition landing between `computeAndApplyAssignment`'s
 /// read of the deployments map and its write must survive, not be clobbered by the stale read.
+@SuppressWarnings("JBCT-EX-01")
 class WorkerDeploymentManagerTest {
     private static final NodeId SELF = NodeId.nodeId("worker-1").unwrap();
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:slice:1.0.0").unwrap();
@@ -56,13 +58,12 @@ class WorkerDeploymentManagerTest {
     @Test
     void stateTransitionLandingDuringAssignmentRecomputation_isPreserved() throws InterruptedException {
         var deployments = new LatchedMap();
-        var loadSlice = Promise.<LoadedSlice>promise();
+        var loadSlice = Promise.<LoadedSlice> promise();
         var sliceStore = mock(SliceStore.class);
 
         when(sliceStore.loadSlice(any())).thenReturn(loadSlice);
         when(sliceStore.activateSlice(any())).thenReturn(Promise.success(mock(LoadedSlice.class)));
         when(sliceStore.loaded()).thenReturn(List.of());
-
         var manager = WorkerDeploymentManager.workerDeploymentManager(SELF,
                                                                       sliceStore,
                                                                       mock(MutationForwarder.class),
@@ -71,27 +72,25 @@ class WorkerDeploymentManagerTest {
                                                                       () -> "default:local");
         // Directive lands: deployment recorded as LOADING, slice load in flight (promise pending).
         manager.onDirectivePut(WorkerSliceDirectiveValue.workerSliceDirectiveValue(ARTIFACT, 1, "any"));
-
         assertThat(deployments.get(ARTIFACT).state()).isEqualTo(DeploymentState.LOADING);
         // Thread A: membership change recomputes the assignment; its read of the map parks.
         deployments.armed.set(true);
-
-        var recompute = new Thread(() -> manager.onMembershipChange(List.of(SELF)), "recompute");
+        var recompute = new Thread(() -> manager.onMembershipChange(List.of(SELF)),
+                                   "recompute");
 
         recompute.start();
         assertThat(deployments.readTaken.await(5, TimeUnit.SECONDS)).as("read taken").isTrue();
         // Inside the window: the slice load completes, driving LOADING -> LOADED -> ACTIVATING -> ACTIVE
         // through computeIfPresent(withState) on this thread.
         loadSlice.succeed(mock(LoadedSlice.class));
-
-        assertThat(deployments.get(ARTIFACT).state()).as("transition applied before write").isEqualTo(DeploymentState.ACTIVE);
+        assertThat(deployments.get(ARTIFACT).state()).as("transition applied before write")
+                  .isEqualTo(DeploymentState.ACTIVE);
         // Release thread A: it now writes the assignment derived from its stale read.
         deployments.proceed.countDown();
         recompute.join(5_000);
-
         assertThat(recompute.isAlive()).as("recompute finished").isFalse();
         assertThat(deployments.get(ARTIFACT).state()).as("ACTIVE transition survives the concurrent write")
-                                                     .isEqualTo(DeploymentState.ACTIVE);
+                  .isEqualTo(DeploymentState.ACTIVE);
         assertThat(deployments.get(ARTIFACT).assignedInstances()).isEqualTo(1);
     }
 
@@ -102,6 +101,7 @@ class WorkerDeploymentManagerTest {
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+
             throw new IllegalStateException(e);
         }
     }
