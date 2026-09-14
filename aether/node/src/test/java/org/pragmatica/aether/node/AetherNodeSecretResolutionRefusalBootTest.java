@@ -84,4 +84,65 @@ class AetherNodeSecretResolutionRefusalBootTest {
                       assertThat(cause.source().unwrap()).isInstanceOf(ConfigError.SecretResolutionFailed.class);
                   });
     }
+
+    /// #904 round 2 (SF-1): the SIBLING arm -- a `${secrets:...}` placeholder in the configured
+    /// provider and NO `SecretsProvider` at all. Before this pin the placeholder passed through
+    /// literally (`ConfigService.getString("database.password")` answered
+    /// `${secrets:vault/db/password}`) and the node booted; the failure surfaced later as an auth
+    /// error naming nothing about secrets. Reachable in production through `Main.resolveEnvironment`'s
+    /// log-and-`Option.none()` and through a node.toml without `[cloud]` -- this test takes exactly
+    /// that shape (`environment` absent). Same rule as `NoSecretsProviderForStorageEncryption`.
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void aetherNode_refusesBoot_whenPlaceholderPresentAndNoSecretsProviderConfigured() {
+        var configProvider = ConfigurationProvider.builder()
+                                                  .withDefaults(Map.of(CONFIG_KEY, "${secrets:" + SECRET_PATH + "}"))
+                                                  .build();
+        var config = AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(), Option.none(), configProvider);
+
+        AetherNode.aetherNode(config, () -> {})
+                  .onSuccess(booted -> {
+                      node = booted;
+                      fail("#904: boot must REFUSE when a ${secrets:...} placeholder has no SecretsProvider to "
+                           + "resolve it -- it booted with the placeholder passed through as the literal value instead");
+                  })
+                  .onFailure(cause -> {
+                      assertThat(cause.message()).as("the refusal names the config key, the secret path, and the "
+                                                     + "missing secrets provider as the reason")
+                                                 .contains("secret")
+                                                 .contains(CONFIG_KEY)
+                                                 .contains(SECRET_PATH)
+                                                 .contains("no secrets provider");
+                      assertThat(cause.source().isPresent()).as("the underlying ConfigError is carried as the source")
+                                                            .isTrue();
+                      assertThat(cause.source().unwrap()).isInstanceOf(ConfigError.SecretResolutionFailed.class);
+                  });
+    }
+
+    /// Control for the arm above, in the shape Ember/Forge boot with: `EnvironmentIntegration`
+    /// present but its `secrets()` empty, and a provider carrying NO placeholder. That must keep
+    /// booting, and the literal value must be served unchanged -- the refusal is keyed on a
+    /// placeholder being present, never on the mere absence of a `SecretsProvider`.
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void aetherNode_boots_whenNoSecretsProviderAndNoPlaceholder() {
+        var literal = "plain-literal-value";
+        var configProvider = ConfigurationProvider.builder()
+                                                  .withDefaults(Map.of(CONFIG_KEY, literal))
+                                                  .build();
+        var environment = Option.some(EnvironmentIntegration.environmentIntegration(Option.none(),
+                                                                                    Option.none(),
+                                                                                    Option.none()));
+        var config = AetherNodeContentStorageWarnBootTest.minimalConfig(environment, Option.none(), configProvider);
+
+        AetherNode.aetherNode(config, () -> {})
+                  .onFailure(cause -> fail("control: a provider with no ${secrets:...} placeholder and no "
+                                           + "SecretsProvider must still boot, but it refused: " + cause.message()))
+                  .onSuccess(booted -> {
+                      node = booted;
+                      assertThat(ConfigService.instance().flatMap(service -> service.getString(CONFIG_KEY)))
+                          .as("the literal value is served unchanged through the node composite")
+                          .isEqualTo(Option.some(literal));
+                  });
+    }
 }
