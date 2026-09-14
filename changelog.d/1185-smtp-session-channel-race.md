@@ -13,19 +13,30 @@
 - **The channel is now assigned in `SmtpChannelInitializer.initChannel`**, which runs on the event
   loop while the pipeline is being built — ordered before `SmtpResponseHandler` is in the pipeline,
   so before any reply can be delivered to it. `handleConnect` keeps only the failure path, which the
-  initializer cannot report. [verified: `SmtpChannelInitializerOrderTest.greetingIsAnsweredEvenWhenItArrivesBeforeTheConnectListenerRuns`]
+  initializer cannot report. **This is deterministic by construction, not a narrowed window:**
+  `session.setChannel(ch)` and `addLast("handler", new SmtpResponseHandler(session))` are consecutive
+  statements on one thread, and Netty delivers no inbound event to a handler that is not yet in the
+  pipeline. The assignment therefore precedes the first read by program order on the event loop, for
+  every connection, at any load — there is no interleaving left to lose.
+  [verified: `SmtpChannelInitializerOrderTest.greetingIsAnsweredEvenWhenItArrivesBeforeTheConnectListenerRuns`]
 - **The underlying interleaving still happens and is now harmless.** A probe built to production's
   own bootstrap shape measured the connect listener as not-yet-run at the first read in **3 of 3000**
   connections both before and after the change; what changed is that the session no longer depends
-  on it. 3000 sequential sends through the real `SmtpClient` against a scripted loopback server went
-  from **5 failures to 0**. [verified: probe measurement, 3000 sends per arm, idle event loop]
-- **The race needs an IDLE event loop, not a busy one** — 3200 sends across 16 concurrent senders at
-  load 100 produced zero failures, because a backlogged loop delays connect completion and lets the
-  caller register its listener in time. Sequential sends against a fast server is the worst case.
-  **So a pass on a loaded machine is not evidence of correctness here — it is the condition under
-  which the defect hides.** A 145-module reactor passing `resource-notification` on a busy 16-core
-  box and CI failing it are not in contradiction, and neither run says anything about correctness.
-  [mechanism: the caller only loses the race when the loop is quick]
+  on it. Interleaved pre/post arms, alternating within each of 6 rounds across load 5.8→81.5, gave
+  **6 failures in 3000 sends before the fix and 0 in 3000 after**, with the post-fix arm holding 0
+  across the whole load range while the pre-fix arm varied inside those same rounds.
+  [verified: interleaved probe measurement, 3000 sends per arm, sequential sender]
+- **Two independent load factors, pointing in OPPOSITE directions.** The caller must be descheduled
+  between `connect()` and `addListener()`, so **machine CPU contention raises** the rate; but the
+  event loop must be prompt to complete the connect first, so **event-loop backlog suppresses** it.
+  Measured, one sequential sender throughout: at 1-min load ~9 the unfixed code failed **0 of 3000**;
+  with CPU burners across load 21→81 it failed **6 of 3000**; with 16 concurrent senders sharing one
+  event loop at load 100 it failed **0 of 3200** — a busy machine, but a backlogged loop.
+  **Consequence: neither "it passed on a quiet box" nor "it passed on a busy box" is evidence of
+  correctness.** A 145-module reactor passing `resource-notification` on a loaded 16-core machine
+  and CI failing it are not in contradiction; the discriminating condition is busy machine + quiet
+  loop, which is what a single module's sequential test does under a module-parallel reactor.
+  [mechanism: the caller loses only when it is preempted AND the loop is free to finish first]
 - **`SmtpReplyCodeClassificationTest`'s two CI failures were this one defect, not a second retry
   bug.** An attempt killed by the NPE fails as `ConnectionFailed`, which is `Cause.Transient`, so it
   is retried — and it abandons its socket right after the greeting. The test's scripted server
