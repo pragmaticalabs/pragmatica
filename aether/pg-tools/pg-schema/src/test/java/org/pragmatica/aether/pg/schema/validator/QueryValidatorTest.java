@@ -652,6 +652,103 @@ class QueryValidatorTest {
                                        .contains("Table or alias not found: o");
         }
 
+        // verify-1124 BLOCKING-1: a RECURSIVE CTE on a DML statement was clean at the tip and refused
+        // at the first head — the DML validators never gave the body its WITH scope.
+        @Test void validate_recursiveCteOnUpdate_isClean() {
+            var result = validate(
+                "WITH RECURSIVE t AS (SELECT id FROM users UNION ALL SELECT t.id FROM t WHERE t.id < 10) "
+                + "UPDATE orders SET status = 'x' FROM t WHERE t.id = orders.user_id"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        @Test void validate_recursiveCteOnDelete_isClean() {
+            var result = validate(
+                "WITH RECURSIVE t AS (SELECT id FROM users UNION ALL SELECT t.id FROM t WHERE t.id < 10) "
+                + "DELETE FROM orders USING t WHERE t.id = orders.user_id"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        // verify-1124 SF-1: the INSERT source query sees the INSERT's own WITH names (never the target).
+        @Test void validate_insertSourceSelect_seesTheInsertsOwnCte() {
+            var result = validate(
+                "WITH x AS (SELECT id FROM users) INSERT INTO orders (id, user_id, total) SELECT x.id, x.id, 0 FROM x"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        // verify-1124 SF-4: a CTE inside a subquery sees the enclosing query (PostgreSQL 17 accepts
+        // this); a top-level statement's CTE body sees nothing outside the statement.
+        @Test void validate_cteBodyInsideSubquery_seesTheEnclosingScope() {
+            var result = validate(
+                "SELECT u.id FROM users u WHERE EXISTS (WITH c AS (SELECT 1 AS x FROM orders o WHERE o.user_id = u.id) "
+                + "SELECT 1 FROM c)"
+            );
+
+            assertThat(result.isValid()).as(messages(result)).isTrue();
+        }
+
+        @Test void validate_topLevelCteBody_doesNotSeeTheStatementsFrom() {
+            var result = validate(
+                "WITH c AS (SELECT users.id AS id FROM users WHERE users.id = o.user_id) SELECT o.id FROM orders o, c"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message).contains("Table or alias not found: o");
+        }
+
+        // verify-1124 SF-3 / NIT-2: reach controls — a bogus INNER column at each correlated position
+        // is reported, so the clean cases above cannot pass by the position going unvalidated.
+        @Test void validate_bogusColumnInsideLateralSubquery_errors() {
+            var result = validate(
+                "SELECT u.id FROM users u, LATERAL (SELECT o.nope FROM orders o WHERE o.user_id = u.id) l"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message)
+                                       .containsExactly("Column 'nope' not found in table 'o'");
+        }
+
+        @Test void validate_bogusColumnInsideSetValueSubquery_errors() {
+            var result = validate(
+                "UPDATE reservations SET state = (SELECT b.nope FROM bookings b WHERE b.reservation_claim_id = reservations.claim_id)"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message)
+                                       .containsExactly("Column 'nope' not found in table 'b'");
+        }
+
+        @Test void validate_bogusColumnInsideReturningSubquery_errors() {
+            var result = validate(
+                "DELETE FROM reservations RETURNING (SELECT b.nope FROM bookings b WHERE b.reservation_claim_id = reservations.claim_id)"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message)
+                                       .containsExactly("Column 'nope' not found in table 'b'");
+        }
+
+        // A UNION body's columns are not inferable, so `t` is permissive and a bogus `t.column` is
+        // (by design) not reported; a bogus TABLE inside the body proves the body is validated.
+        @Test void validate_bogusTableInsideRecursiveCteBody_errors() {
+            var result = validate(
+                "WITH RECURSIVE t AS (SELECT id FROM users UNION ALL SELECT t.id FROM t JOIN nowhere n ON n.id = t.id) "
+                + "SELECT t.id FROM t"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message).contains("Table not found: nowhere");
+        }
+
+        @Test void validate_bogusColumnInsideSubqueryOverOuterCte_errors() {
+            var result = validate(
+                "WITH c AS (SELECT id FROM users) SELECT u.id FROM users u WHERE EXISTS (SELECT 1 FROM c WHERE c.nope = u.id)"
+            );
+
+            assertThat(result.errors()).extracting(ValidationError::message)
+                                       .containsExactly("Column 'nope' not found in table 'c'");
+        }
+
         // A derived table without LATERAL does not see the enclosing FROM list.
         @Test void validate_nonLateralDerivedTable_doesNotSeeOuterScope() {
             var result = validate(
