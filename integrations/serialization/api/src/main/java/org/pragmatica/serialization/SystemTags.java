@@ -53,7 +53,7 @@ import java.util.Map;
 /// Tags are VLQ-encoded, so `0..127` costs ONE byte on the wire, `128..16383` costs two. `0..20` are
 /// the framework primitives (`SliceCodec.TAG_*`). `21..109` is spent on the cluster's own
 /// highest-frequency traffic — consensus rounds, SWIM gossip, DHT lookups, KV commands, stream
-/// replication, and the value objects nested inside all of them. `110..127` is deliberately left free
+/// replication, and the value objects nested inside all of them. `113..127` is deliberately left free
 /// so a future hot type can still be promoted into one byte.
 public interface SystemTags {
     /// Returned by [#tagFor] for a class name that has no hand-assigned tag.
@@ -223,8 +223,11 @@ public interface SystemTags {
         // ruled out as weakening it.
         pin(table, 110, "org.pragmatica.aether.stream.topic.TopicEventEnvelope");
         pin(table, 111, "org.pragmatica.aether.stream.topic.DlqEnvelope");
+        // #667: nested in every Rabia SyncResponse; consensus-prefixed, so it must sit in the one-byte
+        // window (`SystemCodecPinningTest.hotProtocolTypes_fitInTheOneByteWindow`).
+        pin(table, 112, "org.pragmatica.consensus.rabia.ResponderState");
 
-        // ---- 112..127 RESERVED: the last free 1-byte slots. Spend them on hot types only. ----
+        // ---- 113..127 RESERVED: the last free 1-byte slots. Spend them on hot types only. ----
         // ---- 128..16383: two-byte system tags. ----
 
         // worker bootstrap (rare, large payloads)  [base 128]

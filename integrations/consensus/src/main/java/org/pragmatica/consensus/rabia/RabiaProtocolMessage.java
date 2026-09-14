@@ -48,7 +48,9 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
 
         /// State synchronization response. Travels on the dedicated SYNC lane (not CONSENSUS) so
         /// it is not head-of-line-blocked by consensus round traffic during a joiner's catch-up.
-        record SyncResponse<C extends Command>(NodeId sender, SavedState<C> state) implements Synchronous {
+        /// `responder` says whether `state` came from a live engine or a stopped/syncing one (#667);
+        /// the adoption rule in `RabiaEngine` weighs the two differently.
+        record SyncResponse<C extends Command>(NodeId sender, SavedState<C> state, ResponderState responder) implements Synchronous {
             @Override
             public StreamType streamType() {
                 return StreamType.SYNC;

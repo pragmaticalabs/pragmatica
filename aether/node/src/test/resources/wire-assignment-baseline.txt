@@ -28,6 +28,7 @@ ENUM org.pragmatica.aether.slice.kvstore.CommunityState FORMING=0,ACTIVE=1,DEGRA
 ENUM org.pragmatica.aether.slice.stream.StreamRegistryEntry$RegisteredByKind FRAMEWORK=0,BLUEPRINT=1,UNKNOWN=2
 ENUM org.pragmatica.cluster.metrics.ConnectivityState CONNECTED=0,DISCONNECTED=1,STALE=2,UNKNOWN=3
 ENUM org.pragmatica.cluster.metrics.HealthHintWire HEALTHY=0,SUSPECTED=1,FAULTY=2,UNKNOWN=3
+ENUM org.pragmatica.consensus.rabia.ResponderState LIVE=0,COLD=1,UNKNOWN=2
 ENUM org.pragmatica.consensus.rabia.StateValue V0=0,V1=1,VQUESTION=2,UNKNOWN=3
 ENUM org.pragmatica.swim.SwimMember$MemberState ALIVE=0,SUSPECT=1,FAULTY=2,OBSERVED=3,UNKNOWN=4
 TAG  [B 8
@@ -304,6 +305,7 @@ TAG  org.pragmatica.consensus.rabia.RabiaProtocolMessage$Synchronous$Propose 31
 TAG  org.pragmatica.consensus.rabia.RabiaProtocolMessage$Synchronous$SyncResponse 32
 TAG  org.pragmatica.consensus.rabia.RabiaProtocolMessage$Synchronous$VoteRound1 33
 TAG  org.pragmatica.consensus.rabia.RabiaProtocolMessage$Synchronous$VoteRound2 34
+TAG  org.pragmatica.consensus.rabia.ResponderState 112
 TAG  org.pragmatica.consensus.rabia.StateValue 35
 TAG  org.pragmatica.dht.DHTMessage$DigestRequest 54
 TAG  org.pragmatica.dht.DHTMessage$DigestResponse 55

@@ -95,8 +95,8 @@ class RabiaEnginePauseResumeTest {
     private void activateEngine() throws InterruptedException {
         engine.clusterState(ClusterStateNotification.active());
         Thread.sleep(150);
-        engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
-        engine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
+        engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+        engine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
         Thread.sleep(50);
     }
 

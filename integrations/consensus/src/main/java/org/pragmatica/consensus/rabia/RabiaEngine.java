@@ -99,6 +99,9 @@ public class RabiaEngine<C extends Command> {
     private final ClusterNetwork network;
     private final StateMachine<C> stateMachine;
     private final ProtocolConfig config;
+    /// #1212 — this node's durable first-boot marker. Defaults to [ParticipationMarker#unknown] when
+    /// the deployment supplies none, which denies the relaxation: absence is WIPED, never NEW.
+    private final ParticipationMarker participationMarker;
     private final ConsensusMetrics metrics;
     private final boolean activationGated;
     private final TimeSpan phaseStallCheck;
@@ -126,7 +129,7 @@ public class RabiaEngine<C extends Command> {
                                                                     new ThreadPoolExecutor.DiscardPolicy());
 
     private final ConcurrentNavigableMap<Id, Batch<C>> pendingBatches = new ConcurrentSkipListMap<>();
-    private final Map<NodeId, SavedState<C>> syncResponses = new ConcurrentHashMap<>();
+    private final Map<NodeId, SyncResponse<C>> syncResponses = new ConcurrentHashMap<>();
     private final RabiaPersistence<C> persistence;
 
     /// Consecutive sync rounds that failed to reach the response threshold, driving the periodic
@@ -363,6 +366,7 @@ public class RabiaEngine<C extends Command> {
         this.network = network;
         this.stateMachine = stateMachine;
         this.config = config;
+        this.participationMarker = config.participationMarker().or(ParticipationMarker::unknown);
         this.metrics = Option.option(metrics).or(ConsensusMetrics.noop());
         this.activationGated = activationGated;
         this.activationAuthorized = !activationGated;
@@ -1021,12 +1025,11 @@ public class RabiaEngine<C extends Command> {
             return;
         }
         // Check if we already have enough responses from previous attempt
-        if (adoptionThresholdMet()) {
-            // Process immediately instead of clearing
-            adoptCollectedState();
-
+        if (adoptIfThresholdMet()) {
+            // Processed immediately instead of clearing
             return;
         }
+
         warnIfSyncStuck();
         // Only clear and restart if we don't have enough responses
         syncResponses.clear();
@@ -1059,15 +1062,23 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        log.warn("Node {} still SYNCING after {} rounds: {} of {} required peer responses, from {} "
-                 + "(clusterSize={}). Adoption needs clusterSize/2 peers to answer — self completes the "
-                 + "majority. This node has no leader and runs no reconciler while this persists.",
+        log.warn("Node {} still SYNCING after {} rounds: {} responses of which {} live, from {} "
+                + "(clusterSize={}). Adoption needs {} responses while any responder is live — self {} "
+                + "toward that majority — or {} responses when none is live. This node has no leader "
+                + "and runs no reconciler while this persists.",
                  self,
                  round,
                  syncResponses.size(),
-                 syncPeerResponsesRequired(),
+                 liveResponseCount(),
                  syncResponses.keySet(),
-                 topologyManager.clusterSize());
+                 topologyManager.clusterSize(),
+                 responsesRequiredWithALiveResponder(topologyManager.clusterSize()),
+                 selfCanVouchForItsOwnHistory()
+                 ? "counts (it holds durable state)"
+                 : selfProvablyNeverVoted()
+                   ? "counts (marker proves it never participated, #1212)"
+                   : "does NOT count (no durable state, and no marker proving it is new)",
+                 syncPeerResponsesRequired());
     }
 
     /// The state this node adopts: the most advanced state among the peer sync responses AND this
@@ -1103,12 +1114,12 @@ public class RabiaEngine<C extends Command> {
     /// quantity from what this node ends up holding: [#detectBootFutureHistory] compares self against
     /// what the CLUSTER reports, and folding self into the candidate would make its predicate
     /// unfireable and silently retire the §6.4 mixed-wipe detector.
-    private void adoptCollectedState() {
+    private void adoptCollectedState(List<SyncResponse<C>> candidates) {
         var persisted = persistence.load();
-        var responses = syncResponses.values()
-                                     .stream()
-                                     .sorted(Comparator.comparing(SavedState::lastCommittedPhase))
-                                     .toList();
+        var responses = candidates.stream()
+                                  .map(SyncResponse::state)
+                                  .sorted(Comparator.comparing(SavedState::lastCommittedPhase))
+                                  .toList();
 
         syncRounds.set(0);
 
@@ -1167,19 +1178,14 @@ public class RabiaEngine<C extends Command> {
             return;
         }
 
-        syncResponses.put(response.sender(), response.state());
-        if (!adoptionThresholdMet()) {
-            log.trace("Node {} received {} responses {}, not enough to proceed (required = {})",
+        syncResponses.put(response.sender(), response);
+        if (!adoptIfThresholdMet()) {
+            log.trace("Node {} received {} responses {}, not enough to proceed (live responders = {})",
                       self,
                       syncResponses.size(),
                       syncResponses.keySet(),
-                      syncPeerResponsesRequired());
-
-            return;
+                      liveResponseCount());
         }
-
-        log.trace("Node {} received {} responses, collected: {}", self, syncResponses.size(), syncResponses);
-        adoptCollectedState();
     }
 
     private void restoreState(SavedState<C> state) {
@@ -1313,7 +1319,35 @@ public class RabiaEngine<C extends Command> {
 
     /// Activate node and adjust phase, if necessary.
     /// In observer mode, transitions to Observing state instead of Idle and does not start phases.
+    /// #1212 — durably record that this node has participated, BEFORE it leaves `Syncing`.
+    ///
+    /// Ordering is the whole point: a node cannot vote before it activates, so recording here is
+    /// strictly stronger than recording on the vote path, and it has ONE choke point instead of
+    /// several. Deliberately ahead of the `observerMode` branch — whether an observer can ever vote
+    /// is not a property this gate should depend on, and recording for it costs only conservatism.
+    ///
+    /// Returns false when the node must NOT activate. That happens only when this node currently
+    /// claims never to have participated and the marker could not record otherwise: activating there
+    /// would let it vote and then present itself as new on its next boot, which is the exact property
+    /// #667 and #1212 exist to prevent. The retry tick re-enters `doSynchronize`, so a transient
+    /// write failure resolves itself rather than wedging the node permanently.
+    private boolean recordParticipation() {
+        return participationMarker.recordParticipation()
+                                  .onFailure(cause -> log.error("Node {} refusing to activate: could not durably record "
+                                                               + "consensus participation ({}). This node claims to have "
+                                                               + "never participated, and activating without recording "
+                                                               + "would let it vote and later rejoin presenting itself "
+                                                               + "as new (#1212).",
+                                                                self,
+                                                                cause))
+                                  .isSuccess();
+    }
+
     private void activate() {
+        if (!recordParticipation()) {
+            return;
+        }
+
         if (observerMode) {
             activateAsObserver();
 
@@ -1491,14 +1525,16 @@ public class RabiaEngine<C extends Command> {
                         .map(snapshot -> new SyncResponse<>(self,
                                                             savedState(snapshot,
                                                                        currentPhase.get(),
-                                                                       pendingBatches.values())))
+                                                                       pendingBatches.values()),
+                                                            ResponderState.LIVE))
                         .onSuccess(response -> network.send(request.sender(),
                                                             response))
                         .onFailure(cause -> log.error("Node {} failed to create snapshot: {}", self, cause));
         } else {
             log.trace("Node {} is inactive, trying to share saved (or empty) state for request: {}", self, request);
             var response = new SyncResponse<>(self,
-                                              persistence.load().or(SavedState.empty()));
+                                              persistence.load().or(SavedState.empty()),
+                                              ResponderState.COLD);
 
             network.send(request.sender(), response);
         }
@@ -1537,16 +1573,148 @@ public class RabiaEngine<C extends Command> {
         return topologyManager.clusterSize() / 2;
     }
 
-    /// True when this node has heard from enough peers that self completes a cluster majority.
+    /// #667 round 2: the adoption decision, computed ONCE from a single read of the response map and
+    /// a single read of `clusterSize()`. `Option.none()` means "keep collecting"; a present value is
+    /// the exact set adoption may choose its candidate from.
     ///
-    /// The `clusterSize >= 1` arm is not defensive noise. `clusterSize()` is a derived cell fed from the
-    /// KV `coreCount`, and at 0 the requirement would be `0 / 2 == 0`: a node would meet its own
-    /// adoption threshold with ZERO responses and activate alone. The previous `clusterSize <= 1 ? 1`
-    /// made that unsatisfiable by accident; here it is refused on purpose, and the periodic WARN reports
-    /// `clusterSize=0` so the real fault is visible rather than masked by a node that quietly came up.
-    private boolean adoptionThresholdMet() {
-        return topologyManager.clusterSize() >= 1
-               && syncResponses.size() >= syncPeerResponsesRequired();
+    /// The first cut of #667 thresholded on LIVE responders (`clusterSize / 2 + 1` of them) and a live
+    /// minority waited. That is a quantity the waiting nodes cannot increase: the moment one node
+    /// activates it answers LIVE, every remaining joiner sees a live responder, switches to the
+    /// stricter bound, and they answer each other COLD. The only nodes that could raise the live count
+    /// are precisely the ones blocked, and nothing times out of `Syncing` — [#warnIfSyncStuck] only
+    /// WARNs. A cluster that had half-started could never finish. Cold start was never the defective
+    /// arm: at t=0 every responder is COLD and #660's rule is reached.
+    ///
+    /// So the threshold is on RESPONSES, and liveness only chooses the SOURCE:
+    ///
+    /// - any LIVE responder, and `clusterSize / 2 + 1` RESPONSES of any mix: adopt the maximum over
+    ///   the LIVE responders. The response quorum is what carries the safety argument — responders
+    ///   alone are a majority, so they intersect every majority that could have committed anything,
+    ///   without leaning on self's history (the #667 hole was exactly a self whose in-memory
+    ///   persistence left it at phase 0, unable to refuse). [#ownStateFloor] stays as the belt.
+    /// - no LIVE responder: #660's cold rule, unchanged — `clusterSize / 2` responses with self as the
+    ///   floor. Nothing durable answered live, so this is the full-cluster cold bootstrap.
+    ///
+    /// A response minority still waits, which is the arm the live bound existed to protect: a stale
+    /// LIVE responder in a minority partition cannot by itself authorize adoption.
+    ///
+    /// `UNKNOWN` (an ordinal this node cannot name, #964) counts as COLD when choosing the source, and
+    /// counts as a response toward the quorum like any other answer: it can never become the state this
+    /// node installs, and it never lowers the number of answers required.
+    ///
+    /// The single read matters: the previous split between `adoptionThresholdMet()` and
+    /// `candidateResponses()` re-read both the response map and `clusterSize()`, so a topology change
+    /// between the two could pass the gate on one rule and build the candidate set under the other.
+    private Option<List<SyncResponse<C>>> adoptionCandidates() {
+        var clusterSize = topologyManager.clusterSize();
+        // `clusterSize()` is a derived cell fed from the KV `coreCount`; at 0 the cold requirement
+        // would be `0 / 2 == 0` and a node would meet its own threshold with ZERO responses and
+        // activate alone. Refused on purpose, with the periodic WARN reporting `clusterSize=0`.
+        if (clusterSize < 1) {
+            return Option.none();
+        }
+
+        var responses = List.copyOf(syncResponses.values());
+        var liveResponses = responses.stream().filter(response -> response.responder() == ResponderState.LIVE).toList();
+
+        if (liveResponses.isEmpty()) {
+            return responses.size() >= clusterSize / 2
+                   ? Option.some(responses)
+                   : Option.none();
+        }
+
+        if (responses.size() < responsesRequiredWithALiveResponder(clusterSize)) {
+            return Option.none();
+        }
+        // The LIVE filter is licensed by the intersection argument only when the LIVE responders are
+        // THEMSELVES a majority. A response quorum intersects every commit quorum, but the intersecting
+        // member may be COLD, and filtering it out is how a joiner adopts a state behind a commit that
+        // was sitting in its own response set. So: the live maximum when live is a majority, otherwise
+        // the maximum over everything that answered.
+        //
+        // This branch is NOT dead, but it is narrow, and saying so is the point (#667 round 2).
+        // Adoption normally fires on the arrival that first meets the requirement, so the collected set
+        // is exactly the requirement and "a live majority among them" reduces to "all of them are
+        // LIVE", where filtering removes nothing. The filter only SELECTS when the collected set is
+        // LARGER than the requirement, which happens when `clusterSize()` falls mid-round: the
+        // KV-derived cell shrinks, the requirement drops below what is already collected, and the next
+        // evaluation chooses from a set that still holds COLD responses. Pinned by
+        // `RabiaSyncAdoptionResponseQuorumTest.AShrinkingClusterExercisesTheLiveFilter`.
+        return Option.some(liveResponses.size() >= clusterSize / 2 + 1
+                           ? liveResponses
+                           : responses);
+    }
+
+    /// Responses required once any responder is live.
+    ///
+    /// The set that must intersect every commit quorum is `{responders} ∪ {self}`, so self may be
+    /// counted — but ONLY when it brings history of its own. An amnesiac self (in-memory persistence,
+    /// or a wiped disk) sits inside that majority contributing nothing, and that is #667's hole
+    /// exactly: its floor is `Phase.ZERO`, it can refuse nothing, and two responders that never
+    /// witnessed the latest commit are enough to pull it forward. Excluded from its own count, the
+    /// responders must be a majority alone.
+    ///
+    /// **Owner ruling, session 20.** At n=3 with one node down at most ONE responder exists, and one is
+    /// never a majority of three — so in a degraded 3-node cluster #667's safety property and joiner
+    /// liveness are incompatible, and the owner chose liveness. The property being spent is one the
+    /// system does not in fact hold: #660's cold rule, shipping today and untouched by #667, already
+    /// activates a self whose durable snapshot is STALE relative to a commit it witnessed — verified
+    /// against rc4 `4af02125c`, where 2 of 5 minority responses activate and install the stale state
+    /// while a 1-of-5 control stays inactive. This makes the live arm consistent with the cold arm
+    /// rather than introducing a new exposure.
+    ///
+    /// The residual risk, stated precisely because it is narrower than "self is stale": adoption can
+    /// discard a commit only when self was in a commit quorum whose every OTHER member is currently
+    /// unreachable AND self lost its own record of it. A genuinely new node was never in a prior
+    /// quorum, so for it that branch is unreachable.
+    ///
+    /// **#1212 — the second way to reach the cold bound.** The sentence above ("a genuinely new node
+    /// was never in a prior quorum, so for it that branch is unreachable") is an argument this rule
+    /// could not previously ACT on, because nothing durable recorded that a node had never
+    /// participated. [ParticipationMarker] supplies exactly that observation, and nothing else: a
+    /// node that provably never voted was in no commit quorum, so every commit quorum intersecting
+    /// `{responders} ∪ {self}` intersects at a RESPONDER that holds the commit. Admitting it on
+    /// `clusterSize / 2` spends nothing.
+    ///
+    /// The two disjuncts are independent and neither subsumes the other: a returning node with
+    /// durable state vouches for its own history, a brand-new node has no history TO vouch for. Both
+    /// reach the cold bound, for opposite reasons.
+    private int responsesRequiredWithALiveResponder(int clusterSize) {
+        return selfCanVouchForItsOwnHistory() || selfProvablyNeverVoted()
+               ? clusterSize / 2
+               : clusterSize / 2 + 1;
+    }
+
+    /// #1212 — whether this node's durable marker proves it has never participated in consensus, and
+    /// therefore never voted. UNKNOWN and PARTICIPATED both answer false; only a marker written
+    /// BEFORE the node first participated can answer true.
+    private boolean selfProvablyNeverVoted() {
+        return participationMarker.resolve()
+                                  .provablyNeverVoted();
+    }
+
+    /// Whether self brings history of its own to the adoption majority — the same quantity
+    /// [#ownStateFloor] uses to refuse a response set that is behind this node, so the two cannot
+    /// disagree about what self knows.
+    private boolean selfCanVouchForItsOwnHistory() {
+        return ownStateFloor(persistence.load()).compareTo(Phase.ZERO) > 0;
+    }
+
+    /// Adopts when the collected responses already satisfy the rule, reporting whether it did so the
+    /// callers can log the "still waiting" case without evaluating the decision a second time.
+    private boolean adoptIfThresholdMet() {
+        var candidates = adoptionCandidates();
+
+        candidates.onPresent(this::adoptCollectedState);
+
+        return candidates.isPresent();
+    }
+
+    private long liveResponseCount() {
+        return syncResponses.values()
+                            .stream()
+                            .filter(response -> response.responder() == ResponderState.LIVE)
+                            .count();
     }
 
     /// Cleans up old phase data to prevent memory leaks.
