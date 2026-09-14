@@ -320,15 +320,9 @@ public sealed interface ClusterConfigGenerator {
         appendComment(sb, "Advanced configuration (uncomment as needed):");
         appendComment(sb, "------------------------------------------------------------");
         appendComment(sb, "");
-        appendComment(sb, "[operations.auto_heal]");
-        // #575: `enabled` is deliberately absent from this scaffold — it parses into AutoHealSpec,
-        // which the runtime never reads (AutoHealConfig, the type it actually consumes, has no
-        // `enabled` field at all). ClusterBootstrapConfigValidator rejects `enabled = false`
-        // outright rather than let it scaffold a working-looking off switch; showing `enabled = true`
-        // here would be equally misleading since it claims a toggle that does not exist.
-        appendComment(sb, "retry_interval = \"60s\"");
-        appendComment(sb, "startup_cooldown = \"15s\"");
-        appendComment(sb, "");
+        // #575/#675: no `[operations.auto_heal]` scaffold. `enabled = false` is refused (PF-25) and
+        // every tunable that used to be listed here is refused too (PF-26): the runtime reads its
+        // auto-heal settings from the NODE config, never from this document.
         appendComment(sb, "[operations.timeouts]");
         appendComment(sb, "health_check = \"300s\"");
         appendComment(sb, "quorum_formation = \"600s\"");

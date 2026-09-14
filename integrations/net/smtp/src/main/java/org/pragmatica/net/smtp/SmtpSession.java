@@ -39,7 +39,11 @@ class SmtpSession {
     private final SmtpMessage message;
     private final Promise<String> promise;
     private final Option<SslContext> sslContext;
-    private Channel channel;
+    /// Written on the event loop while the pipeline is built and read there for every command, but
+    /// also read off it by [#onTimeout] — whose whole purpose is to close this socket. A plain
+    /// field lets that read see `null` and silently skip the close, which is the leak that method
+    /// documents itself as preventing.
+    private volatile Channel channel;
     private State state;
     private int recipientIndex;
 

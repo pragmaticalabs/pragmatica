@@ -52,9 +52,10 @@ class LoggingInterceptorExitLineTest {
             MDC.clear();
         }
 
+        awaitExitLine(lines);
         assertThat(lines).hasSize(2);
         assertThat(lines.get(0).requestId()).as("entry line").isEqualTo("rid-42");
-        assertThat(lines.get(1).requestId()).as("exit line, logged on the resolving thread").isEqualTo("rid-42");
+        assertThat(lines.get(1).requestId()).as("exit line, logged on the executor thread").isEqualTo("rid-42");
     }
 
     @Test
@@ -85,9 +86,25 @@ class LoggingInterceptorExitLineTest {
         return LogConfig.logConfig("payment.flow").fold(cause -> fail(cause.message()), c -> c);
     }
 
+    /// The exit line is an `onResult` side effect: the resolver hands it to the `AsyncExecutor`
+    /// and unparks `await` without waiting for it, so the line may land after `await` returns
+    /// (#1143 — CI read one line). A bounded wait, not a sleep: it stops on the line or on the
+    /// deadline, and the deadline says what was recorded.
+    private static void awaitExitLine(List<Line> lines) {
+        var deadline = System.nanoTime() + TIMEOUT.nanos();
+
+        while (lines.size() < 2) {
+            if (System.nanoTime() > deadline) {
+                fail("the exit line was not logged within " + TIMEOUT + "; recorded: " + lines);
+            }
+
+            Thread.onSpinWait();
+        }
+    }
+
     /// Resolved on another thread AFTER the interceptor has registered its exit callback — the
-    /// callback therefore runs on that thread, whose MDC is empty. (Resolving before returning would
-    /// run the callback on the caller's thread and pin nothing.)
+    /// callback therefore runs on an `AsyncExecutor` thread, whose MDC is empty. (Resolving before
+    /// returning would run the callback on the caller's thread and pin nothing.)
     @SuppressWarnings("JBCT-EX-01")
     private static Promise<String> resolvedOnAnotherThread(String value) {
         var promise = Promise.<String> promise();
