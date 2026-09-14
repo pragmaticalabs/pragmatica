@@ -15,10 +15,11 @@
  */
 package org.pragmatica.swim;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.List;
-import java.util.concurrent.ConcurrentLinkedDeque;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
@@ -26,14 +27,19 @@ import org.pragmatica.swim.SwimMember.MemberState;
 
 
 /// Bounded buffer for membership updates piggybacked on protocol messages.
-/// Thread-safe: multiple protocol threads may add/peek updates concurrently.
+/// Thread-safe: every operation runs under the buffer's monitor, so a peek — which ages
+/// each entry and re-queues the survivors — is atomic to every other thread. A concurrent
+/// `size`/`faultyCount`/`expireFaultyUpdates` never observes the buffer mid-peek (#1151:
+/// the unlocked drain-and-requeue let `expireFaultyUpdates` miss an in-flight FAULTY
+/// verdict, which was then gossiped into the healed cluster). Contention is the probe
+/// tick against the transport thread at protocol cadence — the monitor is cheap there.
 ///
 /// [Fix #10] Uses peek-and-age instead of drain-on-read. Updates are returned
 /// multiple times (up to dissemination limit) to ensure they reach all members.
 /// Each update tracks how many times it was piggybacked — after enough
 /// disseminations (lambda * log(N)), it is evicted.
 public final class PiggybackBuffer {
-    private final ConcurrentLinkedDeque<TrackedUpdate> buffer = new ConcurrentLinkedDeque<>();
+    private final Deque<TrackedUpdate> buffer = new ArrayDeque<>();
     private final int maxSize;
     private final int maxDisseminations;
 
@@ -56,7 +62,7 @@ public final class PiggybackBuffer {
 
     /// Add an update to the buffer. If the buffer is full, the oldest entry is evicted.
     @Contract
-    public void addUpdate(MembershipUpdate update) {
+    public synchronized void addUpdate(MembershipUpdate update) {
         buffer.addLast(new TrackedUpdate(update, 0));
         trimToSize();
     }
@@ -64,7 +70,7 @@ public final class PiggybackBuffer {
     /// Peek up to {@code max} updates WITHOUT removing them.
     /// Each peeked update increments its dissemination counter.
     /// Updates that have been disseminated enough times are evicted.
-    public List<MembershipUpdate> peekUpdates(int max) {
+    public synchronized List<MembershipUpdate> peekUpdates(int max) {
         var result = new ArrayList<MembershipUpdate>(Math.min(max, buffer.size()));
         var toRequeue = new ArrayList<TrackedUpdate>();
 
@@ -90,12 +96,12 @@ public final class PiggybackBuffer {
     }
 
     /// Current number of buffered updates.
-    public int size() {
+    public synchronized int size() {
         return buffer.size();
     }
 
     /// Current number of buffered FAULTY updates (P2 — used to assert isolation-era expiry).
-    public int faultyCount() {
+    public synchronized int faultyCount() {
         return (int) buffer.stream()
                            .filter(tracked -> tracked.update()
                                                      .state() == MemberState.FAULTY)
@@ -109,7 +115,7 @@ public final class PiggybackBuffer {
     /// partition-heal collapse: a rejoining minority injected isolation-era FAULTY verdicts
     /// that terminalized live majority nodes). Non-FAULTY updates (ALIVE/SUSPECT) are
     /// retained — only the death verdicts are dropped. Returns the number of entries dropped.
-    public int expireFaultyUpdates() {
+    public synchronized int expireFaultyUpdates() {
         var before = buffer.size();
 
         buffer.removeIf(tracked -> tracked.update()

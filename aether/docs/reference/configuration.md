@@ -523,17 +523,19 @@ Workers self-organize into groups deterministically from SWIM membership. Same m
 ```toml
 [backup]
 enabled = true
-interval = "5m"
 path = "/data/backups"
 remote = ""
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | boolean | `false` | Enable durable backup |
-| `interval` | string | `"5m"` | Backup frequency |
-| `path` | string | env-dependent | Git repo directory for backups |
-| `remote` | string | `""` | Optional git remote URL |
+| `enabled` | boolean | `false` | Enable git-backed consensus persistence (also needs a non-blank `path`) |
+| `path` | string | env-dependent | Git repo directory holding `state.toml` |
+| `remote` | string | `""` | Optional git remote URL; pushed after every save |
+| `interval` | string | `"5m"` | Accepted and ignored — saves happen on lifecycle transitions only, never periodically |
+
+Saves are lifecycle-driven (quorum-loss pause, reconfigure, graceful stop); there is no backup API
+or CLI (#676). See the [backup-recovery runbook](../operators/runbooks/backup-recovery.md).
 
 Default `path` by environment:
 - LOCAL: `./aether-backups`
