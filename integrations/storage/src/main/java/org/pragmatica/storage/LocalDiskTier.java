@@ -2,6 +2,7 @@ package org.pragmatica.storage;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.lang.io.FileOps;
@@ -183,11 +184,15 @@ public final class LocalDiskTier implements StorageTier {
 
         return FileOps.createDirectories(path.getParent())
                       .flatMap(_ -> existingSize(path))
-                      .flatMap(previousSize -> writer.apply(partial, content)
-                                                     .flatMap(_ -> FileOps.moveReplace(partial, path))
-                                                     .onSuccess(_ -> correctUsedBytes(previousSize))
-                                                     .onFailure(_ -> discardFailedWrite(partial))
-                                                     .mapToUnit());
+                      .flatMap(previousSize -> writeThenRename(partial, path, content, previousSize));
+    }
+
+    private Result<Unit> writeThenRename(Path partial, Path path, byte[] content, long previousSize) {
+        return writer.apply(partial, content)
+                     .flatMap(_ -> FileOps.moveReplace(partial, path))
+                     .onSuccess(_ -> correctUsedBytes(previousSize))
+                     .onFailure(_ -> discardFailedWrite(partial))
+                     .mapToUnit();
     }
 
     /// Only what THIS write created is discarded: the partial file, whether it holds nothing (the
@@ -240,13 +245,8 @@ public final class LocalDiskTier implements StorageTier {
     /// counted: it is never served (reads use the block path) and nothing else would ever delete it.
     private void calculateUsedBytes() {
         FileOps.walk(basePath, FileOps::isRegularFile)
-               .onSuccess(paths -> paths.stream()
-                                        .filter(LocalDiskTier::isPartial)
-                                        .forEach(LocalDiskTier::removeLeftoverPartial))
-               .map(paths -> paths.stream()
-                                  .filter(path -> !isPartial(path))
-                                  .mapToLong(LocalDiskTier::fileSizeOrZero)
-                                  .sum())
+               .onSuccess(LocalDiskTier::removeLeftoverPartials)
+               .map(LocalDiskTier::blockBytes)
                .onSuccess(this::recordUsedBytes)
                .onFailure(cause -> log.warn("Failed to calculate used bytes at {}: {}",
                                             basePath,
@@ -260,6 +260,17 @@ public final class LocalDiskTier implements StorageTier {
 
     private static long fileSizeOrZero(Path path) {
         return FileOps.size(path).or(0L);
+    }
+
+    private static void removeLeftoverPartials(List<Path> paths) {
+        paths.stream().filter(LocalDiskTier::isPartial).forEach(LocalDiskTier::removeLeftoverPartial);
+    }
+
+    private static long blockBytes(List<Path> paths) {
+        return paths.stream()
+                    .filter(path -> !isPartial(path))
+                    .mapToLong(LocalDiskTier::fileSizeOrZero)
+                    .sum();
     }
 
     private static boolean isPartial(Path path) {
