@@ -6,6 +6,7 @@ package org.pragmatica.aether.config.cluster;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -37,10 +38,6 @@ public final class ClusterBootstrapConfigValidator {
 
     private static final Set<RuntimeType> CLOUD_RUNTIME_TYPES = EnumSet.of(RuntimeType.CONTAINER, RuntimeType.JVM);
 
-    private static final Set<RuntimeType> SSH_RUNTIME_TYPES = EnumSet.of(RuntimeType.CONTAINER,
-                                                                         RuntimeType.JVM,
-                                                                         RuntimeType.EMBER);
-
     private ClusterBootstrapConfigValidator() {}
 
     public static Result<ClusterBootstrapConfig> validate(ClusterBootstrapConfig config) {
@@ -49,6 +46,7 @@ public final class ClusterBootstrapConfigValidator {
         validateClusterLevel(config, errors);
         validateCoreTopology(config, errors);
         validateSources(config, errors);
+        validateSshHostsUniqueAcrossSources(config, errors);
         validatePortDistinctness(config, errors);
         validateAutoHealDisableHonesty(config, errors);
         if (errors.isEmpty()) {
@@ -597,11 +595,13 @@ public final class ClusterBootstrapConfigValidator {
                                         String runtimeRef,
                                         RuntimeType runtimeType,
                                         List<String> errors) {
-        if (!SSH_RUNTIME_TYPES.contains(runtimeType)) {
+        // #1090 review SF-2: the deploy phase launches only a container over SSH; admitting JVM/EMBER
+        // here meant every other source provisioned before DEPLOY_RUNTIME refused the profile by name.
+        if (runtimeType != RuntimeType.CONTAINER) {
             errors.add("PF-22: SSH source '" + sourceName
                       + "' role '" + role.value()
                       + "' runtime '" + runtimeRef
-                      + "' must be CONTAINER, JVM, or EMBER, got " + runtimeType.value());
+                      + "' must be CONTAINER (only a container is launched over SSH), got " + runtimeType.value());
         }
     }
 
@@ -624,6 +624,33 @@ public final class ClusterBootstrapConfigValidator {
 
     private static void collectDuplicateHosts(List<String> hosts, Set<String> seen, Set<String> duplicates) {
         hosts.stream().filter(host -> !seen.add(host)).forEach(duplicates::add);
+    }
+
+    /// PF-27 (#1090 review SF-3): PF-09 is intra-source; a host declared by two SSH sources was
+    /// launched by both deploys, the second `docker run` replacing the first. One host runs one node.
+    private static void validateSshHostsUniqueAcrossSources(ClusterBootstrapConfig config, List<String> errors) {
+        var owners = new HashMap<String, String>();
+
+        config.sources()
+              .forEach((name, source) -> sshHosts(source).forEach(host -> Option.option(owners.putIfAbsent(host, name))
+                                                                                .filter(owner -> !owner.equals(name))
+                                                                                .onPresent(owner -> errors.add("PF-27: Host '" + host
+                                                                                                              + "' is declared by SSH sources '" + owner
+                                                                                                              + "' and '" + name
+                                                                                                              + "' — one host runs one node"))));
+    }
+
+    private static List<String> sshHosts(SourceProfile source) {
+        if (source.type() != SourceType.SSH) {
+            return List.of();
+        }
+
+        return source.roles()
+                     .values()
+                     .stream()
+                     .flatMap(sub -> sub.hosts().stream().flatMap(List::stream))
+                     .distinct()
+                     .toList();
     }
 
     private static void validatePortDistinctness(ClusterBootstrapConfig config, List<String> errors) {

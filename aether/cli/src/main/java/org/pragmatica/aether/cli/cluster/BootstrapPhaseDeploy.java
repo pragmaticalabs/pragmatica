@@ -758,10 +758,11 @@ sealed interface BootstrapPhaseDeploy {
     /// hand-rolled copy of: only THIS source's hosts (exact id attribution, not every `ssh` node
     /// in the context), each with its OWN role (label + `AETHER_ROLE`, else the node classifies
     /// itself as CORE), the image the runtime profile resolves to (never `:latest`), and the
-    /// identity allow-list the cloud path emits. The container is the only runtime this path can
-    /// launch: a JVM or Ember profile on an SSH source is refused by name rather than silently
-    /// run as a container — installing a JVM unit over SSH is the cloud-init script's job and has
-    /// no SSH equivalent yet.
+    /// [ClusterIdentityEnv#IDENTITY_VARS] env names the cloud path forwards from the operator's
+    /// host env. The container is the only runtime this path can launch: the validator refuses a
+    /// JVM or Ember profile on an SSH source at config load (PF-22, before anything provisions),
+    /// and this path refuses it by name again rather than silently run it as a container —
+    /// installing a JVM unit over SSH is the cloud-init script's job and has no SSH equivalent yet.
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
     static Result<Unit> deploySshSource(BootstrapContext ctx,
                                         SourceProfile source,

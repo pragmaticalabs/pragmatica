@@ -219,10 +219,11 @@ At least one role sub-table per source is expected in practice (`core` in the ex
 
 **Source/runtime compatibility** (validator codes `PF-19`..`PF-22`): `forge` sources require `EMBER`
 runtime; `docker` sources require `DOCKER`; `cloud` sources require `CONTAINER` or `JVM`; `ssh` sources
-allow `CONTAINER`, `JVM`, or `EMBER` at validation, **but the deploy phase can launch only `CONTAINER`
-over SSH in this release** — a `JVM` or `EMBER` profile on an `ssh` source is refused by name at
-DEPLOY_RUNTIME rather than silently run as a container (#1090). A mismatch fails validation before
-provisioning starts.
+require `CONTAINER` — the deploy phase can launch only a container over SSH in this release, so a
+`JVM` or `EMBER` profile on an `ssh` source is refused at config load (`PF-22`), before any other
+source provisions (#1090); the deploy phase refuses it by name again as a backstop. A mismatch fails
+validation before provisioning starts. A host may be declared by at most one `ssh` source (`PF-27`);
+`PF-09` covers the same host twice within one source.
 
 ### `[infrastructure.networking]` / `[infrastructure.ssh]`
 
