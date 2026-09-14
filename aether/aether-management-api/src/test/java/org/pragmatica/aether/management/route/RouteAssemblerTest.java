@@ -106,13 +106,15 @@ class RouteAssemblerTest {
 
     /// #725 (2) is NOT a defect: `/` inside a value is load-bearing. `aether artifact …` builds
     /// `groupPath = group.replace('.', '/')` (`AetherCli`) and passes it as ONE value to
-    /// `ARTIFACT_GET`/`PUT`/`INFO`/`DELETE`/`MAVEN_METADATA`, whose `groupPath` param spans as
+    /// `ARTIFACT_GET`/`PUT`/`DELETE`/`MAVEN_METADATA`, whose `groupPath` param spans as
     /// many segments as the group has dots. `assemble_urlEncodesSegments` above pins the
     /// un-escape; this pins the caller's shape so the reason is next to the rule.
     @Test
     void assemble_groupPathWithSlashes_spansSegments_becauseMavenRoutesNeedIt() {
-        var path = ManagementRoute.ARTIFACT_INFO.assemble("org/example", "hello", "1.0.0");
-        path.onSuccess(p -> assertThat(p).isEqualTo("/repository/info/org/example/hello/1.0.0"));
+        // ARTIFACT_GET, not ARTIFACT_INFO: the server positional-parses INFO's dotted group and
+        // does not honour the spanning form there (#1102); GET/PUT/DELETE/MAVEN_METADATA do.
+        var path = ManagementRoute.ARTIFACT_GET.assemble("org/example", "hello", "1.0.0", "hello-1.0.0.jar");
+        path.onSuccess(p -> assertThat(p).isEqualTo("/repository/org/example/hello/1.0.0/hello-1.0.0.jar"));
         assertThat(path.isSuccess()).isTrue();
     }
 
