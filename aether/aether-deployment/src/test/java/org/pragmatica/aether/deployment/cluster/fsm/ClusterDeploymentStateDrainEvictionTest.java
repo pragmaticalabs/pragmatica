@@ -78,6 +78,9 @@ class ClusterDeploymentStateDrainEvictionTest {
     private RecordingClusterNode cluster;
     private FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness;
     private final AtomicReference<Set<NodeId>> draining = new AtomicReference<>(Set.of());
+    /// The counted (effective) membership. Mutable so a test can model the COMMANDED drain, whose
+    /// target is `Departing` and therefore uncounted from t0 — see the SF-2 scope control below.
+    private final AtomicReference<Set<NodeId>> counted = new AtomicReference<>(Set.of(SELF, NODE_A, NODE_D));
 
     @BeforeEach
     void setUp() {
@@ -92,7 +95,7 @@ class ClusterDeploymentStateDrainEvictionTest {
                                                     router,
                                                     stubTopologyManager(SELF),
                                                     stubSchemaOrchestrator(),
-                                                    () -> Set.of(SELF, NODE_A, NODE_D),
+                                                    counted::get,
                                                     () -> Set.of(SELF, NODE_A),
                                                     draining::get,
                                                     Set.of(SELF, NODE_A, NODE_D),
@@ -207,6 +210,39 @@ class ClusterDeploymentStateDrainEvictionTest {
                                       .hasSize(1);
     }
 
+    /// #688 round 2, SF-2 — the SCOPE control for every other test in this class. They supply a
+    /// COUNTED drainee, which models the self-initiated drain (`QUORUM_LOSS`), where the leader's FSM
+    /// never saw a request and the node stays in the effective set until it halts. A COMMANDED drain
+    /// is not that shape: `requestDrainThroughFsm` → `MembershipFsm.onDrainRequested` puts the target
+    /// in `Departing`, whose `countsTowardEffective()` is false, so it leaves the counted set at t0 —
+    /// before any DRAINING pong. `cleanupStaleSliceEntries` then drops its slice entries at the end of
+    /// each `reconcile()` and the blueprint is re-placed from zero instances, by reconcile rather than
+    /// by the eviction loop, which afterwards finds nothing on the node at all.
+    ///
+    /// Without this, the fixture's counted drainee could silently drift from the producers and the
+    /// class would read as a statement about drains in general.
+    @Test
+    void commandedDrain_uncountedDrainee_isReplacedByReconcileAndLeavesTheEvictionLoopNothingToDo() {
+        counted.set(Set.of(SELF, NODE_A));
+        draining.set(Set.of(NODE_D));
+
+        activeState().reconcile();
+
+        assertThat(removalsFor(NODE_D)).as("arming: reconcile cleaned the uncounted node's slice entries — the "
+                                           + "mechanism that makes this path differ from the counted one")
+                                       .isNotEmpty();
+        assertThat(replacementLoads()).as("the replacement for a commanded drain comes from reconcile's re-placement, "
+                                          + "not from the drain-eviction loop")
+                                      .hasSize(1);
+
+        cluster.commands.clear();
+        harness.dispatch(new NodeDrainingReported(NODE_D));
+
+        assertThat(replacementLoads()).as("by the time the DRAINING pong lands there is nothing left on the node to "
+                                          + "evict, so the loop issues nothing")
+                                      .isEmpty();
+    }
+
     /// Control for the fixture: the eviction arm itself works when driven by the legacy decision,
     /// so a red above is about the ENTRY POINT, not the loop.
     @Test
@@ -240,6 +276,16 @@ class ClusterDeploymentStateDrainEvictionTest {
                                                   && !key.nodeId().equals(NODE_D)
                                                   && put.value() instanceof NodeArtifactValue value
                                                   && value.state() == SliceState.LOAD)
+                               .toList();
+    }
+
+    /// Every KV removal the leader issued for a key naming `nodeId`.
+    private List<KVCommand<AetherKey>> removalsFor(NodeId nodeId) {
+        return cluster.commands.stream()
+                               .filter(command -> command instanceof KVCommand.Remove<AetherKey> remove
+                                                  && remove.key()
+                                                           .toString()
+                                                           .contains(nodeId.id()))
                                .toList();
     }
 
