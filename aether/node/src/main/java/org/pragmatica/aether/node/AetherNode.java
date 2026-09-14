@@ -4931,15 +4931,19 @@ public interface AetherNode extends ManageableNode {
         Option.option(quorumLossDetectorRef.get()).onPresent(detector -> detector.onQuorumPresence(notification.state() != ClusterStateNotification.State.PASSIVE));
     }
 
+    /// #517: self is in its own topology by the time assembly runs — `TopologyObserver.topologyObserver`
+    /// (via `RabiaNode.rabiaNode`, before `assembleNode`) refuses the config otherwise, pinned by
+    /// `AetherNodeSelfAbsentFromTopologyBootTest`. The old `.orElse(new NodeAddress("", 0))` was a
+    /// dead branch that would have advertised a placeholder silently if that ordering ever changed.
     private static NodeAddress findSelfAddress(AetherNodeConfig config) {
-        return config.topology()
-                     .coreNodes()
-                     .stream()
-                     .filter(info -> info.id()
-                                         .equals(config.self()))
-                     .map(NodeInfo::address)
-                     .findFirst()
-                     .orElse(new NodeAddress("", 0));
+        return Option.from(config.topology()
+                                 .coreNodes()
+                                 .stream()
+                                 .filter(info -> info.id()
+                                                     .equals(config.self()))
+                                 .map(NodeInfo::address)
+                                 .findFirst()).expect("self " + config.self()
+                                                     + " absent from its own topology — refused by TopologyObserver.topologyObserver before assembly (#517)");
     }
 
     private static AetherValue.ProvisioningSource detectProvisioningSource() {
@@ -5765,16 +5769,9 @@ public interface AetherNode extends ManageableNode {
         return resolveLongEnv("CLUSTER_EVENTS_MAX_EVENT_SIZE_BYTES", 64L * 1024);
     }
 
+    /// #517: same invariant as [#findSelfAddress]; `localhost` was a dead placeholder, never a default.
     private static String resolveHostname(AetherNodeConfig config) {
-        return config.topology()
-                     .coreNodes()
-                     .stream()
-                     .filter(n -> n.id()
-                                   .equals(config.self()))
-                     .findFirst()
-                     .map(n -> n.address()
-                                .host())
-                     .orElse("localhost");
+        return findSelfAddress(config).host();
     }
 
     private static List<MessageRouter.Entry<?>> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,
