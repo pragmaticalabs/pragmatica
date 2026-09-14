@@ -89,6 +89,7 @@ public class RouteSourceGenerator {
     /// `slice-processor-tests` pins the two constants equal. `1` is the #763 contract (no
     /// `[security]` → `SecurityPolicy.unspecified()`); bump both sides together.
     public static final int ROUTE_SECURITY_CONTRACT = 1;
+
     private static final Map<String, String> TYPE_TO_PATH_PARAMETER = Map.ofEntries(Map.entry("String", "aString"),
                                                                                     Map.entry("java.lang.String",
                                                                                               "aString"),
