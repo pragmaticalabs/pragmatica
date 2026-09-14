@@ -9,6 +9,8 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Locale;
+import java.util.regex.Pattern;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
@@ -398,12 +400,16 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
                : "";
     }
 
+    /// The classifier is what follows the file's `<artifactId>-<version>` stem. Maven 3 deploys every
+    /// SNAPSHOT under a unique timestamped stem — `<artifactId>-<base>-<yyyyMMdd.HHmmss>-<n>` inside
+    /// the `<base>-SNAPSHOT` directory — so that stem is accepted too; before, a timestamped
+    /// `-sources.jar` read as unclassified and collided with the jar (#281 round 2).
     private String extractClassifier(String fileName, String artifactId, String version) {
-        var prefix = artifactId + "-" + version;
+        var stemEnd = stemLength(fileName, artifactId, version);
 
-        if (!fileName.startsWith(prefix)) return "";
+        if (stemEnd < 0) return "";
 
-        var remainder = fileName.substring(prefix.length());
+        var remainder = fileName.substring(stemEnd);
 
         if (remainder.startsWith("-")) {
             var dotIndex = remainder.indexOf('.');
@@ -420,6 +426,29 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
     /// one (falling back to `<latest>` when every version is a snapshot); `<versions>` lists them
     /// ascending. The versions list is stored in deploy order, so "last deployed" used to be
     /// reported as latest (#281).
+    private static final Pattern TIMESTAMP_SUFFIX = Pattern.compile("^-\\d{8}\\.\\d{6}-\\d+");
+    private static final String SNAPSHOT_SUFFIX = "-SNAPSHOT";
+
+    /// Length of the `<artifactId>-<version>` stem, or of the timestamped SNAPSHOT stem
+    /// `<artifactId>-<base>-<yyyyMMdd.HHmmss>-<n>` when the version is a snapshot; -1 if neither.
+    private static int stemLength(String fileName, String artifactId, String version) {
+        var plain = artifactId + "-" + version;
+
+        if (fileName.startsWith(plain)) return plain.length();
+
+        if (!version.toUpperCase(Locale.ROOT).endsWith(SNAPSHOT_SUFFIX)) return -1;
+
+        var base = artifactId + "-" + version.substring(0, version.length() - SNAPSHOT_SUFFIX.length());
+
+        if (!fileName.startsWith(base)) return -1;
+
+        var matcher = TIMESTAMP_SUFFIX.matcher(fileName.substring(base.length()));
+
+        return matcher.find()
+               ? base.length() + matcher.end()
+               : -1;
+    }
+
     private String generateMavenMetadata(GroupId groupId, ArtifactId artifactId, List<Version> unordered) {
         var versions = unordered.stream().sorted(VersionOrder.INSTANCE).toList();
         var latest = versions.getLast();

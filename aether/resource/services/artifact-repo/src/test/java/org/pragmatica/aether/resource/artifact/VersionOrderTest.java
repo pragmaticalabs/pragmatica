@@ -12,7 +12,9 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #281 — `<latest>`/`<release>` order: numeric parts, then Maven's canonical qualifier order.
+/// #281 — `<latest>`/`<release>` order: numeric parts, then the qualifier as Maven's
+/// `ComparableVersion` ranks it. Every `LOWER_THAN` row was checked against `ComparableVersion`
+/// 3.9.12 (verify-1132); bare `a`/`b` are unknown qualifiers there, hence above the release.
 class VersionOrderTest {
     private record Row(String lower, String higher) {}
 
@@ -30,9 +32,17 @@ class VersionOrderTest {
         new Row("1.0.0", "1.0.0-sp1"),
         new Row("1.0.0-m2", "1.0.0-cr1"),
         new Row("1.0.0-rc1", "1.0.0-custom"),
-        new Row("1.0.0-custom", "1.0.0-SNAPSHOT"),
+        new Row("1.0.0-SNAPSHOT", "1.0.0-custom"),
+        new Row("1.0.0-sp1", "1.0.0-custom"),
+        new Row("1.0.0-custom", "1.0.0-zzz"),
         new Row("1.0.0-final", "1.0.0-sp1"),
-        new Row("1.0.0", "1.0.0-1"));
+        new Row("1.0.0", "1.0.0-1"),
+        new Row("1.0.0-rc4-SNAPSHOT", "1.0.0-rc4"),
+        new Row("1.0.0-rc4-SNAPSHOT", "1.0.0-SNAPSHOT"),
+        new Row("1.0.0-rc4", "1.0.0-rc5-SNAPSHOT"),
+        new Row("1.0.0-beta-snapshot", "1.0.0-beta"),
+        new Row("1.0.0-alpha", "1.0.0-a"),
+        new Row("1.0.0", "1.0.0-b"));
 
     private static final List<Row> EQUIVALENT = List.of(
         new Row("1.0.0", "1.0.0-ga"),

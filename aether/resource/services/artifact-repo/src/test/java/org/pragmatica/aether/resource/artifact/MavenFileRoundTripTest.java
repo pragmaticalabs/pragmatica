@@ -31,6 +31,7 @@ class MavenFileRoundTripTest {
     private static final byte[] JAR = "jar-bytes".getBytes(StandardCharsets.UTF_8);
     private static final byte[] POM = "<project/>".getBytes(StandardCharsets.UTF_8);
     private static final byte[] SOURCES = "sources-bytes".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] JAVADOC = "javadoc-bytes".getBytes(StandardCharsets.UTF_8);
 
     private ConcurrentHashMap<String, byte[]> dht;
     private MavenProtocolHandler handler;
@@ -81,6 +82,38 @@ class MavenFileRoundTripTest {
 
         assertThat(get(BASE + ".pom").statusCode()).as("no pom was deployed").isEqualTo(404);
         assertThat(get(BASE + "-javadoc.jar").statusCode()).isEqualTo(404);
+    }
+
+    // verify-1132 B1: Maven 3 deploys every SNAPSHOT under a timestamped unique name; each file of
+    // that deploy is its own entry under the SNAPSHOT version, and the plain SNAPSHOT name reads it.
+    @Test
+    void timestampedSnapshotDeploy_keysEveryFileSeparately() {
+        var dir = "/repository/org/example/lib/1.0.0-SNAPSHOT/lib-1.0.0-20260914.010203-1";
+
+        assertThat(body(put(dir + ".jar", JAR))).contains("\"status\":\"uploaded\"");
+        assertThat(body(put(dir + ".pom", POM))).contains("\"status\":\"uploaded\"");
+        assertThat(body(put(dir + "-sources.jar", SOURCES))).as("a timestamped -sources.jar is not the jar")
+                                                            .contains("\"status\":\"uploaded\"");
+        assertThat(body(put(dir + "-javadoc.jar", JAVADOC))).contains("\"status\":\"uploaded\"");
+
+        assertThat(get(dir + "-sources.jar").content()).isEqualTo(SOURCES);
+        assertThat(get(dir + "-javadoc.jar").content()).isEqualTo(JAVADOC);
+        assertThat(get(dir + ".jar").content()).isEqualTo(JAR);
+        assertThat(get(dir + ".pom").content()).isEqualTo(POM);
+        assertThat(get("/repository/org/example/lib/1.0.0-SNAPSHOT/lib-1.0.0-SNAPSHOT-sources.jar").content())
+            .as("the plain SNAPSHOT name addresses the same file").isEqualTo(SOURCES);
+
+        assertThat(dht.keySet()).containsExactlyInAnyOrder(
+            "artifacts/org.example/lib/1.0.0-SNAPSHOT/jar/meta",
+            "artifacts/org.example/lib/1.0.0-SNAPSHOT/pom/meta",
+            "artifacts/org.example/lib/1.0.0-SNAPSHOT/sources.jar/meta",
+            "artifacts/org.example/lib/1.0.0-SNAPSHOT/javadoc.jar/meta",
+            "artifacts/org.example/lib/1.0.0-SNAPSHOT/files",
+            "artifacts/org.example/lib/versions");
+
+        var xml = body(get("/repository/org/example/lib/maven-metadata.xml"));
+
+        assertThat(xml.split("<version>1.0.0-SNAPSHOT</version>", -1)).as("listed once").hasSize(2);
     }
 
     @Test

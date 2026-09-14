@@ -12,7 +12,6 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
-import java.util.stream.Collectors;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
@@ -395,9 +394,9 @@ class ArtifactStoreImpl implements ArtifactStore {
                                  .or(List.of()));
     }
 
-    /// Removes the file's metadata key and, for the PRIMARY file, the version's entry in the
-    /// versions list — a version without its jar is not a resolvable version, while a deleted
-    /// sidecar leaves the version listed. The content chunks are NOT released: they are
+    /// Removes the file's metadata key and its entry in the version's file list; deleting the LAST
+    /// remaining file of a version removes the version from the versions list (CTO ruling, #281
+    /// round 2 — a pom-only version is delisted with its pom). The content chunks are NOT released: they are
     /// content-addressed and shared across artifacts and across the cluster-shared DHT tier, so
     /// releasing one artifact's chunks needs a cluster-wide reference index (#281 follow-up).
     @Override
@@ -421,6 +420,7 @@ class ArtifactStoreImpl implements ArtifactStore {
 
         return dhtPutWithRetry(metaKey(file),
                                metadata.toBytes()).flatMap(_ -> updateVersionsList(file.artifact()))
+                              .flatMap(_ -> registerFile(file))
                               .map(_ -> recordDeployMetrics(file, contentLength, chunkCount, md5, sha1));
     }
 
@@ -523,32 +523,41 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     private Promise<Unit> deleteMetadata(ArtifactFile file, ArtifactMetadata meta) {
         return dht.remove(metaKey(file))
-                  .flatMap(_ -> file.isPrimary()
-                                ? removeFromVersionsList(file.artifact())
-                                : Promise.unitPromise())
+                  .flatMap(_ -> unregisterFile(file))
                   .map(_ -> recordDeleteMetrics(meta));
     }
 
     private Promise<Unit> updateVersionsList(Artifact artifact) {
-        return rewriteVersionsList(artifact, versions -> addVersionIfAbsent(versions, artifact.version()));
+        return rewriteList(versionsKey(artifact.groupId(), artifact.artifactId()),
+                           versions -> addIfAbsent(versions, artifact.version().withQualifier())).map(Unit::unit);
     }
 
     private Promise<Unit> removeFromVersionsList(Artifact artifact) {
-        return rewriteVersionsList(artifact,
-                                   versions -> versions.stream()
-                                                       .filter(v -> !v.equals(artifact.version()))
-                                                       .toList());
+        return rewriteList(versionsKey(artifact.groupId(), artifact.artifactId()),
+                           versions -> without(versions, artifact.version().withQualifier())).map(Unit::unit);
     }
 
-    /// Get-then-put on the versions list; two concurrent rewrites can lose one another's change
-    /// (pre-existing, #281 item 4).
-    private Promise<Unit> rewriteVersionsList(Artifact artifact, Function<List<Version>, List<Version>> change) {
-        var versionsKey = versionsKey(artifact.groupId(), artifact.artifactId());
+    private Promise<Unit> registerFile(ArtifactFile file) {
+        return rewriteList(filesKey(file.artifact()), files -> addIfAbsent(files, file.fileName())).map(Unit::unit);
+    }
 
-        return dht.get(versionsKey)
-                  .map(opt -> change.apply(opt.map(this::parseVersionsList).or(List.of())))
-                  .flatMap(versions -> dhtPutWithRetry(versionsKey,
-                                                       serializeVersionsList(versions)));
+    /// Drops the file from the version's file list; an emptied list delists the version.
+    private Promise<Unit> unregisterFile(ArtifactFile file) {
+        return rewriteList(filesKey(file.artifact()), files -> without(files, file.fileName()))
+                          .flatMap(remaining -> remaining.isEmpty()
+                                                ? removeFromVersionsList(file.artifact())
+                                                : Promise.unitPromise());
+    }
+
+    /// Get-then-put on a comma-separated list key, yielding the list as written; an emptied list
+    /// removes the key. Two concurrent rewrites can lose one another's change (pre-existing, #281
+    /// item 4 — the same race now covers the file list).
+    private Promise<List<String>> rewriteList(byte[] key, Function<List<String>, List<String>> change) {
+        return dht.get(key)
+                  .map(opt -> change.apply(opt.map(ArtifactStoreImpl::parseList).or(List.of())))
+                  .flatMap(items -> items.isEmpty()
+                                    ? dht.remove(key).map(_ -> items)
+                                    : dhtPutWithRetry(key, serializeList(items)).map(_ -> items));
     }
 
     private Promise<Unit> dhtPutWithRetry(byte[] key, byte[] value) {
@@ -704,39 +713,43 @@ class ArtifactStoreImpl implements ArtifactStore {
         SharedScheduler.schedule(() -> storagePutWithRetry(chunk, nextAttempt).onResult(result::resolve), backoff);
     }
 
-    private List<Version> addVersionIfAbsent(List<Version> existing, Version version) {
-        if (existing.contains(version)) {
+    private static List<String> addIfAbsent(List<String> existing, String item) {
+        if (existing.contains(item)) {
             return existing;
         }
 
-        var versions = new ArrayList<>(existing);
+        var items = new ArrayList<>(existing);
 
-        versions.add(version);
+        items.add(item);
 
-        return versions;
+        return items;
+    }
+
+    private static List<String> without(List<String> existing, String item) {
+        return existing.stream().filter(i -> !i.equals(item)).toList();
+    }
+
+    private static List<String> parseList(byte[] data) {
+        var str = new String(data, StandardCharsets.UTF_8);
+
+        return str.isEmpty()
+               ? List.of()
+               : List.of(str.split(","));
     }
 
     @Contract
     private List<Version> parseVersionsList(byte[] data) {
-        var str = new String(data, StandardCharsets.UTF_8);
-
-        if (str.isEmpty()) {
-            return new ArrayList<>();
-        }
-
         var versions = new ArrayList<Version>();
 
-        for (var v : str.split(",")) {
+        for (var v : parseList(data)) {
             Version.version(v).onSuccess(versions::add);
         }
 
         return versions;
     }
 
-    private byte[] serializeVersionsList(List<Version> versions) {
-        var str = versions.stream().map(Version::withQualifier).collect(Collectors.joining(","));
-
-        return str.getBytes(StandardCharsets.UTF_8);
+    private static byte[] serializeList(List<String> items) {
+        return String.join(",", items).getBytes(StandardCharsets.UTF_8);
     }
 
     private DeployResult recordDeployMetrics(ArtifactFile file,
@@ -769,6 +782,17 @@ class ArtifactStoreImpl implements ArtifactStore {
                 + "/" + artifact.version().withQualifier()
                 + "/" + file.fileName()
                 + "/meta";
+
+        return key.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /// The files deployed for one version — `artifacts/<group>/<artifact>/<version>/files` — so a
+    /// delete can tell whether it removed the version's last file.
+    private byte[] filesKey(Artifact artifact) {
+        var key = "artifacts/" + artifact.groupId().id()
+                + "/" + artifact.artifactId().id()
+                + "/" + artifact.version().withQualifier()
+                + "/files";
 
         return key.getBytes(StandardCharsets.UTF_8);
     }

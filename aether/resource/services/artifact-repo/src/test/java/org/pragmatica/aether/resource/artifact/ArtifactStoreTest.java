@@ -10,6 +10,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.resource.artifact.ArtifactStore.ArtifactStoreError;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.storage.BlockId;
@@ -236,7 +237,10 @@ class ArtifactStoreTest {
                 "artifacts/org.example/keyed/1.0.0-rc4/jar/meta",
                 "artifacts/org.example/keyed/1.0.0-rc4/pom/meta",
                 "artifacts/org.example/keyed/1.0.0-rc4/sources.jar/meta",
+                "artifacts/org.example/keyed/1.0.0-rc4/files",
                 "artifacts/org.example/keyed/versions");
+            assertThat(new String(dhtStorage.get("artifacts/org.example/keyed/1.0.0-rc4/files"), StandardCharsets.UTF_8))
+                .isEqualTo("jar,pom,sources.jar");
         }
 
         @Test
@@ -256,57 +260,98 @@ class ArtifactStoreTest {
         }
     }
 
+    /// #281 round 2 (CTO ruling): a version is listed while ANY of its files exists; deleting the
+    /// last remaining file — primary or not — delists it.
     @Nested
     class FileDeleteTests {
         private final Artifact artifact = Artifact.artifact("org.example:files:1.0.0").unwrap();
         private final ArtifactFile pom = ArtifactFile.artifactFile(artifact, "", "pom");
         private final byte[] content = "file content".getBytes(StandardCharsets.UTF_8);
 
-        @Test
-        void deletePrimary_removesTheVersionEntry() {
-            store.deploy(artifact, content).await().onFailureRun(Assertions::fail);
-            store.deploy(pom, content).await().onFailureRun(Assertions::fail);
+        private void deploy(ArtifactFile file) {
+            store.deploy(file, content).await().onFailureRun(Assertions::fail);
+        }
 
-            store.delete(artifact).await().onFailureRun(Assertions::fail);
+        private void delete(ArtifactFile file) {
+            store.delete(file).await().onFailureRun(Assertions::fail);
+        }
 
-            store.versions(artifact.groupId(), artifact.artifactId())
-                 .await()
-                 .onFailureRun(Assertions::fail)
-                 .onSuccess(versions -> assertThat(versions).as("a version without its jar is not listed").isEmpty());
-            store.exists(pom)
-                 .await()
-                 .onFailureRun(Assertions::fail)
-                 .onSuccess(exists -> assertThat(exists).as("the pom is its own entry").isTrue());
+        private boolean exists(ArtifactFile file) {
+            return store.exists(file).await().onFailureRun(Assertions::fail).unwrap();
+        }
+
+        private List<Version> versions() {
+            return store.versions(artifact.groupId(), artifact.artifactId()).await().onFailureRun(Assertions::fail).unwrap();
         }
 
         @Test
-        void deleteSidecar_keepsTheVersionEntryAndThePrimary() {
-            store.deploy(artifact, content).await().onFailureRun(Assertions::fail);
-            store.deploy(pom, content).await().onFailureRun(Assertions::fail);
+        void deletePrimaryWhileSidecarRemains_keepsTheVersionListed() {
+            deploy(ArtifactFile.primary(artifact));
+            deploy(pom);
 
-            store.delete(pom).await().onFailureRun(Assertions::fail);
+            delete(ArtifactFile.primary(artifact));
 
-            store.exists(pom).await().onSuccess(exists -> assertThat(exists).isFalse());
-            store.exists(artifact).await().onSuccess(exists -> assertThat(exists).isTrue());
-            store.versions(artifact.groupId(), artifact.artifactId())
-                 .await()
-                 .onFailureRun(Assertions::fail)
-                 .onSuccess(versions -> assertThat(versions).hasSize(1));
+            assertThat(exists(ArtifactFile.primary(artifact))).isFalse();
+            assertThat(exists(pom)).as("the pom is its own entry").isTrue();
+            assertThat(versions()).as("a file of the version still exists").containsExactly(artifact.version());
+        }
+
+        @Test
+        void deleteSidecarWhilePrimaryRemains_keepsTheVersionListed() {
+            deploy(ArtifactFile.primary(artifact));
+            deploy(pom);
+
+            delete(pom);
+
+            assertThat(exists(pom)).isFalse();
+            assertThat(exists(ArtifactFile.primary(artifact))).isTrue();
+            assertThat(versions()).containsExactly(artifact.version());
+        }
+
+        @Test
+        void deleteLastRemainingFile_delistsTheVersion_whateverTheFile() {
+            deploy(ArtifactFile.primary(artifact));
+            deploy(pom);
+
+            delete(ArtifactFile.primary(artifact));
+            delete(pom);
+
+            assertThat(versions()).as("no file of the version is left").isEmpty();
+            assertThat(dhtStorage.keySet()).as("the version's file list is gone with its last file")
+                                           .doesNotContain("artifacts/org.example/files/1.0.0/files");
+        }
+
+        @Test
+        void pomOnlyVersion_isDelistedWithItsPom() {
+            deploy(pom);
+
+            assertThat(versions()).containsExactly(artifact.version());
+
+            delete(pom);
+
+            assertThat(versions()).isEmpty();
         }
 
         @Test
         void deleteOneVersion_leavesTheOthersListed() {
             var other = Artifact.artifact("org.example:files:2.0.0").unwrap();
 
-            store.deploy(artifact, content).await().onFailureRun(Assertions::fail);
-            store.deploy(other, content).await().onFailureRun(Assertions::fail);
+            deploy(ArtifactFile.primary(artifact));
+            deploy(ArtifactFile.primary(other));
 
-            store.delete(artifact).await().onFailureRun(Assertions::fail);
+            delete(ArtifactFile.primary(artifact));
 
-            store.versions(artifact.groupId(), artifact.artifactId())
-                 .await()
-                 .onFailureRun(Assertions::fail)
-                 .onSuccess(versions -> assertThat(versions).containsExactly(other.version()));
+            assertThat(versions()).containsExactly(other.version());
+        }
+
+        @Test
+        void deleteOfANeverDeployedFile_isANoOp() {
+            deploy(ArtifactFile.primary(artifact));
+
+            delete(pom);
+
+            assertThat(versions()).containsExactly(artifact.version());
+            assertThat(exists(ArtifactFile.primary(artifact))).isTrue();
         }
     }
 
