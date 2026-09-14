@@ -6015,6 +6015,9 @@ public interface AetherNode extends ManageableNode {
                                               clusterTopologyManager::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                               clusterTopologyManager::onMembershipDecision));
+        // #689: the worker join channel reaches the CTM too, so a provisioned node's advertised role
+        // is compared against its provisioning intent on whichever channel it joins.
+        entries.add(MessageRouter.Entry.route(WorkerJoinDecision.class, clusterTopologyManager::onWorkerJoin));
         // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
                                               clusterTopologyManager::onSelfShutdown));

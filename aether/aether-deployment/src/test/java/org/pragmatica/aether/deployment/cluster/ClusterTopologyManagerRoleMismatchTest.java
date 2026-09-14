@@ -37,6 +37,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -174,6 +176,46 @@ class ClusterTopologyManagerRoleMismatchTest {
         ctm.onMembershipDecision(MembershipDecision.nodeJoined(PROVISIONED, List.of(SELF, PEER_A, PEER_B)));
 
         assertThat(appender.capturedWarns()).noneMatch(msg -> msg.contains(MISMATCH_MARKER));
+    }
+
+    /// The other direction: provisioned as CORE, booted labelled `worker`. Such a node never
+    /// appears in `MembershipDecision` (#728 routes it to the worker channel), so the comparison
+    /// must be reachable from `onWorkerJoin` or a core replacement that keeps missing the core set
+    /// is re-provisioned forever with nothing naming why.
+    @Test
+    void provisionedCore_joiningOnTheWorkerChannel_warnsAndIsListed() {
+        provision(PROVISIONED, NodeRole.CORE);
+
+        ctm.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(PROVISIONED, "worker", new HlcTimestamp(HlcTimestamp.pack(1L, 0), SELF)));
+
+        assertThat(appender.capturedWarns()).filteredOn(msg -> msg.contains(MISMATCH_MARKER))
+                                            .hasSize(1)
+                                            .first()
+                                            .asString()
+                                            .contains("intended role 'core'")
+                                            .contains("advertised role 'worker'")
+                                            .contains("classified as WORKER");
+        assertThat(ctm.roleMismatches()).as("#689: the mismatch is readable without log access")
+                                        .containsExactly(new ClusterTopologyManager.RoleMismatch(PROVISIONED, "core", "worker", "WORKER"));
+    }
+
+    /// The operator surface reads the same ledger the WARN writes; a node that departs takes its
+    /// entry with it (a relaunch with the right label arrives under a fresh id), and the intent is
+    /// consumed on first observation so a rejoin under the same id is not re-reported.
+    @Test
+    void ledger_listsTheMismatch_andDropsItWhenTheNodeIsRemoved() {
+        provision(PROVISIONED, NodeRole.WORKER);
+        observe(PROVISIONED, Map.of());
+
+        assertThat(ctm.roleMismatches()).as("control: nothing listed before the node is observed").isEmpty();
+
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(PROVISIONED, List.of(SELF, PEER_A, PEER_B)));
+
+        assertThat(ctm.roleMismatches()).containsExactly(new ClusterTopologyManager.RoleMismatch(PROVISIONED, "worker", "", "CORE"));
+
+        ctm.onMembershipDecision(MembershipDecision.nodeRemoved(PROVISIONED, List.of(SELF, PEER_A, PEER_B)));
+
+        assertThat(ctm.roleMismatches()).isEmpty();
     }
 
     private void provision(NodeId nodeId, NodeRole intendedRole) {
