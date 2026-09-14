@@ -242,13 +242,8 @@ class SwimFaultyReArmBootTest {
 
         selfPort = freePort();
         var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", selfPort).unwrap());
-        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(10).seconds(),
-                                                      timeSpan(15).seconds(),
-                                                      AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
-                                                      AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
+        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(15).seconds(),
                                                       timeSpan(1200).millis(),
-                                                      AutoHealConfig.DEFAULT_PROVISION_STABILITY_WINDOW,
-                                                      AutoHealConfig.DEFAULT_DECOMMISSIONED_RETENTION,
                                                       AutoHealConfig.DEFAULT_SWIM_HINTS_TTL)
                                     .onFailure(cause -> fail("auto-heal config: " + cause.message()))
                                     .unwrap();
