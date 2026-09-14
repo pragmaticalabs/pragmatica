@@ -63,9 +63,14 @@
   distinct named set: resource probe removed → exactly `…NothingHasLoadedFrom`; prefix discriminator restored →
   the two vendor-prefix unserved tests; array unwrap removed → the two array tests; slice loader itself counted as
   serving → all six jar-based tests; `[infra]` dropped from the message → the four unserved tests; no loader ever
-  serves → the four rebuild tests; the two-cause clause replaced by the old single-cause text → the six tests that
-  assert both causes; `loadedArtifacts` forced empty → the three tests that quote the loaded version; a parent-first
-  `getResource` in `serves` → `fails_namingTheOwningLoader_whenTheSharedLoaderAboveIsEmpty` alone].
+  serves → the four rebuild tests. Round 4, each run over the whole `aether/slice` module (799 `<testcase>`), the
+  three sets mutually non-subset: the two-cause clause replaced by the old single-cause text → 4 RED
+  (`…ServedByAJarNothingHasLoadedFrom`, `…ServedByAJarAClassWasLoadedFrom`,
+  `fails_namingBothCauses_when_factory_parameter_type_missing`,
+  `fails_namingTheLoadedVersion_whenTheSharedLoaderKeptTheFirstVersionOfTheArtifact`); `loadedArtifacts` forced
+  empty → 4 RED (those same three less `…when_factory_parameter_type_missing`, whose serving loader tracks no
+  artifacts, plus `names_theLoadedArtifactVersions_whenTheServingLoaderTracksThem`); a parent-first `getResource`
+  in `serves` → `fails_namingTheOwningLoader_whenTheSharedLoaderAboveIsEmpty` ALONE, disjoint from both].
 - **The owning loader is found with `findResource`, not `getResource`, and that choice is now pinned** (round-3
   SHOULD-FIX-1). `getResource` is parent-first, so it credits a child with its parent's contents: with it, a slice
   whose missing class's package is served only by the application loader is told the package is served by the
