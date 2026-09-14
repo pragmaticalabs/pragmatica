@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.slice.SharedLibraryClassLoader;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
@@ -197,14 +198,49 @@ public interface SliceFactory {
                                                               + " — slice was compiled against an older runtime; rebuild against this runtime version");
     }
 
-    private static Cause incompatibleRuntime(String context, String missingClass, ClassLoader owner) {
+    /// Two causes produce this state and nothing observable here separates them: the class was removed
+    /// by a runtime or artifact upgrade, or the serving loader holds a DIFFERENT VERSION of the
+    /// artifact than the slice was built against — `SharedLibraryClassLoader.addArtifact` keeps the
+    /// first version loaded for a `groupId:artifactId` and ignores every later one, so a second slice
+    /// asking for a newer version is served the older jar. The message states the evidence — which
+    /// loader serves the package, its jars, and the artifact versions it holds — names both remedies
+    /// and picks NEITHER: asserting the upgrade cause sends an operator to rebuild a slice that is
+    /// fine, and a rebuild against the older jar would not even compile (#758).
+    private static Cause servedPackageLacksClass(String context, String missingClass, ClassLoader owner) {
         return new SliceLoadingFailure.Fatal.ParameterMismatch(context,
-                                                               "slice was compiled against an older runtime"
-                                                              + " (references removed class " + missingClass
+                                                               "slice references class " + missingClass
                                                               + ", whose package " + packageOf(missingClass)
                                                               + " is served by " + loaderLabel(owner)
-                                                              + " but the class is not);"
-                                                              + " rebuild against this runtime version");
+                                                              + " but the class is not"
+                                                              + loadedArtifacts(owner)
+                                                              + ". Two causes are indistinguishable from here: the class was"
+                                                              + " REMOVED by a runtime or artifact upgrade, in which case"
+                                                              + " rebuild against this runtime version; or that loader serves"
+                                                              + " a DIFFERENT VERSION of the artifact than the slice was built"
+                                                              + " against, in which case reconcile the version and do NOT"
+                                                              + " rebuild. Compare the versions above with the slice's declared"
+                                                              + " dependencies in META-INF/dependencies/<FactoryClass> before"
+                                                              + " choosing (#758).");
+    }
+
+    /// The artifact versions a [SharedLibraryClassLoader] has loaded: the evidence an operator needs
+    /// to tell a version skew from an upgrade, since only they hold the slice's own declaration. No
+    /// other loader tracks versions, and an empty set says nothing, so both stay silent.
+    private static String loadedArtifacts(ClassLoader owner) {
+        if (!(owner instanceof SharedLibraryClassLoader sharedLoader)) {
+            return "";
+        }
+
+        var versions = sharedLoader.getLoadedArtifacts()
+                                   .entrySet()
+                                   .stream()
+                                   .map(entry -> entry.getKey() + ":" + entry.getValue().withQualifier())
+                                   .sorted()
+                                   .toList();
+
+        return versions.isEmpty()
+               ? ""
+               : " (that loader has loaded " + versions + ")";
     }
 
     /// Reflective factory resolution that dies on an unresolvable class surfaces a class-resolution
@@ -216,8 +252,9 @@ public interface SliceFactory {
     ///
     ///   - a loader ABOVE the slice's own (the shared/infra loader, the runtime loader) SERVES the
     ///     missing class's package — it has defined a class in it, or holds the package directory as
-    ///     a resource — and yet lacks the class, which is what a class removed by an upgrade looks like:
-    ///     the remedy is a rebuild, and the message names the loader;
+    ///     a resource — and yet lacks the class: the message names the loader, its jars and the
+    ///     versions it has loaded, and states BOTH causes that produce this state without choosing
+    ///     between them, because nothing observable here separates them;
     ///   - no loader above the slice's serves that package: the message says exactly that, lists the
     ///     chain with each loader's URLs and every section a jar can come from, and asserts no cause.
     ///
@@ -236,7 +273,7 @@ public interface SliceFactory {
         var sliceLoader = sliceClass.getClassLoader();
 
         return servingLoader(sliceLoader,
-                             packageOf(missingClass)).map(owner -> incompatibleRuntime(context, missingClass, owner))
+                             packageOf(missingClass)).map(owner -> servedPackageLacksClass(context, missingClass, owner))
                             .or(() -> new SliceLoadingFailure.Fatal.DependencyClassNotOnClasspath(context,
                                                                                                   missingClass,
                                                                                                   packageOf(missingClass),
@@ -254,8 +291,11 @@ public interface SliceFactory {
 
     /// Defined a class in the package, or holds its directory (own URLs for a URLClassLoader — a
     /// parent-first `getResource` would credit a child with its parent's contents — the chain
-    /// otherwise). A jar written without directory entries is invisible to the second probe; Maven
-    /// always writes them. The default package has no directory and gets the first probe only.
+    /// otherwise). A jar written without directory entries is invisible to the second probe — most
+    /// build tools write them, but not all: this repo's own `h2-2.4.240.jar` holds 1066 class entries
+    /// and no directory entry. Such a jar falls to the unserved branch, which asserts no cause, so the
+    /// gap costs detail and never a wrong verdict. The default package has no directory and gets the
+    /// first probe only.
     private static boolean serves(ClassLoader loader, String packageName) {
         if (loader.getDefinedPackage(packageName) != null) {
             return true;
