@@ -906,12 +906,16 @@ public final class ConfigLoader {
                                                                 d.communityCooldown()),
                                                   parseTimeSpan(doc,
                                                                 "timeouts.scaling",
-                                                                "auto_heal_retry",
-                                                                d.autoHealRetry()),
+                                                                "auto_heal_startup_cooldown",
+                                                                d.autoHealStartupCooldown()),
                                                   parseTimeSpan(doc,
                                                                 "timeouts.scaling",
-                                                                "auto_heal_startup_cooldown",
-                                                                d.autoHealStartupCooldown()));
+                                                                "auto_heal_provisioning_timeout",
+                                                                d.autoHealProvisioningTimeout()),
+                                                  parseTimeSpan(doc,
+                                                                "timeouts.scaling",
+                                                                "auto_heal_swim_hints_ttl",
+                                                                d.autoHealSwimHintsTtl()));
     }
 
     /// #250: `[timeouts.storage_maintenance] interval` -- the tick driving both `DemotionManager.demote()`

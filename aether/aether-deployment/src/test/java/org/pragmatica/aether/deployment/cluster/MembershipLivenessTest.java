@@ -9,6 +9,7 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -29,7 +30,8 @@ class MembershipLivenessTest {
                                                      swimAlive::contains,
                                                      transport::contains,
                                                      () -> inFlight,
-                                                     () -> 5);
+                                                     () -> 5,
+                                                     _ -> Option.none());
     }
 
     /// A DEPARTING target (not counted) that raw SWIM still sees alive is live.
