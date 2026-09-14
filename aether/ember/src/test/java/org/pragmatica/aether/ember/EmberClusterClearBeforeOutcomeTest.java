@@ -4,11 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember;
 
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.CoreError;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.Test;
@@ -37,6 +40,29 @@ class EmberClusterClearBeforeOutcomeTest {
         }
 
         assertThat(nonEmpty).as("iterations where the caller saw a populated registry (of %d)", ITERATIONS).isZero();
+    }
+
+    /// N-1 of the #1126 review: a clear that throws must settle the outcome as a failure carrying
+    /// the throwable's cause, never leave the caller's `await()` hanging (a throw inside a plain
+    /// mapper never resolves the derived promise).
+    @Test
+    void aThrowingClear_settlesAFailure_neverAHang() {
+        var stopsSettled = Promise.<Unit> promise();
+        var outcome = Promise.<Unit> promise();
+
+        EmberCluster.clearThenSettle(stopsSettled, EmberClusterClearBeforeOutcomeTest::blowUp, START_FAILED::promise).onResult(outcome::resolve);
+        Thread.startVirtualThread(() -> stopsSettled.succeed(unit()));
+        var seen = outcome.await(TimeSpan.timeSpan(3).seconds());
+
+        assertThat(seen.isFailure()).as("outcome must settle, saw %s", seen).isTrue();
+        seen.onFailure(cause -> assertThat(cause.message()).contains("registry clear blew up"))
+            .onFailure(cause -> assertThat(cause).isNotInstanceOf(CoreError.Timeout.class));
+    }
+
+    /// A clear that THROWS — a runtime failure escaping the mapper, which is the subject, so no
+    /// returned `Result` can stand in for it.
+    private static Unit blowUp(Unit unit) {
+        return Objects.requireNonNull(null, "registry clear blew up");
     }
 
     private static boolean callerObservesEmptyRegistry() {
