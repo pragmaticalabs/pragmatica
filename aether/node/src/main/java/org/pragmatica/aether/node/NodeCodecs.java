@@ -48,7 +48,7 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.cluster.node.forward.ForwardCodecs.CODECS);
         // #492: worker-community metrics wire types (CommunityMetricsSnapshot + per-slice/per-method
         // nested records) ride the core QUIC METRICS lane (routed to ControlLoop), but their generated
-        // codecs lived only in the orphaned WorkerCodecs registry — every broadcast from a core node
+        // codecs lived only in the orphaned WorkerCodecs registry (deleted in #503) — every broadcast from a core node
         // threw "No codec registered" in writeToStream (44x per forge failover run).
         all.addAll(org.pragmatica.aether.worker.metrics.MetricsCodecs.CODECS);
         all.addAll(org.pragmatica.dht.DhtCodecs.CODECS);

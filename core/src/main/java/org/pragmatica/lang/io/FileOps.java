@@ -132,10 +132,23 @@ public sealed interface FileOps {
                            () -> Files.move(source, target));
     }
 
-    /// Move a file, replacing target if it exists.
+    /// Move a file, replacing target if it exists. Not atomic: the JDK unlinks the target before the
+    /// rename, and falls back to copy-and-delete across filesystems.
     static Result<Path> moveReplace(Path source, Path target) {
         return Result.lift(e -> new FileError.MoveFailed(source, target, e.getMessage()),
                            () -> Files.move(source, target, StandardCopyOption.REPLACE_EXISTING));
+    }
+
+    /// Move a file over the target as ONE rename: the target is never unlinked first, so a crash
+    /// or a failed rename leaves the old target in place. Source and target must be on the same
+    /// filesystem — across devices this fails (`AtomicMoveNotSupportedException`) instead of
+    /// falling back to copy; use [#moveReplace] for that.
+    static Result<Path> moveAtomic(Path source, Path target) {
+        return Result.lift(e -> new FileError.MoveFailed(source, target, e.getMessage()),
+                           () -> Files.move(source,
+                                            target,
+                                            StandardCopyOption.REPLACE_EXISTING,
+                                            StandardCopyOption.ATOMIC_MOVE));
     }
 
     /// Delete a file if it exists. Returns true if the file was deleted.
