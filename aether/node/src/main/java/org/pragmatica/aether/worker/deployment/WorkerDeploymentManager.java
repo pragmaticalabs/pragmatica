@@ -148,7 +148,8 @@ public interface WorkerDeploymentManager {
                     deployments.remove(artifact);
                     teardownSlice(artifact);
                 } else {
-                    current.onPresent(c -> deployments.put(artifact, c.withInstances(assigned)));
+                    // Atomic: a state transition landing after the read above must not be clobbered (#906).
+                    deployments.computeIfPresent(artifact, (_, c) -> c.withInstances(assigned));
                 }
             }
 
