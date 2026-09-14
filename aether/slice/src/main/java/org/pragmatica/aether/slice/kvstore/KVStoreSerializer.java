@@ -1254,7 +1254,9 @@ public final class KVStoreSerializer {
                                                                                                                                                  .asString() + PIPE + v.attemptCount() + PIPE + v.updatedAt();
     }
 
-    private static String serializeSchemaMigrationLock(SchemaMigrationLockValue v) {
+    /// Package-visible for direct round-trip testing (the `schema-lock` section is ephemeral, so it
+    /// never flows through `toToml`).
+    static String serializeSchemaMigrationLock(SchemaMigrationLockValue v) {
         return v.datasourceName() + PIPE + v.heldBy()
                                             .id() + PIPE + v.acquiredAt() + PIPE + v.expiresAt() + PIPE + v.lockVersion();
     }
@@ -1280,8 +1282,9 @@ public final class KVStoreSerializer {
                                                                                                                                                                                 Long.parseLong(parts[7])))));
     }
 
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaMigrationLockEntry(String identity,
-                                                                                           String raw) {
+    /// `datasourceName|heldBy|acquiredAt|expiresAt|lockVersion` — package-visible for direct round-trip
+    /// testing (the `schema-lock` section is ephemeral).
+    static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaMigrationLockEntry(String identity, String raw) {
         var parts = raw.split("\\|", -1);
 
         if (parts.length != 5) {
