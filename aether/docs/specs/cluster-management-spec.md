@@ -1170,13 +1170,16 @@ Full cluster status including desired vs actual state.
 
 #### POST /api/cluster/scale
 
-Adjust core node count.
+Adjust the desired count of one `(source, role)`. The body is `ManagementApiResponses.ScaleRequest`
+(see the scale flow above); a blank `source` is inferred when exactly one source declares the role.
 
 **Request:**
 ```json
 {
-  "core_count": 7,
-  "expected_version": 6
+  "source": "hetzner-eu",
+  "role": "core",
+  "count": 7,
+  "expectedVersion": 6
 }
 ```
 
@@ -1184,15 +1187,19 @@ Adjust core node count.
 ```json
 {
   "success": true,
-  "previous_count": 5,
-  "new_count": 7,
-  "config_version": 7
+  "source": "hetzner-eu",
+  "role": "core",
+  "previousCount": 5,
+  "newCount": 7,
+  "configVersion": 7
 }
 ```
 
 **Errors:**
-- `400 Bad Request`: Quorum safety violation, invalid count
-- `409 Conflict`: Version mismatch
+- `400 Bad Request`: invalid core count (even), core count above `coreMax`, undeclared `(source, role)`,
+  ambiguous blank `source`, or a body the decoder cannot map to `ScaleRequest`
+- `409 Conflict`: version mismatch, quorum safety violation (resulting core total below 3 or `coreMin`),
+  no cluster configuration stored
 
 #### POST /api/cluster/upgrade
 
