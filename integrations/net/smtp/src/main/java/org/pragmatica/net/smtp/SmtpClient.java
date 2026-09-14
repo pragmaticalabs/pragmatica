@@ -128,9 +128,11 @@ record SmtpClientImpl(SmtpConfig config,
                                                                   + "ms")));
     }
 
+    /// The channel is assigned by the initializer, not here: by the time this listener runs a reply
+    /// may already have been delivered. What remains is the failure path, which the initializer
+    /// cannot report — a connect that never succeeded has no channel to talk on.
     private static void handleConnect(ChannelFuture future, SmtpSession session) {
         if (future.isSuccess()) {
-            session.setChannel(future.channel());
             log.debug("Connected to SMTP server");
 
             return;
@@ -178,6 +180,13 @@ class SmtpChannelInitializer extends ChannelInitializer<SocketChannel> {
     @Override
     protected void initChannel(SocketChannel ch) {
         var pipeline = ch.pipeline();
+        // The session gets its channel HERE, not from the connect listener: this runs on the event
+        // loop while the pipeline is being built, so it is ordered before the response handler
+        // below exists and therefore before any reply can be delivered. A listener added to an
+        // already-completed connect future is notified through a QUEUED event-loop task, and an
+        // inbound read is delivered ahead of that queue — the greeting then reached the session
+        // with no channel to answer on (measured: 5 failures in 3000 sequential sends).
+        session.setChannel(ch);
         // For IMPLICIT TLS, add SSL handler first
         if (config.tlsMode() == SmtpTlsMode.IMPLICIT) {
             sslContext.onPresent(ctx -> pipeline.addLast("ssl",
