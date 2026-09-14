@@ -2975,10 +2975,27 @@ public interface AetherNode extends ManageableNode {
         // Gossip-key delivery (§5.8 AMENDED): the GossipKeyRotationKey subscription above is the
         // SOLE delivery path. A late joiner that synced AFTER the rotation PUT receives the
         // current rotation as a replayed ValuePut on this normal subscription once the engine
-        // activates (sync → activate → replay) — no ad-hoc replayFromStore needed. The replay
-        // burst structurally precedes any live apply, so the joiner adopts the cluster key before
-        // it sends its first SWIM datagram. applyRotation is idempotent, so a later live rotation
-        // re-PUT is harmless.
+        // activates (sync → activate → replay) — no ad-hoc replayFromStore needed. applyRotation
+        // is idempotent, so a later live rotation re-PUT is harmless.
+        //
+        // #683 round 2 — WHAT THIS ORDERING DOES **NOT** GUARANTEE. An earlier version of this
+        // comment said the replay burst "structurally precedes any live apply, so the joiner
+        // adopts the cluster key before it sends its first SWIM datagram". The first half is true
+        // of KV notification ordering; the second is false of SWIM datagram ordering, and it was
+        // the safety argument for late joiners. SWIM starts on QUIC transport-ready
+        // (`clusterNode.network().whenReady(startSwimTrigger)`), deliberately BEFORE
+        // startClusterAsync() resolves — so the joiner's first SWIM datagram is sent strictly
+        // EARLIER in boot than the replay, which is reached only via restore → activate → replay
+        // inside the consensus engine.
+        //
+        // The consequence is a cycle, not merely a window: a node booting into a cluster that has
+        // already rotated encrypts SWIM under its cluster_secret-derived key, which the rotated
+        // accept set no longer contains, so peers drop its datagrams and it drops theirs. SWIM
+        // discovers nothing; the QUIC dial set is self-only and SWIM is its sole writer besides
+        // self (TopologyObserverTest.SwimOnlyDialSet); without peers there is no quorum, and
+        // without quorum there is no sync/activate/replay — so the record that would install the
+        // cluster key never arrives. GossipKeyRotationBootDivergenceTest pins both directions of
+        // the key divergence this rests on.
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
 
         allEntries.addAll(aetherEntries);
@@ -5420,13 +5437,21 @@ public interface AetherNode extends ManageableNode {
     // plane, so gating it behind the replacement's own quorum deadlocked sub-quorum
     // auto-heal. The gossip encryptor is ready at boot (createGossipEncryptor), and the
     // COLD_BOOT/`isBooting` FAULTY-suppression keeps pre-quorum SWIM safe.
+    /// #683: the transport sees the encryptor through [GossipKeyDivergenceGuard], which refuses the
+    /// boot if gossip arrives under a key epoch this node does not hold and none has ever decrypted
+    /// — the signature of a cluster that rotated its gossip key after this node's derived key was
+    /// issued. The guard decorates for the TRANSPORT only; `encryptor` itself stays the rotation
+    /// target, so an applied rotation is picked up through the delegate and disarms the guard.
+    /// `System.exit(1)` mirrors `Main`'s other boot gates: the failure surfaces at deployment time
+    /// rather than as a silent, permanently unjoinable node.
     private static void startSwim(CoreSwimHealthDetector swimHealthDetector,
                                   ClusterNetwork network,
                                   RotatingGossipEncryptor encryptor,
                                   Runnable announceJoinTrigger) {
         var workerGroup = network.server().map(Server::workerGroup);
+        var guarded = GossipKeyDivergenceGuard.gossipKeyDivergenceGuard(encryptor, () -> System.exit(1));
 
-        swimHealthDetector.start(workerGroup, encryptor);
+        swimHealthDetector.start(workerGroup, guarded);
         announceJoinTrigger.run();
     }
 

@@ -2540,6 +2540,35 @@ retires it and names it in the output. With several, it refuses and lists the ca
 with `--key-id` naming the one to retire. A key listing that cannot be read fails the rotation
 rather than resolving to some key.
 
+### `aether cluster rotate-gossip-key`
+
+Rotate the SWIM gossip encryption key in place (#683). ADMIN only.
+
+```bash
+aether cluster rotate-gossip-key
+```
+
+The leader generates 32 bytes of fresh key material and publishes it through consensus
+(`POST /api/v1/cluster/gossip-key/rotate`); every running node switches to the new key and keeps
+accepting the previous one for the overlap. Use it after a suspected `cluster_secret` or gossip-key
+leak: the daily key is derived from `cluster_secret`, so this is the only mitigation that does not
+require reconfiguring and restarting every node. The output carries key ids only, never key material.
+
+**Before you run this, know two limits — SECURITY.md has the detail.** The **first** rotation has no
+overlap, because there is no prior record whose key could be carried; it replaces the boot key
+outright. And a rotated cluster **cannot grow until you act**: any node booting afterwards holds only
+the derived key, cannot complete SWIM in either direction, and so never reaches the consensus replay
+that would hand it the cluster key. **Auto-heal replacements and scale-up nodes are included, so an
+emergency rotation leaves the cluster unable to self-heal** until new nodes are given the rotated key
+material out of band. Existing running nodes keep working.
+
+**Troubleshooting a node that will not join after a rotation — check the SEED nodes' logs, not the
+new node's.** Look for `Failed to decrypt gossip from <id>` on the seeds. A node the cluster has
+never heard of logs nothing about the cause: it prints `Aether node <id> started, cluster forming...`
+and then stays quiet, because an unreachable quorum is retried and never exits. A **restarted
+existing member** is the exception — it refuses to boot with a `FATAL` line naming gossip-key
+divergence, because its peers still probe it and it can see the mismatched key id.
+
 ### `aether cluster revoke-key`
 
 Revoke an API key by ID.

@@ -3581,6 +3581,48 @@ entry) and restart the node.
 }
 ```
 
+### POST /api/v1/cluster/gossip-key/rotate
+
+Rotate the SWIM gossip encryption key in place (#683). The leader generates 32 bytes of fresh key
+material and writes one `GossipKeyRotationKey` record through consensus: `currentKeyId` is the previous
+id plus one, and the previous key rides along so nodes mid-rotation keep decrypting each other. Every
+running node applies it through its existing `GossipKeyRotationHandler`. The response carries ids only
+— the key is never returned or logged. The write is version-fenced and confirmed: a rotation that loses
+a race against a concurrent one is reported as a failure, never as a success for a write that did not
+land.
+
+**Three consequences an operator must accept before invoking this — see SECURITY.md:**
+
+1. The key material is stored in the consensus log and its snapshots, readable by any KV reader.
+2. **The first rotation has no decrypt overlap.** With no prior record there is no previous key to
+   carry, so the emergency rotation — the one that runs during an actual leak response — replaces the
+   boot key outright. Only rotations from the second onward are seamless.
+3. **A rotated cluster cannot grow until you act, and that includes auto-heal.**
+
+   **If a node will not join after a rotation, check the SEED nodes' logs, not the new node's** —
+   look for `Failed to decrypt gossip from <id>` on the seeds. A node the cluster has never heard of
+   logs nothing about the cause: it prints `Aether node <id> started, cluster forming...` and then
+   stays quiet, because an unreachable quorum is retried and never exits. The evidence is on the
+   healthy machines.
+
+   A node booting after a rotation holds only the `cluster_secret`-derived key, which the cluster no
+   longer accepts; it cannot complete SWIM in either direction, so no quorum forms and the consensus
+   replay that would deliver the cluster key never runs. Auto-heal replacements, scale-up and
+   re-provisioned nodes all fail to join until given the rotated key material out of band. Existing
+   running nodes are unaffected. A **restarted existing member** does say so for itself — it refuses
+   to boot with a `FATAL` line naming gossip-key divergence — because its peers still probe it.
+
+**RBAC:** ADMIN (exact route; an appended path segment is 404, never a weaker permission) · **Routing:** LEADER
+
+**Response:**
+```json
+{
+  "currentKeyId": 2,
+  "previousKeyId": 1,
+  "rotatedAt": 1757800000000
+}
+```
+
 ### GET /api/v1/cluster/keys/audit
 
 List API key audit trail (create, rotate, revoke, expire events).

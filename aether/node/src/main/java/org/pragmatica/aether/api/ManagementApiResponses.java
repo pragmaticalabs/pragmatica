@@ -664,6 +664,9 @@ public sealed interface ManagementApiResponses {
 
     record AutoHealToggleResponse(boolean enabled, boolean previousState) {}
 
+    /// #683: what a gossip-key rotation reports back — ids only, never key material.
+    record GossipKeyRotationResponse(int currentKeyId, int previousKeyId, long rotatedAt) {}
+
     /// One desired-topology entry: how many nodes of `role` the cluster wants in `sourceName`.
     ///
     /// `coreCount` on [ClusterConfigResponse] is the sum of the core entries. It stays for the

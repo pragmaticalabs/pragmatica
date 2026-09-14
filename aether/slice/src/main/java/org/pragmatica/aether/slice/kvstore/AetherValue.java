@@ -775,11 +775,25 @@ public sealed interface AetherValue {
         }
     }
 
+    /// `currentKeyId` is the lost-update fence (RFC-0018, #570), added for #683 alongside the
+    /// producer: the rotation route reads the committed record and writes `prior + 1`, so two
+    /// concurrent ADMIN rotations — or one CLI retry after a client-side timeout, realistic on the
+    /// emergency path this route exists for — both derive the same successor id from the same base.
+    /// Without the fence consensus orders them and the cluster converges, but during the window a
+    /// peer holding key A under id N+1 receives a datagram encrypted with key B under the SAME id:
+    /// `resolveKey` SUCCEEDS and GCM tag verification then fails, so the failure surfaces as a
+    /// decryption error rather than an unknown-key miss. [VersionFenced] makes the second writer a
+    /// refused write instead, and the route confirms by re-reading the committed record.
     record GossipKeyRotationValue(int currentKeyId,
                                   String currentKey,
                                   int previousKeyId,
                                   String previousKey,
-                                  long rotatedAt) implements AetherValue {
+                                  long rotatedAt) implements AetherValue, VersionFenced {
+        @Override
+        public long fenceVersion() {
+            return currentKeyId;
+        }
+
         public static GossipKeyRotationValue gossipKeyRotationValue(int currentKeyId, String currentKey) {
             return new GossipKeyRotationValue(currentKeyId, currentKey, 0, "", System.currentTimeMillis());
         }
