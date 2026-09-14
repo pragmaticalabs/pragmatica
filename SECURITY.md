@@ -76,8 +76,10 @@ Two consequences follow directly:
       silence is indistinguishable from a partition, down seeds, or a wrong advertise address. Hence
       the instruction above.
 
-    A general key-delivery path for joining nodes is not in rc4; it is an architecture change (it
-    needs either a second trust root or a deliberately weakened revocation) and is tracked separately.
+    A general key-delivery path for joining nodes is not in rc4. It is an architecture change — it
+    needs either a second trust root or a deliberately weakened revocation — and the choice is an open
+    **owner decision tracked as #1200**. Until that lands, the out-of-band re-provisioning described
+    above is the supported answer.
 
     **Exposure introduced by the boot refusal, stated as capability:** an attacker who can send UDP to
     a **booting** node's SWIM port can cause that node to abort its boot, by repeating datagrams

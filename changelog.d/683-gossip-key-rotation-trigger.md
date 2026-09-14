@@ -54,7 +54,7 @@
   rotation leaves the cluster unable to self-heal.** Existing running nodes are unaffected. This cost
   is accepted for rc4 and disclosed in SECURITY.md, the CLI and the endpoint docs; a general
   key-delivery path for joiners is an architecture change (a second trust root, or a deliberately
-  weakened revocation) and is tracked separately.
+  weakened revocation) and the choice is an open owner decision tracked as **#1200**.
   `GossipKeyDivergenceGuard` turns the detectable half into a refused boot: gossip arriving under one
   unheld key id, repeatedly, with no datagram ever having decrypted, is the divergence signature, and
   the node exits with a `FATAL` line naming the cause and the remedy rather than proceeding into a
