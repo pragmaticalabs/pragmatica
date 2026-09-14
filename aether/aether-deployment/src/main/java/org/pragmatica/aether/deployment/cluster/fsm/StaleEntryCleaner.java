@@ -5,7 +5,6 @@
 package org.pragmatica.aether.deployment.cluster.fsm;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -64,18 +63,11 @@ record StaleEntryCleaner(Active active) {
         }
     }
 
-    /// The nodes whose KV rows are NOT stale: counted core members plus registered workers (#850).
-    /// `activeNodes()` is core-scoped by construction, so diffing against it alone classified every
-    /// LIVE worker's rows as stale on every reconcile tick — its `NodeArtifactKey` was removed, which
-    /// the worker's own NDM answers with a force-unload of a serving slice. A worker leaves
-    /// `workerNodes` only through `handleNodeRemoval` (worker-leave channel or the dead-restored
-    /// sweep), the same path that clears its rows directly, so a registered worker's rows are owned.
+    /// The nodes whose KV rows are NOT stale (#850): {@link Active#placementNodes()} — counted core
+    /// members plus registered workers. `activeNodes()` alone is core-scoped by construction and
+    /// classified every LIVE worker's rows as stale on every reconcile tick.
     private Set<NodeId> placementNodes() {
-        var nodes = new HashSet<>(active.activeNodes());
-
-        nodes.addAll(active.workerNodes());
-
-        return nodes;
+        return active.placementNodes();
     }
 
     private void collectStaleNodeRoutesKey(List<KVCommand<AetherKey>> commands,

@@ -1148,6 +1148,20 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             return List.copyOf(ctx.coreCountedMembersSupplier().get());
         }
 
+        /// The nodes whose placements COUNT (#850): counted core members plus the workers registered
+        /// in `workerNodes`. A worker enters that set when its WORKER `ActivationDirectiveKey` commits
+        /// and leaves it only through `handleNodeRemoval` (worker-leave channel, dead-restored sweep),
+        /// so a registered worker's instance is an instance and a departed worker's is not. Consulted
+        /// by the stale-entry sweeps, `getCurrentInstances` and `hasActiveInstance`; `activeNodes()`
+        /// stays core-scoped for role assignment, `allocatableNodes()` and the CORE_ONLY pool.
+        Set<NodeId> placementNodes() {
+            var nodes = new HashSet<>(activeNodes());
+
+            nodes.addAll(workerNodes);
+
+            return nodes;
+        }
+
         /// M4 not-yet-wired guard (cluster-topology-overhaul Wave 9 item 5). True only once the
         /// `MembershipFsm` core-membership supplier is wired; false during the boot window when it
         /// still yields the identity-distinguished [`MembershipFsm#MEMBERSHIP_NOT_WIRED`] sentinel.
@@ -1639,7 +1653,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         /// Completeness of the APPLY, read from durable state: every artifact the blueprint declares
-        /// has at least one instance ACTIVE on a live core node.
+        /// has at least one instance ACTIVE on a placement node (counted core or registered worker, #850).
         ///
         /// Deliberately NOT "is this artifact ACTIVE right now" — that is the present-tense question
         /// #924 round 2 refuted, which cannot vote once a shared transient has reached every instance
@@ -1657,7 +1671,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private boolean hasActiveInstance(Artifact artifact) {
-            var liveNodes = activeNodes();
+            var liveNodes = placementNodes();
 
             return sliceStates.entrySet()
                               .stream()
@@ -2487,7 +2501,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         List<SliceNodeKey> getCurrentInstances(Artifact artifact) {
-            var currentNodes = activeNodes();
+            var currentNodes = placementNodes();
 
             return sliceStates.entrySet()
                               .stream()
@@ -2770,8 +2784,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
                 return false;
             }
-
+            // #850: a worker-hosted instance now counts, but the load being levelled is the core
+            // (allocatable) load, so only a core host can donate — a rebalance must never pull a
+            // placement off a worker.
             var donorOpt = nodesHostingThisArtifact.stream()
+                                                   .filter(allocatable::contains)
                                                    .max(Comparator.comparingLong(node -> totalLoadByNode.getOrDefault(node,
                                                                                                                       0L)));
             var targetOpt = allocatable.stream()
