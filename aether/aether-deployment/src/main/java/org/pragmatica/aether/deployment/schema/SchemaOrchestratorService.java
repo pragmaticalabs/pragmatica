@@ -691,9 +691,8 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                            SchemaMigrationLockKey lockKey,
                                            SchemaMigrationLockValue lockValue) {
         return committedLock(lockKey).filter(lockValue::equals)
-                                     .map(_ -> Promise.unitPromise())
-                                     .or(() -> SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(datasourceName)
-                                                                                .promise());
+                            .map(_ -> Promise.unitPromise())
+                            .or(() -> SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(datasourceName).promise());
     }
 
     private Cause releaseFenceOnLockFailure(String datasourceName, Object attemptToken, Cause cause) {

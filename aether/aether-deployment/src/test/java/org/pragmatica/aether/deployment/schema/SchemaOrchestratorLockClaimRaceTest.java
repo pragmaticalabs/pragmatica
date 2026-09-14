@@ -54,14 +54,14 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
+import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import io.netty.buffer.ByteBuf;
-
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #766: `acquireLock` is check-then-act ACROSS NODES. The in-flight fence is per orchestrator
 /// instance, and the KV lock is read (`isLockHeld`) and written (`Put`) in separate steps, so two
@@ -75,7 +75,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// must run. Committing the second write while the first holder is still migrating is what makes
 /// the applier fence load-bearing: with both commits before either confirm, a last-writer-wins
 /// store plus the re-read alone would also yield one winner.
-@SuppressWarnings("JBCT-EX-01")
+@SuppressWarnings({"JBCT-EX-01", "JBCT-RET-03"})
 class SchemaOrchestratorLockClaimRaceTest {
     private static final NodeId NODE_1 = new NodeId("node-1");
     private static final NodeId NODE_2 = new NodeId("node-2");
@@ -83,18 +83,20 @@ class SchemaOrchestratorLockClaimRaceTest {
     private static final String COORDS = "org.example:my-app:1.0.0";
     private static final BlueprintId OWNER = BlueprintId.blueprintId(COORDS).unwrap();
     private static final Cause NOT_IN_REPOSITORY = Causes.cause("Artifact not present in local repository");
+
     private static final DatabaseConnectorConfig STUB_CONFIG = new DatabaseConnectorConfig(Option.none(),
-                                                                                            Option.some(DatabaseType.POSTGRESQL),
-                                                                                            Option.some("localhost"),
-                                                                                            Option.none(),
-                                                                                            Option.some("test"),
-                                                                                            Option.none(),
-                                                                                            Option.none(),
-                                                                                            PoolConfig.DEFAULT,
-                                                                                            Map.of(),
-                                                                                            Option.none(),
-                                                                                            Option.none(),
-                                                                                            Option.none());
+                                                                                           Option.some(DatabaseType.POSTGRESQL),
+                                                                                           Option.some("localhost"),
+                                                                                           Option.none(),
+                                                                                           Option.some("test"),
+                                                                                           Option.none(),
+                                                                                           Option.none(),
+                                                                                           PoolConfig.DEFAULT,
+                                                                                           Map.of(),
+                                                                                           Option.none(),
+                                                                                           Option.none(),
+                                                                                           Option.none());
+
     private static final String BLUEPRINT_TOML = """
             id = "org.example:my-app:1.0.0"
 
@@ -133,19 +135,16 @@ class SchemaOrchestratorLockClaimRaceTest {
     private void assertExactlyOneClaimWins() {
         var first = orchestrator(NODE_1).migrateIfNeeded(DATASOURCE);
         var second = orchestrator(NODE_2).migrateIfNeeded(DATASOURCE);
-
         // Both dispatches read the lock free and are now parked inside their own lock write.
         assertThat(cluster.parkedLockWrites()).hasSize(2);
         assertThat(schemaManager.invocations).isEmpty();
         // First claim commits and its submitter runs into a migration that never completes: the
         // lock is held for the rest of the test.
         cluster.commitParkedLockWrite(0);
-
         assertThat(schemaManager.invocations).as("first claimant migrates").containsExactly(NODE_1.id());
         assertThat(first.isResolved()).as("first claimant still migrating").isFalse();
         // Second claim commits against the held lock, then its submitter sees the result.
         cluster.commitParkedLockWrite(1);
-
         var outcome = second.await(timeSpan(5).seconds());
 
         assertThat(schemaManager.invocations).as("exactly one node may run the migration").hasSize(1);
@@ -155,7 +154,12 @@ class SchemaOrchestratorLockClaimRaceTest {
 
     private void seedPendingSchema() {
         kvStore.put(SchemaVersionKey.schemaVersionKey(DATASOURCE),
-                    SchemaVersionValue.schemaVersionValue(DATASOURCE, 3, "V003__add_index.sql", SchemaStatus.PENDING, COORDS, OWNER));
+                    SchemaVersionValue.schemaVersionValue(DATASOURCE,
+                                                          3,
+                                                          "V003__add_index.sql",
+                                                          SchemaStatus.PENDING,
+                                                          COORDS,
+                                                          OWNER));
     }
 
     private SchemaOrchestratorService orchestrator(NodeId self) {
@@ -186,23 +190,35 @@ class SchemaOrchestratorLockClaimRaceTest {
             this.kvStore = kvStore;
         }
 
-        @Override public NodeId self() {return self;}
+        @Override
+        public NodeId self() {
+            return self;
+        }
 
-        @Override public TopologyManager topologyManager() {return stubTopologyManager(self);}
+        @Override
+        public TopologyManager topologyManager() {
+            return stubTopologyManager(self);
+        }
 
-        @Override public Promise<Unit> start() {return Promise.unitPromise();}
+        @Override
+        public Promise<Unit> start() {
+            return Promise.unitPromise();
+        }
 
-        @Override public Promise<Unit> stop() {return Promise.unitPromise();}
+        @Override
+        public Promise<Unit> stop() {
+            return Promise.unitPromise();
+        }
 
         @Override
         @SuppressWarnings("unchecked")
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             if (batch.stream().anyMatch(LockDeferringClusterNode::isLockWrite)) {
-                var promise = Promise.<List<Object>>promise();
+                var promise = Promise.<List<Object>> promise();
 
                 parked.add(new Parked(batch, promise));
 
-                return (Promise<List<R>>) (Promise<?>) promise;
+                return (Promise<List<R>>)(Promise<?>) promise;
             }
 
             kvStore.apply(batch);
@@ -211,7 +227,9 @@ class SchemaOrchestratorLockClaimRaceTest {
         }
 
         List<List<KVCommand<AetherKey>>> parkedLockWrites() {
-            return parked.stream().map(Parked::batch).toList();
+            return parked.stream()
+                         .map(Parked::batch)
+                         .toList();
         }
 
         void commitParkedLockWrite(int index) {
@@ -277,13 +295,15 @@ class SchemaOrchestratorLockClaimRaceTest {
 
     private static Serializer stubSerializer() {
         return new Serializer() {
-            @Override public <T> void write(ByteBuf byteBuf, T object) {}
+            @Override
+            public <T> void write(ByteBuf byteBuf, T object) {}
         };
     }
 
     private static Deserializer stubDeserializer() {
         return new Deserializer() {
-            @Override public <T> T read(ByteBuf byteBuf) {
+            @Override
+            public <T> T read(ByteBuf byteBuf) {
                 return null;
             }
         };
@@ -312,35 +332,43 @@ class SchemaOrchestratorLockClaimRaceTest {
         var jarBytes = blueprintJar();
 
         return new ArtifactStore() {
-            @Override public Promise<DeployResult> deploy(Artifact artifact, byte[] content) {
+            @Override
+            public Promise<DeployResult> deploy(Artifact artifact, byte[] content) {
                 return Causes.cause("Not supported in this stub").promise();
             }
 
-            @Override public Promise<byte[]> resolve(Artifact artifact) {
+            @Override
+            public Promise<byte[]> resolve(Artifact artifact) {
                 return Promise.success(jarBytes);
             }
 
-            @Override public Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact) {
+            @Override
+            public Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact) {
                 return Causes.cause("Not supported in this stub").promise();
             }
 
-            @Override public Promise<Boolean> exists(Artifact artifact) {
+            @Override
+            public Promise<Boolean> exists(Artifact artifact) {
                 return Promise.success(true);
             }
 
-            @Override public Promise<Option<ArtifactMetadata>> metadata(Artifact artifact) {
+            @Override
+            public Promise<Option<ArtifactMetadata>> metadata(Artifact artifact) {
                 return Promise.success(Option.none());
             }
 
-            @Override public Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId) {
+            @Override
+            public Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId) {
                 return Promise.success(List.of());
             }
 
-            @Override public Promise<Unit> delete(Artifact artifact) {
+            @Override
+            public Promise<Unit> delete(Artifact artifact) {
                 return Promise.unitPromise();
             }
 
-            @Override public Metrics metrics() {
+            @Override
+            public Metrics metrics() {
                 return new Metrics(0, 0, 0L);
             }
         };
@@ -348,15 +376,18 @@ class SchemaOrchestratorLockClaimRaceTest {
 
     private static DatasourceConnectionProvider stubConnectionProvider() {
         return new DatasourceConnectionProvider() {
-            @Override public Promise<SqlConnector> connector(String datasourceName) {
+            @Override
+            public Promise<SqlConnector> connector(String datasourceName) {
                 return Promise.success(stubConnector());
             }
 
-            @Override public Promise<Unit> release(String datasourceName) {
+            @Override
+            public Promise<Unit> release(String datasourceName) {
                 return Promise.unitPromise();
             }
 
-            @Override public Promise<Unit> releaseAll() {
+            @Override
+            public Promise<Unit> releaseAll() {
                 return Promise.unitPromise();
             }
         };
@@ -364,35 +395,43 @@ class SchemaOrchestratorLockClaimRaceTest {
 
     private static SqlConnector stubConnector() {
         return new SqlConnector() {
-            @Override public DatabaseConnectorConfig config() {
+            @Override
+            public DatabaseConnectorConfig config() {
                 return STUB_CONFIG;
             }
 
-            @Override public Promise<Boolean> isHealthy() {
+            @Override
+            public Promise<Boolean> isHealthy() {
                 return Promise.success(true);
             }
 
-            @Override public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
+            @Override
+            public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
                 return Causes.cause("Not supported in this stub").promise();
             }
 
-            @Override public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {
+            @Override
+            public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {
                 return Promise.success(Option.none());
             }
 
-            @Override public <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params) {
+            @Override
+            public <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params) {
                 return Promise.success(List.of());
             }
 
-            @Override public Promise<Integer> update(String sql, Object... params) {
+            @Override
+            public Promise<Integer> update(String sql, Object... params) {
                 return Promise.success(0);
             }
 
-            @Override public Promise<int[]> batch(String sql, List<Object[]> paramsList) {
+            @Override
+            public Promise<int[]> batch(String sql, List<Object[]> paramsList) {
                 return Promise.success(new int[0]);
             }
 
-            @Override public <T> Promise<T> transactional(TransactionCallback<T> callback) {
+            @Override
+            public <T> Promise<T> transactional(TransactionCallback<T> callback) {
                 return callback.execute(this);
             }
         };
@@ -400,43 +439,53 @@ class SchemaOrchestratorLockClaimRaceTest {
 
     private static TopologyManager stubTopologyManager(NodeId self) {
         return new TopologyManager() {
-            @Override public NodeInfo self() {
+            @Override
+            public NodeInfo self() {
                 return NodeInfo.nodeInfo(self, new NodeAddress("localhost", 9000));
             }
 
-            @Override public Option<NodeInfo> get(NodeId id) {
+            @Override
+            public Option<NodeInfo> get(NodeId id) {
                 return Option.some(NodeInfo.nodeInfo(id, new NodeAddress("localhost", 9000)));
             }
 
-            @Override public int clusterSize() {
+            @Override
+            public int clusterSize() {
                 return 1;
             }
 
-            @Override public Option<NodeId> reverseLookup(SocketAddress socketAddress) {
+            @Override
+            public Option<NodeId> reverseLookup(SocketAddress socketAddress) {
                 return Option.empty();
             }
 
-            @Override public Promise<Unit> start() {
+            @Override
+            public Promise<Unit> start() {
                 return Promise.unitPromise();
             }
 
-            @Override public Promise<Unit> stop() {
+            @Override
+            public Promise<Unit> stop() {
                 return Promise.unitPromise();
             }
 
-            @Override public TimeSpan pingInterval() {
+            @Override
+            public TimeSpan pingInterval() {
                 return timeSpan(5).seconds();
             }
 
-            @Override public TimeSpan helloTimeout() {
+            @Override
+            public TimeSpan helloTimeout() {
                 return timeSpan(5).seconds();
             }
 
-            @Override public Option<NodeState> getState(NodeId id) {
+            @Override
+            public Option<NodeState> getState(NodeId id) {
                 return Option.empty();
             }
 
-            @Override public List<NodeId> topology() {
+            @Override
+            public List<NodeId> topology() {
                 return List.of(self);
             }
         };
