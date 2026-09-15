@@ -84,9 +84,16 @@ public final class CertificateRenewalScheduler {
 
         final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
 
-        /// Raised by `Stopped.onEntry` BEFORE it drains `scheduledTask`. The ordering is the whole
-        /// mechanism — see `armScheduledTask`.
+        /// Raised inside `timerLock` by `Stopped.onEntry`, in the same critical section that drains
+        /// `scheduledTask` — see `markTerminatedAndDrain`.
         final AtomicBoolean terminated = new AtomicBoolean(false);
+
+        /// Guards the PAIRING of `terminated` with `scheduledTask`. They are two separate
+        /// references, so no arrangement of atomics makes "is this scheduler terminal" and "what is
+        /// armed" a single observation, and a check-then-store leaves a window in both directions.
+        /// Arming, draining and marking terminal all take this lock. Cold path: a timer is armed
+        /// once per renewal cycle, never per request.
+        final Object timerLock = new Object();
 
         final Idle idle;
         final Healthy healthy;
@@ -113,37 +120,50 @@ public final class CertificateRenewalScheduler {
         }
 
         void cancelScheduledTask() {
-            scheduledTask.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
+            synchronized (timerLock) {
+                scheduledTask.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
+            }
         }
 
-        /// Stores `task` as the live timer, unless the scheduler has already reached `Stopped` — in
-        /// which case the task is cancelled instead of stored.
-        ///
-        /// Why this is not a plain `set`. `Fsm.dispatch` reads the current state and only then calls
-        /// `handle`, with the CAS inside `transitionTo`; a transition that LOSES the CAS has already
-        /// begun running its side effects. So `RetryBackoff.onEntry` can arm a retry AFTER a
-        /// concurrent `stop()` has run `Stopped.onEntry` and drained the holder, leaving a live,
-        /// uncancelled timer on a stopped scheduler (#1191). The CAS serialises which transition
-        /// wins; it does not serialise the side effects of the one that loses.
-        ///
-        /// The double check closes it, and depends on `Stopped.onEntry` raising `terminated` BEFORE
-        /// it drains. Either this store precedes that drain, and the drain removes the task; or the
-        /// drain precedes this store, in which case `terminated` was already raised and the
-        /// post-store check cancels. No interleaving leaves a task armed past the terminal state.
-        ///
-        /// Scoped to this scheduler on purpose. #1191 is FSM-wide — `LeaderElectionState` and
-        /// `ClusterDeploymentState` also arm timers inside `onEntry` — and its general fix is a
-        /// design decision about the FSM, not a repair to one caller.
-        void armScheduledTask(ScheduledFuture<?> task) {
-            if (terminated.get()) {
-                task.cancel(false);
-                return;
+        /// Marks the scheduler terminal and drains in ONE critical section. Split across two, a task
+        /// armed between the mark and the drain is stored by a thread that saw `terminated` false
+        /// and then missed by a drain that has already run — the leaked timer of #1191.
+        void markTerminatedAndDrain() {
+            synchronized (timerLock) {
+                terminated.set(true);
+                scheduledTask.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
             }
+        }
 
-            scheduledTask.set(Option.some(task));
+        /// Stores `task` as the live timer, unless the scheduler has already reached `Stopped`, in
+        /// which case the task is cancelled instead of stored. Any future this DISPLACES is
+        /// cancelled rather than orphaned.
+        ///
+        /// The mechanism of #1191, stated correctly. `Fsm.tryAdvance` returns early when the CAS
+        /// fails, so a LOSING transition runs no hooks at all — it is not the loser that arms.
+        /// Hooks run AFTER and OUTSIDE the CAS, so two WINNERS overtake each other: a thread that
+        /// has won `Renewing → RetryBackoff` may still sit between the CAS and its `onEntry` while a
+        /// second thread wins `RetryBackoff → Stopped` and completes the drain; the first then arms
+        /// onto a stopped scheduler. The CAS serialises STATE CHANGES, never the hooks after it.
+        ///
+        /// Why a lock rather than the two atomics. `terminated` and `scheduledTask` are separate
+        /// references, so check-then-store leaves a window in both directions: a concurrent arm can
+        /// orphan the future it displaces, and the holder can be observably non-empty after `stop()`
+        /// has returned. One lock across arming, draining and the terminal mark removes both; a
+        /// re-check after an unlocked store removes neither.
+        ///
+        /// Scoped to this scheduler on purpose; #1191 is FSM-wide and its general fix is a design
+        /// decision about the FSM. `LeaderElectionState` is NOT in the same position — it overrides
+        /// `onCasLost` to cancel its eagerly-scheduled tick, a mitigation this scheduler lacks.
+        void armScheduledTask(ScheduledFuture<?> task) {
+            synchronized (timerLock) {
+                if (terminated.get()) {
+                    task.cancel(false);
+                    return;
+                }
 
-            if (terminated.get()) {
-                cancelScheduledTask();
+                scheduledTask.getAndSet(Option.some(task))
+                             .onPresent(displaced -> displaced.cancel(false));
             }
         }
 
@@ -259,11 +279,10 @@ public final class CertificateRenewalScheduler {
     record Stopped(Context ctx) implements SchedulerState {
         @Override
         public void onEntry() {
-            // Order is load-bearing: raise `terminated` BEFORE draining, so a losing-path `onEntry`
-            // that arms after this drain observes the flag and cancels rather than leaking a live
-            // timer onto a stopped scheduler (#1191). See `Context.armScheduledTask`.
-            ctx.terminated.set(true);
-            ctx.cancelScheduledTask();
+            // Marking terminal and draining must be ONE critical section, not two ordered steps: a
+            // timer armed between them is stored by a thread that saw `terminated` false and then
+            // missed by a drain that has already run (#1191). See `markTerminatedAndDrain`.
+            ctx.markTerminatedAndDrain();
             log.info("Certificate renewal scheduler stopped");
         }
 

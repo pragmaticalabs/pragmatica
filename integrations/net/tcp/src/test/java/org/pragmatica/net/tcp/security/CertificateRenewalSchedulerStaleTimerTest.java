@@ -201,6 +201,38 @@ class CertificateRenewalSchedulerStaleTimerTest {
                 .isTrue();
     }
 
+    @Test
+    void armScheduledTask_whenAnotherArmDisplacesIt_cancelsTheDisplacedFuture() {
+        var provider = new CountingProvider();
+        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
+                provider, "node-displace", "localhost",
+                _ -> {}, Instant.now().plusSeconds(3600));
+
+        // NOT started: `Idle` arms nothing, so the only futures in play are the two armed below and
+        // the test is about displacement alone.
+        var first = SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(3_600_000L).millis());
+        var second = SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(3_600_000L).millis());
+
+        armScheduledTask(scheduler, first);
+        armScheduledTask(scheduler, second);
+
+        assertThat(first.isCancelled())
+                .as("#1191: an arm that DISPLACES a live future must cancel it. A bare `set` orphans "
+                    + "the displaced future — invisible to every later drain, and still firing its "
+                    + "tick after the scheduler has stopped")
+                .isTrue();
+        assertThat(second.isCancelled())
+                .as("precondition: the displacing future is itself still live, so the assertion "
+                    + "above is about displacement and not about blanket cancellation")
+                .isFalse();
+
+        scheduler.stop();
+
+        assertThat(second.isCancelled())
+                .as("and the surviving future is cancelled by the terminal drain")
+                .isTrue();
+    }
+
     /// Reflectively reads `ctx.terminated`. Same justification as `readScheduledTask`.
     private static boolean readTerminated(CertificateRenewalScheduler s) {
         try {
