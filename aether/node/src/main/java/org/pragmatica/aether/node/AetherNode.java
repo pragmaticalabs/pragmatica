@@ -1550,8 +1550,8 @@ public interface AetherNode extends ManageableNode {
                                                // slice that deploys and then fails at load.
                                               );
         var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, dhtNetwork, config.artifactRepo());
-        var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer);
         var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode, dhtNetwork, config.artifactRepo());
+        var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer, dhtAntiEntropy);
         var switchableCluster = SwitchableClusterNode.switchableClusterNode(clusterNode);
         var corePeerIds = config.topology()
                                 .coreNodes()
@@ -4030,6 +4030,13 @@ public interface AetherNode extends ManageableNode {
         // default 5m); both operations self-gate internally, so this tick is cheap when inactive or idle.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(storageMaintenanceDriver::tick,
                                                                       config.timeouts().storageMaintenance().interval()));
+        // #420/#1136: the DHT anti-entropy cycle. `DHTAntiEntropy.start()` had no caller, so the
+        // "periodic 30 s repair" never ran in production and `[timeouts.dht] anti_entropy_interval`
+        // was parsed by nothing. Armed here, with the node's other periodic work (#644: after
+        // formation, cancelled first on stop, never a zombie), on the configured interval; the
+        // join-time round in DHTTopologyListener is the fast path, this cycle is its retry.
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(dhtAntiEntropy::synchronizeNow,
+                                                                      config.timeouts().dht().antiEntropyInterval()));
         // W5 WAL disk-reclamation driver: truncate every partition's write-ahead log up to its DURABLE
         // last-sealed offset so the WAL does not grow unbounded. Records <= lastSealedOffset are already in
         // durable cold segments (served post-restart by the tiered reader), so dropping them from the WAL
