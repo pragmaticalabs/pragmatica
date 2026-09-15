@@ -100,11 +100,10 @@ public final class PublisherFactory implements ResourceFactory<Publisher, TopicC
     /// reads, so the two ends agree by construction instead of by coincidence.
     private static String resolveTopicAddress(TopicConfig config, ProvisioningContext context) {
         return context.extension(String.class)
-                      .flatMap(sliceId -> Artifact.artifact(sliceId)
-                                                  .flatMap(artifact -> TopicAddressResolver.resolve(owningBlueprintOf(context,
-                                                                                                                      sliceId),
-                                                                                                    artifact,
-                                                                                                    config.topicName())))
+                      .flatMap(sliceId -> Artifact.artifact(sliceId).flatMap(artifact -> TopicAddressResolver.resolve(owningBlueprintOf(context,
+                                                                                                                                        sliceId),
+                                                                                                                      artifact,
+                                                                                                                      config.topicName())))
                       .orElse(config::address)
                       .map(ResourceAddress::asString)
                       .or(config.topicName());
