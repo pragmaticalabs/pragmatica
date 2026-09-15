@@ -1884,7 +1884,8 @@ aether cluster init --non-interactive --name test-cluster --core-nodes 5 --outpu
 | Option | Description |
 |--------|-------------|
 | `--output` | Output path (default `cluster-config.toml`) |
-| `--force` | Overwrite existing output file |
+| `--force` | Overwrite an existing output file wholesale. Without it, an existing file is **merged into in place** — see "Re-running against an existing file" below. |
+| `--merge` | Consent, given up front, to every edit the merge would make to an existing file — rewriting `init`-generated keys whose value differs from the new flags/answers, and appending generated keys, sections or firewall rules the file lacks. Batch mode refuses without it (non-zero exit, file untouched); interactive mode asks instead. |
 | `--non-interactive` | Force non-interactive mode; default `--target=docker` if absent, fail fast on missing required flags (P-NEW-G, 2026-05-21). Required for CI/integration test usage (TC-07-J3). |
 | `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
 | `--target` | Deployment target: `docker`, `ssh`, `cloud`, or `forge` |
@@ -1902,6 +1903,39 @@ aether cluster init --non-interactive --name test-cluster --core-nodes 5 --outpu
 When `--non-interactive` is set without `--target`, the command applies `--target=docker` as the default. Missing required flags (e.g. `--core-nodes` for docker target) produce a `MissingField` failure and a non-zero exit code rather than dropping into prompts.
 
 **Behaviour change (#1019): `--core-nodes` is now required for an `ssh` target too.** Previously an `ssh` batch run needed no count — the whole of `--hosts` became the cluster and the core/worker split was derived from its length. That derivation is what #1019 removed, so the split is now stated: `--core-nodes` names the consensus tier and the worker tier is whatever `--hosts` holds beyond it. An `ssh` invocation that passed only `--hosts` before will now fail with `Required field missing or invalid: --core-nodes`. `--worker-nodes` is refused on an `ssh` target rather than ignored, since the remainder is not a free choice there.
+
+#### Re-running against an existing file (#311)
+
+The file is the operator's. Without `--force`, `init` rewrites **only the lines holding keys it
+generates**, and every other line — comments, blank lines, section order, value spelling, hand-added
+keys, sections and `[[…]]` tables — is left byte-for-byte. Concretely:
+
+- **Same answers → byte-identical file, not rewritten.** Re-running with unchanged flags changes
+  nothing (`Merged into <path>: already matches the answers, nothing changed` / `Unchanged <path>`);
+  the file is not written, so its mtime and mode stay.
+- **Every other edit needs consent.** The merge first lists what it would do — `section.key: <old>
+  → <new>` for a generated key whose value you changed by hand, `+ section.key` or
+  `+ …allow_ingress[port=…, protocol=…, source_cidr=…]` for a generated key, section or rule the
+  file lacks. Batch mode (`--non-interactive` or `--target`) **refuses** with that list and exits
+  non-zero unless `--merge` is given; interactive mode prints it and asks once (`[y/N]`, default
+  leaves the file untouched). With consent, a differing value is rewritten on its own line — the
+  key's spelling and any trailing `# comment` stay — and missing keys are appended into their
+  section (under a new header when the section exists only through dotted keys), missing sections
+  after the nearest preceding generated section the file has.
+- **Why an addition needs consent:** generated `[[source.primary.firewall.allow_ingress]]` rules are
+  matched by port, protocol and CIDR (a rule you re-described is not duplicated). A rule you
+  narrowed from `0.0.0.0/0` to your CIDR, or deleted, is to the merge a *missing* generated rule,
+  and appending it would re-open the port — so it is listed by CIDR and refused without consent.
+  Rules `init` does not generate are kept. **Nothing is ever removed:** a changed `--admin-cidr`
+  adds the new admin rules (with consent) and keeps the old ones, listed as kept — remove them by
+  hand, or use `--force`.
+- **Keys `init` does not generate are listed** (`kept N key(s) init does not generate — …`), because
+  a merge cannot tell a hand-added key from one `init` used to generate and no longer does.
+- **A file the merge cannot read is refused, never clobbered** — including valid TOML using a
+  feature the reader does not support (dates and times); the message names the reason and
+  `--force`.
+- The generated header comments (`# Topology: …`) are comments and are not rewritten; after a
+  changed answer they may describe the previous answers.
 
 ### `aether cluster scaffold`
 
