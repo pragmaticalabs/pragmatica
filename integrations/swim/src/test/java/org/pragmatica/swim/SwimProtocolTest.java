@@ -20,6 +20,9 @@ import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -30,6 +33,7 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.Ack;
@@ -736,10 +740,261 @@ class SwimProtocolTest {
                 .isEqualTo(afterPing);
         }
 
+        /// #501: the announce loop is a periodic task on the shared scheduler; `stop()` must cancel it
+        /// like the probe tick, or a stopped protocol keeps sending ANNOUNCE for up to 30s.
+        @Test
+        void stop_cancelsTheAnnounceLoop_noAnnounceAfterStop() throws InterruptedException {
+            protocol.start();
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+            assertThat(announceCount(transport)).isGreaterThanOrEqualTo(1);
+
+            protocol.stop();
+
+            // NIT (review 2026-09-14): cancel(false) does not interrupt an attempt already running,
+            // so sample AFTER a settle shorter than the 500ms period — an in-flight attempt drains
+            // into `afterStop` instead of landing between the sample and the assertion.
+            Thread.sleep(200L);
+
+            var afterStop = announceCount(transport);
+            var ticks = observeSchedulerTicks(1_200L); // span at least two 500ms announce ticks
+
+            assertThat(ticks)
+                .as("positive control: the shared scheduler was executing throughout the window in "
+                    + "which no ANNOUNCE was observed — an empty read from a dead scheduler would "
+                    + "look identical to a cancelled loop")
+                .isGreaterThanOrEqualTo(2);
+            assertThat(announceCount(transport))
+                .as("a stopped protocol must not keep announcing — stop() cancels the announce loop")
+                .isEqualTo(afterStop);
+        }
+
+        /// #501 (review 2026-09-14, BLOCKING-1, sequence A): `announceJoin` without `start()` leaves
+        /// `tickFuture` empty, so a `stop()` that cancelled the announce loop only *after* the
+        /// running-check returned `PROTOCOL_NOT_RUNNING` and cancelled nothing. The loop's lifetime
+        /// must depend on `stop()` alone, never on whether the probe tick happens to be armed.
+        @Test
+        void stopWithoutStart_cancelsTheAnnounceLoop() throws InterruptedException {
+            // No start() — the probe tick is never armed.
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+            assertThat(announceCount(transport))
+                .as("positive control: the announce loop is live and its sends are observable")
+                .isGreaterThanOrEqualTo(1);
+
+            assertThat(protocol.stop().isFailure())
+                .as("the tick was never armed, so stop() still reports PROTOCOL_NOT_RUNNING — the "
+                    + "announce cancel must not be conditional on that result")
+                .isTrue();
+
+            Thread.sleep(200L);
+
+            var afterStop = announceCount(transport);
+            var ticks = observeSchedulerTicks(1_200L);
+
+            assertThat(ticks)
+                .as("positive control: the shared scheduler was executing throughout the window")
+                .isGreaterThanOrEqualTo(2);
+            assertThat(announceCount(transport))
+                .as("a never-started protocol that announced must stop announcing on stop()")
+                .isEqualTo(afterStop);
+        }
+
+        /// #501 (review 2026-09-14, BLOCKING-1, sequence B): the production race — `announceJoin`
+        /// resolves the protocol, a concurrent `stop()` completes, then the join calls in and arms a
+        /// loop with `tickFuture` empty, which every later `stop()` early-returned past. `stop()` must
+        /// REFUSE the announce, not merely cancel a handle it may never see.
+        @Test
+        void announceJoinAfterStop_armsNothing() throws InterruptedException {
+            protocol.start();
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+            assertThat(announceCount(transport))
+                .as("instrument control: announceJoin on this protocol does reach the transport")
+                .isGreaterThanOrEqualTo(1);
+
+            protocol.stop();
+            Thread.sleep(200L);
+
+            var afterStop = announceCount(transport);
+            // Nothing advances the self-incarnation once the protocol is stopped, so it is a stable
+            // witness for whether announceJoin ran AT ALL — independent of the per-seed send guard,
+            // which reads the same latch and would otherwise mask a missing refusal here.
+            var incarnationBefore = protocol.selfIncarnation();
+
+            // The call that raced the stop. Nothing cancels what it arms, so only a refusal helps.
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", incarnationBefore + 1_000L, List.of(ADDR_A));
+
+            assertThat(protocol.selfIncarnation())
+                .as("announceJoin must be refused before it does anything at all — a seeded incarnation "
+                    + "proves it armed a loop instead")
+                .isEqualTo(incarnationBefore);
+
+            var ticks = observeSchedulerTicks(1_200L);
+
+            assertThat(ticks)
+                .as("positive control: the shared scheduler was executing throughout the window")
+                .isGreaterThanOrEqualTo(2);
+            assertThat(announceCount(transport))
+                .as("an announceJoin that lands after stop() must arm no loop at all")
+                .isEqualTo(afterStop);
+
+            // The reviewer's literal sequence ends with a second stop(); it must stay frozen.
+            protocol.stop();
+            Thread.sleep(700L);
+            assertThat(announceCount(transport))
+                .as("still no announce after the second stop()")
+                .isEqualTo(afterStop);
+        }
+
+        /// #501: the stop-latch is per stop/start cycle, not a permanent kill switch — a restarted
+        /// protocol must be able to announce again, or a node that stops and restarts SWIM would
+        /// silently never rejoin.
+        @Test
+        void restartedProtocol_announcesAgain() throws InterruptedException {
+            protocol.start();
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+            protocol.stop();
+            Thread.sleep(200L);
+
+            var afterStop = announceCount(transport);
+
+            protocol.start();
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) > afterStop, 3_000L);
+
+            assertThat(announceCount(transport))
+                .as("start() clears the stop-latch — a restarted protocol announces again")
+                .isGreaterThan(afterStop);
+        }
+
+        /// #501 (review 2026-09-14, SHOULD-FIX-2): "a re-announce supersedes (cancels) the previous
+        /// loop" was unpinned — dropping the cancel left the whole module green. Discriminated by
+        /// SEED SET rather than by rate: the superseded loop targets ADDR_A and the current one
+        /// ADDR_B, so a retained loop keeps hitting ADDR_A while a cancelled one cannot, however
+        /// loaded the box is.
+        @Test
+        void reAnnounce_cancelsThePreviousLoop_supersededSeedGoesSilent() throws InterruptedException {
+            protocol.start();
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport, ADDR_A) >= 1, 3_000L);
+            assertThat(announceCount(transport, ADDR_A))
+                .as("positive control: the first loop is live and targeting ADDR_A")
+                .isGreaterThanOrEqualTo(1);
+
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_B));
+
+            // Shorter than the 500ms period: an attempt in flight at the supersede drains into the
+            // sample, a retained loop still gets two full ticks inside the window measured below.
+            Thread.sleep(200L);
+
+            var supersededCount = announceCount(transport, ADDR_A);
+
+            waitUntil(() -> announceCount(transport, ADDR_B) >= 2, 5_000L);
+
+            assertThat(announceCount(transport, ADDR_B))
+                .as("positive control: the superseding loop fired twice, so ≥1s of scheduler time "
+                    + "elapsed while ADDR_A was observed silent")
+                .isGreaterThanOrEqualTo(2);
+            assertThat(announceCount(transport, ADDR_A))
+                .as("a re-announce must cancel the previous loop — the superseded seed set goes silent")
+                .isEqualTo(supersededCount);
+        }
+
+        /// #501 (review 2026-09-14, BLOCKING-1 follow-up): `cancel(false)` does not interrupt an
+        /// attempt already running, so the cancel alone cannot stop an announce that is mid-flight.
+        /// Deterministic in-flight pin: the transport parks inside the send to ADDR_A, `stop()` runs
+        /// while it is parked, and the remaining seed must never be announced to.
+        @Test
+        void stopDuringAnAttempt_doesNotAnnounceToTheRemainingSeeds() throws InterruptedException {
+            var blocking = new ParkingTransport();
+            var local = SwimProtocol.swimProtocol(swimConfig(), blocking, new RecordingListener(), SELF_ID, SELF_ADDR)
+                                    .fold(cause -> null, v -> v);
+
+            local.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A, ADDR_B));
+
+            assertThat(blocking.entered.await(5, TimeUnit.SECONDS))
+                .as("positive control: an attempt is genuinely in flight, parked inside the send to "
+                    + "the first seed — the measurement below is taken on a LIVE attempt, not a dead one")
+                .isTrue();
+            assertThat(announceCount(blocking, ADDR_A))
+                .as("positive control: the first seed's ANNOUNCE was recorded before stop()")
+                .isEqualTo(1);
+
+            local.stop();
+            blocking.release.countDown();
+
+            Thread.sleep(1_200L); // two further announce periods
+
+            assertThat(announceCount(blocking, ADDR_B))
+                .as("an attempt in flight across stop() must not announce to the remaining seeds")
+                .isZero();
+            assertThat(announceCount(blocking, ADDR_A))
+                .as("and it must not re-arm: exactly the one send that was already in progress")
+                .isEqualTo(1);
+        }
+
+        /// Parks the caller inside the first ANNOUNCE send so a `stop()` can be made to land while an
+        /// attempt is demonstrably mid-flight. Records like [`RecordingTransport`] in every other way.
+        private static final class ParkingTransport extends RecordingTransport {
+            private final CountDownLatch entered = new CountDownLatch(1);
+            private final CountDownLatch release = new CountDownLatch(1);
+            private final AtomicInteger announces = new AtomicInteger(0);
+
+            @Override
+            public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
+                var result = super.send(target, message);
+
+                if (message instanceof Announce && announces.incrementAndGet() == 1) {
+                    entered.countDown();
+                    try {
+                        release.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+
+                return result;
+            }
+        }
+
         private static int announceCount(RecordingTransport transport) {
             return (int) transport.sentMessages.stream()
                                                .filter(m -> m.message() instanceof Announce)
                                                .count();
+        }
+
+        private static int announceCount(RecordingTransport transport, InetSocketAddress target) {
+            return (int) transport.sentMessages.stream()
+                                               .filter(m -> m.message() instanceof Announce)
+                                               .filter(m -> m.target().equals(target))
+                                               .count();
+        }
+
+        /// Liveness control for every "no further ANNOUNCE" assertion: run an independent periodic
+        /// task on the SAME scheduler that carries the announce loop for the measurement window and
+        /// report how many times it fired. An empty read from a stalled scheduler and an empty read
+        /// from a cancelled loop are otherwise indistinguishable.
+        private static int observeSchedulerTicks(long windowMs) throws InterruptedException {
+            var ticks = new AtomicInteger(0);
+            var control = SharedScheduler.scheduleAtFixedRate(ticks::incrementAndGet,
+                                                              timeSpan(200).millis(),
+                                                              timeSpan(200).millis());
+
+            try {
+                Thread.sleep(windowMs);
+            } finally {
+                control.cancel(false);
+            }
+
+            return ticks.get();
         }
 
         private static void waitUntil(java.util.function.BooleanSupplier condition, long timeoutMs)
