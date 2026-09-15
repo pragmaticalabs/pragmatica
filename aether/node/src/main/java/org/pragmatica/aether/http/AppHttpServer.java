@@ -804,20 +804,14 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// means "inherit the global policy" (`resolveEffectivePolicy` falls back), never "ask a remote
     /// node".
     ///
-    /// KNOWN GAP in that premise, recorded not fixed (#866 review G4): "matches locally" and "is
-    /// served locally" are decided by two DIFFERENT comparisons. This function's local branch goes
-    /// through `HttpRoutePublisher.findLocalRoute`, which tests
-    /// `normalizedPath.startsWith(route.pathPrefix())` against the RAW stored prefix; dispatch goes
-    /// through `findMatchingLocalRoute` -> `pathMatchesPrefix`, which normalizes BOTH sides and so
-    /// requires a slash boundary. A stored prefix without a trailing slash (which
-    /// `RouteMetadataExtractor.extractPathPrefix` produces for a route with no path placeholder)
-    /// therefore matches here but not there: with a local `/api/v1/pricing` and a remote
-    /// `/api/v1/pricing-admin/`, a request for `/api/v1/pricing-admin/report` short-circuits on the
-    /// local match, drops the remote route's stronger policy, and is then forwarded to the node that
-    /// really owns it -- where `dispatchForwardedRequest` runs no security check of its own. That
-    /// needs `findLocalRoute` to adopt the same normalize-both-sides comparison; it is a matching-
-    /// semantics change and belongs with the route-selection work, not here. Reachability is a
-    /// naming coincidence (`pricing` / `pricing-admin`) and no such pair ships in this repo today.
+    /// CLOSED by #884, which is the route-selection work that #866 review G4 deferred this to.
+    /// "Matches locally" and "is served locally" used to be decided by two different comparisons
+    /// over two different collections; both now resolve through the one
+    /// `HttpRoutePublisher.findLocalRoute` call ([#resolveLocalRoute] builds dispatch's key from
+    /// its answer), so they cannot diverge. G4's other half -- that `startsWith` against a stored
+    /// prefix is not a slash-boundary test -- is closed at the source: `HttpRouteDefinition`
+    /// normalizes `pathPrefix` to a trailing slash in its constructor, so a local `/api/v1/pricing`
+    /// is stored as `/api/v1/pricing/` and no longer matches `/api/v1/pricing-admin/report`.
     ///
     /// Keying the local branch on the POLICY rather than on the MATCH is what #866 review F2 found:
     /// remote lookup is prefix-based and `computeRouteTable` excludes a remote route only on exact
@@ -906,13 +900,11 @@ class AppHttpServerAdapter implements AppHttpServer {
                                  String requestId) {
         // Local fast path: a request matching a locally-hosted ACTIVE slice dispatches locally
         // REGARDLESS of isRouteReady()/republish-in-progress state. The live publisher registry
-        // (allLocalRoutes) is the source of truth for local availability — NOT the propagating
-        // route-table snapshot, which transiently reports empty during generation churn while the
-        // slice instance is still serving. Only requests needing REMOTE forwarding consult the
-        // snapshot and the route-ready barrier.
-        var localRouteOpt = httpRoutePublisher.flatMap(pub -> findMatchingLocalRoute(pub.allLocalRoutes(),
-                                                                                     method,
-                                                                                     normalizedPath));
+        // is the source of truth for local availability — NOT the propagating route-table
+        // snapshot, which transiently reports empty during generation churn while the slice
+        // instance is still serving. Only requests needing REMOTE forwarding consult the snapshot
+        // and the route-ready barrier.
+        var localRouteOpt = httpRoutePublisher.flatMap(pub -> resolveLocalRoute(pub, method, normalizedPath));
 
         if (localRouteOpt.isPresent()) {
             dispatchLocalRoute(request, response, routeTable, method, normalizedPath, localRouteOpt.unwrap(), requestId);
@@ -1165,15 +1157,26 @@ class AppHttpServerAdapter implements AppHttpServer {
         }
     }
 
-    private Option<HttpNodeRouteKey> findMatchingLocalRoute(Set<HttpNodeRouteKey> localRoutes,
-                                                            String method,
-                                                            String normalizedPath) {
-        return Option.from(localRoutes.stream()
-                                      .filter(key -> key.httpMethod()
-                                                        .equalsIgnoreCase(method))
-                                      .filter(key -> pathMatchesPrefix(normalizedPath,
-                                                                       key.pathPrefix()))
-                                      .findFirst());
+    /// #884: dispatch names the local route through the publisher's SINGLE selection rule -- the
+    /// very call the authorization path makes ([#findRouteSecurityPolicy] ->
+    /// `HttpRoutePublisher.findLocalRoute`) -- so the route whose policy admits a request is the
+    /// route that serves it. There is one search, not two that agree by coincidence.
+    ///
+    /// What was here before was the second search: a scan of `pub.allLocalRoutes()` taking the
+    /// first match. That set is a `Set.copyOf` result, an `ImmutableCollections.SetN` whose probe
+    /// sequence is seeded from a per-JVM `SALT`, so over a nested prefix pair it picked the parent
+    /// on some node starts and the child on others while the policy half picked by an unrelated
+    /// hash order. Nothing refused the disagreement, and nothing could observe it: a request could
+    /// be authorized under one slice's policy and answered by another slice.
+    ///
+    /// `findLocalRoute` applies the active security overrides to the route it returns, which
+    /// touches `security()` only -- method, prefix and artifact come back unchanged -- so the key
+    /// built here is the same key the old scan produced for the route it happened to pick.
+    private Option<HttpNodeRouteKey> resolveLocalRoute(HttpRoutePublisher pub, String method, String normalizedPath) {
+        return pub.findLocalRoute(method, normalizedPath)
+                  .map(route -> HttpNodeRouteKey.httpNodeRouteKey(route.httpMethod(),
+                                                                  route.pathPrefix(),
+                                                                  selfNodeId));
     }
 
     private Option<HttpRouteRegistry.RouteInfo> findMatchingRemoteRoute(List<HttpRouteRegistry.RouteInfo> remoteRoutes,
@@ -1485,8 +1488,8 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Option<SliceRouter> findLocalRouterForPath(HttpRoutePublisher pub, String method, String normalizedPath) {
-        return findMatchingLocalRoute(pub.allLocalRoutes(), method, normalizedPath).flatMap(key -> pub.findLocalRouter(key.httpMethod(),
-                                                                                                                       key.pathPrefix()));
+        return resolveLocalRoute(pub, method, normalizedPath).flatMap(key -> pub.findLocalRouter(key.httpMethod(),
+                                                                                                 key.pathPrefix()));
     }
 
     private void sendForwardSuccess(ClusterNetwork network,
