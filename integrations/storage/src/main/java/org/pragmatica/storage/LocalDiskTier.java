@@ -119,10 +119,14 @@ public final class LocalDiskTier implements StorageTier {
         // real ENOSPC). Released here, exactly once, whatever stage failed; the on-disk state is
         // writeBlock's, and it is either the previous copy or nothing — so a later `delete` of the
         // id subtracts only what it finds there and the count never goes negative (r3, b).
+        // `withFailure`, not `onFailure`: a dependent action runs before the returned promise
+        // resolves, so the reservation is gone by the time the caller sees the failure. As an
+        // `onFailure` handler it ran on an executor thread after the caller's `await` returned,
+        // and `usedBytes` over-reported by the block for that window (#1144).
         return Promise.lift(WRITE_ERROR,
                             () -> writeBlock(id, content))
                       .flatMap(Promise::resolved)
-                      .onFailure(_ -> usedBytes.addAndGet(-content.length));
+                      .withFailure(_ -> usedBytes.addAndGet(-content.length));
     }
 
     /// Atomic CAS capacity reservation — prevents TOCTOU race.

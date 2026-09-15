@@ -54,7 +54,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 public final class StorageFactory {
     private static final Logger log = LoggerFactory.getLogger(StorageFactory.class);
-    private static final String STREAMS_NAME = "streams";
+    static final String STREAMS_NAME = "streams";
     /// Hot-ring mirror in the memory tier — small; the live ring already holds recent events,
     /// the memory tier is only the first read-waterfall hop for just-sealed segment blocks.
     private static final long STREAM_MEMORY_BYTES = 16L * 1024 * 1024;
@@ -183,7 +183,17 @@ public final class StorageFactory {
     /// #858: the tier list plus the (possibly absent) DHT marker check that goes with it -- threaded
     /// from [#maybeEncryptDht] up through [#buildTierList]/[#handleDiskTierUnavailable]/[#buildTiers]
     /// to [#createOne], which hands `dhtMarkerCheck` to `StorageSetup` unchanged.
-    private record TierBuild(List<StorageTier> tiers, Option<DhtMarkerCheck> dhtMarkerCheck) {
+    ///
+    /// #852: `armedDisk` is the encrypted local-disk tier whose `.encryption-enabled` marker is NOT
+    /// yet written — [#createAll] commits every instance's marker only after every instance's guard
+    /// has passed, so a boot refused by one instance stamps no sibling's directory.
+    private record TierBuild(List<StorageTier> tiers,
+                             Option<DhtMarkerCheck> dhtMarkerCheck,
+                             Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
+        private TierBuild(List<StorageTier> tiers, Option<DhtMarkerCheck> dhtMarkerCheck) {
+            this(tiers, dhtMarkerCheck, Option.empty());
+        }
+
         /// #858: [#maybeEncryptDht]'s own return shape -- the single (possibly absent) DHT tier plus
         /// its marker check, before either is folded into a [TierBuild]'s full tier list by
         /// [#withDht]. Kept separate from the enclosing record because `maybeEncryptDht` builds at
@@ -297,7 +307,38 @@ public final class StorageFactory {
                                                        String nodeId,
                                                        Option<DHTClient> dhtClient,
                                                        Option<EncryptionKeyring> keyring) {
-        var results = new ArrayList<Result<StorageSetup>>();
+        return admit(pendingSetups(configs, nodeId, dhtClient, keyring));
+    }
+
+    /// #852 round 2: the boot decision `AetherNode` actually makes -- the config-map instances AND
+    /// `streams`. `streams` used to be a SECOND call after this one ([#defaultStreamStorage]'s
+    /// four-argument overload), outside the two-phase commit, so its guard refusing a boot orphaned
+    /// every marker this method had just written: the node never started, and backing those
+    /// instances out to `encrypted = false` then tripped their own reverse guard on a stamp no
+    /// ciphertext justified -- #852's symptom, one call later. Arming `streams` alongside the rest
+    /// puts every marker under ONE admission, so a refusal on any arm stamps no directory at all.
+    ///
+    /// `streams` carries no [StorageConfig] of its own (`[storage.encryption] streams_encrypted` is
+    /// a dedicated top-level flag), which is why it arrives as a [StreamSetupRequest] rather than as
+    /// another entry in `configs`; the returned map still keys it under `streams` like any other
+    /// instance.
+    static Result<Map<String, StorageSetup>> createAll(Map<String, StorageConfig> configs,
+                                                       String nodeId,
+                                                       Option<DHTClient> dhtClient,
+                                                       Option<EncryptionKeyring> keyring,
+                                                       StreamSetupRequest streams) {
+        var results = pendingSetups(configs, nodeId, dhtClient, keyring);
+
+        results.add(armStreamStorage(streams));
+
+        return admit(results);
+    }
+
+    private static List<Result<PendingSetup>> pendingSetups(Map<String, StorageConfig> configs,
+                                                            String nodeId,
+                                                            Option<DHTClient> dhtClient,
+                                                            Option<EncryptionKeyring> keyring) {
+        var results = new ArrayList<Result<PendingSetup>>();
 
         configs.forEach((name, config) -> results.add(createOne(name, config, nodeId, dhtClient, keyring)));
         // Every node carries an `artifacts` storage instance — operators expect it without
@@ -335,9 +376,43 @@ public final class StorageFactory {
                                   keyring));
         }
 
-        return Result.firstFailureOf(results).map(setups -> setups.stream()
-                                                                  .collect(Collectors.toMap(StorageSetup::name,
-                                                                                            Function.identity())));
+        return results;
+    }
+
+    /// #852: two phases. Every arm above was built with its disk marker still pending (a pure guard
+    /// pass that can refuse); only once the whole set is admitted are the markers written, so a boot
+    /// refused by any arm leaves no sibling's directory stamped — the stamp that sibling's own
+    /// reverse guard would otherwise refuse on after a back-out.
+    private static Result<Map<String, StorageSetup>> admit(List<Result<PendingSetup>> results) {
+        return Result.firstFailureOf(results)
+                     .flatMap(StorageFactory::commitDiskMarkers)
+                     .map(setups -> setups.stream()
+                                          .collect(Collectors.toMap(StorageSetup::name,
+                                                                    Function.identity())));
+    }
+
+    /// The side-effect phase of [#createAll]. A marker write that itself fails still fails the boot;
+    /// markers committed before it in the same pass stay. No guard refusal reaches that state -- every
+    /// guard has already passed by the time this runs -- so it takes an I/O failure on a marker file or
+    /// a crash part-way through the pass. Re-running the same config completes the set: the stamped
+    /// instances' guards short-circuit on marker-present and the unstamped ones re-arm over their still
+    /// empty directories.
+    private static Result<List<StorageSetup>> commitDiskMarkers(List<PendingSetup> pending) {
+        return Result.allOf(pending.stream().map(PendingSetup::commitDiskMarker).toList()).map(_ -> pending.stream()
+                                                                                                           .map(PendingSetup::setup)
+                                                                                                           .toList());
+    }
+
+    /// #852: a fully assembled [StorageSetup] plus the disk-marker write [#createAll] has not yet
+    /// performed for it.
+    private record PendingSetup(StorageSetup setup, Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
+        private Result<Unit> commitDiskMarker() {
+            return armedDisk.map(disk -> disk.commitMarker()
+                                             .mapError(cause -> Causes.cause("Failed to create storage '" + setup.name()
+                                                                            + "': " + cause.message(),
+                                                                             Option.some(cause))))
+                            .or(Result.success(unit()));
+        }
     }
 
     /// #253: `StorageConfig.storageConfig()`'s defaults with `encrypted` overridden to track
@@ -430,21 +505,55 @@ public final class StorageFactory {
     /// unchecked, so disabling `streams_encrypted` (or dropping `[storage.encryption]`) would
     /// silently hand back framed ciphertext as plaintext through `buildStreamTiers`' bare disk
     /// tier. Same guard, same architecture as the per-instance path.
+    ///
+    /// #852 round 2: the standalone entry -- arm, then commit this one marker immediately, which is
+    /// what a caller deciding nothing else wants. `AetherNode` does NOT use it; it hands the same
+    /// parameters to [#createAll] as a [StreamSetupRequest] so the segments marker is committed under
+    /// the same admission as every other instance's. Nothing in the type system prevents a future
+    /// caller from reintroducing the second call -- what refuses that is
+    /// `StorageFactoryEncryptionTest#bootDecision_leavesNoDiskMarkerOnAnInstance_whenTheStreamsArmRefusesOverExistingPlaintext`
+    /// and its reverse-direction sibling, which drive the production entry point and would go red.
     static Result<StorageSetup> defaultStreamStorage(Option<DHTClient> dhtClient,
                                                      Path streamDataDir,
                                                      String nodeId,
                                                      Option<EncryptionKeyring> keyring) {
-        return keyring.fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(streamDataDir.resolve("segments"),
-                                                                                        STREAMS_NAME)
-                                                       .map(_ -> defaultStreamStorage(dhtClient, streamDataDir, nodeId)),
-                            ring -> buildEncryptedStreamTiers(dhtClient, streamDataDir.resolve("segments"), ring).map(tiers -> assembleStreamSetup(tiers,
-                                                                                                                                                   streamDataDir.resolve("snapshots"),
-                                                                                                                                                   nodeId)));
+        return armStreamStorage(new StreamSetupRequest(dhtClient, streamDataDir, nodeId, keyring)).flatMap(pending -> pending.commitDiskMarker()
+                                                                                                                             .map(_ -> pending.setup()));
     }
 
-    private static Result<List<StorageTier>> buildEncryptedStreamTiers(Option<DHTClient> dhtClient,
-                                                                       Path segmentsDir,
-                                                                       EncryptionKeyring keyring) {
+    /// #852: everything [#defaultStreamStorage] does except the marker write -- the `streams`
+    /// counterpart of [#createOne], so [#createAll] can hold its side effect back until every arm
+    /// has been admitted. Both guard directions live here unchanged: `refuseIfEncryptedWithoutKeyring`
+    /// when `streams_encrypted` is off over a marked segments dir, `armLocalDisk` when it is on over
+    /// a segments dir that already holds plaintext.
+    private static Result<PendingSetup> armStreamStorage(StreamSetupRequest request) {
+        var segmentsDir = request.streamDataDir().resolve("segments");
+        var snapshotDir = request.streamDataDir().resolve("snapshots");
+
+        return request.keyring()
+                      .fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(segmentsDir, STREAMS_NAME).map(_ -> new PendingSetup(defaultStreamStorage(request.dhtClient(),
+                                                                                                                                                                  request.streamDataDir(),
+                                                                                                                                                                  request.nodeId()),
+                                                                                                                                             Option.none())),
+                            ring -> armEncryptedStreamTiers(request.dhtClient(),
+                                                            segmentsDir,
+                                                            ring).map(build -> new PendingSetup(assembleStreamSetup(build.tiers(),
+                                                                                                                    snapshotDir,
+                                                                                                                    request.nodeId()),
+                                                                                                build.armedDisk())));
+    }
+
+    /// #852: the `streams` parameters `AetherNode` resolves for itself -- `streams_encrypted` has no
+    /// per-instance [StorageConfig] to carry it -- gathered so [#createAll] can take them as one
+    /// argument. `keyring` is that already-resolved decision, empty when streams is not encrypted.
+    record StreamSetupRequest(Option<DHTClient> dhtClient,
+                              Path streamDataDir,
+                              String nodeId,
+                              Option<EncryptionKeyring> keyring) {}
+
+    private static Result<TierBuild> armEncryptedStreamTiers(Option<DHTClient> dhtClient,
+                                                             Path segmentsDir,
+                                                             EncryptionKeyring keyring) {
         var memoryTier = MemoryTier.memoryTier(STREAM_MEMORY_BYTES);
         var dhtTier = dhtClient.map(client -> DhtStorageTier.dhtStorageTier(client, "stream-segments"))
                                .map(dht -> EncryptingStorageTier.wrap(dht, keyring));
@@ -453,17 +562,20 @@ public final class StorageFactory {
                                                                                     log.warn("Disk tier for 'streams' unavailable: {}, using memory + DHT fallback",
                                                                                              cause.message());
 
-                                                                                    return Result.success(dhtTier.map(dht -> List.<StorageTier> of(memoryTier,
-                                                                                                                                                   dht))
-                                                                                                                 .or(List.of(memoryTier)));
+                                                                                    return Result.success(new TierBuild(dhtTier.map(dht -> List.<StorageTier> of(memoryTier,
+                                                                                                                                                                 dht))
+                                                                                                                               .or(List.of(memoryTier)),
+                                                                                                                        Option.none()));
                                                                                 },
-                                                                                disk -> EncryptingStorageTier.wrapLocalDisk(disk,
-                                                                                                                            segmentsDir,
-                                                                                                                            keyring).map(encDisk -> dhtTier.map(dht -> List.<StorageTier> of(memoryTier,
-                                                                                                                                                                                             encDisk,
-                                                                                                                                                                                             dht))
-                                                                                                                                                           .or(List.of(memoryTier,
-                                                                                                                                                                       encDisk))));
+                                                                                disk -> EncryptingStorageTier.armLocalDisk(disk,
+                                                                                                                           segmentsDir,
+                                                                                                                           keyring).map(armed -> new TierBuild(dhtTier.map(dht -> List.<StorageTier> of(memoryTier,
+                                                                                                                                                                                                        armed.tier(),
+                                                                                                                                                                                                        dht))
+                                                                                                                                                                      .or(List.of(memoryTier,
+                                                                                                                                                                                  armed.tier())),
+                                                                                                                                                               Option.none(),
+                                                                                                                                                               Option.some(armed))));
     }
 
     private static List<StorageTier> buildStreamTiers(Option<DHTClient> dhtClient, Path segmentsDir) {
@@ -521,7 +633,7 @@ public final class StorageFactory {
                                          garbageCollector);
     }
 
-    private static Result<StorageSetup> createOne(String name,
+    private static Result<PendingSetup> createOne(String name,
                                                   StorageConfig config,
                                                   String nodeId,
                                                   Option<DHTClient> dhtClient,
@@ -538,11 +650,12 @@ public final class StorageFactory {
         return buildTiers(name, config, dhtClient, effectiveKeyring).mapError(cause -> Causes.cause("Failed to create storage '" + name
                                                                                                    + "': " + cause.message(),
                                                                                                     Option.some(cause)))
-                         .map(build -> assembleSetup(name,
-                                                     build.tiers(),
-                                                     config,
-                                                     nodeId,
-                                                     build.dhtMarkerCheck()));
+                         .map(build -> new PendingSetup(assembleSetup(name,
+                                                                      build.tiers(),
+                                                                      config,
+                                                                      nodeId,
+                                                                      build.dhtMarkerCheck()),
+                                                        build.armedDisk()));
     }
 
     private static Result<TierBuild> buildTiers(String name,
@@ -833,15 +946,22 @@ public final class StorageFactory {
                                                                                                                                          keyring),
                                                                                                                          List.of(memoryTier,
                                                                                                                                  diskTier))),
-                            ring -> EncryptingStorageTier.wrapLocalDisk(diskTier, diskPath, ring).map(encDisk -> withDht(maybeEncryptDht(name,
-                                                                                                                                         dhtClient,
-                                                                                                                                         dhtKeyPrefix,
-                                                                                                                                         keyring),
-                                                                                                                         List.of(memoryTier,
-                                                                                                                                 encDisk))));
+                            ring -> EncryptingStorageTier.armLocalDisk(diskTier, diskPath, ring).map(armed -> withDht(maybeEncryptDht(name,
+                                                                                                                                      dhtClient,
+                                                                                                                                      dhtKeyPrefix,
+                                                                                                                                      keyring),
+                                                                                                                      List.of(memoryTier,
+                                                                                                                              armed.tier()),
+                                                                                                                      Option.some(armed))));
     }
 
     private static TierBuild withDht(TierBuild.DhtBuild dhtBuild, List<StorageTier> baseTiers) {
+        return withDht(dhtBuild, baseTiers, Option.empty());
+    }
+
+    private static TierBuild withDht(TierBuild.DhtBuild dhtBuild,
+                                     List<StorageTier> baseTiers,
+                                     Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
         var tiers = dhtBuild.tier()
                             .map(dht -> {
                                      var withDht = new ArrayList<>(baseTiers);
@@ -852,7 +972,7 @@ public final class StorageFactory {
                                  })
                             .or(baseTiers);
 
-        return new TierBuild(tiers, dhtBuild.markerCheck());
+        return new TierBuild(tiers, dhtBuild.markerCheck(), armedDisk);
     }
 
     private static StorageSetup assembleSetup(String name,

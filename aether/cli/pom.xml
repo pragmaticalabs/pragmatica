@@ -165,6 +165,8 @@
                                     <manifestEntries>
                                         <Implementation-Version>${project.version}</Implementation-Version>
                                         <Implementation-Build-Date>${maven.build.timestamp}</Implementation-Build-Date>
+                                        <!-- #1077: shaded log4j-api is multi-release; see aether/node/pom.xml -->
+                                        <Multi-Release>true</Multi-Release>
                                     </manifestEntries>
                                 </transformer>
                                 <!-- Concatenate META-INF/services/* across all shaded jars so SPI-loaded

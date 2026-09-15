@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -54,6 +55,19 @@ public interface ScheduledTaskManager {
 
     @MessageReceiver
     void onQuorumStateChange(ClusterStateNotification notification);
+
+    /// #273 item 1: ALL-mode eligibility is hosting AND not draining. This node's own drain cancels its
+    /// ALL-mode timers — a draining node must not keep firing — and nothing re-registers them, because
+    /// `DrainProcedure` is single-shot and irreversible (`INACTIVE -> DRAINING -> EXITED`): the node
+    /// halts, it never returns to service. SINGLE-mode is leader-owned and untouched.
+    ///
+    /// Not a `@MessageReceiver`: the producer is `DrainProcedure.initiate`, which invokes its
+    /// `drainInitiatedEmitter` once inside the CAS to DRAINING. `AetherNode` composes this call into
+    /// that emitter, so every drain trigger (QUORUM_LOSS, CORE_ABSENCE, COMMANDED) funnels through it.
+    /// An earlier revision keyed this on `MembershipDecision.NodeDraining`, which no producer emits —
+    /// the per-node lifecycle-projection layer was removed in the membership-v2 finale. Default no-op
+    /// so the route-test stubs that implement this interface stay compilable.
+    default void onDrainInitiated() {}
 
     int activeTimerCount();
     void stop();
@@ -116,6 +130,9 @@ public interface ScheduledTaskManager {
         final Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers = new ConcurrentHashMap<>();
         final Set<ScheduledTaskKey> inFlight = ConcurrentHashMap.newKeySet();
         final AtomicLong quorumSequence = new AtomicLong(0);
+        /// #273: set once by [ScheduledTaskManager#onDrainInitiated], never cleared — the drain is
+        /// irreversible. Gates ALL-mode only.
+        final AtomicBoolean draining = new AtomicBoolean(false);
         final Dormant dormant;
         final Following following;
         final Leading leading;
@@ -258,20 +275,13 @@ public interface ScheduledTaskManager {
         }
 
         private boolean shouldRunInCurrentState(ScheduledTask task) {
-            if (task.paused()) {
+            var state = fsm.current();
+
+            if (! (state instanceof Following || state instanceof Leading)) {
                 return false;
             }
 
-            var state = fsm.current();
-
-            return switch (task.executionMode()) {
-                case ALL -> state instanceof Following || state instanceof Leading;
-                case SINGLE -> state instanceof Leading;
-                // #964, fail closed: an execution mode this node cannot read must not be guessed into
-                // either leader-only or run-everywhere. Running nowhere is recoverable once the mode is
-                // legible; running everywhere is not.
-                case UNKNOWN -> false;
-            };
+            return TaskOps.eligible(ctx, task, state instanceof Leading);
         }
     }
 
@@ -280,11 +290,38 @@ public interface ScheduledTaskManager {
 
         private TaskOps() {}
 
+        /// Where a task runs (#272 R12, #273 item 1). ALL-mode = every node that HOSTS the slice and is
+        /// not draining — a non-hosting node has no bridge to fire through and used to write a failure
+        /// state every interval; a draining node must stop firing. SINGLE-mode = the leader, hosting or
+        /// not: the fire is a `Unit` fire-and-forget the invoker can encode without a local bridge.
+        /// An execution mode this node cannot read runs nowhere (#964, fail closed).
+        static boolean eligible(Context ctx, ScheduledTask task, boolean leader) {
+            if (task.paused()) {
+                return false;
+            }
+
+            return switch (task.executionMode()) {
+                case ALL -> hostingAndNotDraining(ctx, task);
+                case SINGLE -> leader;
+                case UNKNOWN -> false;
+            };
+        }
+
+        static boolean hostingAndNotDraining(Context ctx, ScheduledTask task) {
+            return ! ctx.draining.get() && ctx.invoker.hasLocalSlice(task.artifact());
+        }
+
+        /// Fire-time re-check for ALL-mode: hosting can end (the slice unloaded while other replicas keep
+        /// the cluster-scoped task key alive) and draining can begin between timer registration and a
+        /// tick. A tick that is no longer eligible is skipped without any state write.
+        private static boolean shouldFire(Context ctx, ScheduledTask task) {
+            return task.executionMode() != ExecutionMode.ALL || hostingAndNotDraining(ctx, task);
+        }
+
         static void startEligibleTasks(Context ctx, boolean leader) {
             ctx.registry.allTasks()
                         .stream()
-                        .filter(task -> !task.paused())
-                        .filter(task -> task.executionMode() == ExecutionMode.ALL || (leader && task.executionMode() == ExecutionMode.SINGLE))
+                        .filter(task -> eligible(ctx, task, leader))
                         .forEach(task -> {
                                      var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(),
                                                                                  task.artifact(),
@@ -329,6 +366,10 @@ public interface ScheduledTaskManager {
         /// claimed skips this fire (recording the skip in state) instead of running concurrently with
         /// the in-progress invocation.
         private static void fireFixedRate(Context ctx, ScheduledTaskKey key, ScheduledTask task, TimeSpan interval) {
+            if (!shouldFire(ctx, task)) {
+                return;
+            }
+
             if (!ctx.inFlight.add(key)) {
                 recordSkippedOverlap(ctx, task);
 
@@ -409,6 +450,12 @@ public interface ScheduledTaskManager {
         /// real `Context` and `CronExpression` — cron's minute-granularity `delayUntilNext` makes
         /// waiting on a real timer tick impractically slow for a unit test.
         static void executeCronTask(Context ctx, ScheduledTaskKey key, ScheduledTask task, CronExpression cron) {
+            if (!shouldFire(ctx, task)) {
+                scheduleNextCronFire(ctx, key, task, cron);
+
+                return;
+            }
+
             if (!ctx.inFlight.add(key)) {
                 recordSkippedOverlap(ctx, task);
                 scheduleNextCronFire(ctx, key, task, cron);
@@ -430,6 +477,14 @@ public interface ScheduledTaskManager {
         /// the WRONG next match whenever the invocation runs longer than the interval between cron
         /// matches. `0` on parse failure mirrors the pre-existing warn-only defense-in-depth fallback in
         /// [#startCronTimer] — activation-time validation ([NodeDeploymentState]) is the real gate.
+        ///
+        /// **Clock source is NODE-LOCAL (#273 item 3, documented rather than changed).** `Instant.now()`
+        /// is this JVM's wall clock, read as UTC by [CronExpression]; there is no cluster clock and the
+        /// HLC is not consulted. So an ALL-mode cron fires on each node at that node's own reading of
+        /// the boundary — skew between nodes is skew between their fires — and a SINGLE-mode cron uses
+        /// the leader's clock, so a leader change moves the reference clock along with the timer. A
+        /// clock that steps across a minute boundary on one node can fire that boundary twice or skip
+        /// it once on that node; nothing here detects it.
         private static long nextCronFireAt(CronExpression cron) {
             var now = Instant.now();
 
@@ -484,6 +539,27 @@ public interface ScheduledTaskManager {
             ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
         }
 
+        /// #273: drop this node's ALL-mode timers (SINGLE-mode timers, leader-owned, stay). The count is
+        /// logged rather than returned: it is the node's only operator-visible evidence that the drain
+        /// reached the scheduler, and `ScheduledTaskDrainWiringBootTest` reads this line to pin that the
+        /// real `DrainProcedure.initiate` gets here.
+        static void cancelAllModeTimers(Context ctx) {
+            // Materialised, not `peek`-counted: `count()` is permitted to skip a pipeline whose size it
+            // can derive, which would cancel nothing while still reporting a plausible number.
+            var keys = ctx.registry.allTasks()
+                                   .stream()
+                                   .filter(task -> task.executionMode() == ExecutionMode.ALL)
+                                   .map(task -> ScheduledTaskKey.scheduledTaskKey(task.configSection(),
+                                                                                  task.artifact(),
+                                                                                  task.methodName()))
+                                   .toList();
+
+            keys.forEach(key -> cancelTimer(ctx, key));
+            log.info("Drain initiated on {} — cancelled {} ALL-mode scheduled timer(s); ALL-mode fires stop here",
+                     ctx.self.id(),
+                     keys.size());
+        }
+
         static void cancelTimer(Context ctx, ScheduledTaskKey key) {
             Option.option(ctx.activeTimers.remove(key)).onPresent(future -> {
                 future.cancel(false);
@@ -527,6 +603,13 @@ public interface ScheduledTaskManager {
                 fsm.dispatch(new ClusterFsmEvent.QuorumEstablished());
             } else {
                 fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+            }
+        }
+
+        @Override
+        public void onDrainInitiated() {
+            if (ctx.draining.compareAndSet(false, true)) {
+                TaskOps.cancelAllModeTimers(ctx);
             }
         }
 

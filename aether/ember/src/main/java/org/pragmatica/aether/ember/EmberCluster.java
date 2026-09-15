@@ -4,7 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.ArrayList;
@@ -45,6 +47,7 @@ import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.rabia.ParticipationMarker;
 import org.pragmatica.consensus.rabia.ProtocolConfig;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
@@ -170,12 +173,16 @@ public final class EmberCluster {
     /// [SecurityMode#NONE] with no keys, which is what an in-JVM harness wants: `securityEnabled()` is
     /// false, so the node installs `denyUnlessPublicValidator` and only Public routes answer.
     ///
+    /// This is the harness's EXPLICIT opt-out (#665): the bare `AppHttpConfig` builders default to
+    /// `API_KEY`, so an Ember node that should answer unauthenticated must say NONE here, and the mode
+    /// is passed to the full factory by name below rather than inherited from a convenience default.
+    ///
     /// Forge sets these from the sibling `aether.toml`'s `[app-http]` via [#withAppHttpSecurity] BEFORE
-    /// [#start]. Without that seam a Forge cluster could not authenticate ANY caller — the convenience
-    /// factory hard-codes NONE and an empty key map, so an application declaring `role:admin` or
-    /// `authenticated` routes had every one of them refused with no credential able to satisfy them,
-    /// and no config or environment path could reach the node. That made Aether's own local simulator
-    /// unable to demonstrate the access-control model applications are expected to declare.
+    /// [#start]. Without that seam a Forge cluster could not authenticate ANY caller — NONE with an
+    /// empty key map means an application declaring `role:admin` or `authenticated` routes has every
+    /// one of them refused with no credential able to satisfy them, and no config or environment path
+    /// could reach the node. That made Aether's own local simulator unable to demonstrate the
+    /// access-control model applications are expected to declare.
     private final AtomicReference<SecurityMode> appHttpSecurityMode = new AtomicReference<>(SecurityMode.NONE);
 
     private final AtomicReference<Map<String, ApiKeyEntry>> appHttpApiKeys = new AtomicReference<>(Map.of());
@@ -186,6 +193,14 @@ public final class EmberCluster {
     /// JUnit `@TempDir`) via [#withDataBaseDir] BEFORE [#start] to turn the disk tier and the
     /// per-partition stream WAL on; see [#perNodeStorageConfig].
     private final AtomicReference<Option<Path>> dataBaseDir = new AtomicReference<>(Option.none());
+    /// #1212 — where this instance's nodes keep their durable first-boot markers when the test did
+    /// not opt into [#withDataBaseDir]. Created ONCE per `EmberCluster` instance and deliberately
+    /// NOT cleaned by [#stop], because that is exactly what gives the marker its meaning here:
+    /// `stop()` followed by `start()` rebuilds every node through [#createNode] under the same node
+    /// ids, and those rebuilt nodes must read `PARTICIPATED` rather than re-asserting newness. A
+    /// fresh `EmberCluster` — a new test — gets a fresh dir and therefore genuinely new nodes.
+    /// Harness-scoped; production nodes get their marker from the deployment path instead.
+    private final Option<Path> participationMarkerBaseDir = createParticipationMarkerBaseDir();
     /// #491 pinned convergence variant — when set (via [#withRaisedSwimTimeouts]) every node is created
     /// with raised SWIM / transport / membership timeouts so a single graceful owner-kill does not trip
     /// the transient QuorumLost→PASSIVE false-removal cascade that falsely marks LIVE survivors DEAD.
@@ -655,7 +670,7 @@ public final class EmberCluster {
     /// failsafe's 30-minute fork wall ended it — with no failing test named. Whichever path settles
     /// `outcome` first wins (`resolve` is compare-and-set); the other's stops are bounded, recovered,
     /// and idempotent on an already-stopped node.
-    private Promise<Unit> abortStart(Cause cause, Map<String, String> startFailures) {
+    Promise<Unit> abortStart(Cause cause, Map<String, String> startFailures) {
         log.error("Cluster startup aborted on first node failure: {}", cause.message());
         // #727 review B2: BEFORE the stops and the clear that follows them, while `nodes` and
         // `nodeInfos` still hold the attempt. Moving this below the stops empties the snapshot.
@@ -667,10 +682,50 @@ public final class EmberCluster {
                                                  .recover(_ -> Unit.unit()))
                                 .toList();
 
-        return Promise.allOf(stopPromises)
-                      .mapToUnit()
-                      .onSuccess(this::clearClusterStateOnFailure)
-                      .flatMap(_ -> cause.promise());
+        return clearThenSettle(Promise.allOf(stopPromises).mapToUnit(),
+                               this::clearClusterStateOnFailure,
+                               cause::promise);
+    }
+
+    /// The registry clear between the stops settling and the outcome the caller sees (#913 contract:
+    /// a start failure empties the registry BEFORE the failure reaches the caller; [#stop] likewise
+    /// before its own resolution). One chain for all three paths, package-visible so the ordering is
+    /// pinned on the exact chain the product runs (`EmberClusterClearBeforeOutcomeTest`), and the
+    /// wiring of each call site through it on the real paths (`EmberClusterTeardownWiringTest`).
+    ///
+    /// #1112: the clear is a `flatMap`, not an `onSuccess`. `onSuccess` is dispatched to a virtual
+    /// thread, so it raced the caller's own `onResult` continuation and the caller could still read
+    /// the aborted nodes as `inactive` (34–83 of 20,000 iterations). The ordering is structural, not
+    /// a thread property: `CompletionFold.complete` (`core/.../Promise.java`) applies the transformer
+    /// and only then resolves the derived promise, on whichever thread resolved `stopsSettled`, and
+    /// no path dispatches it — so the clear has RETURNED before the outcome can resolve.
+    ///
+    /// The clear runs under [Result#lift]: a throw inside a plain mapper never resolves the derived
+    /// promise (core's total-mapper contract), which would leave the caller's `await()` hanging
+    /// forever. Lifted, a throwing clear settles the outcome as a FAILURE carrying the throwable's
+    /// cause instead (`EmberClusterClearBeforeOutcomeTest.aThrowingClear_settlesAFailure_neverAHang`).
+    static Promise<Unit> clearThenSettle(Promise<Unit> stopsSettled,
+                                         Functions.Fn1<Unit, Unit> clear,
+                                         Functions.Fn0<Promise<Unit>> outcome) {
+        return stopsSettled.flatMap(_ -> Result.lift(() -> clear.apply(Unit.unit())).async())
+                           .flatMap(_ -> outcome.apply());
+    }
+
+    /// TEST SEAM (#1112 wiring pin) — put a node into the RUNNING-node registry exactly as [#start]
+    /// does, without booting one, so `EmberClusterTeardownWiringTest` can drive the real
+    /// [#abortStart], [#handleStartResults] and [#stop] paths over fakes whose `stop()` it controls.
+    void adoptNode(NodeInfo info, AetherNode node) {
+        nodes.put(info.id().id(),
+                  node);
+        nodeInfos.put(info.id().id(),
+                      info);
+    }
+
+    /// TEST SEAM (#1112 wiring pin) — the live [#nodes] map. A `computeIfAbsent` in flight on it
+    /// blocks the `clear()` every teardown path starts with, which is how the test HOLDS the clear
+    /// and proves the outcome cannot reach the caller until it returns. Never read by product code.
+    Map<String, AetherNode> nodeRegistry() {
+        return nodes;
     }
 
     private void captureStartFailure(Map<String, String> startFailures) {
@@ -726,7 +781,7 @@ public final class EmberCluster {
                      .async();
     }
 
-    private record NodeStartResult(String nodeId, int port, int mgmtPort, Option<Cause> failure) {
+    record NodeStartResult(String nodeId, int port, int mgmtPort, Option<Cause> failure) {
         static NodeStartResult nodeStartResult(String nodeId, int port, int mgmtPort, Option<Cause> failure) {
             return new NodeStartResult(nodeId, port, mgmtPort, failure);
         }
@@ -736,7 +791,7 @@ public final class EmberCluster {
         }
     }
 
-    private Promise<Unit> handleStartResults(List<Result<NodeStartResult>> results, Map<String, String> startFailures) {
+    Promise<Unit> handleStartResults(List<Result<NodeStartResult>> results, Map<String, String> startFailures) {
         var nodeResults = results.stream().flatMap(Result::stream).toList();
         var failed = nodeResults.stream().filter(r -> !r.succeeded()).toList();
         var succeeded = nodeResults.stream().filter(NodeStartResult::succeeded).toList();
@@ -775,16 +830,15 @@ public final class EmberCluster {
                                                     .or(Promise.success(Unit.unit())))
                                     .toList();
 
-        return Promise.allOf(stopPromises)
-                      .mapToUnit()
-                      .onSuccess(this::clearClusterStateOnFailure)
-                      .flatMap(_ -> failed.getFirst()
-                                          .failure()
-                                          .<Promise<Unit>> map(Cause::promise)
-                                          .or(Promise.success(Unit.unit())));
+        return clearThenSettle(Promise.allOf(stopPromises).mapToUnit(),
+                               this::clearClusterStateOnFailure,
+                               () -> failed.getFirst()
+                                           .failure()
+                                           .<Promise<Unit>> map(Cause::promise)
+                                           .or(Promise.success(Unit.unit())));
     }
 
-    private void clearClusterStateOnFailure(Unit unit) {
+    private Unit clearClusterStateOnFailure(Unit unit) {
         nodes.clear();
         // Held-back instances were never started, so dropping the references disposes them fully.
         heldBackNodes.clear();
@@ -793,6 +847,8 @@ public final class EmberCluster {
         slotsByNodeId.clear();
         availableSlots.clear();
         nodeCounter.set(0);
+
+        return unit;
     }
 
     public Promise<Unit> stop() {
@@ -801,9 +857,9 @@ public final class EmberCluster {
         rollingRestartActive.set(false);
         var stopPromises = nodes.values().stream().map(EmberCluster::submitStop).toList();
 
-        return Promise.allOf(stopPromises)
-                      .map(_ -> Unit.unit())
-                      .onSuccess(this::clearClusterState);
+        return clearThenSettle(Promise.allOf(stopPromises).mapToUnit(),
+                               this::clearClusterState,
+                               Promise::unitPromise);
     }
 
     /// Run one node's stop OFF the caller's thread so [`#NODE_TIMEOUT`] can actually see it (#929).
@@ -825,7 +881,7 @@ public final class EmberCluster {
                                                      .onResult(promise::resolve)).timeout(NODE_TIMEOUT);
     }
 
-    private void clearClusterState(Unit unit) {
+    private Unit clearClusterState(Unit unit) {
         nodes.clear();
         // Still-held instances were never started — nothing to stop, dropping them disposes them.
         heldBackNodes.clear();
@@ -834,6 +890,8 @@ public final class EmberCluster {
         slotsByNodeId.clear();
         availableSlots.clear();
         log.info("Ember cluster stopped");
+
+        return unit;
     }
 
     /// Adds a node with NO role label — production-default shape, and byte-identical to the behaviour
@@ -981,26 +1039,39 @@ public final class EmberCluster {
         return effectiveSize.get();
     }
 
+    /// The running node whose own [AetherNode#isLeader] holds — the same self-claim
+    /// (`LeaderElectionContext.isLeader`: committed leader equals `self`) every leader-bound route
+    /// answers from. Empty while no running node claims leadership.
+    ///
+    /// #1070 review B1 — this used to be `nodes.values().stream().findFirst()` → [AetherNode#leader]: the
+    /// leader VIEW of whichever node `ConcurrentHashMap` iterates first. Fixed membership hid the
+    /// defect; after [#addNode] the first entry can be the newborn, which holds no leader view yet, so
+    /// [#getLeaderManagementPort] and [#status] answered "no leader" from a node that had not joined
+    /// while the real leader was running, and probes reading membership through the same entry counted
+    /// the newborn's seeded core set as a completed scale-up.
     public Option<String> currentLeader() {
-        return Option.option(nodes.values().stream().findFirst().orElse(null))
-                     .flatMap(AetherNode::leader)
+        var claimant = nodes.values().stream().filter(AetherNode::isLeader).findFirst();
+
+        return Option.from(claimant)
+                     .map(AetherNode::self)
                      .map(NodeId::id);
     }
 
     public ClusterStatus status() {
-        var nodeStatuses = nodes.entrySet().stream().map(this::toNodeStatus).toList();
+        var leaderId = currentLeader();
+        var nodeStatuses = nodes.entrySet().stream().map(entry -> toNodeStatus(entry, leaderId)).toList();
 
-        return new ClusterStatus(nodeStatuses, currentLeader().or("none"));
+        return new ClusterStatus(nodeStatuses, leaderId.or("none"));
     }
 
-    private NodeStatus toNodeStatus(Map.Entry<String, AetherNode> entry) {
+    private NodeStatus toNodeStatus(Map.Entry<String, AetherNode> entry, Option<String> leaderId) {
         var clusterPort = nodeInfos.get(entry.getKey()).address().port();
 
         return new NodeStatus(entry.getKey(),
                               clusterPort,
                               baseMgmtPort + (clusterPort - basePort),
                               observedState(entry.getValue()),
-                              currentLeader().map(leaderId -> leaderId.equals(entry.getKey())).or(false));
+                              leaderId.map(entry.getKey()::equals).or(false));
     }
 
     /// #727 review B1 — [NodeStatus#state] used to be the string literal `"healthy"`, passed in
@@ -1135,7 +1206,7 @@ public final class EmberCluster {
         var certificateProvider = SelfSignedCertificateProvider.selfSignedCertificateProvider(clusterSecret.get()).unwrap();
         var quicTls = buildForgeQuicTls(nodeId, certificateProvider);
         var config = new AetherNodeConfig(topology,
-                                          ProtocolConfig.testConfig(),
+                                          ProtocolConfig.testConfig(participationMarker(nodeId)),
                                           SliceActionConfig.sliceActionConfig(),
                                           SliceConfig.sliceConfig(),
                                           mgmtPort,
@@ -1210,6 +1281,36 @@ public final class EmberCluster {
     /// dir is restart-stable: [#start] after [#stop] regenerates the same `<nodeIdPrefix>-<i>` ids, so
     /// each node reuses its dir and the WAL/segments survive the restart. Empty map ⇒ default
     /// behaviour (read-only `/data` fallback → WAL off), so non-opted-in callers are unaffected.
+    /// #1212 — the durable first-boot marker for one node.
+    ///
+    /// `creationAsserted` is unconditionally TRUE, and that is correct rather than lazy: [#createNode]
+    /// is the ONLY construction path in this harness, and every node reaching it is being created now.
+    /// The assertion is consulted ONLY when no marker file exists — an existing marker always wins —
+    /// so a rebuilt node under an old node id reads its previous `PARTICIPATED` and stays on the
+    /// conservative bound. Prefers the opt-in [#withDataBaseDir] location when a test set one, so a
+    /// node's marker sits with the rest of its durable state.
+    private Option<ParticipationMarker> participationMarker(NodeId nodeId) {
+        var configured = dataBaseDir.get();
+        var base = configured.isPresent()
+                   ? configured
+                   : participationMarkerBaseDir;
+
+        return base.map(dir -> dir.resolve(nodeId.id())
+                                  .resolve(".aether-participation"))
+                   .map(path -> ParticipationMarker.fileBacked(path, true));
+    }
+
+    /// [Option#none] when the temp dir cannot be created — the nodes then get no marker at all and
+    /// fall back to the amnesiac's adoption bound, which is #1171's behaviour. A harness that cannot
+    /// write to the temp dir should degrade to "slower to form quorum", never to "unsafe".
+    private static Option<Path> createParticipationMarkerBaseDir() {
+        try {
+            return Option.some(Files.createTempDirectory("ember-participation-"));
+        } catch (IOException e) {
+            return Option.none();
+        }
+    }
+
     private Map<String, StorageConfig> perNodeStorageConfig(NodeId nodeId) {
         return dataBaseDir.get()
                           .map(base -> artifactsStorageConfig(base, nodeId))

@@ -654,7 +654,18 @@ public sealed interface ManagementApiResponses {
 
     record AutoHealStatusResponse(boolean enabled) {}
 
+    /// #689: one provisioned node per entry whose advertised role — as membership holds it after the
+    /// blank-downgrade merge, `""` when no label ever arrived — disagreed with the role the leader
+    /// provisioned it with at the node's last observed join; `classifiedAs` is what membership made
+    /// of the label. Leader-scoped, like the intents it is derived from.
+    record RoleMismatchEntry(String nodeId, String intendedRole, String advertisedRole, String classifiedAs) {}
+
+    record RoleMismatchesResponse(List<RoleMismatchEntry> mismatches) {}
+
     record AutoHealToggleResponse(boolean enabled, boolean previousState) {}
+
+    /// #683: what a gossip-key rotation reports back — ids only, never key material.
+    record GossipKeyRotationResponse(int currentKeyId, int previousKeyId, long rotatedAt) {}
 
     /// One desired-topology entry: how many nodes of `role` the cluster wants in `sourceName`.
     ///

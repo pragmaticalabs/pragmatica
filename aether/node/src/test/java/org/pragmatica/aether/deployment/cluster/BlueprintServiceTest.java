@@ -12,7 +12,6 @@ import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
@@ -611,8 +610,6 @@ class BlueprintServiceTest {
             public ArtifactMetricsCollector artifactMetricsCollector() { return unsupported("artifactMetricsCollector"); }
             @Override
             public ClusterEventAggregator eventAggregator() { return unsupported("eventAggregator"); }
-            @Override
-            public BackupService backupService() { return unsupported("backupService"); }
             @Override
             public StreamPartitionManager streamPartitionManager() { return unsupported("streamPartitionManager"); }
             @Override

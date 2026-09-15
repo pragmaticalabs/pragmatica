@@ -174,7 +174,7 @@ class MultiPartitionStreamTest extends AbstractMultiPartitionStream {
 
     private List<Long> inJvmOffsets(AetherNode node, int partition, ReadPreference preference) {
         return node.streamReadRouter()
-                   .read(STREAM_NAME, partition, 0, 500, preference)
+                   .read(streamName(), partition, 0, 500, preference)
                    .await()
                    .map(events -> events.stream().map(event -> event.offset()).sorted().toList())
                    .or(List.of());

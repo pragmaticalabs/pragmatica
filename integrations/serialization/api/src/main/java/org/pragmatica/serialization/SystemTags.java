@@ -53,7 +53,7 @@ import java.util.Map;
 /// Tags are VLQ-encoded, so `0..127` costs ONE byte on the wire, `128..16383` costs two. `0..20` are
 /// the framework primitives (`SliceCodec.TAG_*`). `21..109` is spent on the cluster's own
 /// highest-frequency traffic — consensus rounds, SWIM gossip, DHT lookups, KV commands, stream
-/// replication, and the value objects nested inside all of them. `110..127` is deliberately left free
+/// replication, and the value objects nested inside all of them. `113..127` is deliberately left free
 /// so a future hot type can still be promoted into one byte.
 public interface SystemTags {
     /// Returned by [#tagFor] for a class name that has no hand-assigned tag.
@@ -223,8 +223,11 @@ public interface SystemTags {
         // ruled out as weakening it.
         pin(table, 110, "org.pragmatica.aether.stream.topic.TopicEventEnvelope");
         pin(table, 111, "org.pragmatica.aether.stream.topic.DlqEnvelope");
+        // #667: nested in every Rabia SyncResponse; consensus-prefixed, so it must sit in the one-byte
+        // window (`SystemCodecPinningTest.hotProtocolTypes_fitInTheOneByteWindow`).
+        pin(table, 112, "org.pragmatica.consensus.rabia.ResponderState");
 
-        // ---- 112..127 RESERVED: the last free 1-byte slots. Spend them on hot types only. ----
+        // ---- 113..127 RESERVED: the last free 1-byte slots. Spend them on hot types only. ----
         // ---- 128..16383: two-byte system tags. ----
 
         // worker bootstrap (rare, large payloads)  [base 128]
@@ -254,6 +257,9 @@ public interface SystemTags {
         pin(table, 268, "org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted");
         pin(table, 269, "org.pragmatica.aether.api.ClusterEvent.DeploymentFailed");
         pin(table, 270, "org.pragmatica.aether.api.ClusterEvent.DeploymentStarted");
+        // RETIRED 2026-09-14 (#722): `ClusterEvent.GenerationChanged` was deleted — documented and
+        // consumer-wired, never produced. The pin STAYS so the tag is never reused (see the
+        // DHTNotification note under [base 640]).
         pin(table, 271, "org.pragmatica.aether.api.ClusterEvent.GenerationChanged");
         pin(table, 272, "org.pragmatica.aether.api.ClusterEvent.LeaderElected");
         pin(table, 273, "org.pragmatica.aether.api.ClusterEvent.LeaderLost");
@@ -324,6 +330,7 @@ public interface SystemTags {
         pin(table, 836, "org.pragmatica.aether.slice.generation.CommunitySummary");
         pin(table, 837, "org.pragmatica.aether.slice.generation.CoreMember");
         pin(table, 838, "org.pragmatica.aether.slice.generation.Epoch");
+        // RETIRED 2026-09-14 (#722): `GenerationReason` went with the never-produced generation event.
         pin(table, 839, "org.pragmatica.aether.slice.generation.GenerationReason");
         pin(table, 840, "org.pragmatica.aether.slice.generation.HealthHint");
         pin(table, 841, "org.pragmatica.aether.slice.generation.PartitionOwner");

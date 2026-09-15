@@ -194,6 +194,18 @@ public final class MembershipFsm {
     /// still fires for ALL DEAD paths. Reset to the no-op by passing `null` to [`#onJoinGraceReap`].
     private volatile Consumer<NodeId> onJoinGraceReap = ignored -> {};
 
+    /// Never-joined-death listener (#588) invoked ONCE per fresh edge into DEAD for a member that
+    /// NEVER reached MEMBER — exactly the complement of the REMOVED delta edge, which `everJoined`
+    /// confines to members that did. The cluster-status rosters do NOT wait for promotion: a peer
+    /// enters `TopologyObserver.nodeStatesById` on the SWIM `JoinAnnounced`/`MemberDiscovered` →
+    /// `addNode` edge and `ClusterSyncCollector.remoteMetrics` on the first ping or pong carrying
+    /// it, both of which precede it. A member reaped OBSERVED→DEAD (join-grace expiry, or any other
+    /// pre-promotion death) therefore left a row in both that no edge could remove — the #588 ghost
+    /// by a path the REMOVED arm structurally cannot reach. Role-blind, because those rosters are.
+    /// Default no-op (production-inert): AetherNode wires it to the same two prunes the REMOVED arm
+    /// drives. Reset to the no-op by passing `null` to [`#onNeverJoinedDeath`].
+    private volatile Consumer<NodeId> onNeverJoinedDeath = ignored -> {};
+
     /// Departing-edge listener (seed-500 part 2) invoked ONCE per fresh edge INTO `Departing` —
     /// at the SAME central dispatch chokepoint ([`MemberTracking#dispatch`]) that arms the H2
     /// DEPARTING timeout — for the THREE deliberate-departure ingresses that reach DEPARTING:
@@ -406,6 +418,18 @@ public final class MembershipFsm {
         this.onJoinGraceReap = listener == null
                                ? ignored -> {}
                                : listener;
+    }
+
+    /// Register the never-joined-death listener invoked ONCE per fresh DEAD edge for a member that
+    /// never reached MEMBER (#588) — see [`#onNeverJoinedDeath`]. AetherNode wires this to
+    /// `TopologyObserver.pruneDeparted` plus `ClusterSyncCollector.removeNode`, the same two rosters
+    /// the projector's REMOVED arm prunes, because both admitted the member before promotion. A
+    /// `null` argument resets it to the no-op.
+    @Contract
+    public void onNeverJoinedDeath(Consumer<NodeId> listener) {
+        this.onNeverJoinedDeath = listener == null
+                                  ? ignored -> {}
+                                  : listener;
     }
 
     /// Register the departing-edge listener invoked ONCE per fresh edge INTO `Departing` (seed-500
@@ -1049,6 +1073,15 @@ public final class MembershipFsm {
         onJoinGraceReap.accept(id);
     }
 
+    /// Never-joined-death hook invoked from [`MemberTracking#enteredDead`] for a member whose
+    /// `everJoined` is false — the arm the REMOVED delta edge cannot cover (#588). Notifies the
+    /// [`#onNeverJoinedDeath`] listener (default no-op) so the rosters that admitted the member
+    /// before promotion drop it on the same death edge that ends its tracking.
+    private void neverJoinedDeathEdge(NodeId id) {
+        log.debug("MembershipFsm member {} died without ever joining — pruning the pre-promotion rosters", id);
+        onNeverJoinedDeath.accept(id);
+    }
+
     /// Departing-edge hook invoked CENTRALLY on every fresh edge INTO `Departing` (detected in
     /// [`MemberTracking#dispatch`], the SAME branch that arms the H2 departure timeout). Fires the
     /// [`#onEnteredDeparting`] listener (default no-op) at this single chokepoint so the DHT ring
@@ -1093,6 +1126,7 @@ public final class MembershipFsm {
                                           fsm,
                                           this::onEnteredDead,
                                           this::onJoinGraceReaped,
+                                          this::neverJoinedDeathEdge,
                                           this::onDepartingEdge,
                                           this::onDepartingRecoveryEdge,
                                           this::emitTransition,
@@ -1127,6 +1161,9 @@ public final class MembershipFsm {
         /// edge was driven by [`JoinGraceExpiredNeverHealthy`] (the never-healthy reap, OBSERVED→DEAD
         /// by the state table). ADDITIVE to [`#onEnteredDead`], which fires for every DEAD path.
         private final Consumer<NodeId> onJoinGraceReaped;
+        /// Never-joined-death sink — invoked from [`#enteredDead`] when the fresh DEAD edge belongs
+        /// to a member that never reached MEMBER, the complement of the REMOVED delta below (#588).
+        private final Consumer<NodeId> onNeverJoinedDeath;
         /// Departing-edge sink (seed-500 part 2) — invoked from [`#dispatch`] on the fresh edge
         /// INTO `Departing` (the same branch that arms the H2 departure timeout). Fires for the
         /// deliberate-departure ingresses only (`DrainRequested` / `SwimDeparted` /
@@ -1272,6 +1309,7 @@ public final class MembershipFsm {
                                Fsm<MembershipState, MembershipEvent> fsm,
                                Consumer<NodeId> onEnteredDead,
                                Consumer<NodeId> onJoinGraceReaped,
+                               Consumer<NodeId> onNeverJoinedDeath,
                                Consumer<NodeId> onEnteredDeparting,
                                Consumer<NodeId> onDepartingRecovery,
                                Consumer<MembershipTransitionRecord> transitionSink,
@@ -1283,6 +1321,7 @@ public final class MembershipFsm {
             this.fsm = fsm;
             this.onEnteredDead = onEnteredDead;
             this.onJoinGraceReaped = onJoinGraceReaped;
+            this.onNeverJoinedDeath = onNeverJoinedDeath;
             this.onEnteredDeparting = onEnteredDeparting;
             this.onDepartingRecovery = onDepartingRecovery;
             this.transitionSink = transitionSink;
@@ -1509,7 +1548,14 @@ public final class MembershipFsm {
                                                    descriptor.role());
 
                 emissions.add(() -> deltaSink.accept(edge));
+
+                return;
             }
+            // #588: a member that never JOINED still entered both cluster-status rosters — they admit
+            // on the SWIM discovery edge, not on promotion — so its death needs its own prune. The
+            // delta contract is deliberately untouched: no REMOVED edge is emitted here (it would have
+            // no JOINED to pair with and the projector drops an unannounced removal anyway).
+            emissions.add(() -> onNeverJoinedDeath.accept(id));
         }
 
         private synchronized boolean isDead() {

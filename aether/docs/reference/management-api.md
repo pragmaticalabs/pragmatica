@@ -48,7 +48,6 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 |-------------------|-------------|----------|
 | Blueprint management | ADMIN | `POST /api/v1/blueprints`, `DELETE /api/v1/blueprints/{id}` |
 | Node shutdown | ADMIN | `POST /api/v1/nodes/shutdown/{id}` |
-| Backup restore | ADMIN | `POST /api/v1/backups/restore/{id}` |
 | Log level changes | ADMIN | `PUT /api/v1/logging/levels` |
 | Observability depth | ADMIN | `PUT /api/v1/observability/depth` |
 | Observability config (write) | ADMIN | `POST`/`DELETE /api/v1/observability/config` |
@@ -58,7 +57,6 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 | Scaling | OPERATOR | `POST /api/v1/scale` |
 | Schema operations | OPERATOR | `POST /api/v1/schema/*` |
 | Deployment strategies | OPERATOR | `POST /api/v1/deploy`, `POST /api/v1/deploy/promote/*`, `POST /api/v1/deploy/rollback/*`, `POST /api/v1/deploy/complete/*`, `POST /api/v1/ab-tests/*` |
-| Backup trigger | OPERATOR | `POST /api/v1/backups` |
 | Config overrides | OPERATOR | `PUT /api/v1/config/*` |
 | Alert management | OPERATOR | `POST /api/v1/alerts/inject` |
 | Scheduled tasks | OPERATOR | `POST /api/v1/scheduled-tasks/*` |
@@ -427,11 +425,9 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `ACCESS_DENIED` -- an operation was denied by RBAC (`details` carries `principal`, `method`, `path`, `requiredRole`, `actualRole`). Severity WARNING.
 - `NODE_LIFECYCLE_CHANGED` -- a node lifecycle transition was requested/applied (leader-gated). Severity INFO.
 - `CONFIG_CHANGED` -- dynamic config was added, updated, or removed. Severity INFO.
-- `BACKUP_CREATED` -- a KV backup/commit was created. Severity INFO.
-- `BACKUP_RESTORED` -- a KV backup was restored. Severity WARNING.
+- `BACKUP_CREATED` / `BACKUP_RESTORED` -- no producer since the backup API was removed (#676); the types stay wire-pinned (tags 258/259) and never appear.
 - `BLUEPRINT_DEPLOYED` -- a blueprint was deployed. Severity INFO.
 - `BLUEPRINT_DELETED` -- a blueprint was deleted. Severity INFO.
-- `GENERATION_CHANGED` -- the cluster generation epoch advanced (leader-gated; see below). Severity INFO.
 - `STREAM_REGISTERED` -- a stream was registered (carries the stream `ResourceAddress`). Severity INFO.
 - `STREAM_DELETED` -- a stream was deleted (carries the stream `ResourceAddress`). Severity INFO.
 - `ALERT_INJECTED` -- an operator-injected synthetic alert, replicated cluster-wide so every node serves it on `/api/v1/alerts`. Severity per inject.
@@ -441,15 +437,12 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `DEPARTURE_PUSH_INCOMPLETE` -- a gracefully-departing node could not confirm, within the drain grace window, that every locally-held DHT chunk reached a surviving replica (per-node fact, NOT leader-gated; see below). Severity WARNING.
 - `SCALE_CAPPED` -- the leader autoscaler's requested instance count for an artifact was reduced by a cap before being applied (leader-side; emitted only on a real reduction). Severity WARNING.
 
-`GENERATION_CHANGED` is a **documented-but-dormant** event type: nothing emits it on the current
-codebase. The event record (`OperationalEvent.GenerationChanged`, with `oldEpoch`, `newEpoch`, and
-`reason` — a `GenerationReason` enum name) and its aggregator route both exist, but every emission
-path belonged to the v1 spec's leader-resident reconciler, which was never built (see
-[`cluster-topology-overhaul-spec.md`](../specs/cluster-topology-overhaul-spec.md) W9); the
-`GenerationChangedSink` seam has no live implementation, so generation-epoch advances (which DO
-happen — the leader's per-tenure counter and term bumps) currently produce no operational event.
-Tracked in #722. See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.4 for
-the original design intent.
+`GENERATION_CHANGED` no longer exists (#722). It was documented and consumer-wired but never produced: the
+v1 spec's leader-resident reconciler that would have emitted it was never built, and the epoch the cluster
+actually keeps is `(leaderTerm, tenure-tick)` — the tick advances once per ping interval of leadership, so an
+event per advance would be a 1 Hz stream with no information beyond "the leader is still the leader". Leader
+changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on demand from
+`GET /api/v1/cluster/generation`.
 
 `SELF_DRAIN_INITIATED` (severity `WARNING`) is emitted by the draining node itself when its `SelfDrainCoordinator` flips from `ACTIVE` to `DRAINING` (see `aether/docs/specs/membership-architecture-v2-spec.md`). Unlike most other events, this one is NOT leader-gated — a partition victim is the only authoritative source for "I'm self-draining" and may not be able to reach the leader at all. `details` carries `nodeId` (the draining node), `reason` (one of `sustained-below-quorum`, `quorum-disappeared`, `rabia-paused`), and `graceMs` (the configured in-flight grace before forced halt). Best-effort: if the publish does not reach a quorum before `Runtime.halt(2)` lands, the event is lost.
 
@@ -3225,6 +3218,14 @@ Recovery: `aether cluster bootstrap <aether-cluster.toml>`.
 
 Apply a cluster configuration change. Computes a diff against the stored config and executes actionable changes.
 
+**Scale-only in rc4 (#686).** The only actionable changes are a role's core/worker count going up or
+down (`ScaleUp`/`ScaleDown`), applied as a fenced desired-count write that the leader's reconciler
+actuates. Non-scale changes — sources, roles, runtime, source fields, cluster-level fields — are not
+applicable through this route; a plan containing any of them is rejected in full (typed
+`UnsupportedApplyAction`, or a validation error for an immutable field) and nothing is actuated,
+including any scale in the same plan. A rollout of the other changes needs a new cluster. This is the
+same statement the CLI reference makes for `aether cluster apply`, which calls this route.
+
 **Request:**
 ```json
 {
@@ -3379,6 +3380,25 @@ The toggle is a durable cluster fact (#685): it is stored as a typed record (`Au
 ```json
 {
   "enabled": true
+}
+```
+
+### GET /api/v1/cluster/topology/role-mismatches
+
+Provisioned nodes whose advertised role label disagrees with the role the leader provisioned them with (#689). A node's role is a self-asserted SWIM label (`AETHER_ROLE` → `aether-role` → `NodeInfo` `role` label); a blank or unknown label is classified **CORE** by every peer, deliberately — acting on an unresolved view is the dangerous direction for the core tier. So an intended worker whose label never arrived (env not threaded, user-data lost it, image booted without it) silently joins the core set, and every community-tier mechanism gated on "positively not a core" — the core-absence fence first — is suppressed on it. This route is where that becomes visible without log access; the same fact is logged at WARN by the leader when the node is first observed.
+
+**Scope, stated:** leader-scoped and intent-based. The leader compares only nodes it provisioned itself (auto-heal replacements and worker reconcile); bootstrap nodes, nodes provisioned by an earlier leader and hand-started nodes have no intent on record and are never listed — absence of intent is not a mismatch. The intent is retained for the node id until the node is **decommissioned**, and every join of that id is compared: an in-place restart (crash, OOM, operator restart — same id) that is still mislabelled is re-reported (the WARN fires again) and stays listed; a rejoin that now carries the right label clears the entry. A listed node that departs (`NodeRemoved`) **stays listed** — a restart may follow — until it is decommissioned or leadership changes; a replacement provisioned under a fresh id gets its own comparison. On re-activation of the same leader the ledger is re-derived from membership's current view for every still-tracked provisioned node. `advertisedRole` is the role membership holds for the node (`MemberDescriptor.role`, the self-asserted label after the blank-downgrade merge — never the observer's first sighting, which can be label-less when the node was learned by gossip), `""` when no label ever arrived; `classifiedAs` is what membership made of it. The classification itself is unchanged.
+
+CLI: `aether cluster topology role-mismatches`.
+
+**RBAC:** VIEWER · **Routing:** LEADER
+
+**Response:**
+```json
+{
+  "mismatches": [
+    { "nodeId": "worker-3", "intendedRole": "worker", "advertisedRole": "", "classifiedAs": "CORE" }
+  ]
 }
 ```
 
@@ -3558,6 +3578,48 @@ entry) and restart the node.
   "status": "revoked",
   "keyId": "ak_1a2b3c4d",
   "gracePeriodMs": 300000
+}
+```
+
+### POST /api/v1/cluster/gossip-key/rotate
+
+Rotate the SWIM gossip encryption key in place (#683). The leader generates 32 bytes of fresh key
+material and writes one `GossipKeyRotationKey` record through consensus: `currentKeyId` is the previous
+id plus one, and the previous key rides along so nodes mid-rotation keep decrypting each other. Every
+running node applies it through its existing `GossipKeyRotationHandler`. The response carries ids only
+— the key is never returned or logged. The write is version-fenced and confirmed: a rotation that loses
+a race against a concurrent one is reported as a failure, never as a success for a write that did not
+land.
+
+**Three consequences an operator must accept before invoking this — see SECURITY.md:**
+
+1. The key material is stored in the consensus log and its snapshots, readable by any KV reader.
+2. **The first rotation has no decrypt overlap.** With no prior record there is no previous key to
+   carry, so the emergency rotation — the one that runs during an actual leak response — replaces the
+   boot key outright. Only rotations from the second onward are seamless.
+3. **A rotated cluster cannot grow until you act, and that includes auto-heal.**
+
+   **If a node will not join after a rotation, check the SEED nodes' logs, not the new node's** —
+   look for `Failed to decrypt gossip from <id>` on the seeds. A node the cluster has never heard of
+   logs nothing about the cause: it prints `Aether node <id> started, cluster forming...` and then
+   stays quiet, because an unreachable quorum is retried and never exits. The evidence is on the
+   healthy machines.
+
+   A node booting after a rotation holds only the `cluster_secret`-derived key, which the cluster no
+   longer accepts; it cannot complete SWIM in either direction, so no quorum forms and the consensus
+   replay that would deliver the cluster key never runs. Auto-heal replacements, scale-up and
+   re-provisioned nodes all fail to join until given the rotated key material out of band. Existing
+   running nodes are unaffected. A **restarted existing member** does say so for itself — it refuses
+   to boot with a `FATAL` line naming gossip-key divergence — because its peers still probe it.
+
+**RBAC:** ADMIN (exact route; an appended path segment is 404, never a weaker permission) · **Routing:** LEADER
+
+**Response:**
+```json
+{
+  "currentKeyId": 2,
+  "previousKeyId": 1,
+  "rotatedAt": 1757800000000
 }
 ```
 
@@ -4493,53 +4555,10 @@ Surface per-node execution attribution for a scheduled task. Used by `TC-08-F3` 
 
 ## Backup Management
 
-### POST /api/v1/backups
-
-Trigger a manual backup of the KV-Store state.
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Backup completed"
-}
-```
-
-### GET /api/v1/backups
-
-List available backups.
-
-**Response:**
-```json
-[
-  {
-    "commitId": "abc123",
-    "message": "Backup phase 42 at 2026-03-10T12:00:00Z",
-    "timestamp": "2026-03-10T12:00:00Z"
-  }
-]
-```
-
-### POST /api/v1/backups/restore
-
-Restore from a specific backup.
-
-**Request body:**
-```json
-{
-  "commit": "abc123"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Restore completed"
-}
-```
-
----
+Removed (#676). `POST /api/v1/backups`, `GET /api/v1/backups` and `POST /api/v1/backups/restore` were
+served by `BackupService.disabled()` in every configuration — no other implementation ever existed —
+so each returned `backup-disabled`. Declared-state durability is `[backup]` git-backed persistence,
+which has no API: see the [backup-recovery runbook](../operators/runbooks/backup-recovery.md).
 
 ## Error Responses
 
@@ -4881,16 +4900,19 @@ with `400 Bad Request`.
 > underlying physical database and IS reachable from `migrate`/`undo`/`baseline` alike, via the
 > shared ownership claim) is in the table above.
 
-> **Known limitation — `acquireLock`'s cross-node lock check is not atomic (#766, not fixed by
-> #543).** Both `undo` and `baseline` share `SchemaOrchestratorService.acquireLock` with `migrate`.
-> Its cross-node lock (`SchemaMigrationLockKey`) is read (`isLockHeld`) and then written
-> (`Put<SchemaMigrationLockValue>`) as two separate steps, not an atomic compare-and-set; two
-> concurrent dispatches can both observe the lock free before either writes it. #766 reproduced
-> this live on a 5-node Forge run (two dispatches within two seconds, the second reaching
-> `aether_schema_history` and failing on a duplicate-key constraint, which marked the datasource
-> `FAILED`). Recovery when it happens: `aether schema retry` after the false-`FAILED` record is
-> observed. The fix needs an atomic compare-and-set on the lock key rather than read-then-write;
-> tracked in #766, not addressed here.
+> **Fixed in #766 — `acquireLock`'s cross-node lock claim is a fenced compare-and-set.** Both
+> `undo` and `baseline` share `SchemaOrchestratorService.acquireLock` with `migrate`. The lock
+> (`SchemaMigrationLockKey`) carries a `lockVersion`; a claim writes committed+1 (or the first
+> version) and the KV applier refuses a stale successor, so two concurrent dispatches cannot both
+> hold it [mechanism: `SchemaMigrationLockValue implements VersionFenced`, `KVStore` stale-successor
+> refusal]. Before #766 the claim was a read followed by a separate write, reproduced live on a
+> 5-node Forge run (two dispatches within two seconds, the second failing on `aether_schema_history`'s
+> duplicate-key constraint and marking the datasource `FAILED`; recovery was `aether schema retry`).
+> **Still open — #806:** the lock TTL (5 min) is shorter than the migration timeout (15 min), so an
+> expired lock can be taken over while its holder is still migrating, and `releaseLock` is an
+> unfenced Remove; a holder that times out after a takeover can delete the taker's lock and re-claim.
+> Until #806 lands, a migration, undo or baseline that runs longer than 5 minutes loses its lock while
+> still running (concurrent dispatch itself is refused with `LockAcquisitionFailed` since #766).
 >
 > The leader check above `undo`/`baseline` is also check-then-act, undisclosed until now:
 > `requireLeader` reads `node.isLeader()` once and lets the manager call proceed with no re-check,

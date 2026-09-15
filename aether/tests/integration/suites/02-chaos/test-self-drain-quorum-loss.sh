@@ -153,6 +153,10 @@ EVENT_BASELINE_FILE="/tmp/s19-event-baseline.$$"
 # test_survivors_self_drain_and_exit.
 PRE_KILL_ROSTER_FILE="/tmp/s19-pre-kill-roster.$$"
 VERDICT_FILE="/tmp/s19-verdict.$$"
+# Set by _s19_survivor_membership_direct when a membership read comes back from a node that is
+# NOT the survivor we addressed. A FILE, not a variable: that function runs inside $( ), i.e. a
+# subshell, so an assignment there would never reach the arbitration loop.
+IDENTITY_VIOLATION_FILE="/tmp/s19-identity-violation.$$"
 # #441 run 8 (Defect C): the local ssh CLIENT's own stderr (host-key banner,
 # PAM password-expiry refusal text) is captured here rather than left to
 # bleed unrouted into the suite log — see the tier-2 comment in
@@ -766,12 +770,41 @@ _confirm_survivor_departure() {
 # #441 run 9 (Defect 1): IP resolution goes through the pre-kill cache
 # (_s19_resolve_survivor_ip) — same rationale as tier 3 above.
 # Usage: _s19_survivor_membership_direct "$survivor"
+# Reads a survivor's LOCAL membership view AND proves the survivor is what answered.
+#
+# The IP comes from a pre-kill cache, and cloud providers recycle public IPs across recreated
+# VMs — run 3 (2026-09-14) had two IPs serving SIX distinct VMs each. Without this check a
+# replacement landing on a cached survivor IP answers happily with belowThreshold=false, the
+# read SUCCEEDS, and therefore neither the empty-read degrade path nor the survivor-2 fallback
+# (gated on an EMPTY read) ever fires: the arbitration spends its whole budget interrogating a
+# stranger and calls it "quorum held". A read that FAILS is suspicious; a read that SUCCEEDS
+# from the wrong subject is not, which is why identity is asserted rather than assumed.
 _s19_survivor_membership_direct() {
     local survivor="$1"
-    local ip
+    local ip body observed rc
     ip=$(_s19_resolve_survivor_ip "$survivor") || return 1
     [ -z "$ip" ] && return 1
-    curl -sfk -m 3 -H "X-API-Key: ${API_KEY}" "${MGMT_SCHEME:-http}://${ip}:${CLOUD_MGMT_PORT:-8080}/api/v1/cluster/membership" 2>/dev/null
+    body=$(curl -sfk -m 3 -H "X-API-Key: ${API_KEY}" "${MGMT_SCHEME:-http}://${ip}:${CLOUD_MGMT_PORT:-8080}/api/v1/cluster/membership" 2>/dev/null) || return 1
+    [ -z "$body" ] && return 1
+
+    observed=$(membership_identity_matches "$body" "$survivor")
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        printf '%s' "$body"
+        return 0
+    fi
+    if [ "$rc" -eq 1 ]; then
+        # POSITIVE evidence we polled a stranger. Terminal: never retry, never fall through to
+        # a verdict, because every later reading from this address is equally untrustworthy.
+        printf 'MISMATCH survivor=%s ip=%s answered=%s\n' "$survivor" "$ip" "$observed" \
+            >> "$IDENTITY_VIOLATION_FILE"
+        log_fail "S19 identity violation: polled ${ip} expecting survivor '${survivor}' but node '${observed}' answered — the cached survivor IP has been recycled onto another VM. This round measures NOTHING about ${survivor}; scoring it would report a stranger's quorum state as the survivor's."
+        return 2
+    fi
+    printf 'INDETERMINATE survivor=%s ip=%s answered=%s\n' "$survivor" "$ip" "${observed:-<none>}" \
+        >> "$IDENTITY_VIOLATION_FILE"
+    log_fail "S19 identity indeterminate: membership body from ${ip} carries no usable top-level nodeId (expected survivor '${survivor}'). Cannot establish WHICH node answered, so the round is VOID rather than lost."
+    return 2
 }
 
 # #441 run 8 (Defect A): CLOUD-ONLY arbitration for the auto-heal race. The
@@ -834,6 +867,14 @@ test_confirm_quorum_loss_race() {
         # under `set -e` when the function returns 1 (no live read yet).
         membership=$(_s19_survivor_membership_direct "$s1" || true)
         [ -z "$membership" ] && membership=$(_s19_survivor_membership_direct "$s2" || true)
+        # An identity failure on EITHER survivor voids the round immediately. Continuing would
+        # accumulate polls whose subject is unknown, which is how run 3 produced 0/180 readings
+        # that turned out to be evidence of nothing.
+        if [ -s "$IDENTITY_VIOLATION_FILE" ]; then
+            verdict="void"
+            log_fail "Race-arbitration VOID: $(head -1 "$IDENTITY_VIOLATION_FILE") — this round is NOT a lost race and MUST NOT be counted as an attempt."
+            break
+        fi
         if [ -n "$membership" ]; then
             below=$(membership_bool_field "$membership" belowThreshold)
             if [ "$below" = "true" ]; then
@@ -1265,7 +1306,7 @@ _s20_test_label() {
 
 cleanup() {
     rm -f "$VICTIMS_FILE" "$SURVIVORS_FILE" "$SURVIVOR_IPS_FILE" "$KILL_TS_FILE" "$EVENT_BASELINE_FILE" \
-        "$PRE_KILL_ROSTER_FILE" "$VERDICT_FILE" "$SSH_STDERR_FILE"
+        "$PRE_KILL_ROSTER_FILE" "$VERDICT_FILE" "$SSH_STDERR_FILE" "$IDENTITY_VIOLATION_FILE"
 
     # Semantic baseline restore. After S19+S20 the cluster should already
     # be back at 5 ON_DUTY (restart_all_nodes was invoked in
@@ -1292,12 +1333,81 @@ fi
 # Step 8's test-partition-quorum-gate.sh.
 trap 'cleanup' EXIT
 
+# --- Arm D (#W3): auto-heal suppression, OFF unless explicitly requested -------------------
+#
+# The stock S19 path leaves auto-heal ON. Arm D exists because the quorum-loss branch is what
+# #1053's JVM drain code needs exercised, and auto-heal refilling quorum prevents it. Auto-heal
+# cannot be declared off in the cluster TOML — PF-25 (#575) REFUSES `[operations.auto_heal]
+# enabled = false` precisely because the runtime never read it, and an operator who set it "gets
+# silent no-op". The only real mechanism is the imperative toggle (#603), durable in the
+# consensus KV (#685).
+test_arm_d_disable_autoheal() {
+    if ! arm_d_requested; then
+        log_info "Arm D not requested (S19_ARM_D_DISABLE_AUTOHEAL unset/false) — auto-heal stays ON, stock S19 path unchanged"
+        return 0
+    fi
+
+    if ! api_post "$AUTOHEAL_DISABLE_PATH" '{"reason":"Arm D: S19 quorum-loss branch"}' >/dev/null 2>&1; then
+        log_fail "Arm D: POST ${AUTOHEAL_DISABLE_PATH} failed — the arm's independent variable was never set, so this run is NOT Arm D"
+        return 1
+    fi
+
+    # CONTROL: prove it took, before the kill, while a leader still exists to answer.
+    local state
+    state=$(autoheal_enabled_field "$(api_get "$AUTOHEAL_STATUS_PATH" 2>/dev/null)")
+    if [ "$state" = "false" ]; then
+        log_pass "Arm D: auto-heal read back DISABLED before the kill (independent variable confirmed set)"
+        return 0
+    fi
+    log_fail "Arm D: auto-heal read back '${state:-<unreadable>}' before the kill, expected 'false' — the arm is not set up; this round is VOID, not a result"
+    return 1
+}
+
+# Attempted DURING quorum loss. Expected to be unreadable, and that expectation is the finding:
+# the status route is LEADER-scoped, and S19 destroys the quorum that elects a leader. Setting the
+# flag is not the same as the flag HOLDING through the window it is relied upon — so this records
+# which of the three outcomes actually occurred rather than assuming persistence.
+test_arm_d_autoheal_state_in_window() {
+    if ! arm_d_requested; then
+        return 0
+    fi
+    local state
+    state=$(autoheal_enabled_field "$(api_get "$AUTOHEAL_STATUS_PATH" 2>/dev/null)")
+    case "$state" in
+        false) log_pass "Arm D: auto-heal still reads DISABLED during the quorum-loss window — precondition VERIFIED to have held" ;;
+        true)  log_fail "Arm D: auto-heal reads ENABLED during the window — it re-armed mid-run and THIS ARM WAS ARM R ALL ALONG; do not report it as Arm D" ;;
+        *)     log_warn "Arm D: auto-heal status UNREADABLE during the quorum-loss window (LEADER-scoped route, no leader without quorum). The flag's state across the window is UNVERIFIED — 'we set it' is not 'it held'. Expected outcome; bounds Arm D's conclusions (see plan S18/S19)." ;;
+    esac
+    return 0
+}
+
+# After S20 recovery a leader exists again, so the durable fact is readable. This cannot prove the
+# flag held DURING the window, only that it survived to the other side — weaker, and stated as such.
+test_arm_d_autoheal_state_after_recovery() {
+    if ! arm_d_requested; then
+        return 0
+    fi
+    local state
+    state=$(autoheal_enabled_field "$(api_get "$AUTOHEAL_STATUS_PATH" 2>/dev/null)")
+    case "$state" in
+        false) log_pass "Arm D: auto-heal reads DISABLED after recovery — the durable fact survived the window (does NOT prove it held throughout)" ;;
+        true)  log_fail "Arm D: auto-heal reads ENABLED after recovery — the disable did not survive; the arm's variable was not held" ;;
+        *)     log_warn "Arm D: auto-heal status still unreadable after recovery — cannot assess persistence at all" ;;
+    esac
+    # Restore for whatever runs next; best-effort, never fails the suite.
+    api_post "$AUTOHEAL_ENABLE_PATH" '{"reason":"Arm D teardown"}' >/dev/null 2>&1 || true
+    return 0
+}
+
 run_test "Initial 5 healthy cores" test_initial_state
+run_test "Arm D: disable auto-heal (skipped unless requested)" test_arm_d_disable_autoheal
 run_test "Pick 3 victims and kill simultaneously" test_pick_victims_and_kill_three_simultaneously
 run_test "Confirm quorum-loss vs auto-heal race (cloud-only arbitration)" test_confirm_quorum_loss_race
 run_test "Survivors self-drain and exit within ${SURVIVOR_EXIT_BUDGET_S}s (S19)" test_survivors_self_drain_and_exit
+run_test "Arm D: auto-heal state during the quorum-loss window" test_arm_d_autoheal_state_in_window
 _s19_record_exit_code_step
 run_test "Drain-trigger log signature present on survivors" test_drain_trigger_log_signature_present
 run_test "No KV-writes after drain trigger (negative assertion)" test_no_kv_writes_after_drain_trigger
 run_test "$(_s20_test_label)" test_cluster_recovers_to_five_on_duty
+run_test "Arm D: auto-heal state after recovery" test_arm_d_autoheal_state_after_recovery
 print_summary

@@ -11,6 +11,27 @@ import org.pragmatica.lang.Unit;
 
 /// #782 — a cluster is at least three nodes; there is no supported single-node topology.
 ///
+/// #1019 — THIS FLOOR IS STRUCTURAL AND STAYS AT 3. The owner ruling of 2026-09-12 sets the supported
+/// minimum for NEW clusters at 5, and that is a POLICY minimum enforced where configs are CREATED
+/// (`aether cluster init` / `scaffold`, via `CoreWorkerSplit`), never here.
+///
+/// The distinction is not bookkeeping, and getting it wrong is self-defeating. Three is where a
+/// majority quorum stops existing at all — arithmetic. Five is where a cluster still has a fault
+/// budget DURING MAINTENANCE: a rolling restart of a 3-node cluster leaves 2 of 3, and any further
+/// fault loses quorum. Enforcing the policy figure HERE would make the first node of a rolling
+/// upgrade refuse to start and fail to rejoin — forbidding, in the name of maintenance safety, the
+/// exact maintenance operation the rule exists to protect — and would retroactively refuse to boot
+/// clusters that are running today. That claim is about THIS gate specifically and is load-bearing:
+/// `Main#enforceMinimumClusterSize` calls [#enforce] and pipes the failure into `Main#abortBoot`, so
+/// a rejection here really does stop the process.
+///
+/// `ConfigValidator` keeps the same structural floor, but NOT for the same reason, and the round-1
+/// review of #1019 found this paragraph asserting that it did (S1). `ConfigValidator` also runs on
+/// every boot, and its failure is DISCARDED: `Main#loadConfigFile` is
+/// `ConfigLoader.load(path).onFailure(log::error).option()`. Raising ITS floor would not refuse a
+/// boot — it would drop the config and let the node start without it. See that class for the rest of
+/// the chain. Two gates, two floors of 3, two different mechanisms; only this one refuses.
+///
 /// Kept as its own top-level gate — not folded into [ConfigValidator], which a sibling change is
 /// editing elsewhere — so it can run on the CONFIGURED expected cluster size (`Main`'s
 /// `expectedClusterSize`: the parsed `--peers=`/`CLUSTER_PEERS` list size, or the discovery/config
@@ -18,8 +39,8 @@ import org.pragmatica.lang.Unit;
 /// cloud-discovery majority-at-timeout boot can legitimately resolve fewer peers than configured,
 /// and this gate must not abort that healthy boot. That is a different question from
 /// `ConfigValidator`'s declarative `[cluster] nodes` TOML check, which only fires when a TOML loads
-/// and today never aborts boot on its own (`Main#loadConfigFile` discards any validation failure
-/// into `Option.none()`); this gate is the one that actually stops a sub-3-node start.
+/// and never aborts boot on its own (`Main#loadConfigFile` discards any validation failure into
+/// `Option.none()`); this gate is the one that actually stops a sub-3-node start.
 public final class ClusterSizeGate {
     private static final int MINIMUM_SUPPORTED_CLUSTER_SIZE = 3;
 

@@ -19,8 +19,10 @@ import org.pragmatica.lang.Result;
 /// [StreamPublisherFactory.GovernorResolver]: a node-supplied capability the publish path uses when it
 /// is running inside a real node and does without elsewhere.
 ///
-/// ABSENT IN TEST / FORGE / MINIMAL RUNTIMES, BY DESIGN — see [#qualify]. There is no deployment behind
-/// those, so there is no second spelling for the engine key to disagree with.
+/// ABSENT IN UNIT-TEST AND MINIMAL RUNTIMES, BY DESIGN — see [#qualify]. There is no deployment behind
+/// those, so there is no second spelling for the engine key to disagree with. Forge is NOT one of them:
+/// its Ember nodes are real `AetherNode`s that register this resolver, and its slices are deployed
+/// through a blueprint publish, so they resolve like any cluster's (#1066).
 @FunctionalInterface
 public interface StreamAddressResolver {
     /// The engine key for `alias` as declared by the slice deployed under `sliceId`

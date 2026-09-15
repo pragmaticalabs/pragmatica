@@ -107,7 +107,7 @@ version = "1.0.0-rc1"
 
 [core_topology]
 min = 3
-max = 15
+max = 9
 max_unavailable = 1
 
 [source.docker]
@@ -125,8 +125,6 @@ swim = 6100
 
 [operations.auto_heal]
 enabled = true
-retry_interval = "30s"
-startup_cooldown = "15s"
 
 [runtime.default]
 type = "docker"

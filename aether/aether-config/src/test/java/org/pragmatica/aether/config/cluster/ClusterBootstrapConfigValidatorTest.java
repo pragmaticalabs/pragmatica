@@ -318,7 +318,7 @@ class ClusterBootstrapConfigValidatorTest {
         void validate_autoHealDisabled_returnsPf25() {
             // Positive control for enabled=true already exists: HappyPath.validate_validForgeConfig_succeeds
             // uses defaultOperationsConfig(), which defaults autoHeal to enabled=true and must not trip PF-25.
-            var autoHeal = AutoHealSpec.autoHealSpec(false, "60s", "15s");
+            var autoHeal = AutoHealSpec.autoHealSpec(false);
             var ops = operationsConfig(autoHeal, defaultOperationsConfig().tls(),
                                        defaultOperationsConfig().timeouts(), defaultOperationsConfig().ports());
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
@@ -676,6 +676,83 @@ class ClusterBootstrapConfigValidatorTest {
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-19"));
         }
 
+        /// #1090 review SF-2: a JVM/EMBER runtime on an SSH source used to pass validation and be
+        /// refused only at DEPLOY_RUNTIME — after every other source had already provisioned. The
+        /// deploy phase can launch only a container over SSH, so PF-22 says so at config load.
+        @Test
+        void validate_sshWithJvmRuntime_returnsError() {
+            validate(sshConfigWithRuntime(runtimeProfile("jvm-rt", RuntimeType.JVM, none(), none())))
+                .onSuccess(v -> Assertions.fail("Expected PF-22: a JVM runtime cannot be launched over SSH"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-22").contains("jvm-rt"));
+        }
+
+        @Test
+        void validate_sshWithEmberRuntime_returnsError() {
+            validate(sshConfigWithRuntime(runtimeProfile("ember-rt", RuntimeType.EMBER, none(), none())))
+                .onSuccess(v -> Assertions.fail("Expected PF-22: an EMBER runtime cannot be launched over SSH"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-22").contains("ember-rt"));
+        }
+
+        /// Control for the two above: the container runtime is what the SSH path launches.
+        @Test
+        void validate_sshWithContainerRuntime_isAccepted() {
+            var runtime = runtimeProfile("ctr", RuntimeType.CONTAINER, some("ghcr.io/pragmaticalabs/aether-node:1.0.0"),
+                                         none());
+            validate(sshConfigWithRuntime(runtime))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-22"));
+        }
+
+        private static ClusterBootstrapConfig sshConfigWithRuntime(RuntimeProfile runtime) {
+            var coreRole = roleSubTable(NodeRole.CORE, none(), some(List.of("h1", "h2", "h3")), none(), runtime.name());
+            var source = sourceProfile(sourceNameOrDefault("ssh-src"), SourceType.SSH, none(), none(), none(), none(),
+                                       some("root"), some("/key"), some(22), LoadBalancerMode.NONE,
+                                       List.of(), none(), Map.of(),
+                                       Map.of(NodeRole.CORE, coreRole), List.of());
+            return clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+                                          defaultCoreTopology(), Map.of("ssh-src", source),
+                                          Map.of(runtime.name(), runtime),
+                                          infrastructureConfig(NetworkingType.MANUAL),
+                                          defaultOperationsConfig());
+        }
+
+        /// #1090 review SF-3: PF-09 catches a host listed twice INSIDE one SSH source; a host listed
+        /// by two SSH sources was deployed twice, the second `docker run` replacing the first. One
+        /// host runs one node — refuse it at config load, naming both sources.
+        @Test
+        void validate_sameHostInTwoSshSources_returnsError() {
+            validate(twoSshSources(List.of("10.0.0.1", "10.0.0.2", "10.0.0.3"), List.of("10.0.0.1")))
+                .onSuccess(v -> Assertions.fail("Expected PF-27: host 10.0.0.1 is declared by both SSH sources"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-27")
+                                                               .contains("10.0.0.1")
+                                                               .contains("'dc'")
+                                                               .contains("'lab'"));
+        }
+
+        @Test
+        void validate_distinctHostsAcrossSshSources_isAccepted() {
+            validate(twoSshSources(List.of("10.0.0.1", "10.0.0.2", "10.0.0.3"), List.of("10.0.1.1")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-27"));
+        }
+
+        private static ClusterBootstrapConfig twoSshSources(List<String> dcHosts, List<String> labHosts) {
+            var runtime = runtimeProfile("ctr", RuntimeType.CONTAINER, some("ghcr.io/pragmaticalabs/aether-node:1.0.0"),
+                                         none());
+            return clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+                                          defaultCoreTopology(),
+                                          Map.of("dc", sshSource("dc", NodeRole.CORE, dcHosts),
+                                                 "lab", sshSource("lab", NodeRole.WORKER, labHosts)),
+                                          Map.of("ctr", runtime),
+                                          infrastructureConfig(NetworkingType.MANUAL),
+                                          defaultOperationsConfig());
+        }
+
+        private static SourceProfile sshSource(String name, NodeRole role, List<String> hosts) {
+            return sourceProfile(sourceNameOrDefault(name), SourceType.SSH, none(), none(), none(), none(),
+                                 some("root"), some("/key"), some(22), LoadBalancerMode.NONE,
+                                 List.of(), none(), Map.of(),
+                                 Map.of(role, roleSubTable(role, none(), some(hosts), none(), "ctr")), List.of());
+        }
+
         @Test
         void validate_dockerWithNonDockerRuntime_returnsError() {
             var runtime = runtimeProfile("jvm-rt", RuntimeType.JVM, none(), none());
@@ -702,6 +779,82 @@ class ClusterBootstrapConfigValidatorTest {
             var result = warnings(validForgeConfig());
 
             assertThat(result).anyMatch(w -> w.contains("CL-13"));
+        }
+    }
+
+    /// #1019 — the consensus maximum at the BOOTSTRAP validator.
+    ///
+    /// Round 1 bounded the consensus tier at `aether cluster init` alone. The round-1 review (S2)
+    /// showed what that left: this validator ACCEPTED a hand-written config with a derived core count
+    /// of 11, and `[cluster.core] max = 15` besides — so the operator route the ticket itself calls a
+    /// working alternative ("writing the config directly … DOES provision five core nodes") had no
+    /// ceiling at all. The cap is now a property of the config, not of one command that writes configs.
+    ///
+    /// Both ends are asserted per rule rather than by "validate fails": `validateDerivedCoreCount` and
+    /// `validateCoreMax` are separate checks that this class would otherwise conflate, and a config
+    /// with an over-cap derived count also trips REQ-3.3.3 if `max` is left at the default.
+    @Nested
+    class ConsensusTierMaximum {
+
+        private static ClusterBootstrapConfig configWithCoreCount(int count) {
+            var coreRole = roleSubTable(NodeRole.CORE, some(count), none(), none(), "ember");
+            var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
+                                       none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                       none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+
+            return clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
+                                          defaultCoreTopology(), Map.of("local", source), Map.of(),
+                                          infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+        }
+
+        private static ClusterBootstrapConfig configWithCoreMax(int max) {
+            var coreRole = roleSubTable(NodeRole.CORE, some(5), none(), none(), "ember");
+            var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
+                                       none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                       none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+
+            return clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
+                                          coreTopology(some(5), some(max), 1), Map.of("local", source), Map.of(),
+                                          infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+        }
+
+        private static String messageOf(ClusterBootstrapConfig config) {
+            return validate(config).fold(cause -> cause.message(), _ -> "");
+        }
+
+        @Test
+        void validate_fails_whenDerivedCoreCountExceedsTheMaximum() {
+            assertThat(validate(configWithCoreCount(11)).isFailure()).isTrue();
+            assertThat(messageOf(configWithCoreCount(11))).contains("CL-04")
+                                                          .contains("must be <= 9");
+        }
+
+        /// The boundary, both sides. Without this, a cap set one too low or one too high still passes
+        /// the test above.
+        @Test
+        void validate_succeeds_atTheMaximumAndFailsJustAbove() {
+            assertThat(validate(configWithCoreCount(9)).isSuccess()).isTrue();
+            assertThat(validate(configWithCoreCount(11)).isFailure()).isTrue();
+        }
+
+        /// The STRUCTURAL floor stays at 3 here — an existing 3-node cluster must still re-bootstrap.
+        /// This is deliberately NOT `CoreWorkerSplit`'s supported minimum of 5, and pinning it stops a
+        /// later reader "harmonising" the two.
+        @Test
+        void validate_succeeds_atTheStructuralFloorOfThree() {
+            assertThat(validate(configWithCoreCount(3)).isSuccess()).isTrue();
+        }
+
+        @Test
+        void validate_fails_whenCoreMaxExceedsTheMaximum() {
+            assertThat(validate(configWithCoreMax(15)).isFailure()).isTrue();
+            assertThat(messageOf(configWithCoreMax(15))).contains("REQ-3.3.3")
+                                                        .contains("must be <= 9");
+        }
+
+        @Test
+        void validate_succeeds_whenCoreMaxIsAtTheMaximum() {
+            assertThat(validate(configWithCoreMax(9)).isSuccess()).isTrue();
         }
     }
 }

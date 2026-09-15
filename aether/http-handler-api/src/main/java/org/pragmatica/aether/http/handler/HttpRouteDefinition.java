@@ -17,12 +17,23 @@ public record HttpRouteDefinition(String httpMethod,
                                   String artifactCoord,
                                   String sliceMethod,
                                   SecurityPolicy security) {
+    /// #884: the prefix is normalized HERE, not in one of the factories, because every local route
+    /// lookup compares a normalized request path against this field with `startsWith`. That is a
+    /// segment-boundary comparison only while the stored prefix ends in a slash -- without it
+    /// `/api/pricing` swallows `/api/pricing-admin/report`. Both production producers happened to
+    /// reach a normalizing factory (`RouteMetadataExtractor`, `SecurityOverrideApplier`), but
+    /// nothing REFUSED a definition built any other way: the canonical constructor and the
+    /// `Result`-returning factory stored whatever they were handed. Normalizing in the compact
+    /// constructor makes the boundary property hold for every construction path, so the single
+    /// selection rule in `HttpRoutePublisher` can rely on it locally instead of on a call-site
+    /// convention held elsewhere.
     public HttpRouteDefinition {
         Objects.requireNonNull(httpMethod, "httpMethod");
         Objects.requireNonNull(pathPrefix, "pathPrefix");
         Objects.requireNonNull(artifactCoord, "artifactCoord");
         Objects.requireNonNull(sliceMethod, "sliceMethod");
         Objects.requireNonNull(security, "security");
+        pathPrefix = normalizePrefix(pathPrefix);
     }
 
     public static Result<HttpRouteDefinition> httpRouteDefinition(Result<String> httpMethod,
@@ -46,7 +57,7 @@ public record HttpRouteDefinition(String httpMethod,
                                                           String sliceMethod,
                                                           SecurityPolicy security) {
         return Result.all(success(httpMethod),
-                          success(normalizePrefix(pathPrefix)),
+                          success(pathPrefix),
                           success(artifactCoord),
                           success(sliceMethod),
                           success(security))

@@ -202,6 +202,44 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     clusterSecret);
     }
 
+    /// #420 — replace the timeouts after construction; `timeouts` sits fourteen stages past
+    /// `environment`, where the boot fixtures stop. Same post-build shape as [#withAutoHeal].
+    public AetherNodeConfig withTimeouts(TimeoutsConfig timeouts) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    quicTls,
+                                    ttm,
+                                    rollback,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    atomicity,
+                                    activationGated,
+                                    timeouts,
+                                    certificateProvider,
+                                    workerConfig,
+                                    deploymentDefaults,
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig,
+                                    membership,
+                                    streaming,
+                                    clusterFormation,
+                                    clusterName,
+                                    storageEncryption,
+                                    alerts,
+                                    clusterSecret);
+    }
+
     public AetherNodeConfig withClusterName(Option<ClusterName> clusterName) {
         return new AetherNodeConfig(topology,
                                     protocol,

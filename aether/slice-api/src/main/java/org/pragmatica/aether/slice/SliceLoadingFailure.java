@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
+import java.util.List;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.CoreError;
@@ -12,6 +14,10 @@ import static org.pragmatica.lang.Option.some;
 
 
 public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFailure.Fatal, SliceLoadingFailure.Intermittent {
+    /// #882 — mirrors `SliceRouterFactory.ROUTE_SECURITY_CONTRACT` (this module cannot see it);
+    /// `HttpRoutePublisherStaleContractTest` (which sees both) pins the two equal.
+    int CURRENT_ROUTE_SECURITY_CONTRACT = 1;
+
     non-sealed interface Fatal extends SliceLoadingFailure {
         record FactoryMethodNotFound(String className, String methodName) implements Fatal {
             @Override
@@ -98,6 +104,48 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
             @Override
             public Option<Cause> source() {
                 return some(causeSource);
+            }
+        }
+
+        /// #758 — a class the slice references is unresolvable and NO loader above the slice's own
+        /// (shared/infra loader, runtime loader) serves its package: none has defined a class in it or
+        /// holds its directory. The message states that and asserts no cause; the loader chain is
+        /// listed so the gap can be seen rather than inferred, and every section a dependency jar can
+        /// come from is named so the operator's next action is right.
+        record DependencyClassNotOnClasspath(String context,
+                                             String className,
+                                             String packageName,
+                                             List<String> loaderChain) implements Fatal {
+            @Override
+            public String message() {
+                return "Class " + className
+                     + " referenced by " + context
+                     + " is not on this slice's classloader, and no loader above it serves package " + packageName
+                     + " (none has defined a class in it or holds its directory). Loader chain: " + loaderChain
+                     + ". Check the slice's declared dependencies in META-INF/dependencies/<FactoryClass>:"
+                     + " [slices] jars are appended to the slice's loader; [shared] jars go to the shared loader,"
+                     + " or to the slice's loader on a version conflict, and a [shared] artifact found in no"
+                     + " repository is registered as runtime-provided and loads NOTHING; [infra] jars go to the"
+                     + " shared loader. Confirm the artifact that ships " + className
+                     + " is declared there and resolved to a jar (#758).";
+            }
+        }
+
+        /// #882 — the slice JAR was generated before the #763 route-security contract and declares
+        /// at least one PUBLIC route. The node cannot tell a declared `public` from the old default
+        /// (both compiled to `publicRoute()`), so it refuses rather than serve the route open under
+        /// an `API_KEY`/`JWT` global mode. Fatal: nothing at runtime can change the JAR.
+        record RouteSecurityContractStale(String artifact, int contract, List<String> publicRoutes) implements Fatal {
+            @Override
+            public String message() {
+                return "Slice " + artifact
+                     + " was compiled with a slice-processor before the route-security contract "
+                     + "(routeSecurityContract=" + contract
+                     + ", current " + CURRENT_ROUTE_SECURITY_CONTRACT
+                     + ") and declares PUBLIC route(s) " + publicRoutes
+                     + " — a route with no [security] section was baked in as public by that processor, so these "
+                     + "may be silently open under an API_KEY/JWT security mode; refusing to publish. "
+                     + "Recompile the slice with the current jbct slice-processor (#763/#882).";
             }
         }
 

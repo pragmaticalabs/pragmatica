@@ -12,7 +12,6 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.worker.WorkerCodecs;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -83,7 +82,7 @@ class WireAssignmentTripwireTest {
 
     /// Every codec whose byte format this repository owns.
     ///
-    /// The two node registries are the bulk of it. `DelegationCodecsSlice` and `StreamCodecsSliceApi`
+    /// The node registry is the bulk of it (the orphaned `WorkerCodecs` was deleted in #503). `DelegationCodecsSlice` and `StreamCodecsSliceApi`
     /// are added EXPLICITLY because deriving from the node registries alone silently missed them:
     /// their codecs are generated from `@Codec` but composed into no node registry, so `TaskGroup` and
     /// `StreamRegistryEntry.RegisteredByKind` — 2 of the 26 generated enum codecs — had no pin at all
@@ -92,7 +91,6 @@ class WireAssignmentTripwireTest {
     /// derived set against the generated files rather than by reading this method.
     private static Stream<SliceCodec.TypeCodec<?>> allCodecs() {
         return Stream.of(NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs()).registeredTypes().values().stream(),
-                         WorkerCodecs.workerCodecs(FrameworkCodecs.frameworkCodecs()).registeredTypes().values().stream(),
                          org.pragmatica.aether.slice.delegation.DelegationCodecsSlice.CODECS.stream(),
                          org.pragmatica.aether.slice.stream.StreamCodecsSliceApi.CODECS.stream())
                      .flatMap(stream -> stream);
@@ -174,13 +172,15 @@ class WireAssignmentTripwireTest {
         assertTrue(baseline().size() > 100,
                    "The recorded baseline has only %d lines — it cannot be pinning the registry".formatted(baseline().size()));
 
-        // The number that caught the gap: 26 enum codecs are generated across the repository, and
-        // deriving from the node registries alone pinned 24. Stated as a floor with the space named,
-        // because a count with no stated space is not checkable.
+        // The number that caught the gap: 26 enum codecs were generated across the repository, and
+        // deriving from the node registries alone pinned 24. 25 since #722 deleted `GenerationReason`
+        // (counted as `*Codec.java` under every module's generated-sources carrying the enum
+        // sentinel). Stated as a floor with the space named, because a count with no stated space
+        // is not checkable.
         var pinnedEnums = current.stream().filter(line -> line.startsWith("ENUM ")).count();
 
-        assertTrue(pinnedEnums >= 26,
-                   ("Only %d enums are pinned. 26 enum codecs are generated under aether/ and integrations/;"
+        assertTrue(pinnedEnums >= 25,
+                   ("Only %d enums are pinned. 25 enum codecs are generated under aether/ and integrations/;"
                     + " an enum with a generated codec and no pin is exactly what this test exists to catch.")
                    .formatted(pinnedEnums));
     }

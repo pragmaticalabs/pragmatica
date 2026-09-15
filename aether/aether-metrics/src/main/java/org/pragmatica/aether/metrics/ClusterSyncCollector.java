@@ -461,6 +461,14 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         // Recorded BEFORE the metrics/eviction work below so a slow handler downstream cannot make a
         // live core look absent.
         corePingObserver.get().run();
+        // #588: RETAIN to the ping's key set before storing, do not merge into it. The fenced
+        // leader ping is the SOLE feed of a follower's `remoteMetrics` (only the leader pings, and
+        // the pong below goes to the pinger alone), so the ping IS this node's roster, not an
+        // addition to it. Merging made every eviction order-dependent: each node projects a death
+        // on its own membership verdict, so a follower that pruned a departed worker at t_F took it
+        // straight back from a ping issued before the leader's own verdict at t_L > t_F, and no
+        // later ping evicted it again — the #588 ghost, on every node but the leader.
+        retainPingRoster(ping.allMetrics().keySet());
         ping.allMetrics().forEach(this::storeRemoteMetrics);
         var incomingEpoch = Epoch.epoch(ping.epochTerm(), ping.epochCounter());
 
@@ -870,6 +878,19 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         metrics.put(prefix + "totalNs", (double) m.totalDurationNs());
         metrics.put(prefix + "p50ns", (double) m.estimatePercentileNs(50));
         metrics.put(prefix + "p95ns", (double) m.estimatePercentileNs(95));
+    }
+
+    /// Drop every node the accepted ping no longer carries, through the same [`#removeNode`] the
+    /// leader itself ran for it (#588) — the follower forgets exactly what the leader forgot, and
+    /// converges on the first ping after the leader's own prune whatever order the two verdicts
+    /// landed in. `self` is never a key here (both writers skip it), so the follower's own row —
+    /// which [`#allMetrics`] adds separately — is untouched whether or not the leader lists it.
+    private void retainPingRoster(Set<NodeId> pingRoster) {
+        remoteMetrics.keySet()
+                     .stream()
+                     .filter(nodeId -> !pingRoster.contains(nodeId))
+                     .toList()
+                     .forEach(this::removeNode);
     }
 
     private void storeRemoteMetrics(NodeId nodeId, Map<String, Double> metrics) {

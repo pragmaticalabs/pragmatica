@@ -28,6 +28,7 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Slic
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.MembershipDecisionReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerJoinReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeDrainingReported;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerLeaveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SelfShutdownReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingPutReceived;
@@ -138,6 +139,12 @@ public interface ClusterDeploymentManager {
     @Contract
     @MessageReceiver
     void onWorkerLeave(WorkerLeaveDecision decision);
+
+    /// #688 — the leader recorded a DRAINING readiness report from `nodeId`; the leader-side drain
+    /// eviction (replacement elsewhere, then unload) starts from here. Fed by the same pong-fan
+    /// callback that acknowledges the drain to the membership FSM. Default no-op for test fakes.
+    @Contract
+    default void onNodeDraining(NodeId nodeId) {}
 
     @Contract
     @MessageReceiver
@@ -608,6 +615,12 @@ public interface ClusterDeploymentManager {
         @Override
         public void onWorkerLeave(WorkerLeaveDecision decision) {
             ctx.dispatch(new WorkerLeaveReceived(decision));
+        }
+
+        @Contract
+        @Override
+        public void onNodeDraining(NodeId nodeId) {
+            ctx.dispatch(new NodeDrainingReported(nodeId));
         }
 
         @Contract

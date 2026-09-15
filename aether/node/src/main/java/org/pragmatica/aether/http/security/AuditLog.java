@@ -67,14 +67,6 @@ public final class AuditLog {
         AUDIT.info("CONFIG_REMOVED key={} scope={}", key, scope);
     }
 
-    public static void backupCreated(boolean success, String message) {
-        AUDIT.info("BACKUP_CREATED success={} message={}", success, message);
-    }
-
-    public static void backupRestored(boolean success, String commitId, String message) {
-        AUDIT.info("BACKUP_RESTORED success={} commitId={} message={}", success, commitId, message);
-    }
-
     public static void nodeLifecycleTransition(String nodeId, String targetState, boolean success, String message) {
         AUDIT.info("NODE_LIFECYCLE_TRANSITION nodeId={} targetState={} success={} message={}",
                    nodeId,

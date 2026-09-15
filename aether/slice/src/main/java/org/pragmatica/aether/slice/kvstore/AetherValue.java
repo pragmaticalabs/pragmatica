@@ -775,11 +775,25 @@ public sealed interface AetherValue {
         }
     }
 
+    /// `currentKeyId` is the lost-update fence (RFC-0018, #570), added for #683 alongside the
+    /// producer: the rotation route reads the committed record and writes `prior + 1`, so two
+    /// concurrent ADMIN rotations — or one CLI retry after a client-side timeout, realistic on the
+    /// emergency path this route exists for — both derive the same successor id from the same base.
+    /// Without the fence consensus orders them and the cluster converges, but during the window a
+    /// peer holding key A under id N+1 receives a datagram encrypted with key B under the SAME id:
+    /// `resolveKey` SUCCEEDS and GCM tag verification then fails, so the failure surfaces as a
+    /// decryption error rather than an unknown-key miss. [VersionFenced] makes the second writer a
+    /// refused write instead, and the route confirms by re-reading the committed record.
     record GossipKeyRotationValue(int currentKeyId,
                                   String currentKey,
                                   int previousKeyId,
                                   String previousKey,
-                                  long rotatedAt) implements AetherValue {
+                                  long rotatedAt) implements AetherValue, VersionFenced {
+        @Override
+        public long fenceVersion() {
+            return currentKeyId;
+        }
+
         public static GossipKeyRotationValue gossipKeyRotationValue(int currentKeyId, String currentKey) {
             return new GossipKeyRotationValue(currentKeyId, currentKey, 0, "", System.currentTimeMillis());
         }
@@ -1266,17 +1280,45 @@ public sealed interface AetherValue {
         }
     }
 
-    record SchemaMigrationLockValue(String datasourceName, NodeId heldBy, long acquiredAt, long expiresAt) implements AetherValue {
+    /// `lockVersion` is the lost-update fence (RFC-0018, #570) added for #766: the lock claim is a
+    /// compare-and-put on this chain, so two nodes that both read the lock free (absent OR expired)
+    /// and both write cannot both commit — the applier accepts only the immediate successor of the
+    /// committed version, and a first write against an absent key. The acquirer derives the version
+    /// from the committed value ([#nextVersion]) and confirms after its apply resolves by re-reading
+    /// the committed value and comparing it to the one it wrote ([VersionFenced]'s protocol).
+    ///
+    /// Wire-format note: this adds a record component to a committed AetherValue (generated codec and
+    /// `KVStoreSerializer` text form both change), following the #805 `outcomeVersion` precedent. rc4
+    /// promises no cross-rc wire compatibility; that contract is #434/#666's.
+    record SchemaMigrationLockValue(String datasourceName,
+                                    NodeId heldBy,
+                                    long acquiredAt,
+                                    long expiresAt,
+                                    long lockVersion) implements AetherValue, VersionFenced {
+        /// The version a claim against an ABSENT key carries; the applier does not fence a first write.
+        public static final long FIRST_VERSION = 1L;
+
         public static SchemaMigrationLockValue schemaMigrationLockValue(String datasourceName,
                                                                         NodeId heldBy,
-                                                                        long ttlMs) {
+                                                                        long ttlMs,
+                                                                        long lockVersion) {
             var now = System.currentTimeMillis();
 
-            return new SchemaMigrationLockValue(datasourceName, heldBy, now, now + ttlMs);
+            return new SchemaMigrationLockValue(datasourceName, heldBy, now, now + ttlMs, lockVersion);
         }
 
         public boolean isExpired() {
             return System.currentTimeMillis() > expiresAt;
+        }
+
+        /// The version a claim that takes over THIS committed value (held-and-expired) must carry.
+        public long nextVersion() {
+            return lockVersion + 1;
+        }
+
+        @Override
+        public long fenceVersion() {
+            return lockVersion;
         }
     }
 

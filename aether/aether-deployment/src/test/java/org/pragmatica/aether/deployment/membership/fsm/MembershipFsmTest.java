@@ -4,8 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.fsm;
 
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+
 import org.pragmatica.aether.slice.generation.HealthHint;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -15,15 +20,12 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.statemachine.FsmObserver;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+
 
 /// Verifies the LIVE membership manager ([`MembershipFsm`]) drives the per-member FSM faithfully from
 /// tapped events, computes the cluster aggregate (spec §3.4 effective / would-provision / would-drain),
@@ -37,7 +39,6 @@ class MembershipFsmTest {
     private static final NodeId A = new NodeId("node-a");
     private static final NodeId B = new NodeId("node-b");
     private static final NodeId C = new NodeId("node-c");
-
     /// Short terminal-eviction backstop (#131 Model C) for the existing co-confirmation tests that
     /// assert the TERMINAL DEAD outcome: with a near-zero window the deferred backstop fires almost
     /// immediately, so a co-confirmed-dead member reaches DEAD quickly and those tests poll for it via
@@ -66,7 +67,7 @@ class MembershipFsmTest {
     /// backstop) if real-time scheduling ever makes it flaky.
     private static void awaitDead(MembershipFsm manager, NodeId id) {
         await().atMost(2, TimeUnit.SECONDS)
-               .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(id, "Dead"));
+             .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(id, "Dead"));
     }
 
     @Nested
@@ -89,14 +90,52 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             assertThat(manager.effective()).isEqualTo(1);
-
             manager.onSwimSuspect(A, 2L);
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
             assertThat(manager.effective()).isEqualTo(1);
-
             manager.onSwimHealthy(A, 3L);
             assertThat(manager.memberStates()).containsEntry(A, "Member");
             assertThat(manager.effective()).isEqualTo(1);
+        }
+    }
+
+    /// #275: `reachableMembers` is the source of the invoker's endpoint liveness filter. Its deliberate
+    /// reading of "reachable" is NOT co-confirmed DEAD — a DEPARTING drainer and a SUSPECT member are
+    /// still selectable targets (they are up and serving their in-flight work; the caller carries a
+    /// per-op timeout), and only terminal DEAD is excluded. A reviewer will ask; this is the answer.
+    @Nested
+    class ReachableMembersForEndpointSelection {
+        @Test
+        void departingMember_isStillReachable() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onDrainRequested(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Departing");
+            assertThat(manager.reachableMembers(List.of(A))).as("#275: a DEPARTING node is deliberately still selectable")
+                      .containsExactly(A);
+        }
+
+        @Test
+        void suspectMember_isStillReachable() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onSwimSuspect(A, 2L);
+            assertThat(manager.memberStates()).containsEntry(A, "Suspect");
+            assertThat(manager.reachableMembers(List.of(A))).containsExactly(A);
+        }
+
+        @Test
+        void deadMember_isNotReachable() {
+            var manager = activeManager();
+
+            promoteToMember(manager, A);
+            manager.onSwimFaulty(A, 4L);
+            manager.onLivenessGone(A);
+            awaitDead(manager, A);
+            assertThat(manager.reachableMembers(List.of(A))).as("#275: only a co-confirmed DEAD node drops out of endpoint selection")
+                      .isEmpty();
         }
     }
 
@@ -108,11 +147,9 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             assertThat(manager.effective()).isEqualTo(1);
-
             manager.onSwimFaulty(A, 4L);
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
             assertThat(manager.effective()).isEqualTo(1);
-
             manager.onLivenessGone(A);
             awaitDead(manager, A);
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
@@ -126,7 +163,6 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             manager.onSwimFaulty(A, 4L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
             assertThat(manager.effective()).isEqualTo(1);
         }
@@ -137,7 +173,6 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             manager.onLivenessGone(A);
-
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
             assertThat(manager.effective()).isEqualTo(1);
         }
@@ -171,17 +206,15 @@ class MembershipFsmTest {
         void departingSilence_pastTimeout_terminalizesToDeadWithSingleRemovedDelta() {
             var manager = departureTimeoutManager(FIRING_TIMEOUT);
             var deltas = new ArrayList<MembershipDeltaEdge>();
-            manager.onMembershipDelta(deltas::add);
 
+            manager.onMembershipDelta(deltas::add);
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
             manager.onLivenessGone(A);
             assertThat(manager.memberStates()).containsEntry(A, "Departing");
-
             awaitDead(manager, A);
-            var removed = deltas.stream()
-                                .filter(edge -> edge.kind() == MembershipDeltaEdge.Kind.REMOVED)
-                                .toList();
+            var removed = deltas.stream().filter(edge -> edge.kind() == MembershipDeltaEdge.Kind.REMOVED).toList();
+
             assertThat(removed).as("the DEPARTING-timeout death emits the REMOVED edge exactly once").hasSize(1);
             assertThat(removed.getFirst().node()).isEqualTo(A);
         }
@@ -193,15 +226,14 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
             assertThat(manager.memberStates()).containsEntry(A, "Departing");
-
             manager.onSwimHealthy(A, 2L);
             assertThat(manager.memberStates()).containsEntry(A, "Member");
-
             // Past the (cancelled) window the recovered member must still be MEMBER — the
             // delayed Stopped must never fire on a recovered member.
-            await().pollDelay(FIRING_TIMEOUT.millis() * 3, TimeUnit.MILLISECONDS)
-                   .atMost(2, TimeUnit.SECONDS)
-                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
+            await().pollDelay(FIRING_TIMEOUT.millis() * 3,
+                              TimeUnit.MILLISECONDS)
+                 .atMost(2, TimeUnit.SECONDS)
+                 .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
             assertThat(manager.countedMembers()).contains(A);
         }
 
@@ -211,12 +243,9 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
-
             manager.onSwimHealthy(A, 1L);
-
-            assertThat(manager.memberStates())
-                    .as("mere liveness at the known incarnation does not cancel a drain")
-                    .containsEntry(A, "Departing");
+            assertThat(manager.memberStates()).as("mere liveness at the known incarnation does not cancel a drain")
+                      .containsEntry(A, "Departing");
             assertThat(manager.countedMembers()).doesNotContain(A);
         }
 
@@ -229,22 +258,18 @@ class MembershipFsmTest {
         void undeliveredDrain_pastTimeoutWithNoDeathEvidence_returnsToMemberWithoutRemovedDelta() {
             var manager = departureTimeoutManager(FIRING_TIMEOUT);
             var deltas = new ArrayList<MembershipDeltaEdge>();
-            manager.onMembershipDelta(deltas::add);
 
+            manager.onMembershipDelta(deltas::add);
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
             assertThat(manager.memberStates()).containsEntry(A, "Departing");
-
-            await().pollDelay(FIRING_TIMEOUT.millis() * 3, TimeUnit.MILLISECONDS)
-                   .atMost(2, TimeUnit.SECONDS)
-                   .untilAsserted(() -> assertThat(manager.memberStates())
-                           .as("an unacknowledged drain on a target with no death evidence is withdrawn, never terminalized")
-                           .containsEntry(A, "Member"));
-            assertThat(deltas.stream()
-                             .filter(edge -> edge.kind() == MembershipDeltaEdge.Kind.REMOVED)
-                             .toList())
-                    .as("no REMOVED edge — so no NodeRemoved and no container reap for a live target")
-                    .isEmpty();
+            await().pollDelay(FIRING_TIMEOUT.millis() * 3,
+                              TimeUnit.MILLISECONDS)
+                 .atMost(2, TimeUnit.SECONDS)
+                 .untilAsserted(() -> assertThat(manager.memberStates()).as("an unacknowledged drain on a target with no death evidence is withdrawn, never terminalized")
+                                                .containsEntry(A, "Member"));
+            assertThat(deltas.stream().filter(edge -> edge.kind() == MembershipDeltaEdge.Kind.REMOVED).toList()).as("no REMOVED edge — so no NodeRemoved and no container reap for a live target")
+                      .isEmpty();
             assertThat(manager.countedMembers()).contains(A);
         }
 
@@ -255,16 +280,14 @@ class MembershipFsmTest {
         void acknowledgedDrain_pastTimeout_terminalizesOnceEvenAfterSwimDeathPair() {
             var manager = departureTimeoutManager(FIRING_TIMEOUT);
             var deltas = new ArrayList<MembershipDeltaEdge>();
-            manager.onMembershipDelta(deltas::add);
 
+            manager.onMembershipDelta(deltas::add);
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
             manager.onDrainAcknowledged(A);
-
             awaitDead(manager, A);
             manager.onSwimFaulty(A, 1L);
             manager.onSwimDeparted(A, 1L);
-
             assertThat(removedEdges(deltas)).as("an acknowledged drain is reaped exactly once").hasSize(1);
         }
 
@@ -276,12 +299,11 @@ class MembershipFsmTest {
         void acknowledgedThenSilentDrainer_pastTimeout_terminalizesToDeadWithSingleRemovedDelta() {
             var manager = departureTimeoutManager(FIRING_TIMEOUT);
             var deltas = new ArrayList<MembershipDeltaEdge>();
-            manager.onMembershipDelta(deltas::add);
 
+            manager.onMembershipDelta(deltas::add);
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
             manager.onDrainAcknowledged(A);
-
             awaitDead(manager, A);
             assertThat(removedEdges(deltas)).as("an acknowledged, silent drainer is removed exactly once").hasSize(1);
         }
@@ -293,22 +315,20 @@ class MembershipFsmTest {
         void drainAcknowledgement_afterNewerIncarnationRecovery_doesNotCarryIntoNextEpisode() {
             var manager = departureTimeoutManager(FIRING_TIMEOUT);
             var deltas = new ArrayList<MembershipDeltaEdge>();
-            manager.onMembershipDelta(deltas::add);
 
+            manager.onMembershipDelta(deltas::add);
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
             manager.onDrainAcknowledged(A);
             manager.onSwimHealthy(A, 2L);
             assertThat(manager.memberStates()).as("arming: the newer incarnation ended the first episode")
-                                              .containsEntry(A, "Member");
-
+                      .containsEntry(A, "Member");
             manager.onDrainRequested(A);
-
-            await().pollDelay(FIRING_TIMEOUT.millis() * 3, TimeUnit.MILLISECONDS)
-                   .atMost(2, TimeUnit.SECONDS)
-                   .untilAsserted(() -> assertThat(manager.memberStates())
-                           .as("the second, unacknowledged episode is withdrawn")
-                           .containsEntry(A, "Member"));
+            await().pollDelay(FIRING_TIMEOUT.millis() * 3,
+                              TimeUnit.MILLISECONDS)
+                 .atMost(2, TimeUnit.SECONDS)
+                 .untilAsserted(() -> assertThat(manager.memberStates()).as("the second, unacknowledged episode is withdrawn")
+                                                .containsEntry(A, "Member"));
             assertThat(removedEdges(deltas)).isEmpty();
         }
 
@@ -318,15 +338,15 @@ class MembershipFsmTest {
         void drainAcknowledgement_observedBeforeTheDrain_doesNotPreArmTheEpisode() {
             var manager = departureTimeoutManager(FIRING_TIMEOUT);
             var deltas = new ArrayList<MembershipDeltaEdge>();
-            manager.onMembershipDelta(deltas::add);
 
+            manager.onMembershipDelta(deltas::add);
             promoteToMember(manager, A);
             manager.onDrainAcknowledged(A);
             manager.onDrainRequested(A);
-
-            await().pollDelay(FIRING_TIMEOUT.millis() * 3, TimeUnit.MILLISECONDS)
-                   .atMost(2, TimeUnit.SECONDS)
-                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
+            await().pollDelay(FIRING_TIMEOUT.millis() * 3,
+                              TimeUnit.MILLISECONDS)
+                 .atMost(2, TimeUnit.SECONDS)
+                 .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
             assertThat(removedEdges(deltas)).isEmpty();
         }
 
@@ -337,7 +357,6 @@ class MembershipFsmTest {
             var manager = departureTimeoutManager(FIRING_TIMEOUT);
 
             manager.onDrainAcknowledged(B);
-
             assertThat(manager.memberStates()).doesNotContainKey(B);
         }
 
@@ -348,16 +367,14 @@ class MembershipFsmTest {
         void withdrawnDrain_laterDeliveredAndHalted_reachesDeadWithSingleRemovedDelta() {
             var manager = departureTimeoutManager(FIRING_TIMEOUT);
             var deltas = new ArrayList<MembershipDeltaEdge>();
-            manager.onMembershipDelta(deltas::add);
 
+            manager.onMembershipDelta(deltas::add);
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
             await().atMost(2, TimeUnit.SECONDS)
-                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
-
+                 .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
             manager.onSwimFaulty(A, 1L);
             manager.onSwimDeparted(A, 1L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(removedEdges(deltas)).as("the late SWIM death is the single removal").hasSize(1);
         }
@@ -372,7 +389,6 @@ class MembershipFsmTest {
             manager.onDrainRequested(A);
             manager.onSwimFaulty(A, 2L);
             assertThat(manager.memberStates()).containsEntry(A, "Departing");
-
             awaitDead(manager, A);
         }
 
@@ -383,16 +399,16 @@ class MembershipFsmTest {
         void unacknowledgedDrain_livenessLostThenReconnected_returnsToMember() {
             var manager = departureTimeoutManager(FIRING_TIMEOUT);
             var deltas = new ArrayList<MembershipDeltaEdge>();
-            manager.onMembershipDelta(deltas::add);
 
+            manager.onMembershipDelta(deltas::add);
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
             manager.onLivenessGone(A);
             manager.onPeerConnected(A);
-
-            await().pollDelay(FIRING_TIMEOUT.millis() * 3, TimeUnit.MILLISECONDS)
-                   .atMost(2, TimeUnit.SECONDS)
-                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
+            await().pollDelay(FIRING_TIMEOUT.millis() * 3,
+                              TimeUnit.MILLISECONDS)
+                 .atMost(2, TimeUnit.SECONDS)
+                 .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
             assertThat(removedEdges(deltas)).isEmpty();
         }
 
@@ -405,7 +421,6 @@ class MembershipFsmTest {
 
             manager.onDrainRequested(A);
             assertThat(manager.memberStates()).containsEntry(A, "Departing");
-
             awaitDead(manager, A);
             assertThat(manager.countedMembers()).doesNotContain(A);
         }
@@ -417,13 +432,12 @@ class MembershipFsmTest {
         void sustainedAbsenceDeparture_pastTimeout_stillTerminalizesWithSingleRemovedDelta() {
             var manager = departureTimeoutManager(FIRING_TIMEOUT);
             var deltas = new ArrayList<MembershipDeltaEdge>();
-            manager.onMembershipDelta(deltas::add);
 
+            manager.onMembershipDelta(deltas::add);
             promoteToMember(manager, A);
             manager.onSwimSuspect(A, 2L);
             manager.onDownHysteresisMet(A);
             assertThat(manager.memberStates()).containsEntry(A, "Departing");
-
             awaitDead(manager, A);
             assertThat(removedEdges(deltas)).hasSize(1);
         }
@@ -448,18 +462,16 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             manager.onSwimFaulty(A, 2L);
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
-
             manager.onSwimHealthy(A, 3L);
             assertThat(manager.memberStates()).containsEntry(A, "Member");
-
             manager.onLivenessGone(A);
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
-
             // Past the (short) backstop window: had the stale swimFaulty flag survived the
             // recovery, the pair would have armed the backstop and terminalized — it must not.
-            await().pollDelay(SHORT_BACKSTOP.millis() * 3, TimeUnit.MILLISECONDS)
-                   .atMost(2, TimeUnit.SECONDS)
-                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Suspect"));
+            await().pollDelay(SHORT_BACKSTOP.millis() * 3,
+                              TimeUnit.MILLISECONDS)
+                 .atMost(2, TimeUnit.SECONDS)
+                 .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Suspect"));
             assertThat(manager.countedMembers()).contains(A);
         }
 
@@ -471,15 +483,13 @@ class MembershipFsmTest {
             manager.onSwimFaulty(A, 2L);
             manager.onDrainRequested(A);
             assertThat(manager.memberStates()).containsEntry(A, "Departing");
-
             manager.onSwimHealthy(A, 3L);
             assertThat(manager.memberStates()).containsEntry(A, "Member");
-
             manager.onLivenessGone(A);
-
-            await().pollDelay(SHORT_BACKSTOP.millis() * 3, TimeUnit.MILLISECONDS)
-                   .atMost(2, TimeUnit.SECONDS)
-                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Suspect"));
+            await().pollDelay(SHORT_BACKSTOP.millis() * 3,
+                              TimeUnit.MILLISECONDS)
+                 .atMost(2, TimeUnit.SECONDS)
+                 .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Suspect"));
             assertThat(manager.countedMembers()).contains(A);
         }
     }
@@ -496,9 +506,7 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             manager.onSwimSuspect(A, 2L);
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
-
             manager.onPeerConnected(A);
-
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
             assertThat(manager.countedMembers()).as("SUSPECT still counts — no count perturbation").contains(A);
         }
@@ -511,9 +519,7 @@ class MembershipFsmTest {
             manager.onLivenessGone(A);
             manager.onPeerConnected(A);
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
-
             manager.onSwimHealthy(A, 2L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Member");
         }
     }
@@ -528,9 +534,7 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             assertThat(manager.effective()).isEqualTo(1);
-
             manager.onDrainRequested(A);
-
             assertThat(manager.memberStates()).containsEntry(A, "Departing");
             assertThat(manager.countedMembers()).doesNotContain(A);
             assertThat(manager.effective()).isZero();
@@ -540,12 +544,11 @@ class MembershipFsmTest {
         void onDrainRequested_thenGracefulDeparted_reachesDeadOnce() {
             var manager = activeManager();
             var fired = new ArrayList<NodeId>();
-            manager.onConfirmedDeparture(fired::add);
 
+            manager.onConfirmedDeparture(fired::add);
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
             manager.onSwimDeparted(A, 2L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(fired).containsExactly(A);
         }
@@ -556,7 +559,6 @@ class MembershipFsmTest {
 
             driveToDead(manager, A, 4L);
             manager.onDrainRequested(A);
-
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
         }
     }
@@ -574,11 +576,10 @@ class MembershipFsmTest {
         void onDrainRequested_firesDepartingListenerOnceWithId() {
             var manager = activeManager();
             var pruned = new ArrayList<NodeId>();
-            manager.onEnteredDeparting(pruned::add);
 
+            manager.onEnteredDeparting(pruned::add);
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
-
             assertThat(manager.memberStates()).containsEntry(A, "Departing");
             assertThat(pruned).containsExactly(A);
         }
@@ -587,11 +588,10 @@ class MembershipFsmTest {
         void gracefulSwimDeparted_firesDepartingListenerOnce() {
             var manager = activeManager();
             var pruned = new ArrayList<NodeId>();
-            manager.onEnteredDeparting(pruned::add);
 
+            manager.onEnteredDeparting(pruned::add);
             promoteToMember(manager, A);
             manager.onSwimDeparted(A, 2L);
-
             assertThat(pruned).containsExactly(A);
         }
 
@@ -599,13 +599,12 @@ class MembershipFsmTest {
         void sustainedAbsenceDownHysteresis_firesDepartingListenerOnce() {
             var manager = activeManager();
             var pruned = new ArrayList<NodeId>();
-            manager.onEnteredDeparting(pruned::add);
 
+            manager.onEnteredDeparting(pruned::add);
             promoteToMember(manager, A);
             manager.onSwimSuspect(A, 2L);
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
             manager.onDownHysteresisMet(A);
-
             assertThat(manager.memberStates()).containsEntry(A, "Departing");
             assertThat(pruned).containsExactly(A);
         }
@@ -615,13 +614,12 @@ class MembershipFsmTest {
             var manager = activeManager();
             var pruned = new ArrayList<NodeId>();
             var dead = new ArrayList<NodeId>();
+
             manager.onEnteredDeparting(pruned::add);
             manager.onConfirmedDeparture(dead::add);
-
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
             manager.onSwimDeparted(A, 2L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(pruned).as("the DEPARTING prune fires once at the drain edge").containsExactly(A);
             assertThat(dead).as("the DEAD edge fires the death hook, not a second DEPARTING prune").containsExactly(A);
@@ -631,11 +629,10 @@ class MembershipFsmTest {
         void transientSwimSuspect_doesNotFireDepartingListener() {
             var manager = activeManager();
             var pruned = new ArrayList<NodeId>();
-            manager.onEnteredDeparting(pruned::add);
 
+            manager.onEnteredDeparting(pruned::add);
             promoteToMember(manager, A);
             manager.onSwimSuspect(A, 2L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
             assertThat(pruned).as("a transient SWIM-suspect flap reaches SUSPECT, never DEPARTING").isEmpty();
         }
@@ -644,11 +641,10 @@ class MembershipFsmTest {
         void transientPeerDisconnect_doesNotFireDepartingListener() {
             var manager = activeManager();
             var pruned = new ArrayList<NodeId>();
-            manager.onEnteredDeparting(pruned::add);
 
+            manager.onEnteredDeparting(pruned::add);
             promoteToMember(manager, A);
             manager.onPeerDisconnected(A);
-
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
             assertThat(pruned).as("a transient QUIC drop reaches SUSPECT, never DEPARTING — no storm").isEmpty();
         }
@@ -657,11 +653,10 @@ class MembershipFsmTest {
         void transientLivenessGone_doesNotFireDepartingListener() {
             var manager = activeManager();
             var pruned = new ArrayList<NodeId>();
-            manager.onEnteredDeparting(pruned::add);
 
+            manager.onEnteredDeparting(pruned::add);
             promoteToMember(manager, A);
             manager.onLivenessGone(A);
-
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
             assertThat(pruned).as("a bare liveness-gone reaches SUSPECT, never DEPARTING").isEmpty();
         }
@@ -670,12 +665,11 @@ class MembershipFsmTest {
         void suspectRecoversToMember_neverFiresDepartingListener() {
             var manager = activeManager();
             var pruned = new ArrayList<NodeId>();
-            manager.onEnteredDeparting(pruned::add);
 
+            manager.onEnteredDeparting(pruned::add);
             promoteToMember(manager, A);
             manager.onSwimSuspect(A, 2L);
             manager.onSwimHealthy(A, 3L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Member");
             assertThat(pruned).as("a flap-then-recover never touches DEPARTING").isEmpty();
         }
@@ -694,13 +688,12 @@ class MembershipFsmTest {
         void drainThenNewerIncarnation_firesRecoveryListenerOnceWithId() {
             var manager = activeManager();
             var recovered = new ArrayList<NodeId>();
-            manager.onDepartingRecovery(recovered::add);
 
+            manager.onDepartingRecovery(recovered::add);
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
             assertThat(manager.memberStates()).containsEntry(A, "Departing");
             manager.onSwimHealthy(A, 2L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Member");
             assertThat(recovered).as("the DEPARTING→MEMBER recovery re-adds to the ring once").containsExactly(A);
         }
@@ -709,14 +702,13 @@ class MembershipFsmTest {
         void drainThenSameIncarnation_staysDeparting_neverFiresRecoveryListener() {
             var manager = activeManager();
             var recovered = new ArrayList<NodeId>();
-            manager.onDepartingRecovery(recovered::add);
 
+            manager.onDepartingRecovery(recovered::add);
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
             manager.onSwimHealthy(A, 1L);
-
             assertThat(manager.memberStates()).as("a same-incarnation liveness does not cancel the drain")
-                                              .containsEntry(A, "Departing");
+                      .containsEntry(A, "Departing");
             assertThat(recovered).as("no recovery edge, no ring re-add").isEmpty();
         }
 
@@ -724,10 +716,9 @@ class MembershipFsmTest {
         void normalJoin_neverFiresRecoveryListener() {
             var manager = activeManager();
             var recovered = new ArrayList<NodeId>();
+
             manager.onDepartingRecovery(recovered::add);
-
             promoteToMember(manager, A);
-
             assertThat(manager.memberStates()).containsEntry(A, "Member");
             assertThat(recovered).as("a normal OBSERVED→MEMBER join rides NodeJoined, not the recovery edge").isEmpty();
         }
@@ -736,12 +727,11 @@ class MembershipFsmTest {
         void suspectFlapRecovery_neverFiresRecoveryListener() {
             var manager = activeManager();
             var recovered = new ArrayList<NodeId>();
-            manager.onDepartingRecovery(recovered::add);
 
+            manager.onDepartingRecovery(recovered::add);
             promoteToMember(manager, A);
             manager.onSwimSuspect(A, 2L);
             manager.onSwimHealthy(A, 3L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Member");
             assertThat(recovered).as("a SUSPECT→MEMBER flap was never pruned, so no ring re-add").isEmpty();
         }
@@ -751,13 +741,12 @@ class MembershipFsmTest {
             var manager = activeManager();
             var pruned = new ArrayList<NodeId>();
             var recovered = new ArrayList<NodeId>();
+
             manager.onEnteredDeparting(pruned::add);
             manager.onDepartingRecovery(recovered::add);
-
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
             manager.onSwimHealthy(A, 2L);
-
             assertThat(pruned).as("pruned once on the DEPARTING edge").containsExactly(A);
             assertThat(recovered).as("re-added once on the recovery edge — symmetric").containsExactly(A);
         }
@@ -786,13 +775,13 @@ class MembershipFsmTest {
         void neverHealthyObserved_pastGrace_isReapedToDeadWithoutDelta() {
             var manager = joinGraceManager(FIRING_GRACE);
             var deltas = new ArrayList<MembershipDeltaEdge>();
+
             manager.onMembershipDelta(deltas::add);
             var fired = new ArrayList<NodeId>();
-            manager.onConfirmedDeparture(fired::add);
 
+            manager.onConfirmedDeparture(fired::add);
             manager.onPeerDisconnected(A);
             assertThat(manager.memberStates()).containsEntry(A, "Observed");
-
             awaitDead(manager, A);
             assertThat(fired).as("the ghost reap fires the death hook exactly once").containsExactly(A);
             assertThat(deltas).as("a never-joined member emits no delta (Wave-4 JOINED/REMOVED pairing)").isEmpty();
@@ -806,20 +795,18 @@ class MembershipFsmTest {
         void connectedNeverHealthy_pastGrace_deferred_thenReapedAfterDisconnect() {
             var manager = joinGraceManager(FIRING_GRACE);
             var fired = new ArrayList<NodeId>();
-            manager.onConfirmedDeparture(fired::add);
 
+            manager.onConfirmedDeparture(fired::add);
             manager.onPeerConnected(A);
             assertThat(manager.memberStates()).containsEntry(A, "Observed");
-
             // Past several grace windows the connected joiner must still be tracked OBSERVED —
             // every firing defers (logged) and re-arms instead of reaping.
-            await().pollDelay(FIRING_GRACE.millis() * 3, TimeUnit.MILLISECONDS)
-                   .atMost(2, TimeUnit.SECONDS)
-                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Observed"));
+            await().pollDelay(FIRING_GRACE.millis() * 3,
+                              TimeUnit.MILLISECONDS)
+                 .atMost(2, TimeUnit.SECONDS)
+                 .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Observed"));
             assertThat(fired).as("transport veto: a live connection defers the reap").isEmpty();
-
             manager.onPeerDisconnected(A);
-
             awaitDead(manager, A);
             assertThat(fired).containsExactly(A);
         }
@@ -830,15 +817,15 @@ class MembershipFsmTest {
         void connectedNeverHealthy_swimHealthyBeforeFiring_cancelsReaper() {
             var manager = joinGraceManager(FIRING_GRACE);
             var fired = new ArrayList<NodeId>();
-            manager.onConfirmedDeparture(fired::add);
 
+            manager.onConfirmedDeparture(fired::add);
             manager.onPeerConnected(A);
             manager.onSwimHealthy(A, 1L);
             assertThat(manager.memberStates()).containsEntry(A, "Member");
-
-            await().pollDelay(FIRING_GRACE.millis() * 3, TimeUnit.MILLISECONDS)
-                   .atMost(2, TimeUnit.SECONDS)
-                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
+            await().pollDelay(FIRING_GRACE.millis() * 3,
+                              TimeUnit.MILLISECONDS)
+                 .atMost(2, TimeUnit.SECONDS)
+                 .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
             assertThat(fired).isEmpty();
             assertThat(manager.countedMembers()).contains(A);
         }
@@ -848,10 +835,10 @@ class MembershipFsmTest {
             var manager = joinGraceManager(FIRING_GRACE);
 
             promoteToMember(manager, A);
-
-            await().pollDelay(FIRING_GRACE.millis() * 3, TimeUnit.MILLISECONDS)
-                   .atMost(2, TimeUnit.SECONDS)
-                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
+            await().pollDelay(FIRING_GRACE.millis() * 3,
+                              TimeUnit.MILLISECONDS)
+                 .atMost(2, TimeUnit.SECONDS)
+                 .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Member"));
             assertThat(manager.countedMembers()).contains(A);
         }
     }
@@ -883,13 +870,13 @@ class MembershipFsmTest {
         void onJoinGraceReap_neverHealthyReap_firesExactlyOnceWithReapedId() {
             var manager = joinGraceManager(FIRING_GRACE);
             var reaped = new ArrayList<NodeId>();
-            manager.onJoinGraceReap(reaped::add);
 
+            manager.onJoinGraceReap(reaped::add);
             manager.onPeerDisconnected(A);
             assertThat(manager.memberStates()).containsEntry(A, "Observed");
-
             awaitDead(manager, A);
-            assertThat(reaped).as("the never-healthy join-grace reap fires the actuation callback exactly once").containsExactly(A);
+            assertThat(reaped).as("the never-healthy join-grace reap fires the actuation callback exactly once")
+                      .containsExactly(A);
         }
 
         /// ADDITIVE guarantee: the SAME reap edge still fires the all-paths confirmed-departure hook —
@@ -899,14 +886,14 @@ class MembershipFsmTest {
             var manager = joinGraceManager(FIRING_GRACE);
             var reaped = new ArrayList<NodeId>();
             var departed = new ArrayList<NodeId>();
+
             manager.onJoinGraceReap(reaped::add);
             manager.onConfirmedDeparture(departed::add);
-
             manager.onPeerDisconnected(A);
-
             awaitDead(manager, A);
             assertThat(reaped).containsExactly(A);
-            assertThat(departed).as("the reap edge is additive — onConfirmedDeparture still fires for it").containsExactly(A);
+            assertThat(departed).as("the reap edge is additive — onConfirmedDeparture still fires for it")
+                      .containsExactly(A);
         }
 
         /// NEGATIVE: a graceful `SwimDeparted` DEAD edge (clean leave — container already gone) must
@@ -916,12 +903,11 @@ class MembershipFsmTest {
             var manager = joinGraceManager(FIRING_GRACE);
             var reaped = new ArrayList<NodeId>();
             var departed = new ArrayList<NodeId>();
+
             manager.onJoinGraceReap(reaped::add);
             manager.onConfirmedDeparture(departed::add);
-
             promoteToMember(manager, A);
             manager.onSwimDeparted(A, 5L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(reaped).as("graceful departure is not a never-healthy reap").isEmpty();
             assertThat(departed).as("but the all-paths departure hook still fires").containsExactly(A);
@@ -935,13 +921,12 @@ class MembershipFsmTest {
             var manager = joinGraceManager(FIRING_GRACE);
             var reaped = new ArrayList<NodeId>();
             var departed = new ArrayList<NodeId>();
+
             manager.onJoinGraceReap(reaped::add);
             manager.onConfirmedDeparture(departed::add);
-
             promoteToMember(manager, A);
             manager.onSwimFaulty(A, 4L);
             manager.onLivenessGone(A);
-
             awaitDead(manager, A);
             assertThat(reaped).as("co-confirmed eviction is not a never-healthy reap").isEmpty();
             assertThat(departed).containsExactly(A);
@@ -953,13 +938,105 @@ class MembershipFsmTest {
         void onJoinGraceReap_nullResetsToNoop() {
             var manager = joinGraceManager(FIRING_GRACE);
             var reaped = new ArrayList<NodeId>();
+
             manager.onJoinGraceReap(reaped::add);
             manager.onJoinGraceReap(null);
+            manager.onPeerDisconnected(A);
+            awaitDead(manager, A);
+            assertThat(reaped).isEmpty();
+        }
+    }
+
+    /// #588 — the NEVER-JOINED death arm ([`MembershipFsm#onNeverJoinedDeath`]): the complement of
+    /// the REMOVED delta edge, which `everJoined` confines to members that reached MEMBER. Both
+    /// cluster-status rosters admit a peer on the SWIM discovery edge, BEFORE promotion, so a member
+    /// that dies still OBSERVED (join-grace reap, or any other pre-promotion death) left a row in
+    /// each that no edge removed. The two arms are mutually exclusive by construction: exactly one
+    /// of them fires per fresh DEAD edge.
+    @Nested
+    class NeverJoinedDeath {
+        private static final TimeSpan FIRING_GRACE = TimeSpan.timeSpan(80).millis();
+        private static final TimeSpan LONG_WINDOW = TimeSpan.timeSpan(30).seconds();
+
+        private static MembershipFsm joinGraceManager(TimeSpan joinGrace) {
+            return MembershipFsm.membershipFsm(FsmObserver.noop(),
+                                               System::currentTimeMillis,
+                                               NO_HINT_DECAY,
+                                               SHORT_BACKSTOP,
+                                               LONG_WINDOW,
+                                               joinGrace);
+        }
+
+        /// THE PIN. A disconnected never-healthy joiner is reaped OBSERVED→DEAD by the join-grace
+        /// reaper; the rosters that admitted it must be told, and the delta contract must not move.
+        @Test
+        void neverHealthyReap_firesTheRosterPruneOnceAndStillEmitsNoDelta() {
+            var manager = joinGraceManager(FIRING_GRACE);
+            var pruned = new ArrayList<NodeId>();
+            var deltas = new ArrayList<MembershipDeltaEdge>();
+            manager.onNeverJoinedDeath(pruned::add);
+            manager.onMembershipDelta(deltas::add);
+
+            manager.onPeerDisconnected(A);
+            assertThat(manager.memberStates()).containsEntry(A, "Observed");
+
+            awaitDead(manager, A);
+            assertThat(pruned).as("the rosters admitted A before promotion, so its pre-promotion death must prune them")
+                              .containsExactly(A);
+            assertThat(deltas).as("still no REMOVED delta — the never-joined arm is the complement, not a widening")
+                              .isEmpty();
+        }
+
+        /// Role-blind, as both rosters are: `TopologyObserver.addNode` has no role filter and
+        /// `ClusterSyncCollector.remoteMetrics` is keyed by node alone. #588's own subject is a worker.
+        @Test
+        void neverHealthyReapOfAWorker_firesTheRosterPrune() {
+            var manager = joinGraceManager(FIRING_GRACE);
+            var pruned = new ArrayList<NodeId>();
+            manager.onNeverJoinedDeath(pruned::add);
+
+            manager.onMemberDescriptor(labeledInfo(A, "host-a", 6001, Map.of(NodeInfo.LABEL_ROLE, "worker")));
+            manager.onPeerDisconnected(A);
+
+            awaitDead(manager, A);
+            assertThat(pruned).containsExactly(A);
+        }
+
+        /// MUTUAL EXCLUSION, the half that keeps this arm from silently taking over the joined path:
+        /// a member that DID reach MEMBER emits the REMOVED delta on death and must NOT fire this arm
+        /// — otherwise the projector's prune would be dead code and its mutation would stay green.
+        @Test
+        void joinedMemberDeath_emitsTheRemovedDeltaAndNotTheNeverJoinedArm() {
+            var manager = joinGraceManager(FIRING_GRACE);
+            var pruned = new ArrayList<NodeId>();
+            var deltas = new ArrayList<MembershipDeltaEdge>();
+            manager.onNeverJoinedDeath(pruned::add);
+            manager.onMembershipDelta(deltas::add);
+
+            promoteToMember(manager, A);
+            manager.onSwimDeparted(A, 5L);
+
+            assertThat(manager.memberStates()).containsEntry(A, "Dead");
+            assertThat(deltas).extracting(MembershipDeltaEdge::kind)
+                              .as("a joined member's death still rides the REMOVED delta")
+                              .containsExactly(MembershipDeltaEdge.Kind.JOINED, MembershipDeltaEdge.Kind.REMOVED);
+            assertThat(pruned).as("and must not also fire the never-joined arm — the two are exclusive")
+                              .isEmpty();
+        }
+
+        /// Passing `null` resets the listener to the no-op — a later never-joined death neither throws
+        /// nor reaches a stale listener.
+        @Test
+        void onNeverJoinedDeath_nullResetsToNoop() {
+            var manager = joinGraceManager(FIRING_GRACE);
+            var pruned = new ArrayList<NodeId>();
+            manager.onNeverJoinedDeath(pruned::add);
+            manager.onNeverJoinedDeath(null);
 
             manager.onPeerDisconnected(A);
 
             awaitDead(manager, A);
-            assertThat(reaped).isEmpty();
+            assertThat(pruned).isEmpty();
         }
     }
 
@@ -971,12 +1048,11 @@ class MembershipFsmTest {
         void onConfirmedDeparture_coConfirmedDeath_firesExactlyOnce() {
             var manager = activeManager();
             var fired = new ArrayList<NodeId>();
-            manager.onConfirmedDeparture(fired::add);
 
+            manager.onConfirmedDeparture(fired::add);
             promoteToMember(manager, A);
             manager.onSwimFaulty(A, 4L);
             manager.onLivenessGone(A);
-
             awaitDead(manager, A);
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(fired).containsExactly(A);
@@ -987,11 +1063,10 @@ class MembershipFsmTest {
         void onConfirmedDeparture_gracefulDeparted_firesExactlyOnce() {
             var manager = activeManager();
             var fired = new ArrayList<NodeId>();
-            manager.onConfirmedDeparture(fired::add);
 
+            manager.onConfirmedDeparture(fired::add);
             promoteToMember(manager, A);
             manager.onSwimDeparted(A, 5L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(fired).containsExactly(A);
         }
@@ -1002,13 +1077,12 @@ class MembershipFsmTest {
         void onConfirmedDeparture_joinGraceExpiryOnObserved_firesExactlyOnce() {
             var manager = activeManager();
             var fired = new ArrayList<NodeId>();
-            manager.onConfirmedDeparture(fired::add);
 
+            manager.onConfirmedDeparture(fired::add);
             // Link the FSM in OBSERVED without promoting, then expire its join grace.
             manager.onPeerDisconnected(A);
             assertThat(manager.memberStates()).containsEntry(A, "Observed");
             manager.onJoinGraceExpired(A);
-
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(fired).containsExactly(A);
         }
@@ -1019,11 +1093,10 @@ class MembershipFsmTest {
         void onConfirmedDeparture_singlePlaneFaulty_doesNotFire() {
             var manager = activeManager();
             var fired = new ArrayList<NodeId>();
-            manager.onConfirmedDeparture(fired::add);
 
+            manager.onConfirmedDeparture(fired::add);
             promoteToMember(manager, A);
             manager.onSwimFaulty(A, 4L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
             assertThat(fired).isEmpty();
         }
@@ -1034,11 +1107,10 @@ class MembershipFsmTest {
         void onConfirmedDeparture_singlePlaneLivenessGone_doesNotFire() {
             var manager = activeManager();
             var fired = new ArrayList<NodeId>();
-            manager.onConfirmedDeparture(fired::add);
 
+            manager.onConfirmedDeparture(fired::add);
             promoteToMember(manager, A);
             manager.onLivenessGone(A);
-
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
             assertThat(fired).isEmpty();
         }
@@ -1049,11 +1121,10 @@ class MembershipFsmTest {
         void onConfirmedDeparture_nullResetsToNoop() {
             var manager = activeManager();
             var fired = new ArrayList<NodeId>();
+
             manager.onConfirmedDeparture(fired::add);
             manager.onConfirmedDeparture(null);
-
             driveToDead(manager, A, 4L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(fired).isEmpty();
         }
@@ -1067,7 +1138,6 @@ class MembershipFsmTest {
 
             driveToDead(manager, A, 4L);
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
-
             manager.onSwimHealthy(A, 9L);
             assertThat(manager.memberStates()).containsEntry(A, "Member");
             assertThat(manager.effective()).isEqualTo(1);
@@ -1078,7 +1148,6 @@ class MembershipFsmTest {
             var manager = activeManager();
 
             driveToDead(manager, A, 7L);
-
             manager.onSwimHealthy(A, 3L);
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(manager.effective()).isZero();
@@ -1093,7 +1162,6 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             manager.onSwimDeparted(A, 5L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(manager.effective()).isZero();
         }
@@ -1111,11 +1179,10 @@ class MembershipFsmTest {
         void onSwimHealthy_firstPromotion_emitsJoinedWithIncarnationAndRole() {
             var manager = activeManager();
             var edges = new ArrayList<MembershipDeltaEdge>();
-            manager.onMembershipDelta(edges::add);
 
+            manager.onMembershipDelta(edges::add);
             manager.onMemberDescriptor(labeledInfo(A, "host-a", 6001, Map.of(NodeInfo.LABEL_ROLE, "core")));
             manager.onSwimHealthy(A, 7L);
-
             assertThat(edges).hasSize(1);
             assertThat(edges.getFirst().node()).isEqualTo(A);
             assertThat(edges.getFirst().kind()).isEqualTo(MembershipDeltaEdge.Kind.JOINED);
@@ -1130,10 +1197,9 @@ class MembershipFsmTest {
         void seed_promotion_emitsJoinedEdge() {
             var manager = activeManager();
             var edges = new ArrayList<MembershipDeltaEdge>();
+
             manager.onMembershipDelta(edges::add);
-
             manager.seed(Set.of(A));
-
             assertThat(edges).hasSize(1);
             assertThat(edges.getFirst().node()).isEqualTo(A);
             assertThat(edges.getFirst().kind()).isEqualTo(MembershipDeltaEdge.Kind.JOINED);
@@ -1145,11 +1211,10 @@ class MembershipFsmTest {
         void workerLabelledPromotion_emitsJoinedCarryingWorkerRole() {
             var manager = activeManager();
             var edges = new ArrayList<MembershipDeltaEdge>();
-            manager.onMembershipDelta(edges::add);
 
+            manager.onMembershipDelta(edges::add);
             manager.onMemberDescriptor(labeledInfo(A, "host-a", 6001, Map.of(NodeInfo.LABEL_ROLE, "worker")));
             manager.onSwimHealthy(A, 3L);
-
             assertThat(edges).hasSize(1);
             assertThat(edges.getFirst().kind()).isEqualTo(MembershipDeltaEdge.Kind.JOINED);
             assertThat(edges.getFirst().role()).isEqualTo("worker");
@@ -1161,11 +1226,10 @@ class MembershipFsmTest {
         void gracefulDeath_afterJoined_emitsJoinedThenRemoved() {
             var manager = activeManager();
             var edges = new ArrayList<MembershipDeltaEdge>();
-            manager.onMembershipDelta(edges::add);
 
+            manager.onMembershipDelta(edges::add);
             promoteToMember(manager, A);
             manager.onSwimDeparted(A, 5L);
-
             assertThat(edges).hasSize(2);
             assertThat(edges.getFirst().kind()).isEqualTo(MembershipDeltaEdge.Kind.JOINED);
             assertThat(edges.getLast().kind()).isEqualTo(MembershipDeltaEdge.Kind.REMOVED);
@@ -1179,12 +1243,11 @@ class MembershipFsmTest {
         void coConfirmedDeath_afterJoined_emitsRemoved() {
             var manager = activeManager();
             var edges = new ArrayList<MembershipDeltaEdge>();
-            manager.onMembershipDelta(edges::add);
 
+            manager.onMembershipDelta(edges::add);
             promoteToMember(manager, A);
             manager.onSwimFaulty(A, 4L);
             manager.onLivenessGone(A);
-
             awaitDead(manager, A);
             assertThat(edges).hasSize(2);
             assertThat(edges.getLast().kind()).isEqualTo(MembershipDeltaEdge.Kind.REMOVED);
@@ -1198,12 +1261,11 @@ class MembershipFsmTest {
         void joinGraceExpiry_neverMember_emitsNoDelta() {
             var manager = activeManager();
             var edges = new ArrayList<MembershipDeltaEdge>();
-            manager.onMembershipDelta(edges::add);
 
+            manager.onMembershipDelta(edges::add);
             manager.onPeerDisconnected(A);
             assertThat(manager.memberStates()).containsEntry(A, "Observed");
             manager.onJoinGraceExpired(A);
-
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(edges).isEmpty();
         }
@@ -1214,13 +1276,12 @@ class MembershipFsmTest {
         void suspectRecovery_andRepeatedHealthy_emitNoDuplicateJoined() {
             var manager = activeManager();
             var edges = new ArrayList<MembershipDeltaEdge>();
-            manager.onMembershipDelta(edges::add);
 
+            manager.onMembershipDelta(edges::add);
             promoteToMember(manager, A);
             manager.onSwimHealthy(A, 2L);
             manager.onSwimSuspect(A, 3L);
             manager.onSwimHealthy(A, 4L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Member");
             assertThat(edges).hasSize(1);
             assertThat(edges.getFirst().kind()).isEqualTo(MembershipDeltaEdge.Kind.JOINED);
@@ -1232,12 +1293,11 @@ class MembershipFsmTest {
         void rejoinAfterDeath_emitsFreshJoined() {
             var manager = activeManager();
             var edges = new ArrayList<MembershipDeltaEdge>();
-            manager.onMembershipDelta(edges::add);
 
+            manager.onMembershipDelta(edges::add);
             promoteToMember(manager, A);
             manager.onSwimDeparted(A, 5L);
             manager.onSwimHealthy(A, 6L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Member");
             assertThat(edges).hasSize(3);
             assertThat(edges.get(0).kind()).isEqualTo(MembershipDeltaEdge.Kind.JOINED);
@@ -1251,11 +1311,10 @@ class MembershipFsmTest {
         void onMembershipDelta_nullResetsToNoop() {
             var manager = activeManager();
             var edges = new ArrayList<MembershipDeltaEdge>();
+
             manager.onMembershipDelta(edges::add);
             manager.onMembershipDelta(null);
-
             promoteToMember(manager, A);
-
             assertThat(edges).isEmpty();
         }
     }
@@ -1270,10 +1329,8 @@ class MembershipFsmTest {
             assertThat(manager.effective()).isEqualTo(5);
             assertThat(manager.wouldProvision(5)).isZero();
             assertThat(manager.wouldDrain(5)).isZero();
-
             driveToDead(manager, members[0], 100L);
             driveToDead(manager, members[1], 100L);
-
             assertThat(manager.effective()).isEqualTo(3);
             assertThat(manager.wouldProvision(5)).isEqualTo(2);
         }
@@ -1285,6 +1342,7 @@ class MembershipFsmTest {
             for (var i = 0; i < 6; i++) {
                 promoteToMember(manager, new NodeId("core-" + i));
             }
+
             assertThat(manager.effective()).isEqualTo(6);
             assertThat(manager.wouldDrain(5)).isEqualTo(1);
             assertThat(manager.wouldProvision(5)).isZero();
@@ -1301,7 +1359,6 @@ class MembershipFsmTest {
             promoteToMember(manager, B);
             manager.onSwimFaulty(B, 4L);
             assertThat(manager.memberStates()).containsEntry(B, "Suspect");
-
             assertThat(manager.countedMembers()).containsExactlyInAnyOrder(A, B);
             assertThat(manager.countedMembers()).hasSize(2);
             assertThat(manager.countedMembers()).hasSize(manager.effective());
@@ -1317,7 +1374,6 @@ class MembershipFsmTest {
             manager.onLivenessGone(A);
             awaitDead(manager, A);
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
-
             assertThat(manager.countedMembers()).doesNotContain(A);
             assertThat(manager.countedMembers()).containsExactly(B);
         }
@@ -1343,7 +1399,6 @@ class MembershipFsmTest {
             assertThat(manager.memberStates()).containsEntry(B, "Suspect");
             manager.onPeerDisconnected(C);
             assertThat(manager.memberStates()).containsEntry(C, "Observed");
-
             assertThat(manager.dhtRoutableMembers()).containsExactlyInAnyOrder(A, B, C);
         }
 
@@ -1357,16 +1412,12 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             promoteToMember(manager, B);
             assertThat(manager.dhtRoutableMembers()).containsExactlyInAnyOrder(A, B);
-
             manager.onDrainRequested(B);
             assertThat(manager.memberStates()).containsEntry(B, "Departing");
-
-            assertThat(manager.dhtRoutableMembers())
-                    .as("a DEPARTING drainer is shed from the DHT routing view at the drain edge")
-                    .containsExactly(A);
-            assertThat(manager.broadcastEligibleMembers())
-                    .as("but it stays broadcast-eligible so consensus + forward-routing still reach it while draining")
-                    .containsExactlyInAnyOrder(A, B);
+            assertThat(manager.dhtRoutableMembers()).as("a DEPARTING drainer is shed from the DHT routing view at the drain edge")
+                      .containsExactly(A);
+            assertThat(manager.broadcastEligibleMembers()).as("but it stays broadcast-eligible so consensus + forward-routing still reach it while draining")
+                      .containsExactlyInAnyOrder(A, B);
         }
 
         /// A terminally-DEAD member is excluded from BOTH projections.
@@ -1377,7 +1428,6 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             driveToDead(manager, B, 4L);
             assertThat(manager.memberStates()).containsEntry(B, "Dead");
-
             assertThat(manager.dhtRoutableMembers()).containsExactly(A);
             assertThat(manager.broadcastEligibleMembers()).containsExactly(A);
         }
@@ -1391,13 +1441,9 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             manager.onDrainRequested(A);
             assertThat(manager.dhtRoutableMembers()).isEmpty();
-
             manager.onSwimHealthy(A, 2L);
             assertThat(manager.memberStates()).containsEntry(A, "Member");
-
-            assertThat(manager.dhtRoutableMembers())
-                    .as("a recovered drainer is routable again")
-                    .containsExactly(A);
+            assertThat(manager.dhtRoutableMembers()).as("a recovered drainer is routable again").containsExactly(A);
         }
     }
 
@@ -1411,9 +1457,7 @@ class MembershipFsmTest {
             manager.onSwimFaulty(A, 4L);
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
             assertThat(manager.effective()).isEqualTo(1);
-
             manager.onDownHysteresisMet(A);
-
             assertThat(manager.memberStates()).containsEntry(A, "Departing");
             assertThat(manager.countedMembers()).doesNotContain(A);
             assertThat(manager.effective()).isZero();
@@ -1424,7 +1468,6 @@ class MembershipFsmTest {
             var manager = MembershipFsm.membershipFsm();
 
             manager.onDownHysteresisMet(A);
-
             assertThat(manager.memberStates()).containsEntry(A, "Observed");
             assertThat(manager.effective()).isZero();
         }
@@ -1437,10 +1480,9 @@ class MembershipFsmTest {
             var manager = activeManager();
 
             manager.seed(Set.of(A, B, C));
-
             assertThat(manager.memberStates()).containsEntry(A, "Member")
-                                              .containsEntry(B, "Member")
-                                              .containsEntry(C, "Member");
+                      .containsEntry(B, "Member")
+                      .containsEntry(C, "Member");
             assertThat(manager.effective()).isEqualTo(3);
         }
 
@@ -1450,11 +1492,10 @@ class MembershipFsmTest {
 
             manager.seed(Set.of(A, B, C));
             manager.seed(Set.of(A, B, C));
-
             assertThat(manager.effective()).isEqualTo(3);
             assertThat(manager.memberStates()).containsEntry(A, "Member")
-                                              .containsEntry(B, "Member")
-                                              .containsEntry(C, "Member");
+                      .containsEntry(B, "Member")
+                      .containsEntry(C, "Member");
         }
 
         @Test
@@ -1465,11 +1506,8 @@ class MembershipFsmTest {
             assertThat(manager.memberStates()).containsEntry(A, "Observed");
             driveToDead(manager, B, 4L);
             assertThat(manager.memberStates()).containsEntry(B, "Dead");
-
             manager.seed(Set.of(A, B));
-
-            assertThat(manager.memberStates()).containsEntry(A, "Member")
-                                              .containsEntry(B, "Dead");
+            assertThat(manager.memberStates()).containsEntry(A, "Member").containsEntry(B, "Dead");
             assertThat(manager.effective()).isEqualTo(1);
         }
 
@@ -1478,10 +1516,8 @@ class MembershipFsmTest {
             var manager = MembershipFsm.membershipFsm();
 
             manager.seed(Set.of(A, B));
-
             assertThat(manager.effective()).isEqualTo(2);
-            assertThat(manager.memberStates()).containsEntry(A, "Member")
-                                              .containsEntry(B, "Member");
+            assertThat(manager.memberStates()).containsEntry(A, "Member").containsEntry(B, "Member");
         }
 
         @Test
@@ -1490,16 +1526,13 @@ class MembershipFsmTest {
 
             manager.seed(Set.of(A, B));
             assertThat(manager.effective()).isEqualTo(2);
-
             manager.onSwimFaulty(A, 4L);
             manager.onLivenessGone(A);
             awaitDead(manager, A);
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(manager.effective()).isEqualTo(1);
-
             manager.seed(Set.of(A, B));
-            assertThat(manager.memberStates()).containsEntry(A, "Dead")
-                                              .containsEntry(B, "Member");
+            assertThat(manager.memberStates()).containsEntry(A, "Dead").containsEntry(B, "Member");
             assertThat(manager.effective()).isEqualTo(1);
         }
     }
@@ -1513,7 +1546,6 @@ class MembershipFsmTest {
             var manager = MembershipFsm.membershipFsm();
 
             manager.onSwimHealthy(A, 1L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Member");
             assertThat(manager.effective()).isEqualTo(1);
         }
@@ -1525,7 +1557,6 @@ class MembershipFsmTest {
             var manager = activeManager();
 
             driveToDead(manager, A, 4L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
             assertThat(manager.effective()).isZero();
         }
@@ -1538,7 +1569,6 @@ class MembershipFsmTest {
             var manager = activeManager();
 
             manager.onPeerDisconnected(B);
-
             assertThat(manager.memberStates()).containsEntry(B, "Observed");
             assertThat(manager.effective()).isZero();
         }
@@ -1554,10 +1584,12 @@ class MembershipFsmTest {
             manager.onSwimFaulty(new NodeId("u5"), 1L);
             manager.onSwimDeparted(new NodeId("u6"), 1L);
             manager.onJoinGraceExpired(new NodeId("u7"));
-
-            assertThat(manager.memberStates()).containsKeys(new NodeId("u1"), new NodeId("u2"),
-                                                            new NodeId("u3"), new NodeId("u4"),
-                                                            new NodeId("u5"), new NodeId("u6"));
+            assertThat(manager.memberStates()).containsKeys(new NodeId("u1"),
+                                                            new NodeId("u2"),
+                                                            new NodeId("u3"),
+                                                            new NodeId("u4"),
+                                                            new NodeId("u5"),
+                                                            new NodeId("u6"));
             assertThat(manager.memberStates()).containsEntry(new NodeId("u7"), "Dead");
         }
     }
@@ -1570,12 +1602,9 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             assertThat(manager.memberStates()).containsEntry(A, "Member");
-
             manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
-
             assertThat(manager.memberStates()).containsEntry(A, "Member");
-            assertThat(manager.desiredConnections())
-                    .contains(new PeerTarget(A, address("10.0.0.1", 7000)));
+            assertThat(manager.desiredConnections()).contains(new PeerTarget(A, address("10.0.0.1", 7000)));
         }
 
         @Test
@@ -1583,7 +1612,6 @@ class MembershipFsmTest {
             var manager = activeManager();
 
             manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
-
             assertThat(manager.memberStates()).containsEntry(A, "Observed");
             assertThat(manager.effective()).isZero();
             assertThat(manager.desiredConnections()).isEmpty();
@@ -1596,9 +1624,7 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
             manager.onMemberDescriptor(coreInfo(A, "10.0.0.9", 7100));
-
-            assertThat(manager.desiredConnections())
-                    .containsExactly(new PeerTarget(A, address("10.0.0.9", 7100)));
+            assertThat(manager.desiredConnections()).containsExactly(new PeerTarget(A, address("10.0.0.9", 7100)));
         }
 
         @Test
@@ -1612,10 +1638,9 @@ class MembershipFsmTest {
             manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
             // A degraded observation with NO resolved address arrives.
             manager.onMemberDescriptor(addresslessInfo(A));
-
-            assertThat(manager.desiredConnections())
-                    .as("a known address must NOT be downgraded to none by an empty-address update")
-                    .containsExactly(new PeerTarget(A, address("10.0.0.1", 7000)));
+            assertThat(manager.desiredConnections()).as("a known address must NOT be downgraded to none by an empty-address update")
+                      .containsExactly(new PeerTarget(A,
+                                                      address("10.0.0.1", 7000)));
         }
 
         @Test
@@ -1628,10 +1653,8 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
             manager.onMemberDescriptor(addresslessWorkerInfo(A));
-
-            assertThat(manager.desiredConnections())
-                    .as("an address-less worker re-label still excludes the member from the core dial-set")
-                    .isEmpty();
+            assertThat(manager.desiredConnections()).as("an address-less worker re-label still excludes the member from the core dial-set")
+                      .isEmpty();
         }
 
         @Test
@@ -1644,10 +1667,8 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             manager.onMemberDescriptor(workerInfo(A, "10.0.0.1", 7000));
             manager.onMemberDescriptor(unlabeledInfo(A, "10.0.0.1", 7000));
-
-            assertThat(descriptorOf(manager, A).role())
-                    .as("a blank incoming role must not erase a known role")
-                    .isEqualTo("worker");
+            assertThat(descriptorOf(manager, A).role()).as("a blank incoming role must not erase a known role")
+                      .isEqualTo("worker");
         }
 
         @Test
@@ -1657,10 +1678,8 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
             manager.onMemberDescriptor(workerInfo(A, "10.0.0.1", 7000));
-
-            assertThat(descriptorOf(manager, A).role())
-                    .as("a non-blank incoming role still wins (re-label works)")
-                    .isEqualTo("worker");
+            assertThat(descriptorOf(manager, A).role()).as("a non-blank incoming role still wins (re-label works)")
+                      .isEqualTo("worker");
         }
 
         @Test
@@ -1670,10 +1689,8 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.1", 7000, "core", "seed"));
             manager.onMemberDescriptor(unlabeledInfo(A, "10.0.0.1", 7000));
-
-            assertThat(descriptorOf(manager, A).source())
-                    .as("a blank incoming source must not erase a known source")
-                    .isEqualTo("seed");
+            assertThat(descriptorOf(manager, A).source()).as("a blank incoming source must not erase a known source")
+                      .isEqualTo("seed");
         }
 
         @Test
@@ -1683,10 +1700,8 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.1", 7000, "core", "seed"));
             manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.1", 7000, "core", "replacement"));
-
-            assertThat(descriptorOf(manager, A).source())
-                    .as("a non-blank incoming source still wins")
-                    .isEqualTo("replacement");
+            assertThat(descriptorOf(manager, A).source()).as("a non-blank incoming source still wins")
+                      .isEqualTo("replacement");
         }
 
         @Test
@@ -1698,8 +1713,8 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.1", 7000, "worker", "scale-up"));
             manager.onMemberDescriptor(addresslessUnlabeledInfo(A));
-
             var descriptor = descriptorOf(manager, A);
+
             assertThat(descriptor.address()).isEqualTo(Option.some(address("10.0.0.1", 7000)));
             assertThat(descriptor.role()).isEqualTo("worker");
             assertThat(descriptor.source()).isEqualTo("scale-up");
@@ -1720,15 +1735,18 @@ class MembershipFsmTest {
             var manager = activeManager();
 
             promoteToMember(manager, A);
-
             var hello = NetworkServiceMessage.ConnectionEstablished.connectionEstablished(A,
-                                                                                          sourcedInfo(A, "10.0.0.7", 7000, "worker", "docker"));
-            hello.nodeInfo().onPresent(manager::onMemberDescriptor);
+                                                                                          sourcedInfo(A,
+                                                                                                      "10.0.0.7",
+                                                                                                      7000,
+                                                                                                      "worker",
+                                                                                                      "docker"));
 
+            hello.nodeInfo().onPresent(manager::onMemberDescriptor);
             var descriptor = descriptorOf(manager, A);
-            assertThat(descriptor.role())
-                    .as("the Hello role label must land in the descriptor on first handshake")
-                    .isEqualTo("worker");
+
+            assertThat(descriptor.role()).as("the Hello role label must land in the descriptor on first handshake")
+                      .isEqualTo("worker");
             assertThat(descriptor.source()).isEqualTo("docker");
             assertThat(descriptor.address()).isEqualTo(Option.some(address("10.0.0.7", 7000)));
         }
@@ -1739,15 +1757,16 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.7", 7000, "worker", "docker"));
-
             var labelLessHello = NetworkServiceMessage.ConnectionEstablished.connectionEstablished(A,
-                                                                                                   unlabeledInfo(A, "10.0.0.7", 7000));
-            labelLessHello.nodeInfo().onPresent(manager::onMemberDescriptor);
+                                                                                                   unlabeledInfo(A,
+                                                                                                                 "10.0.0.7",
+                                                                                                                 7000));
 
+            labelLessHello.nodeInfo().onPresent(manager::onMemberDescriptor);
             var descriptor = descriptorOf(manager, A);
-            assertThat(descriptor.role())
-                    .as("a label-less Hello must not erase the known role (blank-downgrade guard)")
-                    .isEqualTo("worker");
+
+            assertThat(descriptor.role()).as("a label-less Hello must not erase the known role (blank-downgrade guard)")
+                      .isEqualTo("worker");
             assertThat(descriptor.source()).isEqualTo("docker");
         }
 
@@ -1757,13 +1776,11 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.7", 7000, "worker", "docker"));
-
             var bare = NetworkServiceMessage.ConnectionEstablished.connectionEstablished(A);
-            bare.nodeInfo().onPresent(manager::onMemberDescriptor);
 
-            assertThat(descriptorOf(manager, A).role())
-                    .as("an info-less ConnectionEstablished feeds nothing — the descriptor is untouched")
-                    .isEqualTo("worker");
+            bare.nodeInfo().onPresent(manager::onMemberDescriptor);
+            assertThat(descriptorOf(manager, A).role()).as("an info-less ConnectionEstablished feeds nothing — the descriptor is untouched")
+                      .isEqualTo("worker");
         }
     }
 
@@ -1781,7 +1798,6 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             clock.set(31_000L);
-
             assertThat(manager.memberAgeMs(A)).isEqualTo(Option.some(30_000L));
         }
 
@@ -1802,10 +1818,8 @@ class MembershipFsmTest {
             clock.set(5_000L);
             // Higher-incarnation recovery re-arms the SAME tracking (DEAD entries are retained).
             manager.onSwimHealthy(A, 3L);
-
-            assertThat(manager.memberAgeMs(A))
-                    .as("rejoin re-arms the same tracking — the first-observation stamp is retained")
-                    .isEqualTo(Option.some(4_000L));
+            assertThat(manager.memberAgeMs(A)).as("rejoin re-arms the same tracking — the first-observation stamp is retained")
+                      .isEqualTo(Option.some(4_000L));
         }
     }
 
@@ -1822,10 +1836,9 @@ class MembershipFsmTest {
             manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
             manager.onSwimSuspect(A, 5L);
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
-
-            assertThat(manager.desiredConnections())
-                    .as("a SWIM-SUSPECT core member stays in the desired dial-set")
-                    .containsExactly(new PeerTarget(A, address("10.0.0.1", 7000)));
+            assertThat(manager.desiredConnections()).as("a SWIM-SUSPECT core member stays in the desired dial-set")
+                      .containsExactly(new PeerTarget(A,
+                                                      address("10.0.0.1", 7000)));
         }
 
         @Test
@@ -1838,10 +1851,10 @@ class MembershipFsmTest {
             manager.onMemberDescriptor(coreInfo(B, "10.0.0.2", 7000));
             manager.onSwimFaulty(B, 4L);
             assertThat(manager.memberStates()).containsEntry(B, "Suspect");
-
-            assertThat(manager.desiredConnections())
-                    .containsExactlyInAnyOrder(new PeerTarget(A, address("10.0.0.1", 7000)),
-                                               new PeerTarget(B, address("10.0.0.2", 7000)));
+            assertThat(manager.desiredConnections()).containsExactlyInAnyOrder(new PeerTarget(A,
+                                                                                              address("10.0.0.1", 7000)),
+                                                                               new PeerTarget(B,
+                                                                                              address("10.0.0.2", 7000)));
         }
 
         @Test
@@ -1850,20 +1863,17 @@ class MembershipFsmTest {
 
             manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
             assertThat(manager.memberStates()).containsEntry(A, "Observed");
-
             promoteToMember(manager, B);
             manager.onMemberDescriptor(coreInfo(B, "10.0.0.2", 7000));
             manager.onSwimFaulty(B, 4L);
             manager.onDownHysteresisMet(B);
             assertThat(manager.memberStates()).containsEntry(B, "Departing");
-
             promoteToMember(manager, C);
             manager.onMemberDescriptor(coreInfo(C, "10.0.0.3", 7000));
             manager.onSwimFaulty(C, 4L);
             manager.onLivenessGone(C);
             awaitDead(manager, C);
             assertThat(manager.memberStates()).containsEntry(C, "Dead");
-
             assertThat(manager.desiredConnections()).isEmpty();
         }
 
@@ -1875,9 +1885,7 @@ class MembershipFsmTest {
             promoteToMember(manager, B);
             manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
             manager.onMemberDescriptor(workerInfo(B, "10.0.0.2", 7000));
-
-            assertThat(manager.desiredConnections())
-                    .containsExactly(new PeerTarget(A, address("10.0.0.1", 7000)));
+            assertThat(manager.desiredConnections()).containsExactly(new PeerTarget(A, address("10.0.0.1", 7000)));
         }
 
         @Test
@@ -1888,10 +1896,10 @@ class MembershipFsmTest {
             promoteToMember(manager, B);
             manager.onMemberDescriptor(unlabeledInfo(A, "10.0.0.1", 7000));
             manager.onMemberDescriptor(unlabeledInfo(B, "10.0.0.2", 7000));
-
-            assertThat(manager.desiredConnections())
-                    .containsExactlyInAnyOrder(new PeerTarget(A, address("10.0.0.1", 7000)),
-                                               new PeerTarget(B, address("10.0.0.2", 7000)));
+            assertThat(manager.desiredConnections()).containsExactlyInAnyOrder(new PeerTarget(A,
+                                                                                              address("10.0.0.1", 7000)),
+                                                                               new PeerTarget(B,
+                                                                                              address("10.0.0.2", 7000)));
         }
 
         @Test
@@ -1901,9 +1909,7 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             promoteToMember(manager, B);
             manager.onMemberDescriptor(coreInfo(B, "10.0.0.2", 7000));
-
-            assertThat(manager.desiredConnections())
-                    .containsExactly(new PeerTarget(B, address("10.0.0.2", 7000)));
+            assertThat(manager.desiredConnections()).containsExactly(new PeerTarget(B, address("10.0.0.2", 7000)));
         }
     }
 
@@ -1918,7 +1924,6 @@ class MembershipFsmTest {
             promoteToMember(manager, C);
             manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
             manager.onMemberDescriptor(workerInfo(B, "10.0.0.2", 7000));
-
             assertThat(manager.coreMembers()).containsExactlyInAnyOrder(A, C);
         }
 
@@ -1928,7 +1933,6 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             driveToDead(manager, B, 4L);
-
             assertThat(manager.coreMembers()).containsExactly(A);
         }
     }
@@ -1938,28 +1942,23 @@ class MembershipFsmTest {
         @Test
         void broadcastEligibleMembers_includesObservedMemberSuspect_excludesDead() {
             var manager = activeManager();
-
             // A: bare OBSERVED (descriptor links the FSM without promoting).
             manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
             assertThat(manager.memberStates()).containsEntry(A, "Observed");
-
             // B: MEMBER.
             promoteToMember(manager, B);
             assertThat(manager.memberStates()).containsEntry(B, "Member");
-
             // C: SUSPECT (still in the lifecycle).
             promoteToMember(manager, C);
             manager.onSwimSuspect(C, 2L);
             assertThat(manager.memberStates()).containsEntry(C, "Suspect");
-
             // D: terminally DEAD — the storm's zombie, the only exclusion.
             var d = new NodeId("node-d");
+
             driveToDead(manager, d, 4L);
             assertThat(manager.memberStates()).containsEntry(d, "Dead");
-
-            assertThat(manager.broadcastEligibleMembers())
-                    .as("OBSERVED + MEMBER + SUSPECT stay broadcast targets; only DEAD is excluded")
-                    .containsExactlyInAnyOrder(A, B, C);
+            assertThat(manager.broadcastEligibleMembers()).as("OBSERVED + MEMBER + SUSPECT stay broadcast targets; only DEAD is excluded")
+                      .containsExactlyInAnyOrder(A, B, C);
         }
 
         @Test
@@ -1970,10 +1969,8 @@ class MembershipFsmTest {
             manager.onSwimFaulty(A, 4L);
             manager.onDownHysteresisMet(A);
             assertThat(manager.memberStates()).containsEntry(A, "Departing");
-
-            assertThat(manager.broadcastEligibleMembers())
-                    .as("a DEPARTING member is still draining and must keep receiving consensus")
-                    .containsExactly(A);
+            assertThat(manager.broadcastEligibleMembers()).as("a DEPARTING member is still draining and must keep receiving consensus")
+                      .containsExactly(A);
         }
 
         @Test
@@ -1984,10 +1981,8 @@ class MembershipFsmTest {
             promoteToMember(manager, B);
             manager.onMemberDescriptor(coreInfo(A, "10.0.0.1", 7000));
             manager.onMemberDescriptor(workerInfo(B, "10.0.0.2", 7000));
-
-            assertThat(manager.broadcastEligibleMembers())
-                    .as("broadcast carries more than consensus — NO worker/role filter (#241 later)")
-                    .containsExactlyInAnyOrder(A, B);
+            assertThat(manager.broadcastEligibleMembers()).as("broadcast carries more than consensus — NO worker/role filter (#241 later)")
+                      .containsExactlyInAnyOrder(A, B);
         }
 
         @Test
@@ -1996,7 +1991,6 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             driveToDead(manager, B, 4L);
-
             assertThat(manager.broadcastEligibleMembers()).containsExactly(A);
         }
     }
@@ -2010,7 +2004,6 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             promoteToMember(manager, B);
             driveToDead(manager, C, 4L);
-
             assertThat(manager.reachableMembers(List.of(C, B, A))).containsExactly(B, A);
         }
 
@@ -2019,44 +2012,41 @@ class MembershipFsmTest {
             var manager = activeManager();
 
             driveToDead(manager, A, 4L);
-
             assertThat(manager.reachableMembers(List.of(A))).isEmpty();
         }
 
         @Test
         void reachableMembers_includesObservedAndDeparting_excludesOnlyDead() {
             var manager = activeManager();
-
             // observed: bare descriptor links the FSM in OBSERVED without promoting.
             var observed = new NodeId("observed");
+
             manager.onMemberDescriptor(coreInfo(observed, "10.0.0.9", 7000));
             assertThat(manager.memberStates()).containsEntry(observed, "Observed");
-
             // member: promoted MEMBER.
             var member = new NodeId("member");
-            promoteToMember(manager, member);
 
+            promoteToMember(manager, member);
             // suspect: MEMBER then a bare SWIM-suspect.
             var suspect = new NodeId("suspect");
+
             promoteToMember(manager, suspect);
             manager.onSwimSuspect(suspect, 2L);
             assertThat(manager.memberStates()).containsEntry(suspect, "Suspect");
-
             // departing: MEMBER then SWIM-faulty + down-hysteresis → DEPARTING (still UP, draining).
             var departing = new NodeId("departing");
+
             promoteToMember(manager, departing);
             manager.onSwimFaulty(departing, 3L);
             manager.onDownHysteresisMet(departing);
             assertThat(manager.memberStates()).containsEntry(departing, "Departing");
-
             // dead: co-confirmed.
             var dead = new NodeId("dead");
+
             driveToDead(manager, dead, 4L);
             assertThat(manager.memberStates()).containsEntry(dead, "Dead");
-
-            assertThat(manager.reachableMembers(List.of(observed, member, suspect, departing, dead)))
-                    .as("best-effort serving set is NOT-DEAD: OBSERVED + DEPARTING serve too, only DEAD is excluded")
-                    .containsExactly(observed, member, suspect, departing);
+            assertThat(manager.reachableMembers(List.of(observed, member, suspect, departing, dead))).as("best-effort serving set is NOT-DEAD: OBSERVED + DEPARTING serve too, only DEAD is excluded")
+                      .containsExactly(observed, member, suspect, departing);
         }
     }
 
@@ -2068,8 +2058,8 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.1", 7000, "core", "seed"));
-
             var descriptor = descriptorOf(manager, A);
+
             assertThat(descriptor.address()).isEqualTo(Option.some(address("10.0.0.1", 7000)));
             assertThat(descriptor.role()).isEqualTo("core");
             assertThat(descriptor.source()).isEqualTo("seed");
@@ -2088,12 +2078,10 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.1", 7000, "core", "replacement"));
-
             manager.onSwimFaulty(A, 4L);
             manager.onLivenessGone(A);
             awaitDead(manager, A);
             assertThat(manager.memberStates()).containsEntry(A, "Dead");
-
             assertThat(descriptorOf(manager, A).source()).isEqualTo("replacement");
         }
 
@@ -2105,8 +2093,8 @@ class MembershipFsmTest {
             promoteToMember(manager, B);
             manager.onMemberDescriptor(sourcedInfo(A, "10.0.0.1", 7000, "core", "seed"));
             manager.onMemberDescriptor(sourcedInfo(B, "10.0.0.2", 7000, "worker", "scale-up"));
-
             var snapshot = manager.memberDescriptors();
+
             assertThat(snapshot).containsOnlyKeys(A, B);
             assertThat(snapshot.get(A).source()).isEqualTo("seed");
             assertThat(snapshot.get(B).role()).isEqualTo("worker");
@@ -2117,8 +2105,8 @@ class MembershipFsmTest {
             var manager = activeManager();
 
             promoteToMember(manager, A);
-
             var snapshot = manager.memberDescriptors();
+
             assertThat(snapshot).containsKey(A);
             assertThat(snapshot.get(A).address().isEmpty()).isTrue();
             assertThat(snapshot.get(A).role()).isEmpty();
@@ -2126,9 +2114,9 @@ class MembershipFsmTest {
     }
 
     // --- helpers ---
-
     private static MemberDescriptor descriptorOf(MembershipFsm manager, NodeId id) {
-        return manager.memberDescriptor(id).or(MemberDescriptor.UNKNOWN);
+        return manager.memberDescriptor(id)
+                      .or(MemberDescriptor.UNKNOWN);
     }
 
     private static NodeAddress address(String host, int port) {
@@ -2158,14 +2146,12 @@ class MembershipFsmTest {
     /// A NodeInfo whose dial-preferred (resolved) address is ABSENT (null) — its derived
     /// MemberDescriptor has an empty address. Used to exercise the address-downgrade guard.
     private static NodeInfo addresslessInfo(NodeId id) {
-        return NodeInfo.nodeInfo(id, address("0.0.0.0", 1),
-                                 Map.of(NodeInfo.LABEL_ROLE, "core"), null);
+        return NodeInfo.nodeInfo(id, address("0.0.0.0", 1), Map.of(NodeInfo.LABEL_ROLE, "core"), null);
     }
 
     /// Address-less observation that ALSO re-labels the member as a worker (non-blank role wins).
     private static NodeInfo addresslessWorkerInfo(NodeId id) {
-        return NodeInfo.nodeInfo(id, address("0.0.0.0", 1),
-                                 Map.of(NodeInfo.LABEL_ROLE, "worker"), null);
+        return NodeInfo.nodeInfo(id, address("0.0.0.0", 1), Map.of(NodeInfo.LABEL_ROLE, "worker"), null);
     }
 
     /// An observation with NO resolved address and NO labels — the degenerate gossip-rebuilt
@@ -2228,12 +2214,10 @@ class MembershipFsmTest {
             var manager = activeManager();
 
             driveToDead(manager, A, 4L);
-            assertThat(manager.memberStates())
-                    .as("the member is retained in the map as a DEAD tombstone for incarnation-fenced rejoin")
-                    .containsEntry(A, "Dead");
-            assertThat(manager.healthHints())
-                    .as("#68 — a terminally-DEAD tombstone must NOT emit a FAULTY quiesce hint")
-                    .doesNotContainKey(A);
+            assertThat(manager.memberStates()).as("the member is retained in the map as a DEAD tombstone for incarnation-fenced rejoin")
+                      .containsEntry(A, "Dead");
+            assertThat(manager.healthHints()).as("#68 — a terminally-DEAD tombstone must NOT emit a FAULTY quiesce hint")
+                      .doesNotContainKey(A);
         }
 
         @Test
@@ -2244,17 +2228,13 @@ class MembershipFsmTest {
             promoteToMember(manager, B);
             manager.onSwimSuspect(B, 2L);
             driveToDead(manager, C, 4L);
-
             var hints = manager.healthHints();
-            assertThat(hints)
-                    .as("a HEALTHY member is omitted (projector defaults it to HEALTHY)")
-                    .doesNotContainKey(A);
-            assertThat(hints)
-                    .as("a SUSPECT member is carried — a real in-progress death still blocks quiescence")
-                    .containsEntry(B, HealthHint.SUSPECTED);
-            assertThat(hints)
-                    .as("#68 — a co-confirmed-DEAD ghost is filtered out, so it cannot pin DEGRADED")
-                    .doesNotContainKey(C);
+
+            assertThat(hints).as("a HEALTHY member is omitted (projector defaults it to HEALTHY)").doesNotContainKey(A);
+            assertThat(hints).as("a SUSPECT member is carried — a real in-progress death still blocks quiescence")
+                      .containsEntry(B, HealthHint.SUSPECTED);
+            assertThat(hints).as("#68 — a co-confirmed-DEAD ghost is filtered out, so it cannot pin DEGRADED")
+                      .doesNotContainKey(C);
         }
 
         /// #68 core regression: a SUSPECT (real in-progress death) STILL blocks quiescence while a
@@ -2264,26 +2244,21 @@ class MembershipFsmTest {
         void healthHints_suspectPresentDeadAbsent_onlyTerminalDeadIsFiltered() {
             var manager = activeManager();
 
-            promoteToMember(manager, A);   // healthy MEMBER
+            promoteToMember(manager, A);  // healthy MEMBER
             promoteToMember(manager, B);
             manager.onSwimSuspect(B, 2L);  // SUSPECT — real in-progress death
-            driveToDead(manager, C, 4L);   // co-confirmed terminally DEAD ghost
-
-            assertThat(manager.memberStates())
-                    .containsEntry(A, "Member")
-                    .containsEntry(B, "Suspect")
-                    .containsEntry(C, "Dead");
-
+            driveToDead(manager, C, 4L);  // co-confirmed terminally DEAD ghost
+            assertThat(manager.memberStates()).containsEntry(A, "Member")
+                      .containsEntry(B, "Suspect")
+                      .containsEntry(C, "Dead");
             var hints = manager.healthHints();
-            assertThat(hints)
-                    .as("a genuinely co-confirmed-DEAD member is absent (its FAULTY tombstone is filtered)")
-                    .doesNotContainKey(C);
-            assertThat(hints)
-                    .as("a SUSPECT member is still present, so real deaths block quiescence during the SUSPECT window")
-                    .containsEntry(B, HealthHint.SUSPECTED);
-            assertThat(hints)
-                    .as("the healthy MEMBER is omitted (projector defaults it to HEALTHY)")
-                    .doesNotContainKey(A);
+
+            assertThat(hints).as("a genuinely co-confirmed-DEAD member is absent (its FAULTY tombstone is filtered)")
+                      .doesNotContainKey(C);
+            assertThat(hints).as("a SUSPECT member is still present, so real deaths block quiescence during the SUSPECT window")
+                      .containsEntry(B, HealthHint.SUSPECTED);
+            assertThat(hints).as("the healthy MEMBER is omitted (projector defaults it to HEALTHY)")
+                      .doesNotContainKey(A);
         }
     }
 
@@ -2303,7 +2278,6 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             manager.onSwimFaulty(A, 2L);
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
-
             assertThat(manager.healthHints()).containsEntry(A, HealthHint.SUSPECTED);
         }
 
@@ -2314,18 +2288,13 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             manager.onSwimFaulty(A, 2L);
-
             clock[0] = 10_000L + TTL_MS + 1L;
-
-            assertThat(manager.healthHints())
-                    .as("a stale one-shot SWIM-suspect decays OUT of the quiesce hint after the TTL")
-                    .doesNotContainKey(A);
-            assertThat(manager.memberStates())
-                    .as("membership is unaffected — the member stays in FSM SUSPECT")
-                    .containsEntry(A, "Suspect");
-            assertThat(manager.countedMembers())
-                    .as("a decayed-hint SUSPECT still counts toward effective membership")
-                    .contains(A);
+            assertThat(manager.healthHints()).as("a stale one-shot SWIM-suspect decays OUT of the quiesce hint after the TTL")
+                      .doesNotContainKey(A);
+            assertThat(manager.memberStates()).as("membership is unaffected — the member stays in FSM SUSPECT")
+                      .containsEntry(A, "Suspect");
+            assertThat(manager.countedMembers()).as("a decayed-hint SUSPECT still counts toward effective membership")
+                      .contains(A);
         }
 
         @Test
@@ -2335,10 +2304,8 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             manager.onSwimFaulty(A, 2L);
-
             clock[0] = 10_000L + TTL_MS + 1L;
             assertThat(manager.healthHints()).doesNotContainKey(A);
-
             // A fresh doubt re-stamps the doubt time → SUSPECTED again.
             manager.onSwimSuspect(A, 3L);
             assertThat(manager.healthHints()).containsEntry(A, HealthHint.SUSPECTED);
@@ -2374,13 +2341,10 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             manager.onSwimFaulty(A, 4L);
             manager.onLivenessGone(A);
-
-            assertThat(manager.memberStates())
-                    .as("co-confirmed death is DEFERRED — the member is held SUSPECT, not DEAD")
-                    .containsEntry(A, "Suspect");
-            assertThat(manager.countedMembers())
-                    .as("a held-SUSPECT co-confirmed member still counts (recoverable)")
-                    .contains(A);
+            assertThat(manager.memberStates()).as("co-confirmed death is DEFERRED — the member is held SUSPECT, not DEAD")
+                      .containsEntry(A, "Suspect");
+            assertThat(manager.countedMembers()).as("a held-SUSPECT co-confirmed member still counts (recoverable)")
+                      .contains(A);
         }
 
         /// The core anti-#131 property: a `SwimHealthy` recovery within the backstop window cancels the
@@ -2396,18 +2360,15 @@ class MembershipFsmTest {
             // Recovery lands inside the window: higher incarnation drives SUSPECT→MEMBER and clears the
             // co-confirmation flags, cancelling the armed backstop.
             manager.onSwimHealthy(A, 5L);
-
-            assertThat(manager.memberStates())
-                    .as("a recovery edge within the window recovers the member SUSPECT→MEMBER")
-                    .containsEntry(A, "Member");
+            assertThat(manager.memberStates()).as("a recovery edge within the window recovers the member SUSPECT→MEMBER")
+                      .containsEntry(A, "Member");
             assertThat(manager.countedMembers()).contains(A);
-
             // Wait WELL beyond the backstop window: a cancelled timer must never fire.
-            await().pollDelay(FIRING_BACKSTOP.millis() * 3, TimeUnit.MILLISECONDS)
-                   .atMost(2, TimeUnit.SECONDS)
-                   .untilAsserted(() -> assertThat(manager.memberStates())
-                           .as("the cancelled backstop must NOT later evict the recovered member")
-                           .containsEntry(A, "Member"));
+            await().pollDelay(FIRING_BACKSTOP.millis() * 3,
+                              TimeUnit.MILLISECONDS)
+                 .atMost(2, TimeUnit.SECONDS)
+                 .untilAsserted(() -> assertThat(manager.memberStates()).as("the cancelled backstop must NOT later evict the recovered member")
+                                                .containsEntry(A, "Member"));
         }
 
         /// No recovery: the backstop fires after the window and performs the original terminal march —
@@ -2419,12 +2380,9 @@ class MembershipFsmTest {
             promoteToMember(manager, A);
             manager.onSwimFaulty(A, 4L);
             manager.onLivenessGone(A);
-
             await().atMost(2, TimeUnit.SECONDS)
-                   .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Dead"));
-            assertThat(manager.countedMembers())
-                    .as("a backstop-evicted member is no longer counted")
-                    .doesNotContain(A);
+                 .untilAsserted(() -> assertThat(manager.memberStates()).containsEntry(A, "Dead"));
+            assertThat(manager.countedMembers()).as("a backstop-evicted member is no longer counted").doesNotContain(A);
         }
 
         /// Regression guard: ONE plane alone (bare SWIM-FAULTY, no liveness-gone) never arms the
@@ -2435,19 +2393,17 @@ class MembershipFsmTest {
 
             promoteToMember(manager, A);
             manager.onSwimFaulty(A, 4L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Suspect");
             assertThat(manager.countedMembers()).contains(A);
-
             // Past the window a single-plane signal still must not have evicted.
-            await().pollDelay(FIRING_BACKSTOP.millis() * 3, TimeUnit.MILLISECONDS)
-                   .atMost(2, TimeUnit.SECONDS)
-                   .untilAsserted(() -> {
-                       assertThat(manager.memberStates())
-                               .as("a single death plane never arms the backstop, never evicts")
-                               .containsEntry(A, "Suspect");
-                       assertThat(manager.countedMembers()).contains(A);
-                   });
+            await().pollDelay(FIRING_BACKSTOP.millis() * 3,
+                              TimeUnit.MILLISECONDS)
+                 .atMost(2, TimeUnit.SECONDS)
+                 .untilAsserted(() -> {
+                                    assertThat(manager.memberStates()).as("a single death plane never arms the backstop, never evicts")
+                                              .containsEntry(A, "Suspect");
+                                    assertThat(manager.countedMembers()).contains(A);
+                                });
         }
 
         private static MembershipFsm backstopManager(TimeSpan backstop) {
@@ -2467,12 +2423,12 @@ class MembershipFsmTest {
     }
 
     private static NodeId[] fivePromotedMembers(MembershipFsm manager) {
-        var ids = new NodeId[]{
-                new NodeId("m0"), new NodeId("m1"), new NodeId("m2"), new NodeId("m3"), new NodeId("m4")
-        };
+        var ids = new NodeId[]{new NodeId("m0"), new NodeId("m1"), new NodeId("m2"), new NodeId("m3"), new NodeId("m4")};
+
         for (var id : ids) {
             promoteToMember(manager, id);
         }
+
         return ids;
     }
 
@@ -2489,11 +2445,8 @@ class MembershipFsmTest {
 
             manager.onMemberDescriptor(coreNodeInfo(A));
             manager.onSwimHealthy(A, 0L);
-
             assertThat(manager.memberStates()).containsEntry(A, "Member");
-            assertThat(dialIds(manager))
-                    .as("an inc-0 FSM Member must appear in the dial set")
-                    .contains(A);
+            assertThat(dialIds(manager)).as("an inc-0 FSM Member must appear in the dial set").contains(A);
         }
 
         @Test
@@ -2504,17 +2457,13 @@ class MembershipFsmTest {
             manager.onSwimHealthy(A, 0L);
             manager.onMemberDescriptor(coreNodeInfo(B));
             manager.onSwimHealthy(B, 1_781_178_206_970L);
-
-            assertThat(dialIds(manager))
-                    .as("the inc-0 member is NOT excluded while its real-incarnation peer is dialed")
-                    .contains(A, B);
+            assertThat(dialIds(manager)).as("the inc-0 member is NOT excluded while its real-incarnation peer is dialed")
+                      .contains(A, B);
         }
     }
 
     private static NodeInfo coreNodeInfo(NodeId id) {
-        return NodeInfo.nodeInfo(id,
-                                 new NodeAddress(id.id(), 6000),
-                                 java.util.Map.of(NodeInfo.LABEL_ROLE, "core"));
+        return NodeInfo.nodeInfo(id, new NodeAddress(id.id(), 6000), java.util.Map.of(NodeInfo.LABEL_ROLE, "core"));
     }
 
     private static java.util.Set<NodeId> dialIds(MembershipFsm manager) {
