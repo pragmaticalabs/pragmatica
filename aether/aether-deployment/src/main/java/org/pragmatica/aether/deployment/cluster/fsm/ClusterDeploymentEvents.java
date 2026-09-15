@@ -23,6 +23,7 @@ import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 
@@ -58,6 +59,11 @@ public interface ClusterDeploymentEvents extends ClusterFsmEvent {
     record WorkerLeaveReceived(WorkerLeaveDecision decision) implements ClusterDeploymentEvents {}
 
     record SelfShutdownReceived(TransportObservation.SelfShutdown selfShutdown) implements ClusterDeploymentEvents {}
+
+    /// #688 — the leader recorded a DRAINING readiness report from `nodeId` (the pong fan's
+    /// `onDrainingReported`). This is the production entry to the leader-side drain eviction; the
+    /// `MembershipDecision.NodeDraining` arm is retained but never emitted (membership-v2 finale).
+    record NodeDrainingReported(NodeId nodeId) implements ClusterDeploymentEvents {}
 
     record ActivationDirectivePutReceived(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) implements ClusterDeploymentEvents {}
 
