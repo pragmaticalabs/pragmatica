@@ -23,7 +23,6 @@ public record WorkerConfig(List<String> coreNodes,
                            SliceConfig sliceConfig,
                            String groupName,
                            String zone,
-                           int maxGroupSize,
                            TimeSpan heartbeatInterval,
                            TimeSpan heartbeatTimeout,
                            String advertiseAddress,
@@ -32,7 +31,6 @@ public record WorkerConfig(List<String> coreNodes,
     public static final int DEFAULT_SWIM_PORT = 7200;
     public static final String DEFAULT_GROUP_NAME = "default";
     public static final String DEFAULT_ZONE = "local";
-    public static final int DEFAULT_MAX_GROUP_SIZE = 100;
     public static final TimeSpan DEFAULT_HEARTBEAT_INTERVAL = timeSpan(500).millis();
     public static final TimeSpan DEFAULT_HEARTBEAT_TIMEOUT = timeSpan(2).seconds();
     public static final String DEFAULT_ADVERTISE_ADDRESS = "";
@@ -45,10 +43,6 @@ public record WorkerConfig(List<String> coreNodes,
 
         if (zone == null || zone.isBlank()) {
             zone = DEFAULT_ZONE;
-        }
-
-        if (maxGroupSize < 2) {
-            maxGroupSize = DEFAULT_MAX_GROUP_SIZE;
         }
 
         if (heartbeatInterval.millis() <= 0) {
@@ -74,8 +68,7 @@ public record WorkerConfig(List<String> coreNodes,
                                                     SwimSettings swimSettings,
                                                     SliceConfig sliceConfig,
                                                     String groupName,
-                                                    String zone,
-                                                    int maxGroupSize) {
+                                                    String zone) {
         return workerConfig(coreNodes,
                             clusterPort,
                             swimPort,
@@ -83,7 +76,6 @@ public record WorkerConfig(List<String> coreNodes,
                             sliceConfig,
                             groupName,
                             zone,
-                            maxGroupSize,
                             DEFAULT_HEARTBEAT_INTERVAL,
                             DEFAULT_HEARTBEAT_TIMEOUT,
                             DEFAULT_ADVERTISE_ADDRESS,
@@ -97,7 +89,6 @@ public record WorkerConfig(List<String> coreNodes,
                                                     SliceConfig sliceConfig,
                                                     String groupName,
                                                     String zone,
-                                                    int maxGroupSize,
                                                     TimeSpan heartbeatInterval,
                                                     TimeSpan heartbeatTimeout) {
         return workerConfig(coreNodes,
@@ -107,7 +98,6 @@ public record WorkerConfig(List<String> coreNodes,
                             sliceConfig,
                             groupName,
                             zone,
-                            maxGroupSize,
                             heartbeatInterval,
                             heartbeatTimeout,
                             DEFAULT_ADVERTISE_ADDRESS,
@@ -121,7 +111,6 @@ public record WorkerConfig(List<String> coreNodes,
                                                     SliceConfig sliceConfig,
                                                     String groupName,
                                                     String zone,
-                                                    int maxGroupSize,
                                                     TimeSpan heartbeatInterval,
                                                     TimeSpan heartbeatTimeout,
                                                     String advertiseAddress,
@@ -130,7 +119,6 @@ public record WorkerConfig(List<String> coreNodes,
                              .flatMap(_ -> checkPort("swimPort", swimPort))
                              .flatMap(_ -> checkNotBlank("groupName", groupName))
                              .flatMap(_ -> checkNotBlank("zone", zone))
-                             .flatMap(_ -> checkMinValue("maxGroupSize", maxGroupSize, 2))
                              .map(_ -> new WorkerConfig(List.copyOf(coreNodes),
                                                         clusterPort,
                                                         swimPort,
@@ -138,7 +126,6 @@ public record WorkerConfig(List<String> coreNodes,
                                                         sliceConfig,
                                                         groupName,
                                                         zone,
-                                                        maxGroupSize,
                                                         heartbeatInterval,
                                                         heartbeatTimeout,
                                                         advertiseAddress,
@@ -156,8 +143,7 @@ public record WorkerConfig(List<String> coreNodes,
                             swimSettings,
                             sliceConfig,
                             DEFAULT_GROUP_NAME,
-                            DEFAULT_ZONE,
-                            DEFAULT_MAX_GROUP_SIZE);
+                            DEFAULT_ZONE);
     }
 
     private static Result<List<String>> checkCoreNodes(List<String> coreNodes) {
@@ -174,12 +160,6 @@ public record WorkerConfig(List<String> coreNodes,
     private static Result<String> checkNotBlank(String name, String value) {
         return option(value).filter(v -> !v.isBlank())
                      .toResult(WorkerConfigError.invalidWorkerConfig(name + " must not be blank"));
-    }
-
-    private static Result<Integer> checkMinValue(String name, int value, int min) {
-        return value >= min
-               ? success(value)
-               : WorkerConfigError.invalidWorkerConfig(name + " must be >= " + min + ", got: " + value).result();
     }
 
     public record SwimSettings(TimeSpan period,

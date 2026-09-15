@@ -237,51 +237,15 @@ graph TB
 
 ## Group Formation
 
-### Assignment
-
-`GroupAssignment.computeGroups()` is deterministic and zone-aware:
-
-1. Extract zone from NodeId (prefix before last dash, or `"local"` if no dash)
-2. Group members by zone
-3. If zone group <= `maxGroupSize` -> single group
-4. Else -> split round-robin into `ceil(size/maxGroupSize)` subgroups
-5. Return sorted map by `WorkerGroupId.communityId()`
-
-```java
-record WorkerGroupId(String groupName, String zone) {
-    String communityId() { return groupName + ":" + zone; }
-}
-// Example: NodeId "worker-us-west-1" → zone "worker-us-west"
-```
-
-### Splitting
-
-When a group exceeds its size limit:
-
-```mermaid
-graph LR
-    subgraph Before["Group Alpha (45 nodes)"]
-        G1["Governor + 44 workers"]
-    end
-
-    Before -->|"Split at threshold"| After
-
-    subgraph After["Two groups"]
-        subgraph A1["Group Alpha (23 nodes)"]
-            GA["Governor A"]
-        end
-        subgraph A2["Group Alpha-2 (22 nodes)"]
-            GB["Governor B"]
-        end
-    end
-```
-
-Split is coordinated by CDM (core leader):
-1. CDM decides split point
-2. CDM assigns new group IDs via consensus
-3. Affected workers receive new group assignment
-4. New governors elected deterministically
-5. SWIM membership converges
+**Communities are one per source (#673, decided 2026-09-14).** The leader mints a worker's community
+as `<source>-w-0` when it assigns the worker its role (`ClusterDeploymentState.assignWorkerRole`,
+`WORKER_COMMUNITY_SUFFIX`); every worker of one source shares that community, whatever its size.
+Multiple communities today means multiple sources in the cluster config. The earlier size-based
+splitter (`GroupAssignment.computeGroups` at a `maxGroupSize` threshold, driven by a
+`GroupMembershipTracker`) was never wired into a live node and was removed together with the
+`[worker] max_group_size` key, which a node now refuses at parse. Per-community sizing
+(`CommunitySizing.targetSize`) is stamped onto the role record but does not split; a growth
+comparator that mints `-w-N` siblings is future work and has its own ticket.
 
 ## KV-Store Integration
 
