@@ -5,7 +5,6 @@
 package org.pragmatica.aether.deployment.cluster.fsm;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -28,10 +27,11 @@ import org.slf4j.LoggerFactory;
 
 
 /// Stale-entry cleanup seam extracted (move-only) from {@link Active}. Diffs KV-Store node-routes,
-/// slice-state, and node-artifact entries against the resolved core membership and removes entries
-/// for departed nodes; also unloads/removes orphaned slice entries that have no matching blueprint.
-/// All cleanups gate on {@link Active#coreMembershipResolved()} so a sweep racing the membership
-/// wiring never mass-classifies KV-known members as departed.
+/// slice-state, and node-artifact entries against the nodes that still own placements — the
+/// resolved core membership plus the registered workers ({@link #placementNodes()}) — and removes
+/// entries for departed nodes; also unloads/removes orphaned slice entries that have no matching
+/// blueprint. All cleanups gate on {@link Active#coreMembershipResolved()} so a sweep racing the
+/// membership wiring never mass-classifies KV-known members as departed.
 record StaleEntryCleaner(Active active) {
     private static final Logger log = LoggerFactory.getLogger(StaleEntryCleaner.class);
 
@@ -45,7 +45,7 @@ record StaleEntryCleaner(Active active) {
             return;
         }
 
-        var currentNodes = new HashSet<>(active.activeNodes());
+        var currentNodes = placementNodes();
         var commands = new ArrayList<KVCommand<AetherKey>>();
 
         active.ctx()
@@ -61,6 +61,13 @@ record StaleEntryCleaner(Active active) {
                   .onFailure(cause -> log.error("Failed to clean up stale node routes: {}",
                                                 cause.message()));
         }
+    }
+
+    /// The nodes whose KV rows are NOT stale (#850): {@link Active#placementNodes()} — counted core
+    /// members plus registered workers. `activeNodes()` alone is core-scoped by construction and
+    /// classified every LIVE worker's rows as stale on every reconcile tick.
+    private Set<NodeId> placementNodes() {
+        return active.placementNodes();
     }
 
     private void collectStaleNodeRoutesKey(List<KVCommand<AetherKey>> commands,
@@ -79,7 +86,7 @@ record StaleEntryCleaner(Active active) {
             return;
         }
 
-        var currentNodes = new HashSet<>(active.activeNodes());
+        var currentNodes = placementNodes();
         var staleKeys = active.sliceStates()
                               .keySet()
                               .stream()
@@ -111,7 +118,7 @@ record StaleEntryCleaner(Active active) {
             return;
         }
 
-        var currentNodes = new HashSet<>(active.activeNodes());
+        var currentNodes = placementNodes();
         var staleKeys = new ArrayList<NodeArtifactKey>();
 
         active.ctx()
@@ -157,8 +164,10 @@ record StaleEntryCleaner(Active active) {
         if (!active.coreMembershipResolved()) {
             return;
         }
-
-        var currentNodes = new HashSet<>(active.activeNodes());
+        // #850: the inclusion filter is the placement set (core ∪ registered workers), not the core
+        // set alone — a worker-hosted orphan must be unloaded too, and the stale-entry sweeps no longer
+        // remove a live worker's key for it.
+        var currentNodes = placementNodes();
         var orphanedEntries = new ArrayList<Map.Entry<SliceNodeKey, SliceState>>();
 
         active.ctx()

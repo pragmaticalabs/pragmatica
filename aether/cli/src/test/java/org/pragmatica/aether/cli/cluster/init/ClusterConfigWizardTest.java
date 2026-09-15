@@ -30,6 +30,22 @@ class ClusterConfigWizardTest {
         return new ClusterConfigWizard(new Prompt(in, out));
     }
 
+    /// A wizard whose PROMPT TEXT is readable afterwards, so a test can assert which questions were
+    /// asked and in what order — not only what the answers produced.
+    private record Session(ClusterConfigWizard wizard, ByteArrayOutputStream prompts) {
+        String promptText() {
+            return prompts.toString(StandardCharsets.UTF_8);
+        }
+    }
+
+    private static Session sessionFor(String input) {
+        var in = new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8));
+        var captured = new ByteArrayOutputStream();
+        var out = new PrintStream(captured, true, StandardCharsets.UTF_8);
+
+        return new Session(new ClusterConfigWizard(new Prompt(in, out)), captured);
+    }
+
     @Nested
     class HappyPath {
 
@@ -379,5 +395,97 @@ class ClusterConfigWizardTest {
                   .onSuccess(a -> fail("Expected failure but got " + a))
                   .onFailure(cause -> assertThat(cause).isInstanceOf(ClusterInitError.Aborted.class));
         }
+    }
+
+    /// #1019 — the wizard is the other entry point to `CoreWorkerSplit`, and round 1 left both of its
+    /// topology answers unpinned. The round-1 review's M4 (replace the worker answer with 0) and the
+    /// N2 ordering defect both survived the whole module's suite.
+    @Nested
+    class Topology {
+
+        /// M4. Every pre-existing wizard fixture answers the worker question with `0`, which is also
+        /// what a wizard that IGNORED the answer would produce — so the suite could not tell the two
+        /// apart. A non-zero worker count is the discriminator.
+        @Test
+        void run_workerAnswer_reachesTheCollectedTopology() {
+            var input = "my-cluster\n" +   // cluster name
+                        "\n" +             // deployment target: default = DOCKER
+                        "7\n" +            // core (consensus) node count
+                        "3\n" +            // worker node count — NOT zero, on purpose
+                        "n\n" +            // configure database? no
+                        "\n";              // generate config? default yes
+
+            wizardFor(input).run()
+                            .onFailure(c -> fail("Expected success but got " + c.message()))
+                            .onSuccess(answers -> {
+                                assertThat(answers.topology().core()).isEqualTo(7);
+                                assertThat(answers.topology().worker()).isEqualTo(3);
+                            });
+        }
+
+        /// N2 — the core answer is refused BEFORE the worker question is asked.
+        ///
+        /// The input is the discriminator and needs no output inspection to work: `3` is refused, so a
+        /// wizard that validates first re-asks for the core and consumes `7` as the core, `2` as the
+        /// worker, and completes. A wizard that asks for workers first consumes `7` as a WORKER count,
+        /// fails the split, and the remaining answers desync — it cannot reach a 7+2 topology from this
+        /// input at all. The prompt-count assertion then says WHY, rather than leaving a reader to infer
+        /// it from a desync.
+        @Test
+        void run_coreBelowMinimum_reAsksForCoreWithoutAskingForWorkers() {
+            var input = "my-cluster\n" +   // cluster name
+                        "\n" +             // deployment target: default = DOCKER
+                        "3\n" +            // core: below the supported minimum — must be refused HERE
+                        "7\n" +            // core, corrected
+                        "2\n" +            // worker
+                        "n\n" +            // configure database? no
+                        "\n";              // generate config? default yes
+            var session = sessionFor(input);
+
+            session.wizard()
+                   .run()
+                   .onFailure(c -> fail("Expected success but got " + c.message()))
+                   .onSuccess(answers -> {
+                       assertThat(answers.topology().core()).isEqualTo(7);
+                       assertThat(answers.topology().worker()).isEqualTo(2);
+                   });
+
+            // Asked for the core twice (rejected, then corrected) and for workers exactly once. Asking
+            // for workers twice is the defect: it means the rejected core was carried past this step.
+            assertThat(countOf(session.promptText(), "Core (consensus) node count")).isEqualTo(2);
+            assertThat(countOf(session.promptText(), "Worker node count")).isEqualTo(1);
+        }
+
+        /// The maximum is reachable from the wizard too, not only from the flags.
+        @Test
+        void run_coreAboveMaximum_isRefusedAndReAsked() {
+            var input = "my-cluster\n" +
+                        "\n" +
+                        "11\n" +           // above the consensus maximum
+                        "9\n" +            // corrected to the maximum
+                        "0\n" +
+                        "n\n" +
+                        "\n";
+            var session = sessionFor(input);
+
+            session.wizard()
+                   .run()
+                   .onFailure(c -> fail("Expected success but got " + c.message()))
+                   .onSuccess(answers -> assertThat(answers.topology().core()).isEqualTo(9));
+
+            assertThat(countOf(session.promptText(), "Worker node count")).isEqualTo(1);
+        }
+    }
+
+    private static int countOf(String haystack, String needle) {
+        var count = 0;
+        var index = haystack.indexOf(needle);
+
+        while (index >= 0) {
+            count++;
+            index = haystack.indexOf(needle, index + needle.length());
+        }
+
+        return count;
     }
 }

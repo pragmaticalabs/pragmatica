@@ -4,17 +4,27 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster.init;
 
+import org.pragmatica.aether.config.ConsensusTierBounds;
 import org.pragmatica.lang.Result;
 
 
 /// The two tiers of a cluster, stated rather than inferred.
 ///
-/// #1019 — this is the ONE place the supported-minimum POLICY is enforced, and it is reachable only
-/// from `aether cluster init` and `aether cluster scaffold`, both of which CREATE configs and sit on
-/// no boot path. That placement is the whole point: `ConfigValidator` and `ClusterSizeGate` look like
-/// authoring gates and are not (`ConfigLoader.load` validates, and `Main` loads through it, so both
-/// run on every node boot), so enforcing the policy there would refuse to start clusters that are
-/// running today.
+/// #1019 — this is the ONE place the supported-minimum POLICY of 5 is enforced, and it is reachable
+/// only from `aether cluster init` and `aether cluster scaffold`, both of which CREATE configs and
+/// sit on no boot path. That placement is the whole point: `ConfigValidator` and `ClusterSizeGate`
+/// look like authoring gates and are not — both run on every node boot — so each keeps a STRUCTURAL
+/// floor of 3 instead.
+///
+/// Their two boot-time mechanisms differ, and the round-1 review of #1019 found this comment eliding
+/// that (S1). `ClusterSizeGate` genuinely refuses: `Main#enforceMinimumClusterSize` pipes its failure
+/// into `Main#abortBoot`, so raising its floor would stop a running 3-node cluster from restarting.
+/// `ConfigValidator` does NOT refuse: `Main#loadConfigFile` discards its failure into `Option.none()`,
+/// so raising its floor would silently drop the node's config and boot it without one. Neither
+/// outcome is acceptable, which is why the policy lives here — but "it would refuse to boot" is only
+/// true of one of them.
+///
+/// The MAXIMUM is a different question and is NOT CLI-only: see [#MAXIMUM_CORE_NODES].
 ///
 /// A previous design had the CLI take ONE number and infer the split. That inference was the defect:
 /// the config models `[cluster.core]` and `[source.X.worker]` as independent quantities, the CLI
@@ -29,7 +39,12 @@ public record CoreWorkerSplit(int core, int worker) {
     /// deliberately unbounded (`ClusterConfig#maxNodes`, #298: a default numeric cap silently refuses
     /// provisioning on any cluster already larger than it), so capacity beyond this is added as
     /// workers rather than refused.
-    public static final int MAXIMUM_CORE_NODES = 9;
+    ///
+    /// Unlike [#MINIMUM_CORE_NODES] this is NOT a CLI-only authoring rule. Round 1 enforced it here and
+    /// nowhere else, so a hand-written bootstrap config with 11 cores validated and a scale command
+    /// could grow the tier without limit. The figure and the list of enforcement points now live in
+    /// `ConsensusTierBounds`.
+    public static final int MAXIMUM_CORE_NODES = ConsensusTierBounds.MAXIMUM_CORE_NODES;
 
     public static Result<CoreWorkerSplit> coreWorkerSplit(int core, int worker) {
         if (core < MINIMUM_CORE_NODES) {

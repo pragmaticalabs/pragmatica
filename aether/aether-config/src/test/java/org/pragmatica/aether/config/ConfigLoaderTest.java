@@ -741,4 +741,44 @@ class ConfigLoaderTest {
                     .onFailure(cause -> Assertions.fail(cause.message()))
                     .onSuccess(config -> assertThat(config.appHttp().tls().isPresent()).isFalse());
     }
+
+    /// #1019 round-1 review, S1 — what a boot-time config validation failure actually DOES.
+    ///
+    /// Round 1 justified keeping `ConfigValidator`'s floor at 3 by saying that raising it "would refuse
+    /// to start clusters that are running today". That names the wrong enforcer. `Main#loadConfigFile`
+    /// is `ConfigLoader.load(path).onFailure(log::error).option()`, so a validation failure is
+    /// discarded and the node boots with NO CONFIG — it is `ClusterSizeGate`, piped into
+    /// `Main#abortBoot`, that refuses a start.
+    ///
+    /// The distinction is load-bearing for anyone deciding where a new rule belongs, and a comment
+    /// stating it is an unverified claim. This pins the half that is observable from this module: a
+    /// rejected config yields an EMPTY `Option` through the exact composition `Main` uses, so nothing
+    /// downstream of it can distinguish "config rejected" from "no config supplied".
+    ///
+    /// `nodes = 2` is below the structural floor and would be rejected by any floor this class might
+    /// ever carry, so the test speaks about the discard, not about the value of the floor.
+    @Test
+    void load_validationFailure_becomesAnEmptyOptionRatherThanAnAbort() {
+        var rejected = """
+            [cluster]
+            environment = "docker"
+            nodes = 2
+            """;
+
+        var result = ConfigLoader.loadFromString(rejected);
+
+        assertThat(result.isFailure()).isTrue();
+        // The `.option()` that `Main#loadConfigFile` applies. A node reaching this branch continues.
+        assertThat(result.option().isEmpty()).isTrue();
+
+        // Positive control: the identical composition yields a PRESENT config for an accepted count,
+        // so the emptiness above is the rejection and not an always-empty accessor.
+        var accepted = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+            """;
+
+        assertThat(ConfigLoader.loadFromString(accepted).option().isPresent()).isTrue();
+    }
 }

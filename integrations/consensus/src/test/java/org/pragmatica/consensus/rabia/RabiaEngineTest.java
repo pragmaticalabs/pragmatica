@@ -93,8 +93,8 @@ class RabiaEngineTest {
         // Wait for sync to occur and send quorum sync responses
         Thread.sleep(150); // Allow sync request to be sent
         // Send sync responses from other nodes
-        engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
-        engine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
+        engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+        engine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
         Thread.sleep(50); // Allow activation to complete
     }
 
@@ -188,8 +188,8 @@ class RabiaEngineTest {
         private void activate(RabiaEngine<TestCommand> target) throws InterruptedException {
             target.clusterState(ClusterStateNotification.active());
             Thread.sleep(150);
-            target.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
-            target.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
+            target.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+            target.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
             Thread.sleep(50);
         }
     }
@@ -261,7 +261,7 @@ class RabiaEngineTest {
             engine.clusterState(ClusterStateNotification.active());
             awaitSyncRequestBroadcast();
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
 
             assertThat(awaitActive())
                 .as("1 response + self = 2 of %d = a majority; demanding a 2nd response demanded the whole cluster",
@@ -399,9 +399,9 @@ class RabiaEngineTest {
             // test network, which collapsed the gate to 1 and let a minority activate the engine).
             // Two responses plus self is already the majority of five that #660 settled on; the third is
             // harmless surplus, ignored once the engine is active.
-            stallEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
-            stallEngine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
-            stallEngine.processSyncResponse(new SyncResponse<>(NODE_4, RabiaPersistence.SavedState.empty()));
+            stallEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+            stallEngine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+            stallEngine.processSyncResponse(new SyncResponse<>(NODE_4, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
             Thread.sleep(50);
         }
 
@@ -764,8 +764,8 @@ class RabiaEngineTest {
             engine.clusterState(ClusterStateNotification.active());
             Thread.sleep(150); // Allow sync request to be sent
             var state = RabiaPersistence.SavedState.<TestCommand>savedState(new byte[]{42}, Phase.ZERO, List.of());
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, state));
-            engine.processSyncResponse(new SyncResponse<>(NODE_3, state));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, state, ResponderState.COLD));
+            engine.processSyncResponse(new SyncResponse<>(NODE_3, state, ResponderState.COLD));
             Thread.sleep(50); // Allow activation to complete
 
             assertThat(activeAtFire.get())
@@ -912,8 +912,8 @@ class RabiaEngineTest {
             Thread.sleep(200);
 
             // Send sync responses to complete activation
-            gatedEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
-            gatedEngine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
+            gatedEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+            gatedEngine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
             Thread.sleep(100);
 
             assertThat(gatedEngine.isActive()).as("Gated engine should activate after authorization").isTrue();
@@ -927,8 +927,8 @@ class RabiaEngineTest {
             ungatedEngine.clusterState(ClusterStateNotification.active());
             Thread.sleep(200);
 
-            ungatedEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
-            ungatedEngine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
+            ungatedEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+            ungatedEngine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
             Thread.sleep(100);
 
             assertThat(ungatedEngine.isActive()).as("Ungated engine should activate on quorum").isTrue();

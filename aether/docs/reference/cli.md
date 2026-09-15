@@ -105,7 +105,7 @@ authorization_role = "VIEWER"
 | Role | CLI Access |
 |------|-----------|
 | **ADMIN** | All commands |
-| **OPERATOR** | Status, scaling, drain, deploy from artifact, schema, updates, backup, config, alerts |
+| **OPERATOR** | Status, scaling, drain, deploy from artifact, schema, updates, config, alerts |
 | **VIEWER** | Read-only commands: `status`, `nodes`, `slices`, `nodes slices`, `routes`, `nodes routes`, `metrics`, `events`, `health` |
 
 When `authorization_role` is omitted, the key defaults to `ADMIN`. See [Management API - Authorization](management-api.md#authorization-rbac) for the full permission mapping.
@@ -1375,43 +1375,11 @@ aether scheduled-tasks inject \
 
 ### backup
 
-Manage cluster backups. Two surfaces are available: the **singular** `aether backup` parent
-with verb-style subcommands (`create`, `restore`, `list`) introduced for operator-facing
-workflows in P-NEW-C, and the legacy **plural** `aether backups` parent with the original
-`trigger`/`list`/`restore` subcommands. Both call the same REST routes
-(`POST /api/backups`, `POST /api/backups/restore`, `GET /api/backups`) — pick whichever
-reads more naturally for your scripts.
-
-```bash
-# Singular surface (P-NEW-C, recommended for new scripts)
-aether backup create                   # create a new backup (synchronous)
-aether backup create --wait            # create + poll /api/backups until the new entry appears
-aether backup create --wait --timeout 120
-aether backup restore <commit-id>      # restore from a specific backup commit (prompts for confirmation)
-aether backup restore <commit-id> --yes  # skip confirmation (required in non-interactive shells)
-aether backup list                     # list available backups
-
-# Plural surface (legacy alias, identical routes)
-aether backups trigger
-aether backups list
-aether backups restore <commit-id>
-```
-
-#### `aether backup` subcommands
-
-| Subcommand | Description |
-|------------|-------------|
-| `create [--wait] [--timeout N]` | Create a new backup (`POST /api/backups`). With `--wait`, polls `GET /api/backups` until the new entry appears or `--timeout` (default 60s) elapses. |
-| `restore <commit> [--yes\|--force]` | Restore the cluster KV-Store from the named backup commit (`POST /api/backups/restore`). Destructive — overwrites current state, so it prompts for confirmation; `--yes`/`--force` skips the prompt (required in non-interactive shells). |
-| `list` | List available backups (`GET /api/backups`). |
-
-#### `aether backups` subcommands (legacy)
-
-| Subcommand | Description |
-|------------|-------------|
-| `trigger` | Trigger a manual backup |
-| `list` | List available backups |
-| `restore <commit>` | Restore from backup |
+Removed (#676). The `backup` and `backups` command trees and `POST|GET /api/v1/backups` were wired to a
+service whose only implementation was `disabled()`, so every call returned `backup-disabled` in every
+configuration. Declared-state durability is `[backup]` git-backed persistence — see
+[backup-recovery](../operators/runbooks/backup-recovery.md); it has no CLI or API surface and is
+inspected with `git log` in the configured `path`.
 
 ---
 
@@ -1921,7 +1889,7 @@ aether cluster init --non-interactive --name test-cluster --core-nodes 5 --outpu
 | `--non-interactive` | Force non-interactive mode; default `--target=docker` if absent, fail fast on missing required flags (P-NEW-G, 2026-05-21). Required for CI/integration test usage (TC-07-J3). |
 | `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
 | `--target` | Deployment target: `docker`, `ssh`, `cloud`, or `forge` |
-| `--core-nodes` | Consensus tier size: 5 (minimum), 7 (recommended) or 9 (maximum). Must be odd. Required for non-SSH targets |
+| `--core-nodes` | Consensus tier size: 5 (minimum), 7 (recommended) or 9 (maximum). Must be odd. **Required for every target, `ssh` included** — see the note below |
 | `--worker-nodes` | Worker tier size (default 0). Not bounded by the consensus-tier maximum. For an `ssh` target it is the remainder of `--hosts` after `--core-nodes` and must not be given |
 | `--hosts` | SSH hosts (ssh target only), comma-separated |
 | `--ssh-user`, `--ssh-key`, `--ssh-port` | SSH credentials (ssh target only) |
@@ -1933,6 +1901,8 @@ aether cluster init --non-interactive --name test-cluster --core-nodes 5 --outpu
 | `--secret`, `--secret-env` | Cluster secret mode: `auto` (default) or `env` |
 
 When `--non-interactive` is set without `--target`, the command applies `--target=docker` as the default. Missing required flags (e.g. `--core-nodes` for docker target) produce a `MissingField` failure and a non-zero exit code rather than dropping into prompts.
+
+**Behaviour change (#1019): `--core-nodes` is now required for an `ssh` target too.** Previously an `ssh` batch run needed no count — the whole of `--hosts` became the cluster and the core/worker split was derived from its length. That derivation is what #1019 removed, so the split is now stated: `--core-nodes` names the consensus tier and the worker tier is whatever `--hosts` holds beyond it. An `ssh` invocation that passed only `--hosts` before will now fail with `Required field missing or invalid: --core-nodes`. `--worker-nodes` is refused on an `ssh` target rather than ignored, since the remainder is not a free choice there.
 
 #### Re-running against an existing file (#311)
 
@@ -1980,7 +1950,7 @@ aether cluster scaffold --name <cluster-name> --template docker-compose [--nodes
 |--------|-------------|
 | `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
 | `--template` | Output template. Currently `docker-compose` |
-| `--nodes` | Compose-fixed node count (default 5) |
+| `--nodes` | Compose-fixed node count (default 5, minimum 5) |
 | `--image` | Container image (default `aether-node:local`) |
 | `--mgmt-port-base` | Host port base for management API (default 5150) |
 | `--app-port-base` | Host port base for application HTTP (default 8070) |
@@ -2174,6 +2144,32 @@ aether cluster topology auto-heal enable
 Example output:
 ```json
 {"enabled": true, "previousState": false}
+```
+
+### `aether cluster topology role-mismatches`
+
+List provisioned nodes whose advertised role label disagrees with the role the leader provisioned them with (#689). A node's role is a self-asserted label (`AETHER_ROLE` → `aether-role`); a blank or unknown label is classified **CORE** by every peer, deliberately, so an intended worker whose label never arrived silently joins the core set and every community-tier mechanism gated on "positively not a core" is suppressed on it. This is that fact without log access; the leader also logs it at WARN on every join of such a node. Leader-scoped and intent-based: only nodes this leader provisioned are compared, the intent is kept until the node is decommissioned, a still-mislabelled restart under the same id is re-listed and a correctly relabelled rejoin clears the entry. See `GET /api/v1/cluster/topology/role-mismatches` in `management-api.md` for the full scope statement.
+
+```bash
+aether cluster topology role-mismatches
+```
+
+| Option | Description |
+|--------|-------------|
+| `--format` | Output format: `table` (default), `json`, `value`, `csv` |
+
+Example:
+```bash
+aether cluster topology role-mismatches
+
+# Output (table):
+# NODE                      INTENDED    ADVERTISED    CLASSIFIED
+# worker-3                  worker                    CORE
+```
+
+Example output (`--format json`):
+```json
+{"mismatches": [{"nodeId": "worker-3", "intendedRole": "worker", "advertisedRole": "", "classifiedAs": "CORE"}]}
 ```
 
 ### `aether cluster governors`
@@ -2540,10 +2536,21 @@ a valid scale with an unsupported action is rejected in full; the scale is not a
 Recovery: split the file so scale changes go through plain `apply` and everything else is handled
 separately, or wait for the change to be supported.
 
-**The terraform-style plan (`[+]`/`[~]`/`[-]`) and wave-based rollout (additions → modifications →
-removals, respecting `maxUnavailable` for core nodes) is the `--resume`/`--rollback` path**
-(`ApplyOrchestrator` → `WaveExecutor`), not plain `apply` — reachable only by first halting an
-apply and then resuming or rolling it back.
+**Non-scale changes — sources, roles, runtime, source fields, cluster-level fields — are not
+applicable through `apply` in rc4.** `apply` performs scale-only plans via the leader (a fenced
+desired-count write that the leader's reconciler actuates); a rollout of the other changes needs a
+new cluster. There is no first-time path to a wave rollout: the terraform-style plan and the
+wave-based executor (`ApplyOrchestrator` → `WaveExecutor`, actuating from the operator's machine
+through the cloud provider) are entered only through `--resume`/`--rollback`, and they are
+deliberately not wired to plain `apply` — a client-side rollout would be a second actuation
+authority over the same fleet next to the leader's reconciler (#686; the server-side wave design
+is a separate ticket).
+
+**In rc4 `--resume` and `--rollback` have nothing to act on.** Both begin by loading the apply
+state for the cluster and abort without it (`No apply state found for cluster '<name>'. Nothing to
+resume.` / `... Nothing to rollback.`). That state is written only by the unwired client-side
+rollout itself, so no rc4 command creates it: unless a pre-rc4 CLI left a state file behind, both
+options report that message and the wave executor is unreachable end to end.
 
 ### `aether cluster rotate-key`
 
@@ -2566,6 +2573,35 @@ listing order never decides which credential is revoked. With exactly one `ACTIV
 retires it and names it in the output. With several, it refuses and lists the candidates — re-run
 with `--key-id` naming the one to retire. A key listing that cannot be read fails the rotation
 rather than resolving to some key.
+
+### `aether cluster rotate-gossip-key`
+
+Rotate the SWIM gossip encryption key in place (#683). ADMIN only.
+
+```bash
+aether cluster rotate-gossip-key
+```
+
+The leader generates 32 bytes of fresh key material and publishes it through consensus
+(`POST /api/v1/cluster/gossip-key/rotate`); every running node switches to the new key and keeps
+accepting the previous one for the overlap. Use it after a suspected `cluster_secret` or gossip-key
+leak: the daily key is derived from `cluster_secret`, so this is the only mitigation that does not
+require reconfiguring and restarting every node. The output carries key ids only, never key material.
+
+**Before you run this, know two limits — SECURITY.md has the detail.** The **first** rotation has no
+overlap, because there is no prior record whose key could be carried; it replaces the boot key
+outright. And a rotated cluster **cannot grow until you act**: any node booting afterwards holds only
+the derived key, cannot complete SWIM in either direction, and so never reaches the consensus replay
+that would hand it the cluster key. **Auto-heal replacements and scale-up nodes are included, so an
+emergency rotation leaves the cluster unable to self-heal** until new nodes are given the rotated key
+material out of band. Existing running nodes keep working.
+
+**Troubleshooting a node that will not join after a rotation — check the SEED nodes' logs, not the
+new node's.** Look for `Failed to decrypt gossip from <id>` on the seeds. A node the cluster has
+never heard of logs nothing about the cause: it prints `Aether node <id> started, cluster forming...`
+and then stays quiet, because an unreachable quorum is retried and never exits. A **restarted
+existing member** is the exception — it refuses to boot with a `FATAL` line naming gossip-key
+divergence, because its peers still probe it and it can see the mismatched key id.
 
 ### `aether cluster revoke-key`
 

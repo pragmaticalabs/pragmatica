@@ -57,7 +57,7 @@ public sealed interface ManagementRoutePermissions {
     }
 
     /// Operational mutations — day-2 operations an OPERATOR performs: deploy strategies, scaling,
-    /// schema migrations, streams, scheduled-task actions, backups (create), config set/delete,
+    /// schema migrations, streams, scheduled-task actions, config set/delete,
     /// thresholds, alert injection, controller tuning, cluster topology remediation, artifact publish,
     /// cluster-config apply, key listing/audit (read-shaped POSTs are absent — those are GET).
     private static void assignOperatorMutations(Map<ManagementRoute, RoutePermission> table) {
@@ -67,7 +67,7 @@ public sealed interface ManagementRoutePermissions {
     }
 
     /// Destructive / identity-affecting mutations — ADMIN only: raw blueprint publish + delete, node
-    /// shutdown/promote, backup restore, log-level and observability depth/config changes, config-node
+    /// shutdown/promote, log-level and observability depth/config changes, config-node
     /// delete, API-key create/revoke, dev-only inject endpoints.
     private static void assignAdminMutations(Map<ManagementRoute, RoutePermission> table) {
         for (var route : adminRoutes()) {
@@ -119,8 +119,7 @@ public sealed interface ManagementRoutePermissions {
                        ManagementRoute.ARTIFACT_PUT,
                        ManagementRoute.ARTIFACT_POST,
                        ManagementRoute.ARTIFACT_DELETE,
-                       ManagementRoute.NODE_DRAIN,
-                       ManagementRoute.BACKUP_TRIGGER);
+                       ManagementRoute.NODE_DRAIN);
     }
 
     private static List<ManagementRoute> adminRoutes() {
@@ -129,7 +128,6 @@ public sealed interface ManagementRoutePermissions {
                        ManagementRoute.BLUEPRINT_DELETE,
                        ManagementRoute.NODE_SHUTDOWN,
                        ManagementRoute.NODE_PROMOTE,
-                       ManagementRoute.BACKUP_RESTORE,
                        ManagementRoute.LOG_LEVEL_SET,
                        ManagementRoute.LOG_LEVEL_RESET,
                        ManagementRoute.OBSERVABILITY_DEPTH_SET,
@@ -139,6 +137,7 @@ public sealed interface ManagementRoutePermissions {
                        ManagementRoute.CONFIG_NODE_DELETE,
                        ManagementRoute.CLUSTER_KEYS_CREATE,
                        ManagementRoute.CLUSTER_KEYS_REVOKE,
+                       ManagementRoute.CLUSTER_GOSSIP_KEY_ROTATE,
                        ManagementRoute.CERT_CONFIGURE_SHORT_VALIDITY,
                        ManagementRoute.SCHEDULED_TASK_INJECT,
                        ManagementRoute.ALERTS_INJECT,

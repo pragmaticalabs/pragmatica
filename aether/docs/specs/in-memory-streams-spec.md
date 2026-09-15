@@ -181,14 +181,16 @@ consistency = "strong"           # produce path goes through Rabia
 
 Consumer groups can be declared in the blueprint (static) or created at runtime by slices (dynamic):
 
-> **⚠️ REJECTED AT DEPLOY TIME TODAY (#576).** Neither key below is read at runtime, so a blueprint
-> containing this block does not deploy — it is failed as inert configuration. `auto-offset-reset`
+> **⚠️ REFUSED BY BLUEPRINT VALIDATION (#576).** Neither key below is read at runtime, and both are
+> failed as inert configuration — but that refusal does not block the publish today
+> (`BlueprintService.streamBindings` discards it), so the blueprint deploys with empty stream bindings. `auto-offset-reset`
 > accepts only `"earliest"`, because a never-committed consumer always starts at offset 0 permanently
-> by the **#478 ruling**, so the `"latest"` shown here is the value that gets refused. Retained as the
-> design target for **#677**; see `streaming-spec.md` §3.2/§3.3 for the full per-key status.
+> by the **#478 ruling**, so the `"latest"` shown here is the value that gets refused. Retained as a
+> post-GA design target (**#677** descoped the wiring from 1.0); see `streaming-spec.md` §3.2/§3.3 for
+> the full per-key status.
 
 ```toml
-# DESIGN TARGET — does not deploy today (#576, #677).
+# DESIGN TARGET — refused as inert (#576, #677); that refusal does not block the publish today.
 [streams.order-events.consumer-groups.analytics]
 auto-offset-reset = "latest"     # REJECTED: only "earliest" is accepted (#478 makes it permanent)
 commit-interval = "1s"           # REJECTED as inert: not read at runtime

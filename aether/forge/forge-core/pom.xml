@@ -109,6 +109,8 @@
                                     <mainClass>org.pragmatica.aether.forge.ForgeServer</mainClass>
                                     <manifestEntries>
                                         <Implementation-Version>${project.version}</Implementation-Version>
+                                        <!-- #1077: shaded log4j-api is multi-release; see aether/node/pom.xml -->
+                                        <Multi-Release>true</Multi-Release>
                                     </manifestEntries>
                                 </transformer>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>

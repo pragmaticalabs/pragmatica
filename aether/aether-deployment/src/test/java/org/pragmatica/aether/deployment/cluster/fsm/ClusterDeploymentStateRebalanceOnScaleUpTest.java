@@ -16,6 +16,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.node.ClusterNode;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
@@ -166,6 +167,54 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
         assertThat(cluster.commands)
                 .as("second imbalanced tick must dispatch a single rebalance move")
                 .isNotEmpty();
+    }
+
+    /// #850: a worker-hosted instance now COUNTS for reconcile, but the load a rebalance levels is
+    /// the core (allocatable) load, so a worker must never be picked as the donor — otherwise a
+    /// placement the allocation policy put on a worker is pulled back onto core. NODE_A carries two
+    /// artifacts and SELF/NODE_NEW none, so the core imbalance opens the rebalance path on every
+    /// tick; the worker carries two of its own. Six ticks are enough for both core moves to land and
+    /// for a worker donor to have been chosen had it been eligible.
+    @Test
+    void rebalance_neverPicksAWorkerAsDonor() {
+        var worker = new NodeId("node-worker");
+        var artifactA = Artifact.artifact("org.example:slice-a:1.0.0").unwrap();
+        var artifactD = Artifact.artifact("org.example:slice-d:1.0.0").unwrap();
+        var artifactE = Artifact.artifact("org.example:slice-e:1.0.0").unwrap();
+        var artifactF = Artifact.artifact("org.example:slice-f:1.0.0").unwrap();
+
+        seedNodeOnDuty(SELF); seedNodeOnDuty(NODE_A); seedNodeOnDuty(NODE_NEW);
+        publishSnapshot(List.of(SELF, NODE_A, NODE_NEW));
+        harness.dispatch(new Activate());
+        activeState().workerNodes().add(worker);
+        cluster.commands.clear();
+
+        for (var artifact : List.of(artifactA, artifactD, artifactE, artifactF)) {
+            seedBlueprint(artifact, 1);
+        }
+        seedSliceActive(artifactA, worker);
+        seedSliceActive(artifactD, worker);
+        seedSliceActive(artifactE, NODE_A);
+        seedSliceActive(artifactF, NODE_A);
+
+        for (int i = 0; i < 6; i++) {activeState().reconcile();}
+
+        assertThat(activeState().sliceStates().keySet())
+                .as("#850: the worker's two placements must still be on the worker after six rebalance ticks")
+                .contains(SliceNodeKey.sliceNodeKey(artifactA, worker), SliceNodeKey.sliceNodeKey(artifactD, worker));
+        assertThat(cluster.commands.stream()
+                                   .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                        && put.key() instanceof NodeArtifactKey nak
+                                                        && (nak.artifact().equals(artifactA) || nak.artifact().equals(artifactD))))
+                .as("#850: no LOAD may be issued for a worker-hosted artifact anywhere — the worker is never a donor")
+                .isFalse();
+        assertThat(cluster.commands.stream()
+                                   .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                        && put.key() instanceof NodeArtifactKey nak
+                                                        && (nak.artifact().equals(artifactE) || nak.artifact().equals(artifactF))
+                                                        && !nak.nodeId().equals(NODE_A)))
+                .as("control: the core imbalance itself was rebalanced (a core donor moved E or F), so the path was live")
+                .isTrue();
     }
 
     /// Balanced spread: instances are evenly distributed across allocatable nodes —

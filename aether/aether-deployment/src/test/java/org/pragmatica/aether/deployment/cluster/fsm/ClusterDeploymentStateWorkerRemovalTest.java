@@ -13,6 +13,7 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Deploym
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.ActivationDirectivePutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.MembershipDecisionReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerJoinReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerLeaveReceived;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
@@ -25,11 +26,13 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -356,11 +359,10 @@ class ClusterDeploymentStateWorkerRemovalTest {
                     .contains(restoredWorker);
             assertThat(kvStore.get(directiveKey)).as("kept worker's ActivationDirectiveKey survives").isNotEqualTo(Option.empty());
             // NodeArtifactKey/NodeRoutesKey/SliceNodeKey are deliberately NOT asserted here: the same
-            // rebuildStateFromKVStore() call that just ran this sweep also unconditionally runs
-            // cleanupStaleNodeRoutes/SliceEntries/NodeArtifactEntries, which diff against activeNodes()
-            // (core-only) and so scrub ANY worker's rows regardless of liveness — a pre-existing gap
-            // this fix does not touch (tracked separately as #850, see changelog). workerNodes and
-            // ActivationDirectiveKey are the only footprint round 2's sweep itself controls.
+            // rebuildStateFromKVStore() call that just ran this sweep also runs
+            // cleanupStaleNodeRoutes/SliceEntries/NodeArtifactEntries, whose liveness set is pinned by
+            // LiveWorkerFootprint (#850). workerNodes and ActivationDirectiveKey are the only footprint
+            // round 2's sweep itself controls.
         }
 
         @Test
@@ -459,6 +461,174 @@ class ClusterDeploymentStateWorkerRemovalTest {
                     .doesNotContainKey(sliceKey);
             assertThat(kvStore.get(artifactKey)).isEqualTo(Option.empty());
             assertThat(kvStore.get(routesKey)).isEqualTo(Option.empty());
+        }
+    }
+
+    /// #850: the three reconcile-time stale-entry sweeps (`StaleEntryCleaner`) classify a KV row as
+    /// stale when its node is absent from the sweep's liveness set. That set was `activeNodes()` —
+    /// the CORE counted membership, worker-free by construction — so every row a LIVE worker owns
+    /// (`SliceNodeKey`/`NodeArtifactKey`/`NodeRoutesKey`) read as stale on every reconcile tick: the
+    /// worker's `NodeArtifactKey` was removed from the KV, which its own NDM answers with
+    /// `forceCleanupSlice` (the slice is unloaded while serving), and the CDM's `sliceStates` view
+    /// lost the placement, so the next tick re-placed it. A worker is registered in `workerNodes`
+    /// the moment its WORKER directive commits and leaves it only through the same `handleNodeRemoval`
+    /// that clears its rows, so the sweeps must treat a registered worker exactly like a counted core.
+    @Nested
+    class LiveWorkerFootprint {
+        private NodeArtifactKey artifactKey;
+        private NodeRoutesKey routesKey;
+        private SliceNodeKey sliceKey;
+
+        @BeforeEach
+        void placeOnLiveWorker() {
+            joinWorker(WORKER_1);
+            artifactKey = NodeArtifactKey.nodeArtifactKey(WORKER_1, ARTIFACT);
+            routesKey = NodeRoutesKey.nodeRoutesKey(WORKER_1, ARTIFACT);
+            sliceKey = SliceNodeKey.sliceNodeKey(ARTIFACT, WORKER_1);
+            var artifactValue = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
+
+            // The committed slice target is what `cleanupOrphanedSliceEntries` confirms against (#1068:
+            // the authority is the KV `SliceTargetValue`, not the blueprint projection), so it is committed
+            // here exactly as a real deploy commits it; the blueprint projection drives reconcile.
+            kvStore.put(SliceTargetKey.sliceTargetKey(ARTIFACT.base()), SliceTargetValue.sliceTargetValue(ARTIFACT.version(), 1, Option.empty()));
+            activeState().blueprints().put(ARTIFACT, Blueprint.blueprint(ARTIFACT, 1, 1, Option.empty(), true));
+            kvStore.put(artifactKey, artifactValue);
+            kvStore.put(routesKey, NodeRoutesValue.empty());
+            kvStore.put(sliceKey, AetherValue.SliceNodeValue.sliceNodeValue(SliceState.ACTIVE));
+            // The CDM learns of a placement from the committed NodeArtifactKey put — the same
+            // notification round-trip the production KV router delivers.
+            harness.dispatch(new NodeArtifactPutReceived(new ValuePut<>(new KVCommand.Put<>(artifactKey, artifactValue), Option.empty())));
+
+            assertThat(activeState().workerNodes()).contains(WORKER_1);
+            assertThat(activeState().sliceStates()).containsKey(sliceKey);
+        }
+
+        @Test
+        void reconcile_liveWorkerWithPlacement_keepsSliceStateAndKvRows() {
+            activeState().reconcile();
+
+            assertFootprintIntact("reconcile()");
+        }
+
+        @Test
+        void staleSliceEntrySweep_liveWorker_keepsItsSliceNodeRow() {
+            activeState().cleanupStaleSliceEntries();
+
+            assertFootprintIntact("cleanupStaleSliceEntries()");
+        }
+
+        @Test
+        void staleNodeArtifactSweep_liveWorker_keepsItsNodeArtifactRow() {
+            activeState().cleanupStaleNodeArtifactEntries();
+
+            assertFootprintIntact("cleanupStaleNodeArtifactEntries()");
+        }
+
+        @Test
+        void staleNodeRoutesSweep_liveWorker_keepsItsNodeRoutesRow() {
+            activeState().cleanupStaleNodeRoutes();
+
+            assertFootprintIntact("cleanupStaleNodeRoutes()");
+        }
+
+        /// Reviewer probe (verify-1127): with the rows kept, the reconcile count must also see the
+        /// worker's instance, or `instances=1` held by a live worker gets a SECOND instance allocated
+        /// on core — a permanent 2-ACTIVE steady state where the base at least churned.
+        @Test
+        void reconcile_liveWorkerHoldsTheOnlyInstance_placesNoSecondCoreInstance() {
+            cluster.commands.clear();
+
+            activeState().reconcile();
+
+            assertThat(activeState().sliceStates().keySet())
+                    .as("#850: an RF=1 slice held by a LIVE worker must not be allocated a second instance on core")
+                    .containsExactly(sliceKey);
+            assertThat(cluster.commands.stream()
+                                       .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                            && put.key() instanceof NodeArtifactKey nak
+                                                            && nak.artifact().equals(ARTIFACT)
+                                                            && !nak.nodeId().equals(WORKER_1)))
+                    .as("#850: no LOAD may be issued for the artifact on any node but the worker that holds it")
+                    .isFalse();
+        }
+
+        /// The inverse of the probe above: once the worker has LEFT, its instance no longer counts and
+        /// the shortfall is re-placed onto core (the #731 path, seen from this fixture).
+        @Test
+        void reconcile_departedWorkersInstance_isReplacedOnCore() {
+            cluster.commands.clear();
+
+            leaveWorker(WORKER_1);
+
+            assertThat(activeState().sliceStates()).doesNotContainKey(sliceKey);
+            assertThat(cluster.commands.stream()
+                                       .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                            && put.key() instanceof NodeArtifactKey nak
+                                                            && nak.artifact().equals(ARTIFACT)
+                                                            && nak.nodeId().equals(SELF)))
+                    .as("#850: a DEPARTED worker's instance must be replaced on the remaining core")
+                    .isTrue();
+        }
+
+        /// Reviewer probe (verify-1127 r2): with the stale sweeps keeping a live worker's rows, the orphan
+        /// sweep must include the worker too, or a worker-hosted slice whose committed target is gone is
+        /// never unloaded — the core-only inclusion filter it had from #1068 plus the kept rows left it
+        /// serving forever. The committed target is removed (an undeploy), the worker stays live.
+        @Test
+        void orphanSweep_workerHostedSliceWithNoCommittedTarget_isUnloaded() {
+            kvStore.commit(List.of(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(ARTIFACT.base()))));
+            cluster.commands.clear();
+
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(activeState().sliceStates())
+                    .as("#850: a worker-hosted orphan leaves the CDM slice-state view")
+                    .doesNotContainKey(sliceKey);
+            assertThat(cluster.commands.stream()
+                                       .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                            && put.key() instanceof NodeArtifactKey nak
+                                                            && nak.nodeId().equals(WORKER_1)
+                                                            && put.value() instanceof NodeArtifactValue nav
+                                                            && nav.state() == SliceState.UNLOAD))
+                    .as("#850: the orphan sweep must issue UNLOAD to the live worker exactly as it does to a core")
+                    .isTrue();
+        }
+
+        /// Control for the fix: a worker that HAS departed (left `workerNodes` through the leave
+        /// channel) is still swept. Without this the fix could pass by never sweeping anything.
+        @Test
+        void staleSweeps_departedWorker_stillRemoveItsRows() {
+            leaveWorker(WORKER_1);
+            // #731's handleNodeRemoval already clears the rows directly; re-seed them so the sweeps
+            // themselves are what is under test.
+            kvStore.put(artifactKey, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
+            kvStore.put(routesKey, NodeRoutesValue.empty());
+            kvStore.put(sliceKey, AetherValue.SliceNodeValue.sliceNodeValue(SliceState.ACTIVE));
+            activeState().sliceStates().put(sliceKey, SliceState.ACTIVE);
+
+            activeState().cleanupStaleSliceEntries();
+            activeState().cleanupStaleNodeArtifactEntries();
+            activeState().cleanupStaleNodeRoutes();
+
+            assertThat(activeState().sliceStates()).doesNotContainKey(sliceKey);
+            assertThat(kvStore.get(artifactKey)).isEqualTo(Option.empty());
+            assertThat(kvStore.get(routesKey)).isEqualTo(Option.empty());
+            assertThat(kvStore.get(sliceKey)).isEqualTo(Option.empty());
+        }
+
+        private void assertFootprintIntact(String sweep) {
+            assertThat(activeState().sliceStates())
+                    .as("#850: %s must not drop a LIVE worker's placement from the CDM slice-state view", sweep)
+                    .containsKey(sliceKey);
+            assertThat(kvStore.get(artifactKey))
+                    .as("#850: %s must not remove a LIVE worker's NodeArtifactKey (its NDM answers that with a force-unload)", sweep)
+                    .isNotEqualTo(Option.empty());
+            assertThat(kvStore.get(routesKey))
+                    .as("#850: %s must not remove a LIVE worker's NodeRoutesKey", sweep)
+                    .isNotEqualTo(Option.empty());
+            assertThat(kvStore.get(sliceKey))
+                    .as("#850: %s must not remove a LIVE worker's SliceNodeKey", sweep)
+                    .isNotEqualTo(Option.empty());
         }
     }
 

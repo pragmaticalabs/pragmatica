@@ -37,7 +37,90 @@ Two consequences follow directly:
 - **All nodes in a cluster trust each other completely.** Any node that can complete the join
   handshake is a full member — able to reach every slice, every KV key, and (if storage encryption
   is enabled) every data key in that cluster. There is currently no per-node revocation short of
-  removing the node and rotating the shared secret.
+  removing the node and rotating the shared secret. For the gossip layer specifically there is one
+  in-place mitigation, `aether cluster rotate-gossip-key` (`POST /api/v1/cluster/gossip-key/rotate`,
+  ADMIN), which pushes a fresh, non-derived gossip key through consensus without a restart (#683).
+  Three facts about it, accepted and stated:
+  - **The key material lives in the consensus log and its snapshots, readable by any KV reader** —
+    accepted by the §5.8 delivery design because a per-node out-of-band channel would need a second
+    trust root, and every KV reader is already a full member.
+  - **After the first rotation the `cluster_secret`-derived daily key is permanently superseded on
+    that cluster.** The delivered key is what every node encrypts under from then on. The first
+    rotation carries NO decrypt overlap (there is no prior record to carry), so boot-key ciphertext
+    is rejected from the moment it lands; subsequent rotations carry the previous key.
+  - **A ROTATED CLUSTER CANNOT GROW UNTIL AN OPERATOR ACTS — INCLUDING AUTO-HEAL.**
+
+    **If a node will not join after a rotation, CHECK THE SEED NODES' LOGS, NOT THE NEW NODE'S.**
+    Look for `Failed to decrypt gossip from <id>` on the seeds. This is the first thing to know
+    because it inverts where you will instinctively look: a node the cluster has never heard of
+    logs **nothing** about the cause — worse, it logs `Aether node <id> started, cluster forming...`
+    and then stays quiet, because an unreachable quorum is retried and never exits. The only
+    evidence is on the healthy machines you have no reason to suspect.
+
+    The mechanism: a node booting after a rotation derives its gossip key from `cluster_secret`,
+    which the rotated cluster no longer accepts; its SWIM datagrams are dropped and it cannot decrypt
+    the cluster's either. SWIM therefore discovers no peers, the QUIC dial set stays self-only, no
+    quorum forms, and the consensus replay that carries the rotation record — the only way to obtain
+    the cluster key — never runs. The node cannot join, and the cycle cannot resolve itself.
+    **So an emergency rotation, performed precisely because something was compromised, leaves the
+    cluster unable to self-heal: auto-heal replacements, scale-up and re-provisioned nodes all fail
+    to join until they are given the rotated key material out of band.** Existing running nodes are
+    unaffected.
+
+    Which nodes say so for themselves:
+    - A **restarted existing member** refuses to boot with a `FATAL` line naming gossip-key
+      divergence (#683) — its peers still hold it in their configured seed set, so they probe it and
+      it can see gossip arriving under a key id it does not hold.
+    - A **node the cluster has never heard of** — an auto-heal replacement or scale-up node — cannot
+      detect it at all. Nobody probes an address they do not know, so it receives nothing, and its
+      silence is indistinguishable from a partition, down seeds, or a wrong advertise address. Hence
+      the instruction above.
+
+    A general key-delivery path for joining nodes is not in rc4. It is an architecture change — it
+    needs either a second trust root or a deliberately weakened revocation — and the choice is an open
+    **owner decision tracked as #1200**. Until that lands, the out-of-band re-provisioning described
+    above is the supported answer.
+
+    **Exposure introduced by the boot refusal, stated as capability.** The refusal counts
+    same-key-id-consecutive undecryptable datagrams, and an unencrypted datagram is **not**
+    distinguishable from a rotated peer's by that signal alone — anything at least as long as the
+    16-byte header has its first four bytes read as a key id. So an attacker who can send UDP to a
+    node's SWIM port, while that node has gone a full minute without decrypting a single gossip
+    datagram, can end that node's process. This needs **no privileged position**: the SWIM listener
+    decrypts datagrams from any sender with no source check, and the default firewall preset opens
+    SWIM UDP to `0.0.0.0/0`, so the packets are off-path and spoofable, and a restart supervisor will
+    crash-loop the node.
+
+    Two bounds contain it, and they are not equally load-bearing — **the first is the protection, the
+    second only bounds what the first has not yet covered:**
+    - **A node that has decrypted even once is immune, permanently.** One successful decrypt latches
+      the check off for the life of the process, so no volume of later traffic can reach it —
+      measured at 500 junk packets after a single successful decrypt, no effect. A healthy node in a
+      healthy cluster decrypts within seconds of SWIM starting. **This, not the arming delay, is what
+      keeps running nodes safe.**
+    - **The arming delay only bounds the pre-decrypt interval, and it costs an attacker patience
+      rather than bandwidth.** It removes the instant kill — before it, eight packets sufficed — but
+      it does not make the attack expensive: **a one-packet-per-second stream that merely crosses the
+      60-second boundary trips the gate at 68 packets, needing no knowledge of when the node booted.**
+      The exposed population is therefore nodes that have not yet decrypted anything, for a bounded
+      interval, at a price measured in seconds of waiting.
+
+    **Do not "harden" this by lengthening the arming delay.** That widens the pre-decrypt interval,
+    which is the only interval that was ever exposed; it makes the exposure worse, not better.
+
+    **Both bounds are CHOSEN, not measured.** 60 seconds is intended to clear a healthy node's
+    first-decrypt latency — expected to be seconds after SWIM starts, itself unmeasured — by roughly
+    an order of magnitude, so a spurious refusal needs a node that is genuinely not communicating.
+    10 minutes is intended to clear, by a similar margin, the time a restarted member takes to
+    accumulate the threshold once its peers begin probing it, while still ending the interval in
+    which the process can be killed. Neither number was derived from a measured distribution; both
+    margins were chosen deliberately wide, and **whether the behaviour is sensitive to either is
+    unknown until those distributions are measured** (#1208).
+
+    Do not read the pre-existing alternatives as making this free: dropping traffic requires being
+    on-path and flooding requires sustained bandwidth, whereas this requires a handful of spoofable
+    packets aimed at a node in a state an attacker can wait for. It is a remote-input-triggered
+    process exit that did not exist before #683.
 - **The runtime/slice boundary is an accident boundary, not a security sandbox.** Each slice loads
   in its own `SliceClassLoader` [mechanism: `aether/slice/src/main/java/org/pragmatica/aether/slice/SliceClassLoader.java`],
   which isolates classpaths across slices/versions. This is **not** a hardened security boundary:

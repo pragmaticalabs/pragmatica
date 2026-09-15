@@ -41,7 +41,6 @@ import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.api.routes.RetentionRoutes;
 import org.pragmatica.aether.api.DynamicConfigManager;
-import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.DynamicConfigurationProvider;
@@ -390,7 +389,6 @@ public interface AetherNode extends ManageableNode {
     ArtifactMetricsCollector artifactMetricsCollector();
     DeploymentMap deploymentMap();
     ClusterEventAggregator eventAggregator();
-    BackupService backupService();
     StreamPartitionManager streamPartitionManager();
     StreamReadRouter streamReadRouter();
     ConsumerGroupCoordinator consumerGroupCoordinator();
@@ -1605,7 +1603,6 @@ public interface AetherNode extends ManageableNode {
                           ArtifactMetricsCollector artifactMetricsCollector,
                           DeploymentMap deploymentMap,
                           ClusterEventAggregator eventAggregator,
-                          BackupService backupService,
                           StreamPartitionManager streamPartitionManager,
                           SegmentIndex streamSegmentIndex,
                           StreamReadRouter streamReadRouter,
@@ -1838,9 +1835,33 @@ public interface AetherNode extends ManageableNode {
                                                                              .or(Promise.unitPromise()))
                                                .flatMap(_ -> appHttpServer.stop())
                                                .flatMap(_ -> sliceInvoker.stop())
+                                               .map(_ -> shutdownStorage())
                                                .flatMap(_ -> clusterNode.stop())
                                                .onSuccess(_ -> log.info("Aether node {} stopped",
                                                                         self()));
+            }
+
+            /// #1078: the three node-owned storage instances (`content`, `artifacts`, `streams`)
+            /// were never shut down — `StorageInstance.shutdown()` is the path that drains a
+            /// write-behind queue, and no stop reached it. Placed after the slice invoker (the
+            /// writers are stopped) and before the cluster node (a DHT tier can still be reached
+            /// while draining). Infallible by design: `shutdown()` is a void contract, and a
+            /// storage failure here must not skip `clusterNode.stop()` behind it.
+            @Contract
+            private Unit shutdownStorage() {
+                storageSetups.forEach((name, setup) -> shutdownStorage(name, setup));
+
+                return Unit.unit();
+            }
+
+            @Contract
+            @SuppressWarnings("JBCT-EX-01")
+            private static void shutdownStorage(String name, StorageFactory.StorageSetup setup) {
+                try {
+                    setup.instance().shutdown();
+                } catch (RuntimeException e) {
+                    log.warn("Storage instance '{}' failed to shut down cleanly: {}", name, e.getMessage());
+                }
             }
 
             private Promise<Unit> startClusterAsync() {
@@ -2751,6 +2772,10 @@ public interface AetherNode extends ManageableNode {
         AccessibilityFilter accessibilityFilter = candidates -> Option.option(membershipFsmRef.get())
                                                                       .map(fsm -> fsm.reachableMembers(candidates))
                                                                       .or(candidates);
+        // #275: the same narrowing for slice-to-slice invocation — a co-confirmed-DEAD node's endpoints
+        // stay registered until the CDM's removal cleanup lands, and without this a new invocation
+        // was round-robined onto it and hung for the invoker timeout.
+        sliceInvoker.setAccessibilityFilter(accessibilityFilter);
         var appHttpServer = AppHttpServer.appHttpServer(config.appHttp(),
                                                         config.timeouts().forwarding(),
                                                         config.self(),
@@ -2950,10 +2975,27 @@ public interface AetherNode extends ManageableNode {
         // Gossip-key delivery (§5.8 AMENDED): the GossipKeyRotationKey subscription above is the
         // SOLE delivery path. A late joiner that synced AFTER the rotation PUT receives the
         // current rotation as a replayed ValuePut on this normal subscription once the engine
-        // activates (sync → activate → replay) — no ad-hoc replayFromStore needed. The replay
-        // burst structurally precedes any live apply, so the joiner adopts the cluster key before
-        // it sends its first SWIM datagram. applyRotation is idempotent, so a later live rotation
-        // re-PUT is harmless.
+        // activates (sync → activate → replay) — no ad-hoc replayFromStore needed. applyRotation
+        // is idempotent, so a later live rotation re-PUT is harmless.
+        //
+        // #683 round 2 — WHAT THIS ORDERING DOES **NOT** GUARANTEE. An earlier version of this
+        // comment said the replay burst "structurally precedes any live apply, so the joiner
+        // adopts the cluster key before it sends its first SWIM datagram". The first half is true
+        // of KV notification ordering; the second is false of SWIM datagram ordering, and it was
+        // the safety argument for late joiners. SWIM starts on QUIC transport-ready
+        // (`clusterNode.network().whenReady(startSwimTrigger)`), deliberately BEFORE
+        // startClusterAsync() resolves — so the joiner's first SWIM datagram is sent strictly
+        // EARLIER in boot than the replay, which is reached only via restore → activate → replay
+        // inside the consensus engine.
+        //
+        // The consequence is a cycle, not merely a window: a node booting into a cluster that has
+        // already rotated encrypts SWIM under its cluster_secret-derived key, which the rotated
+        // accept set no longer contains, so peers drop its datagrams and it drops theirs. SWIM
+        // discovers nothing; the QUIC dial set is self-only and SWIM is its sole writer besides
+        // self (TopologyObserverTest.SwimOnlyDialSet); without peers there is no quorum, and
+        // without quorum there is no sync/activate/replay — so the record that would install the
+        // cluster key never arrives. GossipKeyRotationBootDivergenceTest pins both directions of
+        // the key divergence this rests on.
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
 
         allEntries.addAll(aetherEntries);
@@ -3547,7 +3589,6 @@ public interface AetherNode extends ManageableNode {
                                                               clusterNode);
 
         attachQuicConnectivityReporter(clusterNode.network(),
-                                       isLeaderSupplier,
                                        peerObservationStore,
                                        leaderEpochSupplier,
                                        nttConnectTap,
@@ -4346,7 +4387,6 @@ public interface AetherNode extends ManageableNode {
                                   artifactMetricsCollector,
                                   deploymentMap,
                                   eventAggregator,
-                                  BackupService.disabled(),
                                   streamPartitionManager,
                                   streamSegmentIndex,
                                   streamReadRouter,
@@ -4562,7 +4602,6 @@ public interface AetherNode extends ManageableNode {
                                                                         artifactMetricsCollector,
                                                                         deploymentMap,
                                                                         eventAggregator,
-                                                                        BackupService.disabled(),
                                                                         streamPartitionManager,
                                                                         streamSegmentIndex,
                                                                         streamReadRouter,
@@ -4847,7 +4886,9 @@ public interface AetherNode extends ManageableNode {
     /// - transportConnected — the leader's own cluster-transport view;
     /// - in-flight — this leader's reconciler in-flight keys plus the set retained from the previous leader's
     ///   pings;
-    /// - configured — the committed `ClusterConfigValue.coreCount`, else the bootstrap topology size.
+    /// - configured — the committed `ClusterConfigValue.coreCount`, else the bootstrap topology size;
+    /// - advertisedRole (#689) — the FSM's `memberDescriptor(id).role()`, the self-asserted role the projector
+    ///   classified the node's join by; `none()` for an untracked id or before the FSM is published.
     ///
     /// Before the FSM, detector or reconciler is published, its projection reads empty or false, which every
     /// reap gate treats as not quorum-safe (fail-closed). `DrainGraceLivenessSeamTest` pins this method.
@@ -4867,7 +4908,14 @@ public interface AetherNode extends ManageableNode {
                                                      () -> inFlightProvisioning(leaderReconciler.get(),
                                                                                 retainedDispatched.get()),
                                                      () -> configuredCoreCount(clusterConfigReader.get(),
-                                                                               topologyCoreNodes));
+                                                                               topologyCoreNodes),
+                                                     nodeId -> advertisedRole(membershipFsm.get(), nodeId));
+    }
+
+    private static Option<String> advertisedRole(MembershipFsm membershipFsm, NodeId nodeId) {
+        return Option.option(membershipFsm)
+                     .flatMap(fsm -> fsm.memberDescriptor(nodeId))
+                     .map(MemberDescriptor::role);
     }
 
     private static Set<NodeId> fsmProjection(MembershipFsm membershipFsm,
@@ -4922,15 +4970,19 @@ public interface AetherNode extends ManageableNode {
         Option.option(quorumLossDetectorRef.get()).onPresent(detector -> detector.onQuorumPresence(notification.state() != ClusterStateNotification.State.PASSIVE));
     }
 
+    /// #517: self is in its own topology by the time assembly runs — `TopologyObserver.topologyObserver`
+    /// (via `RabiaNode.rabiaNode`, before `assembleNode`) refuses the config otherwise, pinned by
+    /// `AetherNodeSelfAbsentFromTopologyBootTest`. The old `.orElse(new NodeAddress("", 0))` was a
+    /// dead branch that would have advertised a placeholder silently if that ordering ever changed.
     private static NodeAddress findSelfAddress(AetherNodeConfig config) {
-        return config.topology()
-                     .coreNodes()
-                     .stream()
-                     .filter(info -> info.id()
-                                         .equals(config.self()))
-                     .map(NodeInfo::address)
-                     .findFirst()
-                     .orElse(new NodeAddress("", 0));
+        return Option.from(config.topology()
+                                 .coreNodes()
+                                 .stream()
+                                 .filter(info -> info.id()
+                                                     .equals(config.self()))
+                                 .map(NodeInfo::address)
+                                 .findFirst()).expect("self " + config.self()
+                                                     + " absent from its own topology — refused by TopologyObserver.topologyObserver before assembly (#517)");
     }
 
     private static AetherValue.ProvisioningSource detectProvisioningSource() {
@@ -5128,7 +5180,6 @@ public interface AetherNode extends ManageableNode {
     /// `ingestSelfTransition` fast-path is removed — SWIM (fed by these QUIC hints) is now the
     /// single liveness signal, so the separate reachability fold is gone.
     private static void attachQuicConnectivityReporter(ClusterNetwork network,
-                                                       BooleanSupplier isLeaderSupplier,
                                                        PeerObservationBuffer buffer,
                                                        Supplier<Epoch> epochSupplier,
                                                        Consumer<NodeId> onNttConnect,
@@ -5185,7 +5236,7 @@ public interface AetherNode extends ManageableNode {
             }
         };
 
-        quicNetwork.setFollowerObservationWiring(isLeaderSupplier, reporter, epochAdapter);
+        quicNetwork.setFollowerObservationWiring(reporter, epochAdapter);
     }
 
     /// #1050 — only the FAULTY edge reaches [`ClusterTopologyManager#onSwimFaulty`]; every other observation
@@ -5386,13 +5437,21 @@ public interface AetherNode extends ManageableNode {
     // plane, so gating it behind the replacement's own quorum deadlocked sub-quorum
     // auto-heal. The gossip encryptor is ready at boot (createGossipEncryptor), and the
     // COLD_BOOT/`isBooting` FAULTY-suppression keeps pre-quorum SWIM safe.
+    /// #683: the transport sees the encryptor through [GossipKeyDivergenceGuard], which refuses the
+    /// boot if gossip arrives under a key epoch this node does not hold and none has ever decrypted
+    /// — the signature of a cluster that rotated its gossip key after this node's derived key was
+    /// issued. The guard decorates for the TRANSPORT only; `encryptor` itself stays the rotation
+    /// target, so an applied rotation is picked up through the delegate and disarms the guard.
+    /// `System.exit(1)` mirrors `Main`'s other boot gates: the failure surfaces at deployment time
+    /// rather than as a silent, permanently unjoinable node.
     private static void startSwim(CoreSwimHealthDetector swimHealthDetector,
                                   ClusterNetwork network,
                                   RotatingGossipEncryptor encryptor,
                                   Runnable announceJoinTrigger) {
         var workerGroup = network.server().map(Server::workerGroup);
+        var guarded = GossipKeyDivergenceGuard.gossipKeyDivergenceGuard(encryptor, () -> System.exit(1));
 
-        swimHealthDetector.start(workerGroup, encryptor);
+        swimHealthDetector.start(workerGroup, guarded);
         announceJoinTrigger.run();
     }
 
@@ -5756,16 +5815,9 @@ public interface AetherNode extends ManageableNode {
         return resolveLongEnv("CLUSTER_EVENTS_MAX_EVENT_SIZE_BYTES", 64L * 1024);
     }
 
+    /// #517: same invariant as [#findSelfAddress]; `localhost` was a dead placeholder, never a default.
     private static String resolveHostname(AetherNodeConfig config) {
-        return config.topology()
-                     .coreNodes()
-                     .stream()
-                     .filter(n -> n.id()
-                                   .equals(config.self()))
-                     .findFirst()
-                     .map(n -> n.address()
-                                .host())
-                     .orElse("localhost");
+        return findSelfAddress(config).host();
     }
 
     private static List<MessageRouter.Entry<?>> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,
@@ -6028,6 +6080,9 @@ public interface AetherNode extends ManageableNode {
                                               clusterTopologyManager::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                               clusterTopologyManager::onMembershipDecision));
+        // #689: the worker join channel reaches the CTM too, so a provisioned node's advertised role
+        // is compared against its provisioning intent on whichever channel it joins.
+        entries.add(MessageRouter.Entry.route(WorkerJoinDecision.class, clusterTopologyManager::onWorkerJoin));
         // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
                                               clusterTopologyManager::onSelfShutdown));
@@ -6123,14 +6178,10 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(OperationalEvent.NodeLifecycleChanged.class,
                                               eventAggregator::onNodeLifecycleChanged));
         entries.add(MessageRouter.Entry.route(OperationalEvent.ConfigChanged.class, eventAggregator::onConfigChanged));
-        entries.add(MessageRouter.Entry.route(OperationalEvent.BackupCreated.class, eventAggregator::onBackupCreated));
-        entries.add(MessageRouter.Entry.route(OperationalEvent.BackupRestored.class, eventAggregator::onBackupRestored));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeployed.class,
                                               eventAggregator::onBlueprintDeployed));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeleted.class,
                                               eventAggregator::onBlueprintDeleted));
-        entries.add(MessageRouter.Entry.route(OperationalEvent.GenerationChanged.class,
-                                              eventAggregator::onGenerationChanged));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));
         entries.add(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardRequest.class,

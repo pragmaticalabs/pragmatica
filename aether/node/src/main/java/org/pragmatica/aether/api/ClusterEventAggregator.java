@@ -16,8 +16,6 @@ import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.api.ClusterEvent.AccessDenied;
-import org.pragmatica.aether.api.ClusterEvent.BackupCreated;
-import org.pragmatica.aether.api.ClusterEvent.BackupRestored;
 import org.pragmatica.aether.api.ClusterEvent.BlueprintDeleted;
 import org.pragmatica.aether.api.ClusterEvent.BlueprintDeployed;
 import org.pragmatica.aether.api.ClusterEvent.ConfigChanged;
@@ -27,7 +25,6 @@ import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentStarted;
-import org.pragmatica.aether.api.ClusterEvent.GenerationChanged;
 import org.pragmatica.aether.api.ClusterEvent.LeaderElected;
 import org.pragmatica.aether.api.ClusterEvent.LeaderLost;
 import org.pragmatica.aether.api.ClusterEvent.NodeFailed;
@@ -965,22 +962,6 @@ public final class ClusterEventAggregator {
     }
 
     @Contract
-    public void onBackupCreated(OperationalEvent.BackupCreated event) {
-        emit(new BackupCreated(hlcClock.now(),
-                               Severity.INFO,
-                               "Backup created: " + event.commitId(),
-                               Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
-    }
-
-    @Contract
-    public void onBackupRestored(OperationalEvent.BackupRestored event) {
-        emit(new BackupRestored(hlcClock.now(),
-                                Severity.WARNING,
-                                "Backup restored: " + event.commitId(),
-                                Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
-    }
-
-    @Contract
     public void onBlueprintDeployed(OperationalEvent.BlueprintDeployed event) {
         emit(new BlueprintDeployed(hlcClock.now(),
                                    Severity.INFO,
@@ -994,22 +975,6 @@ public final class ClusterEventAggregator {
                                   Severity.INFO,
                                   "Blueprint deleted: " + event.artifactId(),
                                   Map.of("artifactId", event.artifactId(), "requestedBy", event.requestedBy())));
-    }
-
-    @Contract
-    public void onGenerationChanged(OperationalEvent.GenerationChanged event) {
-        emitAsLeader(new GenerationChanged(hlcClock.now(),
-                                           Severity.INFO,
-                                           "Generation epoch advanced " + event.oldEpoch()
-                                          + " -> " + event.newEpoch()
-                                          + " (" + event.reason()
-                                          + ")",
-                                           Map.of("oldEpoch",
-                                                  event.oldEpoch(),
-                                                  "newEpoch",
-                                                  event.newEpoch(),
-                                                  "reason",
-                                                  event.reason())));
     }
 
     @Contract

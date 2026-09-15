@@ -100,8 +100,8 @@ class RabiaSyncAdoptionQuorumTest {
         void bareMajorityColdStart_activates_whenQuorumMinusOnePeersAnswer() {
             var engine = coldStarted(5);
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty()));
-            engine.processSyncResponse(new SyncResponse<>(NODE_3, SavedState.empty()));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty(), ResponderState.COLD));
+            engine.processSyncResponse(new SyncResponse<>(NODE_3, SavedState.empty(), ResponderState.COLD));
 
             assertThat(awaitActive(engine))
                 .as("2 peer responses + self = 3 of 5 = a majority; requiring a 3rd response demanded 4 live nodes")
@@ -114,7 +114,7 @@ class RabiaSyncAdoptionQuorumTest {
         void threeNodeCluster_activates_onOnePeerResponse() {
             var engine = coldStarted(3);
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty()));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty(), ResponderState.COLD));
 
             assertThat(awaitActive(engine))
                 .as("1 peer response + self = 2 of 3 = a majority")
@@ -140,8 +140,8 @@ class RabiaSyncAdoptionQuorumTest {
         void fourNodeCluster_activates_onTwoPeerResponses() {
             var engine = coldStarted(4);
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty()));
-            engine.processSyncResponse(new SyncResponse<>(NODE_3, SavedState.empty()));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty(), ResponderState.COLD));
+            engine.processSyncResponse(new SyncResponse<>(NODE_3, SavedState.empty(), ResponderState.COLD));
 
             assertThat(awaitActive(engine))
                 .as("2 responses + self = 3 of 4 = a majority")
@@ -154,7 +154,7 @@ class RabiaSyncAdoptionQuorumTest {
         void twoNodeCluster_activates_onOnePeerResponse() {
             var engine = coldStarted(2);
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty()));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty(), ResponderState.COLD));
 
             assertThat(awaitActive(engine))
                 .as("1 response + self = 2 of 2 = a majority")
@@ -173,7 +173,7 @@ class RabiaSyncAdoptionQuorumTest {
         void oneResponse_isAMinorityOfFive_andMustNotActivate() throws InterruptedException {
             var engine = coldStarted(5);
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty()));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty(), ResponderState.COLD));
 
             assertThat(staysInactive(engine))
                 .as("1 response + self = 2 of 5 is a minority — adopting state on it is the bug #660 must not introduce")
@@ -201,8 +201,8 @@ class RabiaSyncAdoptionQuorumTest {
             var engine = coldStarted(5, stateMachine, persistedAt(Phase.phase(42), SELF_SNAPSHOT));
             var stale = SavedState.<TestCommand>savedState(PEER_SNAPSHOT, Phase.phase(10), List.of());
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, stale));
-            engine.processSyncResponse(new SyncResponse<>(NODE_3, stale));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, stale, ResponderState.COLD));
+            engine.processSyncResponse(new SyncResponse<>(NODE_3, stale, ResponderState.COLD));
 
             assertThat(awaitActive(engine))
                 .as("the node must still ACTIVATE — refusing to regress is not a reason to stay dead")
@@ -220,11 +220,11 @@ class RabiaSyncAdoptionQuorumTest {
             var stateMachine = new RecordingStateMachine();
             var engine = coldStarted(5, stateMachine, persistedAt(Phase.phase(7), SELF_SNAPSHOT));
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty()));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty(), ResponderState.COLD));
             engine.processSyncResponse(new SyncResponse<>(NODE_3,
                                                           SavedState.savedState(PEER_SNAPSHOT,
                                                                                 Phase.phase(99),
-                                                                                List.of())));
+                                                                                List.of()), ResponderState.COLD));
 
             assertThat(awaitActive(engine))
                 .as("engine must reach ACTIVE so the adopted candidate is observable")
@@ -243,11 +243,11 @@ class RabiaSyncAdoptionQuorumTest {
             var stateMachine = new RecordingStateMachine();
             var engine = coldStarted(5, stateMachine, persistedAt(Phase.phase(5), SELF_SNAPSHOT));
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty()));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty(), ResponderState.COLD));
             engine.processSyncResponse(new SyncResponse<>(NODE_3,
                                                           SavedState.savedState(PEER_SNAPSHOT,
                                                                                 Phase.phase(5),
-                                                                                List.of())));
+                                                                                List.of()), ResponderState.COLD));
 
             assertThat(awaitActive(engine))
                 .as("engine must reach ACTIVE so the adopted candidate is observable")
@@ -291,8 +291,8 @@ class RabiaSyncAdoptionQuorumTest {
 
             var stale = SavedState.<TestCommand>savedState(PEER_SNAPSHOT, Phase.phase(10), List.of());
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, stale));
-            engine.processSyncResponse(new SyncResponse<>(NODE_3, stale));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, stale, ResponderState.COLD));
+            engine.processSyncResponse(new SyncResponse<>(NODE_3, stale, ResponderState.COLD));
 
             assertThat(awaitActive(engine))
                 .as("the node must still ACTIVATE — holding its own history is not a reason to stay dead")

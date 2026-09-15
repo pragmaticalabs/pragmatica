@@ -33,7 +33,7 @@ import org.pragmatica.http.ContentCategory;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.aether.api.routes.AlertRoutes;
 import org.pragmatica.aether.api.routes.ApiKeyRoutes;
-import org.pragmatica.aether.api.routes.BackupRoutes;
+import org.pragmatica.aether.api.routes.GossipKeyRoutes;
 import org.pragmatica.aether.api.routes.ClusterAwaitQuiescedRoute;
 import org.pragmatica.aether.api.routes.ClusterConfigRoutes;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
@@ -348,9 +348,6 @@ class ManagementServerImpl implements ManagementServer {
                                      .map(ClusterConfigApplier::clusterConfigApplier)
                                      .map(applier -> ClusterConfigRoutes.clusterConfigRoutes(nodeSupplier, applier))
                                      .or(ClusterConfigRoutes.clusterConfigRoutes(nodeSupplier)));
-        routeSources.add(BackupRoutes.backupRoutes(() -> nodeSupplier.get()
-                                                                     .backupService(),
-                                                   nodeSupplier));
         routeSources.add(SchemaRoutes.schemaRoutes(nodeSupplier));
         routeSources.add(StreamRoutes.streamRoutes(nodeSupplier,
                                                    nodeSupplier.get().consumerGroupCoordinator(),
@@ -370,6 +367,7 @@ class ManagementServerImpl implements ManagementServer {
 
         apiKeyRoutesRef.set(apiKeyRoutes);
         routeSources.add(apiKeyRoutes);
+        routeSources.add(GossipKeyRoutes.gossipKeyRoutes(nodeSupplier));
         routeSources.add(DhtRoutes.dhtRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.VersionRoutes.versionRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.WorkerRoutes.workerRoutes(nodeSupplier));

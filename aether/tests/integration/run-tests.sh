@@ -42,9 +42,18 @@ TIMINGS_FILE="$(mktemp /tmp/aether-test-timings.XXXXXX)"
 # Child processes (suites) may record per-await durations here.
 export QUIESCED_TIMINGS_FILE="$TIMINGS_FILE"
 
+# Captured BEFORE the defaults below assign over them. resolve_cluster_name (lib/cluster.sh)
+# deliberately never reads CLUSTER_{A,B}_NAME itself, so it cannot mistake a default this
+# script just set for a name the operator chose. Set CLUSTER_A_NAME / CLUSTER_B_NAME in the
+# environment to give one arm its own cluster name, state dir and aether-cluster label —
+# required before running two arms concurrently, because the reaper scopes by that label and
+# an unscoped second arm's teardown reaps the first arm's live VMs.
+CLUSTER_A_NAME_EXPLICIT="${CLUSTER_A_NAME:-}"
+CLUSTER_B_NAME_EXPLICIT="${CLUSTER_B_NAME:-}"
+
 # Cluster A: non-destructive (parallel)
 COMPOSE_A="${SCRIPT_DIR}/docker-compose-a.yml"
-CLUSTER_A_NAME="test-a"
+CLUSTER_A_NAME="$(resolve_cluster_name a container)"
 # Direct entry point: node-1's host-mapped mgmt port. `_resolve_live_endpoint`
 # (lib/common.sh) handles failover by health-probing MGMT_PORT..MGMT_PORT+N-1
 # and updating the pin to the first live node — structurally equivalent to a
@@ -62,7 +71,7 @@ CLUSTER_A_LB_MGMT=""
 
 # Cluster B: destructive (sequential)
 COMPOSE_B="${SCRIPT_DIR}/docker-compose-b.yml"
-CLUSTER_B_NAME="test-b"
+CLUSTER_B_NAME="$(resolve_cluster_name b container)"
 # Direct entry point: node-1's host-mapped mgmt port. Same rationale as
 # CLUSTER_A_MGMT above. `_resolve_live_endpoint` failover preserves destructive-
 # test resilience: if node-1 (the pinned endpoint) is killed, the resolver
@@ -89,7 +98,7 @@ CLUSTER_A_SUITES=(00 04 06 07 08 09 10 11 14 15)
 # rather than a member of 02-chaos: the 8th test of that suite fails whichever test it is
 # (see #593, and #594 for the probable cause). Listing it here means it gets its own
 # cluster-B pass instead of inheriting six chaos tests' worth of un-reconciled churn.
-CLUSTER_B_SUITES=(05 13 12 03 02 02y 02w)
+CLUSTER_B_SUITES=(05 13 12 03 02 02y 02w 02s)
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -190,8 +199,8 @@ case "$ENV_TYPE" in
         case "$CLOUD_RUNTIME" in
             container) ;;
             jvm)
-                CLUSTER_A_NAME="cloud-test-a-jvm"
-                CLUSTER_B_NAME="cloud-test-b-jvm"
+                CLUSTER_A_NAME="$(resolve_cluster_name a jvm)"
+                CLUSTER_B_NAME="$(resolve_cluster_name b jvm)"
                 ;;
             *)
                 echo "ERROR: --runtime must be 'container' or 'jvm', got: ${CLOUD_RUNTIME}"
