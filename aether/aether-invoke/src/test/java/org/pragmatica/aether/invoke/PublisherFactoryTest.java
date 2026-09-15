@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.Publisher;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
+import org.pragmatica.aether.slice.blueprint.OwningBlueprintResolver;
 import org.pragmatica.aether.slice.blueprint.TopicAddressResolver;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
@@ -163,15 +164,30 @@ class PublisherFactoryTest {
         }
     }
 
-    /// RC2 #274 — the publisher (provisioned here from the slice-id) and the subscriber (registered
-    /// by the deployment FSM) MUST resolve the same bare topic name to the same blueprint-derived
-    /// namespace, or co-deployed pub/sub silently stops delivering. The publisher reads its owning
-    /// slice's [Artifact] from the provisioning context's slice-id extension and resolves via the
-    /// same [TopicAddressResolver] the subscriber uses.
+    /// RC2 #274 + #1216 — the publisher (provisioned here from the slice-id) and the subscriber
+    /// (registered by the deployment FSM) MUST resolve the same bare topic name to the same
+    /// BLUEPRINT-derived namespace, or co-deployed pub/sub silently stops delivering.
+    ///
+    /// #1216 REWROTE THIS FIXTURE BECAUSE IT SPECIFIED THE DEFECT RATHER THAN MISSING IT. Its
+    /// co-deployment test passed ONE artifact to both ends, which is not co-deployment at all, and
+    /// its sibling passed two distinct SLICES, asserted non-delivery, and commented that they lived
+    /// in different blueprints — while the namespace derivation never saw a blueprint. That second
+    /// test therefore asserted the production failure AS CORRECT BEHAVIOUR: any two co-deployed
+    /// distinct slices could never agree on an address, and `TopicPublisher` reported success having
+    /// delivered nothing.
+    ///
+    /// Both tests below now use the SAME two distinct slice artifacts, so slice-distinctness is held
+    /// constant and the OWNING BLUEPRINT is the only variable that differs between them. That pairing
+    /// is what makes them statements about blueprints; either one alone is satisfied by the defect.
     @Nested
     class NamespaceAlignment {
         private static final MethodName METHOD = MethodName.methodName("onMessage").unwrap();
         private static final NodeId NODE = new NodeId("node-a");
+
+        private static final Artifact BLUEPRINT = Artifact.artifact("org.example:orders-app:1.0.0").unwrap();
+        private static final Artifact OTHER_BLUEPRINT = Artifact.artifact("org.example:billing-app:1.0.0").unwrap();
+        private static final Artifact PUBLISHER_SLICE = Artifact.artifact("org.example:order-intake:1.0.0").unwrap();
+        private static final Artifact SUBSCRIBER_SLICE = Artifact.artifact("org.example:order-audit:1.0.0").unwrap();
 
         private TopicSubscriptionRegistry registry;
         private CopyOnWriteArrayList<Object> invocations;
@@ -182,8 +198,12 @@ class PublisherFactoryTest {
             invocations = new CopyOnWriteArrayList<>();
         }
 
-        private void registerBareSubscriptionFor(Artifact subscriberArtifact, String bareTopic) {
-            var address = TopicAddressResolver.resolve(subscriberArtifact, bareTopic).unwrap();
+        /// What `NodeDeploymentState` writes: the address scoped to the blueprint OWNING the
+        /// subscribing slice, keyed by the subscribing slice's own artifact.
+        private void registerBareSubscriptionFor(Option<Artifact> owningBlueprint,
+                                                 Artifact subscriberArtifact,
+                                                 String bareTopic) {
+            var address = TopicAddressResolver.resolve(owningBlueprint, subscriberArtifact, bareTopic).unwrap();
             var key = TopicSubscriptionKey.topicSubscriptionKey(address, subscriberArtifact, METHOD);
             var value = TopicSubscriptionValue.topicSubscriptionValue(NODE);
             var put = new KVCommand.Put<>(key, value);
@@ -191,12 +211,19 @@ class PublisherFactoryTest {
             registry.onSubscriptionPut(new ValuePut<>(put, Option.none()));
         }
 
-        private Publisher<Object> provisionPublisherFor(String sliceArtifact, String bareTopic) {
+        /// A publisher provisioned as a real node provisions one: the slice-id extension plus the
+        /// node-registered [OwningBlueprintResolver]. Passing [Option#none] models a runtime with no
+        /// resolver registered at all (see [#provision_noResolver_bothEndsFallBackToSliceCoordinates]).
+        private Publisher<Object> provisionPublisherFor(Option<Artifact> owningBlueprint,
+                                                        Artifact sliceArtifact,
+                                                        String bareTopic) {
             var context = ProvisioningContext.provisioningContext()
                                              .withExtension(TopicSubscriptionRegistry.class, registry)
                                              .withExtension(SliceInvoker.class,
                                                             new MinimalStubSliceInvoker(invocations))
-                                             .withExtension(String.class, sliceArtifact);
+                                             .withExtension(String.class, sliceArtifact.asString())
+                                             .withExtension(OwningBlueprintResolver.class,
+                                                            _ -> owningBlueprint);
             @SuppressWarnings("unchecked")
             var publisher = (Publisher<Object>) factory.provision(new TopicConfig(bareTopic),
                                                                   context)
@@ -209,45 +236,82 @@ class PublisherFactoryTest {
 
         @Test
         void provision_bareTopic_resolvesPublisherToBlueprintNamespace() {
-            var artifact = Artifact.artifact("org.example:my-slice:1.0.0").unwrap();
-            var expectedNamespace = BlueprintNamespace.deriveNamespace(artifact).unwrap();
-            var expectedAddress = ResourceAddress.resourceAddress(expectedNamespace,
+            var blueprintNamespace = BlueprintNamespace.deriveNamespace(BLUEPRINT).unwrap();
+            var sliceNamespace = BlueprintNamespace.deriveNamespace(PUBLISHER_SLICE).unwrap();
+            var expectedAddress = ResourceAddress.resourceAddress(blueprintNamespace,
                                                                   "orders",
                                                                   ResourceVersion.defaultVersion())
                                                  .unwrap();
 
-            registerBareSubscriptionFor(artifact, "orders");
-            var publisher = provisionPublisherFor(artifact.asString(), "orders");
-            // The subscriber is stored at the blueprint-derived address (not DEFAULT_NAMESPACE).
-            assertEquals(1,
-                         registry.findSubscribers(expectedAddress.asString()).size());
-            // A publish from the co-deployed publisher reaches it → both resolved the same address.
+            // The two namespaces must genuinely differ, or the assertions below pass for the wrong
+            // reason — this is the discriminator the pre-#1216 fixture lacked.
+            assertTrue(!blueprintNamespace.equals(sliceNamespace));
+
+            registerBareSubscriptionFor(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders");
+            var publisher = provisionPublisherFor(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders");
+
+            // The subscriber is stored at the BLUEPRINT-derived address, not the slice-derived one.
+            assertEquals(1, registry.findSubscribers(expectedAddress.asString()).size());
+            assertEquals(0,
+                         registry.findSubscribers(ResourceAddress.resourceAddress(sliceNamespace,
+                                                                                   "orders",
+                                                                                   ResourceVersion.defaultVersion())
+                                                                 .unwrap()
+                                                                 .asString())
+                                 .size());
             publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
             assertEquals(1, invocations.size());
         }
 
+        /// THE ACCEPTANCE TEST FOR #1216: two DISTINCT slice artifacts co-deployed in ONE blueprint.
+        /// The pre-#1216 version of this test passed one artifact to both ends and so never exercised
+        /// co-deployment; pointed at two artifacts it failed `expected: <1> but was: <0>` while the
+        /// publish itself still reported SUCCESS, which is the production symptom exactly.
         @Test
         void publish_coDeployedBareTopic_reachesSubscriber() {
-            var artifact = Artifact.artifact("org.example:my-slice:1.0.0").unwrap();
-
-            registerBareSubscriptionFor(artifact, "orders");
-            var publisher = provisionPublisherFor(artifact.asString(), "orders");
+            registerBareSubscriptionFor(Option.some(BLUEPRINT), SUBSCRIBER_SLICE, "orders");
+            var publisher = provisionPublisherFor(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders");
 
             publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
             assertEquals(1, invocations.size());
-            assertEquals(artifact, invocations.getFirst());
+            assertEquals(SUBSCRIBER_SLICE, invocations.getFirst());
         }
 
+        /// The reverse direction: either co-deployed slice may be the publisher.
+        @Test
+        void publish_coDeployedBareTopic_reachesSubscriber_inTheReverseDirection() {
+            registerBareSubscriptionFor(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders");
+            var publisher = provisionPublisherFor(Option.some(BLUEPRINT), SUBSCRIBER_SLICE, "orders");
+
+            publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
+            assertEquals(1, invocations.size());
+            assertEquals(PUBLISHER_SLICE, invocations.getFirst());
+        }
+
+        /// Genuinely about two BLUEPRINTS: same two distinct slices as the co-deployment test above,
+        /// differing ONLY in their owner. Before #1216 this test used two slices in ONE (unnamed)
+        /// blueprint and passed because co-deployment was broken — it specified the defect.
         @Test
         void publish_subscriberInDifferentBlueprint_isNotReached() {
-            var publisherArtifact = Artifact.artifact("org.example:publisher-slice:1.0.0").unwrap();
-            var subscriberArtifact = Artifact.artifact("org.example:subscriber-slice:1.0.0").unwrap();
-            // Both declare the bare topic "orders" but live in different blueprints → different namespaces.
-            registerBareSubscriptionFor(subscriberArtifact, "orders");
-            var publisher = provisionPublisherFor(publisherArtifact.asString(), "orders");
+            registerBareSubscriptionFor(Option.some(OTHER_BLUEPRINT), SUBSCRIBER_SLICE, "orders");
+            var publisher = provisionPublisherFor(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders");
 
             publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
             assertTrue(invocations.isEmpty());
+        }
+
+        /// A runtime with no resolver registered (unit test, minimal runtime): both ends scope to the
+        /// slice's own coordinates. A SINGLE slice therefore still reaches itself — the behaviour
+        /// that existed before #1216 and must not regress — while two distinct slices do not, because
+        /// with no deployment behind them there is no blueprint to share.
+        @Test
+        void provision_noResolver_bothEndsFallBackToSliceCoordinates() {
+            registerBareSubscriptionFor(Option.none(), PUBLISHER_SLICE, "orders");
+            var publisher = provisionPublisherFor(Option.none(), PUBLISHER_SLICE, "orders");
+
+            publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
+            assertEquals(1, invocations.size());
+            assertEquals(PUBLISHER_SLICE, invocations.getFirst());
         }
     }
 
