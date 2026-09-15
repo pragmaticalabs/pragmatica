@@ -10,15 +10,22 @@ package org.pragmatica.net.tcp.security;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import java.lang.reflect.Field;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.concurrent.Delayed;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -141,6 +148,274 @@ class CertificateRenewalSchedulerStaleTimerTest {
         var holder = readScheduledTask(scheduler);
         assertThat(holder.get().isEmpty())
                 .as("Stopped.onEntry → cancelScheduledTask drains the holder to None")
+                .isTrue();
+    }
+
+    /// Invokes the package-private `ctx.armScheduledTask(...)` reflectively with the CURRENT epoch,
+    /// i.e. as a FRESH arm. Same justification as `readScheduledTask`.
+    private static void armScheduledTask(CertificateRenewalScheduler s, ScheduledFuture<?> task) {
+        armScheduledTask(s, task, readEpoch(s));
+    }
+
+    /// As above but with an explicit arming epoch, so a STALE arm can be driven deterministically
+    /// rather than raced for.
+    private static void armScheduledTask(CertificateRenewalScheduler s,
+                                         ScheduledFuture<?> task,
+                                         long armingEpoch) {
+        try {
+            Field ctxField = CertificateRenewalScheduler.class.getDeclaredField("ctx");
+            ctxField.setAccessible(true);
+            Object ctx = ctxField.get(s);
+            var method = ctx.getClass().getDeclaredMethod("armScheduledTask",
+                                                          ScheduledFuture.class,
+                                                          long.class);
+            method.setAccessible(true);
+            method.invoke(ctx, task, armingEpoch);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("reflection failed: " + e.getMessage(), e);
+        }
+    }
+
+    /// Reflectively reads `ctx.epoch`.
+    private static long readEpoch(CertificateRenewalScheduler s) {
+        try {
+            Field ctxField = CertificateRenewalScheduler.class.getDeclaredField("ctx");
+            ctxField.setAccessible(true);
+            Object ctx = ctxField.get(s);
+            Field epochField = ctx.getClass().getDeclaredField("epoch");
+            epochField.setAccessible(true);
+            return ((AtomicLong) epochField.get(ctx)).get();
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("reflection failed: " + e.getMessage(), e);
+        }
+    }
+
+    /// Reflectively opens a genuinely-issued arming epoch, so a fixture never drives the guard with
+    /// a value the real path could not produce.
+    private static long openArmingEpoch(CertificateRenewalScheduler s) {
+        try {
+            Field ctxField = CertificateRenewalScheduler.class.getDeclaredField("ctx");
+            ctxField.setAccessible(true);
+            Object ctx = ctxField.get(s);
+            var method = ctx.getClass().getDeclaredMethod("openArmingEpoch");
+            method.setAccessible(true);
+            return (long) method.invoke(ctx);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("reflection failed: " + e.getMessage(), e);
+        }
+    }
+
+    @Test
+    void armScheduledTask_whenTheArmIsStale_cancelsItselfAndLeavesTheResidentTimer() {
+        var provider = new CountingProvider();
+        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
+                provider, "node-stale", "localhost",
+                _ -> {}, Instant.now().plusSeconds(3600));
+
+        var holder = readScheduledTask(scheduler);
+
+        // The #1191 shape, driven rather than raced. `Healthy.onEntry` SCHEDULES a zero-delay tick
+        // and only then arms, so that tick can complete the whole Healthy -> Renewing ->
+        // RetryBackoff round trip — arming the real retry — while the original hook is still
+        // between its schedule and its arm. The original's arm is then STALE.
+        //
+        // Both epochs below are GENUINELY ISSUED by `openArmingEpoch`, never synthesised: a fixture
+        // driving the guard with a value the real path cannot produce can drift from it unnoticed.
+        var staleEpoch = openArmingEpoch(scheduler);
+
+        var resident = SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(3_600_000L).millis());
+        armScheduledTask(scheduler, resident, staleEpoch);
+
+        // A later hook supersedes it, exactly as RetryBackoff.onEntry would.
+        openArmingEpoch(scheduler);
+
+        var stale = SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(3_600_000L).millis());
+        armScheduledTask(scheduler, stale, staleEpoch);
+
+        assertThat(stale.isCancelled())
+                .as("#1191: a STALE arm must cancel ITSELF")
+                .isTrue();
+        assertThat(resident.isCancelled())
+                .as("#1191: a stale arm must NOT cancel the RESIDENT timer. Cancelling it kills the "
+                    + "live retry, renewal stops permanently, and the status surface still reports "
+                    + "FAILED — strictly worse than the orphaned future this guard replaced")
+                .isFalse();
+        assertThat(holder.get().isPresent())
+                .as("the resident timer is still the armed one")
+                .isTrue();
+    }
+
+    @Test
+    void armScheduledTask_afterStop_refusesAndCancelsTheTask() {
+        var provider = new CountingProvider();
+        // Far-future notAfter: `Healthy` arms a real long-delay timer and no tick races us, so the
+        // only concurrency in this test is the one it is about.
+        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
+                provider, "node-late-arm", "localhost",
+                _ -> {}, Instant.now().plusSeconds(3600));
+
+        scheduler.start();
+        scheduler.stop();
+
+        var holder = readScheduledTask(scheduler);
+        assertThat(holder.get().isEmpty())
+                .as("precondition: stop() drains the holder before the late arm is attempted")
+                .isTrue();
+
+        // #1191's interleaving, driven rather than awaited: a losing-path `onEntry` arms AFTER
+        // `Stopped.onEntry` has drained. The natural race is rare — 200 isolated runs of
+        // `stopAfterImmediateRenewal_clearsScheduledTask` reproduced it zero times on an idle
+        // machine, while CI hit it once — so waiting for it would be a lottery, not a regression
+        // pin. Calling the arming seam directly reproduces the CONSEQUENCE every time.
+        var late = SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(3_600_000L).millis());
+
+        armScheduledTask(scheduler, late);
+
+        assertThat(holder.get().isEmpty())
+                .as("#1191: arming after the terminal state must be refused, never stored")
+                .isTrue();
+        assertThat(late.isCancelled())
+                .as("#1191: the refused task must be CANCELLED, not merely dropped — a dropped but "
+                    + "live future still fires its tick on a stopped scheduler, which is the defect")
+                .isTrue();
+    }
+
+    @Test
+    void armScheduledTask_whenAnotherArmDisplacesIt_cancelsTheDisplacedFuture() {
+        var provider = new CountingProvider();
+        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
+                provider, "node-displace", "localhost",
+                _ -> {}, Instant.now().plusSeconds(3600));
+
+        // NOT started: `Idle` arms nothing, so the only futures in play are the two armed below and
+        // the test is about displacement alone.
+        var first = SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(3_600_000L).millis());
+        var second = SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(3_600_000L).millis());
+
+        armScheduledTask(scheduler, first);
+        armScheduledTask(scheduler, second);
+
+        assertThat(first.isCancelled())
+                .as("#1191: an arm that DISPLACES a live future must cancel it. A bare `set` orphans "
+                    + "the displaced future — invisible to every later drain, and still firing its "
+                    + "tick after the scheduler has stopped")
+                .isTrue();
+        assertThat(second.isCancelled())
+                .as("precondition: the displacing future is itself still live, so the assertion "
+                    + "above is about displacement and not about blanket cancellation")
+                .isFalse();
+
+        scheduler.stop();
+
+        assertThat(second.isCancelled())
+                .as("and the surviving future is cancelled by the terminal drain")
+                .isTrue();
+    }
+
+    /// Reflectively reads `ctx.terminated`. Same justification as `readScheduledTask`.
+    private static boolean readTerminated(CertificateRenewalScheduler s) {
+        try {
+            Field ctxField = CertificateRenewalScheduler.class.getDeclaredField("ctx");
+            ctxField.setAccessible(true);
+            Object ctx = ctxField.get(s);
+            Field terminatedField = ctx.getClass().getDeclaredField("terminated");
+            terminatedField.setAccessible(true);
+            return ((AtomicBoolean) terminatedField.get(ctx)).get();
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("reflection failed: " + e.getMessage(), e);
+        }
+    }
+
+    /// A `ScheduledFuture` stub that records what `ctx.terminated` held **at the moment it was
+    /// cancelled**. That is the entire instrument: it converts an ORDERING inside `Stopped.onEntry`
+    /// into a value a test can assert on, with no concurrency and no timing involved.
+    static final class OrderRecordingFuture implements ScheduledFuture<Object> {
+        private final Supplier<Boolean> terminatedNow;
+        private final AtomicReference<Boolean> terminatedWhenCancelled = new AtomicReference<>(null);
+        private final AtomicBoolean cancelled = new AtomicBoolean(false);
+
+        OrderRecordingFuture(Supplier<Boolean> terminatedNow) {
+            this.terminatedNow = terminatedNow;
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            // Only the FIRST cancellation is recorded. The arming guard's post-store re-check can
+            // cancel a second time, and it is the first observation that describes the drain.
+            terminatedWhenCancelled.compareAndSet(null, terminatedNow.get());
+            cancelled.set(true);
+            return true;
+        }
+
+        Boolean terminatedWhenCancelled() {
+            return terminatedWhenCancelled.get();
+        }
+
+        @Override
+        public boolean isCancelled() {
+            return cancelled.get();
+        }
+
+        @Override
+        public boolean isDone() {
+            return cancelled.get();
+        }
+
+        @Override
+        public long getDelay(TimeUnit unit) {
+            return 0L;
+        }
+
+        @Override
+        public int compareTo(Delayed other) {
+            return 0;
+        }
+
+        @Override
+        public Object get() {
+            throw new AssertionError("stub future: get() is never called by the code under test");
+        }
+
+        @Override
+        public Object get(long timeout, TimeUnit unit) {
+            throw new AssertionError("stub future: get(timeout) is never called by the code under test");
+        }
+    }
+
+    @Test
+    void stopEntry_raisesTerminatedBeforeDraining_soNoArmCanSlipBetweenThem() {
+        var provider = new CountingProvider();
+        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
+                provider, "node-order", "localhost",
+                _ -> {}, Instant.now().plusSeconds(3600));
+
+        // Deliberately NOT started, and that is the whole design of this test. `transitionTo` runs
+        // the FROM state's `onExit` before the target's `onEntry`, and both `Healthy.onExit` and
+        // `RetryBackoff.onExit` drain the holder themselves. Entered from either, the probe is
+        // cancelled by the EXIT hook while `terminated` is still false, so the test measures a
+        // drain it is not about and fails against correct code — which is precisely what the first
+        // version of this test did. `Idle` declares no exit hook, so the only drain that can reach
+        // the probe is the one inside `Stopped.onEntry`, which is the ordering under test.
+        var holder = readScheduledTask(scheduler);
+        var probe = new OrderRecordingFuture(() -> readTerminated(scheduler));
+
+        holder.set(Option.<ScheduledFuture<?>>some(probe));
+
+        assertThat(readTerminated(scheduler))
+                .as("precondition: the scheduler is not terminal before stop()")
+                .isFalse();
+
+        scheduler.stop();
+
+        assertThat(probe.terminatedWhenCancelled())
+                .as("precondition: Stopped.onEntry actually drained the holder and cancelled the "
+                    + "probe — a null here means the drain never reached it, so the assertion "
+                    + "below would be vacuous")
+                .isNotNull();
+        assertThat(probe.terminatedWhenCancelled())
+                .as("#1191: `terminated` must ALREADY be raised when the drain cancels. If the "
+                    + "drain ran first, a concurrent arm landing between the drain and the flag "
+                    + "would be stored and never cancelled, which is exactly the leaked timer")
                 .isTrue();
     }
 
