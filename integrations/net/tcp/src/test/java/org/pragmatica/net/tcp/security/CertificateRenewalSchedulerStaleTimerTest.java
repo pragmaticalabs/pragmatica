@@ -10,7 +10,9 @@ package org.pragmatica.net.tcp.security;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import java.lang.reflect.Field;
 import java.time.Duration;
@@ -141,6 +143,57 @@ class CertificateRenewalSchedulerStaleTimerTest {
         var holder = readScheduledTask(scheduler);
         assertThat(holder.get().isEmpty())
                 .as("Stopped.onEntry → cancelScheduledTask drains the holder to None")
+                .isTrue();
+    }
+
+    /// Invokes the package-private `ctx.armScheduledTask(...)` reflectively, for the same reason
+    /// `readScheduledTask` reads the field that way: `Context` is reachable from this package but
+    /// the `ctx` field on the scheduler is private.
+    private static void armScheduledTask(CertificateRenewalScheduler s, ScheduledFuture<?> task) {
+        try {
+            Field ctxField = CertificateRenewalScheduler.class.getDeclaredField("ctx");
+            ctxField.setAccessible(true);
+            Object ctx = ctxField.get(s);
+            var method = ctx.getClass().getDeclaredMethod("armScheduledTask", ScheduledFuture.class);
+            method.setAccessible(true);
+            method.invoke(ctx, task);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("reflection failed: " + e.getMessage(), e);
+        }
+    }
+
+    @Test
+    void armScheduledTask_afterStop_refusesAndCancelsTheTask() {
+        var provider = new CountingProvider();
+        // Far-future notAfter: `Healthy` arms a real long-delay timer and no tick races us, so the
+        // only concurrency in this test is the one it is about.
+        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
+                provider, "node-late-arm", "localhost",
+                _ -> {}, Instant.now().plusSeconds(3600));
+
+        scheduler.start();
+        scheduler.stop();
+
+        var holder = readScheduledTask(scheduler);
+        assertThat(holder.get().isEmpty())
+                .as("precondition: stop() drains the holder before the late arm is attempted")
+                .isTrue();
+
+        // #1191's interleaving, driven rather than awaited: a losing-path `onEntry` arms AFTER
+        // `Stopped.onEntry` has drained. The natural race is rare — 200 isolated runs of
+        // `stopAfterImmediateRenewal_clearsScheduledTask` reproduced it zero times on an idle
+        // machine, while CI hit it once — so waiting for it would be a lottery, not a regression
+        // pin. Calling the arming seam directly reproduces the CONSEQUENCE every time.
+        var late = SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(3_600_000L).millis());
+
+        armScheduledTask(scheduler, late);
+
+        assertThat(holder.get().isEmpty())
+                .as("#1191: arming after the terminal state must be refused, never stored")
+                .isTrue();
+        assertThat(late.isCancelled())
+                .as("#1191: the refused task must be CANCELLED, not merely dropped — a dropped but "
+                    + "live future still fires its tick on a stopped scheduler, which is the defect")
                 .isTrue();
     }
 
