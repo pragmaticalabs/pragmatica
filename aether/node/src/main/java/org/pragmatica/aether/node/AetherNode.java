@@ -1039,18 +1039,6 @@ public interface AetherNode extends ManageableNode {
         return Option.none();
     }
 
-    /// Fold the `streams` StorageSetup into the (immutable) map produced by `StorageFactory.createAll`
-    /// so that downstream consumers — storage-status routes today, the snapshot scheduler later —
-    /// treat stream storage uniformly with artifacts/content.
-    private static Map<String, StorageFactory.StorageSetup> withStreamSetup(Map<String, StorageFactory.StorageSetup> base,
-                                                                            StorageFactory.StorageSetup streamSetup) {
-        var merged = new HashMap<>(base);
-
-        merged.put(streamSetup.name(), streamSetup);
-
-        return Map.copyOf(merged);
-    }
-
     /// Build a named daemon thread for a single-thread executor's `ThreadFactory`. Extracted so the
     /// executor factories pass a method-reference-friendly single-expression lambda instead of a
     /// multi-statement block.
@@ -1455,40 +1443,38 @@ public interface AetherNode extends ManageableNode {
         // and the cause, the same way `streamStorageResult`'s failure is propagated below, rather
         // than silently dropping that one instance (the old behavior) and letting boot continue on
         // whatever was left, e.g. a `wrapLocalDisk` refusal over plaintext artifacts.
-        var baseStorageSetupsResult = StorageFactory.createAll(config.storageConfig(),
-                                                               config.self().id(),
-                                                               dhtClientOption,
-                                                               storageKeyring);
-
-        if (baseStorageSetupsResult.isFailure()) {
-            return baseStorageSetupsResult.map(ignored -> null);
-        }
-
-        var baseStorageSetups = baseStorageSetupsResult.fold(_ -> null, setups -> setups);
         // Stream storage is a first-class, disk-backed snapshot-capable StorageSetup (memory -> disk
-        // -> DHT) keyed under "streams". It is built here (not via `createAll`, which is config-map
-        // driven) so it can be folded into `storageSetups` — a later snapshot scheduler iterates that
-        // map — while its `instance()` is reused as `streamStorage` at the stream wiring site below.
-        // #253: streams has no per-instance `StorageConfig.encrypted()` of its own to consult --
-        // `streams_encrypted` is a dedicated top-level `[storage.encryption]` flag -- so the gate is
-        // applied here, and `defaultStreamStorage` can fail (unlike the plaintext-only 3-arg
-        // overload) when the segments dir already holds unmarked plaintext blocks from a prior
-        // unencrypted boot; that failure is propagated exactly like `keyringResolution`'s above.
+        // -> DHT) keyed under "streams". It has no `[storage.X]` section of its own -- `streams_encrypted`
+        // is a dedicated top-level `[storage.encryption]` flag -- so its parameters are resolved here
+        // and handed to `createAll` as a `StreamSetupRequest`; the returned map carries it under
+        // "streams" alongside the config-map instances, and its `instance()` is reused as
+        // `streamStorage` at the stream wiring site below.
+        //
+        // #852 round 2: it is part of the SAME `createAll` call, not a second one after it. As a second
+        // call its guard could refuse a boot whose earlier arms had already stamped their directories,
+        // leaving markers nothing owns -- see `StorageFactory.createAll`'s five-argument overload.
         var streamsEncrypted = config.storageEncryption().map(StorageEncryptionConfig::streamsEncrypted).or(false);
         var streamsKeyring = streamsEncrypted
                              ? storageKeyring
                              : Option.<EncryptionKeyring> empty();
-        var streamStorageResult = StorageFactory.defaultStreamStorage(dhtClientOption,
-                                                                      streamDataDir(config),
-                                                                      config.self().id(),
-                                                                      streamsKeyring);
+        var storageSetupsResult = StorageFactory.createAll(config.storageConfig(),
+                                                           config.self().id(),
+                                                           dhtClientOption,
+                                                           storageKeyring,
+                                                           new StorageFactory.StreamSetupRequest(dhtClientOption,
+                                                                                                 streamDataDir(config),
+                                                                                                 config.self().id(),
+                                                                                                 streamsKeyring));
 
-        if (streamStorageResult.isFailure()) {
-            return streamStorageResult.map(ignored -> null);
+        if (storageSetupsResult.isFailure()) {
+            return storageSetupsResult.map(ignored -> null);
         }
 
-        var streamStorageSetup = streamStorageResult.fold(_ -> null, setup -> setup);
-        var storageSetups = withStreamSetup(baseStorageSetups, streamStorageSetup);
+        var storageSetups = storageSetupsResult.fold(_ -> null, setups -> setups);
+        // Same invariant as "artifacts" and "content" below: `createAll` builds "streams" itself now,
+        // so its absence here would mean the guard above should already have failed.
+        var streamStorageSetup = Objects.requireNonNull(storageSetups.get(StorageFactory.STREAMS_NAME),
+                                                        "storageSetups missing \"streams\" after createAll succeeded -- invariant violated");
         // #253 BLOCKING #1 (2026-09-04 ruling): `createAll`'s postcondition on success is that
         // "artifacts" is ALWAYS present in `baseStorageSetups` -- either the operator's
         // `[storage.artifacts]` config or the synthesized default, and either one failing now
