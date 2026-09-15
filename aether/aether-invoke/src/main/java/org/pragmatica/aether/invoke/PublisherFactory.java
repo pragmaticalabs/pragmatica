@@ -11,6 +11,7 @@ import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.resource.TopicConfig;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.Publisher;
+import org.pragmatica.aether.slice.blueprint.OwningBlueprintResolver;
 import org.pragmatica.aether.slice.blueprint.TopicAddressResolver;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.stream.topic.DurableTopicSubstrate;
@@ -85,16 +86,40 @@ public final class PublisherFactory implements ResourceFactory<Publisher, TopicC
     /// the deployment FSM applies to subscriptions, so a co-deployed pub/sub pair always agrees on
     /// the namespace (RC2 #274). The owning slice's [Artifact] is read from the provisioning
     /// context's slice-id extension (set by `SliceLoadingContext`); a bare topic name derives its
-    /// namespace from that artifact's blueprint coordinates. When the slice-id is absent or
+    /// namespace from the BLUEPRINT that owns that slice. When the slice-id is absent or
     /// unparseable, falls back to the config's own default-namespace resolution so the address is
     /// always deterministic.
+    ///
+    /// #1216: this previously namespaced by the slice artifact itself. `DependencyResolver` builds
+    /// "one loading context per slice", so the slice-id extension is the PUBLISHING slice — and the
+    /// subscriber side symmetrically used its own. Two distinct co-deployed slices therefore derived
+    /// two namespaces and, since `TopicSubscriptionRegistry` matches on exact string equality, never
+    /// met: `TopicPublisher` returned a SUCCESSFUL promise having delivered nothing, with no log line
+    /// on either side. The blueprint is now an explicit input, obtained from the node-supplied
+    /// [OwningBlueprintResolver] over the same `SliceTargetValue.owningBlueprint` the subscriber
+    /// reads, so the two ends agree by construction instead of by coincidence.
     private static String resolveTopicAddress(TopicConfig config, ProvisioningContext context) {
         return context.extension(String.class)
-                      .flatMap(Artifact::artifact)
-                      .flatMap(artifact -> TopicAddressResolver.resolve(artifact,
-                                                                        config.topicName()))
+                      .flatMap(sliceId -> Artifact.artifact(sliceId)
+                                                  .flatMap(artifact -> TopicAddressResolver.resolve(owningBlueprintOf(context,
+                                                                                                                      sliceId),
+                                                                                                    artifact,
+                                                                                                    config.topicName())))
                       .orElse(config::address)
                       .map(ResourceAddress::asString)
                       .or(config.topicName());
+    }
+
+    /// The blueprint owning `sliceId`, or [Option#none] when this runtime carries no deployment.
+    ///
+    /// Two absences are folded deliberately, exactly as `StreamAddressResolver.resolvedKey` folds
+    /// them: no resolver (unit test / minimal runtime) and a resolver that finds no owning blueprint.
+    /// Neither can name a blueprint, so neither may guess at one — and unlike the stream path there is
+    /// nothing to refuse, because the slice's own coordinates remain a spelling both ends derive
+    /// identically. See [OwningBlueprintResolver].
+    private static Option<Artifact> owningBlueprintOf(ProvisioningContext context, String sliceId) {
+        return context.extension(OwningBlueprintResolver.class)
+                      .option()
+                      .flatMap(resolver -> resolver.owningBlueprintOf(sliceId));
     }
 }

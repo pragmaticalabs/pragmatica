@@ -44,6 +44,7 @@ import org.pragmatica.aether.slice.SliceLoadingFailure.Unrecognised;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.OwningBlueprintResolver;
 import org.pragmatica.aether.slice.blueprint.TopicAddressResolver;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -1181,7 +1182,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
             return manifestTopicName.isEmpty()
                    ? resolveTopicAddress(artifact, entry.config())
-                   : TopicAddressResolver.resolve(artifact, manifestTopicName);
+                   : TopicAddressResolver.resolve(owningBlueprintOf(artifact), artifact, manifestTopicName);
         }
 
         /// Resolve a subscription's declared topic config to a canonical [ResourceAddress].
@@ -1198,7 +1199,19 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private Result<ResourceAddress> resolveTopicAddress(Artifact artifact, TopicConfig config) {
-            return TopicAddressResolver.resolve(artifact, config.topicName());
+            return TopicAddressResolver.resolve(owningBlueprintOf(artifact), artifact, config.topicName());
+        }
+
+        /// The blueprint owning `sliceArtifact`, which is what a bare topic name is scoped to (#1216).
+        ///
+        /// Reads the SAME `SliceTargetValue.owningBlueprint` the publisher side reaches through its
+        /// node-supplied [OwningBlueprintResolver] extension, and the same field
+        /// [#lookupOwningBlueprintId] already resolves for stream refcounting — one committed fact,
+        /// two readers, so the two ends of a co-deployed pair cannot derive different namespaces.
+        /// [Option#none] (no deployment behind this runtime) scopes to the slice's own coordinates,
+        /// which the publisher does too.
+        private Option<Artifact> owningBlueprintOf(Artifact sliceArtifact) {
+            return OwningBlueprintResolver.owningBlueprintOf(ctx.kvStore(), sliceArtifact);
         }
 
         private Promise<SliceNodeKey> publishScheduledTasks(SliceNodeKey sliceKey) {
