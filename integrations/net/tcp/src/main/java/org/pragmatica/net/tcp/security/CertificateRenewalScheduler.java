@@ -152,6 +152,18 @@ public final class CertificateRenewalScheduler {
 
         /// Opens a new arming epoch and returns it. Called at the TOP of every hook that arms, before
         /// it schedules anything, so a hook overtaken between scheduling and arming is detectable.
+        ///
+        /// THE ORDERING IS THE GUARANTEE, NOT A CONVENTION. `openArmingEpoch()` must precede
+        /// `SharedScheduler.schedule(...)` at every site. An overtaking thread cannot exist until
+        /// `schedule` returns, and `schedule` runs after this call — so the overtaker is CAUSALLY
+        /// downstream of this hook's epoch and necessarily draws a higher number. Move this call
+        /// below the schedule and the guarantee dies silently, with no test to catch it.
+        ///
+        /// `configureShortValidity` is the one arming path NOT causally downstream, because it is
+        /// invoked externally rather than by a transition: a hook already past its CAS but not yet
+        /// at its own `openArmingEpoch()` can draw a HIGHER epoch afterwards and displace a freshly
+        /// configured timer. Dev-mode only — production never calls it — and the clean fix is to
+        /// dispatch an event rather than arm out of band, as the note on that method already says.
         long openArmingEpoch() {
             synchronized (timerLock) {
                 return epoch.incrementAndGet();

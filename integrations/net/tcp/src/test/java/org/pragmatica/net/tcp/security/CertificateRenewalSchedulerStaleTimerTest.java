@@ -190,6 +190,21 @@ class CertificateRenewalSchedulerStaleTimerTest {
         }
     }
 
+    /// Reflectively opens a genuinely-issued arming epoch, so a fixture never drives the guard with
+    /// a value the real path could not produce.
+    private static long openArmingEpoch(CertificateRenewalScheduler s) {
+        try {
+            Field ctxField = CertificateRenewalScheduler.class.getDeclaredField("ctx");
+            ctxField.setAccessible(true);
+            Object ctx = ctxField.get(s);
+            var method = ctx.getClass().getDeclaredMethod("openArmingEpoch");
+            method.setAccessible(true);
+            return (long) method.invoke(ctx);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("reflection failed: " + e.getMessage(), e);
+        }
+    }
+
     @Test
     void armScheduledTask_whenTheArmIsStale_cancelsItselfAndLeavesTheResidentTimer() {
         var provider = new CountingProvider();
@@ -203,10 +218,16 @@ class CertificateRenewalSchedulerStaleTimerTest {
         // and only then arms, so that tick can complete the whole Healthy -> Renewing ->
         // RetryBackoff round trip — arming the real retry — while the original hook is still
         // between its schedule and its arm. The original's arm is then STALE.
-        var staleEpoch = readEpoch(scheduler) - 1;
+        //
+        // Both epochs below are GENUINELY ISSUED by `openArmingEpoch`, never synthesised: a fixture
+        // driving the guard with a value the real path cannot produce can drift from it unnoticed.
+        var staleEpoch = openArmingEpoch(scheduler);
 
         var resident = SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(3_600_000L).millis());
-        armScheduledTask(scheduler, resident);
+        armScheduledTask(scheduler, resident, staleEpoch);
+
+        // A later hook supersedes it, exactly as RetryBackoff.onEntry would.
+        openArmingEpoch(scheduler);
 
         var stale = SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(3_600_000L).millis());
         armScheduledTask(scheduler, stale, staleEpoch);
