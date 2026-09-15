@@ -5,10 +5,12 @@
 package org.pragmatica.aether.http;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.LinkedHashMap;
 import java.util.ServiceLoader;
+import java.util.function.Predicate;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -135,6 +137,16 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     private static final Logger log = LoggerFactory.getLogger(HttpRoutePublisherImpl.class);
     private static final TimeSpan CONSENSUS_OPERATION_TIMEOUT = TimeSpan.timeSpan(30).seconds();
     private static final int CONSENSUS_MAX_RETRIES = 2;
+
+    /// #884: the total order every local route lookup resolves through. Longest matching prefix
+    /// first -- the more specific route owns its subtree -- then the lexically SMALLEST artifact
+    /// coordinate, reached by reversing the coordinate half under `max`. Both components are
+    /// String-derived, so the winner depends on nothing that varies between JVMs or between nodes.
+    /// Two distinct prefixes that both match one path and share a length are the same string, so a
+    /// length tie means identical prefixes and the coordinate decides.
+    private static final Comparator<HttpRouteDefinition> LONGEST_PREFIX_THEN_ARTIFACT = Comparator.comparingInt((HttpRouteDefinition route) -> route.pathPrefix()
+                                                                                                                                                    .length()).thenComparing(HttpRouteDefinition::artifactCoord,
+                                                                                                                                                                             Comparator.reverseOrder());
 
     private final NodeId selfNodeId;
     private final ClusterNode<KVCommand<AetherKey>> cluster;
@@ -590,20 +602,39 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         return Set.copyOf(localRoutes);
     }
 
+    /// #884: the ONE local-route selection. Every local lookup that has to name a route resolves
+    /// through this method over the same `publishedRoutes` snapshot and the same total order, so
+    /// the route that AUTHORIZES a request (`AppHttpServer.findRouteSecurityPolicy` ->
+    /// [#findLocalRoute]), the route that DISPATCHES it (`AppHttpServer.dispatchToRoute`, through
+    /// the same call) and the router that SERVES it ([#findLocalRouter]) cannot disagree.
+    ///
+    /// They could, and did. Dispatch ran its own scan over [#allLocalRoutes], whose `Set.copyOf`
+    /// result is an `ImmutableCollections.SetN` -- its iteration order is a function of a `SALT`
+    /// seeded once per JVM, so `findFirst` over a nested pair picked a different route on roughly
+    /// half of node starts, while the policy half picked by `ConcurrentHashMap` hash order. Making
+    /// only the policy half deterministic would have turned an intermittent disagreement into a
+    /// systematic one. There is now a single scan and nothing left to disagree with.
+    private Option<Map.Entry<Artifact, HttpRouteDefinition>> selectRoute(Predicate<HttpRouteDefinition> matches) {
+        return Option.from(publishedRoutes.entrySet()
+                                          .stream()
+                                          .flatMap(entry -> entry.getValue()
+                                                                 .stream()
+                                                                 .filter(matches)
+                                                                 .map(route -> Map.entry(entry.getKey(),
+                                                                                         route)))
+                                          .max(Map.Entry.comparingByValue(LONGEST_PREFIX_THEN_ARTIFACT)));
+    }
+
+    /// The router that serves `pathPrefix`. Keyed on an EXACT prefix, so the length half of the
+    /// order is always a tie here and the artifact coordinate decides -- which is what keeps this
+    /// answer equal to [#findLocalRoute]'s pick when two artifacts publish the same method and
+    /// prefix. A first match over the map would have picked by artifact hash instead, and the
+    /// request would have been authorized under one slice's policy and served by the other's.
     @Override
     public Option<SliceRouter> findLocalRouter(String httpMethod, String pathPrefix) {
-        for (var entry : publishedRoutes.entrySet()) {
-            var artifact = entry.getKey();
-            var routes = entry.getValue();
-
-            for (var route : routes) {
-                if (route.httpMethod().equalsIgnoreCase(httpMethod) && route.pathPrefix().equals(pathPrefix)) {
-                    return Option.option(sliceRouters.get(artifact));
-                }
-            }
-        }
-
-        return Option.none();
+        return selectRoute(route -> route.httpMethod()
+                                         .equalsIgnoreCase(httpMethod) && route.pathPrefix()
+                                                                               .equals(pathPrefix)).flatMap(entry -> Option.option(sliceRouters.get(entry.getKey())));
     }
 
     /// #887: the matched route's security policy is resolved against the CURRENT overrides here,
@@ -615,21 +646,21 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     ///
     /// One `activeOverrides.get()` for the whole scan, so a concurrent `updateSecurityOverrides`
     /// cannot make a single lookup resolve two different routes against two different override sets.
+    ///
+    /// #884: the LONGEST matching prefix wins, by [#selectRoute]. With two slices on one node
+    /// declaring nested prefixes (`/api/v1/pricing/` and `/api/v1/pricing/analytics/`) a request
+    /// under the inner one used to resolve to whichever artifact hashed first, and under #866 that
+    /// picked which security policy applied. Nested prefixes across slices are legal; the more
+    /// specific route owns its subtree. `startsWith` is a segment-boundary test because
+    /// `HttpRouteDefinition` normalizes every prefix to a trailing slash in its constructor.
     @Override
     public Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path) {
         var normalizedPath = normalizePath(path);
         var overrides = activeOverrides.get();
 
-        for (var routes : publishedRoutes.values()) {
-            for (var route : routes) {
-                if (route.httpMethod().equalsIgnoreCase(httpMethod) && normalizedPath.startsWith(route.pathPrefix())) {
-                    return Option.some(LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(route,
-                                                                                                           overrides)));
-                }
-            }
-        }
-
-        return Option.none();
+        return selectRoute(route -> route.httpMethod()
+                                         .equalsIgnoreCase(httpMethod) && normalizedPath.startsWith(route.pathPrefix())).map(entry -> LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(entry.getValue(),
+                                                                                                                                                                                                          overrides)));
     }
 
     private String normalizePath(String path) {

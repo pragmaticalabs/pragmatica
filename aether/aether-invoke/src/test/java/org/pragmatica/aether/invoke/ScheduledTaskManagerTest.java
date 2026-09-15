@@ -2,13 +2,15 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.invoke;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
+import java.util.Set;
+import java.util.function.Consumer;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.invoke.ScheduledTaskManager.ScheduledTaskManagerAdapter;
 import org.pragmatica.aether.slice.ExecutionMode;
@@ -33,13 +35,13 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.SharedScheduler;
 
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BooleanSupplier;
-import java.util.function.Consumer;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 class ScheduledTaskManagerTest {
     private ScheduledTaskRegistry registry;
@@ -66,7 +68,6 @@ class ScheduledTaskManagerTest {
         stateWrites = new CopyOnWriteArrayList<>();
         stateMap = new ConcurrentHashMap<>();
         leaderManager = new TestLeaderManager(self);
-
         Consumer<KVCommand<AetherKey>> stateWriter = command -> {
             stateWrites.add(command);
             if (command instanceof KVCommand.Put<AetherKey, ?> put
@@ -89,11 +90,16 @@ class ScheduledTaskManagerTest {
         manager.stop();
     }
 
-    private void putTask(String configSection, Artifact artifact, MethodName method,
-                         NodeId node, String interval, ExecutionMode executionMode) {
+    private void putTask(String configSection,
+                         Artifact artifact,
+                         MethodName method,
+                         NodeId node,
+                         String interval,
+                         ExecutionMode executionMode) {
         var key = ScheduledTaskKey.scheduledTaskKey(configSection, artifact, method);
         var value = ScheduledTaskValue.intervalTask(node, interval, executionMode);
         var put = new KVCommand.Put<>(key, value);
+
         registry.onScheduledTaskPut(new ValuePut<>(put, Option.none()));
     }
 
@@ -121,21 +127,127 @@ class ScheduledTaskManagerTest {
         void allMode_startsOnNonLeaderNode() {
             putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
-
-            // Not a leader, but ALL mode should start
+            // Not a leader, but a HOSTING node — ALL mode should start (#273: hosting ∧ ¬draining)
             assertThat(manager.activeTimerCount()).isEqualTo(1);
+        }
+
+        /// #272 R12 / #273 item 1: ALL-mode means every HOSTING node. A node that does not host the
+        /// slice has no bridge to fire through and used to write a failure state every interval.
+        @Test
+        void allMode_nonHostingNode_registersNoTimerAndWritesNoState() {
+            stubInvoker.setHosted(artifact, false);
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            assertThat(manager.activeTimerCount()).as("#273: a non-hosting node registers no ALL-mode timer").isZero();
+            settle(2_500);
+            assertThat(invocations).as("no fire from a non-hosting node over ≥2 intervals").isEmpty();
+            assertThat(stateWrites).as("no state write from a non-hosting node over ≥2 intervals").isEmpty();
+        }
+
+        /// #272 R12 (a): SINGLE-mode stays leader-owned and is NOT gated on hosting — the leader fires
+        /// it as a `Unit` fire-and-forget the invoker can encode without a local bridge.
+        @Test
+        void singleMode_leaderNotHosting_stillStartsAndFires() {
+            stubInvoker.setHosted(artifact, false);
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.SINGLE);
+            becomeLeader();
+            establishQuorum();
+            assertThat(manager.activeTimerCount()).isEqualTo(1);
+            awaitTrue(() -> invocations.size() >= 2, 4_000);
+            assertThat(invocations).allMatch(record -> record.message() instanceof Unit);
+        }
+
+        /// #273 item 1: this node's own drain cancels its ALL-mode timers and no fire or state write
+        /// happens over >=2 intervals. Driven through [ScheduledTaskManager#onDrainInitiated] — the
+        /// method `DrainProcedure.initiate` invokes via `AetherNode`'s `drainInitiatedEmitter`. That the
+        /// real drain reaches this method is pinned separately, in `aether/node`, by
+        /// `ScheduledTaskDrainWiringBootTest`; this test owns only the manager's behaviour once it does.
+        @Test
+        void allMode_drainingSelf_stopsFiring() {
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            assertThat(manager.activeTimerCount()).isEqualTo(1);
+            manager.onDrainInitiated();
+            assertThat(manager.activeTimerCount()).as("#273: the drain cancels this node's ALL-mode timer").isZero();
+            var firesBefore = invocations.size();
+            var writesBefore = stateWrites.size();
+
+            settle(2_500);
+            assertThat(invocations).as("no fire while draining over >=2 intervals").hasSize(firesBefore);
+            assertThat(stateWrites).as("no state write while draining over >=2 intervals").hasSize(writesBefore);
+        }
+
+        /// #273 item 1, the `!draining` term of `hostingAndNotDraining` rather than the cancel: a drained
+        /// node must not RE-register an ALL-mode timer. `startEligibleTasks` runs again on every
+        /// Following/Leading re-entry and on any registry change, both of which outlive the drain's start
+        /// (the grace window is 30s by default). Round 1 left this unpinned — dropping the `!draining`
+        /// term reddened nothing, because the only drain test asserted the cancel, which
+        /// `cancelAllModeTimers` performs on its own.
+        @Test
+        void allMode_drainingSelf_doesNotReRegisterOnQuorumReEntryOrRegistryChange() {
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            assertThat(manager.activeTimerCount()).isEqualTo(1);
+            manager.onDrainInitiated();
+            assertThat(manager.activeTimerCount()).isZero();
+
+            loseQuorum();
+            establishQuorum();
+            assertThat(manager.activeTimerCount()).as("a Following re-entry must not re-register while draining")
+                      .isZero();
+
+            putTask("cache", artifact, MethodName.methodName("refresh").unwrap(), self, "1s", ExecutionMode.ALL);
+            assertThat(manager.activeTimerCount()).as("a registry change must not register a new timer while draining")
+                      .isZero();
+
+            var firesBefore = invocations.size();
+
+            settle(2_500);
+            assertThat(invocations).as("no fire after re-entry while draining over >=2 intervals").hasSize(firesBefore);
+        }
+
+        /// The opposite direction of the same gate, and the reason it is not simply "exclude everyone":
+        /// a hosting node that is NOT draining keeps firing after the very same re-entry the test above
+        /// drives. Without this control, a predicate that returned `false` unconditionally would satisfy
+        /// every drain assertion above while silently stopping the feature on every node.
+        @Test
+        void allMode_notDraining_stillFiresAfterQuorumReEntry() {
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            loseQuorum();
+            establishQuorum();
+            assertThat(manager.activeTimerCount()).as("a hosting, non-draining node re-registers on re-entry")
+                      .isEqualTo(1);
+
+            var firesBefore = invocations.size();
+
+            awaitTrue(() -> invocations.size() >= firesBefore + 2, 6_000);
+            assertThat(invocations.size()).as("and keeps firing").isGreaterThan(firesBefore);
+        }
+
+        /// Fire-time guard: hosting can end without a registry change (the slice unloaded here while
+        /// another replica keeps the cluster-scoped key). A tick on a no-longer-hosting node is skipped
+        /// without a state write.
+        @Test
+        void allMode_hostingLostAfterTimerStart_ticksAreSkippedSilently() {
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            stubInvoker.setHosted(artifact, false);
+            var firesBefore = invocations.size();
+            var writesBefore = stateWrites.size();
+
+            settle(2_500);
+            assertThat(invocations).hasSize(firesBefore);
+            assertThat(stateWrites).hasSize(writesBefore);
         }
 
         @Test
         void singleMode_onlyStartsOnLeader() {
             putTask("cache", artifact, method, self, "30s", ExecutionMode.SINGLE);
             establishQuorum();
-
             // Not a leader — SINGLE mode should NOT start
             assertThat(manager.activeTimerCount()).isEqualTo(0);
-
             becomeLeader();
-
             assertThat(manager.activeTimerCount()).isEqualTo(1);
         }
     }
@@ -146,9 +258,7 @@ class ScheduledTaskManagerTest {
         void onLeaderChange_becomesLeader_startsSingleModeTasks() {
             putTask("cache", artifact, method, self, "30s", ExecutionMode.SINGLE);
             establishQuorum();
-
             becomeLeader();
-
             assertThat(manager.activeTimerCount()).isEqualTo(1);
         }
 
@@ -158,9 +268,7 @@ class ScheduledTaskManagerTest {
             establishQuorum();
             becomeLeader();
             assertThat(manager.activeTimerCount()).isEqualTo(1);
-
             loseLeadership();
-
             assertThat(manager.activeTimerCount()).isEqualTo(0);
         }
     }
@@ -170,9 +278,7 @@ class ScheduledTaskManagerTest {
         @Test
         void onQuorumStateChange_established_enablesExecution() {
             putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
-
             establishQuorum();
-
             assertThat(manager.activeTimerCount()).isEqualTo(1);
         }
 
@@ -181,9 +287,7 @@ class ScheduledTaskManagerTest {
             putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
             assertThat(manager.activeTimerCount()).isEqualTo(1);
-
             loseQuorum();
-
             assertThat(manager.activeTimerCount()).isEqualTo(0);
         }
     }
@@ -193,10 +297,10 @@ class ScheduledTaskManagerTest {
         @Test
         void activeTimerCount_reflectsRunningTimers() {
             var method2 = MethodName.methodName("refresh").unwrap();
+
             putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             putTask("metrics", artifact, method2, self, "1m", ExecutionMode.ALL);
             establishQuorum();
-
             assertThat(manager.activeTimerCount()).isEqualTo(2);
         }
 
@@ -205,9 +309,7 @@ class ScheduledTaskManagerTest {
             putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
             assertThat(manager.activeTimerCount()).isEqualTo(1);
-
             manager.stop();
-
             assertThat(manager.activeTimerCount()).isEqualTo(0);
         }
     }
@@ -217,9 +319,7 @@ class ScheduledTaskManagerTest {
         @Test
         void registryChange_taskAdded_startsTimer() {
             establishQuorum();
-
             putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
-
             assertThat(manager.activeTimerCount()).isEqualTo(1);
         }
 
@@ -228,11 +328,11 @@ class ScheduledTaskManagerTest {
             putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
             assertThat(manager.activeTimerCount()).isEqualTo(1);
-
             var key = ScheduledTaskKey.scheduledTaskKey("cache", artifact, method);
             var remove = new KVCommand.Remove<ScheduledTaskKey>(key);
-            registry.onScheduledTaskRemove(new org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove<>(remove, Option.none()));
 
+            registry.onScheduledTaskRemove(new org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove<>(remove,
+                                                                                                                      Option.none()));
             assertThat(manager.activeTimerCount()).isEqualTo(0);
         }
     }
@@ -241,16 +341,22 @@ class ScheduledTaskManagerTest {
     class IntervalParserTests {
         @Test
         void parse_validFormats_parsed() {
-            assertParsedInterval("30s", TimeSpan.timeSpan(30).seconds());
-            assertParsedInterval("5m", TimeSpan.timeSpan(5).minutes());
-            assertParsedInterval("1h", TimeSpan.timeSpan(1).hours());
-            assertParsedInterval("2d", TimeSpan.timeSpan(2).days());
+            assertParsedInterval("30s",
+                                 TimeSpan.timeSpan(30).seconds());
+            assertParsedInterval("5m",
+                                 TimeSpan.timeSpan(5).minutes());
+            assertParsedInterval("1h",
+                                 TimeSpan.timeSpan(1).hours());
+            assertParsedInterval("2d",
+                                 TimeSpan.timeSpan(2).days());
         }
 
         @Test
         void parse_weeks_parsed() {
-            assertParsedInterval("1w", TimeSpan.timeSpan(7).days());
-            assertParsedInterval("2w", TimeSpan.timeSpan(14).days());
+            assertParsedInterval("1w",
+                                 TimeSpan.timeSpan(7).days());
+            assertParsedInterval("2w",
+                                 TimeSpan.timeSpan(14).days());
         }
 
         @Test
@@ -264,12 +370,15 @@ class ScheduledTaskManagerTest {
 
         private void assertParsedInterval(String input, TimeSpan expected) {
             var result = ScheduledTaskManager.IntervalParser.parse(input);
-            result.onFailure(cause -> org.junit.jupiter.api.Assertions.fail("Expected success for '" + input + "': " + cause.message()))
+
+            result.onFailure(cause -> org.junit.jupiter.api.Assertions.fail("Expected success for '" + input
+                                                                           + "': " + cause.message()))
                   .onSuccess(ts -> assertThat(ts.nanos()).isEqualTo(expected.nanos()));
         }
 
         private void assertParseFailure(String input) {
             var result = ScheduledTaskManager.IntervalParser.parse(input);
+
             result.onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure for '" + input + "'"));
         }
     }
@@ -280,7 +389,6 @@ class ScheduledTaskManagerTest {
         void pausedTask_preventsTimerCreation() {
             putPausedTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
-
             assertThat(manager.activeTimerCount()).isEqualTo(0);
         }
 
@@ -289,10 +397,8 @@ class ScheduledTaskManagerTest {
             putPausedTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
             assertThat(manager.activeTimerCount()).isEqualTo(0);
-
             // Resume by putting non-paused task
             putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
-
             assertThat(manager.activeTimerCount()).isEqualTo(1);
         }
     }
@@ -303,7 +409,6 @@ class ScheduledTaskManagerTest {
         void cronTask_registersActiveTimer() {
             putCronTask("cleanup", artifact, method, self, "0 * * * *", ExecutionMode.ALL);
             establishQuorum();
-
             assertThat(manager.activeTimerCount()).isEqualTo(1);
         }
 
@@ -311,7 +416,6 @@ class ScheduledTaskManagerTest {
         void cronTask_invalidCron_skipsTimer() {
             putCronTask("cleanup", artifact, method, self, "invalid cron", ExecutionMode.ALL);
             establishQuorum();
-
             assertThat(manager.activeTimerCount()).isEqualTo(0);
         }
 
@@ -320,9 +424,7 @@ class ScheduledTaskManagerTest {
             putCronTask("cleanup", artifact, method, self, "0 * * * *", ExecutionMode.ALL);
             establishQuorum();
             assertThat(manager.activeTimerCount()).isEqualTo(1);
-
             loseQuorum();
-
             assertThat(manager.activeTimerCount()).isEqualTo(0);
         }
     }
@@ -347,12 +449,14 @@ class ScheduledTaskManagerTest {
         void fixedRate_twoFires_accumulatesTotalExecutions() {
             putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
             establishQuorum();
-
             var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
-            awaitTrue(() -> stateFor(key).map(v -> v.totalExecutions() >= 2).or(false), 4000);
-            manager.stop(); // freeze — no further tick can land between detection and assertion
 
+            awaitTrue(() -> stateFor(key).map(v -> v.totalExecutions() >= 2)
+                                    .or(false),
+                      4000);
+            manager.stop();  // freeze — no further tick can land between detection and assertion
             var state = stateFor(key).unwrap();
+
             assertThat(state.totalExecutions()).isEqualTo(2);
             assertThat(state.consecutiveFailures()).isZero();
             assertThat(state.nextFireAt()).isGreaterThan(0L);
@@ -361,59 +465,58 @@ class ScheduledTaskManagerTest {
         @Test
         void fixedRate_failThenSucceed_consecutiveFailuresTracksThenResets() {
             Cause boom = () -> "boom";
-            stubInvoker.setFailureCause(Option.some(boom));
 
+            stubInvoker.setFailureCause(Option.some(boom));
             putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
             establishQuorum();
-
             var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
-            awaitTrue(() -> stateFor(key).map(v -> v.consecutiveFailures() >= 1).or(false), 4000);
 
+            awaitTrue(() -> stateFor(key).map(v -> v.consecutiveFailures() >= 1)
+                                    .or(false),
+                      4000);
             var afterFailure = stateFor(key).unwrap();
+
             assertThat(afterFailure.consecutiveFailures()).isEqualTo(1);
             assertThat(afterFailure.totalExecutions()).isZero();
             assertThat(afterFailure.lastFailureMessage()).isEqualTo("boom");
-
             stubInvoker.setFailureCause(Option.none());
-
-            awaitTrue(() -> stateFor(key).map(v -> v.consecutiveFailures() == 0).or(false), 4000);
+            awaitTrue(() -> stateFor(key).map(v -> v.consecutiveFailures() == 0)
+                                    .or(false),
+                      4000);
             manager.stop();
-
             var afterSuccess = stateFor(key).unwrap();
+
             assertThat(afterSuccess.consecutiveFailures()).isZero();
             assertThat(afterSuccess.totalExecutions()).isEqualTo(1);
         }
 
         @Test
         void fixedRate_overlappingFire_recordsSkipInsteadOfDoubleExecution() {
-            var gate = Promise.<Unit>promise();
-            stubInvoker.holdNextInvocation(gate);
+            var gate = Promise.<Unit> promise();
 
+            stubInvoker.holdNextInvocation(gate);
             putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
             establishQuorum();
-
             // First tick (~1s) blocks on `gate`: invoked, but never settles until released —
             // this keeps ctx.inFlight claimed for the key past the second tick.
             awaitTrue(() -> invocations.size() >= 1, 3000);
-
             var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
-
             // Second tick (~2s) must find the key still in-flight: recorded as a skip, no
             // second invoke.
-            awaitTrue(() -> stateFor(key).map(v -> v.skippedOverlaps() >= 1).or(false), 3000);
-
+            awaitTrue(() -> stateFor(key).map(v -> v.skippedOverlaps() >= 1)
+                                    .or(false),
+                      3000);
             assertThat(invocations).as("overlap must be skipped, not executed").hasSize(1);
             assertThat(stateFor(key).unwrap().skippedOverlaps()).isEqualTo(1);
-            assertThat(stateFor(key).unwrap().totalExecutions())
-                    .as("the blocked invocation has not settled yet")
-                    .isZero();
-
+            assertThat(stateFor(key).unwrap().totalExecutions()).as("the blocked invocation has not settled yet")
+                      .isZero();
             gate.succeed(Unit.unit());
-
-            awaitTrue(() -> stateFor(key).map(v -> v.totalExecutions() >= 1).or(false), 3000);
+            awaitTrue(() -> stateFor(key).map(v -> v.totalExecutions() >= 1)
+                                    .or(false),
+                      3000);
             manager.stop();
-
             var finalState = stateFor(key).unwrap();
+
             assertThat(finalState.totalExecutions()).isEqualTo(1);
             assertThat(finalState.skippedOverlaps()).isEqualTo(1);
             assertThat(invocations).hasSize(1);
@@ -441,7 +544,6 @@ class ScheduledTaskManagerTest {
             var invocationsB = new CopyOnWriteArrayList<InvocationRecord>();
             var stubInvokerB = new StubSliceInvoker(invocationsB, Option.none());
             var leaderManagerB = new TestLeaderManager(nodeB);
-
             Consumer<KVCommand<AetherKey>> stateWriterB = command -> {
                 if (command instanceof KVCommand.Put<AetherKey, ?> put
                     && put.key() instanceof ScheduledTaskStateKey stateKey
@@ -449,31 +551,32 @@ class ScheduledTaskManagerTest {
                     stateMap.put(stateKey, stateValue);
                 }
             };
-
             var managerB = ScheduledTaskManager.scheduledTaskManager(registryB,
-                                                                      stubInvokerB,
-                                                                      nodeB,
-                                                                      stateWriterB,
-                                                                      key -> Option.option(stateMap.get(key)),
-                                                                      leaderManagerB);
+                                                                     stubInvokerB,
+                                                                     nodeB,
+                                                                     stateWriterB,
+                                                                     key -> Option.option(stateMap.get(key)),
+                                                                     leaderManagerB);
+
             try {
                 putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
                 establishQuorum();
-
                 var putB = new KVCommand.Put<>(ScheduledTaskKey.scheduledTaskKey("cache", artifact, method),
                                                ScheduledTaskValue.intervalTask(nodeB, "1s", ExecutionMode.ALL));
+
                 registryB.onScheduledTaskPut(new ValuePut<>(putB, Option.none()));
                 managerB.onQuorumStateChange(ClusterStateNotification.active());
-
                 var keyA = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
                 var keyB = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, nodeB);
 
-                awaitTrue(() -> stateFor(keyA).map(v -> v.totalExecutions() >= 2).or(false), 4000);
-                awaitTrue(() -> stateFor(keyB).map(v -> v.totalExecutions() >= 2).or(false), 4000);
-
+                awaitTrue(() -> stateFor(keyA).map(v -> v.totalExecutions() >= 2)
+                                        .or(false),
+                          4000);
+                awaitTrue(() -> stateFor(keyB).map(v -> v.totalExecutions() >= 2)
+                                        .or(false),
+                          4000);
                 manager.stop();
                 managerB.stop();
-
                 assertThat(stateFor(keyA).unwrap().totalExecutions()).isEqualTo(2);
                 assertThat(stateFor(keyB).unwrap().totalExecutions()).isEqualTo(2);
                 assertThat(stateMap).as("both nodes' rows must survive side by side").containsKeys(keyA, keyB);
@@ -494,31 +597,22 @@ class ScheduledTaskManagerTest {
     class TriggerGuard {
         @Test
         void tryClaim_fixedRateInFlight_refusesClaimUntilReleased() {
-            var gate = Promise.<Unit>promise();
-            stubInvoker.holdNextInvocation(gate);
+            var gate = Promise.<Unit> promise();
 
+            stubInvoker.holdNextInvocation(gate);
             putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
             establishQuorum();
-
             var key = ScheduledTaskKey.scheduledTaskKey("cache", artifact, method);
             var ctx = ((ScheduledTaskManagerAdapter) manager).ctx();
-
             // First tick (~1s) blocks on `gate`: ctx.inFlight is claimed for the key and stays
             // claimed until the gate is released.
             awaitTrue(() -> invocations.size() >= 1, 3000);
-
-            assertThat(manager.tryClaim(key))
-                    .as("an automatic fire is in flight — a manual trigger must be refused")
-                    .isFalse();
-
+            assertThat(manager.tryClaim(key)).as("an automatic fire is in flight — a manual trigger must be refused")
+                      .isFalse();
             gate.succeed(Unit.unit());
-
-            awaitTrue(() -> ! ctx.inFlight.contains(key), 3000);
-            manager.stop(); // freeze — no further tick can land between release and the assertion below
-
-            assertThat(manager.tryClaim(key))
-                    .as("the automatic fire settled and released its claim")
-                    .isTrue();
+            awaitTrue(() -> !ctx.inFlight.contains(key), 3000);
+            manager.stop();  // freeze — no further tick can land between release and the assertion below
+            assertThat(manager.tryClaim(key)).as("the automatic fire settled and released its claim").isTrue();
             manager.release(key);
         }
 
@@ -536,45 +630,56 @@ class ScheduledTaskManagerTest {
                                                                ExecutionMode.ALL,
                                                                false);
             var cron = CronExpression.parse(task.cron()).unwrap();
+            var gate = Promise.<Unit> promise();
 
-            var gate = Promise.<Unit>promise();
             stubInvoker.holdNextInvocation(gate);
-
             // Drives the widened TaskOps.executeCronTask directly — cron's minute-granularity
             // delayUntilNext makes waiting on a real timer tick impractically slow for a unit
             // test. The task/timer is never registered, so releasing the gate below settles the
             // invocation without arming a real next-fire timer.
             ScheduledTaskManager.TaskOps.executeCronTask(ctx, key, task, cron);
-
-            assertThat(manager.tryClaim(key))
-                    .as("a cron fire is in flight — a manual trigger must be refused")
-                    .isFalse();
-
+            assertThat(manager.tryClaim(key)).as("a cron fire is in flight — a manual trigger must be refused")
+                      .isFalse();
             gate.succeed(Unit.unit());
-
-            awaitTrue(() -> ! ctx.inFlight.contains(key), 3000);
-
-            assertThat(manager.tryClaim(key))
-                    .as("the cron fire settled and released its claim")
-                    .isTrue();
+            awaitTrue(() -> !ctx.inFlight.contains(key), 3000);
+            assertThat(manager.tryClaim(key)).as("the cron fire settled and released its claim").isTrue();
             manager.release(key);
         }
     }
 
-    private void putPausedTask(String configSection, Artifact artifact, MethodName method,
-                               NodeId node, String interval, ExecutionMode executionMode) {
+    private void putPausedTask(String configSection,
+                               Artifact artifact,
+                               MethodName method,
+                               NodeId node,
+                               String interval,
+                               ExecutionMode executionMode) {
         var key = ScheduledTaskKey.scheduledTaskKey(configSection, artifact, method);
         var value = ScheduledTaskValue.intervalTask(node, interval, executionMode).withPaused(true);
         var put = new KVCommand.Put<>(key, value);
+
         registry.onScheduledTaskPut(new ValuePut<>(put, Option.none()));
     }
 
-    private void putCronTask(String configSection, Artifact artifact, MethodName method,
-                             NodeId node, String cron, ExecutionMode executionMode) {
+    private void putCronTask(String configSection,
+                             Artifact artifact,
+                             MethodName method,
+                             NodeId node,
+                             String cron,
+                             ExecutionMode executionMode) {
         var key = ScheduledTaskKey.scheduledTaskKey(configSection, artifact, method);
         var value = ScheduledTaskValue.cronTask(node, cron, executionMode);
         var put = new KVCommand.Put<>(key, value);
+
         registry.onScheduledTaskPut(new ValuePut<>(put, Option.none()));
+    }
+
+    /// Lets `millis` of wall time pass so a negative ("nothing fired") covers ≥2 one-second intervals.
+    private static void settle(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private void awaitTrue(BooleanSupplier condition, long timeoutMs) {
@@ -589,6 +694,7 @@ class ScheduledTaskManagerTest {
                 Thread.sleep(20);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+
                 throw new RuntimeException(e);
             }
         }
@@ -603,6 +709,9 @@ class ScheduledTaskManagerTest {
         private final CopyOnWriteArrayList<InvocationRecord> invocations;
         private final AtomicReference<Option<Cause>> failureCause;
         private final AtomicReference<Promise<Unit>> pendingGate = new AtomicReference<>();
+        /// #272/#273: the stub models a node that HOSTS every slice unless told otherwise, so the
+        /// pre-existing ALL-mode tests keep their meaning (every node = every hosting node).
+        private final Set<Artifact> notHosted = ConcurrentHashMap.newKeySet();
 
         public StubSliceInvoker(CopyOnWriteArrayList<InvocationRecord> invocations, Option<Cause> failureCause) {
             this.invocations = invocations;
@@ -617,42 +726,62 @@ class ScheduledTaskManagerTest {
             pendingGate.set(gate);
         }
 
+        void setHosted(Artifact slice, boolean hosted) {
+            if (hosted) {
+                notHosted.remove(slice);
+            } else {
+                notHosted.add(slice);
+            }
+        }
+
+        @Override
+        public boolean hasLocalSlice(Artifact slice) {
+            return ! notHosted.contains(slice);
+        }
+
         @Override
         public Promise<Unit> invoke(Artifact slice, MethodName method, Object request) {
             invocations.add(new InvocationRecord(slice, method, request));
-
             var gate = pendingGate.getAndSet(null);
 
             if (gate != null) {
                 return gate;
             }
 
-            return failureCause.get().fold(Promise::unitPromise, Cause::promise);
+            return failureCause.get()
+                               .fold(Promise::unitPromise, Cause::promise);
         }
 
         @Override
         @SuppressWarnings("unchecked")
         public <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
             invocations.add(new InvocationRecord(slice, method, request));
-            return failureCause.get().fold(() -> (Promise<R>) Promise.unitPromise(), Cause::promise);
+
+            return failureCause.get()
+                               .fold(() -> (Promise<R>) Promise.unitPromise(),
+                                     Cause::promise);
         }
 
         // --- Unused methods — minimal stubs for compilation ---
-
         @Override
         public Result<Unit> verifyEndpointExists(Artifact artifact, MethodName method) {
             return Result.unitResult();
         }
 
         @Override
-        public <R> Promise<R> invokeWithRetry(Artifact slice, MethodName method, Object request,
-                                               TypeToken<R> responseType, int maxRetries) {
+        public <R> Promise<R> invokeWithRetry(Artifact slice,
+                                              MethodName method,
+                                              Object request,
+                                              TypeToken<R> responseType,
+                                              int maxRetries) {
             return invoke(slice, method, request, responseType);
         }
 
         @Override
-        public <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request,
-                                           TypeToken<R> responseType) {
+        public <R> Promise<R> invokeLocal(Artifact slice,
+                                          MethodName method,
+                                          Object request,
+                                          TypeToken<R> responseType) {
             return invoke(slice, method, request, responseType);
         }
 
@@ -684,8 +813,7 @@ class ScheduledTaskManagerTest {
         }
 
         @Override
-        public Unit registerAffinityResolver(Artifact artifact, MethodName method,
-                                              CacheAffinityResolver resolver) {
+        public Unit registerAffinityResolver(Artifact artifact, MethodName method, CacheAffinityResolver resolver) {
             return Unit.unit();
         }
 
@@ -708,26 +836,48 @@ class ScheduledTaskManagerTest {
             this.leader = value;
         }
 
-        @Override public Option<NodeId> leader() {
-            return leader ? Option.some(self) : Option.none();
+        @Override
+        public Option<NodeId> leader() {
+            return leader
+                   ? Option.some(self)
+                   : Option.none();
         }
 
-        @Override public boolean isLeader() {
+        @Override
+        public boolean isLeader() {
             return leader;
         }
 
-        @Override public Option<Long> currentLeaderEpoch() {
+        @Override
+        public Option<Long> currentLeaderEpoch() {
             return Option.none();
         }
 
-        @Override public void onLeaderCommitted(NodeId leader) {}
-        @Override public void triggerElection() {}
-        @Override public void stop() {}
-        @Override public void peerJoined(org.pragmatica.consensus.topology.TransportObservation.PeerJoined p) {}
-        @Override public void peerDisconnected(org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected p) {}
-        @Override public void peerObservedFaulty(org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty p) {}
-        @Override public void peerReconnected(org.pragmatica.consensus.topology.TransportObservation.PeerReconnected p) {}
-        @Override public void selfShutdown(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown s) {}
-        @Override public void watchClusterState(ClusterStateNotification q) {}
+        @Override
+        public void onLeaderCommitted(NodeId leader) {}
+
+        @Override
+        public void triggerElection() {}
+
+        @Override
+        public void stop() {}
+
+        @Override
+        public void peerJoined(org.pragmatica.consensus.topology.TransportObservation.PeerJoined p) {}
+
+        @Override
+        public void peerDisconnected(org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected p) {}
+
+        @Override
+        public void peerObservedFaulty(org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty p) {}
+
+        @Override
+        public void peerReconnected(org.pragmatica.consensus.topology.TransportObservation.PeerReconnected p) {}
+
+        @Override
+        public void selfShutdown(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown s) {}
+
+        @Override
+        public void watchClusterState(ClusterStateNotification q) {}
     }
 }

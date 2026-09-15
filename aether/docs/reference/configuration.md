@@ -305,6 +305,18 @@ framed `AEC1...` bytes as if they were plaintext content on every read. Recovery
 to a fresh, unmarked directory or DHT namespace (`#831`). This marker/refusal pair covers the
 per-instance disk/DHT path above; the built-in `streams` segment tiers' DHT namespace
 (`stream-segments`) has neither yet — only its disk side does — and is tracked separately as `#849`.
+**A refused boot leaves no disk marker behind (`#852`).** Storage construction is two-phase: the
+guards of every configured instance *and* of the built-in `streams` segment tiers all run first, and
+only when all of them pass are the `.encryption-enabled` disk markers written. So a boot refused by
+any one of them — legacy plaintext under an `encrypted = true` instance, `streams_encrypted` turned
+on over a segments directory that already holds plaintext, or either of the reverse-direction
+refusals — stamps no directory at all, and backing the others out to `encrypted = false` afterwards
+starts, because there is no marker for their reverse guard to trip on. Two windows stay outside this
+guarantee, and both open only AFTER the boot has been admitted: an I/O error on a marker file, or a
+crash part-way through writing the set, leaves the markers already written (re-running the same
+config completes them; a back-out to `encrypted = false` does not), and the DHT marker is checked
+post-formation (see next paragraph), so its refusal follows disk markers an admitted construction
+already wrote.
 **Timing differs by tier (`#858`/`#874`):** the local-disk marker is checked synchronously during
 storage construction, before the node object exists — a disk read needs no cluster. The DHT marker
 cannot be: its `DHTClient` can only route once cluster formation resolves, so that check runs from
@@ -493,16 +505,27 @@ var config = AetherNodeConfig.builder()
 [worker]
 group_name = "default"
 zone = "local"
-max_group_size = 100
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `group_name` | string | `"default"` | Logical group name for this worker pool |
-| `zone` | string | `"local"` | Zone identifier for zone-aware grouping. Workers in the same zone auto-cluster |
-| `max_group_size` | int | `100` | **Inert today** — `GroupMembershipTracker` is constructed at boot (`AetherNode.activateWorkerMode`, `AetherNode.java:5152`) but never fed membership events and never read again: repo-wide, `.updateMember(`/`.removeMember(` have zero callers, so `recomputeGroups()`/`GroupAssignment.computeGroups` never run. Group splitting is dead code (#673: wire-or-delete decision still open). Parsed and validated (`< 2` refuses at parse); changes no behavior today. Community size in the shipping product is the per-source worker count. |
+| `group_name` | string | `"default"` | Logical group name for this worker pool. Parsed, validated and stored; **read by no production code** (see below) |
+| `zone` | string | `"local"` | Zone identifier. Parsed, validated and stored; **read by no production code** (see below). Not the same knob as the `AETHER_ZONE` environment variable |
+| `max_group_size` | — | — | **Removed (#673, 2026-09-14).** A present key is refused at parse: worker group splitting was never wired, and communities are one per source (`<source>-w-0`). Remove the key from any `[worker]` table. |
 
-Zone is also extracted from the NodeId: everything before the last dash (e.g., `us-east-worker-1` → zone `us-east-worker`). The explicit `zone` config takes precedence for group computation.
+Both keys above are parsed, validated and stored on `AetherNodeConfig`, and then **read by nothing**. Their only
+consumer was the worker group-splitting chain (`GroupMembershipTracker` → `GroupAssignment.computeGroups`), which
+was never wired into a live node and was deleted in #673 (2026-09-14). Setting either key changes no behaviour
+today; they are documented because they are still accepted, not because they do anything.
+
+NodeId-derived zones were removed in #592 (2026-08-17). A node's zone is no longer inferred by splitting its id at
+the last dash — that was identifier parsing rather than zone awareness, and it put `node-1` in a zone called
+`node`.
+
+`[worker] zone` is a **different knob** from the `AETHER_ZONE` environment variable, and only the latter is live:
+`Main` maps `AETHER_ZONE` onto `NodeInfo.LABEL_ZONE`, the Hello handshake propagates that label into
+`SwimMember.labels`, and it is read for observability by `ClusterTopologyManagerRecord` and `ClusterTopologyRoutes`.
+`AETHER_ZONE` is carried to every provisioned node via `ClusterIdentityEnv.IDENTITY_VARS`.
 
 Workers self-organize into groups deterministically from SWIM membership. Same membership produces identical groups on every worker — no coordination needed. Each group elects its own governor (lowest ALIVE NodeId).
 

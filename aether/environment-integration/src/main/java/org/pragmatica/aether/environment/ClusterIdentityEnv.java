@@ -26,10 +26,13 @@ public sealed interface ClusterIdentityEnv {
     /// Cluster-identity env vars propagated by every provider (cloud + Docker).
     ///
     /// `AETHER_ZONE` is here because omitting it made the zone knob unreachable END-TO-END (#592): `Main`
-    /// maps it to `NodeInfo.LABEL_ZONE`, the handshake propagates that label into `SwimMember.labels`, and
-    /// worker-community grouping reads it — but both provisioning paths iterate THIS allow-list, so a
-    /// provisioned node never received the variable and every node came up zoneless. Fixing the grouping
-    /// alone would have left the whole chain inert.
+    /// maps it to `NodeInfo.LABEL_ZONE`, the handshake propagates that label into `SwimMember.labels` — but
+    /// both provisioning paths iterate THIS allow-list, so a provisioned node never received the variable
+    /// and every node came up zoneless. The consumer #592 cited, worker-community grouping, was deleted in
+    /// #673 (2026-09-14): `GroupAssignment` never ran. `AETHER_ZONE` is NOT dead — the label still has two
+    /// live readers, `ClusterTopologyManagerRecord` and `ClusterTopologyRoutes` (observability) — so only
+    /// the rationale changed, not the entry. Note this is the SWIM-label zone, a different knob from the
+    /// `[worker] zone` TOML key, which is parsed and read by nothing.
     /// `AETHER_API_KEYS` (PLURAL) is the node's SERVER-side credential set — the keys it ACCEPTS,
     /// parsed by `ConfigLoader.resolveApiKeys` ahead of any TOML. `AETHER_API_KEY` (SINGULAR, above)
     /// is the CLIENT credential the CLI SENDS. They are different variables read by different code,

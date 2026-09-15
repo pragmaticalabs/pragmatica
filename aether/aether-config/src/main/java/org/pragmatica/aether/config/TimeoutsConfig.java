@@ -43,6 +43,26 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
                                   StorageMaintenanceTimeouts.storageMaintenanceTimeouts());
     }
 
+    /// #420 — the DHT timeouts replaced, the rest kept; lets a boot test shorten
+    /// `anti_entropy_interval` without restating fourteen sibling records.
+    public TimeoutsConfig withDht(DhtTimeouts dht) {
+        return new TimeoutsConfig(invocation,
+                                  forwarding,
+                                  deployment,
+                                  rollingUpdate,
+                                  cluster,
+                                  consensus,
+                                  election,
+                                  swim,
+                                  observability,
+                                  dht,
+                                  worker,
+                                  security,
+                                  repository,
+                                  scaling,
+                                  storageMaintenance);
+    }
+
     public record InvocationTimeouts(TimeSpan timeout,
                                      TimeSpan invokerTimeout,
                                      TimeSpan retryBaseDelay,

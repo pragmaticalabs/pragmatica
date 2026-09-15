@@ -1,7 +1,7 @@
 # Docker Scaling Test Specification
 
 **Version:** 0.21.0
-**Status:** Draft
+**Status:** ARCHIVED (2026-09-14, #673) — every section that relies on `max_group_size` / `GroupAssignment.computeGroups` community splitting (G-6, §3 phase 3, the `max_group_size = 5` configuration, the 7-worker split expectations) describes a mechanism that was never wired and has been deleted; `max_group_size` is refused at parse. Communities are one per source. Kept as history; do not execute as written.
 **Date:** 2026-03-19
 
 ## 1. Overview

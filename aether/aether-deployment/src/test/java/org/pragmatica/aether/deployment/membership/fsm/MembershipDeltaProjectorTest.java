@@ -216,14 +216,29 @@ class MembershipDeltaProjectorTest {
             assertThat(decisions)
                 .as("a worker departure must never travel on the core MembershipDecision stream")
                 .isEmpty();
-            assertThat(pruned)
-                .as("core-only prune (TopologyObserver::pruneDeparted) must not run for a worker")
-                .isEmpty();
             assertThat(workerLeaves)
                 .as("#731: the worker leave must still be emitted — on its own channel")
                 .hasSize(1);
             assertThat(workerLeaves.getFirst().nodeId()).isEqualTo(W);
             assertThat(workerLeaves.getFirst().stampedAt()).isEqualTo(HLC);
+        }
+
+        /// #588: the prune is NOT core-only, and the earlier assertion here that it "must not run for
+        /// a worker" specified the ghost. `TopologyObserver.addNode` admits a worker into
+        /// `nodeStatesById` from the same SWIM discovery edges as a core, with no role filter, and
+        /// `removeNode` is reachable only through `pruneDeparted` — which the worker REMOVED arm never
+        /// called, so a dead worker stayed in `topology()` (and in `/api/v1/status` as `UNKNOWN`) forever.
+        @Test
+        void workerRemoval_prunesTheWorkerFromTheTransportTopology() {
+            projector.onDelta(joined(W, "worker"));
+            projector.onDelta(removed(W, "worker"));
+
+            assertThat(pruned)
+                .as("#588: a departed worker must be pruned from the transport topology exactly as a core is")
+                .containsExactly(W);
+            assertThat(decisions)
+                .as("the core MembershipDecision stream stays untouched by the prune")
+                .isEmpty();
         }
 
         /// Symmetric to [`#workerJoin_repeated_emitsExactlyOnce`]: the once-only guard is
