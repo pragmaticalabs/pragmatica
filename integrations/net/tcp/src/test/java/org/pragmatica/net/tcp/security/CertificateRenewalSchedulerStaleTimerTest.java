@@ -22,6 +22,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
@@ -150,20 +151,77 @@ class CertificateRenewalSchedulerStaleTimerTest {
                 .isTrue();
     }
 
-    /// Invokes the package-private `ctx.armScheduledTask(...)` reflectively, for the same reason
-    /// `readScheduledTask` reads the field that way: `Context` is reachable from this package but
-    /// the `ctx` field on the scheduler is private.
+    /// Invokes the package-private `ctx.armScheduledTask(...)` reflectively with the CURRENT epoch,
+    /// i.e. as a FRESH arm. Same justification as `readScheduledTask`.
     private static void armScheduledTask(CertificateRenewalScheduler s, ScheduledFuture<?> task) {
+        armScheduledTask(s, task, readEpoch(s));
+    }
+
+    /// As above but with an explicit arming epoch, so a STALE arm can be driven deterministically
+    /// rather than raced for.
+    private static void armScheduledTask(CertificateRenewalScheduler s,
+                                         ScheduledFuture<?> task,
+                                         long armingEpoch) {
         try {
             Field ctxField = CertificateRenewalScheduler.class.getDeclaredField("ctx");
             ctxField.setAccessible(true);
             Object ctx = ctxField.get(s);
-            var method = ctx.getClass().getDeclaredMethod("armScheduledTask", ScheduledFuture.class);
+            var method = ctx.getClass().getDeclaredMethod("armScheduledTask",
+                                                          ScheduledFuture.class,
+                                                          long.class);
             method.setAccessible(true);
-            method.invoke(ctx, task);
+            method.invoke(ctx, task, armingEpoch);
         } catch (ReflectiveOperationException e) {
             throw new AssertionError("reflection failed: " + e.getMessage(), e);
         }
+    }
+
+    /// Reflectively reads `ctx.epoch`.
+    private static long readEpoch(CertificateRenewalScheduler s) {
+        try {
+            Field ctxField = CertificateRenewalScheduler.class.getDeclaredField("ctx");
+            ctxField.setAccessible(true);
+            Object ctx = ctxField.get(s);
+            Field epochField = ctx.getClass().getDeclaredField("epoch");
+            epochField.setAccessible(true);
+            return ((AtomicLong) epochField.get(ctx)).get();
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("reflection failed: " + e.getMessage(), e);
+        }
+    }
+
+    @Test
+    void armScheduledTask_whenTheArmIsStale_cancelsItselfAndLeavesTheResidentTimer() {
+        var provider = new CountingProvider();
+        var scheduler = CertificateRenewalScheduler.certificateRenewalScheduler(
+                provider, "node-stale", "localhost",
+                _ -> {}, Instant.now().plusSeconds(3600));
+
+        var holder = readScheduledTask(scheduler);
+
+        // The #1191 shape, driven rather than raced. `Healthy.onEntry` SCHEDULES a zero-delay tick
+        // and only then arms, so that tick can complete the whole Healthy -> Renewing ->
+        // RetryBackoff round trip — arming the real retry — while the original hook is still
+        // between its schedule and its arm. The original's arm is then STALE.
+        var staleEpoch = readEpoch(scheduler) - 1;
+
+        var resident = SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(3_600_000L).millis());
+        armScheduledTask(scheduler, resident);
+
+        var stale = SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(3_600_000L).millis());
+        armScheduledTask(scheduler, stale, staleEpoch);
+
+        assertThat(stale.isCancelled())
+                .as("#1191: a STALE arm must cancel ITSELF")
+                .isTrue();
+        assertThat(resident.isCancelled())
+                .as("#1191: a stale arm must NOT cancel the RESIDENT timer. Cancelling it kills the "
+                    + "live retry, renewal stops permanently, and the status surface still reports "
+                    + "FAILED — strictly worse than the orphaned future this guard replaced")
+                .isFalse();
+        assertThat(holder.get().isPresent())
+                .as("the resident timer is still the armed one")
+                .isTrue();
     }
 
     @Test

@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -95,6 +96,19 @@ public final class CertificateRenewalScheduler {
         /// once per renewal cycle, never per request.
         final Object timerLock = new Object();
 
+        /// Monotonic arming epoch. Every hook that arms a timer opens a new epoch, captures it, and
+        /// hands that value back to `armScheduledTask`.
+        ///
+        /// Why an epoch and not just the lock. `Healthy.onEntry` SCHEDULES before it arms, and on the
+        /// immediate branch the delay is zero — so the tick can fire and drive
+        /// `Healthy → Renewing → RetryBackoff` to completion, arming the real retry, while the
+        /// original hook is still between its `schedule` and its `armScheduledTask`. That late arm is
+        /// STALE. The lock makes the two arms atomic with respect to each other; it cannot say which
+        /// is NEWER, and without that a stale arm displaces and cancels the live retry — renewal then
+        /// stops permanently while the status surface still reports FAILED. Strictly worse than the
+        /// orphan it was meant to fix.
+        final AtomicLong epoch = new AtomicLong(0);
+
         final Idle idle;
         final Healthy healthy;
         final Renewing renewing;
@@ -131,7 +145,16 @@ public final class CertificateRenewalScheduler {
         void markTerminatedAndDrain() {
             synchronized (timerLock) {
                 terminated.set(true);
+                epoch.incrementAndGet();
                 scheduledTask.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
+            }
+        }
+
+        /// Opens a new arming epoch and returns it. Called at the TOP of every hook that arms, before
+        /// it schedules anything, so a hook overtaken between scheduling and arming is detectable.
+        long openArmingEpoch() {
+            synchronized (timerLock) {
+                return epoch.incrementAndGet();
             }
         }
 
@@ -157,9 +180,11 @@ public final class CertificateRenewalScheduler {
         /// `LeaderElectionState.AwaitingKvSync.onEntry` schedules and stores the same way and is
         /// exposed to the same overtake. Its `onCasLost` override does not help here — `tryAdvance`
         /// calls that hook only on the CAS-LOSS path, and this race is between two winners.
-        void armScheduledTask(ScheduledFuture<?> task) {
+        void armScheduledTask(ScheduledFuture<?> task, long armingEpoch) {
             synchronized (timerLock) {
-                if (terminated.get()) {
+                // A STALE arm cancels ITSELF, never the resident task. Cancelling the resident one
+                // would kill a live retry armed by the hook that overtook this one.
+                if (terminated.get() || epoch.get() != armingEpoch) {
                     task.cancel(false);
                     return;
                 }
@@ -194,13 +219,14 @@ public final class CertificateRenewalScheduler {
             // Both branches schedule a tick AND store the future on the context — the immediate
             // (delay <= 0) branch must NOT skip the store, otherwise stale ticks fire after a
             // transition out of `Healthy` and the cancellation in `onExit` becomes a no-op.
+            var armingEpoch = ctx.openArmingEpoch();
             var scheduleDelay = delay.isNegative() || delay.isZero()
                                 ? TimeSpan.timeSpan(0).millis()
                                 : TimeSpan.timeSpan(delay.toMillis()).millis();
             var task = SharedScheduler.schedule(() -> ctx.dispatch(new RenewalEvent.Tick()),
                                                 scheduleDelay);
 
-            ctx.armScheduledTask(task);
+            ctx.armScheduledTask(task, armingEpoch);
             if (delay.isNegative() || delay.isZero()) {
                 log.info("Certificate validity window passed — renewing immediately");
             } else {
@@ -257,10 +283,11 @@ public final class CertificateRenewalScheduler {
                       retryCount,
                       jitteredMs,
                       delayMinutes);
+            var armingEpoch = ctx.openArmingEpoch();
             var task = SharedScheduler.schedule(() -> ctx.dispatch(new RenewalEvent.Tick()),
                                                 TimeSpan.timeSpan(jitteredMs).millis());
 
-            ctx.armScheduledTask(task);
+            ctx.armScheduledTask(task, armingEpoch);
         }
 
         @Override
@@ -389,6 +416,7 @@ public final class CertificateRenewalScheduler {
             // Dispatch is single-threaded on the FSM; the Tick→Renewing→Healthy round-trip
             // would also work but is needlessly invasive when we just need a fresh timer.
             ctx.cancelScheduledTask();
+            var armingEpoch = ctx.openArmingEpoch();
             var delay = calculateRenewalDelay(newNotAfter);
             var scheduleDelay = delay.isNegative() || delay.isZero()
                                 ? TimeSpan.timeSpan(0).millis()
@@ -396,7 +424,7 @@ public final class CertificateRenewalScheduler {
             var task = SharedScheduler.schedule(() -> ctx.dispatch(new RenewalEvent.Tick()),
                                                 scheduleDelay);
 
-            ctx.armScheduledTask(task);
+            ctx.armScheduledTask(task, armingEpoch);
             log.info("Short-validity reconfiguration: certificate notAfter set to {}, next Tick in {}",
                      newNotAfter,
                      formatDuration(delay));
