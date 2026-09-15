@@ -9,6 +9,7 @@ package org.pragmatica.net.tcp.security;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -83,6 +84,10 @@ public final class CertificateRenewalScheduler {
 
         final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
 
+        /// Raised by `Stopped.onEntry` BEFORE it drains `scheduledTask`. The ordering is the whole
+        /// mechanism — see `armScheduledTask`.
+        final AtomicBoolean terminated = new AtomicBoolean(false);
+
         final Idle idle;
         final Healthy healthy;
         final Renewing renewing;
@@ -109,6 +114,37 @@ public final class CertificateRenewalScheduler {
 
         void cancelScheduledTask() {
             scheduledTask.getAndSet(Option.none()).onPresent(task -> task.cancel(false));
+        }
+
+        /// Stores `task` as the live timer, unless the scheduler has already reached `Stopped` — in
+        /// which case the task is cancelled instead of stored.
+        ///
+        /// Why this is not a plain `set`. `Fsm.dispatch` reads the current state and only then calls
+        /// `handle`, with the CAS inside `transitionTo`; a transition that LOSES the CAS has already
+        /// begun running its side effects. So `RetryBackoff.onEntry` can arm a retry AFTER a
+        /// concurrent `stop()` has run `Stopped.onEntry` and drained the holder, leaving a live,
+        /// uncancelled timer on a stopped scheduler (#1191). The CAS serialises which transition
+        /// wins; it does not serialise the side effects of the one that loses.
+        ///
+        /// The double check closes it, and depends on `Stopped.onEntry` raising `terminated` BEFORE
+        /// it drains. Either this store precedes that drain, and the drain removes the task; or the
+        /// drain precedes this store, in which case `terminated` was already raised and the
+        /// post-store check cancels. No interleaving leaves a task armed past the terminal state.
+        ///
+        /// Scoped to this scheduler on purpose. #1191 is FSM-wide — `LeaderElectionState` and
+        /// `ClusterDeploymentState` also arm timers inside `onEntry` — and its general fix is a
+        /// design decision about the FSM, not a repair to one caller.
+        void armScheduledTask(ScheduledFuture<?> task) {
+            if (terminated.get()) {
+                task.cancel(false);
+                return;
+            }
+
+            scheduledTask.set(Option.some(task));
+
+            if (terminated.get()) {
+                cancelScheduledTask();
+            }
         }
 
         void dispatch(RenewalEvent event) {
@@ -142,7 +178,7 @@ public final class CertificateRenewalScheduler {
             var task = SharedScheduler.schedule(() -> ctx.dispatch(new RenewalEvent.Tick()),
                                                 scheduleDelay);
 
-            ctx.scheduledTask.set(Option.some(task));
+            ctx.armScheduledTask(task);
             if (delay.isNegative() || delay.isZero()) {
                 log.info("Certificate validity window passed — renewing immediately");
             } else {
@@ -202,7 +238,7 @@ public final class CertificateRenewalScheduler {
             var task = SharedScheduler.schedule(() -> ctx.dispatch(new RenewalEvent.Tick()),
                                                 TimeSpan.timeSpan(jitteredMs).millis());
 
-            ctx.scheduledTask.set(Option.some(task));
+            ctx.armScheduledTask(task);
         }
 
         @Override
@@ -223,6 +259,10 @@ public final class CertificateRenewalScheduler {
     record Stopped(Context ctx) implements SchedulerState {
         @Override
         public void onEntry() {
+            // Order is load-bearing: raise `terminated` BEFORE draining, so a losing-path `onEntry`
+            // that arms after this drain observes the flag and cancels rather than leaking a live
+            // timer onto a stopped scheduler (#1191). See `Context.armScheduledTask`.
+            ctx.terminated.set(true);
             ctx.cancelScheduledTask();
             log.info("Certificate renewal scheduler stopped");
         }
@@ -335,7 +375,7 @@ public final class CertificateRenewalScheduler {
             var task = SharedScheduler.schedule(() -> ctx.dispatch(new RenewalEvent.Tick()),
                                                 scheduleDelay);
 
-            ctx.scheduledTask.set(Option.some(task));
+            ctx.armScheduledTask(task);
             log.info("Short-validity reconfiguration: certificate notAfter set to {}, next Tick in {}",
                      newNotAfter,
                      formatDuration(delay));
