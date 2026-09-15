@@ -45,6 +45,7 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Self
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerJoinReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeDrainingReported;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerLeaveReceived;
 import org.pragmatica.aether.deployment.schema.SchemaEvent.ActivationBlocked;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed;
@@ -257,6 +258,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                   // only, never persisted — resets on leader failover. See #reportSchemaHold's
                   // Javadoc (#760/#724 review round 2 item l) for the accepted consequence.
                   Map<SliceNodeKey, String> reportedSchemaHolds,
+                  // #688: nodes whose drain eviction loop is running. Judgment, in-memory, rebuilt
+                  // empty on a new leader — which is fine, because `resumeDrainEvictions` runs on
+                  // every reconcile tick and restarts whatever the draining set still names.
+                  Set<NodeId> drainEvictionsInProgress,
                   AtomicInteger allocationIndex,
                   AtomicBoolean deactivated,
                   CancellableTask reconcileTimer) implements ClusterDeploymentState {
@@ -337,6 +342,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 case MembershipDecisionReceived(MembershipDecision decision) -> handleMembershipDecision(decision, tx);
                 case WorkerJoinReceived(WorkerJoinDecision decision) -> handleWorkerJoin(decision, tx);
                 case WorkerLeaveReceived(WorkerLeaveDecision decision) -> handleWorkerLeave(decision, tx);
+                case NodeDrainingReported(NodeId drainingNode) -> tx.handle(() -> startDrainEviction(drainingNode));
                 case SelfShutdownReceived(TransportObservation.SelfShutdown selfShutdown) -> handleSelfShutdown(selfShutdown,
                                                                                                                 tx);
                 case ActivationDirectivePutReceived(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) -> handleActivationDirectivePut(valuePut,
@@ -619,15 +625,22 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             reconcile();
         }
 
+        /// #688 — runs on every reconcile tick as well as on leader activation. A drain the leader
+        /// never got a report for (the pong landed on the previous leader) or one whose loop stalled
+        /// is picked up here; a loop already running for the node is left alone (the guard), so a
+        /// tick never double-issues a replacement.
         private void resumeDrainEvictions() {
             var draining = drainingNodes();
 
-            if (draining.isEmpty()) {
+            drainEvictionsInProgress.retainAll(draining);
+            var stalled = draining.stream().filter(node -> !drainEvictionsInProgress.contains(node)).toList();
+
+            if (stalled.isEmpty()) {
                 return;
             }
 
-            log.info("Resuming drain evictions for {} nodes", draining.size());
-            draining.forEach(this::evictNextSliceFromNode);
+            log.info("Resuming drain evictions for {} nodes", stalled.size());
+            stalled.forEach(this::startDrainEviction);
         }
 
         /// Rebuild-time schema recovery. Two distinct ways a migration stalls, both of which strand
@@ -1244,13 +1257,31 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
         }
 
+        /// #688 — the one entry to the eviction loop, idempotent per drain episode: the DRAINING pong
+        /// repeats every ping interval and the reconcile tick repeats every interval, so the loop
+        /// must start once and the repeats must find it running.
         private void startDrainEviction(NodeId drainingNode) {
+            if (!drainEvictionsInProgress.add(drainingNode)) {
+                return;
+            }
+
             log.info("Starting drain eviction for node {}", drainingNode);
             evictNextSliceFromNode(drainingNode);
         }
 
+        /// #688 round 2 — the guard is held for exactly as long as a loop step is scheduled, so EVERY
+        /// step that abandons the loop must release it. Both abandon paths (the head of the loop and
+        /// the parked replacement check) reach it here: a drain that ends between two steps — halted,
+        /// or withdrawn — leaves nothing scheduled, and a guard nobody will clear would swallow the
+        /// node's NEXT drain episode whole (`startDrainEviction`'s `add` is what refuses it).
+        private void abandonDrainEviction(NodeId drainingNode) {
+            drainEvictionsInProgress.remove(drainingNode);
+        }
+
         private void evictNextSliceFromNode(NodeId drainingNode) {
             if (deactivated.get() || !drainingNodes().contains(drainingNode)) {
+                abandonDrainEviction(drainingNode);
+
                 return;
             }
 
@@ -1293,6 +1324,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         private void checkReplacementAndUnload(SliceNodeKey originalKey) {
             if (deactivated.get() || !drainingNodes().contains(originalKey.nodeId())) {
+                abandonDrainEviction(originalKey.nodeId());
+
                 return;
             }
 
@@ -1321,6 +1354,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// Terminal step of the drain eviction chain: draining completion is observed through the
         /// FSM transition and its log line, and writes no KV command.
         private void completeDrain(NodeId drainingNode) {
+            drainEvictionsInProgress.remove(drainingNode);
             log.info("Drain complete for node {}", drainingNode);
         }
 
@@ -2411,6 +2445,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private Promise<Unit> handleNodeRemoval(NodeId removedNode) {
+            drainEvictionsInProgress.remove(removedNode);
             rebuildSliceStateFromKVStoreEntries();
             var sliceKeysToRemove = sliceStates.keySet()
                                                .stream()
@@ -2599,6 +2634,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
 
             log.debug("Reconciliation complete: {} of {} blueprints required adjustment", reconciled, blueprints.size());
+            resumeDrainEvictions();
             evaluateCommunityStates();
             cleanupOrphanedSliceEntries();
             cleanupStaleNodeRoutes();
