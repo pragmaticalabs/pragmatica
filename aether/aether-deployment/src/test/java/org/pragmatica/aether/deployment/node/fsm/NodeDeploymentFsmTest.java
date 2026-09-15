@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.ConfigChanged;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceActionConfig;
@@ -58,6 +59,7 @@ import java.util.function.LongSupplier;
 import io.netty.buffer.ByteBuf;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// FSM-level tests for the [`org.pragmatica.aether.deployment.node.NodeDeploymentManager`] state
@@ -114,6 +116,31 @@ class NodeDeploymentFsmTest {
             harness.dispatch(new QuorumEstablished());
             assertThat(harness.state()).isInstanceOf(NodeDeploymentState.Active.class);
             assertThat(ctx.isActive()).isTrue();
+        }
+
+        /// #381: a `ConfigChanged` event in ACTIVE reaches the state's `ConfigNotificationManager` and,
+        /// through it, the registered slice's generated `notifyConfigUpdate` for the matching section.
+        @Test
+        void active_ConfigChanged_isPushedToTheRegisteredSlice() {
+            harness.dispatch(new QuorumEstablished());
+            var active = (NodeDeploymentState.Active) harness.state();
+
+            ConfigChangeProbeFactory.calls.clear();
+            active.configNotificationManager().register(ARTIFACT,
+                                                        new Object(),
+                                                        getClass().getClassLoader(),
+                                                        ConfigChangeProbeFactory.class.getName(),
+                                                        List.of("database"));
+            harness.dispatch(new ConfigChanged("database.pool_size"));
+
+            await().untilAsserted(() -> assertThat(ConfigChangeProbeFactory.calls).containsExactly("database"));
+            assertThat(harness.state()).isSameAs(active);
+        }
+
+        @Test
+        void dormant_ConfigChanged_isIgnored() {
+            harness.dispatch(new ConfigChanged("database.pool_size"));
+            assertThat(harness.state()).isInstanceOf(NodeDeploymentState.Dormant.class);
         }
 
         @Test
@@ -591,5 +618,14 @@ class NodeDeploymentFsmTest {
                 return null;
             }
         };
+    }
+
+    /// Stands in for a generated `<Slice>Factory` (looked up by name and shape by the manager).
+    public static final class ConfigChangeProbeFactory {
+        static final List<String> calls = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        public static void notifyConfigUpdate(Object sliceInstance, String section, org.pragmatica.aether.slice.ConfigFacade config) {
+            calls.add(section);
+        }
     }
 }

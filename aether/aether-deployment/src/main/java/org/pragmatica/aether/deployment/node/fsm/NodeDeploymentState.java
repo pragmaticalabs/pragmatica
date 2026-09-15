@@ -21,6 +21,7 @@ import org.pragmatica.aether.deployment.drain.DrainReason;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SliceDeployment;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SuspendedSlice;
 import org.pragmatica.aether.deployment.node.RoutingEpochAckTracker;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.ConfigChanged;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.LeavingRequested;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactRemoveReceived;
@@ -195,6 +196,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 case NodeArtifactRemoveReceived(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) -> handleNodeArtifactRemove(valueRemove,
                                                                                                                                          tx);
                 case NodeRoutesPutReceived(var valuePut) -> handleNodeRoutesPut(valuePut, tx);
+                case ConfigChanged(String changedKey) -> handleConfigChanged(changedKey, tx);
                 case SliceTargetPutReceived(var valuePut) -> tx.handle(() -> redriveDeferredStarts(valuePut.cause()
                                                                                                            .key()
                                                                                                            .artifactBase()));
@@ -263,6 +265,14 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId());
 
             tx.handle(() -> handleSliceValueRemove(sliceKey));
+        }
+
+        /// #381 — a committed `ConfigKey` change (cluster-wide or scoped to this node) is pushed to every
+        /// registered slice whose declared section the key falls under; each slice reads through its own
+        /// composite facade, which already layers the KV overlay the change landed in.
+        private void handleConfigChanged(String changedKey,
+                                         TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> configNotificationManager.notifyChange(changedKey, this::buildConfigFacade));
         }
 
         private void handleNodeRoutesPut(ValuePut<AetherKey.NodeRoutesKey, org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue> valuePut,
@@ -1365,10 +1375,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var classLoader = slice.getClass().getClassLoader();
             var factoryClassName = entries.getFirst().factoryClassName();
             var sliceInstance = extractSliceInstance(slice);
-
-            configNotificationManager.register(artifact, sliceInstance, classLoader, factoryClassName);
             var sections = entries.stream().map(ConfigUpdateManifestEntry::configSection).toList();
 
+            configNotificationManager.register(artifact, sliceInstance, classLoader, factoryClassName, sections);
             configNotificationManager.notifyInitial(artifact, sections, buildConfigFacade(artifact));
             log.debug("Registered slice {} for config updates on sections: {}", artifact, sections);
         }

@@ -9,9 +9,9 @@
 > inaccurate. Of the seven issues filed from it (#378–#384), **six are CLOSED**: #378 (sync-replication
 > off-by-one), #379 (KV `Remove` unfenced), #380 (DHTConfig strong-consistency docstring), #382
 > (DurableEntity "Linearizable get" javadoc), #383 (in-memory/snapshot-only persistence — documented,
-> build deferred to epic #349), #384 (DHT guarantee downgrade documented). **#381 remains open**
-> (`ConfigNotificationManager.notifyChange` has no caller — runtime config-change push is dead code),
-> milestone `v1.0.0-rc4`, and is a member of the dead-surface class tracked under #519.
+> build deferred to epic #349), #384 (DHT guarantee downgrade documented), and #381
+> (`ConfigNotificationManager.notifyChange` had no caller — wired in #381: `DynamicConfigManager` →
+> `NodeDeploymentManager.onConfigChanged` → `notifyChange`; the C4 row below is history).
 >
 > Re-grounding this file against current `HEAD` is part of **#496** (GA claims-vs-reality audit).
 > Until that runs, treat the rows below as historically accurate at rc2, not as current findings.
