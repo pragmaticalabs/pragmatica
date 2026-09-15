@@ -153,8 +153,10 @@ public final class CertificateRenewalScheduler {
         /// re-check after an unlocked store removes neither.
         ///
         /// Scoped to this scheduler on purpose; #1191 is FSM-wide and its general fix is a design
-        /// decision about the FSM. `LeaderElectionState` is NOT in the same position — it overrides
-        /// `onCasLost` to cancel its eagerly-scheduled tick, a mitigation this scheduler lacks.
+        /// decision about the FSM. Do NOT read that scoping as "the others are safe":
+        /// `LeaderElectionState.AwaitingKvSync.onEntry` schedules and stores the same way and is
+        /// exposed to the same overtake. Its `onCasLost` override does not help here — `tryAdvance`
+        /// calls that hook only on the CAS-LOSS path, and this race is between two winners.
         void armScheduledTask(ScheduledFuture<?> task) {
             synchronized (timerLock) {
                 if (terminated.get()) {
