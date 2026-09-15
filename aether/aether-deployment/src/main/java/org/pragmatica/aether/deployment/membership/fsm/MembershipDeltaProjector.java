@@ -49,7 +49,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// departed peer via `TopologyObserver.pruneDeparted` → `removeNode` — `removeNode` is one of
 /// the evaluator's PRE-EXISTING triggers (it was reached identically by the old
 /// `publishCoreMembershipDelta` removal arm), so no NEW path into `evaluateQuorumState` is
-/// introduced and the promotion edge can never reach it.
+/// introduced and the promotion edge can never reach it. The worker REMOVED arm prunes through the
+/// same call (#588); for a worker the evaluator's level re-check is a no-op on a settled cluster.
 ///
 /// **Quorum gate / A7 — drainer-gated, self-draining (follower-starvation fix).** The FIFO
 /// queue IS the pending store: edges are enqueued unconditionally and [`#inQuorum`] is
@@ -395,12 +396,19 @@ public final class MembershipDeltaProjector {
     /// guard is needed here the way [`#emitWorkerJoin`] needs `announcedWorkers.add` — the caller
     /// already consumed the once-only `announcedWorkers.remove` guard before calling this, so a
     /// second REMOVED edge for the same node finds `wasWorker` false and never reaches here.
+    ///
+    /// Prunes the transport topology exactly as [`#emitRemoval`] does (#588). A worker enters
+    /// `TopologyObserver.nodeStatesById` through the same SWIM `JoinAnnounced`/`MemberDiscovered` →
+    /// `addNode` path as a core, with no role filter, and `removeNode` is reached only through this
+    /// prune — so a dead worker's entry, and with it its `/api/v1/status` `cluster.nodes[]` row
+    /// (`derivedStatus: UNKNOWN`), its place in discovery gossip and its dial-set slot, lived forever.
     @Contract
     private void emitWorkerLeave(NodeId node) {
         var stampedAt = hlcSupplier.get();
 
         log.debug("Membership delta: WorkerLeft {} (stampedAt={})", node, stampedAt);
         workerLeaveSink.accept(WorkerLeaveDecision.workerLeaveDecision(node, stampedAt));
+        pruneDeparted.accept(node);
     }
 
     @Contract
