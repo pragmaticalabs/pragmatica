@@ -2473,10 +2473,14 @@ public interface AetherNode extends ManageableNode {
         // then, keeping aether-deployment free of any ClusterEvent / DHT-event dependency.
         var departurePushObserverRef = new java.util.concurrent.atomic.AtomicReference<>(DeparturePushObserver.noop());
         Supplier<Promise<Unit>> departurePush = () -> dhtRebalancer.pushOnDeparture(departurePushObserverRef.get());
+        // #273 item 1: forward-declared hook resolved once the ScheduledTaskManager is built below. The
+        // drain edge for scheduled tasks is THIS emitter, not a MembershipDecision — `NodeDraining` has
+        // no producer since the membership-v2 finale removed the per-node lifecycle projection.
+        var scheduledTaskDrainHookRef = new java.util.concurrent.atomic.AtomicReference<Runnable>(() -> {});
         var drainProcedure = DrainProcedure.drainProcedure(inFlightTrackerForDrain,
                                                            () -> {},
-                                                           reason -> clusterEventDrainEmitterRef.get()
-                                                                                                .accept(reason),
+                                                           drainInitiatedEmitter(scheduledTaskDrainHookRef,
+                                                                                 clusterEventDrainEmitterRef),
                                                            departurePush,
                                                            jvmExit);
         Supplier<Option<NodeId>> healthLeaderSupplier = () -> clusterNode.leaderManager()
@@ -2714,7 +2718,9 @@ public interface AetherNode extends ManageableNode {
                                                                              command -> clusterNode.apply(List.of(command)),
                                                                              scheduledTaskStateRegistry::stateFor,
                                                                              clusterNode.leaderManager());
-
+        // #273 item 1: resolve the drain hook now the manager exists. `DrainProcedure.initiate` runs this
+        // once at the INACTIVE->DRAINING CAS, for every trigger (QUORUM_LOSS, CORE_ABSENCE, COMMANDED).
+        scheduledTaskDrainHookRef.set(scheduledTaskManager::onDrainInitiated);
         resourceProviderSetup.spiProvider()
                              .onPresent(spi -> registerRuntimeExtensions(spi,
                                                                          topicSubscriptionRegistry,
@@ -4957,6 +4963,38 @@ public interface AetherNode extends ManageableNode {
     private static void commandedDrain(DrainProcedure drainProcedure, NodeReportedStateHolder holder) {
         drainProcedure.initiate(DrainReason.COMMANDED);
         holder.onDrainStarted();
+    }
+
+    /// `DrainProcedure`'s single-shot `drainInitiatedEmitter`, invoked once inside the INACTIVE->DRAINING
+    /// CAS and therefore the node's one drain edge, shared by all three triggers (QUORUM_LOSS,
+    /// CORE_ABSENCE, COMMANDED). Two consumers, in falling order of consequence:
+    ///
+    ///   1. #273 item 1 — stop this node's ALL-mode scheduled fires. A correctness action.
+    ///   2. #565 — emit `SelfDrainInitiated`, the one event that explains why a node left.
+    ///
+    /// The scheduled-task hook runs FIRST but inside its own no-throw guard, so it can neither delay nor
+    /// suppress (2). `DrainProcedure.emitDrainInitiatedSafely` already wraps the whole consumer, but that
+    /// outer guard would let a throw from (1) swallow (2) — the exact loss #565 was filed for.
+    ///
+    /// Package-private and named rather than an inline lambda so the composition itself is testable:
+    /// `ScheduledTaskDrainWiringBootTest` drives a real drain through it. Both arguments are
+    /// forward-declared refs — the manager and the event aggregator are both constructed after
+    /// `DrainProcedure`.
+    static Consumer<DrainReason> drainInitiatedEmitter(AtomicReference<Runnable> scheduledTaskDrainHookRef,
+                                                       AtomicReference<Consumer<DrainReason>> clusterEventDrainEmitterRef) {
+        return reason -> {
+            runScheduledTaskDrainHookSafely(scheduledTaskDrainHookRef.get());
+            clusterEventDrainEmitterRef.get()
+                                       .accept(reason);
+        };
+    }
+
+    private static void runScheduledTaskDrainHookSafely(Runnable hook) {
+        try {
+            hook.run();
+        } catch (Throwable t) {
+            LOG.warn("Scheduled-task drain hook failed: {} — drain proceeds", t.getMessage());
+        }
     }
 
     /// E2 Phase 2b (2026-05-28): bridge the consensus-derived `ClusterStateNotification`
