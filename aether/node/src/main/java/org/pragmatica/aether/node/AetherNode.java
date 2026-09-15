@@ -158,6 +158,7 @@ import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.DefaultStreamPublisher;
 import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.slice.blueprint.OwningBlueprintResolver;
 import org.pragmatica.aether.slice.stream.BlueprintStreamAddresses;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.KvStreamOwnerEpochSource;
@@ -6479,6 +6480,14 @@ public interface AetherNode extends ManageableNode {
                               (sliceId, alias) -> Artifact.artifact(sliceId).flatMap(artifact -> BlueprintStreamAddresses.engineKeyFor(kvStore,
                                                                                                                                        artifact,
                                                                                                                                        alias)));
+        // #1216: a bare pub/sub topic name is scoped to the owning BLUEPRINT, exactly as a stream
+        // alias is. PublisherFactory holds only the publishing slice's id and cannot reach the
+        // cluster KV-Store where `SliceTargetValue.owningBlueprint` lives, so the one hop from slice
+        // identity to blueprint identity is supplied here. Registered unconditionally and for the
+        // same reason as the resolver above: absence is what a test/minimal runtime looks like, and
+        // on a real node the resolver must always be present or a co-deployed publisher and
+        // subscriber fall back to two DIFFERENT slice-derived namespaces and silently never meet.
+        spi.registerExtension(OwningBlueprintResolver.class, OwningBlueprintResolver.kvBacked(kvStore));
     }
 
     /// A6 cold-boot convergence window: how long after THIS node's `start()` the SWIM cold-boot

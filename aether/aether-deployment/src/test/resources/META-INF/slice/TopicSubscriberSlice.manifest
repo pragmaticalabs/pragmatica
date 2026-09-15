@@ -1,0 +1,10 @@
+# Test fixture for NodeDeploymentStateTopicSubscriptionNamespaceTest (#1216).
+#
+# Shaped exactly as the slice processor generates a declarative topic subscription: `topicName`
+# present means the address is resolved straight from the single-source `Topic<T>` constant (#396)
+# via TopicAddressResolver, so this fixture needs no ConfigService and no resources.toml section.
+reactive.count=1
+reactive.0.category=subscription
+reactive.0.method=onMessage
+reactive.0.config=topics.orders
+reactive.0.topicName=orders
