@@ -10,6 +10,7 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentContext;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.ConfigChanged;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactRemoveReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeRoutesPutReceived;
@@ -95,6 +96,13 @@ public interface NodeDeploymentManager {
     @Contract
     @MessageReceiver
     void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
+
+    /// #381 — a `ConfigKey` change applied to this node's dynamic config overlay (`DynamicConfigManager`
+    /// calls this after the overlay is updated, so a slice reading through its facade sees the new
+    /// value). Pushed to the registered slices' `notifyConfigUpdate` only while ACTIVE; every other
+    /// state ignores it, and the slices re-read at their next activation anyway.
+    @Contract
+    void onConfigChanged(String changedKey);
 
     /// #1068: a start refused for want of a committed target is deferred, and these two observations
     /// are what re-evaluate it.
@@ -565,6 +573,12 @@ public interface NodeDeploymentManager {
         @Override
         public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
             ctx.dispatch(new NodeRoutesPutReceived(valuePut));
+        }
+
+        @Contract
+        @Override
+        public void onConfigChanged(String changedKey) {
+            ctx.dispatch(new ConfigChanged(changedKey));
         }
 
         @Contract
