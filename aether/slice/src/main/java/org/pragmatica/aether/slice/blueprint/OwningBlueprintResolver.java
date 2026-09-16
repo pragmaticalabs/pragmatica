@@ -55,10 +55,15 @@ public interface OwningBlueprintResolver {
 
     /// Cluster-backed resolver over the deploy-time `SliceTargetValue` written by the blueprint apply.
     ///
-    /// The Put carrying `owningBlueprint` is in the apply batch that PRECEDES any `SliceNodeKey`
-    /// assignment (`ClusterDeploymentState`), so the owner is committed before a node is ever told to
-    /// load the slice — the ordering both the provisioning-time (publisher) and activation-time
-    /// (subscriber) reads depend on.
+    /// THE ORDERING IS CAUSAL, NOT BATCH CO-LOCATION. An earlier version of this note defended it by
+    /// claiming the `owningBlueprint` Put sits in an apply batch preceding any `SliceNodeKey`
+    /// assignment. That is false: `SliceNodeKey` is never written to consensus at all. What actually
+    /// holds is stronger — allocation is TRIGGERED BY the committed `SliceTargetKey` Put, which
+    /// `ClusterDeploymentState.handleSliceTargetChange` reacts to and only then emits the
+    /// `NodeArtifactKey` Put that tells a node to load the slice. The leader cannot issue the load
+    /// trigger before observing the owner committed, and every node applies the log in the same order,
+    /// so both the provisioning-time (publisher) and activation-time (subscriber) reads see the owner.
+    /// Verified structurally by reading the call chain, not by a runtime probe (#1216 review).
     static OwningBlueprintResolver kvBacked(KVStore<AetherKey, AetherValue> kvStore) {
         return sliceId -> Artifact.artifact(sliceId)
                                   .option()
