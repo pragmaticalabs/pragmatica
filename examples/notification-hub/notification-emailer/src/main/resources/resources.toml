@@ -56,3 +56,14 @@ port = 1025
 tls_mode = "NONE"
 connect_timeout = "5s"
 command_timeout = "10s"
+
+# The `delivery-status` topic (#1216) — the CO-DEPLOYED topic this example exists to exercise.
+# Published by the emailer slice, consumed by the analytics slice: two DISTINCT artifacts in one
+# blueprint. The bare name below is namespaced at runtime by the OWNING BLUEPRINT, which is what
+# makes the two ends meet; namespaced by either slice they never could.
+#
+# Declared identically in BOTH modules on purpose. The name comes from each module's own
+# `Topics.DELIVERY_STATUS` constant (#396), and the slice-processor's resource-config validation
+# still requires the backing section here — same arrangement as url-shortener-v2's `click-events`.
+[delivery-status]
+topic_name = "delivery-status"
