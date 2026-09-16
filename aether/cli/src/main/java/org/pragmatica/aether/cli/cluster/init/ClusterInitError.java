@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster.init;
 
+import java.util.List;
+
 import org.pragmatica.lang.Cause;
 
 
@@ -40,10 +42,43 @@ public sealed interface ClusterInitError extends Cause {
         }
     }
 
-    record OutputExists(String path) implements ClusterInitError {
+    /// #311 — the existing output cannot be merged into because it does not parse. Refused rather
+    /// than overwritten: the operator's edits are what a merge exists to keep.
+    record OutputUnreadable(String path, String detail) implements ClusterInitError {
         @Override
         public String message() {
-            return "Output file already exists: " + path + ". Re-run with --force to overwrite.";
+            return "Output file " + path
+                 + " exists and the merge cannot read it (" + detail
+                 + "). Fix it, or re-run with --force to overwrite.";
+        }
+    }
+
+    /// #311 — the existing output needs edits to match the new answers — init-generated keys
+    /// whose values differ, or generated keys and `[[…]]` rules it lacks — and batch mode has no
+    /// operator to ask. Refused with the list, file untouched: `--merge` applies exactly these
+    /// edits, `--force` overwrites the file. A missing rule is listed because appending it can
+    /// re-open a port the operator narrowed or removed.
+    record OutputDiffers(String path, List<String> changes, List<String> additions) implements ClusterInitError {
+        @Override
+        public String message() {
+            return "Output file " + path
+                 + " exists: " + changes.size()
+                 + " init-generated key(s) differ from the new answers and " + additions.size()
+                 + " would be added:\n  " + String.join("\n  ", changes) + (changes.isEmpty() || additions.isEmpty()
+                                                                            ? ""
+                                                                            : "\n  ") + String.join("\n  ", additions)
+                 + "\nRe-run with --merge to apply these edits, or --force to overwrite the whole file.";
+        }
+    }
+
+    /// #311 — a refusal from inside the merge: the line index and the parser disagree, or the merged text
+    /// does not parse. Either is a defect here, never in the operator's file — reported, and the
+    /// file is left alone.
+    record MergeError(String detail) implements ClusterInitError {
+        @Override
+        public String message() {
+            return "Merge into the existing file was not attempted (" + detail
+                 + "). Re-run with --force to overwrite, and report this.";
         }
     }
 
