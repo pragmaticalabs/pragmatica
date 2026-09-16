@@ -22,19 +22,48 @@ import org.pragmatica.lang.Result;
 ///
 /// Resolution rule (mirrors stream addressing and [PubSubValidator]):
 ///  - an already fully-namespaced declaration (`namespace:topic:version`) is parsed verbatim;
-///  - a bare/legacy topic name derives its namespace from the owning slice's blueprint Maven
-///    coordinates via [BlueprintNamespace#deriveNamespace(Artifact)] and defaults the version to
+///  - a bare/legacy topic name derives its namespace from the OWNING BLUEPRINT's Maven coordinates
+///    via [BlueprintNamespace#deriveNamespace(Artifact)] and defaults the version to
 ///    [ResourceVersion#defaultVersion] (`1.0.0`).
+///
+/// THE BLUEPRINT IS AN INPUT, NOT SOMETHING THIS CLASS CAN FIND (#1216). Until then this class
+/// documented "the owning slice's blueprint Maven coordinates" while [BlueprintNamespace] read
+/// nothing blueprint-scoped — it namespaced by whatever artifact it was handed, and both ends handed
+/// it their OWN slice. Matching in `TopicSubscriptionRegistry` is exact string equality, so a
+/// co-deployed pair of two DISTINCT slices could never agree and `TopicPublisher` returned success
+/// with zero deliveries and zero log lines. The producer disagreeing with its own docstring is why
+/// the docstring was never evidence; the fix is that callers must now supply the blueprint, which
+/// [OwningBlueprintResolver] is the one way to obtain.
 public final class TopicAddressResolver {
     private TopicAddressResolver() {}
 
-    /// Resolve a raw declared topic string against the owning slice's [Artifact].
-    public static Result<ResourceAddress> resolve(Artifact artifact, String declared) {
+    /// Resolve a raw declared topic string for a slice, scoping a bare name to the blueprint that
+    /// OWNS that slice. This is the form both ends of a pub/sub pair MUST use.
+    ///
+    /// Falls back to the slice's own coordinates when `owningBlueprint` is [Option#none] — a unit
+    /// test, a programmatic publisher, or a slice not deployed under a blueprint. There is no
+    /// deployment behind those and therefore no second spelling to disagree with, so the slice's own
+    /// identity is the only one in play and both ends still derive it identically. See
+    /// [OwningBlueprintResolver] for why this absence is benign here and fatal on the stream path.
+    public static Result<ResourceAddress> resolve(Option<Artifact> owningBlueprint,
+                                                  Artifact sliceArtifact,
+                                                  String declared) {
+        return resolve(owningBlueprint.or(sliceArtifact), declared);
+    }
+
+    /// Resolve a raw declared topic string against an explicit namespacing `scope`.
+    ///
+    /// The namespace comes from the artifact handed in and NOTHING ELSE — this method cannot tell a
+    /// blueprint artifact from a slice artifact, which is exactly how #1216 stayed invisible. Prefer
+    /// [#resolve(Option, Artifact, String)], which names both and makes the scope a decision rather
+    /// than an accident. Direct use is correct only where the caller already holds a genuine blueprint
+    /// artifact.
+    public static Result<ResourceAddress> resolve(Artifact scope, String declared) {
         return isNamespaced(declared)
                ? ResourceAddress.resourceAddress(declared)
-               : BlueprintNamespace.deriveNamespace(artifact).flatMap(namespace -> ResourceAddress.resourceAddress(namespace,
-                                                                                                                   declared,
-                                                                                                                   ResourceVersion.defaultVersion()));
+               : BlueprintNamespace.deriveNamespace(scope).flatMap(namespace -> ResourceAddress.resourceAddress(namespace,
+                                                                                                                declared,
+                                                                                                                ResourceVersion.defaultVersion()));
     }
 
     private static boolean isNamespaced(String declared) {
