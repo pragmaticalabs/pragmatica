@@ -34,10 +34,11 @@ core = "cx22"
 type = "container"
 # Must match a tag published by .github/workflows/release.yml, which derives the tag
 # from the pushed git tag (VERSION=${GITHUB_REF#refs/tags/v}). The moving candidate tag
-# v1.0.0-rc3-candidate therefore publishes :1.0.0-rc3-candidate. A stale pin here does
-# not fail loudly — deploy-cloud.sh swallows a failed pull — so it must be updated
-# whenever the candidate tag's name changes.
-image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc3-candidate"
+# v1.0.0-rc4-candidate therefore publishes :1.0.0-rc4-candidate. This key is the ONLY
+# live pin: `aether cluster bootstrap` reads it. (deploy-cloud.sh also sets AETHER_IMAGE,
+# but that variable has no consuming reference and pulls nothing — an earlier comment here
+# claimed the script "swallows a failed pull"; it never performs one.)
+image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc4-candidate"
 
 [deployment.zones]
 zone-1 = "fsn1-dc14"
