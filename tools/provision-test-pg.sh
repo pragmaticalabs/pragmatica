@@ -405,7 +405,25 @@ EOF
     chmod 0600 "$ENV_FILE"
     log_info "wrote ${ENV_FILE} (mode 0600)"
     # Echo the same block to stdout so callers can capture/source as needed.
-    cat "$ENV_FILE"
+    print_env_summary
+}
+
+# ---------------------------------------------------------------------------
+# Print a NON-SECRET summary of the env file.
+#
+# This used to be `cat "$ENV_FILE"`, which wrote PG_PASSWORD and the
+# credential-bearing PG_URL to stdout on EVERY invocation — including the
+# idempotent reuse and --print-only paths, which are the ones run most often.
+# The file itself is mode 0600, but stdout is not: it lands in terminal
+# scrollback, CI job logs, and any wrapper that captures the tool's output.
+# No caller parses this stdout; every consumer sources the file directly:
+#
+#     set -a; source /tmp/aether-test-pg.env; set +a
+#
+# ---------------------------------------------------------------------------
+print_env_summary() {
+    grep -v -e '^export PG_PASSWORD=' -e '^export PG_URL=' "$ENV_FILE" || true
+    echo "# PG_URL and PG_PASSWORD are in ${ENV_FILE} (mode 0600) and are not printed."
 }
 
 # ---------------------------------------------------------------------------
@@ -484,7 +502,7 @@ print_only() {
         log_err "password is unrecoverable from this side; redeploy with --fresh"
         exit 1
     fi
-    cat "$ENV_FILE"
+    print_env_summary
     exit 0
 }
 
@@ -501,7 +519,7 @@ reuse_existing() {
         exit 1
     fi
     log_ok "reusing existing VM (env file present)"
-    cat "$ENV_FILE"
+    print_env_summary
     exit 0
 }
 
