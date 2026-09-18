@@ -1110,6 +1110,24 @@ fi
     exit 1
 }
 
+# --- Re-derive CLOUD_MODE now that --env has been parsed ---------------------------
+# lib/common.sh computes CLOUD_MODE from ENV_TYPE at SOURCE time (line ~1038), and it is
+# sourced at the top of this file — before the argument loop runs. So on `--env cloud`
+# it latched "false" from the default ENV_TYPE=docker and EXPORTED that to every suite
+# subprocess, while ENV_TYPE itself was later set to "cloud".
+#
+# That split the harness in half: functions branching on ENV_TYPE took cloud paths, and
+# the six that branch on CLOUD_MODE (kill_node, start_node, restart_all_nodes, ...) took
+# DOCKER paths on a cloud run. Measured 2026-09-18: restore_cluster_baseline escalated to
+# restart_all_nodes, which ran a docker-compose cycle over SSH to the remote host, timed
+# out, and declared a merely-degraded cloud cluster "unrecoverable" — hard-skipping
+# 03-scaling, 02y, 02w and 02s.
+#
+# Keep the two in sync here, after parsing, rather than trusting source-time order.
+if [ "$ENV_TYPE" = "cloud" ]; then CLOUD_MODE="true"; else CLOUD_MODE="false"; fi
+export CLOUD_MODE
+log_info "runtime dispatch: ENV_TYPE=${ENV_TYPE} CLOUD_MODE=${CLOUD_MODE}"
+
 # --- Compute selected suites early so cluster bootstrap can be skipped per-cluster ---
 A_SUITES=($(filter_suites "${CLUSTER_A_SUITES[@]}"))
 B_SUITES=($(filter_suites "${CLUSTER_B_SUITES[@]}"))
