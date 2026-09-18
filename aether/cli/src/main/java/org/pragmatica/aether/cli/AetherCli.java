@@ -34,6 +34,7 @@ import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.slice.repository.maven.MavenLocalRepoLocator;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
@@ -1763,8 +1764,8 @@ public class AetherCli implements Runnable {
                 return List.of();
             }
 
-            private static Path findBlueprintJar(String groupId, String artifactId, String version) {
-                var m2Home = System.getProperty("user.home") + "/.m2/repository";
+            static Path findBlueprintJar(String groupId, String artifactId, String version) {
+                var m2Home = MavenLocalRepoLocator.findLocalRepository();
 
                 return Path.of(m2Home,
                                groupId.replace('.', '/'),
@@ -1773,8 +1774,8 @@ public class AetherCli implements Runnable {
                                artifactId + "-" + version + "-blueprint.jar");
             }
 
-            private static Path findSliceJar(String groupId, String artifactId, String version) {
-                var m2Home = System.getProperty("user.home") + "/.m2/repository";
+            static Path findSliceJar(String groupId, String artifactId, String version) {
+                var m2Home = MavenLocalRepoLocator.findLocalRepository();
 
                 return Path.of(m2Home,
                                groupId.replace('.', '/'),
