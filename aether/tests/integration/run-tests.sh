@@ -1097,6 +1097,19 @@ else
     log_warn "--skip-build: running against the jars already on disk. Their provenance is NOT verified — confirm they contain the change under test (javap the symbol; mtime is not evidence)."
 fi
 
+# --- Step 1b: Blueprint fixture preflight (ALWAYS, including under --skip-build) ---
+# Runs after the build so that a full build satisfies it, and guards the --skip-build
+# path, which is exactly where a fixture gap survives. Checks the SAME local repository
+# the CLI will resolve from (honouring -Dmaven.repo.local via AETHER_JAVA_OPTS) — checking
+# a different repository than the deploy reads is the #1223 defect in another costume.
+#
+# 2026-09-18: without this, a missing url-shortener blueprint surfaced as an HTTP 500
+# mid-suite, four suites deep and one paid cloud provision cycle after it was knowable.
+"${SCRIPT_DIR}/lib/verify-blueprint-fixtures.sh" || {
+    log_error "blueprint fixture preflight failed — refusing to provision against an incomplete fixture set"
+    exit 1
+}
+
 # --- Compute selected suites early so cluster bootstrap can be skipped per-cluster ---
 A_SUITES=($(filter_suites "${CLUSTER_A_SUITES[@]}"))
 B_SUITES=($(filter_suites "${CLUSTER_B_SUITES[@]}"))
