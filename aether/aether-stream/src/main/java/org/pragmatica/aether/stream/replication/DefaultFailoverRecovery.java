@@ -65,7 +65,15 @@ final class DefaultFailoverRecovery implements FailoverRecovery {
 
         return transport.requestCatchup(bestReplica.nodeId(),
                                         request)
-                        .map(response -> applyRecoveredEvents(streamName, partition, response));
+                        .map(response -> applyRecoveredEvents(streamName, partition, response))
+                        .flatMap(count -> commitRecovered(streamName, partition, count));
+    }
+
+    /// #1244: re-appended replica frames carry no per-record fsync, so the fetched range is committed once
+    /// through the replica WAL barrier before the partition counts as recovered.
+    private Promise<Long> commitRecovered(String streamName, int partition, long count) {
+        return durability.sync(streamName, partition)
+                         .map(_ -> count);
     }
 
     private long applyRecoveredEvents(String streamName, int partition, ReplicationMessage.CatchupResponse response) {

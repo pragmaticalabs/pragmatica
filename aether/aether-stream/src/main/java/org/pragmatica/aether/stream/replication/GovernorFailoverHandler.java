@@ -126,7 +126,7 @@ final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
 
         return segmentReader.readEvents(streamName, partition, fromOffset, MAX_EVENTS_PER_SEGMENT_READ)
                             .map(events -> applyEvents(streamName, partition, events))
-                            .mapToUnit();
+                            .flatMap(_ -> durability.sync(streamName, partition));
     }
 
     private long applyEvents(String streamName, int partition, List<RawEvent> events) {
