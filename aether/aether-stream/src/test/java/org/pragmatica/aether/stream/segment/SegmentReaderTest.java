@@ -12,9 +12,14 @@ import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
+import com.sun.management.ThreadMXBean;
+
+import java.lang.management.ManagementFactory;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.Arrays;
 import java.util.List;
+import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.segment.SegmentReader.segmentReader;
@@ -204,6 +209,88 @@ class SegmentReaderTest {
             var result = SegmentReader.deserializeAndFilter(serialized, 0, 2);
 
             assertThat(result).hasSize(2);
+        }
+    }
+
+    /// #1265: a cold read skips records below `fromOffset` by header alone — no payload allocation, no
+    /// copy — and accumulates across segments into one list. Allocation is measured, not time: the
+    /// per-thread allocated-bytes counter brackets exactly one decode.
+    @Nested
+    class AllocationAndAccumulation {
+        private static final int EVENT_COUNT = 1_000;
+        private static final int PAYLOAD_BYTES = 1_024;
+        private static final long ALLOCATION_BUDGET_BYTES = 16 * 1_024;
+        private static final int SEGMENT_COUNT = 50;
+
+        @Test
+        void deserializeAndFilter_allocatesUnderBudget_whenSkippingRecordsBelowFromOffset() {
+            var serialized = serializeEvents(oneKibEvents());
+            var lastOffset = EVENT_COUNT - 1;
+
+            // Warm-up: class loading and first-call allocations belong to no decode.
+            SegmentReader.deserializeAndFilter(serialized, lastOffset, 1);
+
+            var before = allocatedBytes();
+            var result = SegmentReader.deserializeAndFilter(serialized, lastOffset, 1);
+            var allocated = allocatedBytes() - before;
+
+            assertThat(result).hasSize(1);
+            assertThat(result.getFirst().offset()).isEqualTo(lastOffset);
+            assertThat(allocated).as("bytes allocated decoding one event past %d skipped records", lastOffset)
+                                 .isLessThan(ALLOCATION_BUDGET_BYTES);
+        }
+
+        @Test
+        void deserializeAndFilter_stopsWithoutAllocating_whenLengthExceedsRemainingBytes() {
+            var serialized = serializeEvents(List.of(RawEvent.rawEvent(0L, "ok".getBytes(), 10L),
+                                                     RawEvent.rawEvent(1L, "cut".getBytes(), 20L)));
+            var truncated = Arrays.copyOf(serialized, serialized.length - 1);
+
+            var result = SegmentReader.deserializeAndFilter(truncated, 0, 100);
+
+            assertThat(result).extracting(RawEvent::offset).containsExactly(0L);
+        }
+
+        @Test
+        void deserializeAndFilter_stopsWithoutAllocating_whenLengthIsNegative() {
+            var serialized = serializeEvents(List.of(RawEvent.rawEvent(0L, "ok".getBytes(), 10L),
+                                                     RawEvent.rawEvent(1L, "bad".getBytes(), 20L)));
+            var secondLengthAt = 2 * (Long.BYTES + Long.BYTES) + Integer.BYTES + "ok".length();
+
+            ByteBuffer.wrap(serialized).order(ByteOrder.BIG_ENDIAN).putInt(secondLengthAt, -1);
+
+            var result = SegmentReader.deserializeAndFilter(serialized, 0, 100);
+
+            assertThat(result).extracting(RawEvent::offset).containsExactly(0L);
+        }
+
+        @Test
+        void readEvents_returnsAllEventsInOrder_acrossFiftyOneEventSegments() {
+            for (long offset = 0; offset < SEGMENT_COUNT; offset++) {
+                var serialized = serializeEvents(List.of(RawEvent.rawEvent(offset, ("e" + offset).getBytes(), offset)));
+
+                sink.seal(sealedSegment(STREAM, PARTITION, offset, offset, 1, offset, offset, serialized)).await();
+            }
+
+            var events = reader.readEvents(STREAM, PARTITION, 0, SEGMENT_COUNT).await();
+
+            assertThat(events.isSuccess()).isTrue();
+            events.onSuccess(list -> assertThat(list).extracting(RawEvent::offset)
+                                                     .containsExactlyElementsOf(LongStream.range(0, SEGMENT_COUNT)
+                                                                                          .boxed()
+                                                                                          .toList()));
+        }
+
+        private static List<RawEvent> oneKibEvents() {
+            return LongStream.range(0, EVENT_COUNT)
+                             .mapToObj(offset -> RawEvent.rawEvent(offset, new byte[PAYLOAD_BYTES], offset))
+                             .toList();
+        }
+
+        private static long allocatedBytes() {
+            var threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+
+            return threads.getThreadAllocatedBytes(Thread.currentThread().threadId());
         }
     }
 

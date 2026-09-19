@@ -116,6 +116,10 @@ public final class StreamReadRouter {
                                                           long fromOffset,
                                                           int maxEvents,
                                                           ReadPreference preference) {
+        return readRouter(preference).route(streamName, partition, fromOffset, maxEvents);
+    }
+
+    ForwardingReadRouter<OffHeapRingBuffer.RawEvent> readRouter(ReadPreference preference) {
         return ForwardingReadRouter.<OffHeapRingBuffer.RawEvent> forwardingReadRouter(replicaRegistry,
                                                                                       selfNodeId,
                                                                                       forwardClient,
@@ -126,10 +130,7 @@ public final class StreamReadRouter {
                                                                                       metrics,
                                                                                       committedOwnerSource,
                                                                                       epochHighWater,
-                                                                                      barrier).route(streamName,
-                                                                                                     partition,
-                                                                                                     fromOffset,
-                                                                                                     maxEvents);
+                                                                                      barrier);
     }
 
     private Promise<List<OffHeapRingBuffer.RawEvent>> readLocal(String streamName,
