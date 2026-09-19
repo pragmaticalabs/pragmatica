@@ -6,6 +6,7 @@ package org.pragmatica.aether.test.durabletopic;
 
 import java.util.List;
 import java.util.Queue;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 import org.pragmatica.aether.slice.Publisher;
@@ -75,9 +76,13 @@ public interface DurableTopicSlice {
     ///
     /// An event is recorded when the handler is INVOKED, not when it acks, so two overlapping
     /// deliveries of one offset show up here as two entries rather than being hidden by the ack.
-    record OrderStatus(int count, List<OrderPlaced> orders) {
-        public static OrderStatus orderStatus(List<OrderPlaced> orders) {
-            return new OrderStatus(orders.size(), orders);
+    ///
+    /// `instanceId` names the slice instance that answered. App HTTP is local-first but FORWARDS when
+    /// the receiving node has no active local instance, so two nodes' ports can answer from one
+    /// instance; a cluster-wide total must count each instance once, not each port.
+    record OrderStatus(String instanceId, int count, List<OrderPlaced> orders) {
+        public static OrderStatus orderStatus(String instanceId, List<OrderPlaced> orders) {
+            return new OrderStatus(instanceId, orders.size(), orders);
         }
     }
 
@@ -92,9 +97,21 @@ public interface DurableTopicSlice {
     /// `failingPayloads` holds one entry per failing-group INVOCATION, so the retry budget can be read
     /// per event. A single counter cannot tell one event's retries from another's, which is how events
     /// still retrying from one forge arm were counted by the next.
-    record PoisonStatus(int failingAttempts, int healthyCount, List<String> failingPayloads, List<String> healthyPayloads) {
-        public static PoisonStatus poisonStatus(List<String> failingPayloads, List<String> healthyPayloads) {
-            return new PoisonStatus(failingPayloads.size(), healthyPayloads.size(), failingPayloads, healthyPayloads);
+    ///
+    /// `instanceId` as in [OrderStatus].
+    record PoisonStatus(String instanceId,
+                        int failingAttempts,
+                        int healthyCount,
+                        List<String> failingPayloads,
+                        List<String> healthyPayloads) {
+        public static PoisonStatus poisonStatus(String instanceId,
+                                                List<String> failingPayloads,
+                                                List<String> healthyPayloads) {
+            return new PoisonStatus(instanceId,
+                                    failingPayloads.size(),
+                                    healthyPayloads.size(),
+                                    failingPayloads,
+                                    healthyPayloads);
         }
     }
 
@@ -121,14 +138,16 @@ public interface DurableTopicSlice {
 
     static DurableTopicSlice durableTopicSlice(@OrderEventPublisher Publisher<OrderPlaced> orderPublisher,
                                                @PoisonEventPublisher Publisher<String> poisonPublisher) {
-        return new durableTopicSlice(orderPublisher,
+        return new durableTopicSlice(UUID.randomUUID().toString(),
+                                     orderPublisher,
                                      poisonPublisher,
                                      new ConcurrentLinkedQueue<>(),
                                      new ConcurrentLinkedQueue<>(),
                                      new ConcurrentLinkedQueue<>());
     }
 
-    record durableTopicSlice(Publisher<OrderPlaced> orderPublisher,
+    record durableTopicSlice(String instanceId,
+                             Publisher<OrderPlaced> orderPublisher,
                              Publisher<String> poisonPublisher,
                              Queue<OrderPlaced> deliveredOrders,
                              Queue<String> healthyPayloads,
@@ -148,7 +167,7 @@ public interface DurableTopicSlice {
 
         @Override
         public Promise<OrderStatus> orderStatus(StatusRequest request) {
-            return Promise.success(OrderStatus.orderStatus(List.copyOf(deliveredOrders)));
+            return Promise.success(OrderStatus.orderStatus(instanceId, List.copyOf(deliveredOrders)));
         }
 
         @Override
@@ -159,7 +178,9 @@ public interface DurableTopicSlice {
 
         @Override
         public Promise<PoisonStatus> poisonStatus(StatusRequest request) {
-            return Promise.success(PoisonStatus.poisonStatus(List.copyOf(failingPayloads), List.copyOf(healthyPayloads)));
+            return Promise.success(PoisonStatus.poisonStatus(instanceId,
+                                                             List.copyOf(failingPayloads),
+                                                             List.copyOf(healthyPayloads)));
         }
 
         @Override

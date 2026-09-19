@@ -30,6 +30,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -148,6 +149,7 @@ class DurableTopicDeliveryForgeTest {
     private static final Pattern ORDER_ENTRY = Pattern.compile("\"orderId\"\\s*:\\s*\"([^\"]*)\"\\s*,\\s*\"sequence\"\\s*:\\s*(-?\\d+)");
     private static final Pattern FAILING_PAYLOADS = Pattern.compile("\"failingPayloads\"\\s*:\\s*\\[([^\\]]*)\\]");
     private static final Pattern HEALTHY_PAYLOADS = Pattern.compile("\"healthyPayloads\"\\s*:\\s*\\[([^\\]]*)\\]");
+    private static final Pattern INSTANCE_ID = Pattern.compile("\"instanceId\"\\s*:\\s*\"([^\"]*)\"");
     private static final Pattern QUOTED = Pattern.compile("\"([^\"]*)\"");
 
     private EmberCluster cluster;
@@ -500,7 +502,7 @@ class DurableTopicDeliveryForgeTest {
                   .collect(Collectors.toMap(Function.identity(), _ -> 1L));
     }
 
-    /// Per id, how many times it was delivered, summed across every node — which is what makes the
+    /// Per id, how many times it was delivered, summed across every instance — which is what makes the
     /// count a cluster-wide claim rather than a per-node one. Ids never delivered are reported as 0.
     private Map<String, Long> deliveryCounts(List<String> ids) {
         var delivered = allDeliveries().stream()
@@ -540,11 +542,35 @@ class DurableTopicDeliveryForgeTest {
     }
 
     private List<List<Delivered>> deliveriesPerNode() {
-        return cluster.getAvailableAppHttpPorts()
-                      .stream()
-                      .map(port -> httpPost(port, "/api/durable-topic/order-status", "{}"))
-                      .map(DurableTopicDeliveryForgeTest::parseDeliveries)
-                      .toList();
+        return statusPerInstance("/api/durable-topic/order-status").stream()
+                                                                   .map(DurableTopicDeliveryForgeTest::parseDeliveries)
+                                                                   .toList();
+    }
+
+    /// One status body per slice INSTANCE, however many ports answered from it.
+    ///
+    /// App HTTP is local-first but forwards when the receiving node has no active local instance, so
+    /// two ports can answer from the same instance. Summing per PORT then counts that instance's
+    /// deliveries twice — a run reported 10 attempts for an event whose trace log shows exactly 5 —
+    /// so bodies are keyed by the `instanceId` the fixture reports and each instance is counted once.
+    private List<String> statusPerInstance(String path) {
+        return List.copyOf(cluster.getAvailableAppHttpPorts()
+                                  .stream()
+                                  .map(port -> httpPost(port, path, "{}"))
+                                  .collect(Collectors.toMap(DurableTopicDeliveryForgeTest::instanceId,
+                                                            Function.identity(),
+                                                            (first, _) -> first))
+                                  .values());
+    }
+
+    /// A body carrying no `instanceId` is an error response; each gets a key of its own, so it
+    /// contributes nothing to a count and never displaces a real instance's body.
+    private static String instanceId(String body) {
+        var matcher = INSTANCE_ID.matcher(body);
+
+        return matcher.find()
+               ? matcher.group(1)
+               : "no-instance:" + UUID.randomUUID();
     }
 
     private static List<Delivered> parseDeliveries(String body) {
@@ -562,13 +588,11 @@ class DurableTopicDeliveryForgeTest {
         return poisonRecordsOf(HEALTHY_PAYLOADS, payload);
     }
 
-    /// Occurrences of `payload` in one of the fixture's per-group records, summed across every node.
+    /// Occurrences of `payload` in one of the fixture's per-group records, summed across every instance.
     private int poisonRecordsOf(Pattern field, String payload) {
-        return cluster.getAvailableAppHttpPorts()
-                      .stream()
-                      .map(port -> httpPost(port, "/api/durable-topic/poison-status", "{}"))
-                      .mapToInt(body -> occurrences(field, body, payload))
-                      .sum();
+        return statusPerInstance("/api/durable-topic/poison-status").stream()
+                                                                    .mapToInt(body -> occurrences(field, body, payload))
+                                                                    .sum();
     }
 
     private static int occurrences(Pattern field, String body, String payload) {
