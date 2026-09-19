@@ -188,10 +188,10 @@ public final class EmberCluster {
     private final AtomicReference<Map<String, ApiKeyEntry>> appHttpApiKeys = new AtomicReference<>(Map.of());
 
     /// TEST SEAM (streaming A-WAL) — opt-in writable, restart-stable per-node data dir. Defaults to
-    /// [Option#none] (production + existing tests: nodes fall back to the default read-only `/data`
-    /// stream path → WAL off, streaming non-crash-durable). A test sets a writable base dir (e.g. a
-    /// JUnit `@TempDir`) via [#withDataBaseDir] BEFORE [#start] to turn the disk tier and the
-    /// per-partition stream WAL on; see [#perNodeStorageConfig].
+    /// [Option#none] (production + existing tests: nodes get an UNCREATABLE storage root, see
+    /// [#unwritableStorageBaseDir] → disk tier and WAL off, streaming non-crash-durable). A test sets a
+    /// writable base dir (e.g. a JUnit `@TempDir`) via [#withDataBaseDir] BEFORE [#start] to turn the
+    /// disk tier and the per-partition stream WAL on; see [#perNodeStorageConfig].
     private final AtomicReference<Option<Path>> dataBaseDir = new AtomicReference<>(Option.none());
     /// #1212 — where this instance's nodes keep their durable first-boot markers when the test did
     /// not opt into [#withDataBaseDir]. Created ONCE per `EmberCluster` instance and deliberately
@@ -201,6 +201,13 @@ public final class EmberCluster {
     /// fresh `EmberCluster` — a new test — gets a fresh dir and therefore genuinely new nodes.
     /// Harness-scoped; production nodes get their marker from the deployment path instead.
     private final Option<Path> participationMarkerBaseDir = createParticipationMarkerBaseDir();
+    /// #1276 — the storage root for nodes when the test did not opt into [#withDataBaseDir]: a path
+    /// under a regular FILE in a per-instance temp dir, so no directory can ever be created beneath it,
+    /// not even by root. Before this, those nodes got an empty `storageConfig` and resolved the
+    /// production default `/data/aether/...`. That degraded to memory + DHT only where `/data` is not
+    /// writable. On a host where it IS writable, every cluster on the machine shared one storage
+    /// directory across runs, trees and branches. This keeps the degraded behaviour on every host.
+    private final Option<Path> unwritableStorageBaseDir = createUnwritableStorageBaseDir();
     /// #491 pinned convergence variant — when set (via [#withRaisedSwimTimeouts]) every node is created
     /// with raised SWIM / transport / membership timeouts so a single graceful owner-kill does not trip
     /// the transient QuorumLost→PASSIVE false-removal cascade that falsely marks LIVE survivors DEAD.
@@ -392,8 +399,8 @@ public final class EmberCluster {
     /// TEST SEAM (streaming A-WAL) — set the writable, restart-stable base data dir for EVERY node in
     /// this cluster (opt-in). MUST be called before [#start]. Each node then gets a `storageConfig`
     /// `artifacts` [StorageConfig] keyed by its STABLE node id, so a `stop()`→`start()` restart reuses
-    /// the same dir and the stream WAL/segments survive. Production node paths never call this (the
-    /// default empty `storageConfig` keeps the read-only `/data` fallback → WAL off); Forge — a local
+    /// the same dir and the stream WAL/segments survive. Production node paths never call this (without it
+    /// each node gets an uncreatable storage root, #1276 → WAL off); Forge — a local
     /// dev simulator, not a production path — calls it at startup (`ForgeServer.applyForgeDataDir`) to
     /// home node data under the dir `ForgeDataDir` resolves for the run, which since #718 is scoped to
     /// the project owning the `--config` file rather than being machine-wide. See [#perNodeStorageConfig].
@@ -1279,8 +1286,8 @@ public final class EmberCluster {
     /// `<baseDir>/<nodeId>/storage` — turning the artifact disk tier AND the per-partition stream WAL
     /// (`<...>/stream-segments/<nodeId>/wal`) writable so streaming runs crash-durable. The id-keyed
     /// dir is restart-stable: [#start] after [#stop] regenerates the same `<nodeIdPrefix>-<i>` ids, so
-    /// each node reuses its dir and the WAL/segments survive the restart. Empty map ⇒ default
-    /// behaviour (read-only `/data` fallback → WAL off), so non-opted-in callers are unaffected.
+    /// each node reuses its dir and the WAL/segments survive the restart. Without it, the same shape is
+    /// rooted at [#unwritableStorageBaseDir] (#1276), which cannot be created → WAL off, as before.
     /// #1212 — the durable first-boot marker for one node.
     ///
     /// `creationAsserted` is unconditionally TRUE, and that is correct rather than lazy: [#createNode]
@@ -1313,8 +1320,23 @@ public final class EmberCluster {
 
     private Map<String, StorageConfig> perNodeStorageConfig(NodeId nodeId) {
         return dataBaseDir.get()
+                          .orElse(unwritableStorageBaseDir)
                           .map(base -> artifactsStorageConfig(base, nodeId))
                           .or(Map.of());
+    }
+
+    /// [Option#none] when the temp dir cannot be created — the nodes then get the empty `storageConfig`
+    /// and the production default, which is the pre-#1276 behaviour.
+    private static Option<Path> createUnwritableStorageBaseDir() {
+        try {
+            var blocker = Files.createTempDirectory("ember-storage-").resolve("not-a-directory");
+
+            Files.writeString(blocker, "#1276: storage roots under this file cannot be created");
+
+            return Option.some(blocker);
+        } catch (IOException e) {
+            return Option.none();
+        }
     }
 
     private static Map<String, StorageConfig> artifactsStorageConfig(Path base, NodeId nodeId) {
