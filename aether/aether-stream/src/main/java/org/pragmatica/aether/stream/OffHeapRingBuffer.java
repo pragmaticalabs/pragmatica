@@ -21,6 +21,8 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.TierAwareRetention;
+import org.pragmatica.aether.stream.wal.PartitionWal;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -317,8 +319,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     ///     when it cannot make room by growing.
     ///   - DROP_OLDEST (EVENTUAL) and does not fit — the event genuinely cannot be stored in the frozen
     ///     ring; drop it (NO write, no corruption) and report success at the current head, mirroring the
-    ///     existing non-fatal EVENTUAL contract (EVENTUAL appends never fail; the exhaustion event was
-    ///     already emitted via the growth seam). See spec §4.2 / bug #7.
+    ///     existing non-fatal EVENTUAL contract (an EVENTUAL append never fails for size; the exhaustion
+    ///     event was already emitted via the growth seam). See spec §4.2 / bug #7. The one refusal an
+    ///     EVENTUAL append can meet is the eviction listener's: `SEALING_BEHIND` once the pending-seal cap
+    ///     is reached on a partition with NO WAL — the non-crash-durable mode, where the sealer's heap copy
+    ///     is the only holder (#1234, [#evictForSpace]). With a WAL the sealer never refuses.
     private Result<Long> appendIfFitsAllocated(byte[] payload, long timestamp) {
         if (payload.length <= allocatedDataBytes) {
             return appendWritten(payload, timestamp);
@@ -342,7 +347,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.BUFFER_FULL.result();
         }
 
-        evictForSpace(payload.length);
+        return evictForSpace(payload.length).map(_ -> writeAppend(payload, timestamp));
+    }
+
+    private long writeAppend(byte[] payload, long timestamp) {
         var currentHead = rawHeadOffset();
         var newOffset = currentHead + 1;
         var slotIndex = Math.floorMod(newOffset, capacity);
@@ -353,7 +361,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         updateHeaderAfterAppend(newOffset, payload.length);
         notifyAppendListeners(newOffset);
 
-        return success(newOffset);
+        return newOffset;
     }
 
     public Result<Long> appendBatch(List<byte[]> payloads, long[] timestamps) {
@@ -399,12 +407,15 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.BUFFER_FULL.result();
         }
 
-        evictForSpace((int) totalSize);
+        return evictForSpace((int) totalSize).map(_ -> writeAppendBatch(payloads, timestamps));
+    }
+
+    private long writeAppendBatch(List<byte[]> payloads, long[] timestamps) {
         var lastOffset = appendPayloads(payloads, timestamps);
 
         notifyAppendListeners(lastOffset);
 
-        return success(lastOffset);
+        return lastOffset;
     }
 
     /// Position a FRESH ring (no appends yet, `headOffset() == -1`) so the NEXT append is assigned
@@ -750,6 +761,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return lastSealedOffset;
     }
 
+    /// Tell this ring's eviction listener which WAL holds the partition's records (#1234), before anything
+    /// is replayed into the ring, so every hand-over — recovery-time ones included — knows the WAL is there.
+    public Unit attachWal(PartitionWal wal) {
+        return listener.walAttached(streamName, partition, wal);
+    }
+
     /// Guarded for the same reason as [#applyRetention] (#999) — a public `void` path that reads and then
     /// rewrites the control region.
     @Contract
@@ -1045,10 +1062,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return controlSegment.get(ValueLayout.JAVA_LONG, indexPos + INDEX_TIMESTAMP);
     }
 
-    private void evictForSpace(int payloadLength) {
-        var countToEvict = countEvictionsForSpace(payloadLength);
-
-        notifyAndEvict(countToEvict);
+    /// Make room for an append. A refusal by the eviction listener (#1234) leaves every event in place and is
+    /// returned to the append, which then writes nothing.
+    private Result<Unit> evictForSpace(int payloadLength) {
+        return handOverAndEvict(countEvictionsForSpace(payloadLength));
     }
 
     private long countEvictionsForSpace(int payloadLength) {
@@ -1123,18 +1140,46 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         notifyAndEvict(countToEvict);
     }
 
+    /// Retention-driven reclamation. A refusal by the eviction listener is absorbed by design-out, not
+    /// loss: the events stay in the ring, readable and counted against its retention, and the next retention
+    /// pass hands them over again. The listener that refused has already reported it (#1234). [Contract]:
+    /// retention is a `void` sweep driven from [#applyRetention] / [#evictByAge], so the refusal has no caller
+    /// to return to — the same shape as the other `void` sweep paths here.
+    @Contract
     private void notifyAndEvict(long count) {
+        handOverAndEvict(count).onFailure(this::retentionDeferred);
+    }
+
+    private void retentionDeferred(Cause cause) {
+        log.debug("OffHeapRingBuffer {}[{}]: retention deferred, eviction listener refused: {}",
+                  streamName,
+                  partition,
+                  cause.message());
+    }
+
+    /// Hand the oldest `count` events to the eviction listener and reclaim them once it has taken them. The
+    /// listener takes ownership synchronously and seals asynchronously, so reclamation is immediate; the
+    /// partition WAL holds the events until their seal lands (#1234).
+    private Result<Unit> handOverAndEvict(long count) {
         if (count <= 0) {
-            return;
+            return unitResult();
         }
 
-        if (listener != EvictionListener.NOOP) {
-            var events = collectEvictedEvents(count);
+        return handOver(count).onSuccess(_ -> evictOldest(count));
+    }
 
-            listener.onEviction(streamName, partition, events);
-            updateSealedOffsetFromEvents(events);
+    private Result<Unit> handOver(long count) {
+        if (listener == EvictionListener.NOOP) {
+            return unitResult();
         }
 
+        var events = collectEvictedEvents(count);
+
+        return listener.onEviction(streamName, partition, events)
+                       .onSuccess(_ -> updateSealedOffsetFromEvents(events));
+    }
+
+    private void evictOldest(long count) {
         for (long i = 0; i < count; i++) {
             evictOldest();
         }

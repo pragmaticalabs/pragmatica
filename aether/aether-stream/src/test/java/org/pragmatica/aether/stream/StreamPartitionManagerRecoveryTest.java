@@ -7,19 +7,27 @@ package org.pragmatica.aether.stream;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.aether.stream.segment.SealedSegment;
+import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.IntStream;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
+import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 
 /// Proves streaming-persistence W4 (replay-on-recovery): when a partition ring is rebuilt and a WAL
 /// exists, the un-sealed tail is recovered into the fresh ring at its ORIGINAL offsets — bounded by the
@@ -30,6 +38,10 @@ class StreamPartitionManagerRecoveryTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
     private static final int EVENTS = 6;
+    private static final int SMALL_RING_EVENTS = 4;
+    private static final int RECOVERY_EVENTS = 30;
+    /// Two pending one-event segments of an `evt-N` payload (20-byte header + up to 6 bytes each).
+    private static final long TWO_SEGMENTS_BYTES = 2 * (20 + 6);
 
     @TempDir
     Path walDir;
@@ -86,7 +98,117 @@ class StreamPartitionManagerRecoveryTest {
         rebuilt.close();
     }
 
+    /// #1234: segment 1 ([0-1]) failed to seal while a later segment ([2-3]) is sealed, then the node
+    /// restarts. Recovery seeds the ring at the sealed watermark and replays only the WAL above it, so the
+    /// watermark must stop below the failed segment: the failed range comes back from the WAL. Before the fix
+    /// recovery seeded above the later segment and the failed range was in neither the ring, the segments nor
+    /// the replay. The index is written directly — an index rebuilt from refs written before the fix.
+    @Test
+    void rebuild_replaysFailedSegmentRangeFromWal_whenLaterSegmentSealed() {
+        var index = new SegmentIndex();
+
+        publishAll(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir)));
+        index.addSegment(STREAM, PARTITION, 2, 3);
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), index::lastSealedOffset);
+        createStream(recovered);
+
+        var events = readFrom(recovered, 0);
+
+        assertThat(events).hasSize(EVENTS);
+        IntStream.range(0, EVENTS).forEach(i -> assertEvent(events.get(i), i));
+
+        recovered.close();
+    }
+
+    /// #1234, ruling B: the node restarts while sealing is still failing. The ring had already reclaimed the
+    /// evicted events and the sealer's retained copies die with the process, so the WAL — never truncated past
+    /// the contiguous sealed watermark — is the copy that survives: recovery replays the whole range.
+    @Test
+    void rebuild_replaysEvictedRangeFromWal_whenRestartedWhileSealingFails() {
+        var index = new SegmentIndex();
+        var storageDown = new AtomicBoolean(true);
+        var failing = streamPartitionManager(Long.MAX_VALUE,
+                                             segmentSealer(segment -> sealUnlessDown(storageDown, index, segment)),
+                                             Option.some(walDir),
+                                             index::lastSealedOffset);
+
+        createStream(failing, SMALL_RING_EVENTS);
+        IntStream.range(0, EVENTS).forEach(i -> publishOne(failing, i));
+
+        assertCursorExpired(failing, 0);
+        failing.truncateWalsToSealed();
+        failing.close();
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), index::lastSealedOffset);
+        createStream(recovered, EVENTS * 10);
+
+        var events = readFrom(recovered, 0);
+
+        assertThat(index.lastSealedOffset(STREAM, PARTITION)).isEqualTo(-1L);
+        assertThat(events).hasSize(EVENTS);
+        IntStream.range(0, EVENTS).forEach(i -> assertEvent(events.get(i), i));
+
+        recovered.close();
+        // Let the orphaned sealer's next retry succeed, so it stops retrying for the rest of the test JVM.
+        storageDown.set(false);
+    }
+
+    /// #1234 (review of 510829642, the recovery path): a restart replays the WAL into the ring BEFORE the
+    /// stream is registered with the manager. With storage down and the replay evicting past the pending-seal
+    /// cap, every recovery-time hand-over must already see the partition as WAL-backed — spill, never refuse.
+    /// Keyed on manager registration instead, recovery refused each hand-over as "no WAL" and createStream
+    /// failed.
+    @Test
+    void rebuild_replayPastPendingCapWhileStorageDown_neverRefused_spillsToWal() {
+        var index = new SegmentIndex();
+        var writer = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+
+        createStream(writer, RECOVERY_EVENTS * 2);
+        IntStream.range(0, RECOVERY_EVENTS).forEach(i -> publishOne(writer, i));
+        writer.close();
+
+        var storageDown = new AtomicBoolean(true);
+        var sealer = segmentSealer(segment -> sealUnlessDown(storageDown, index, segment), TWO_SEGMENTS_BYTES);
+        var recovered = streamPartitionManager(Long.MAX_VALUE, sealer, Option.some(walDir), index::lastSealedOffset);
+
+        createStream(recovered, SMALL_RING_EVENTS);
+
+        assertThat(sealer.refusalCount()).isZero();
+        assertThat(sealer.spillCount()).isPositive();
+        assertThat(sealer.pendingBytes()).isLessThanOrEqualTo(TWO_SEGMENTS_BYTES);
+
+        var tail = readFrom(recovered, RECOVERY_EVENTS - SMALL_RING_EVENTS);
+
+        assertThat(tail).hasSize(SMALL_RING_EVENTS);
+        IntStream.range(0, tail.size()).forEach(i -> assertEvent(tail.get(i), RECOVERY_EVENTS - SMALL_RING_EVENTS + i));
+
+        recovered.close();
+        storageDown.set(false);
+    }
+
     // === helpers ===
+
+    /// Storage refuses every seal while it is down; once up, it records the segment in the index as
+    /// `StorageSegmentSink` does.
+    private static Promise<Unit> sealUnlessDown(AtomicBoolean storageDown, SegmentIndex index, SealedSegment segment) {
+        return storageDown.get()
+               ? Causes.cause("disk full").promise()
+               : indexed(index, segment);
+    }
+
+    private static Promise<Unit> indexed(SegmentIndex index, SealedSegment segment) {
+        index.addSegment(segment.streamName(), segment.partition(), segment.startOffset(), segment.endOffset());
+
+        return Promise.unitPromise();
+    }
+
+    private static void createStream(StreamPartitionManager manager, int ringEvents) {
+        var retention = RetentionPolicy.retentionPolicy(ringEvents, 64 * 1024, 600_000);
+
+        manager.createStream(StreamConfig.streamConfig(STREAM, 1, retention, "earliest"))
+               .onFailure(cause -> fail(cause.message()));
+    }
 
     private static void publishAll(StreamPartitionManager manager) {
         createStream(manager);

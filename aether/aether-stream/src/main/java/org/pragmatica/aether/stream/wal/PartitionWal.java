@@ -130,6 +130,7 @@ public final class PartitionWal implements AutoCloseable {
     private volatile long syncedSeq;  // published under syncLock AFTER force(false)
     private volatile long writePosition;  // end of valid data; guarded by writeLock
     private volatile long lastOffset;  // last appended offset (-1 when none)
+    private volatile long syncedOffset;  // last offset covered by a successful force (#1234); guarded by syncLock
     private volatile long truncatedUpto = -1;  // in-memory discard watermark
     private volatile long lastCompactedUpto = -1;  // last physical compaction point
     private volatile long fsyncCount;  // group commits completed; guarded by syncLock
@@ -143,6 +144,7 @@ public final class PartitionWal implements AutoCloseable {
         this.channel = channel;
         this.writePosition = writePosition;
         this.lastOffset = lastOffset;
+        this.syncedOffset = lastOffset;
     }
 
     /// Open-or-create the WAL for `file`, positioned for further appends AFTER its last VALID
@@ -214,6 +216,13 @@ public final class PartitionWal implements AutoCloseable {
     /// Last appended offset, or `-1` when the WAL holds no valid record.
     public long lastOffset() {
         return lastOffset;
+    }
+
+    /// Highest offset known to be on disk: covered by a successful `force`, or present when the file was
+    /// opened. A record above it may still be only in the page cache, so nothing that relies on the WAL as the
+    /// durable copy of a record may do so above this offset (#1234). `-1` when nothing is durable.
+    public long durableOffset() {
+        return syncedOffset;
     }
 
     /// Point-in-time observability view (#634-3): live bytes on disk (the write position — a lazy
@@ -310,13 +319,17 @@ public final class PartitionWal implements AutoCloseable {
         }
     }
 
+    /// `covered` is read before `force`: every record whose write completed before that read is in the
+    /// channel, so the force makes it durable, whatever `writtenSeq` said.
     private Result<Unit> forceAndPublish() {
         var target = writtenSeq;
+        var covered = lastOffset;
         var startedAt = System.nanoTime();
 
         return Result.lift(APPEND_FAILED,
                            () -> channel.force(false))
                      .onSuccess(_ -> publishSync(target,
+                                                 covered,
                                                  System.nanoTime() - startedAt))
                      .onFailure(this::failStop);
     }
@@ -334,8 +347,9 @@ public final class PartitionWal implements AutoCloseable {
     /// Runs under `syncLock` (the only writer of these fields). The timing wraps ONLY the
     /// `force` call — one nanoTime pair per GROUP COMMIT, not per append, so a burst of N
     /// pipelined appends still pays for one measurement (#634-3).
-    private void publishSync(long target, long elapsedNanos) {
+    private void publishSync(long target, long covered, long elapsedNanos) {
         syncedSeq = target;
+        syncedOffset = Math.max(syncedOffset, covered);
         fsyncCount = fsyncCount + 1;
         fsyncTotalNanos = fsyncTotalNanos + elapsedNanos;
         fsyncMaxNanos = Math.max(fsyncMaxNanos, elapsedNanos);
