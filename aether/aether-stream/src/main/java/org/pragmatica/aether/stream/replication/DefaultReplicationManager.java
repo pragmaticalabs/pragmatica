@@ -214,9 +214,9 @@ final class DefaultReplicationManager implements ReplicationManager {
         var byNode = confirmedByNode(streamName, partition);
 
         return replicationTargets(streamName, partition).stream()
-                                                        .map(nodeId -> byNode.getOrDefault(nodeId, -1L))
-                                                        .sorted(Comparator.reverseOrder())
-                                                        .toList();
+                                 .map(nodeId -> byNode.getOrDefault(nodeId, -1L))
+                                 .sorted(Comparator.reverseOrder())
+                                 .toList();
     }
 
     private Map<NodeId, Long> confirmedByNode(String streamName, int partition) {
