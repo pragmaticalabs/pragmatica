@@ -123,6 +123,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private final ConcurrentLinkedQueue<Long> pendingAppendNotifications = new ConcurrentLinkedQueue<>();
     /// Set while this ring's notifier runs: at most one per ring, so notifications stay in offset order.
     private final AtomicBoolean notifying = new AtomicBoolean(false);
+    /// Listener invocations that threw, since the ring was built (#1258 review R3-1).
+    private final AtomicLong appendListenerFailures = new AtomicLong();
 
     private OffHeapRingBuffer(Arena arena,
                               MemorySegment controlSegment,
@@ -799,6 +801,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     /// Count of reads refused because the arena was closed UNDER an in-flight reader (#999). Zero on every
     /// quiescent ring; non-zero means the release path overlapped a live reader on this partition.
+    /// Append-listener invocations that threw — an exception or an `Error` — since the ring was built. Each
+    /// is logged; none stops later notifications (#1258 review R3-1).
+    public long appendListenerFailures() {
+        return appendListenerFailures.get();
+    }
+
     public long closedUnderReaderCount() {
         return closedUnderReader.get();
     }
