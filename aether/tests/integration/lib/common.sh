@@ -288,7 +288,26 @@ _fork_bounded() {
     local secs="$1"
     shift
     [ "$secs" -lt 1 ] 2>/dev/null && secs=1
-    "$@" &
+    # `( "$@" ) &`, not bare `"$@" &`: this box runs bash 3.2.57 (macOS's frozen
+    # system bash), which has a fork-avoidance optimization for command
+    # substitution that misfires specifically when a function containing NESTED
+    # command substitutions (value_cmd -> api_get -> the real network/stub call)
+    # is itself backgrounded directly by name. Confirmed by isolation: a 3-level
+    # nested function chain (each level assigning `x=$(next_level)`), with the
+    # innermost doing a real blocking `command sleep N`, loses its own
+    # continuation the instant the sleep's child exits when backgrounded as
+    # `funcname &` — the sleep genuinely runs to completion (verified via `ps`
+    # showing it as a live process), but the subshell that was waiting on it
+    # never executes the lines AFTER the sleep, so a value the reader was about
+    # to print is silently dropped and the poll comes back as "read failed"
+    # instead of "value=N" even though nothing actually errored. Wrapping the
+    # backgrounded call in an explicit `( ... )` subshell forces bash to take
+    # the real fork path instead of the buggy optimization; verified this
+    # resolves it while leaving elapsed time and return value unchanged. This
+    # is what made B8 fail: a legitimately slow (not hung) value read via
+    # _wait_for_poll_once, backgrounded here, came back empty at the exact
+    # moment its own read finished, well inside its time budget.
+    ( "$@" ) &
     local cpid=$!
     # `command sleep`, not bare `sleep`: this subshell is a fork of the caller's own
     # interpreter, so a caller-defined shell function named `sleep` (e.g. the chaos
@@ -942,14 +961,42 @@ wait_for() {
         # ordinary "predicate said no" — correct, since either way the iteration
         # simply didn't succeed and the wait should keep polling, not treat a
         # self-inflicted kill as the "buggy predicate" 2|127 case.
-        _fork_bounded "$WAIT_FOR_REMAINING" _wait_for_poll_once && rc=0 || rc=$?
+        #
+        # #1226/B8: _fork_bounded's job here is to catch a predicate that HANGS
+        # (the original defect: unbounded, 4596s/19057s observed), not to
+        # truncate a poll that is merely slower than the sliver of budget left
+        # once the deadline is close. A poll already in flight whose value_cmd
+        # takes a real 8s against a 6s remaining budget must still be allowed
+        # to finish — the caller's own post-hoc elapsed-vs-budget check is what
+        # reports that overrun (S20 in test-self-drain-quorum-loss.sh), not a
+        # kill from inside wait_for.
+        #
+        # There is no universal floor that serves both callers: a wait_for
+        # call whose ENTIRE stated timeout is small (a 5s budget hiding a
+        # genuinely hung 60s predicate) must be killed at ~5s, not stretched
+        # to some floor — that is the ordinary case, and it is what the
+        # original #1226 fix verified. A wait_for call whose remaining slice
+        # is small only because it is the tail of a much larger budget (S20's
+        # 600s) needs the opposite: let the in-flight read finish even past
+        # that slice. wait_for's own visible state (timeout, WAIT_FOR_REMAINING)
+        # cannot tell these apart — both present identically at poll time. So
+        # the floor is an explicit, per-call OPT-IN from the caller, never a
+        # default: unset (or 0), a poll is bounded by whatever time remains,
+        # full stop — this is what makes a hung predicate under a small budget
+        # die on time. A caller whose value_cmd is a legitimately slow-but-
+        # finite read (network/topology fetch that can outlast the final
+        # slice) exports WAIT_FOR_MIN_POLL_BOUND before calling wait_for.
+        local poll_bound=$WAIT_FOR_REMAINING
+        local poll_floor=${WAIT_FOR_MIN_POLL_BOUND:-0}
+        [ "$poll_bound" -lt "$poll_floor" ] && poll_bound=$poll_floor
+        _fork_bounded "$poll_bound" _wait_for_poll_once && rc=0 || rc=$?
         if [ -n "$value_cmd" ]; then
             value_rc=$(cat "$valuercfile" 2>/dev/null)
             if [ -z "$value_rc" ]; then
                 # Killed by the wall clock before the fork even finished the
                 # value_cmd read — still a failed read, just say why.
                 read_failures=$((read_failures + 1))
-                last_value="<read failed: ${value_cmd} killed at ${WAIT_FOR_REMAINING}s bound, no value>"
+                last_value="<read failed: ${value_cmd} killed at ${poll_bound}s bound, no value>"
                 unset WAIT_FOR_VALUE
             elif [ "$value_rc" -eq 0 ] && [ -s "$valuefile" ]; then
                 value=$(cat "$valuefile" 2>/dev/null)

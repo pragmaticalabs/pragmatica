@@ -1192,6 +1192,11 @@ test_cluster_recovers_to_five_on_duty() {
             return 1
         fi
         # TIMEOUT_SCALE=1: remaining is a slice of the unscaled budget.
+        # #1226/B8: a poll that starts inside this slice and finishes late is
+        # a real (slow) read, not a hang — wait_for now lets an in-flight poll
+        # run to completion rather than truncating it at the slice boundary,
+        # and it is THIS check plus the elapsed check below that judges
+        # timeliness against the ${budget}s S20 budget, not wait_for itself.
         if ! TIMEOUT_SCALE=1 wait_for "5 healthy cores after full-drain rebootstrap (remaining ${remaining}s of the ${budget}s S20 budget)" \
                 '[ "$WAIT_FOR_VALUE" -eq 5 ]' "$remaining" 5 "_cluster_active_core_count_checked"; then
             log_fail "S20 violation (cloud): cluster not back to 5 healthy cores (elapsed $((SECONDS - start))s, budget ${budget}s; last read in the line above)"

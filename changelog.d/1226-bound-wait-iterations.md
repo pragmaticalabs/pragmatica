@@ -35,3 +35,27 @@
   failure it would produce — a suite vanishing mid-run with no message — is expensive to diagnose
   and cheap to prevent. [verified: forcing the fallback with both binaries shadowed, a child exiting
   7 now returns 7 instead of aborting the shell]
+- **The first bounding attempt regressed 14 assertions in `test-chaos-harness.sh`**, caught by CI and
+  not by either harness used to develop it — both of which were written for this change and so shared
+  its premise. The project's own tests encoded requirements neither harness knew about ("one read per
+  poll", "predicate never evaluated when the reader fails", "a reader that succeeds with no output is
+  a failed read, not a value"). Three separate causes:
+  - the chaos harness stubs the `sleep` **shell function**, which the watchdog subshell inherited
+    instead of the real syscall — now `command sleep`;
+  - an empty value from a reader that exited 0 counted as a value — now requires a non-empty read;
+  - **bash 3.2.57** (macOS's frozen `/bin/bash`) mis-optimises `funcname &` when the function contains
+    nested command substitutions: the innermost blocking child runs to completion but the function's
+    own continuation silently never executes, while `wait` returns at the right elapsed time with a
+    failure-shaped status. `_fork_bounded` now backgrounds an explicit subshell, `( "$@" ) &`.
+- **B8 forced a design decision rather than a code fix.** Its poll starts inside the budget and ends
+  past it, returning a SUCCESS that arrived late; the caller
+  (`test-self-drain-quorum-loss.sh:1202`) then reports `5 healthy cores reached only after Ns`.
+  That split is deliberate — `wait_for` reports what it OBSERVED, the caller judges timeliness — and
+  killing the poll collapses "recovered, slowly" into "never recovered", sending an operator after a
+  cluster that never returned instead of a budget that is too small.
+  B8's poll and a genuinely hung predicate are **observationally identical from `wait_for`'s own
+  state**: same timeout, same remaining, same non-returning call. No function of its visible
+  parameters separates them. So the minimum-poll floor is an explicit per-call opt-in
+  (`WAIT_FOR_MIN_POLL_BOUND`, default 0), set by the one S20 call site that needs it, with the reason
+  recorded there. Every other caller keeps the strict bound: a hung predicate under a 5s budget ends
+  at 5s, measured.
