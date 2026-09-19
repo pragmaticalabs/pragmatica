@@ -1045,8 +1045,9 @@ public sealed interface ManagementApiResponses {
     /// A partition this node has never folded is ABSENT from `checkpointedThrough` rather than reported
     /// as `0`: "nothing to say about it" and "checkpointed through offset 0" are different claims.
     ///
-    /// `checkpointLag` (#1302) is, per partition this node folds, the log head minus the last checkpoint
-    /// it committed — how far a recovery would replay. Its node-wide maximum is the
+    /// `checkpointLag` (#1302) is, per partition this node folds, the log head minus the last committed
+    /// checkpoint — the later of the one it committed and the one its fold resumed from, so a takeover
+    /// measures from the previous owner's — how far a recovery would replay. Its node-wide maximum is the
     /// `entity.checkpoint.lag.max` metric the alert threshold evaluates; this map names the partition.
     record EntityCheckpointsResponse(List<EntityKeyspaceCheckpointView> keyspaces) {}
 

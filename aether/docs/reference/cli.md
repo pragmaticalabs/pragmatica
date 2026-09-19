@@ -2693,7 +2693,8 @@ floor reclaims nothing for it. **`writes` climbing is the signal that the driver
 reads keep succeeding even when checkpointing has stopped, so a flat `writes` under load is the fault to
 act on. `failures` and `checkpointedThrough` say which partitions are stuck; a partition this node has
 never folded is absent rather than reported as offset 0. `checkpointLag` (#1302) is, per folded partition,
-the log head minus the last checkpoint this node committed — how far a recovery would replay; its node-wide
+the log head minus the last committed checkpoint (this node's, or the one its fold resumed from after a
+takeover) — how far a recovery would replay; its node-wide
 maximum drives the `entity.checkpoint.lag.max` threshold alert (default WARNING 5,000 / CRITICAL 10,000).
 
 Output is the endpoint's JSON, pretty-printed:

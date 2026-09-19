@@ -111,13 +111,12 @@ public final class EntityCheckpointDriver {
     ///                            has never folded is ABSENT rather than reported as 0, because "nothing
     ///                            to say about it" and "checkpointed through offset 0" are different
     ///                            claims and an operator must be able to tell them apart
-    /// @param checkpointLag       per partition this node FOLDS, the log head minus the last checkpoint
-    ///                            this node committed (#1302) — how far a recovery would have to replay.
-    ///                            A partition not folded here is ABSENT, for the same reason as above.
-    ///                            A folded partition this node has not yet checkpointed counts from
-    ///                            offset -1, so right after a takeover it reads the full head distance
-    ///                            until its first checkpoint lands (one tick) — erring toward alerting,
-    ///                            the safe direction for a stall signal
+    /// @param checkpointLag       per partition this node FOLDS, the log head minus the last committed
+    ///                            checkpoint (#1302) — how far a recovery would have to replay. "Last
+    ///                            committed" is the later of the checkpoint this node committed and the one
+    ///                            its fold resumed from, so a takeover measures from the previous owner's
+    ///                            checkpoint. A partition not folded here is ABSENT, for the same reason as
+    ///                            above
     public record KeyspaceCheckpoints(String keyspace,
                                       int partitionCount,
                                       long writes,
@@ -163,11 +162,17 @@ public final class EntityCheckpointDriver {
 
     /// Head minus last committed checkpoint, never negative: a local head that has not caught up to a
     /// checkpoint written from a fuller copy is "nothing to replay", not a negative distance.
+    ///
+    /// "Last committed" is the later of the checkpoint THIS node committed and the one its fold RESUMED
+    /// from. After a takeover the previous owner's checkpoint is the true baseline; measuring from this
+    /// node's own writes alone would count the whole log until its first checkpoint landed and raise a
+    /// spurious alert on every failover.
     private static long partitionLag(Registration registration, int partition) {
         var head = registration.substrate().headOffset(registration.keyspace(), partition);
-        var checkpointed = registration.checkpointedThrough().getOrDefault(partition, -1L);
+        var committedHere = registration.checkpointedThrough().getOrDefault(partition, -1L);
+        var resumedFrom = registration.fold().resumedCheckpointOffset(partition);
 
-        return Math.max(0L, head - checkpointed);
+        return Math.max(0L, head - Math.max(committedHere, resumedFrom));
     }
 
     /// Register a provisioned keyspace's fold for periodic checkpointing. A second registration of the

@@ -139,7 +139,7 @@ public record AlertConfig(boolean enabled,
 
     /// Durable-entity checkpoint lag alert thresholds (#1302), in log RECORDS: the metric
     /// `entity.checkpoint.lag.max` is a node's largest per-(keyspace, partition) distance between the
-    /// log head and the last checkpoint it committed. Config keys `alerts.entity_checkpoint_lag_warning`
+    /// log head and the last committed checkpoint. Config keys `alerts.entity_checkpoint_lag_warning`
     /// and `alerts.entity_checkpoint_lag_critical`; seeded as the metric's threshold only when the
     /// cluster holds none, so an operator's `/api/v1/thresholds` value always wins.
     ///

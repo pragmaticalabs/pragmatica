@@ -93,7 +93,8 @@ Default thresholds are in-memory only until explicitly set via API.
 ### Durable-entity checkpoint lag (#1302)
 
 `entity.checkpoint.lag.max` is a node's largest per-(keyspace, partition) checkpoint lag, in log records:
-the log head offset minus the last checkpoint that node committed, over the partitions it folds. It rises
+the log head offset minus the last committed checkpoint (the later of the one that node committed and the
+one its fold resumed from, so a takeover measures from the previous owner's), over the partitions it folds. It rises
 when a checkpointer stalls, and a recovery of that partition would have to replay that many records. The
 per-partition values, which say *which* partition, are on `GET /api/v1/entity/checkpoints` (`checkpointLag`).
 
