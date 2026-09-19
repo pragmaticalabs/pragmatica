@@ -25,9 +25,18 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// `try`/`finally` and try-with-resources without a `catch` convert nothing and are not flagged.
 /// JBCT-EX-01 flags `throw`/`throws` but never saw `catch` at all, so its suppression does not exempt
 /// a `catch` — the two constructs are marked separately. Test classes are exempt, as for JBCT-PAT-03.
+///
+/// The mark is METHOD-scoped (#1247 review M1): only the annotations of the catch's NEAREST enclosing
+/// method or constructor count, so the linter's generic line-range suppression is bypassed
+/// ([#usesScopedSuppression]). A mark on a class, field, local variable or parameter exempts nothing, and
+/// a marked method does not cover methods of an anonymous or nested class inside it — each needs its own
+/// mark. Lambdas are not members, so a catch in a lambda belongs to the method that contains it. On that
+/// method, `@SuppressWarnings("JBCT-EX-03")`, `@SuppressWarnings("all")` and `@Contract` (which exempts every
+/// rule by design) count as the mark.
 public class CstTryCatchRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-EX-03";
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
+    private static final Pattern MARK_PATTERN = Pattern.compile("\"(JBCT-EX-03|all)\"");
 
     @Override
     public String ruleId() {
@@ -45,7 +54,37 @@ public class CstTryCatchRule implements CstLintRule {
         }
 
         return findAll(root, RuleKind.CATCH).stream()
+                      .filter(clause -> !insideMarkedMethod(root, clause))
                       .map(clause -> createDiagnostic(root, clause, ctx));
+    }
+
+    @Override
+    public boolean usesScopedSuppression() {
+        return false;
+    }
+
+    private static boolean insideMarkedMethod(Cursor root, Cursor clause) {
+        return enclosingMethodMember(root, clause).filter(CstTryCatchRule::isMethodOrConstructor)
+                                    .flatMap(member -> enclosingMember(root, member))
+                                    .map(CstTryCatchRule::carriesBoundaryMark)
+                                    .or(false);
+    }
+
+    private static boolean isMethodOrConstructor(Cursor member) {
+        return hasChildOfRule(member, RuleKind.METHOD_DECL) || hasChildOfRule(member, RuleKind.CONSTRUCTOR_DECL)
+               || hasChildOfRule(member, RuleKind.COMPACT_CONSTRUCTOR);
+    }
+
+    private static boolean carriesBoundaryMark(Cursor wrapper) {
+        return childrenByRule(wrapper, RuleKind.ANNOTATION).stream()
+                                                           .anyMatch(CstTryCatchRule::isBoundaryMark);
+    }
+
+    private static boolean isBoundaryMark(Cursor annotation) {
+        var name = annotationSimpleName(annotation);
+
+        return "Contract".equals(name) || ("SuppressWarnings".equals(name) && MARK_PATTERN.matcher(tokenText(annotation))
+                                                                                         .find());
     }
 
     private Diagnostic createDiagnostic(Cursor root, Cursor clause, LintContext ctx) {

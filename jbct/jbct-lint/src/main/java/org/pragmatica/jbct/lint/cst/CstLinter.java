@@ -2,6 +2,7 @@ package org.pragmatica.jbct.lint.cst;
 
 import java.util.List;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
@@ -80,13 +81,22 @@ public class CstLinter {
 
         return rules.stream()
                     .filter(rule -> contextWithFile.isRuleEnabled(rule.ruleId()))
-                    .flatMap(rule -> rule.analyze(root,
-                                                  source.content(),
-                                                  contextWithFile))
-                    .filter(diagnostic -> !SuppressionExtractor.isSuppressed(suppressions,
-                                                                             diagnostic.ruleId(),
-                                                                             diagnostic.line()))
+                    .flatMap(rule -> ruleDiagnostics(rule, root, source, contextWithFile, suppressions))
                     .collect(Collectors.toList());
+    }
+
+    private static Stream<Diagnostic> ruleDiagnostics(CstLintRule rule,
+                                                      Cursor root,
+                                                      SourceFile source,
+                                                      LintContext ctx,
+                                                      List<SuppressionExtractor.Suppression> suppressions) {
+        var diagnostics = rule.analyze(root, source.content(), ctx);
+
+        return rule.usesScopedSuppression()
+               ? diagnostics.filter(diagnostic -> !SuppressionExtractor.isSuppressed(suppressions,
+                                                                                     diagnostic.ruleId(),
+                                                                                     diagnostic.line()))
+               : diagnostics;
     }
 
     /// Rule IDs emitted by the default rule set, in registration order.
