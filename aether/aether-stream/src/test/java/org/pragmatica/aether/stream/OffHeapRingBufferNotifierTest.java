@@ -88,6 +88,26 @@ class OffHeapRingBufferNotifierTest {
         ring.close();
     }
 
+    /// A JVM-level `VirtualMachineError` (here `OutOfMemoryError`) is rethrown rather than swallowed, and
+    /// it ends that notifier thread — but the notifier's `finally` clears the flag and restarts it, so every
+    /// later publish is still notified. Without that `finally` the ring would stop notifying for good.
+    @Test
+    void jvmErrorFromAListener_isRethrown_butEveryLaterPublishIsStillNotified() {
+        var ring = OffHeapRingBuffer.offHeapRingBuffer(1_000, 1024 * 1024);
+        var highWater = new AtomicLong(-1);
+        var oomCalls = new AtomicInteger();
+
+        ring.addAppendListener(offset -> highWater.set(offset));
+        ring.addAppendListener(throwing(oomCalls, new OutOfMemoryError("injected by the test")));
+
+        for (int i = 0; i < 4; i++) {
+            assertThat(ring.append(("e" + i).getBytes(UTF_8), 1L).isSuccess()).as("append %d", i).isTrue();
+            awaitHighWater(highWater, i);
+        }
+        assertThat(oomCalls).as("the failing listener was reached on every publish").hasValue(4);
+        ring.close();
+    }
+
     /// #1258 addendum (a): pending notifications coalesce into one high-water offset. 10,000 publishes
     /// while the only listener is blocked leave one pending offset, and on release the listener observes
     /// the final offset in a single call — never one queued entry per publish.
