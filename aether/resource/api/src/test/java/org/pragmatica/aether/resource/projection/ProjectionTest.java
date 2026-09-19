@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.slice.topic.Topic;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -323,20 +324,25 @@ class ProjectionTest {
         public Promise<ClaimOutcome> claimIfAbsent(Projection.ClaimKey key, TimeSpan lease) {
             var outcome = new ClaimOutcome[1];
 
-            claimed.compute(key, (_, existing) -> decide(existing, lease, outcome));
+            claimed.compute(key, (_, existing) -> decide(Option.option(existing), lease, outcome));
 
             return Promise.success(outcome[0]);
         }
 
-        private Claim decide(Claim existing, TimeSpan lease, ClaimOutcome[] outcome) {
+        private Claim decide(Option<Claim> existing, TimeSpan lease, ClaimOutcome[] outcome) {
             var now = clock.get();
+            var live = existing.filter(claim -> claim.done() || claim.expiresAt() > now);
 
-            if (existing == null || (!existing.done() && existing.expiresAt() <= now)) {
-                outcome[0] = ClaimOutcome.CLAIMED;
-                return new Claim(false, now + lease.nanos());
-            }
-            outcome[0] = existing.done() ? ClaimOutcome.DONE : ClaimOutcome.IN_PROGRESS;
-            return existing;
+            outcome[0] = live.map(InMemoryClaims::outcomeOf)
+                             .or(ClaimOutcome.CLAIMED);
+
+            return live.or(() -> new Claim(false, now + lease.nanos()));
+        }
+
+        private static ClaimOutcome outcomeOf(Claim claim) {
+            return claim.done()
+                   ? ClaimOutcome.DONE
+                   : ClaimOutcome.IN_PROGRESS;
         }
 
         @Override
@@ -348,9 +354,17 @@ class ProjectionTest {
 
         @Override
         public Promise<Unit> releaseClaim(Projection.ClaimKey key) {
-            claimed.computeIfPresent(key, (_, existing) -> existing.done() ? existing : null);
+            claimed.computeIfPresent(key, (_, existing) -> keepIfDone(existing));
 
             return Promise.unitPromise();
+        }
+
+        /// `computeIfPresent` removes the entry on null: a PENDING claim is dropped, a DONE one kept.
+        @NullReturn
+        private static Claim keepIfDone(Claim claim) {
+            return claim.done()
+                   ? claim
+                   : null;
         }
     }
 

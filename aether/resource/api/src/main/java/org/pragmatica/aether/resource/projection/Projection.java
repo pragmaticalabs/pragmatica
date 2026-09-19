@@ -99,8 +99,8 @@ public record Projection<S, T>(String name,
     /// inert instead of dedup'ing the whole replay into a no-op.
     public record ClaimKey(String projectionName, long generation, String messageId) {}
 
-    /// Apply one durably-delivered event under the §8 guard — see the class doc for the guarantee and
-    /// its two named exceptions.
+    /// Apply one durably-delivered event under the §8 claim — see the class doc for the guarantee,
+    /// stated per operation.
     ///
     /// The generation is read PER EVENT and deliberately not cached. A rebuild bumps it, and a cached
     /// value would key the replayed events under the previous generation, matching the prior pass's
@@ -162,7 +162,7 @@ public record Projection<S, T>(String name,
 
     /// Bump generation → reset read model → reset the group cursor. Order is load-bearing: the
     /// generation moves FIRST so every replayed event lands under the new generation's idempotency
-    /// keys (once the guard exists) instead of being dedup'd into a no-op by the prior pass's
+    /// keys instead of being dedup'd into a no-op by the prior pass's
     /// claims.
     public Promise<Unit> rebuild() {
         return store.bumpGeneration()
