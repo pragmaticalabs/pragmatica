@@ -446,9 +446,14 @@ final class EntityFold {
     /// @param snapshot      the encoded contents, folded at or beyond that offset
     record CheckpointCandidate(long throughOffset, byte[] snapshot) {}
 
-    /// A checkpoint for `partition`, or [Option#none] when this node has nothing to say about it — a
-    /// partition never folded here answers a watermark of `-1`, which correctly means "no claim", not
-    /// "checkpointed through offset 0".
+    /// A checkpoint for `partition` that claims MORE than `notAbove`, or [Option#none] when there is none —
+    /// either because the fold has not advanced past `notAbove`, or because this node has nothing to say
+    /// about the partition at all: a partition never folded here answers a watermark of `-1`, which
+    /// correctly means "no claim", not "checkpointed through offset 0". A caller with no floor passes `-1`.
+    ///
+    /// The floor is checked BEFORE the contents are copied and encoded (#1269). Checked after, as the
+    /// driver's advancement guard alone did, every tick paid a full copy and encode of every folded
+    /// partition — owner and replica alike — only to discard it whenever the partition was idle.
     ///
     /// The offset and the contents come from the SAME [FoldedPartition], and that is the entire reason this
     /// exists beside [#checkpointableThrough] and [#snapshot]. Read as two calls, a rebuild publishing
@@ -467,7 +472,7 @@ final class EntityFold {
     /// It also sweeps the per-key offsets the settled watermark now covers — the entries of offsets that
     /// PARKED when applied, which [#forgetCovered] could not drop at the time. Periodic like the re-drain,
     /// so such an entry outlives its coverage by at most one checkpoint interval.
-    Option<CheckpointCandidate> checkpointCandidate(int partition) {
+    Option<CheckpointCandidate> checkpointCandidate(int partition, long notAbove) {
         var data = publishedFold(partition);
 
         drain(data);
@@ -475,7 +480,7 @@ final class EntityFold {
 
         data.keyApplied.values().removeIf(applied -> applied <= through);
 
-        return through < 0L
+        return through < 0L || through <= notAbove
                ? Option.none()
                : Option.some(new CheckpointCandidate(through, encodedFold(data)));
     }
