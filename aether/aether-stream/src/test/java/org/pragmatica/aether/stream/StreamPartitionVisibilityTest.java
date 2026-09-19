@@ -30,6 +30,7 @@ import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -239,6 +240,40 @@ class StreamPartitionVisibilityTest {
         }
     }
 
+    /// CTO lock rule (#1235, #1258 R2-1): a visible advance only queues for the ring's serial notifier.
+    /// Neither the publisher that saw its fsync nor the thread delivering a replica ack runs a listener.
+    @Nested
+    class ListenerThread {
+
+        @Test
+        void publishLocal_neverRunsTheListenerOnThePublishingThread() {
+            manager = streamPartitionManager(Long.MAX_VALUE);
+            createStream(manager, 1, 1);
+            var listenerThreads = listenThreads(manager);
+
+            publish(manager, "e0");
+
+            assertThat(awaitThreads(listenerThreads, 1)).as("the publisher thread executes no listener")
+                                                         .hasSize(1)
+                                                         .doesNotContain(Thread.currentThread());
+        }
+
+        @Test
+        void replicaAck_neverRunsTheListenerOnTheAckingThread() {
+            var replication = replicationWithPeer();
+            manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
+            createStream(manager, 2, 2);
+            var listenerThreads = listenThreads(manager);
+            var offset = publish(manager, "e0");
+
+            replication.handleAck(replicateAck(PEER, STREAM, PARTITION, offset));
+
+            assertThat(awaitThreads(listenerThreads, 1)).as("the ack-handling thread executes no listener")
+                                                         .hasSize(1)
+                                                         .doesNotContain(Thread.currentThread());
+        }
+    }
+
     /// Owner-only durability (minSync <= 1) with no WAL: visible aliases appended. This is the control
     /// that shows a visible event IS read and announced by the same instruments.
     @Nested
@@ -326,6 +361,24 @@ class StreamPartitionVisibilityTest {
                .onEmpty(() -> fail("partition not materialized"))
                .onPresent(ring -> ring.addAppendListener(_ -> notifications.incrementAndGet()));
         return notifications;
+    }
+
+    private static List<Thread> listenThreads(StreamPartitionManager manager) {
+        var threads = new CopyOnWriteArrayList<Thread>();
+
+        manager.partitionBuffer(STREAM, PARTITION)
+               .onEmpty(() -> fail("partition not materialized"))
+               .onPresent(ring -> ring.addAppendListener(_ -> threads.add(Thread.currentThread())));
+        return threads;
+    }
+
+    private static List<Thread> awaitThreads(List<Thread> threads, int expected) {
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (threads.size() < expected && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        return List.copyOf(threads);
     }
 
     /// Listeners run on the ring's serial notifier (#1258 R2-1), so a positive count is awaited.
