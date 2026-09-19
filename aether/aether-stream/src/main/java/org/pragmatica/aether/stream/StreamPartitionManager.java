@@ -212,6 +212,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// refused on ownership grounds. Forge/unit/legacy managers keep this; `AetherNode` late-binds the real
     /// committed-`StreamPartitionOwnershipValue` check.
     private static final OwnerWriteAdmission ADMIT_ALL = (_, _) -> Option.none();
+    /// Replication receipt and backfill land the COMMITTED owner's events on a replica, so they carry no
+    /// owner-write admission (#1230) — only the epoch fence applies to them.
+    private static final Result<Unit> RECEIPT_NEEDS_NO_ADMISSION = Result.unitResult();
 
     /// Live committed-ownership admission for application appends (#1230). Consulted by [#publishLocal]
     /// ONLY — never by [#appendRecovered], which lands the committed owner's replicated/backfilled events on
@@ -1188,27 +1191,30 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// so it retries) — only WAL-durable events ack. With no WAL configured this is a no-op gate and
     /// behavior is exactly as before.
     ///
-    /// Owner admission (#1230): refused with [StreamError.NotOwnerAppend] before anything else when the
-    /// committed owner of `(streamName, partition)` is another node — see [OwnerWriteAdmission].
+    /// Owner admission (#1230): refused with [StreamError.NotOwnerAppend] when the committed owner of
+    /// `(streamName, partition)` is another node — see [OwnerWriteAdmission]. It runs AFTER the epoch fence,
+    /// so a deposed writer presenting a stale epoch is told it is deposed ([StreamError.StaleEpochAppend],
+    /// permanent) rather than being redirected (`NotOwnerAppend`, transient); a current-epoch append from a
+    /// live non-owner passes the fence and is refused here.
     public Result<Long> publishLocal(String streamName,
                                      int partition,
                                      byte[] payload,
                                      long timestamp,
                                      Epoch ownerEpoch) {
-        return admitOwnerWrite(streamName, partition).flatMap(_ -> resolveStreamEntry(streamName))
-                              .flatMap(entry -> appendToPartition(entry,
-                                                                  streamName,
-                                                                  partition,
-                                                                  payload,
-                                                                  timestamp,
-                                                                  ownerEpoch))
-                              .flatMap(offset -> durablyLog(streamName, partition, offset, payload, timestamp))
-                              .onSuccess(offset -> replicationManager.replicateEvent(streamName,
-                                                                                     partition,
-                                                                                     offset,
-                                                                                     payload,
-                                                                                     timestamp,
-                                                                                     ownerEpoch));
+        return resolveStreamEntry(streamName).flatMap(entry -> appendToPartition(entry,
+                                                                                 streamName,
+                                                                                 partition,
+                                                                                 payload,
+                                                                                 timestamp,
+                                                                                 ownerEpoch,
+                                                                                 admitOwnerWrite(streamName, partition)))
+                                 .flatMap(offset -> durablyLog(streamName, partition, offset, payload, timestamp))
+                                 .onSuccess(offset -> replicationManager.replicateEvent(streamName,
+                                                                                        partition,
+                                                                                        offset,
+                                                                                        payload,
+                                                                                        timestamp,
+                                                                                        ownerEpoch));
     }
 
     private Result<Unit> admitOwnerWrite(String streamName, int partition) {
@@ -1293,7 +1299,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                  partition,
                                                                                  payload,
                                                                                  timestamp,
-                                                                                 ownerEpoch))
+                                                                                 ownerEpoch,
+                                                                                 RECEIPT_NEEDS_NO_ADMISSION))
                                  .onSuccess(offset -> walReplicated(streamName, partition, offset, payload, timestamp));
     }
 
@@ -1372,8 +1379,10 @@ public final class StreamPartitionManager implements AutoCloseable {
                                            int partition,
                                            byte[] payload,
                                            long timestamp,
-                                           Epoch ownerEpoch) {
-        return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> checkEventSize(entry, payload))
+                                           Epoch ownerEpoch,
+                                           Result<Unit> admission) {
+        return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> admission)
+                             .flatMap(_ -> checkEventSize(entry, payload))
                              .flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
                              .flatMap(buffer -> buffer.append(payload, timestamp))
                              .onSuccess(_ -> entry.updateActivity());
