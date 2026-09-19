@@ -476,6 +476,35 @@ class StreamConsumerRuntimeTest {
             }
         }
 
+        /// #1266: a scheduled retry of the head event is a hold too, and is visible the same way.
+        @Test
+        void retryBackoff_isVisibleAsAHold() throws Exception {
+            createTestStream("orders");
+            var attempts = new AtomicInteger();
+
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-r", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY),
+                              (offset, payload, ts) -> attempts.incrementAndGet() == 1
+                                                       ? StreamError.General.BUFFER_EMPTY.promise()
+                                                       : Promise.unitPromise());
+            manager.publishLocal("orders", 0, "flaky".getBytes(UTF_8), 1000L);
+            Thread.sleep(30);
+            assertThat(runtime.subscriptions()).singleElement()
+                      .satisfies(snapshot -> assertThat(snapshot.retryInFlight())
+                                                      .describedAs("inside the retry backoff (>= 100ms base, jittered) the hold is visible")
+                                                      .isTrue());
+
+            var deadline = System.currentTimeMillis() + 3_000;
+
+            while (runtime.cursorPosition("orders", 0, "group-r").or(-1L) < 1L && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+            assertThat(runtime.subscriptions()).singleElement()
+                      .satisfies(snapshot -> assertThat(snapshot.retryInFlight()).describedAs("released once the retry succeeded")
+                                                                                 .isFalse());
+        }
+
         private Promise<Unit> failFirst(List<Long> delivered, long offset) {
             if (offset == 0L) {
                 return StreamError.General.BUFFER_EMPTY.promise();
