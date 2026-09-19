@@ -1383,6 +1383,112 @@ class StreamConsumerRuntimeTest {
             }
         }
 
+        /// rev1272 F6: with one periodic commit in flight per consumer, a commit that NEVER settles held the
+        /// slot forever — every later checkpoint was absorbed as "pending" (`commits=1`). The periodic
+        /// commit is bounded; past the bound it counts as failed and the retry commits the latest cursor.
+        @Test
+        void periodicCommitNeverSettles_isBounded_andALaterCheckpointLands() throws InterruptedException {
+            createTestStream("orders");
+            var calls = new AtomicInteger();
+            var persisted = new CopyOnWriteArrayList<Long>();
+            var store = new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    if (calls.incrementAndGet() == 1) {
+                        return Promise.promise();
+                    }
+                    persisted.add(offset);
+
+                    return Promise.success(CommitOutcome.persisted());
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
+
+            try {
+                observedRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
+                Thread.sleep(50);
+                manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+                Thread.sleep(200);
+                manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+
+                var deadline = System.currentTimeMillis() + 10_000;
+
+                while (persisted.isEmpty() && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(20);
+                }
+                assertThat(calls.get()).describedAs("control: the first periodic commit was issued (and never settles)")
+                                       .isGreaterThanOrEqualTo(1);
+                assertThat(persisted).describedAs("a never-settling periodic commit must not stop every later checkpoint")
+                                     .isNotEmpty();
+                assertThat(persisted.getLast()).isEqualTo(2L);
+            } finally {
+                observedRuntime.close();
+            }
+        }
+
+        /// rev1272 F7 (pre-existing): a cursor store whose `fetch` THROWS at subscribe used to escape to
+        /// the caller with the consumer registered but never started — and every re-subscribe was refused
+        /// as already subscribed. The fetch is lifted and a failed fetch is retried, so the consumer starts
+        /// once the store answers, from the cursor it holds.
+        @Test
+        void cursorFetchSyncThrow_atSubscribe_doesNotStrandTheConsumer() throws InterruptedException {
+            createTestStream("orders");
+            var fetches = new AtomicInteger();
+            var store = new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    return Promise.success(CommitOutcome.persisted());
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    if (fetches.incrementAndGet() == 1) {
+                        throw new IllegalStateException("store blew up synchronously");
+                    }
+
+                    return Promise.success(option(1L));
+                }
+            };
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            try {
+                manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+
+                var subscribed = org.pragmatica.lang.Result.lift(() -> observedRuntime.subscribe("orders",
+                                                                                                0,
+                                                                                                ConsumerConfig.consumerConfig("group-1"),
+                                                                                                (offset, payload, ts) -> recordOffset(delivered, offset)));
+
+                assertThat(subscribed.flatMap(result -> result).isSuccess()).describedAs("subscribe must not throw when the store's fetch throws: %s", subscribed)
+                                                                           .isTrue();
+
+                var deadline = System.currentTimeMillis() + 3_000;
+
+                while (delivered.isEmpty() && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertThat(fetches.get()).describedAs("control: the first fetch threw, a retry followed").isGreaterThanOrEqualTo(2);
+                assertThat(delivered).describedAs("the consumer starts from the stored cursor once the store answers")
+                                     .containsExactly(1L);
+            } finally {
+                observedRuntime.close();
+            }
+        }
+
+        private static Promise<Unit> recordOffset(List<Long> delivered, long offset) {
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+
         private static ConsumerCursorStore failingFirst(List<Long> commits, List<Long> persisted) {
             return new ConsumerCursorStore() {
                 @Override

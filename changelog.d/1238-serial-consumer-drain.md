@@ -39,6 +39,13 @@
   including the subscribe kick, is re-requested after the poll backoff, so a backlog is never stranded
   waiting for an append. [mechanism: `drainPass`/`guardedCycle`/`afterFailedPass`/`invokeHandler`;
   pinned by `StreamConsumerRuntimeTest$PassBoundary`]
+- **A cursor store whose `fetch` throws at subscribe no longer strands the consumer.** This was
+  pre-existing, found in review as rev1272 F7. The throw escaped `subscribe`, leaving the consumer
+  registered but never started, and every resubscribe was refused as already subscribed. The fetch is
+  now lifted, and a failed fetch is retried with backoff until the store answers; the consumer then
+  starts from the stored cursor. It no longer starts from offset 0 after a failed fetch, which replayed
+  the whole retained partition. [mechanism: `fetchCursorAndStart`; pinned by
+  `StreamConsumerRuntimeTest$CursorCommitObservability.cursorFetchSyncThrow_atSubscribe_doesNotStrandTheConsumer`]
 - **A consumer whose ring was released on role loss now falls back to polling.** Releasing the ring
   cleared its listeners, but the assignment could keep the consumer on this node, which left it with
   neither a listener nor a poller. The consumer runtime's 10s idle-check tick now re-attaches such a
