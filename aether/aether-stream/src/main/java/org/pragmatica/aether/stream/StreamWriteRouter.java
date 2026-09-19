@@ -61,9 +61,9 @@ public final class StreamWriteRouter {
     /// for the committed owner; a refusal in the ownership-lag window redirects to that owner.
     ///
     /// **STRONG (#1262):** a stream declared `STRONG` is refused with `CONSENSUS_PATH_UNAVAILABLE` before
-    /// routing — see {@link StreamPartitionManager#ensureConsensusPathNotRequired}.
+    /// routing — see {@link StreamPartitionManager#ensureWritableConsistency}.
     public Promise<Long> publish(String streamName, int partition, byte[] payload, long timestamp) {
-        return partitionManager.ensureConsensusPathNotRequired(streamName)
+        return partitionManager.ensureWritableConsistency(streamName)
                                .async()
                                .flatMap(_ -> routePublish(streamName, partition, payload, timestamp));
     }

@@ -595,14 +595,14 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     ///
     /// **STRONG (#1262):** a stream declared `STRONG` is refused with `CONSENSUS_PATH_UNAVAILABLE` before
     /// routing — no consensus path is wired, and writing it as EVENTUAL would silently weaken the declared
-    /// guarantee (see {@link StreamPartitionManager#ensureConsensusPathNotRequired}).
+    /// guarantee (see {@link StreamPartitionManager#ensureWritableConsistency}).
     @Override
     public Promise<Long> publish(T event) {
         var bytes = serializer.encode(event);
         var partition = resolvePartition(event);
         var timestamp = System.currentTimeMillis();
 
-        return partitionManager.ensureConsensusPathNotRequired(streamName)
+        return partitionManager.ensureWritableConsistency(streamName)
                                .async()
                                .flatMap(_ -> routePublish(partition, bytes, timestamp));
     }
