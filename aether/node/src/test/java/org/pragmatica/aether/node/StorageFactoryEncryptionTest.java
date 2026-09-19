@@ -293,6 +293,27 @@ class StorageFactoryEncryptionTest {
         stored.onPresent(raw -> assertPlaintextAtRest(raw, "the synthesized 'artifacts' DHT tier"));
     }
 
+    /// #1276: the synthesized `artifacts` instance takes its disk path from the `defaults` handed to
+    /// `createAll`, never from `StorageConfig.storageConfig()`. Every hermetic case in this class depends
+    /// on that: if the injected defaults were ignored, they would silently fall back to the machine-global
+    /// `/data/aether/...` again. The check is on disk, with a WRITABLE injected root: the block must land
+    /// under it. That holds on every host. Where `/data` is unwritable the production default would
+    /// degrade to memory+DHT and write no file; where it is writable the file would land in `/data`.
+    @Test
+    void createAll_synthesizedArtifacts_takesDiskPathFromInjectedDefaults() {
+        var defaults = HermeticStorage.storageConfigAt(tempDir.resolve("injected-defaults"), false);
+        var setups = StorageFactory.createAll(Map.of(), NODE_ID, Option.none(), Option.none(), defaults)
+                                    .onFailure(cause -> fail("createAll must succeed: " + cause.message()))
+                                    .unwrap();
+
+        var blockId = writeThrough(setups.get(ARTIFACTS));
+
+        assertThat(Files.exists(rawBlockPath(Path.of(defaults.diskPath()), blockId)))
+                .as("the synthesized 'artifacts' block must land under the injected defaults' diskPath %s, not "
+                    + "under the production default", defaults.diskPath())
+                .isTrue();
+    }
+
     /// #783 C1 (2026-09-04 ruling): `content`'s synthesized default `diskPath` must be a SIBLING of
     /// wherever `artifacts` actually resolves, never the bare `StorageConfig.storageConfig()` default
     /// -- `assembleSetup` reads `config.snapshotPath()`/tier `basePath` directly with no per-instance
