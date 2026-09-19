@@ -1067,36 +1067,38 @@ class StreamConsumerManagerTest {
         }
 
         /// The unwrap seam end to end at the delivery boundary: the captured callback receives a
-        /// node-codec-encoded [TopicEventEnvelope]; the slice's invoker must see the DECODED
-        /// application payload — never the envelope, never raw bytes.
+        /// node-codec-encoded [TopicEventEnvelope]; the slice must be handed the APPLICATION payload —
+        /// never the envelope — together with the envelope's delivery context (#1295: before it, the
+        /// node decoded the payload and invoked with the bare event, so no context ever existed). The
+        /// subscribing slice's own bridge decodes the payload bytes.
         @Test
-        void delivery_unwrapsEnvelope_andInvokesSliceWithApplicationPayload() {
+        void delivery_unwrapsEnvelope_andInvokesSliceWithApplicationPayloadAndContext() {
             subscribeTopic(ARTIFACT);
             deployDecodingSliceLocally();
             ownership.ownedBySelf(0);
             ownership.withPartitionCount(1);
-            when(invoker.invokeLocal(any(), any(), any(), any())).thenAnswer(_ -> Promise.unitPromise());
+            when(invoker.invokeLocalWithContext(any(), any(), any(), any())).thenAnswer(_ -> Promise.unitPromise());
             topicManager().reconcile();
-            var appEvent = new AppEvent("order-42");
             var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
-            var envelope = new org.pragmatica.aether.stream.topic.TopicEventEnvelope("msg-1",
-                                                                                     1234L,
-                                                                                     sliceCodec.encode(appEvent));
+            var appPayload = sliceCodec.encode(new AppEvent("order-42"));
+            var envelope = new TopicEventEnvelope("msg-1", 1234L, appPayload);
 
             capturingRuntime.callbackFor(TOPIC_STREAM, 0)
-                            .onEvent(0L,
+                            .onEvent(3L,
                                      topicAwareCodec.encode(envelope),
                                      1234L)
                             .await()
-                            .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
-            var payload = org.mockito.ArgumentCaptor.forClass(Object.class);
+                            .onFailure(cause -> fail(cause.message()));
+            var payload = org.mockito.ArgumentCaptor.forClass(byte[].class);
+            var context = org.mockito.ArgumentCaptor.forClass(MessageContext.class);
 
             org.mockito.Mockito.verify(invoker)
-                               .invokeLocal(org.mockito.ArgumentMatchers.eq(ARTIFACT),
-                                            org.mockito.ArgumentMatchers.eq(METHOD),
-                                            payload.capture(),
-                                            any());
-            assertThat(payload.getValue()).isEqualTo(appEvent);
+                               .invokeLocalWithContext(org.mockito.ArgumentMatchers.eq(ARTIFACT),
+                                                       org.mockito.ArgumentMatchers.eq(METHOD),
+                                                       payload.capture(),
+                                                       context.capture());
+            assertThat(payload.getValue()).isEqualTo(appPayload);
+            assertThat(context.getValue()).isEqualTo(MessageContext.messageContext("msg-1", TOPIC_ADDRESS, 0, 3L));
         }
 
         /// #1295, end to end at the node boundary: a REAL [DurableTopicPublisher]
