@@ -212,7 +212,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// refused on ownership grounds. Forge/unit/legacy managers keep this; `AetherNode` late-binds the real
     /// committed-`StreamPartitionOwnershipValue` check.
     private static final OwnerWriteAdmission ADMIT_ALL = (_, _) -> Option.none();
-
     /// Replication receipt and backfill land the COMMITTED owner's events on a replica, so they carry no
     /// owner-write admission (#1230) — only the epoch fence applies to them.
     private static final Result<Unit> RECEIPT_NEEDS_NO_ADMISSION = Result.unitResult();
@@ -1208,15 +1207,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                  payload,
                                                                                  timestamp,
                                                                                  ownerEpoch,
-                                                                                 admitOwnerWrite(streamName,
-                                                                                                 partition)))
-                              .flatMap(offset -> durablyLog(streamName, partition, offset, payload, timestamp))
-                              .onSuccess(offset -> replicationManager.replicateEvent(streamName,
-                                                                                     partition,
-                                                                                     offset,
-                                                                                     payload,
-                                                                                     timestamp,
-                                                                                     ownerEpoch));
+                                                                                 admitOwnerWrite(streamName, partition)))
+                                 .flatMap(offset -> durablyLog(streamName, partition, offset, payload, timestamp))
+                                 .onSuccess(offset -> replicationManager.replicateEvent(streamName,
+                                                                                        partition,
+                                                                                        offset,
+                                                                                        payload,
+                                                                                        timestamp,
+                                                                                        ownerEpoch));
     }
 
     private Result<Unit> admitOwnerWrite(String streamName, int partition) {
