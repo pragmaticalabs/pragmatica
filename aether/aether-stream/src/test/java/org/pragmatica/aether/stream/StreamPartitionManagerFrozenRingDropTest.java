@@ -63,6 +63,8 @@ class StreamPartitionManagerFrozenRingDropTest {
                                          + " was acked at offset " + offset))
                .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.EVENT_DROPPED));
         assertThat(manager.droppedEventsSinceBoot()).as("a failed publish is not a best-effort drop").isZero();
+        assertThat(manager.refusedPublishDropsSinceBoot()).as("the refused durable drop is counted on the owner")
+                                                          .isEqualTo(1L);
 
         assertThat(walLastOffset(config)).as("WAL lastOffset after the drop").isEqualTo(walLastOffsetBefore);
         assertThat(walRecords(config)).as("a dropped event must never reach the WAL (not even at the old"
@@ -130,6 +132,31 @@ class StreamPartitionManagerFrozenRingDropTest {
     void publishLocal_fails_whenFrozenRingCannotFitEvent_onTopicAndDlqStreamsWithoutWalOrMinSync() {
         assertDropFailsWithoutWal(namedConfig("topic:orders-1233"));
         assertDropFailsWithoutWal(namedConfig("topic:orders-1233.dlq"));
+    }
+
+    /// Replica receive path: a replicated event a frozen replica ring cannot fit FAILS `appendRecovered`
+    /// with `EVENT_DROPPED` (so the receive handler stops the batch and never acks it) and never reaches
+    /// the replica's WAL. The refusal is counted so the resulting stall — the owner's min-sync barrier
+    /// times out while this replica stays SYNCING — is observable on the replica, not only as a WARN.
+    @Test
+    void appendRecovered_failsWithEventDropped_writesNoWal_andCounts_onFrozenReplicaRing() {
+        var config = durableTopicConfig();
+        var manager = streamPartitionManager(floorBudget(config), Option.some(walDir));
+        create(manager, config);
+
+        manager.appendRecovered(config.name(), PARTITION, payload(0), 1000L)
+               .onFailure(cause -> fail(cause.message()));
+        manager.appendRecovered(config.name(), PARTITION, new byte[OVERSIZED], 9_999L)
+               .onSuccess(offset -> fail("a replica must refuse an event its frozen ring cannot store, but"
+                                         + " it was applied at " + offset))
+               .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.EVENT_DROPPED));
+        manager.syncReplicated(config.name(), PARTITION).await().onFailure(cause -> fail(cause.message()));
+
+        assertThat(manager.refusedReplicaDropsSinceBoot()).isEqualTo(1L);
+        assertThat(manager.droppedEventsSinceBoot()).isZero();
+        manager.close();
+
+        assertThat(walRecords(config)).as("the refused replica event never reaches the WAL").hasSize(1);
     }
 
     /// Bring-up disclosure: rebuilding a partition from a WAL whose tail holds a record larger than the
