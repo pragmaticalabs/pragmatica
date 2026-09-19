@@ -70,7 +70,6 @@ public sealed interface QuicClusterServer {
     /// source for both the server and the client pipelines, and the bound message producers split by
     /// (e.g. stream replication, #1287).
     int MAX_FRAME_LENGTH = 32 * 1024 * 1024;
-
     /// Start listening on the given UDP port.
     Promise<Unit> start(int port);
     /// Stop the server and release resources.
