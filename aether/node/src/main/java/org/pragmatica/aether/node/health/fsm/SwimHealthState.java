@@ -52,9 +52,20 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
                 case PeerLeft pl -> tx.handle(() -> ctx.routeFaulty(pl.peer(), Option.none()));
                 case PeerConnected pc -> tx.handle(() -> ctx.reportHint(pc.peer(), HealthHint.HEALTHY));
                 case ReportHint rh -> tx.handle(() -> ctx.reportHint(rh.peer(), rh.hint()));
-                case StopRequested _, LeaderChanged _, ProtocolReady _, StartFailed _ -> tx.ignore();
+                case ProtocolReady ready -> tx.handle(() -> stopOrphanedProtocol(ready));
+                case StopRequested _, LeaderChanged _, StartFailed _ -> tx.ignore();
             }
         }
+    }
+
+    /// A ProtocolReady reaching Stopped means stop() won the race against an in-flight start(): the
+    /// protocol and its bound transport exist, but no state owns them. Close both, or the SWIM port
+    /// stays bound for the life of the process (#1308).
+    private static void stopOrphanedProtocol(ProtocolReady ready) {
+        ready.swim()
+             .stop();
+        ready.transport()
+             .stop();
     }
 
     private static void handleStoppedPeerJoined(SwimMember member) {

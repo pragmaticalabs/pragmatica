@@ -68,6 +68,10 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private final List<SwimProtocol.TransportObservationEmitter> pendingTransportObservationEmitters = new CopyOnWriteArrayList<>();
 
     private volatile Option<AnnounceJoinCall> pendingAnnounceJoin = none();
+    /// Test seam (#1308): runs on the starting thread once the SWIM port is bound and before the
+    /// protocol is created, so a test can hold the detector in Starting or fail a start after a
+    /// successful bind. Production never replaces it.
+    private volatile Supplier<Result<Unit>> afterBind = Result::unitResult;
 
     private record AnnounceJoinCall(NodeInfo self,
                                     String clusterName,
@@ -299,6 +303,10 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                       .current();
     }
 
+    void afterBindForTest(Supplier<Result<Unit>> hook) {
+        afterBind = hook;
+    }
+
     SwimHealthContext contextForTest() {
         return context;
     }
@@ -446,6 +454,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                         .await(timeSpan(5).seconds())
                         .onFailure(cause -> log.error("SWIM transport failed to start: {}",
                                                       cause.message()))
+                        .flatMap(_ -> afterBind.get())
                         .flatMap(_ -> SwimProtocol.swimProtocol(swimConfig,
                                                                 transport,
                                                                 this,
@@ -454,7 +463,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                 context.isBootingSupplier(),
                                                                 context.transportConnected()))
                         .flatMap(SwimProtocol::start)
-                        .map(protocol -> seedAndWrap(protocol, transport, encryptor));
+                        .map(protocol -> seedAndWrap(protocol, transport, encryptor))
+                        .onFailure(_ -> transport.stop());
     }
 
     private SwimHealthEvents.ProtocolReady seedAndWrap(SwimProtocol protocol,
