@@ -57,7 +57,6 @@ public interface ReplicationManager extends AutoCloseable {
 
     ReplicaRegistry registry();
     Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks);
-
     /// The highest offset at least `minAcks` DISTINCT non-self replicas have acknowledged for
     /// `(stream, partition)` — the non-blocking reading of the same condition [#awaitReplication] waits
     /// for (#1235). `-1` when fewer replicas than `minAcks` have acknowledged anything; [Long#MAX_VALUE]

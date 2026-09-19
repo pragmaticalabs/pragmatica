@@ -1196,13 +1196,11 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// The owner's append at `offset` is durable — its group commit resolved, and group commit resolves in
     /// offset order, so the whole prefix is. Visibility is recomputed BEFORE the publish returns, so an
-    /// owner-only (`minSyncReplicas <= 1`) publisher can read its own write.
+    /// owner-only (`minSyncReplicas <= 1`) publisher can read its own write. A ring released in the
+    /// meantime has no reader left to expose the event to, so its absence is ignored.
     @Contract
     private void ownerDurable(String streamName, int partition, long offset) {
-        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> ownerDurable(ring,
-                                                                                     streamName,
-                                                                                     partition,
-                                                                                     offset));
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> ownerDurable(ring, streamName, partition, offset));
     }
 
     @Contract
@@ -1349,7 +1347,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #1235, replica side: a replicated record becomes visible to reads served BY THIS NODE once its own
     /// WAL write is durable (at once with no WAL). A replica does not learn the owner's visible position,
     /// so this bounds a replica-local read by the replica's durability, not by the owner's min-sync acks.
-    /// A poisoned WAL chain never resolves, so nothing after the failure becomes visible here.
+    /// A failed WAL write poisons the chain, so the failure is dropped here by design: nothing at or after
+    /// it becomes visible, and the failure itself surfaces where the receive handler awaits
+    /// [#syncReplicated] before acking.
     @Contract
     private void visibleWhenReplicaDurable(String streamName, int partition, long offset) {
         syncReplicated(streamName, partition).onSuccess(_ -> replicaDurable(streamName, partition, offset));
@@ -1547,8 +1547,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                  int partition,
                                                                  long fromOffset,
                                                                  int maxEvents) {
-        return resolvePartitionBuffer(streamName, partition).flatMap(buffer -> buffer.readAppended(fromOffset,
-                                                                                                   maxEvents));
+        return resolvePartitionBuffer(streamName, partition).flatMap(buffer -> buffer.readAppended(fromOffset, maxEvents));
     }
 
     public Option<StreamInfo> streamInfo(String streamName) {

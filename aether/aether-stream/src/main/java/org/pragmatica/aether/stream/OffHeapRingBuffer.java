@@ -482,6 +482,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
 
         evictForSpace((int) totalSize);
+
         return success(appendPayloads(payloads, timestamps));
     }
 
