@@ -72,6 +72,7 @@ class SegmentSealerTest {
             );
 
             sealer.onEviction(STREAM, PARTITION, events);
+            awaitCondition(() -> !captured.isEmpty());
 
             assertThat(captured).hasSize(1);
             var segment = captured.getFirst();
@@ -94,6 +95,7 @@ class SegmentSealerTest {
             );
 
             sealer.onEviction(STREAM, PARTITION, events);
+            awaitCondition(() -> !captured.isEmpty());
 
             var serialized = captured.getFirst().serializedEvents();
             var buffer = ByteBuffer.wrap(serialized).order(ByteOrder.BIG_ENDIAN);
@@ -107,6 +109,7 @@ class SegmentSealerTest {
             var events = List.of(RawEvent.rawEvent(5L, "x".getBytes(), 500L));
 
             sealer.onEviction(STREAM, PARTITION, events);
+            awaitCondition(() -> !captured.isEmpty());
 
             assertThat(captured).hasSize(1);
             assertThat(captured.getFirst().startOffset()).isEqualTo(5L);
@@ -124,6 +127,7 @@ class SegmentSealerTest {
             var events = List.of(RawEvent.rawEvent(42L, "only".getBytes(), 9999L));
 
             sealer.onEviction(STREAM, PARTITION, events);
+            awaitCondition(() -> !captured.isEmpty());
 
             var segment = captured.getFirst();
             assertThat(segment.startOffset()).isEqualTo(42L);
@@ -172,6 +176,7 @@ class SegmentSealerTest {
             orderedSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(0L, "a".getBytes(), 1L)));
             orderedSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(1L, "b".getBytes(), 2L)));
             orderedSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(2L, "c".getBytes(), 3L)));
+            awaitCondition(() -> sink.calls() == 1);
 
             assertThat(sink.startOffsets()).containsExactly(0L);
 
@@ -248,6 +253,7 @@ class SegmentSealerTest {
                 assertThat(ring.eventCount()).isEqualTo((long) RING_EVENTS);
                 assertThat(ring.read(3, RING_EVENTS).unwrap()).hasSize(RING_EVENTS);
 
+                awaitCondition(() -> sink.calls() == 1);
                 sink.succeed(0);
                 awaitCondition(() -> cappedSealer.pendingBytes() < CAP_BYTES);
 
@@ -316,6 +322,7 @@ class SegmentSealerTest {
             deletingSealer.onEviction(DOOMED, PARTITION, List.of(RawEvent.rawEvent(1L, "b".getBytes(), 2L)));
             deletingSealer.onEviction(DOOMED, 1, List.of(RawEvent.rawEvent(0L, "c".getBytes(), 3L)));
             deletingSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(0L, "d".getBytes(), 4L)));
+            awaitCondition(() -> sink.calls() == 3);
 
             var oneSegment = deletingSealer.pendingBytes() / 4;
 
@@ -346,10 +353,14 @@ class SegmentSealerTest {
 
             failingSealer.onStreamDeleted(DOOMED);
             var attemptsAtDeletion = attempts.get();
+            var failuresAtDeletion = failingSealer.sealFailureCount();
 
             LockSupport.parkNanos(RETRY_WINDOW_NANOS);
 
+            // At most the one attempt already in flight at deletion; after that a retry stops at the cancelled
+            // check — not by failing again (a counted failure) on the heap copy the deletion dropped.
             assertThat(attempts.get()).isLessThanOrEqualTo(attemptsAtDeletion + 1);
+            assertThat(failingSealer.sealFailureCount()).isLessThanOrEqualTo(failuresAtDeletion + 1);
             assertThat(failingSealer.pendingBytes()).isZero();
         }
 
@@ -436,6 +447,7 @@ class SegmentSealerTest {
             assertThat(sealer.spillCount()).as("nothing durable to spill").isZero();
             assertThat(sealer.pendingBytes()).as("the not-yet-durable copy is kept past the cap").isPositive();
 
+            awaitCondition(() -> sink.calls() == 1);
             sink.succeed(0);
             awaitCondition(() -> sealer.pendingBytes() == 0);
 
@@ -470,6 +482,7 @@ class SegmentSealerTest {
             trackingSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(10L, "a".getBytes(), 1L),
                                                                   RawEvent.rawEvent(11L, "b".getBytes(), 2L)));
             trackingSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(12L, "c".getBytes(), 3L)));
+            awaitCondition(() -> sink.calls() == 1);
 
             assertThat(trackingSealer.lowestUnsealed(STREAM, PARTITION)).isEqualTo(Option.some(10L));
             assertThat(trackingSealer.lowestUnsealed(STREAM, 1)).isEqualTo(Option.none());

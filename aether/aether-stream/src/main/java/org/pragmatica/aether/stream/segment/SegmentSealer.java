@@ -26,7 +26,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Functions.ThrowingFn0;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Retry;
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 import org.pragmatica.lang.utils.SharedScheduler;
@@ -99,6 +101,7 @@ public final class SegmentSealer implements EvictionListener {
     /// WARN while [#refusalCount] counts every refusal.
     private final AtomicBoolean refusing = new AtomicBoolean(false);
     private final AtomicLong spills = new AtomicLong(0);
+    private final AtomicLong drainCrashes = new AtomicLong(0);
     /// Set by the first spill of an episode and cleared by the next hand-over that fits under the cap, so a
     /// spill episode logs one WARN while [#spillCount] counts every dropped heap copy.
     private final AtomicBoolean spilling = new AtomicBoolean(false);
@@ -172,6 +175,11 @@ public final class SegmentSealer implements EvictionListener {
                                          .equals(streamName));
 
         return unit();
+    }
+
+    /// Drain steps that threw — never expected; each is an ERROR and the drain resumes after a pause.
+    public long drainCrashCount() {
+        return drainCrashes.get();
     }
 
     /// Seal attempts that failed. Each failed segment stays pending and is retried.
@@ -318,13 +326,40 @@ public final class SegmentSealer implements EvictionListener {
 
     private void drain(PendingSeals seals) {
         if (seals.inFlight().compareAndSet(false, true)) {
-            sealHead(seals);
+            hop(seals, () -> sealHead(seals));
         }
     }
 
+    /// The drain's trampoline (#1234): every step — the first seal of a drain, the next head after a seal, a
+    /// new retry cycle — runs as its own task on a fresh stack. A sink that completes synchronously used to make
+    /// `sealed -> sealHead -> seal -> sealed` recurse on ONE stack, one frame group per queued segment, until a
+    /// `StackOverflowError` was swallowed inside a promise callback with the in-flight flag still set: the
+    /// partition never sealed again, silently. Stack depth no longer depends on the backlog, and any Throwable
+    /// a step lets escape is caught here, logged, counted and the flag released ([#drainCrashed]).
+    private void hop(PendingSeals seals, ThrowingFn0<Unit> step) {
+        Promise.lift(Causes::fromThrowable, step).onFailure(cause -> drainCrashed(seals, cause));
+    }
+
     /// Runs holding the partition's in-flight flag.
-    private void sealHead(PendingSeals seals) {
+    private Unit sealHead(PendingSeals seals) {
         option(seals.queue().peek()).onPresent(segment -> sealWithRetry(seals, segment)).onEmpty(() -> release(seals));
+
+        return unit();
+    }
+
+    /// Absorbing the crash is design-out, not loss: the segment that was being sealed is still queued (it
+    /// leaves the queue only once sealed), so releasing the flag and draining again after [#CYCLE_PAUSE]
+    /// resumes exactly where the drain stopped. What must never happen is the flag staying set.
+    private void drainCrashed(PendingSeals seals, Cause cause) {
+        var crashes = drainCrashes.incrementAndGet();
+
+        log.error("Seal drain step failed unexpectedly (drain crash {} on this node); the in-flight flag is released "
+                 + "and the partition's pending seals resume in {}: {}",
+                  crashes,
+                  CYCLE_PAUSE,
+                  cause.message());
+        seals.inFlight().set(false);
+        SharedScheduler.schedule(() -> drain(seals), CYCLE_PAUSE);
     }
 
     /// The re-check after clearing the flag closes the window where a segment was queued after [#sealHead]
@@ -343,8 +378,12 @@ public final class SegmentSealer implements EvictionListener {
     private void sealWithRetry(PendingSeals seals, PendingSegment segment) {
         SEAL_RETRY.execute(() -> attempt(seals, segment))
                   .map(_ -> released(seals, segment))
-                  .onSuccess(_ -> sealHead(seals))
-                  .onFailure(cause -> retryCycleExhausted(seals, segment, cause));
+                  .onResult(outcome -> hop(seals,
+                                           () -> afterAttempt(seals, segment, outcome)));
+    }
+
+    private Unit afterAttempt(PendingSeals seals, PendingSegment segment, Result<Unit> outcome) {
+        return outcome.fold(cause -> retryCycleExhausted(seals, segment, cause), _ -> sealHead(seals));
     }
 
     private Promise<Unit> attempt(PendingSeals seals, PendingSegment segment) {
@@ -352,8 +391,16 @@ public final class SegmentSealer implements EvictionListener {
                     .get()
                ? SegmentError.General.SEAL_CANCELLED.promise()
                : segmentToSeal(segment).async()
-                              .flatMap(sink::seal)
+                              .flatMap(this::sealGuarded)
                               .onFailure(cause -> recordFailure(segment, cause));
+    }
+
+    /// A sink that THROWS instead of failing its promise must still fail this attempt: retries run on the
+    /// scheduler's thread, where an escaping exception would leave the retry — and the drain — hanging.
+    private Promise<Unit> sealGuarded(SealedSegment segment) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> sink.seal(segment))
+                     .fold(Cause::<Unit> promise, promise -> promise);
     }
 
     /// The heap copy while it is retained; after a spill, the segment rebuilt from exactly its WAL range.
@@ -431,11 +478,11 @@ public final class SegmentSealer implements EvictionListener {
     /// Absorbing the exhausted cycle is design-out, not loss: the segment stays at the head of its queue (so
     /// nothing later in the partition is sealed past it), its retained copy and the WAL both still hold its
     /// offsets, and a fresh retry cycle starts after [#CYCLE_PAUSE].
-    private void retryCycleExhausted(PendingSeals seals, PendingSegment segment, Cause cause) {
+    private Unit retryCycleExhausted(PendingSeals seals, PendingSegment segment, Cause cause) {
         if (seals.cancelled().get()) {
             release(seals);
 
-            return;
+            return unit();
         }
 
         log.error("Sealing {}/{} offsets [{}-{}] failed through a retry cycle of up to {} attempts; the segment stays "
@@ -447,7 +494,9 @@ public final class SegmentSealer implements EvictionListener {
                   ERROR_AFTER_FAILURES,
                   CYCLE_PAUSE,
                   cause.message());
-        SharedScheduler.schedule(() -> sealWithRetry(seals, segment), CYCLE_PAUSE);
+        SharedScheduler.schedule(() -> hop(seals, () -> sealHead(seals)), CYCLE_PAUSE);
+
+        return unit();
     }
 
     private SealedSegment buildSegment(String streamName, int partition, List<RawEvent> events) {

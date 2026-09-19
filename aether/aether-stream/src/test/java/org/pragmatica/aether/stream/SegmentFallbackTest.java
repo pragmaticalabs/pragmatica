@@ -29,6 +29,7 @@ import org.pragmatica.storage.StorageInstance;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -110,6 +111,7 @@ class SegmentFallbackTest {
         void fetch_evictedEvents_readsFromSealedSegment() {
             // Publish enough events to force eviction (capacity = 5, publish 10)
             publishEvents(10);
+            awaitSealedThrough(RING_CAPACITY - 1);
 
             // Offset 0 should have been evicted from the ring buffer and sealed to storage
             var result = access.fetch(PARTITION, 0, 5).await();
@@ -128,6 +130,7 @@ class SegmentFallbackTest {
         void fetch_mixedRange_combinesBothSources() {
             // Publish enough to evict early events, keep recent ones in ring buffer
             publishEvents(10);
+            awaitSealedThrough(RING_CAPACITY - 1);
 
             // Request from offset 0 -- should combine sealed + ring buffer
             var result = access.fetch(PARTITION, 0, 20).await();
@@ -206,6 +209,18 @@ class SegmentFallbackTest {
 
             return seal;
         }
+    }
+
+    /// Sealing runs off the appending thread (#1234), so an evicted offset is readable from storage only once
+    /// its seal has landed; until then a read of it is IN FLIGHT.
+    private void awaitSealedThrough(long offset) {
+        var deadline = System.currentTimeMillis() + 10_000;
+
+        while (index.lastSealedOffset(STREAM, PARTITION) < offset && System.currentTimeMillis() < deadline) {
+            LockSupport.parkNanos(10_000_000);
+        }
+
+        assertThat(index.lastSealedOffset(STREAM, PARTITION)).isGreaterThanOrEqualTo(offset);
     }
 
     private void publishEvents(int count) {
