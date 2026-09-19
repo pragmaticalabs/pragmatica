@@ -4,8 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.stream;
 
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.LongSupplier;
 
 import org.pragmatica.aether.slice.ConsumerConfig;
@@ -13,10 +16,13 @@ import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.slice.ConsumerConfig.ProcessingMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
 import org.pragmatica.aether.stream.DeadLetterHandler;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -246,6 +252,92 @@ class StreamConsumerRuntimeClusterCursorTest {
         assertThat(runtime.cursorCommitFailureCount())
                 .describedAs("both stages succeeded — nothing to recover, nothing to count")
                 .isZero();
+    }
+
+    /// #1239 scope (review claim P2): a consensus-publish failure is recovered into a local-only success,
+    /// and the periodic checkpoint used to retry only when `commit(...)` itself FAILED — so a failed
+    /// cluster checkpoint was never retried and the cluster cursor stayed stale on a quiet partition.
+    /// One event, then silence: only a retry of the local-only outcome can land the cluster checkpoint.
+    @Test
+    void periodicCheckpoint_retriesALocalOnlyOutcome_untilTheClusterCheckpointLands() throws InterruptedException {
+        var calls = new AtomicInteger();
+        var clusterPersisted = new CopyOnWriteArrayList<Long>();
+        var store = ClusterCursorStore.clusterCursorStore(succeedingLocal(),
+                                                          _ -> Option.none(),
+                                                          command -> firstRejected(calls, clusterPersisted, command));
+        var runtime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+        var config = ConsumerConfig.consumerConfig(GROUP, 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
+
+        try {
+            runtime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
+            // The 10ms interval elapses first, so the single delivery trips the time-based checkpoint.
+            Thread.sleep(50);
+            manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+
+            while (clusterPersisted.isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertThat(calls.get()).describedAs("the first cluster checkpoint was attempted and rejected")
+                                   .isGreaterThanOrEqualTo(1);
+            assertThat(clusterPersisted).describedAs("a local-only outcome is retried until the cluster checkpoint lands")
+                                        .isNotEmpty();
+            assertThat(clusterPersisted.getLast()).isEqualTo(runtime.cursorPosition("orders", 0, GROUP).or(-1L));
+        } finally {
+            runtime.close();
+        }
+    }
+
+    /// #1239 scope (review claim P2): the detach flush must not overlap the in-flight periodic commit.
+    /// Overlapping commits for one key let one commit's outcome be read as another's — the old per-key
+    /// side map reported B with A's cause, or lost A's cause when B cleared it. Here A (periodic) is held
+    /// and later rejected; B (detach flush) must wait for A, and each commit reports only its own outcome:
+    /// A's rejection exactly once, B's success not at all.
+    @Test
+    void detachFlush_waitsForTheInFlightPeriodicCommit_andEachCommitReportsOnlyItsOwnOutcome() throws InterruptedException {
+        var calls = new AtomicInteger();
+        Promise<Unit> heldA = Promise.promise();
+        var store = ClusterCursorStore.clusterCursorStore(succeedingLocal(),
+                                                          _ -> Option.none(),
+                                                          _ -> calls.incrementAndGet() == 1 ? heldA : Promise.unitPromise());
+        var runtime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+        var config = ConsumerConfig.consumerConfig(GROUP, 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
+
+        try {
+            runtime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
+            Thread.sleep(50);
+            manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+            awaitCount(calls::get, 1L);
+            assertThat(calls.get()).describedAs("commit A (periodic) is in flight").isEqualTo(1);
+
+            runtime.unsubscribe("orders", 0, GROUP);
+            Thread.sleep(200);
+            assertThat(calls.get()).describedAs("commit B (detach flush) must not be issued while commit A is in flight")
+                                   .isEqualTo(1);
+
+            heldA.fail(CheckpointRejected.INSTANCE);
+            awaitCount(calls::get, 2L);
+            awaitCount(runtime::cursorCommitFailureCount, 1L);
+            Thread.sleep(200);
+            assertThat(calls.get()).describedAs("B is issued once A settles, and nothing retries after detach")
+                                   .isEqualTo(2);
+            assertThat(runtime.cursorCommitFailureCount()).describedAs("A's rejection is counted exactly once; B's success adds nothing")
+                                                          .isEqualTo(1L);
+        } finally {
+            runtime.close();
+        }
+    }
+
+    private static Promise<Unit> firstRejected(AtomicInteger calls, List<Long> persisted, KVCommand<AetherKey> command) {
+        if (calls.incrementAndGet() == 1) {
+            return CheckpointRejected.INSTANCE.promise();
+        }
+        if (command instanceof KVCommand.Put<?, ?> put && put.value() instanceof StreamCursorCheckpointValue value) {
+            persisted.add(value.committedOffset());
+        }
+
+        return Promise.unitPromise();
     }
 
     private enum CheckpointRejected implements Cause {

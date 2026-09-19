@@ -1216,6 +1216,34 @@ class StreamConsumerRuntimeTest {
             assertThat(runtime.cursorPosition("orders", 0, "group-1").or(-1L)).isEqualTo(2L);
         }
 
+        /// #1238 threading: the append listener fires on the notifying thread (the publisher today; the
+        /// per-partition notifier after #1258). It must only mark the loop dirty and hand the pass to an
+        /// executor — a handler run inline there can re-enter the publish path (the #1258 deadlock) or
+        /// stall every other notification for that partition. Same for subscribe's backlog kick.
+        @Test
+        void handler_neverRunsOnTheNotifyingOrSubscribingThread() throws InterruptedException {
+            createTestStream("orders");
+            var handlerThreads = new CopyOnWriteArrayList<Thread>();
+            var latch = new CountDownLatch(2);
+
+            manager.publishLocal("orders", 0, "backlog".getBytes(UTF_8), 1000L);
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-1"),
+                              (offset, payload, ts) -> recordThread(handlerThreads, latch));
+            manager.publishLocal("orders", 0, "appended".getBytes(UTF_8), 2000L);
+            assertThat(latch.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(handlerThreads).describedAs("neither the subscribe kick nor the append notification runs the handler on the caller's thread")
+                                      .doesNotContain(Thread.currentThread());
+        }
+
+        private Promise<Unit> recordThread(List<Thread> threads, CountDownLatch latch) {
+            threads.add(Thread.currentThread());
+            latch.countDown();
+
+            return Promise.unitPromise();
+        }
+
         @Test
         void advanceCursor_neverMovesBackwards() {
             var state = ConsumerRuntimeState.ConsumerState.consumerState(ConsumerConfig.consumerConfig("group-1"),
