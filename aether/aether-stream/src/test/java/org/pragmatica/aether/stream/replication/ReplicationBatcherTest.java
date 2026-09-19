@@ -14,10 +14,13 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
@@ -336,6 +339,79 @@ class ReplicationBatcherTest {
             }
 
             return batcher.accumulatorCount();
+        }
+    }
+
+    /// #1246 review N3: identity, not count. Every event carries a unique id, and the delivered multiset must
+    /// equal the added set exactly — a count-only check cannot see a loss cancelled by an equal resend.
+    @Nested
+    class DeliveryIdentity {
+        private static final int THREADS = 4;
+        private static final int EVENTS_PER_THREAD = 5_000;
+        private static final int ROUNDS = 10;
+
+        @Test
+        void add_concurrentWithSizeAndTimerFlushes_deliversEveryIdExactlyOnce() throws InterruptedException {
+            for (int round = 0; round < ROUNDS; round++) {
+                assertEveryIdDeliveredOnce(round);
+            }
+        }
+
+        private void assertEveryIdDeliveredOnce(int round) throws InterruptedException {
+            var delivered = new ConcurrentLinkedQueue<String>();
+            batcher = replicationBatcher(identityTransport(delivered), registry, GOVERNOR, 7, TimeSpan.timeSpan(1).millis());
+
+            var threads = IntStream.range(0, THREADS)
+                                   .mapToObj(thread -> Thread.ofVirtual().start(() -> addIdentified(thread)))
+                                   .toList();
+
+            for (var thread : threads) {
+                thread.join();
+            }
+
+            batcher.close();
+
+            var expected = IntStream.range(0, THREADS)
+                                    .boxed()
+                                    .flatMap(thread -> IntStream.range(0, EVENTS_PER_THREAD)
+                                                                .mapToObj(i -> eventId(thread, i)))
+                                    .collect(Collectors.toSet());
+
+            assertThat(delivered).as("round %d: total deliveries", round).hasSize(THREADS * EVENTS_PER_THREAD);
+            assertThat(Set.copyOf(delivered)).as("round %d: delivered ids", round).isEqualTo(expected);
+        }
+
+        private void addIdentified(int thread) {
+            IntStream.range(0, EVENTS_PER_THREAD)
+                     .forEach(i -> batcher.add(STREAM, PARTITION, i, eventId(thread, i).getBytes(), TIMESTAMP, Epoch.ZERO));
+        }
+
+        private static String eventId(int thread, int index) {
+            return thread + "-" + index;
+        }
+
+        private static ReplicationTransport identityTransport(ConcurrentLinkedQueue<String> delivered) {
+            return (_, message) -> ((ReplicationMessage.ReplicateEvents) message).payloads()
+                                                                                 .forEach(payload -> delivered.add(new String(payload)));
+        }
+    }
+
+    /// #1246 review N6: close() is a lifecycle end. At base it cancelled the flush timer, so nothing was sent
+    /// after close; the one-shot design must not regress that — an add after close is refused, not sent.
+    @Nested
+    class AfterClose {
+
+        @Test
+        void addAfterClose_sendsNothing() throws InterruptedException {
+            batcher = replicationBatcher(capturingTransport(), registry, GOVERNOR, 1000, TimeSpan.timeSpan(20).millis());
+            batcher.close();
+
+            batcher.add(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
+
+            TimeUnit.MILLISECONDS.sleep(200);
+
+            assertThat(sentMessages).isEmpty();
+            assertThat(batcher.accumulatorCount()).isZero();
         }
     }
 
