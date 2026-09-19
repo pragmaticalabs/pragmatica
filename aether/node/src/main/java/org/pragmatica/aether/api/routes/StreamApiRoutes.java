@@ -625,7 +625,8 @@ public final class StreamApiRoutes implements RouteSource {
                                                                                                            offset)));
     }
 
-    private Promise<PublishBatchResponse> publishBatch(String namespace,
+    /// Package-visible for direct unit coverage, like [#publishEvent].
+    Promise<PublishBatchResponse> publishBatch(String namespace,
                                                        String stream,
                                                        String version,
                                                        String publishBatchLiteral,
@@ -635,7 +636,16 @@ public final class StreamApiRoutes implements RouteSource {
                               .flatMap(addr -> publishMany(addr, requests));
     }
 
+    /// The stream is ensured ONCE, before the fan-out: every event targets the same address, and a failure
+    /// here — a reserved-name refusal (#1282), an unavailable stream — then surfaces as ITSELF, with its own
+    /// HTTP status. Left to the per-event path it arrived wrapped in `Result.allOf`'s composite cause, which
+    /// is not `HttpStatusAware` and left the wire as 500.
     private Promise<PublishBatchResponse> publishMany(ResourceAddress addr, PublishRequest[] requests) {
+        return ensureStreamExists(StreamManager.engineKey(addr)).async()
+                                                                .flatMap(_ -> publishEach(addr, requests));
+    }
+
+    private Promise<PublishBatchResponse> publishEach(ResourceAddress addr, PublishRequest[] requests) {
         var perEvent = Arrays.stream(requests).map(req -> publishOne(addr, req)).toList();
 
         return Promise.allOf(perEvent).flatMap(results -> collectOffsets(addr, results));
@@ -759,11 +769,19 @@ public final class StreamApiRoutes implements RouteSource {
     /// Idempotent on an already-registered address (mirrors [StreamRoutes#createStreamWithConfig]'s
     /// check-exists-first shape): a repeat `create` for the same address reports `"exists"` rather
     /// than re-attempting registration and hitting [StreamRegistry.StreamRegistryError.General#ALREADY_REGISTERED].
+    ///
+    /// #1282: the reserved-kind refusal runs BEFORE the catalog lookup, so an existing reserved address is
+    /// refused rather than reported `"exists"` — no existence oracle for internally provisioned streams.
     private Result<CreateResponse> createAtAddress(ResourceAddress addr, CreateRequest request) {
+        return ReservedStreamNames.requireUnreserved(StreamManager.engineKey(addr))
+                                  .flatMap(engineKey -> createOrReportExisting(addr, engineKey, request));
+    }
+
+    private Result<CreateResponse> createOrReportExisting(ResourceAddress addr, String engineKey, CreateRequest request) {
         return namespacesService.lookup(addr)
                                 .map(_ -> Result.success(new CreateResponse(addr.asString(),
                                                                             "exists")))
-                                .or(() -> materializeAndRegister(addr, request));
+                                .or(() -> materializeAndRegister(addr, engineKey, request));
     }
 
     /// Registers a PERMANENT catalog reference ([StreamRegistryEntry.RegisteredByKind#OPERATOR]): no
@@ -774,13 +792,9 @@ public final class StreamApiRoutes implements RouteSource {
     /// `STREAM_ALREADY_EXISTS` duplicate-create sentinel via [StreamCreateOutcome] like every other
     /// idempotent caller of that method.
     ///
-    /// #1282: refused before anything is minted or registered when the engine key carries a reserved
-    /// kind prefix ([ReservedStreamNames]) — a `topic` or `entity` namespace address would otherwise plant
-    /// an operator-chosen config under a name only internal provisioning may create.
-    private Result<CreateResponse> materializeAndRegister(ResourceAddress addr, CreateRequest request) {
-        return ReservedStreamNames.requireUnreserved(StreamManager.engineKey(addr))
-                                  .flatMap(engineKey -> mintOperatorStream(engineKey, request))
-                                  .flatMap(_ -> registerCatalogEntry(addr))
+    /// Reached only through [#createAtAddress], whose reserved-kind refusal has already run on `engineKey`.
+    private Result<CreateResponse> materializeAndRegister(ResourceAddress addr, String engineKey, CreateRequest request) {
+        return mintOperatorStream(engineKey, request).flatMap(_ -> registerCatalogEntry(addr))
                                   .map(_ -> new CreateResponse(addr.asString(),
                                                                "created"));
     }

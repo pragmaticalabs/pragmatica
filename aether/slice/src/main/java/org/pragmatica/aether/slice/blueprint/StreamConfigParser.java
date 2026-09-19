@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.stream.StreamEngineKey;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.config.toml.TomlDocument;
@@ -230,7 +231,18 @@ public interface StreamConfigParser {
     }
 
     private static Result<StreamResource> parseExternalResource(String streamName, String source) {
-        return ResourceAddress.resourceAddress(source).map(addr -> StreamResource.external(streamName, addr));
+        return ResourceAddress.resourceAddress(source)
+                              .flatMap(addr -> refuseReservedKind(streamName, source, addr))
+                              .map(addr -> StreamResource.external(streamName, addr));
+    }
+
+    /// #1282: an External source whose engine key carries a reserved stream-kind prefix is refused — see
+    /// [StreamSourceError.ReservedKindSource].
+    private static Result<ResourceAddress> refuseReservedKind(String streamName, String source, ResourceAddress addr) {
+        return StreamEngineKey.reservedKindPrefixOf(StreamEngineKey.engineKey(addr))
+                              .map(prefix -> StreamSourceError.ReservedKindSource.FACTORY.apply(streamName, source, prefix)
+                                                                                         .<ResourceAddress> result())
+                              .or(() -> success(addr));
     }
 
     private static Result<StreamResource> parseOwnedResource(TomlDocument doc,

@@ -5605,6 +5605,10 @@ or `entity` namespace address with no committed config is refused with `400 Bad 
 is adopted as usual. `[mechanism: ReservedStreamNames.requireUnreserved on the management-default
 branch only]`
 
+**`publish-batch` ensures the stream once, before any item is written.** A stream-level failure (a
+reserved name `400`, or an unavailable stream `409`) fails the whole batch with its own status and
+writes nothing. `[mechanism: publishMany runs ensureStreamExists before the per-item fan-out]`
+
 **Batch publish is not atomic.** `publish-batch` validates and writes each item independently and
 concurrently; when one item names an out-of-range `partition`, items before it (and possibly after
 it) may already be durably written before the batch call fails. The response on failure names only
@@ -5707,12 +5711,23 @@ paths are:
 
 - `POST /api/v1/streams` (body name);
 - `POST /api/v1/streams/{namespace}/{stream}/{version}` (engine key);
-- the publish auto-create fallback.
+- the publish auto-create fallback, for both `publish` and `publish-batch`.
+
+On the two create routes the refusal runs **before** the existence check. An existing reserved name is
+refused, never answered with `"exists"`, so the API is not an oracle for which internally provisioned
+streams exist.
+
+Blueprints are covered as well. A `[streams.X]` section whose `source` names a `topic` or `entity`
+namespace address would otherwise make the slice's stream factories mint that stream. Such a section is
+refused when the blueprint is validated, under rule `source-reserved-kind`. A `system`-namespace source
+is unaffected, because its engine key is the bare name.
 
 Without the refusal, a stream minted ahead of the real resource would plant an operator-chosen config
-(partitions, replicas, min-sync, retention) that the resource later finds already in place.
-`[mechanism: ReservedStreamNames.requireUnreserved runs before each mint; prefixes are read from their
-canonical owners]`
+(partitions, replicas, min-sync, retention) that the resource later finds already in place. For
+`entity:`, the name can even exactly match a real keyspace log, because keyspace names may contain `:`.
+`[mechanism: the prefixes are declared once as StreamEngineKey.RESERVED_KIND_PREFIXES and pinned against
+their canonical owners; ReservedStreamNames.requireUnreserved runs before each Management-API mint, and
+the blueprint parser refuses a reserved External source]`
 
 Reads are unaffected. The `405` refusal of the enumerated system streams
 ([`system:*` write gate](#system-write-gate-405)) still applies first.

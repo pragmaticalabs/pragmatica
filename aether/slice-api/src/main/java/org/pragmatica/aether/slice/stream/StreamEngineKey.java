@@ -4,7 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import java.util.List;
+
 import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.lang.Option;
 
 
 /// The ONE reduction from a catalog [ResourceAddress] to the string the stream engine keys by.
@@ -35,6 +38,22 @@ public sealed interface StreamEngineKey {
                ? address.name()
                         .value()
                : address.asString();
+    }
+
+    /// Engine-key prefixes marking a stream KIND that only internal provisioning creates (#1282): `system:`
+    /// (system streams, named from their `system`-namespace address), `topic:` (durable topics and their
+    /// DLQs) and `entity:` (entity keyspace logs). Runtime rules key off these prefixes, so no user input —
+    /// a Management-API write or a blueprint `External` source — may mint under one. Declared here because
+    /// the blueprint parser (aether/slice) cannot see the canonical owners (`DurableTopicNames` in
+    /// aether-stream, `EntityPartitionArc` in aether-dht); `ReservedStreamNamesTest` in aether/node pins
+    /// this list against them.
+    List<String> RESERVED_KIND_PREFIXES = List.of(ResourceAddress.SYSTEM_NAMESPACE + ":", "topic:", "entity:");
+
+    /// The reserved kind prefix `engineKey` starts with, or none.
+    static Option<String> reservedKindPrefixOf(String engineKey) {
+        return Option.from(RESERVED_KIND_PREFIXES.stream()
+                                                 .filter(engineKey::startsWith)
+                                                 .findFirst());
     }
 
     record unused() implements StreamEngineKey {}
