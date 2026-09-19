@@ -820,9 +820,9 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     }
 
     private Result<List<StreamEvent<T>>> combineWithBufferEvents(List<OffHeapRingBuffer.RawEvent> sealedEvents,
-                                                         int partition,
-                                                         long fromOffset,
-                                                         int maxEvents) {
+                                                                 int partition,
+                                                                 long fromOffset,
+                                                                 int maxEvents) {
         var remaining = maxEvents - sealedEvents.size();
         var sealed = toStreamEvents(sealedEvents, partition);
 
@@ -837,7 +837,8 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
         return partitionManager.readLocal(streamName, partition, bufferStart, remaining)
                                .map(rawEvents -> toStreamEvents(rawEvents, partition))
                                .fold(this::bufferReadFallback, Result::success)
-                               .map(bufferEvents -> List.copyOf(Stream.concat(sealed.stream(), bufferEvents.stream())
+                               .map(bufferEvents -> List.copyOf(Stream.concat(sealed.stream(),
+                                                                              bufferEvents.stream())
                                                                       .toList()));
     }
 

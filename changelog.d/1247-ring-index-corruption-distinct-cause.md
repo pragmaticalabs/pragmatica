@@ -10,3 +10,8 @@
   `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/OffHeapRingBufferIndexCorruptionTest.java — a real index entry is corrupted; unit level]`
 - The two comments claiming "the single justified try/catch" in a file that has four now name all four
   marked sites.
+- **The cause now reaches the caller on the segment-fallback read path too.** After a `CursorExpired` fallback to
+  sealed segments, `PartitionedStreamAccess` read the ring tail with `.or(List.of())`, so a corrupted ring
+  silently truncated the read to the sealed events. `RingIndexCorrupted` now propagates. Other buffer failures
+  keep the short-read degrade that path always had.
+  `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/SegmentFallbackTest.java — CorruptedRingAfterFallback]`
