@@ -9,6 +9,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -762,6 +765,132 @@ class StreamConsumerManagerTest {
                       .containsExactlyInAnyOrder(0, 1, 2, 3);
             assertThat(runtime.subscribeCalls).describedAs("the actual symptom: a group-only filter detaches `invoices` mid-pass and then transparently re-subscribes it since it is still desired — a spurious unsubscribe+resubscribe a real runtime would feel as a needless cursor flush and resume. A stream-scoped filter never touches `invoices`: zero new subscribe calls since before the collision")
                       .isEqualTo(subscribeCallsBeforeCollision);
+        }
+    }
+
+    /// #1267: one declaration snapshot per reconcile pass, and passes that never overlap.
+    ///
+    /// The timer tick and the registration-change listener both call `reconcile()`, on different
+    /// threads. Unserialized, a pass that read the declarations BEFORE a registration landed can finish
+    /// AFTER the listener's pass attached that registration's partitions, and its `dropStale` then
+    /// detaches what the newer pass just attached — leaving a desired consumer detached until the next
+    /// tick. The latch parks the older pass inside that window; it widens the window, it does not create
+    /// it.
+    @Nested
+    class ReconcilePasses {
+        private static final long PARK_TIMEOUT_SECONDS = 10;
+
+        @Test
+        void reconcile_readsTopicDeclarationsExactlyOnce_perPass() {
+            var topicGroups = new CountingTopicGroups();
+
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(topicGroups);
+
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(topicGroups.calls.get()).describedAs("one declaration snapshot per pass — not one more per desired subscription")
+                                               .isEqualTo(1);
+        }
+
+        @Test
+        void reconcile_keepsAttachedPartitions_whenAnOlderConcurrentPassFinishesLast() throws InterruptedException {
+            var topicGroups = new ParkingTopicGroups();
+
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(topicGroups);
+            var timerPass = Thread.ofPlatform().start(manager::reconcile);
+
+            assertThat(topicGroups.parked.await(PARK_TIMEOUT_SECONDS, TimeUnit.SECONDS)).describedAs("the timer pass reached the declaration read with the OLD registry snapshot")
+                                                                                   .isTrue();
+            var listenerPass = Thread.ofPlatform().start(ReconcilePasses.this::declareOnListenerThread);
+
+            awaitFinishedOrBlocked(listenerPass);
+            topicGroups.release.countDown();
+            timerPass.join(PARK_TIMEOUT_SECONDS * 1_000);
+            listenerPass.join(PARK_TIMEOUT_SECONDS * 1_000);
+
+            assertThat(timerPass.isAlive() || listenerPass.isAlive()).describedAs("both passes completed").isFalse();
+            assertThat(runtime.subscribedPartitions()).describedAs("the newer registration's partitions stay attached once both passes are done")
+                                                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(manager.activeSubscriptionCount()).isEqualTo(4);
+        }
+
+        private void declareOnListenerThread() {
+            declareStringConsumer();
+        }
+
+        /// The listener pass either ran to completion (unserialized) or is waiting for the parked pass
+        /// (serialized); only then is the parked pass released, so the older pass finishes LAST.
+        private static void awaitFinishedOrBlocked(Thread thread) throws InterruptedException {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(PARK_TIMEOUT_SECONDS);
+
+            while (thread.isAlive() && !isWaiting(thread) && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+        }
+
+        private static boolean isWaiting(Thread thread) {
+            return switch (thread.getState()) {
+                case BLOCKED, WAITING, TIMED_WAITING -> true;
+                default -> false;
+            };
+        }
+
+        private StreamConsumerManager managerWithTopicGroups(TopicGroupDeclarationSource topicGroups) {
+            return StreamConsumerManager.streamConsumerManager(registry,
+                                                               runtime,
+                                                               invoker,
+                                                               invocationHandler,
+                                                               FrameworkCodecs.frameworkCodecs(),
+                                                               ownership,
+                                                               placement,
+                                                               SELF,
+                                                               topicGroups);
+        }
+    }
+
+    /// Counts declaration reads; synthesizes no topic declarations.
+    private static final class CountingTopicGroups implements TopicGroupDeclarationSource {
+        private final AtomicInteger calls = new AtomicInteger();
+
+        @Override
+        public List<StreamConsumerRegistry.ConsumerDeclaration> declarations() {
+            calls.incrementAndGet();
+
+            return List.of();
+        }
+    }
+
+    /// Parks the FIRST declaration read until released. `allDeclarations()` reads the registry before
+    /// the topic source, so the parked pass holds the registry snapshot taken before the park.
+    private static final class ParkingTopicGroups implements TopicGroupDeclarationSource {
+        private static final long PARK_SECONDS = 10;
+
+        private final CountDownLatch parked = new CountDownLatch(1);
+        private final CountDownLatch release = new CountDownLatch(1);
+        private final AtomicInteger calls = new AtomicInteger();
+
+        @Override
+        public List<StreamConsumerRegistry.ConsumerDeclaration> declarations() {
+            if (calls.getAndIncrement() == 0) {
+                parked.countDown();
+                awaitRelease();
+            }
+
+            return List.of();
+        }
+
+        private void awaitRelease() {
+            try {
+                release.await(PARK_SECONDS, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
