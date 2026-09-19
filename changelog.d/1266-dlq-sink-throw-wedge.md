@@ -7,9 +7,11 @@
   and wedged it again. A sink whose append never settled held the partition forever too, because there
   was no timeout.
 - The runtime now lifts and bounds every dead-letter append. A synchronous throw, or an append still
-  unsettled after 30s, becomes a failure and takes the existing retry-with-backoff path. A timed-out
-  append can still land later, so the DLQ is at-least-once per event; entries carry the event's
-  `messageId` for deduplication. [mechanism: `ConsumerRuntimeState.appendDeadLetter`; pinned by
+  unsettled after 30s, becomes a failure and takes the existing retry-with-backoff path. The DLQ is
+  **at-least-once** per event: a timed-out append can still land later, and the retry then writes a
+  duplicate entry. Nothing deduplicates today. `DeadLetterEntry` carries no `messageId`, and
+  `DlqEnvelope.messageId` is only a candidate key, for topic streams only. A handler that returns `null`
+  instead of a promise is a delivery failure too. [mechanism: `ConsumerRuntimeState.appendDeadLetter`; pinned by
   `StreamConsumerRuntimeTest$SynchronousThrows.deadLetterHandlerSyncThrow_doesNotWedge` and
   `...deadLetterAppendNeverSettles_doesNotHoldForever_andTheHoldIsVisible`]
 - The same class for the consumer handler (a synchronous throw from the handler) is fixed in #1238's review
@@ -27,5 +29,10 @@
   therefore distinguishable from a quiet one. Operator recovery: none needed for the wedge itself. A
   partition left wedged by an earlier build resumes on restart onto this build, where the poison event
   is quarantined instead of throwing.
+- `DlqStreamSink.read` decodes each DLQ record under a lift. A record that does not decode, such as
+  one in the pre-`rawEvent` wire shape, is logged as a typed `UndecodableDeadLetter` and skipped instead
+  of throwing out of `read`. The delivery holds are released on every outcome, cancellation included.
+  [mechanism: pinned by `DlqStreamSinkTest.read_skipsAnOldShapeRecord_insteadOfThrowing` and
+  `StreamConsumerRuntimeTest$SynchronousThrows.cancel_releasesBothDeliveryHolds`]
 - [unverified: how envelopes become undecodable in practice was not established — codec skew across a
   rolling upgrade and segment or WAL corruption are the plausible sources]

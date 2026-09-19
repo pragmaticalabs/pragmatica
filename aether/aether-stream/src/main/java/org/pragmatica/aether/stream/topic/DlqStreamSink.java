@@ -9,10 +9,14 @@ import java.util.function.Function;
 
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.DeadLetterHandler;
+import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn2;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 
@@ -121,6 +125,12 @@ public record DlqStreamSink(Deserializer deserializer,
                                true);
     }
 
+    /// #1266 review: each DLQ record is decoded under a lift. A record that does not decode — an entry
+    /// in the pre-`rawEvent` wire shape, or a corrupt one — is reported as a typed
+    /// [UndecodableDeadLetter] and SKIPPED, never thrown out of `read`, so one bad record cannot make the
+    /// whole DLQ unreadable. `read` has no per-entry failure channel (its contract is a `List`), so the
+    /// typed failure surfaces in the log. [design intent — unverified: skip-and-log is a judgment call;
+    /// an interface change to `Result<List<...>>` was not made.]
     @Override
     public List<DeadLetterEntry> read(String streamName, int maxCount) {
         return manager.readLocal(DurableTopicNames.dlqStreamForTopicStream(streamName),
@@ -128,10 +138,26 @@ public record DlqStreamSink(Deserializer deserializer,
                                  0,
                                  maxCount)
                       .map(events -> events.stream()
-                                           .map(event -> toEntry(streamName,
-                                                                 event.data()))
+                                           .flatMap(event -> decodedEntry(streamName, event).stream())
                                            .toList())
                       .or(List.of());
+    }
+
+    private Option<DeadLetterEntry> decodedEntry(String streamName, OffHeapRingBuffer.RawEvent event) {
+        return Result.lift(() -> toEntry(streamName, event.data()))
+                     .mapError(cause -> UndecodableDeadLetter.FACTORY.apply(event.offset(), cause.message()))
+                     .onFailure(DlqStreamSink::logSkipped)
+                     .option();
+    }
+
+    private static void logSkipped(Cause cause) {
+        LOG.log(System.Logger.Level.WARNING, "Skipping undecodable DLQ record: {0}", cause.message());
+    }
+
+    /// A DLQ-stream record that does not decode as a [DlqEnvelope] (#1266 review).
+    public record UndecodableDeadLetter(long dlqOffset, String detail, String message) implements Cause {
+        static final Fn2<UndecodableDeadLetter, Long, String> FACTORY =
+            Causes.forTwoValues("DLQ record at offset %s does not decode as a DlqEnvelope: %s", UndecodableDeadLetter::new);
     }
 
     private DeadLetterEntry toEntry(String streamName, byte[] rawDlqEvent) {
