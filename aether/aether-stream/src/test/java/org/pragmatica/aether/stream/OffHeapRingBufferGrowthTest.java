@@ -230,8 +230,9 @@ class OffHeapRingBufferGrowthTest {
     /// would self-overlap the ring or index a non-existent segment. The event is dropped and the append
     /// reports the distinct `EVENT_DROPPED` outcome — never success at the current head (#1233: this test
     /// previously asserted drop-as-success, which let `publishLocal` WAL-write and replicate the dropped
-    /// payload under the previous head's offset). Every previously-stored event reads back byte-identical. Exercised at dataPos == 0 AND at dataPos ~= 200 KiB (after a smaller
-    /// pre-append), the two layouts that trigger the corruption / IndexOutOfBounds in the unfixed code.
+    /// payload under the previous head's offset). Every previously-stored event reads back byte-identical.
+    /// Exercised at dataPos == 0 AND at dataPos ~= 200 KiB (after a smaller pre-append), the two layouts
+    /// that trigger the corruption / IndexOutOfBounds in the unfixed code.
     @Test
     void frozenRing_eventLargerThanAllocated_dropOldest_returnsEventDropped_withoutStoringOrCorrupting() {
         var capacity = 1_000L;
@@ -620,9 +621,6 @@ class OffHeapRingBufferGrowthTest {
             return offset;
         }
 
-        /// Frozen-ring (bug #7) variant: an event larger than the FROZEN allocated bytes can never be
-        /// stored, so it is DROPPED (no store, no offset advance) and the current head is returned —
-        /// exactly what the buffer does under DROP_OLDEST. Otherwise behaves like `append`.
         private void dropOldest() {
             if (live.isEmpty()) {
                 return;
