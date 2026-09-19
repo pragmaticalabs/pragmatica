@@ -238,15 +238,14 @@ public final class SegmentReader {
                                                         int len,
                                                         int remaining) {
         log.error("Segment {} has a corrupt record at byte position {} (offset field {}): declared payload length {}"
-                  + " with {} bytes remaining; failing the read",
+                 + " with {} bytes remaining; failing the read",
                   segment,
                   position,
                   offset,
                   len,
                   remaining);
 
-        return SegmentError.CorruptRecord.FACTORY.apply(segment, position, len)
-                                                 .result();
+        return SegmentError.CorruptRecord.FACTORY.apply(segment, position, len).result();
     }
 
     private static RawEvent readPayload(ByteBuffer buffer, long offset, long timestamp, int len) {
