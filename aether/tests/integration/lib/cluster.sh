@@ -4398,6 +4398,25 @@ stream_list() {
 # Resolving against the LIVE catalog rather than hard-coding the triple keeps this from
 # rotting the same way: if the coordinate changes, the lookup follows it.
 # Prints "ns/stream/version" on stdout; returns 1 if the name is not in the catalog.
+# Create a stream at a CATALOG address (#1224).
+#
+# The flat `POST /api/v1/streams` with a body-carried name is refused as of #1224: it wrote only
+# the engine's ring-buffer store and never the registry, so everything it created was invisible to
+# `GET /api/v1/streams` — which is what `stream_coordinate` below reads. Every publish therefore
+# failed to resolve a coordinate and reported zero acks, across four suites, in both runtimes.
+#
+# Operator-created streams are addressed like every other catalog verb since the 2026-09-02
+# migration and #1044: namespace:stream:version, stated explicitly. `system` is rejected by the
+# server, so integration fixtures use STREAM_TEST_NAMESPACE.
+STREAM_TEST_NAMESPACE="${STREAM_TEST_NAMESPACE:-integration}"
+STREAM_TEST_VERSION="${STREAM_TEST_VERSION:-1.0.0}"
+
+stream_create() {
+    local name="$1" partitions="${2:-1}"
+    api_post "/api/v1/streams/${STREAM_TEST_NAMESPACE}/${name}/${STREAM_TEST_VERSION}" \
+             "{\"partitions\":${partitions}}"
+}
+
 stream_coordinate() {
     local name="$1" body coord
     body=$(api_get "/api/v1/streams" 2>/dev/null) || return 1

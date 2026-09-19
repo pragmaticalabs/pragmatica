@@ -15,18 +15,23 @@ test_cluster_ready() {
 }
 
 test_stream_exists_or_created() {
-    local streams
-    streams=$(stream_list)
-    # Match exact JSON field "name":"<STREAM_NAME>" (with optional whitespace) so
-    # that a different stream whose name is a prefix of $STREAM_NAME (or contains
-    # $STREAM_NAME inside another field, e.g. a description) does NOT cause a
-    # false positive. Allow optional whitespace between the colon and the value.
-    if printf '%s' "$streams" | grep -qE "\"name\"[[:space:]]*:[[:space:]]*\"${STREAM_NAME}\""; then
-        log_pass "Stream ${STREAM_NAME} already exists"
-    else
-        log_info "Stream ${STREAM_NAME} not found — publishing will auto-create"
-        log_pass "Stream list endpoint responds"
-    fi
+    # #1224. This function previously could not fail, for two independent reasons:
+    #
+    #   1. It grepped the catalog listing for `"name":"<stream>"`. The listing emits
+    #      `"stream":"..."`, never `"name"`, so the match could never succeed and the else
+    #      branch was taken on every run, in every environment, since the 2026-09-02 migration.
+    #   2. BOTH branches called log_pass. A found stream passed; a missing stream passed as
+    #      "Stream list endpoint responds". No outcome reddened it.
+    #
+    # Its else branch also asserted something untrue: "publishing will auto-create". Publishing
+    # resolves a name to a catalog coordinate FIRST (stream_coordinate), so a publish cannot
+    # create what the lookup has to find. Every publish then reported zero acks and the real
+    # failure surfaced four assertions later as `expected '25', got '0'`.
+    #
+    # Create it explicitly and assert against the CATALOG, which is the store publish reads.
+    stream_create "$STREAM_NAME" 1 > /dev/null 2>&1 || true   # idempotent; a repeat is not a failure
+    assert_ne "$(stream_coordinate "$STREAM_NAME" 2>/dev/null)" "" \
+              "Stream ${STREAM_NAME} resolvable in catalog before publishing"
 }
 
 # Bounded transient-only retry for a single publish (#460 gap 3). Under parallel
