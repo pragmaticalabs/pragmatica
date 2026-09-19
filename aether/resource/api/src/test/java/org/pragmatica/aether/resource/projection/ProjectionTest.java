@@ -387,13 +387,27 @@ class ProjectionTest {
 
             first.await()
                  .onSuccess(_ -> fail("a zero lease must be refused, not claimed"))
-                 .onFailure(cause -> assertThat(cause.message()).contains("lease"));
+                 .onFailure(cause -> assertThat(cause).isInstanceOf(Projection.ProjectionError.NonPositiveLease.class));
             second.await()
                   .onSuccess(_ -> fail("a zero lease must be refused, not claimed"))
-                  .onFailure(cause -> assertThat(cause.message()).contains("lease"));
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(Projection.ProjectionError.NonPositiveLease.class));
 
             assertThat(store.data).describedAs("a refused lease must not let either racing attempt fold")
                                   .doesNotContainKey("a");
+        }
+
+        /// A negative lease is refused the same way — the check is `> 0`, not `!= 0`.
+        @Test
+        void negativeLease_isRefused() {
+            var store = new InMemoryStore();
+
+            countingProjection(store).withClaims(new InMemoryClaims(), timeSpan(-1).seconds())
+                                     .onEvent(new OrderSeen("a"), FIRST)
+                                     .await()
+                                     .onSuccess(_ -> fail("a negative lease must be refused, not claimed"))
+                                     .onFailure(cause -> assertThat(cause).isInstanceOf(Projection.ProjectionError.NonPositiveLease.class));
+
+            assertThat(store.data).doesNotContainKey("a");
         }
 
         /// The contract itself, below the facade: a token that no longer matches the stored claim is

@@ -120,6 +120,17 @@ public record Projection<S, T>(String name,
     /// inert instead of dedup'ing the whole replay into a no-op.
     public record ClaimKey(String projectionName, long generation, String messageId) {}
 
+    /// Failures of the §8 guard a caller can act on.
+    public sealed interface ProjectionError extends Cause {
+        /// The configured claim lease is zero or negative. A claim that expires the instant it is taken
+        /// suppresses nothing, so the guarded apply is refused rather than run unguarded.
+        record NonPositiveLease(TimeSpan lease, String message) implements ProjectionError {
+            static final Fn1<NonPositiveLease, TimeSpan> FACTORY = Causes.forOneValue("Projection: claim lease %s is not positive — a claim that expires the instant it is"
+                                                                                     + " taken suppresses nothing, so the guarded apply is refused",
+                                                                                      NonPositiveLease::new);
+        }
+    }
+
     /// Apply one durably-delivered event under the §8 claim — see the class doc for the guarantee,
     /// stated per operation.
     ///
@@ -129,13 +140,24 @@ public record Projection<S, T>(String name,
     /// key to prevent. Local invalidation would not be sound either: the rebuild may be performed on
     /// another node, so this instance never learns of it. The cost is one generation read per event.
     public Promise<Unit> onEvent(T event, MessageContext context) {
-        return claims.fold(CLAIMS_UNWIRED::promise,
-                           guard -> store.generation()
-                                         .flatMap(generation -> applyOnce(event,
-                                                                          guard,
-                                                                          new ClaimKey(name,
-                                                                                       generation,
-                                                                                       context.messageId()))));
+        return claims.fold(CLAIMS_UNWIRED::promise, guard -> applyGuarded(event, context, guard));
+    }
+
+    /// A non-positive lease is refused BEFORE claiming: such a claim expires the instant it is taken,
+    /// so racing attempts would each find the other's claim expired and all fold. Checked per event,
+    /// like the unwired-claims refusal, so misconfiguration surfaces on the first guarded event.
+    private Promise<Unit> applyGuarded(T event, MessageContext context, ClaimGuard guard) {
+        return Result.success(guard)
+                     .filter(invalid -> ProjectionError.NonPositiveLease.FACTORY.apply(invalid.lease()),
+                             valid -> valid.lease()
+                                           .nanos() > 0)
+                     .async()
+                     .flatMap(_ -> store.generation())
+                     .flatMap(generation -> applyOnce(event,
+                                                      guard,
+                                                      new ClaimKey(name,
+                                                                   generation,
+                                                                   context.messageId())));
     }
 
     private Promise<Unit> applyOnce(T event, ClaimGuard guard, ClaimKey claimKey) {

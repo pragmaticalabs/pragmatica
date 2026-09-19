@@ -64,8 +64,10 @@ public interface ProjectionClaims {
 
     /// In ONE indivisible step: absent or lease-expired PENDING → write PENDING with a fresh token,
     /// expiring after `lease`, answer [Claimed]; DONE → [Held#DONE]; live PENDING →
-    /// [Held#IN_PROGRESS]. Expiry is judged against ONE clock every instance agrees on (the store's),
-    /// never a caller's own wall clock — otherwise clock skew decides who may reclaim.
+    /// [Held#IN_PROGRESS]. `lease` is always positive: [Projection] refuses a non-positive lease
+    /// before claiming ([Projection.ProjectionError.NonPositiveLease]). Expiry is judged against ONE
+    /// clock every instance agrees on — the STORE's, applied when the step executes — never a caller's
+    /// own wall clock, otherwise clock skew decides who may reclaim.
     Promise<ClaimOutcome> claimIfAbsent(ClaimKey key, TimeSpan lease);
     /// Mark the key DONE after a successful fold, only while the stored claim is PENDING with `token`;
     /// otherwise change nothing and answer [Settlement#STALE]. Named `finalizeClaim`, not `finalize`,
