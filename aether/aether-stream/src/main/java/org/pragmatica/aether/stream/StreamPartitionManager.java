@@ -38,6 +38,7 @@ import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
+import org.pragmatica.aether.stream.topic.DurableTopicNames;
 import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -119,6 +120,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// off-heap budget reject (always materialize, emitting a named {@link Exhaustion.Phase#SYSTEM_OVERSUBSCRIBE}
     /// WARN when over budget) and drain FIRST in the reshuffle materialization queue.
     private static final String SYSTEM_STREAM_PREFIX = "system:";
+    /// The `entity:<keyspace>` stream-name prefix of entity keyspace logs. Mirrors
+    /// `org.pragmatica.aether.dht.EntityPartitionArc.ARC_PREFIX` (aether-dht, which this module does not
+    /// depend on); agreement is pinned end-to-end through the real entity substrate by
+    /// `StreamEntityLogSubstrateTest.append_failsWithEventDropped_whenFrozenRingCannotFitRecord_evenAtReplicationFactorOneWithoutWal`.
+    private static final String ENTITY_STREAM_PREFIX = "entity:";
 
     /// Default exhaustion sink — no-op. Wave 3 (`AetherNode`) replaces it with a binding to the
     /// cluster-event aggregator. See spec §4.5c.
@@ -254,6 +260,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final AtomicLong reconcileTick = new AtomicLong(0);
     /// Count of partition rings released on role loss since boot (#265 increment 5 observability).
     private final AtomicLong releasedSinceBoot = new AtomicLong(0);
+    /// Best-effort-stream events dropped by a frozen ring since boot (#1233 observability).
+    private final AtomicLong droppedEventsSinceBoot = new AtomicLong(0);
+    /// Owner publishes refused because a frozen ring dropped the event on a durable stream (#1233).
+    private final AtomicLong refusedPublishDropsSinceBoot = new AtomicLong(0);
+    /// Replicated appends refused because this replica's frozen ring dropped the event (#1233).
+    private final AtomicLong refusedReplicaDropsSinceBoot = new AtomicLong(0);
 
     private StreamPartitionManager(long maxTotalBytes,
                                    EvictionListener evictionListener,
@@ -1173,7 +1185,81 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                         offset,
                                                                                         payload,
                                                                                         timestamp,
-                                                                                        ownerEpoch));
+                                                                                        ownerEpoch))
+                                 .fold(cause -> handleDrop(cause, streamName, partition),
+                                       Result::success);
+    }
+
+    /// Frozen-ring drop handling (#1233). The ring reports [StreamError.General#EVENT_DROPPED] BEFORE
+    /// `durablyLog` / `replicateEvent`, so a dropped event is never WAL-written or replicated. The drop
+    /// FAILS the publish for any stream with durability semantics: `minSyncReplicas >= 2`, a partition
+    /// WAL, an entity keyspace log (`entity:`), or a durable-topic / DLQ stream (`topic:`) — the last two by
+    /// name, so an RF=1 entity keyspace without a WAL can never ack a lost write. The refusal is counted in
+    /// [#refusedPublishDropsSinceBoot] and logged. `StreamConfig` carries no explicit best-effort flag, so
+    /// only the remaining app streams are best-effort: the drop is absorbed as FER (degrade forward — the
+    /// event is lost, the stream keeps accepting), made observable by [#droppedEventsSinceBoot] and a WARN,
+    /// and acked at the unchanged ring head, exactly the offset such a stream reported before this change.
+    /// Every other failure propagates unchanged.
+    private Result<Long> handleDrop(Cause cause, String streamName, int partition) {
+        if (cause != StreamError.General.EVENT_DROPPED) {
+            return cause.result();
+        }
+
+        return isBestEffort(streamName, partition)
+               ? recordBestEffortDrop(streamName, partition)
+               : refuseDurableDrop(cause, streamName, partition);
+    }
+
+    private boolean isBestEffort(String streamName, int partition) {
+        return ! isDurableByName(streamName)
+               && minSyncReplicasFor(streamName) < 2
+               && walFor(streamName, partition).isEmpty();
+    }
+
+    private static boolean isDurableByName(String streamName) {
+        return streamName.startsWith(ENTITY_STREAM_PREFIX) || DurableTopicNames.isTopicStream(streamName);
+    }
+
+    private Result<Long> recordBestEffortDrop(String streamName, int partition) {
+        var dropped = droppedEventsSinceBoot.incrementAndGet();
+
+        log.warn("Dropped event on best-effort stream '{}' partition {}: larger than the frozen ring's allocation ({} dropped since boot)",
+                 streamName,
+                 partition,
+                 dropped);
+
+        return resolvePartitionBuffer(streamName, partition).map(OffHeapRingBuffer::headOffset);
+    }
+
+    private Result<Long> refuseDurableDrop(Cause cause, String streamName, int partition) {
+        var refused = refusedPublishDropsSinceBoot.incrementAndGet();
+
+        log.warn("Refused publish on durable stream '{}' partition {}: event larger than the frozen ring's allocation; the ring cannot grow until it is rebuilt with pool budget ({} refused since boot)",
+                 streamName,
+                 partition,
+                 refused);
+
+        return cause.result();
+    }
+
+    /// Events dropped since boot on best-effort streams because a frozen ring could not fit them (#1233).
+    /// Drops on streams with durability semantics are not counted here — they fail the publish instead.
+    public long droppedEventsSinceBoot() {
+        return droppedEventsSinceBoot.get();
+    }
+
+    /// Owner publishes on durable streams refused since boot because a frozen ring could not fit the event
+    /// (#1233) — the failing-class counterpart of [#droppedEventsSinceBoot].
+    public long refusedPublishDropsSinceBoot() {
+        return refusedPublishDropsSinceBoot.get();
+    }
+
+    /// Replicated appends refused since boot because this replica's frozen ring could not fit the event
+    /// (#1233). Each one stalls the partition on this replica: the receive handler stops the batch there,
+    /// backfill hits the same refusal and keeps the replica SYNCING, and an owner whose min-sync barrier
+    /// needs this replica times out its publishes — until the ring is rebuilt with pool budget.
+    public long refusedReplicaDropsSinceBoot() {
+        return refusedReplicaDropsSinceBoot.get();
     }
 
     /// Gate the publish ack on WAL fsync (streaming-persistence W3). With no WAL configured for
@@ -1236,7 +1322,24 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                  payload,
                                                                                  timestamp,
                                                                                  ownerEpoch))
-                                 .onSuccess(offset -> walReplicated(streamName, partition, offset, payload, timestamp));
+                                 .onSuccess(offset -> walReplicated(streamName, partition, offset, payload, timestamp))
+                                 .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
+    }
+
+    /// #1233: a replicated event this replica's frozen ring cannot store fails the append (never applied,
+    /// never WAL-written, never acked) — counted and logged here so the resulting stall is observable.
+    @Contract
+    private void countRefusedReplicaDrop(Cause cause, String streamName, int partition) {
+        if (cause != StreamError.General.EVENT_DROPPED) {
+            return;
+        }
+
+        var refused = refusedReplicaDropsSinceBoot.incrementAndGet();
+
+        log.warn("Refused replicated append on '{}' partition {}: event larger than this replica's frozen ring; the partition stays behind on this replica until the ring is rebuilt with pool budget ({} refused since boot)",
+                 streamName,
+                 partition,
+                 refused);
     }
 
     /// #634 item 1: a replicated/backfilled record enters the SAME per-partition WAL the owner's publish
