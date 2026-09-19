@@ -1176,7 +1176,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                         payload,
                                                                                         timestamp,
                                                                                         ownerEpoch))
-                                 .fold(cause -> absorbBestEffortDrop(cause, streamName, partition), Result::success);
+                                 .fold(cause -> absorbBestEffortDrop(cause, streamName, partition),
+                                       Result::success);
     }
 
     /// Frozen-ring drop handling (#1233). The ring reports [StreamError.General#EVENT_DROPPED] BEFORE
