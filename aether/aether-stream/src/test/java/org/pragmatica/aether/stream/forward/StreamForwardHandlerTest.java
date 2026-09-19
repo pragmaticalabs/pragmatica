@@ -192,14 +192,26 @@ class StreamForwardHandlerTest {
         }
 
         @Test
-        void catchupReadForward_servesTheAppendedEvent() {
-            handler.onReadForward(readForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 0L, 10, false, true));
+        void catchupReadForward_fromARegisteredReplica_servesTheAppendedEvent() {
+            handler.onReadForward(readForward(PEER, CORRELATION_ID, STREAM, PARTITION, 0L, 10, false, true));
 
             var response = (ReadForwardResponse) sentMessages.getFirst().message();
 
             assertThat(response.success()).isTrue();
             assertThat(response.events()).hasSize(1);
             assertThat(response.events().getFirst().data()).isEqualTo(PAYLOAD);
+        }
+
+        /// CTO ruling (#1235 Fork A): the flag alone must not let an arbitrary reader opt out of
+        /// visibility. A node outside the partition's replica set gets a consumer read.
+        @Test
+        void catchupReadForward_fromANonReplica_isServedOnlyTheVisiblePosition() {
+            handler.onReadForward(readForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 0L, 10, false, true));
+
+            var response = (ReadForwardResponse) sentMessages.getFirst().message();
+
+            assertThat(response.success()).isTrue();
+            assertThat(response.events()).isEmpty();
         }
     }
 

@@ -322,7 +322,15 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// standalone rings and by WAL recovery, whose records are durable by construction. An owner or
     /// replica append that must first become durable goes through [#appendOrdered].
     public Result<Long> append(byte[] payload, long timestamp) {
-        return appendLocked(payload, timestamp).onSuccess(this::publishAppended);
+        return notifyingAfter(appendVisible(payload, timestamp));
+    }
+
+    /// The visible advance is queued INSIDE the section, so concurrent plain appends are notified once
+    /// each, in offset order (#1258 R2-1); the notifier starts only after the section is released.
+    private Result<Long> appendVisible(byte[] payload, long timestamp) {
+        synchronized (appendLock) {
+            return appendLocked(payload, timestamp).onSuccess(this::queueAppendedVisible);
+        }
     }
 
     private Result<Long> appendLocked(byte[] payload, long timestamp) {
@@ -433,7 +441,21 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     /// Batch sibling of [#append]: visible at once when it succeeds.
     public Result<Long> appendBatch(List<byte[]> payloads, long[] timestamps) {
-        return appendBatchLocked(payloads, timestamps).onSuccess(this::publishAppended);
+        return notifyingAfter(appendBatchVisible(payloads, timestamps));
+    }
+
+    private Result<Long> appendBatchVisible(List<byte[]> payloads, long[] timestamps) {
+        synchronized (appendLock) {
+            return appendBatchLocked(payloads, timestamps).onSuccess(this::queueAppendedVisible);
+        }
+    }
+
+    /// `result` is evaluated by the caller, so `appendLock` is already released here. The appender only
+    /// hands its queued offsets to the notifier; it never runs a listener.
+    private <T> Result<T> notifyingAfter(Result<T> result) {
+        startNotifierIfIdle();
+
+        return result;
     }
 
     private Result<Long> appendBatchLocked(List<byte[]> payloads, long[] timestamps) {
@@ -671,26 +693,23 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     /// Make every offset up to `offset` visible and, when that moves the visible position, queue one
-    /// notification for the serial notifier. Monotonic: a lower value is ignored. The caller never runs a
-    /// listener — it only hands the offset over, so this is safe from the publisher, the WAL commit and
-    /// the replica-ack threads.
+    /// notification — carrying the new visible offset — for the serial notifier. Monotonic: a lower value
+    /// is ignored, so advances that arrive out of order coalesce into the highest. The caller never runs a
+    /// listener, so this is safe from the publisher, the WAL-commit and the replica-ack threads.
     @Contract
     public void advanceVisible(long offset) {
-        if (queueVisibleAdvance(offset)) {
-            startNotifierIfIdle();
-        }
+        queueVisibleAdvance(offset);
+        startNotifierIfIdle();
     }
 
-    private boolean queueVisibleAdvance(long offset) {
+    @Contract
+    private void queueVisibleAdvance(long offset) {
         synchronized (visibleLock) {
-            return visibleOffset.get() < offset && publishVisible(offset);
+            if (visibleOffset.get() < offset) {
+                visibleOffset.set(offset);
+                pendingAppendNotifications.add(offset);
+            }
         }
-    }
-
-    private boolean publishVisible(long offset) {
-        visibleOffset.set(offset);
-
-        return pendingAppendNotifications.add(offset);
     }
 
     public long durableOffset() {
@@ -1028,10 +1047,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         notifyAndEvict(count);
     }
 
+    /// A plain append has no durability gate: durable and visible at once. Called inside the section.
     @Contract
-    private void publishAppended(long offset) {
+    private void queueAppendedVisible(long offset) {
         markDurable(offset);
-        advanceVisible(offset);
+        queueVisibleAdvance(offset);
     }
 
     private void notifyAppendListeners(long offset) {

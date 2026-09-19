@@ -37,6 +37,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
+import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.wal.PartitionWal;
@@ -45,6 +46,7 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
@@ -1538,6 +1540,17 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                               long fromOffset,
                                                               int maxEvents) {
         return resolvePartitionBuffer(streamName, partition).flatMap(buffer -> buffer.read(fromOffset, maxEvents));
+    }
+
+    /// Whether `nodeId` is a registered replica of `(streamName, partition)` in the SAME registry the
+    /// replication manager sends to and counts acks from (#1235). Gates the appended-head catch-up read:
+    /// a node outside the replica set gets a consumer read instead.
+    public boolean isRegisteredReplica(String streamName, int partition, NodeId nodeId) {
+        return replicationManager.registry()
+                                 .replicasFor(streamName, partition)
+                                 .stream()
+                                 .map(ReplicaDescriptor::nodeId)
+                                 .anyMatch(nodeId::equals);
     }
 
     /// Replication read of the local ring, bounded by the APPENDED head (#1235): serves replica catch-up

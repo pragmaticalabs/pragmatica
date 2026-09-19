@@ -696,6 +696,15 @@ class OffHeapRingBufferTest {
     /// listeners follow VISIBLE; [OffHeapRingBuffer#readAppended] follows the head.
     @Nested
     class Visibility {
+        /// Listeners run on the ring's serial notifier (#1258 R2-1), so delivery is awaited.
+        private static List<Long> awaitAnnounced(List<Long> announced, int expected) {
+            var deadline = System.nanoTime() + 5_000_000_000L;
+
+            while (announced.size() < expected && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            return List.copyOf(announced);
+        }
 
         @Test
         void appendOrdered_isNeitherReadableNorAnnounced_untilAdvanceVisible() {
@@ -712,7 +721,7 @@ class OffHeapRingBufferTest {
 
             assertThat(buffer.read(0L, 10).or(List.of())).hasSize(1);
             assertThat(buffer.readSlice(0L).isSuccess()).isTrue();
-            assertThat(announced).containsExactly(0L);
+            assertThat(awaitAnnounced(announced, 1)).containsExactly(0L);
         }
 
         @Test
@@ -737,7 +746,7 @@ class OffHeapRingBufferTest {
             buffer.advanceVisible(1L);
 
             assertThat(buffer.visibleOffset()).isEqualTo(1L);
-            assertThat(announced).containsExactly(1L);
+            assertThat(awaitAnnounced(announced, 1)).containsExactly(1L);
         }
 
         @Test
@@ -759,7 +768,7 @@ class OffHeapRingBufferTest {
 
             assertThat(buffer.durableOffset()).isEqualTo(0L);
             assertThat(buffer.visibleOffset()).isEqualTo(0L);
-            assertThat(announced).containsExactly(0L);
+            assertThat(awaitAnnounced(announced, 1)).containsExactly(0L);
         }
 
         @Test

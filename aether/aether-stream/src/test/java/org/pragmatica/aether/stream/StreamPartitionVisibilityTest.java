@@ -77,6 +77,8 @@ class StreamPartitionVisibilityTest {
             var pending = manager.awaitReplication(STREAM, PARTITION, offset, 1);
 
             assertThat(pending.isResolved()).as("the publish is waiting for the peer").isFalse();
+            assertThat(visibleOffset(manager)).as("nothing became visible, so nothing was queued for the notifier")
+                                              .isEqualTo(-1L);
             assertThat(notifications).as("no push notification for an unacknowledged event").hasValue(0);
             assertThat(readAll(manager)).as("read(0) must not expose the unacknowledged event").isEmpty();
 
@@ -84,7 +86,8 @@ class StreamPartitionVisibilityTest {
 
             assertThat(pending.await().isSuccess()).as("the peer ack resolves the publish").isTrue();
             assertThat(readAll(manager)).as("acknowledged ⇒ visible").containsExactly("e0");
-            assertThat(notifications).as("the listener fires once, when the event becomes visible").hasValue(1);
+            assertThat(awaitNotifications(notifications, 1)).as("the listener fires once, when the event becomes visible")
+                                                         .isEqualTo(1);
         }
 
         /// Read-your-writes for an acknowledged publish: whatever continues the publish promise already
@@ -146,7 +149,7 @@ class StreamPartitionVisibilityTest {
             manager.appendRecovered(STREAM, PARTITION, "r0".getBytes(UTF_8), 1L);
 
             assertThat(readAll(manager)).containsExactly("r0");
-            assertThat(notifications).hasValue(1);
+            assertThat(awaitNotifications(notifications, 1)).isEqualTo(1);
         }
 
         @Test
@@ -174,6 +177,7 @@ class StreamPartitionVisibilityTest {
             assertThat(manager.syncReplicated(STREAM, PARTITION).await().isFailure()).as("the chain is poisoned")
                                                                                    .isTrue();
             assertThat(readAll(manager)).isEmpty();
+            assertThat(visibleOffset(manager)).isEqualTo(-1L);
             assertThat(notifications).hasValue(0);
         }
     }
@@ -196,6 +200,7 @@ class StreamPartitionVisibilityTest {
             publishExpectingFailure(manager, "after-fail-stop");
 
             assertThat(readAll(manager)).as("an event whose WAL frame never landed is never readable").isEmpty();
+            assertThat(visibleOffset(manager)).as("nothing queued for the notifier").isEqualTo(-1L);
             assertThat(notifications).as("and never announced").hasValue(0);
         }
 
@@ -210,6 +215,7 @@ class StreamPartitionVisibilityTest {
             publishExpectingFailure(manager, "lost");
 
             assertThat(readAll(manager)).as("an event whose fsync failed is never readable").isEmpty();
+            assertThat(visibleOffset(manager)).as("nothing queued for the notifier").isEqualTo(-1L);
             assertThat(notifications).as("and never announced").hasValue(0);
         }
 
@@ -228,6 +234,7 @@ class StreamPartitionVisibilityTest {
             replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 0L));
 
             assertThat(readAll(manager)).isEmpty();
+            assertThat(visibleOffset(manager)).isEqualTo(-1L);
             assertThat(notifications).hasValue(0);
         }
     }
@@ -246,7 +253,7 @@ class StreamPartitionVisibilityTest {
             publish(manager, "e0");
 
             assertThat(readAll(manager)).containsExactly("e0");
-            assertThat(notifications).hasValue(1);
+            assertThat(awaitNotifications(notifications, 1)).isEqualTo(1);
         }
 
         @Test
@@ -319,6 +326,22 @@ class StreamPartitionVisibilityTest {
                .onEmpty(() -> fail("partition not materialized"))
                .onPresent(ring -> ring.addAppendListener(_ -> notifications.incrementAndGet()));
         return notifications;
+    }
+
+    /// Listeners run on the ring's serial notifier (#1258 R2-1), so a positive count is awaited.
+    private static int awaitNotifications(AtomicInteger notifications, int expected) {
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (notifications.get() < expected && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        return notifications.get();
+    }
+
+    private static long visibleOffset(StreamPartitionManager manager) {
+        return manager.partitionBuffer(STREAM, PARTITION)
+                      .map(OffHeapRingBuffer::visibleOffset)
+                      .or(Long.MIN_VALUE);
     }
 
     private static long publish(StreamPartitionManager manager, String payload) {
