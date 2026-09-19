@@ -270,8 +270,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
     public Promise<Unit> start(Option<EventLoopGroup> sharedEventLoopGroup, GossipEncryptor gossipEncryptor) {
         context.dispatch(new SwimHealthEvents.StartRequested());
-        var selfPort = findSelfPort();
-        var swimPort = selfPort + SWIM_PORT_OFFSET;
+        var swimPort = swimPort();
         var selfHost = findSelfHost();
         var selfAddress = new InetSocketAddress(selfHost, swimPort);
 
@@ -283,6 +282,11 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                               .onSuccess(context::dispatch)
                               .onFailure(_ -> context.dispatch(new SwimHealthEvents.StartFailed()))
                               .mapToUnit();
+    }
+
+    /// The UDP port [#start] binds: this node's configured port plus [#SWIM_PORT_OFFSET].
+    public int swimPort() {
+        return findSelfPort() + SWIM_PORT_OFFSET;
     }
 
     @Contract

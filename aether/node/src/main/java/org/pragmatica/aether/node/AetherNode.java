@@ -3116,7 +3116,8 @@ public interface AetherNode extends ManageableNode {
         Runnable startSwimTrigger = () -> startSwim(swimHealthDetector,
                                                     clusterNode.network(),
                                                     rotatingEncryptor,
-                                                    announceJoinTrigger);
+                                                    announceJoinTrigger,
+                                                    () -> System.exit(1));
         // ---------------------------------------------------------------------
         // Membership v2 — NTT wiring (spec §6, §7.4). E2 Phase 2a (2026-05-28) made the
         // observation unconditional: NTT + QuorumLossDetector + LeaderReconciler are
@@ -5500,15 +5501,31 @@ public interface AetherNode extends ManageableNode {
     /// target, so an applied rotation is picked up through the delegate and disarms the guard.
     /// `System.exit(1)` mirrors `Main`'s other boot gates: the failure surfaces at deployment time
     /// rather than as a silent, permanently unjoinable node.
-    private static void startSwim(CoreSwimHealthDetector swimHealthDetector,
-                                  ClusterNetwork network,
-                                  RotatingGossipEncryptor encryptor,
-                                  Runnable announceJoinTrigger) {
+    ///
+    /// #1308: the join is announced only once SWIM has STARTED, and a failed start (typically the
+    /// SWIM UDP port already bound) fails the node through `failNode` — `System.exit(1)` in
+    /// production, the same boot-gate idiom as the divergence guard. A node without its SWIM listener
+    /// neither answers peers' probes nor probes them, so it must not keep running as a cluster member.
+    /// `failNode` is injected so the gate can be pinned by a test without exiting the JVM.
+    static Promise<Unit> startSwim(CoreSwimHealthDetector swimHealthDetector,
+                                   ClusterNetwork network,
+                                   RotatingGossipEncryptor encryptor,
+                                   Runnable announceJoinTrigger,
+                                   Runnable failNode) {
         var workerGroup = network.server().map(Server::workerGroup);
         var guarded = GossipKeyDivergenceGuard.gossipKeyDivergenceGuard(encryptor, () -> System.exit(1));
 
-        swimHealthDetector.start(workerGroup, guarded);
-        announceJoinTrigger.run();
+        return swimHealthDetector.start(workerGroup, guarded)
+                                 .onSuccessRun(announceJoinTrigger)
+                                 .onFailure(cause -> refuseToRunWithoutSwim(swimHealthDetector.swimPort(), cause, failNode));
+    }
+
+    private static void refuseToRunWithoutSwim(int swimPort, Cause cause, Runnable failNode) {
+        LOG.error("SWIM failed to start on UDP port {}: {} — this node cannot answer or send failure-detection "
+                  + "probes, so it will not announce its join and is exiting instead of running without SWIM",
+                  swimPort,
+                  cause.message());
+        failNode.run();
     }
 
     @SuppressWarnings({"JBCT-RET-01"})
