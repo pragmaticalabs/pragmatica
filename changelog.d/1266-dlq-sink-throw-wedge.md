@@ -12,10 +12,9 @@
   `messageId` for deduplication. [mechanism: `ConsumerRuntimeState.appendDeadLetter`; pinned by
   `StreamConsumerRuntimeTest$SynchronousThrows.deadLetterHandlerSyncThrow_doesNotWedge` and
   `...deadLetterAppendNeverSettles_doesNotHoldForever_andTheHoldIsVisible`]
-- The handler invocation is lifted the same way. A handler that throws synchronously is now a delivery
-  failure handled by the error strategy, instead of an exception that left the delivery loop's
-  `running` flag, or a retry hold, set forever. [mechanism: `ConsumerRuntimeState.invokeHandler`; pinned
-  by `StreamConsumerRuntimeTest$SynchronousThrows.handlerSyncThrow_isADeliveryFailure_andDoesNotWedgeTheLoop`]
+- The same class for the consumer handler (a synchronous throw from the handler) is fixed in #1238's review
+  round, which this change builds on (`invokeHandler`, pinned by
+  `StreamConsumerRuntimeTest$PassBoundary`).
 - **An undecodable durable-topic event is quarantined raw.** `DlqStreamSink` lifts the envelope decode.
   On failure it dead-letters the raw event bytes under a synthetic `messageId`
   (`undecodable:<stream>:<partition>:<offset>`), and the source cursor moves past it. `DlqEnvelope`

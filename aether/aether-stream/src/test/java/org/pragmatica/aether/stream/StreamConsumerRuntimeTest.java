@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -389,9 +390,236 @@ class StreamConsumerRuntimeTest {
         }
     }
 
-    /// #1266: synchronous throws must not wedge a partition. A throw escaping before any callback is
-    /// attached leaves whatever hold was set (dead-letter, retry, or the loop's own `running` flag) set
-    /// forever: silent, permanent, and indistinguishable from an idle partition.
+    /// Review rev1272 F1/F2 on #1285: ONE serial loop per (group, partition) means a single escape that
+    /// leaves `drainRunning` set stops that partition's consumer permanently, where the old per-append
+    /// cycles simply tried again on the next append. Every foreign call inside a pass (handler, reader,
+    /// cursor store) must surface as a failure on the normal path, and the pass must always release the
+    /// loop. The probes are the reviewer's, reproduced.
+    @Nested
+    class PassBoundary {
+        private final List<Long> delivered = new CopyOnWriteArrayList<>();
+
+        @Test
+        void handlerSyncThrow_isADeliveryFailure_andDoesNotWedgeTheLoop() throws Exception {
+            createTestStream("orders");
+            var thrown = new AtomicBoolean(false);
+
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-h", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY),
+                              (offset, payload, ts) -> throwOnce(thrown, offset));
+            manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+            manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+            manager.publishLocal("orders", 0, "e2".getBytes(UTF_8), 3000L);
+            awaitSize(3);
+            assertThat(thrown.get()).describedAs("control: the handler really threw").isTrue();
+            assertThat(delivered).describedAs("a handler that throws is retried like one that fails, and the loop moves on")
+                                 .containsExactly(0L, 1L, 2L);
+        }
+
+        /// A throwing handler goes through the ERROR STRATEGY, not the read-failure path: with SKIP it is
+        /// dead-lettered and the loop moves on. Treated as a failed read instead, the same offset would be
+        /// re-read forever and never dead-lettered.
+        @Test
+        void handlerThatAlwaysThrows_isDeadLettered_likeAFailingHandler() throws Exception {
+            createTestStream("orders");
+
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-a", 1, ProcessingMode.ORDERED, ErrorStrategy.SKIP),
+                              (offset, payload, ts) -> alwaysThrowOnZero(offset));
+            manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+            manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
+            awaitSize(1);
+            assertThat(delivered).describedAs("the event behind the throwing one is delivered").containsExactly(1L);
+            assertThat(runtime.deadLetterHandler().read("orders", 10)).describedAs("the throwing event is dead-lettered once")
+                                                                      .hasSize(1);
+        }
+
+        @Test
+        void readerSyncThrow_releasesTheLoop_andLaterAppendsAreDelivered() throws Exception {
+            createTestStream("orders");
+            var reads = new AtomicInteger();
+            var throwingReader = new ConsumerRuntimeState(manager,
+                                                          DeadLetterHandler.deadLetterHandler(),
+                                                          none(),
+                                                          none(),
+                                                          (stream, partition, from, max) -> throwOnFirstRead(reads, stream, partition, from, max));
+
+            try {
+                throwingReader.subscribe("orders", 0, ConsumerConfig.consumerConfig("group-r"), (offset, payload, ts) -> record(offset));
+                awaitReads(reads, 1);
+                manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+                awaitSize(2);
+                assertThat(delivered).describedAs("the loop is released after the reader threw").containsExactly(0L, 1L);
+            } finally {
+                throwingReader.close();
+            }
+        }
+
+        /// F2: in push mode nothing but an append re-drives the loop, so a subscribe kick whose read FAILS
+        /// (a failed promise, not a throw) would strand the backlog until the next append.
+        @Test
+        void subscribeKick_retriesAFailedRead_soTheBacklogIsNotStranded() throws Exception {
+            createTestStream("orders");
+            var reads = new AtomicInteger();
+            var failingReader = new ConsumerRuntimeState(manager,
+                                                         DeadLetterHandler.deadLetterHandler(),
+                                                         none(),
+                                                         none(),
+                                                         (stream, partition, from, max) -> failFirstRead(reads, stream, partition, from, max));
+
+            try {
+                manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+                failingReader.subscribe("orders", 0, ConsumerConfig.consumerConfig("group-f"), (offset, payload, ts) -> record(offset));
+                awaitSize(2);
+                assertThat(reads.get()).describedAs("control: the kick's read ran and failed").isGreaterThanOrEqualTo(1);
+                assertThat(delivered).describedAs("the backlog is delivered with no further append").containsExactly(0L, 1L);
+            } finally {
+                failingReader.close();
+            }
+        }
+
+        /// A throw inside an ASYNCHRONOUS continuation of the pass — here the cursor store, reached through
+        /// the checkpoint after a handler that completes on another thread — escapes on that thread, and
+        /// Promise continuations do not catch, so the pass would never settle. The store call is lifted.
+        @Test
+        void cursorStoreSyncThrow_isACommitFailure_andDeliveryContinues() throws Exception {
+            createTestStream("orders");
+            var store = new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    throw new IllegalStateException("store blew up synchronously");
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+
+            try {
+                observedRuntime.subscribe("orders",
+                                          0,
+                                          ConsumerConfig.consumerConfig("group-s", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 1L, 3, ""),
+                                          (offset, payload, ts) -> recordLater(offset));
+                Thread.sleep(20);
+                manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+                manager.publishLocal("orders", 0, "e2".getBytes(UTF_8), 3000L);
+                awaitSize(3);
+                assertThat(delivered).describedAs("a throwing cursor store never stops delivery").containsExactly(0L, 1L, 2L);
+                assertThat(observedRuntime.cursorCommitFailureCount()).describedAs("the throw is counted as a commit failure")
+                                                                      .isGreaterThanOrEqualTo(1L);
+                assertThat(org.pragmatica.lang.Result.lift(observedRuntime::close).isSuccess())
+                          .describedAs("the final flush on close meets the same throwing store and must not throw either")
+                          .isTrue();
+            } finally {
+                org.pragmatica.lang.Result.lift(observedRuntime::close);
+            }
+        }
+
+        /// K1 pin: each further pass is a fresh scheduler task. Inline, `onResult` on an already-resolved
+        /// promise recurses once per 100-event batch on ONE stack, and a deep backlog overflows it. Stack
+        /// depth itself needs a backlog larger than a test ring holds, so the pin is its observable
+        /// signature: the second batch is delivered on a different thread from the first.
+        @Test
+        void furtherPasses_runOnAFreshSchedulerTask_notInlineOnThePreviousPass() throws Exception {
+            createTestStream("orders");
+            var threads = new ConcurrentHashMap<Long, Thread>();
+            var latch = new CountDownLatch(150);
+
+            for (int i = 0; i < 150; i++) {
+                manager.publishLocal("orders", 0, ("e" + i).getBytes(UTF_8), 1000L + i);
+            }
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-k"),
+                              (offset, payload, ts) -> recordThread(threads, latch, offset));
+            assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(threads.get(100L)).describedAs("batch two (offset 100) runs on a fresh task, not inline on batch one's stack")
+                                         .isNotSameAs(threads.get(0L));
+        }
+
+        private Promise<Unit> throwOnce(AtomicBoolean thrown, long offset) {
+            if (offset == 0L && thrown.compareAndSet(false, true)) {
+                throw new IllegalStateException("handler blew up synchronously");
+            }
+
+            return record(offset);
+        }
+
+        private Promise<Unit> alwaysThrowOnZero(long offset) {
+            if (offset == 0L) {
+                throw new IllegalStateException("handler always throws on offset 0");
+            }
+
+            return record(offset);
+        }
+
+        private Promise<Unit> record(long offset) {
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+
+        private Promise<Unit> recordLater(long offset) {
+            Promise<Unit> outcome = Promise.promise();
+
+            delivered.add(offset);
+            CompletableFuture.delayedExecutor(5, TimeUnit.MILLISECONDS)
+                             .execute(() -> outcome.succeed(Unit.unit()));
+
+            return outcome;
+        }
+
+        private static Promise<Unit> recordThread(Map<Long, Thread> threads, CountDownLatch latch, long offset) {
+            threads.put(offset, Thread.currentThread());
+            latch.countDown();
+
+            return Promise.unitPromise();
+        }
+
+        private Promise<List<OffHeapRingBuffer.RawEvent>> throwOnFirstRead(AtomicInteger reads, String stream, int partition, long from, int max) {
+            if (reads.incrementAndGet() == 1) {
+                throw new IllegalStateException("reader blew up synchronously");
+            }
+
+            return manager.readLocal(stream, partition, from, max).async();
+        }
+
+        private Promise<List<OffHeapRingBuffer.RawEvent>> failFirstRead(AtomicInteger reads, String stream, int partition, long from, int max) {
+            if (reads.incrementAndGet() == 1) {
+                return StreamError.General.PARTITION_NOT_LOCAL.promise();
+            }
+
+            return manager.readLocal(stream, partition, from, max).async();
+        }
+
+        private void awaitSize(int size) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + 3_000;
+
+            while (delivered.size() < size && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+        }
+
+        private static void awaitReads(AtomicInteger reads, int count) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + 2_000;
+
+            while (reads.get() < count && System.currentTimeMillis() < deadline) {
+                Thread.sleep(5);
+            }
+        }
+    }
+
+    /// #1266: a dead-letter append that throws synchronously or never settles must not hold a partition.
+    /// A throw escaping before any callback is attached leaves the dead-letter hold set forever: silent,
+    /// permanent, and indistinguishable from an idle partition. (The handler-throw case lives in
+    /// [PassBoundary], fixed with #1238's review round.)
     @Nested
     class SynchronousThrows {
         @Test
@@ -417,24 +645,6 @@ class StreamConsumerRuntimeTest {
             } finally {
                 throwingRuntime.close();
             }
-        }
-
-        @Test
-        void handlerSyncThrow_isADeliveryFailure_andDoesNotWedgeTheLoop() throws Exception {
-            createTestStream("orders");
-            var delivered = new CopyOnWriteArrayList<Long>();
-            var thrown = new AtomicBoolean(false);
-
-            runtime.subscribe("orders",
-                              0,
-                              ConsumerConfig.consumerConfig("group-h", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY),
-                              (offset, payload, ts) -> throwOnce(thrown, delivered, offset));
-            manager.publishLocal("orders", 0, "flaky".getBytes(UTF_8), 1000L);
-            manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
-            awaitContains(delivered, 1L);
-            assertThat(thrown.get()).describedAs("control: the handler really threw").isTrue();
-            assertThat(delivered).describedAs("a handler that throws is retried like one that fails, and the loop moves on")
-                                 .containsExactly(0L, 1L);
         }
 
         /// #1266: an append that never settles is bounded (shortened here through the constructor seam;
@@ -508,15 +718,6 @@ class StreamConsumerRuntimeTest {
         private Promise<Unit> failFirst(List<Long> delivered, long offset) {
             if (offset == 0L) {
                 return StreamError.General.BUFFER_EMPTY.promise();
-            }
-            delivered.add(offset);
-
-            return Promise.unitPromise();
-        }
-
-        private Promise<Unit> throwOnce(AtomicBoolean thrown, List<Long> delivered, long offset) {
-            if (offset == 0L && thrown.compareAndSet(false, true)) {
-                throw new IllegalStateException("handler blew up synchronously");
             }
             delivered.add(offset);
 
