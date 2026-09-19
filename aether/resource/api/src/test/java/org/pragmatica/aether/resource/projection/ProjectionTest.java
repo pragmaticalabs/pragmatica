@@ -345,6 +345,34 @@ class ProjectionTest {
                                                      .matches(claim -> !claim.done() && claim.token() == successorToken);
         }
 
+        /// #1256 B1 — a token must stay unique for the key ACROSS releases. A backing whose counter
+        /// lives in the claim record restarts it when a release drops the record and reissues an old
+        /// token; the expired holder carrying that token would then release a claim that is not its
+        /// own, and a third attempt could fold beside its owner.
+        @Test
+        void expiredHolder_lateRelease_cannotRemoveAClaimIssuedAfterARelease() {
+            var store = new InMemoryStore();
+            var claims = new InMemoryClaims();
+            var projection = countingProjection(store).withClaims(claims, LEASE);
+            var gate = Promise.<Unit> promise();
+
+            store.writeGate = gate;
+
+            var holder = projection.onEvent(new OrderSeen("a"), FIRST);
+
+            claims.clock.addAndGet(LEASE.nanos() + 1);
+            claims.releaseClaim(CLAIM_KEY, claimToken(claims, CLAIM_KEY)).await();
+
+            var successorToken = claimToken(claims, CLAIM_KEY);
+
+            gate.fail(WRITE_FAILED);
+            holder.await();
+
+            assertThat(claims.claimed.get(CLAIM_KEY)).describedAs("a token reissued after a release must not let the expired holder release the new claim")
+                                                     .isNotNull()
+                                                     .matches(claim -> !claim.done() && claim.token() == successorToken);
+        }
+
         /// The contract itself, below the facade: a token that no longer matches the stored claim is
         /// refused as STALE by both finalize and release, and the claim is left untouched.
         @Test
@@ -400,7 +428,8 @@ class ProjectionTest {
 
     /// In-memory [ProjectionClaims]. Each operation is atomic (`compute`) but NOT shared — it models
     /// one process; cross-instance suppression needs a backing every instance reads. The clock is
-    /// manual so lease expiry is a test decision, not a sleep.
+    /// manual so lease expiry is a test decision, not a sleep. Tokens come from a counter that
+    /// OUTLIVES every claim record, so a release never lets an old token be reissued.
     private static final class InMemoryClaims implements ProjectionClaims {
         private record Claim(boolean done, long expiresAt, long token) {}
 
