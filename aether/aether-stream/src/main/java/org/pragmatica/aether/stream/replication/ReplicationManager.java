@@ -29,14 +29,16 @@ public interface ReplicationManager extends AutoCloseable {
 
     EarliestRetainedOffset ALWAYS_PROMOTE = (_, _) -> - 1L;
 
-    /// Owner-side observer of the replica-ack stream (#1235): told which `(stream, partition)` a replica
-    /// just acknowledged, AFTER the ack is recorded in the registry and BEFORE any pending
-    /// [#awaitReplication] it satisfies resolves. The partition manager advances the partition's visible
-    /// position here, so a publish whose await resolves is already readable.
+    /// Owner-side observer of the replica-ack stream (#1235). It is told of each ack BEFORE the registry
+    /// records it (ruling after the #1279 review, N2): a waiter can be resolved from a registry read, so an
+    /// observer that ran after the update could run after that waiter. It therefore reads the ack through
+    /// [#replicatedThrough(ReplicationMessage.ReplicateAck, int)], which overlays the ack on the registry.
+    /// It is told a second time after the update. That call only moves visibility forward, and it closes
+    /// the race with a concurrent owner fsync that read the registry before this ack landed.
     @FunctionalInterface
     interface AckObserver {
         @Contract
-        void acked(String streamName, int partition);
+        void acked(ReplicationMessage.ReplicateAck ack);
     }
 
     /// Replicate one accepted owner-local append to the partition's replica set, carrying the owner's
@@ -60,6 +62,11 @@ public interface ReplicationManager extends AutoCloseable {
     /// for (#1235). `-1` when fewer replicas than `minAcks` have acknowledged anything; [Long#MAX_VALUE]
     /// when `minAcks <= 0`, since no ack is required.
     long replicatedThrough(String streamName, int partition, int minAcks);
+
+    /// [#replicatedThrough(String, int, int)] as it will read once `pending` is recorded: the ack is
+    /// overlaid on the registry rows (never lowering a row), so an [AckObserver] running before the
+    /// registry update sees the ack it is being told about.
+    long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks);
 
     /// Install the single [AckObserver] (#1235). The partition manager installs itself at construction.
     @Contract
@@ -138,6 +145,11 @@ public interface ReplicationManager extends AutoCloseable {
             /// Consistent with [#awaitReplication] above: with no replication every ack requirement is met.
             @Override
             public long replicatedThrough(String streamName, int partition, int minAcks) {
+                return Long.MAX_VALUE;
+            }
+
+            @Override
+            public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
                 return Long.MAX_VALUE;
             }
 

@@ -174,6 +174,11 @@ class StreamEntityLogSubstrateTest {
             }
 
             @Override
+            public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
+                return acknowledgedThrough;
+            }
+
+            @Override
             public void observeAcks(AckObserver observer) {}
         };
     }

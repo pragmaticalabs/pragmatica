@@ -243,6 +243,11 @@ class StreamPartitionManagerOrderedAppendTest {
             return Long.MAX_VALUE;
         }
 
+        @Override
+        public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
+            return Long.MAX_VALUE;
+        }
+
         @Contract
         @Override
         public void observeAcks(AckObserver observer) {}

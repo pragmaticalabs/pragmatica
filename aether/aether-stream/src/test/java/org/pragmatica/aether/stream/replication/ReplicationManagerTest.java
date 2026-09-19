@@ -360,21 +360,37 @@ class ReplicationManagerTest {
             assertThat(ReplicationManager.NONE.replicatedThrough(STREAM, PARTITION, 2)).isEqualTo(Long.MAX_VALUE);
         }
 
-        /// The ordering the partition manager's read-your-writes depends on: the observer sees the ack
-        /// already recorded AND runs before the await it satisfies resolves.
+        /// Ruling after the #1279 review (N2): the observer runs BEFORE the registry records the ack. A waiter
+        /// can be resolved from a registry read, so an observer that ran after the update could run after
+        /// it. The first call must therefore see the registry row not yet raised and the ack covered only
+        /// through the overlay, with the await unresolved. The second call runs after the update and only
+        /// moves visibility forward. Goes RED if the first call moves after `updateWatermark`.
         @Test
-        void ackObserver_seesTheRecordedAck_beforeThePendingAwaitResolves() {
+        void ackObserver_runsBeforeTheRegistryRecordsTheAck_andSeesItThroughTheOverlay() {
             registry.registerReplica(STREAM, PARTITION, REPLICA_A);
             var pending = manager.awaitReplication(STREAM, PARTITION, 5L, 1);
             var observed = new ArrayList<String>();
 
-            manager.observeAcks((stream, partition) -> observed.add(stream + "/" + partition + " covered="
-                                                                    + manager.replicatedThrough(stream, partition, 1)
-                                                                    + " resolved=" + pending.isResolved()));
+            manager.observeAcks(ack -> observed.add("row=" + registry.replicasFor(STREAM, PARTITION)
+                                                                    .getFirst()
+                                                                    .confirmedOffset()
+                                                    + " covered=" + manager.replicatedThrough(ack, 1)
+                                                    + " resolved=" + pending.isResolved()));
             manager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 5L));
 
-            assertThat(observed).containsExactly(STREAM + "/" + PARTITION + " covered=5 resolved=false");
+            assertThat(observed).containsExactly("row=-1 covered=5 resolved=false",
+                                                 "row=5 covered=5 resolved=false");
             assertThat(pending.isResolved()).isTrue();
+        }
+
+        /// The overlay reads as the registry will once the ack is recorded, which only ever raises a row.
+        @Test
+        void replicatedThrough_overlaidAck_neverLowersARecordedRow() {
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+            manager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 9L));
+
+            assertThat(manager.replicatedThrough(replicateAck(REPLICA_A, STREAM, PARTITION, 3L), 1)).isEqualTo(9L);
+            assertThat(manager.replicatedThrough(replicateAck(REPLICA_A, STREAM, PARTITION, 12L), 1)).isEqualTo(12L);
         }
     }
 

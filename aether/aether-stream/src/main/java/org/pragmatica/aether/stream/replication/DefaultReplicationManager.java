@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream.replication;
 
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -94,13 +95,21 @@ final class DefaultReplicationManager implements ReplicationManager {
     @Contract
     @Override
     public void handleAck(ReplicationMessage.ReplicateAck ack) {
+        notifyObserver(ack);
         registry.updateWatermark(ack.streamName(),
                                  ack.partition(),
                                  ack.replicaId(),
                                  ack.confirmedOffset(),
                                  promotionState(ack));
-        ackObserver.onPresent(observer -> observer.acked(ack.streamName(), ack.partition()));
+        notifyObserver(ack);
         resolvePendingAck(ack.streamName(), ack.partition(), ack.replicaId(), ack.confirmedOffset());
+    }
+
+    /// Called BEFORE the registry update, so no waiter a registry read could resolve is resolved before the
+    /// observer sees the ack; and again AFTER it, see [AckObserver].
+    @Contract
+    private void notifyObserver(ReplicationMessage.ReplicateAck ack) {
+        ackObserver.onPresent(observer -> observer.acked(ack));
     }
 
     @Contract
@@ -197,22 +206,39 @@ final class DefaultReplicationManager implements ReplicationManager {
     public long replicatedThrough(String streamName, int partition, int minAcks) {
         return minAcks <= 0
                ? Long.MAX_VALUE
-               : minAcksConfirmedOffset(streamName, partition, minAcks);
+               : minAcksConfirmedOffset(peerConfirmedDescending(streamName,
+                                                                partition,
+                                                                confirmedByNode(streamName, partition)),
+                                        minAcks);
+    }
+
+    @Override
+    public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
+        return minAcks <= 0
+               ? Long.MAX_VALUE
+               : minAcksConfirmedOffset(peerConfirmedDescending(pending.streamName(),
+                                                                pending.partition(),
+                                                                withAck(pending)),
+                                        minAcks);
+    }
+
+    /// The registry rows with `pending` overlaid — a row is only ever raised, as the registry update would.
+    private Map<NodeId, Long> withAck(ReplicationMessage.ReplicateAck pending) {
+        var byNode = new HashMap<>(confirmedByNode(pending.streamName(), pending.partition()));
+
+        byNode.merge(pending.replicaId(), pending.confirmedOffset(), Math::max);
+        return byNode;
     }
 
     /// The `minAcks`-th highest confirmed offset among the non-self replicas: every offset at or below it
     /// is covered by at least `minAcks` distinct peers.
-    private long minAcksConfirmedOffset(String streamName, int partition, int minAcks) {
-        var descending = peerConfirmedDescending(streamName, partition);
-
+    private static long minAcksConfirmedOffset(List<Long> descending, int minAcks) {
         return descending.size() >= minAcks
                ? descending.get(minAcks - 1)
                : -1L;
     }
 
-    private List<Long> peerConfirmedDescending(String streamName, int partition) {
-        var byNode = confirmedByNode(streamName, partition);
-
+    private List<Long> peerConfirmedDescending(String streamName, int partition, Map<NodeId, Long> byNode) {
         return replicationTargets(streamName, partition).stream()
                                  .map(nodeId -> byNode.getOrDefault(nodeId, -1L))
                                  .sorted(Comparator.reverseOrder())

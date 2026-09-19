@@ -40,6 +40,7 @@ import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
+import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -1211,19 +1212,28 @@ public final class StreamPartitionManager implements AutoCloseable {
         refreshVisible(ring, streamName, partition);
     }
 
-    /// Owner-side ack observer (#1235), run by the replication manager after it records a replica's ack
-    /// and BEFORE it resolves the pending [#awaitReplication] calls — so a publish whose await resolves is
-    /// already visible to whatever continues it.
+    /// Owner-side ack observer (#1235). The replication manager runs it BEFORE it records the ack in the
+    /// registry, so no waiter can be resolved — by an await or a registry read — before the event is
+    /// visible. It runs a second time after the registry update; see [#refreshVisible] for why.
     @Contract
-    private void onReplicaAck(String streamName, int partition) {
-        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> refreshVisible(ring, streamName, partition));
+    private void onReplicaAck(ReplicationMessage.ReplicateAck ack) {
+        resolvePartitionBuffer(ack.streamName(), ack.partition()).onSuccess(ring -> ackedVisible(ring, ack));
+    }
+
+    /// Reads the ack through the overlay, because this observer runs BEFORE the registry records it.
+    @Contract
+    private void ackedVisible(OffHeapRingBuffer ring, ReplicationMessage.ReplicateAck ack) {
+        ring.advanceVisible(Math.min(ring.durableOffset(),
+                                     replicationManager.replicatedThrough(ack,
+                                                                          minSyncReplicasFor(ack.streamName()) - 1)));
     }
 
     /// visible = min(durable, the highest offset `minSyncReplicas - 1` distinct peers have acknowledged).
     /// Both inputs cover a contiguous prefix — group commit resolves in offset order, and a replica acks
-    /// only its verified contiguous run (#260) — so the minimum is a prefix too. The two writers (the
-    /// fsync path and the ack path) each publish their input before reading the other's (an atomic
-    /// here, the registry's concurrent map there), so at least one of them sees both.
+    /// only its verified contiguous run (#260) — so the minimum is a prefix too. No advance is lost to a
+    /// race between the fsync path and the ack path. The fsync path writes `durable` and then reads the
+    /// registry. The ack's second observer call runs after the registry write and then reads `durable`.
+    /// Both are volatile accesses, so at least one of the two sees both inputs.
     @Contract
     private void refreshVisible(OffHeapRingBuffer ring, String streamName, int partition) {
         ring.advanceVisible(Math.min(ring.durableOffset(), peerAcknowledgedThrough(streamName, partition)));
