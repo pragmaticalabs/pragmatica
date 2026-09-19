@@ -24,7 +24,8 @@ import org.pragmatica.utility.KSUID;
 /// A publish resolves in one of three ways (#1236):
 /// - **success** — the event is in the log at the declared floor;
 /// - **failure** — the event is NOT in the log (e.g. `NOT_ENOUGH_REPLICAS`, checked BEFORE the append);
-///   a retry is a new publish;
+///   a retry is a new publish. One known exception (#1235): a WAL fsync failure AFTER the ring append is
+///   reported as a failure while the event is already visible in the owner's ring;
 /// - [org.pragmatica.aether.slice.PublishOutcomeUnknown] — the owner appended but the floor was not
 ///   confirmed (e.g. peer acks timed out): the event MAY be in the log and visible to consumers. Retry
 ///   only with the same message ID, or downstream dedup sees two distinct events.
@@ -34,8 +35,9 @@ import org.pragmatica.utility.KSUID;
 /// payload bytes. Subscribers decode the envelope, then the payload with the subscription's own type.
 /// The keyless [#publish(Object)] mints a fresh time-sortable KSUID per call; the keyed
 /// [#publish(Object, String)] uses the caller's key (#1237), so a retry after an outcome-unknown result
-/// carries the same `messageId` and dedup collapses it. Retrying through the keyless overload writes a
-/// second, unrecognisable copy.
+/// carries the same `messageId` — the necessary condition for dedup to collapse it (see
+/// [Publisher#publish(Object, String)] for what is not yet sufficient). Retrying through the keyless
+/// overload writes a second copy under an identity nothing can match.
 public record DurableTopicPublisher<T>(Serializer serializer, StreamPublisher<TopicEventEnvelope> stream) implements Publisher<T> {
     private static final Cause BLANK_IDEMPOTENCY_KEY = Causes.cause("Durable publish idempotency key must not be blank: it becomes the message ID that deduplication matches retries on");
 

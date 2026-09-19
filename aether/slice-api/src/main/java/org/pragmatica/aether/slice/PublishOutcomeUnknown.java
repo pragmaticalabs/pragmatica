@@ -19,9 +19,12 @@ import org.pragmatica.lang.utils.Causes;
 ///
 /// The one safe reaction is to retry with the SAME message identity, so downstream message-ID dedup
 /// collapses the two copies. A retry that mints a fresh identity writes a duplicate that dedup cannot
-/// recognise. This is why the cause is deliberately neither [Cause.Transient] nor [Cause.Terminal]:
-/// a retry facility that re-runs the whole operation would re-mint the identity, so it must not be
-/// invited to retry by classification.
+/// recognise. This is why the cause is deliberately not [Cause.Transient]: the default retry policy
+/// (`RetryOn.TRANSIENT`) retries only transient causes, so it leaves this one alone. It is not
+/// [Cause.Terminal] either, because a retry with the same key is legitimate — which means a facility
+/// configured with `RetryOn.NON_TERMINAL` (or [org.pragmatica.lang.utils.Retry], which retries every
+/// non-terminal cause) DOES retry it: a keyed publish re-sent that way is safe, a keyless one writes a
+/// duplicate.
 ///
 /// It lives in `slice-api` so a slice can discriminate it (`cause instanceof PublishOutcomeUnknown`)
 /// without depending on the stream runtime, the same placement as [ResourceCapacityExhausted].
