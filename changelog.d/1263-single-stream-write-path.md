@@ -17,6 +17,10 @@
 - **Behaviour changes beyond the minSync read.**
   - A publisher built EVENTUAL over a stream whose committed config is STRONG or UNKNOWN is now refused
     (the shared guard reads the committed config, not the mode the publisher was built with).
+  - The committed config is also the source for the reverse case: a publisher whose own blueprint mode is
+    UNKNOWN publishes normally to a stream committed EVENTUAL, where before the slice publisher refused on
+    its own unreadable mode. The stream's committed config is what the write must honour, and an unreadable
+    blueprint mode over a stream that is committed EVENTUAL promises nothing the write cannot deliver.
   - An EVENTUAL `publishBatch` whose group fails now fails the batch; it was acknowledged as success.
   - A STRONG stream on the slice publisher keeps its explicit consensus alternative and does not go through
     the shared router; with no consensus path wired it refuses with `CONSENSUS_PATH_UNAVAILABLE`, as the
