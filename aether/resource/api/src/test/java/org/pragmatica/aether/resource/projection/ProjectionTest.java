@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
@@ -46,17 +47,25 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Pins durable-pubsub-spec §10's facade: keyed fold-and-write on each event, the honest
 /// at-least-once single-argument path, the §8 idempotency guard (leased, fenced claims — see
-/// [IdempotencyGuard]), and the rebuild order — generation bumped BEFORE the data reset (review
-/// finding 3), data cleared with the generation slot preserved (§13 item 6), cursor seam invoked LAST
-/// and loudly refused by default until the operator surface exists.
+/// [IdempotencyGuard]), and the rebuild — capture, then ONE-step reset to a new generation (generation
+/// advanced, model cleared, REBUILDING), then rewind; replay-order admission while REBUILDING; and the
+/// default cursor refusing before anything is touched until the operator surface exists.
 class ProjectionTest {
     private record OrderSeen(String orderId) {}
 
     private static final Topic<OrderSeen> TOPIC = Topic.of("orders-seen", OrderSeen.class);
+
+    /// An event whose fold is ORDER-SENSITIVE (`state * 10 + value`), for pinning apply order.
+    private record Digit(String key, int value) {}
+
+    private static final Topic<Digit> DIGITS = Topic.of("digits", Digit.class);
     private static final Cause WRITE_FAILED = Causes.cause("staged read-model write failure");
+    private static final Cause FINALIZE_FAILED = Causes.cause("staged claim finalize failure");
     private static final TimeSpan LEASE = timeSpan(30).seconds();
 
-    /// In-memory [ProjectionStore] honoring the reset contract: data cleared, generation kept.
+    /// In-memory [ProjectionStore] honoring the reset contract and the #1304 REBUILDING admission. The
+    /// reset and every fenced write share one monitor, so a reset is ONE step as far as any write can
+    /// tell — which is the property the tests below pin.
     private static final class InMemoryStore implements ProjectionStore<Integer> {
         private final Map<String, Integer> data = new ConcurrentHashMap<>();
         private final AtomicLong generation = new AtomicLong();
@@ -68,6 +77,12 @@ class ProjectionTest {
         private final AtomicInteger failingWrites = new AtomicInteger();
         // Every write completes only when this does, so a fold can be held past its claim's lease.
         private volatile Promise<Unit> writeGate = Promise.unitPromise();
+        // Replay progress while REBUILDING: each partition's next replay offset and captured head. Both
+        // empty means LIVE.
+        private final Map<Integer, Long> nextReplayOffset = new ConcurrentHashMap<>();
+        private final Map<Integer, Long> replayThrough = new ConcurrentHashMap<>();
+        // Runs at the first moment a new generation is visible to writers — after the reset returns.
+        private volatile Runnable onNewGeneration = () -> {};
 
         @Override
         public Promise<Option<Integer>> read(String key) {
@@ -75,25 +90,94 @@ class ProjectionTest {
         }
 
         @Override
-        public Promise<Unit> write(String key, Integer state) {
+        public Promise<ProjectionStore.WriteOutcome> write(String key,
+                                                           Integer state,
+                                                           long expectedGeneration,
+                                                           Option<ProjectionStore.DeliveryPosition> position) {
             if (failingWrites.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
                 return WRITE_FAILED.promise();
             }
-            return writeGate.map(_ -> put(key, state));
+            return writeGate.map(_ -> admit(key, state, expectedGeneration, position));
         }
 
-        private Unit put(String key, Integer state) {
-            data.put(key, state);
+        private synchronized ProjectionStore.WriteOutcome admit(String key,
+                                                                Integer state,
+                                                                long expectedGeneration,
+                                                                Option<ProjectionStore.DeliveryPosition> position) {
+            if (generation.get() != expectedGeneration) {
+                return ProjectionStore.WriteOutcome.STALE_GENERATION;
+            }
+            if (replayThrough.isEmpty()) {
+                data.put(key, state);
 
-            return Unit.unit();
+                return ProjectionStore.WriteOutcome.WRITTEN;
+            }
+            return position.map(at -> admitReplay(key, state, at))
+                           .or(ProjectionStore.WriteOutcome.REBUILDING);
+        }
+
+        private ProjectionStore.WriteOutcome admitReplay(String key, Integer state, ProjectionStore.DeliveryPosition at) {
+            if (!replayThrough.containsKey(at.partition())) {
+                return ProjectionStore.WriteOutcome.REBUILDING;
+            }
+            var next = nextReplayOffset.get(at.partition());
+
+            if (at.offset() < next) {
+                return ProjectionStore.WriteOutcome.ALREADY_APPLIED;
+            }
+            if (at.offset() > next || at.offset() > replayThrough.get(at.partition())) {
+                return ProjectionStore.WriteOutcome.REBUILDING;
+            }
+            data.put(key, state);
+            nextReplayOffset.put(at.partition(), next + 1);
+            goLiveOnceReplayed();
+
+            return ProjectionStore.WriteOutcome.WRITTEN;
+        }
+
+        private void goLiveOnceReplayed() {
+            if (replayThrough.entrySet()
+                             .stream()
+                             .allMatch(entry -> nextReplayOffset.get(entry.getKey()) > entry.getValue())) {
+                replayThrough.clear();
+                nextReplayOffset.clear();
+            }
         }
 
         @Override
-        public Promise<Unit> reset() {
+        public Promise<Long> resetToNewGeneration(ProjectionStore.ReplayRange range) {
+            var newGeneration = resetAtomically(range);
+
+            onNewGeneration.run();
+
+            return Promise.success(newGeneration);
+        }
+
+        private synchronized long resetAtomically(ProjectionStore.ReplayRange range) {
+            var newGeneration = advanceGeneration();
+
+            clearIntoRebuilding(range);
+
+            return newGeneration;
+        }
+
+        private synchronized long advanceGeneration() {
+            return generation.incrementAndGet();
+        }
+
+        private synchronized void clearIntoRebuilding(ProjectionStore.ReplayRange range) {
             data.clear();
             resets.incrementAndGet();
+            nextReplayOffset.clear();
+            replayThrough.clear();
+            range.partitions()
+                 .forEach((partition, span) -> startReplay(partition, span));
+            goLiveOnceReplayed();
+        }
 
-            return Promise.unitPromise();
+        private void startReplay(int partition, ProjectionStore.PartitionRange span) {
+            nextReplayOffset.put(partition, span.fromOffset());
+            replayThrough.put(partition, span.throughOffset());
         }
 
         @Override
@@ -102,11 +186,41 @@ class ProjectionTest {
 
             return Promise.success(generation.get());
         }
+    }
+
+    private static final ProjectionStore.ReplayRange NOTHING_TO_REPLAY = new ProjectionStore.ReplayRange(Map.of());
+
+    /// A [Projection.ReplayCursor] that hands back a fixed range and records the store's state at each
+    /// call, so the rebuild's step ORDER is observable rather than only its end state.
+    private static final class RecordingCursor implements Projection.ReplayCursor {
+        private final InMemoryStore store;
+        private final ProjectionStore.ReplayRange range;
+        private final List<String> calls = new CopyOnWriteArrayList<>();
+
+        private RecordingCursor(InMemoryStore store, ProjectionStore.ReplayRange range) {
+            this.store = store;
+            this.range = range;
+        }
 
         @Override
-        public Promise<Long> bumpGeneration() {
-            return Promise.success(generation.incrementAndGet());
+        public Promise<ProjectionStore.ReplayRange> capture() {
+            calls.add("capture@gen" + store.generation.get() + "/resets" + store.resets.get());
+
+            return Promise.success(range);
         }
+
+        @Override
+        public Promise<Unit> rewind(ProjectionStore.ReplayRange rewound) {
+            calls.add("rewind@gen" + store.generation.get() + "/resets" + store.resets.get());
+
+            return Promise.unitPromise();
+        }
+    }
+
+    private static Projection<Integer, OrderSeen> rebuildable(InMemoryStore store, ProjectionStore.ReplayRange range) {
+        return Projection.of(TOPIC)
+                         .into(store, OrderSeen::orderId)
+                         .apply("orders-seen", (current, event) -> current.or(0) + 1, new RecordingCursor(store, range));
     }
 
     private static Projection<Integer, OrderSeen> countingProjection(InMemoryStore store) {
@@ -153,6 +267,11 @@ class ProjectionTest {
     @Nested
     class IdempotencyGuard {
         private static final MessageContext FIRST = MessageContext.messageContext("msg-1", "ns:orders-seen:1.0.0", 0, 10L);
+        // FIRST sits at partition 0, offset 10: a replay of exactly that one offset.
+        private static final ProjectionStore.ReplayRange REPLAY_FIRST = new ProjectionStore.ReplayRange(Map.of(0,
+                                                                                                             new ProjectionStore.PartitionRange(10L, 10L)));
+        private static final ProjectionStore.ReplayRange REPLAY_TEN_TO_TWELVE = new ProjectionStore.ReplayRange(Map.of(0,
+                                                                                                                     new ProjectionStore.PartitionRange(10L, 12L)));
         private static final Projection.ClaimKey CLAIM_KEY = new Projection.ClaimKey("orders-seen", 0L, "msg-1");
 
         /// THE pin. The same messageId redelivered at a DIFFERENT source position — which is exactly
@@ -199,12 +318,13 @@ class ProjectionTest {
             var event = new OrderSeen("a");
 
             projection.onEvent(event, FIRST).await();
-            store.bumpGeneration().await();
+            store.resetToNewGeneration(NOTHING_TO_REPLAY).await();
             projection.onEvent(event, FIRST).await();
 
             assertThat(store.data).describedAs("a rebuild must be able to replay the same events; the"
-                                               + " generation moves them to fresh claim keys")
-                                  .containsEntry("a", 2);
+                                               + " generation moves them to fresh claim keys, so the"
+                                               + " cleared model holds the event again")
+                                  .containsEntry("a", 1);
         }
 
         /// The generation is read PER EVENT, never cached on the projection instance. Pinned because a
@@ -412,6 +532,177 @@ class ProjectionTest {
                                   .doesNotContainKey("a");
         }
 
+        /// #1298 (review R4) — a guarded fold in flight across [Projection#rebuild] must apply exactly
+        /// once. Held at its write while the rebuild bumps the generation and resets the model, its late
+        /// write would land in the rebuilt model under the OLD generation, and the replay would then
+        /// apply the same event again under the new one.
+        @Test
+        void rebuild_inFlightGuardedFold_appliesExactlyOnce() {
+            var store = new InMemoryStore();
+            var projection = Projection.of(TOPIC)
+                                       .into(store, OrderSeen::orderId)
+                                       .apply("orders-seen", (current, event) -> current.or(0) + 1, new RecordingCursor(store, NOTHING_TO_REPLAY))
+                                       .withClaims(new InMemoryClaims(), LEASE);
+            var gate = Promise.<Unit> promise();
+            var event = new OrderSeen("a");
+
+            store.writeGate = gate;
+
+            var inFlight = projection.onEvent(event, FIRST);
+
+            projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+            gate.succeed(Unit.unit());
+            inFlight.await()
+                    .onSuccess(_ -> fail("the in-flight fold's late write must be refused, not applied"))
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(Projection.ProjectionError.StaleGeneration.class));
+            projection.onEvent(event, FIRST).await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(store.data).describedAs("rebuilt model after the replay: the in-flight fold must not count")
+                                  .containsEntry("a", 1);
+        }
+
+        /// #1298 — the fence must use the CLAIM's generation. Here the claim step itself spans the
+        /// rebuild: the claim is decided under the old generation, then the fold starts after the bump.
+        /// A fold that re-read the generation would write legitimately under the new one while the
+        /// replay applied the same event under a different claim key.
+        @Test
+        void rebuild_foldWhoseClaimSpansTheRebuild_appliesExactlyOnce() {
+            var store = new InMemoryStore();
+            var claims = new GatedClaims();
+            var projection = Projection.of(TOPIC)
+                                       .into(store, OrderSeen::orderId)
+                                       .apply("orders-seen", (current, event) -> current.or(0) + 1, new RecordingCursor(store, NOTHING_TO_REPLAY))
+                                       .withClaims(claims, LEASE);
+            var event = new OrderSeen("a");
+
+            var inFlight = projection.onEvent(event, FIRST);
+
+            projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+            claims.gate.succeed(Unit.unit());
+            inFlight.await()
+                    .onSuccess(_ -> fail("a fold claimed under the old generation must be refused at its write"))
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(Projection.ProjectionError.StaleGeneration.class));
+            projection.onEvent(event, FIRST).await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(store.data).describedAs("rebuilt model after the replay: the claim-spanning fold must not count")
+                                  .containsEntry("a", 1);
+        }
+
+        /// #1304 (review R5) — a live delivery whose write lands at the FIRST moment the rebuild's new
+        /// generation is visible. Were the bump and the clear separate steps, it would be admitted under
+        /// the new generation, wiped by the clear while its claim stayed DONE, and the replay suppressed —
+        /// the event silently missing. With the reset one step it lands after the clear, in replay order.
+        @Test
+        void rebuild_liveWriteAtTheNewGeneration_isNotLost() {
+            var store = new InMemoryStore();
+            var projection = rebuildable(store, REPLAY_FIRST).withClaims(new InMemoryClaims(), LEASE);
+            var event = new OrderSeen("a");
+
+            store.onNewGeneration = () -> projection.onEvent(event, FIRST).await();
+            projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(event, FIRST).await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(store.data).describedAs("the event must be in the rebuilt model exactly once")
+                                  .containsEntry("a", 1);
+        }
+
+        /// #1304 (review R6) — the StaleGeneration attempt's own RETRY, landing at the first moment the
+        /// new generation is visible, must meet the same fate as R5's live write: kept, exactly once.
+        @Test
+        void rebuild_staleGenerationRetryAtTheNewGeneration_isNotLost() {
+            var store = new InMemoryStore();
+            var projection = rebuildable(store, REPLAY_FIRST).withClaims(new InMemoryClaims(), LEASE);
+            var gate = Promise.<Unit> promise();
+            var event = new OrderSeen("a");
+
+            store.writeGate = gate;
+
+            var inFlight = projection.onEvent(event, FIRST);
+
+            store.onNewGeneration = () -> refuseThenRetry(gate, inFlight, projection, event);
+            projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(event, FIRST).await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(store.data).describedAs("the retried event must be in the rebuilt model exactly once")
+                                  .containsEntry("a", 1);
+        }
+
+        private static void refuseThenRetry(Promise<Unit> gate,
+                                            Promise<Unit> inFlight,
+                                            Projection<Integer, OrderSeen> projection,
+                                            OrderSeen event) {
+            gate.succeed(Unit.unit());
+            inFlight.await()
+                    .onSuccess(_ -> fail("the in-flight fold must be refused at the new generation"))
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(Projection.ProjectionError.StaleGeneration.class));
+            projection.onEvent(event, FIRST).await();
+        }
+
+        /// #1304 — while REBUILDING the model is built in OFFSET order. A live delivery of a later offset
+        /// arriving before the replay reaches it is refused (retryable) instead of applied out of order.
+        /// The fold is order-SENSITIVE on purpose: a counting fold commutes and would pass either way.
+        @Test
+        void rebuilding_refusesAnOutOfOrderLiveWrite_andBuildsInOffsetOrder() {
+            var store = new InMemoryStore();
+            var projection = Projection.of(DIGITS)
+                                       .into(store, Digit::key)
+                                       .apply("digits", (current, digit) -> current.or(0) * 10 + digit.value(), new RecordingCursor(store, REPLAY_TEN_TO_TWELVE))
+                                       .withClaims(new InMemoryClaims(), LEASE);
+
+            projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new Digit("n", 3), at("msg-12", 12))
+                      .await()
+                      .onSuccess(_ -> fail("offset 12 is not the next replay offset and must be refused"))
+                      .onFailure(cause -> assertThat(cause).isInstanceOf(Projection.ProjectionError.Rebuilding.class));
+            projection.onEvent(new Digit("n", 1), at("msg-10", 10)).await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new Digit("n", 2), at("msg-11", 11)).await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new Digit("n", 3), at("msg-12", 12)).await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(store.data).describedAs("replayed in offset order 10, 11, 12")
+                                  .containsEntry("n", 123);
+        }
+
+        /// #1304 — a redelivery of an offset the replay already applied (a crash between the write and
+        /// the claim finalize, reclaimed after its lease) is ALREADY_APPLIED: acknowledged, not re-applied.
+        @Test
+        void rebuilding_redeliveryOfAnAppliedReplayOffset_isNotReapplied() {
+            var store = new InMemoryStore();
+            var claims = new InMemoryClaims();
+            var projection = rebuildable(store, REPLAY_TEN_TO_TWELVE).withClaims(claims, LEASE);
+            var event = new OrderSeen("a");
+
+            projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+            claims.failNextFinalize.set(true);
+            projection.onEvent(event, at("msg-10", 10))
+                      .await()
+                      .onSuccess(_ -> fail("the staged finalize failure must surface"));
+            claims.clock.addAndGet(LEASE.nanos() + 1);
+            projection.onEvent(event, at("msg-10", 10)).await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(store.data).describedAs("offset 10's write landed once; its redelivery must not add to it")
+                                  .containsEntry("a", 1);
+        }
+
+        /// #1304 — the single-argument path carries no delivery position, so while REBUILDING it cannot be
+        /// placed in replay order and is refused.
+        @Test
+        void rebuilding_refusesAPositionlessWrite() {
+            var store = new InMemoryStore();
+            var projection = rebuildable(store, REPLAY_TEN_TO_TWELVE);
+
+            projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new OrderSeen("a"))
+                      .await()
+                      .onSuccess(_ -> fail("a positionless write must be refused while rebuilding"))
+                      .onFailure(cause -> assertThat(cause).isInstanceOf(Projection.ProjectionError.Rebuilding.class));
+
+            assertThat(store.data).isEmpty();
+        }
+
+        private static MessageContext at(String messageId, long offset) {
+            return MessageContext.messageContext(messageId, "ns:orders-seen:1.0.0", 0, offset);
+        }
+
         /// A negative lease is refused the same way — the check is `> 0`, not `!= 0`.
         @Test
         void negativeLease_isRefused() {
@@ -573,6 +864,8 @@ class ProjectionTest {
         private final Map<Projection.ClaimKey, Claim> claimed = new ConcurrentHashMap<>();
         private final AtomicLong clock = new AtomicLong();
         private final AtomicLong tokens = new AtomicLong();
+        // Fails the next finalize once — a crash between the write and the claim's finalize.
+        private final AtomicBoolean failNextFinalize = new AtomicBoolean();
 
         @Override
         public Promise<ClaimOutcome> claimIfAbsent(Projection.ClaimKey key, TimeSpan lease) {
@@ -602,6 +895,9 @@ class ProjectionTest {
 
         @Override
         public Promise<Settlement> finalizeClaim(Projection.ClaimKey key, long token) {
+            if (failNextFinalize.getAndSet(false)) {
+                return FINALIZE_FAILED.promise();
+            }
             return settle(key, token, new Claim(true, Long.MAX_VALUE, token));
         }
 
@@ -655,6 +951,34 @@ class ProjectionTest {
         }
     }
 
+    /// Gated [ProjectionClaims]: the FIRST claim's answer is held until `gate` completes, so a claim
+    /// decided under one generation can be delivered after a rebuild has moved it. Later claims pass
+    /// straight through.
+    private static final class GatedClaims implements ProjectionClaims {
+        private final InMemoryClaims delegate = new InMemoryClaims();
+        private final Promise<Unit> gate = Promise.promise();
+        private final AtomicInteger claims = new AtomicInteger();
+
+        @Override
+        public Promise<ClaimOutcome> claimIfAbsent(Projection.ClaimKey key, TimeSpan lease) {
+            var decided = delegate.claimIfAbsent(key, lease);
+
+            return claims.incrementAndGet() == 1
+                   ? gate.flatMap(_ -> decided)
+                   : decided;
+        }
+
+        @Override
+        public Promise<Settlement> finalizeClaim(Projection.ClaimKey key, long token) {
+            return delegate.finalizeClaim(key, token);
+        }
+
+        @Override
+        public Promise<Settlement> releaseClaim(Projection.ClaimKey key, long token) {
+            return delegate.releaseClaim(key, token);
+        }
+    }
+
     /// Latched [ProjectionClaims]: each claim is decided ATOMICALLY on arrival, but the answer is
     /// DELIVERED only once two attempts have reached the claim step — so both pass it before either
     /// folds or records. Against a check-then-record guard this is the #1243 race.
@@ -689,27 +1013,49 @@ class ProjectionTest {
         }
     }
 
+    /// #1304 — the rebuild's step ORDER, observed at each cursor call rather than inferred from the end
+    /// state: capture BEFORE the store is touched (generation 0, no reset), rewind only AFTER the one-step
+    /// reset (generation 1, one reset). A rewind before the reset would let replay deliveries land in the
+    /// old model and be cleared unseen.
     @Test
-    void rebuild_bumpsGenerationBeforeReset_preservingTheSlot_andResetsCursorLast() {
+    void rebuild_capturesFirst_resetsInOneStep_andRewindsLast() {
         var store = new InMemoryStore();
-        var order = new java.util.ArrayList<String>();
+        var cursor = new RecordingCursor(store, NOTHING_TO_REPLAY);
         var projection = Projection.of(TOPIC)
                                    .into(store, OrderSeen::orderId)
-                                   .apply("orders-proj",
-                                          (current, event) -> current.or(0) + 1,
-                                          () -> {
-                                              order.add("cursor@gen" + store.generation.get()
-                                                       + "/resets" + store.resets.get());
-
-                                              return Promise.unitPromise();
-                                          });
+                                   .apply("orders-proj", (current, event) -> current.or(0) + 1, cursor);
 
         projection.onEvent(new OrderSeen("a")).await().onFailure(cause -> fail(cause.message()));
         projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+
         assertThat(store.generation.get()).isEqualTo(1L);
         assertThat(store.data).isEmpty();
-        // Cursor seam ran LAST, observing the bumped generation AND the completed reset.
-        assertThat(order).containsExactly("cursor@gen1/resets1");
+        assertThat(cursor.calls).containsExactly("capture@gen0/resets0", "rewind@gen1/resets1");
+    }
+
+    /// #1298 — a single-argument fold in flight across [Projection#rebuild] read the PRE-reset model;
+    /// its late write must not carry that state into the rebuilt one. The replay is the only writer.
+    @Test
+    void rebuild_inFlightUnguardedFold_doesNotWriteIntoTheResetModel() {
+        var store = new InMemoryStore();
+        var projection = Projection.of(TOPIC)
+                                   .into(store, OrderSeen::orderId)
+                                   .apply("orders-seen", (current, event) -> current.or(0) + 1, new RecordingCursor(store, NOTHING_TO_REPLAY));
+        var gate = Promise.<Unit> promise();
+
+        projection.onEvent(new OrderSeen("a")).await().onFailure(cause -> fail(cause.message()));
+        store.writeGate = gate;
+
+        var inFlight = projection.onEvent(new OrderSeen("a"));
+
+        projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+        gate.succeed(Unit.unit());
+        inFlight.await()
+                .onSuccess(_ -> fail("the in-flight fold's late write must be refused, not applied"))
+                .onFailure(cause -> assertThat(cause).isInstanceOf(Projection.ProjectionError.StaleGeneration.class));
+
+        assertThat(store.data).describedAs("a fold that read the pre-reset model must not write into the rebuilt one")
+                              .doesNotContainKey("a");
     }
 
     @Test
@@ -717,14 +1063,16 @@ class ProjectionTest {
         var store = new InMemoryStore();
         var projection = countingProjection(store);
 
+        projection.onEvent(new OrderSeen("a")).await().onFailure(cause -> fail(cause.message()));
         projection.rebuild()
                   .await()
                   .onSuccess(_ -> fail("rebuild without a cursor reset would clear the model and replay nothing"))
                   .onFailure(cause -> assertThat(cause.message()).contains("D3"));
-        // The refusal happens AFTER generation+reset (order is the facade's contract; the cursor
-        // step is the one still pending) — the store must reflect the completed halves.
-        assertThat(store.generation.get()).isEqualTo(1L);
-        assertThat(store.data).isEmpty();
+        // #1304: the refusal now happens at CAPTURE, before the store is touched. The previous version of
+        // this test pinned the opposite — generation bumped and model cleared by a rebuild that then
+        // refused — which was the partial completion the reordering removes, not a property to keep.
+        assertThat(store.generation.get()).isZero();
+        assertThat(store.data).containsEntry("a", 1);
     }
 
     @Test

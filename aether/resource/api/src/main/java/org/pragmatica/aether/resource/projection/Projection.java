@@ -8,9 +8,10 @@ import org.pragmatica.aether.resource.projection.ProjectionClaims.ClaimOutcome;
 import org.pragmatica.aether.resource.projection.ProjectionClaims.Claimed;
 import org.pragmatica.aether.resource.projection.ProjectionClaims.Held;
 import org.pragmatica.aether.resource.projection.ProjectionClaims.Settlement;
+import org.pragmatica.aether.resource.projection.ProjectionStore.DeliveryPosition;
+import org.pragmatica.aether.resource.projection.ProjectionStore.WriteOutcome;
 import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.slice.topic.Topic;
-import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Cause;
@@ -80,25 +81,60 @@ import org.slf4j.LoggerFactory;
 /// failed or crashed fold never looks applied — it is released, or reclaimed after its lease — and
 /// the event is not lost silently. The cost is the re-apply window named above.
 ///
-/// **Rebuild (one operator procedure, spec §10):** [#rebuild] bumps the persisted generation, then
-/// resets the read model ([ProjectionStore#reset] — the §13-item-6 contract: data cleared,
-/// generation preserved), then asks the cursor-reset seam to send the group's cursor to the
-/// earliest retained offset. Until the D3 operator surface provides that reset, the DEFAULT seam
-/// REFUSES loudly — a rebuild that silently skipped the cursor step would clear the model and then
-/// replay nothing, converging to an empty projection that looks caught-up. A rebuild replays only
-/// what retention still holds; older history is a partial rebuild, reported by the same cursor
-/// machinery (`CURSOR_GAP` semantics when that surface lands).
+/// **Rebuild (one operator procedure of three ordered steps, spec §10):** [#rebuild] asks the
+/// [ReplayCursor] to CAPTURE what it will replay (per partition, earliest retained offset through the
+/// head), then resets the store to a new generation in ONE step
+/// ([ProjectionStore#resetToNewGeneration]: generation advanced, model cleared, REBUILDING over that
+/// range), then REWINDS the group's cursor to replay it. The cursor moves only after the store is
+/// REBUILDING, so no replay delivery can land in the old model and be cleared unseen. Until the D3
+/// operator surface provides the cursor, the DEFAULT seam refuses at capture — before anything is
+/// touched — rather than clearing the model and replaying nothing. A rebuild replays only what
+/// retention still holds; older history is a partial rebuild (`CURSOR_GAP` semantics when that
+/// surface lands).
+///
+/// **What holds during a rebuild (#1298, #1304).** A fold in flight under the old generation is
+/// refused at its write ([ProjectionError.StaleGeneration]). While REBUILDING the store admits a write
+/// only when its delivery position is its partition's next replay offset, so the model is built in
+/// offset order by exactly one apply per offset; every other write — a live delivery, a zombie, a
+/// retry, the positionless single-argument path — is refused as retryable
+/// ([ProjectionError.Rebuilding]), and applies after the replay. Once every partition passes its
+/// captured head the generation is LIVE again. Two limits, stated: a replay offset that can never
+/// apply (a fold that always fails, dead-lettered during the replay) holds its partition in
+/// REBUILDING, because nothing tells the store that offset was skipped — the operator rebuilds again
+/// once the fold is fixed; and a refused live delivery that exhausts its retry budget is dead-lettered
+/// and applies when redriven.
 public record Projection<S, T>(String name,
                                Topic<T> topic,
                                ProjectionStore<S> store,
                                Fn1<String, T> key,
                                Fn2<S, Option<S>, T> fold,
-                               Fn0<Promise<Unit>> cursorReset,
+                               ReplayCursor replayCursor,
                                Option<ClaimGuard> claims) {
     private static final Logger LOG = LoggerFactory.getLogger(Projection.class);
 
     private static final Cause CURSOR_RESET_PENDING = Causes.cause("Projection rebuild: group-cursor reset is not wired yet (arrives with the durable pub-sub"
-                                                                  + " operator surface, #386 D3) — rebuild refused rather than silently replaying nothing");
+                                                                  + " operator surface, #386 D3) — rebuild refused before touching the model, rather than"
+                                                                  + " clearing it and replaying nothing");
+
+    private static final ReplayCursor CURSOR_PENDING = new ReplayCursor() {
+        @Override
+        public Promise<ProjectionStore.ReplayRange> capture() {
+            return CURSOR_RESET_PENDING.promise();
+        }
+
+        @Override
+        public Promise<Unit> rewind(ProjectionStore.ReplayRange range) {
+            return CURSOR_RESET_PENDING.promise();
+        }
+    };
+
+    /// The group-cursor seam a rebuild drives (spec §10), supplied by the runtime once the D3 operator
+    /// surface exists. [#capture] reports what a rewind WILL replay without moving anything; [#rewind]
+    /// then sends the group's cursor back over exactly that range.
+    public interface ReplayCursor {
+        Promise<ProjectionStore.ReplayRange> capture();
+        Promise<Unit> rewind(ProjectionStore.ReplayRange range);
+    }
 
     private static final Cause CLAIMS_UNWIRED = Causes.cause("Projection: a context-carrying event arrived but no ProjectionClaims backing is wired, so the §8"
                                                             + " idempotency guard cannot run — refused rather than applying unguarded, because a projection"
@@ -129,6 +165,24 @@ public record Projection<S, T>(String name,
                                                                                      + " taken suppresses nothing, so the guarded apply is refused",
                                                                                       NonPositiveLease::new);
         }
+
+        /// A rebuild moved the generation while this fold was in flight, so its write was refused: the
+        /// fold read the pre-rebuild model. Retryable — a retry runs under the new generation, where
+        /// REBUILDING admission and the §8 claim decide it.
+        record StaleGeneration(Long generation, String message) implements ProjectionError {
+            static final Fn1<StaleGeneration, Long> FACTORY = Causes.forOneValue("Projection: fold keyed under generation %s was refused — a rebuild moved the"
+                                                                                + " generation while it was in flight",
+                                                                                 StaleGeneration::new);
+        }
+
+        /// The generation is REBUILDING and this write is not its partition's next replay offset, so it
+        /// was refused. Retryable — once the replay passes it (or the generation goes LIVE) a retry either
+        /// finds it already applied or applies it in order.
+        record Rebuilding(Long generation, String message) implements ProjectionError {
+            static final Fn1<Rebuilding, Long> FACTORY = Causes.forOneValue("Projection: generation %s is rebuilding and this write is not the next replay"
+                                                                           + " offset of its partition — refused so the replay stays the only, in-order writer",
+                                                                            Rebuilding::new);
+        }
     }
 
     /// Apply one durably-delivered event under the §8 claim — see the class doc for the guarantee,
@@ -153,33 +207,45 @@ public record Projection<S, T>(String name,
                                            .nanos() > 0)
                      .async()
                      .flatMap(_ -> store.generation())
-                     .flatMap(generation -> applyOnce(event,
-                                                      guard,
-                                                      new ClaimKey(name,
-                                                                   generation,
-                                                                   context.messageId())));
+                     .flatMap(generation -> applyOnce(new Delivery<>(event,
+                                                                     new ClaimKey(name,
+                                                                                  generation,
+                                                                                  context.messageId()),
+                                                                     new DeliveryPosition(context.partition(),
+                                                                                          context.offset())),
+                                                      guard));
     }
 
-    private Promise<Unit> applyOnce(T event, ClaimGuard guard, ClaimKey claimKey) {
+    /// One guarded delivery: the event, its claim key, and where it sits in the source partition.
+    private record Delivery<T>(T event, ClaimKey claimKey, DeliveryPosition position) {}
+
+    private Promise<Unit> applyOnce(Delivery<T> delivery, ClaimGuard guard) {
         return guard.backing()
-                    .claimIfAbsent(claimKey,
+                    .claimIfAbsent(delivery.claimKey(),
                                    guard.lease())
                     .flatMap(outcome -> resolveClaim(outcome,
-                                                     event,
-                                                     guard.backing(),
-                                                     claimKey));
+                                                     delivery,
+                                                     guard.backing()));
     }
 
-    private Promise<Unit> resolveClaim(ClaimOutcome outcome, T event, ProjectionClaims backing, ClaimKey claimKey) {
+    private Promise<Unit> resolveClaim(ClaimOutcome outcome, Delivery<T> delivery, ProjectionClaims backing) {
         return switch (outcome) {
-            case Claimed(var token) -> applyUnderClaim(event, backing, claimKey, token);
+            case Claimed(var token) -> applyUnderClaim(delivery, backing, token);
             case Held.DONE -> Promise.unitPromise();
             case Held.IN_PROGRESS -> CLAIM_IN_PROGRESS.promise();
         };
     }
 
-    private Promise<Unit> applyUnderClaim(T event, ProjectionClaims backing, ClaimKey claimKey, long token) {
-        return onEvent(event).fold(folded -> settleClaim(folded, backing, claimKey, token));
+    /// The fold is fenced on the CLAIM's generation, never a fresh read: a fold that re-read the
+    /// generation after a rebuild's bump would write legitimately under the new generation while the
+    /// replay applied the same event under a different claim key.
+    private Promise<Unit> applyUnderClaim(Delivery<T> delivery, ProjectionClaims backing, long token) {
+        return foldAt(delivery.event(),
+                      delivery.claimKey().generation(),
+                      Option.some(delivery.position())).fold(folded -> settleClaim(folded,
+                                                                                   backing,
+                                                                                   delivery.claimKey(),
+                                                                                   token));
     }
 
     /// Success finalizes; failure releases, then reports the FOLD's cause. Both carry the claim's token,
@@ -211,23 +277,47 @@ public record Projection<S, T>(String name,
 
     /// Apply one durably-delivered event: read the keyed state, fold, write back. **At-least-once
     /// applied** — no idempotency guard runs on this path, because without a [MessageContext] there is
-    /// no key to guard by. Use [#onEvent(Object, MessageContext)] for the guarded shape.
+    /// no key to guard by. Use [#onEvent(Object, MessageContext)] for the guarded shape. The write is
+    /// still generation-fenced, so a fold in flight across a rebuild cannot carry pre-rebuild state
+    /// into the rebuilt model; carrying no delivery position, it is refused while REBUILDING.
     public Promise<Unit> onEvent(T event) {
+        return store.generation()
+                    .flatMap(generation -> foldAt(event,
+                                                  generation,
+                                                  Option.none()));
+    }
+
+    /// Read the keyed state, fold, and write it back under the store's generation fence and REBUILDING
+    /// admission ([ProjectionStore]).
+    private Promise<Unit> foldAt(T event, long generation, Option<DeliveryPosition> position) {
         var eventKey = key.apply(event);
 
         return store.read(eventKey)
                     .flatMap(current -> store.write(eventKey,
-                                                    fold.apply(current, event)));
+                                                    fold.apply(current, event),
+                                                    generation,
+                                                    position))
+                    .flatMap(outcome -> writeAccepted(outcome, generation));
     }
 
-    /// Bump generation → reset read model → reset the group cursor. Order is load-bearing: the
-    /// generation moves FIRST so every replayed event lands under the new generation's idempotency
-    /// keys instead of being dedup'd into a no-op by the prior pass's
-    /// claims.
+    /// ALREADY_APPLIED is a success: while REBUILDING an offset below its partition's next replay offset
+    /// was applied exactly once already, so finalizing its claim is correct and re-applying is not.
+    private static Promise<Unit> writeAccepted(WriteOutcome outcome, long generation) {
+        return switch (outcome) {
+            case WRITTEN, ALREADY_APPLIED -> Promise.unitPromise();
+            case STALE_GENERATION -> ProjectionError.StaleGeneration.FACTORY.apply(generation).promise();
+            case REBUILDING -> ProjectionError.Rebuilding.FACTORY.apply(generation).promise();
+        };
+    }
+
+    /// Capture the replay range → reset the store to a new generation, REBUILDING over it, in one step →
+    /// rewind the cursor. Capture comes first so the range exists before the reset needs it, and a
+    /// refused capture touches nothing; the rewind comes LAST so no replay delivery arrives while the
+    /// old generation is still current.
     public Promise<Unit> rebuild() {
-        return store.bumpGeneration()
-                    .flatMap(_ -> store.reset())
-                    .flatMap(_ -> cursorReset.apply());
+        return replayCursor.capture()
+                           .ensureWith(store::resetToNewGeneration)
+                           .flatMap(replayCursor::rewind);
     }
 
     public static <T> Builder<T> of(Topic<T> topic) {
@@ -240,7 +330,7 @@ public record Projection<S, T>(String name,
     /// its lease can be overlapped by a reclaiming attempt's fold. Its ratio to the redelivery budget
     /// decides whether a stuck claim is reclaimed by a retry or by a DLQ redrive (class doc).
     public Projection<S, T> withClaims(ProjectionClaims backing, TimeSpan lease) {
-        return new Projection<>(name, topic, store, key, fold, cursorReset, Option.some(new ClaimGuard(backing, lease)));
+        return new Projection<>(name, topic, store, key, fold, replayCursor, Option.some(new ClaimGuard(backing, lease)));
     }
 
     /// The claims backing paired with the lease every claim is taken for.
@@ -260,21 +350,13 @@ public record Projection<S, T>(String name,
         }
 
         public Projection<S, T> apply(String projectionName, Fn2<S, Option<S>, T> fold) {
-            return new Projection<>(projectionName,
-                                    topic,
-                                    store,
-                                    key,
-                                    fold,
-                                    () -> CURSOR_RESET_PENDING.promise(),
-                                    Option.none());
+            return new Projection<>(projectionName, topic, store, key, fold, CURSOR_PENDING, Option.none());
         }
 
-        /// Deployment-wired variant: the cursor-reset seam is supplied by the runtime once the
-        /// operator surface exists; tests supply a recording stub.
-        public Projection<S, T> apply(String projectionName,
-                                      Fn2<S, Option<S>, T> fold,
-                                      Fn0<Promise<Unit>> cursorReset) {
-            return new Projection<>(projectionName, topic, store, key, fold, cursorReset, Option.none());
+        /// Deployment-wired variant: the replay cursor is supplied by the runtime once the operator
+        /// surface exists; tests supply a recording stub.
+        public Projection<S, T> apply(String projectionName, Fn2<S, Option<S>, T> fold, ReplayCursor replayCursor) {
+            return new Projection<>(projectionName, topic, store, key, fold, replayCursor, Option.none());
         }
     }
 }
