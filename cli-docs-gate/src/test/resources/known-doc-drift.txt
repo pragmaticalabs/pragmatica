@@ -40,11 +40,16 @@
 #     the docs gets the opposite behaviour.
 #   * `aether blueprint set` and `aether artifact upload` - unlike the ten above, `blueprints set` and
 #     `artifacts upload` do not exist either, so there is no mechanical target to rename to.
-#   * `aether stream create` and its siblings in in-memory-streams-spec.md - the CLI ships BOTH an
-#     `aether stream` and an `aether streams` tree with divergent subcommands (#951). That spec is
-#     written against the singular tree throughout; renaming one line to the plural would leave the
-#     document internally inconsistent while four sibling commands remain absent under either tree.
-#     Resolved by #951, deliberately not by this pass.
+#   * `aether stream create`'s SIBLINGS in in-memory-streams-spec.md. The command itself is no longer
+#     waived: #1224 implemented `aether stream create` on the singular tree — the tree this spec was
+#     written against — so that entry was stale and has been deleted.
+#     What remains absent is `--replication` ON that command, waived just below alongside `lag`,
+#     `migrate`, `repartition` and `set-replication`. Replication factor is not configurable at
+#     create time: the create path builds a StreamConfig with partitions and retention only. The
+#     spec describes the target state, and a reader who copies that line still gets a working
+#     stream, just without the replication argument.
+#     The dual-tree cause (#951) is unchanged: the CLI still ships BOTH `aether stream` and
+#     `aether streams` with divergent subcommands. Removing the old tree is separate work.
 #   * The remaining absent commands (`aether aspects`, `topic(s)`, `forge`, `logs`, `workflows`,
 #     `landscape`, `cluster audit/heal/api-key/unregister`, `workers health/endpoints`,
 #     `nodes decommission`, `jbct add`, ...) are surfaces the documentation describes and the CLI
@@ -187,11 +192,11 @@ aether/docs/specs/event-stream-namespaces-spec.md	command: aether stream peek
 aether/docs/specs/harness-resilience-spec.md	command: aether node
 
 # --- aether/docs/specs/in-memory-streams-spec.md ---
-aether/docs/specs/in-memory-streams-spec.md	command: aether stream create
 aether/docs/specs/in-memory-streams-spec.md	command: aether stream lag
 aether/docs/specs/in-memory-streams-spec.md	command: aether stream migrate
 aether/docs/specs/in-memory-streams-spec.md	command: aether stream repartition
 aether/docs/specs/in-memory-streams-spec.md	command: aether stream set-replication
+aether/docs/specs/in-memory-streams-spec.md	option: --replication on aether stream create
 
 # --- aether/docs/specs/integration-test-overhaul-v2-spec.md ---
 aether/docs/specs/integration-test-overhaul-v2-spec.md	command: aether cluster heal

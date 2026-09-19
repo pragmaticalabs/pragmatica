@@ -290,7 +290,13 @@ _fork_bounded() {
     [ "$secs" -lt 1 ] 2>/dev/null && secs=1
     "$@" &
     local cpid=$!
-    ( sleep "$secs"; kill -TERM "$cpid" 2>/dev/null || true; sleep 0.2; kill -KILL "$cpid" 2>/dev/null || true ) &
+    # `command sleep`, not bare `sleep`: this subshell is a fork of the caller's own
+    # interpreter, so a caller-defined shell function named `sleep` (e.g. the chaos
+    # harness's virtual-clock stub, which bumps $SECONDS with zero real delay) would
+    # otherwise be inherited here too, making the watchdog fire in the same instant
+    # it forks regardless of $secs and killing "$@" on effectively every call.
+    # `command` bypasses shell-function lookup and always reaches the real binary.
+    ( command sleep "$secs"; kill -TERM "$cpid" 2>/dev/null || true; command sleep 0.2; kill -KILL "$cpid" 2>/dev/null || true ) &
     local wpid=$!
     local rc
     wait "$cpid" 2>/dev/null && rc=0 || rc=$?
@@ -945,11 +951,16 @@ wait_for() {
                 read_failures=$((read_failures + 1))
                 last_value="<read failed: ${value_cmd} killed at ${WAIT_FOR_REMAINING}s bound, no value>"
                 unset WAIT_FOR_VALUE
-            elif [ "$value_rc" -eq 0 ]; then
+            elif [ "$value_rc" -eq 0 ] && [ -s "$valuefile" ]; then
                 value=$(cat "$valuefile" 2>/dev/null)
                 last_value="$value"
                 export WAIT_FOR_VALUE="$value"
             else
+                # Either value_rc != 0, or the reader exited 0 but printed
+                # nothing (valuefile still empty from this iteration's
+                # truncation) — _wait_for_poll_once treats that as no value
+                # obtained and never evaluates check_cmd, so wait_for must
+                # count it as a failed read rather than a successful empty one.
                 read_failures=$((read_failures + 1))
                 last_value="<read failed: ${value_cmd} rc=${value_rc}, no value>"
                 unset WAIT_FOR_VALUE

@@ -23,3 +23,14 @@
   catalog verb since #1044. Integration fixtures use the `integration` namespace — `system` is
   rejected by the server, and operator-created streams state their namespace explicitly rather than
   inheriting a default that silently meant `system:<name>:1.0.0`.
+- **A doc-drift waiver became stale by being fixed.** `in-memory-streams-spec.md` documents
+  `aether stream create`, which did not exist — so it sat waived in `known-doc-drift.txt` pending
+  #951's dual-tree resolution. Implementing the command made that waiver stale and exposed the drift
+  beneath it: `--replication` is not an option on create, because the create path builds a
+  `StreamConfig` with partitions and retention only. The command waiver is deleted and the option is
+  waived alongside its still-absent siblings (`lag`, `migrate`, `repartition`, `set-replication`).
+- `WAIVED_FINDINGS_DIGEST` is updated in the same commit, as `waiverAndBaseline_canOnlyShrink`
+  requires. That check earns its keep here: removing one waiver and adding another leaves the entry
+  COUNT unchanged, which is invisible to every other check in the gate — nothing unwaived, nothing
+  stale — and is exactly how new drift would be silenced by a diff that reads like a document being
+  fixed. It is pinned by digest precisely so a same-size substitution cannot pass unexamined.
