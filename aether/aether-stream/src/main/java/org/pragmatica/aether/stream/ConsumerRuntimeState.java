@@ -634,9 +634,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     }
 
     /// One pass of the loop. `dirty` is cleared BEFORE the read, so an append that lands after the read
-    /// re-arms it and [#afterDrainPass] runs another pass rather than stranding that event. The
-    /// continuation is an `onResult` handler, which runs on another thread — a fresh stack per pass, so
-    /// draining an arbitrarily deep backlog cannot grow the stack.
+    /// re-arms it and [#afterDrainPass] runs another pass rather than stranding that event.
     @Contract
     private void drainPass(ConsumerKey key, ConsumerState state) {
         state.clearDirty();
@@ -651,15 +649,24 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     @Contract
     private void afterDrainPass(ConsumerKey key, ConsumerState state, boolean batchFull) {
         if (batchFull) {
-            drainPass(key, state);
+            continueDrain(key, state);
 
             return;
         }
 
         state.finishDrain();
         if (state.isDirty() && state.tryStartDrain()) {
-            drainPass(key, state);
+            continueDrain(key, state);
         }
+    }
+
+    /// The next pass runs on a scheduler thread, never inline: `onResult` on an ALREADY-resolved promise
+    /// (a local read plus a handler that returns a completed promise) runs its action on the calling
+    /// stack, so an inline continuation would recurse once per batch and a deep backlog could overflow
+    /// the stack.
+    @Contract
+    private void continueDrain(ConsumerKey key, ConsumerState state) {
+        SharedScheduler.schedule(() -> drainPass(key, state), TimeSpan.timeSpan(0).millis());
     }
 
     /// One poll cycle: read the partition, then deliver what came back. The returned promise resolves
