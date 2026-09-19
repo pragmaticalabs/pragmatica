@@ -26,7 +26,6 @@ import static org.pragmatica.aether.stream.forward.StreamForwardError.General.FO
 import static org.pragmatica.aether.stream.forward.StreamForwardError.General.READ_FORWARD_TIMEOUT;
 import static org.pragmatica.aether.stream.forward.StreamForwardError.General.STREAM_FORWARD_UNAVAILABLE;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward.publishForward;
-import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.catchupReadForward;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.readForward;
 import static org.pragmatica.lang.Option.option;
 
@@ -237,12 +236,14 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
                                                         long fromOffset,
                                                         int maxEvents) {
         return sendRead(sourceId,
-                        catchupReadForward(selfNodeId,
-                                           UUID.randomUUID().toString(),
-                                           streamName,
-                                           partition,
-                                           fromOffset,
-                                           maxEvents),
+                        readForward(selfNodeId,
+                                    UUID.randomUUID().toString(),
+                                    streamName,
+                                    partition,
+                                    fromOffset,
+                                    maxEvents,
+                                    false,
+                                    true),
                         "CATCHUP");
     }
 

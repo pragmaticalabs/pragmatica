@@ -29,7 +29,6 @@ import static org.pragmatica.aether.slice.StreamConfig.streamConfig;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.forward.StreamForwardHandler.streamForwardHandler;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward.publishForward;
-import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.catchupReadForward;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.readForward;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
 import static org.pragmatica.aether.stream.replication.ReplicationManager.replicationManager;
@@ -194,7 +193,7 @@ class StreamForwardHandlerTest {
 
         @Test
         void catchupReadForward_servesTheAppendedEvent() {
-            handler.onReadForward(catchupReadForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 0L, 10));
+            handler.onReadForward(readForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 0L, 10, false, true));
 
             var response = (ReadForwardResponse) sentMessages.getFirst().message();
 

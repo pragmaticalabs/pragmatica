@@ -39,7 +39,7 @@ final class DefaultReplicationManager implements ReplicationManager {
     private final Option<ReplicationBatcher> batcher;
     private final EarliestRetainedOffset earliestRetained;
     private final ConcurrentHashMap<PendingAckKey, PendingAck> pendingAcks = new ConcurrentHashMap<>();
-    private volatile AckObserver ackObserver = NO_ACK_OBSERVER;
+    private volatile Option<AckObserver> ackObserver = none();
 
     DefaultReplicationManager(NodeId governorId, ReplicaRegistry registry, ReplicationTransport transport) {
         this(governorId, registry, transport, none(), ALWAYS_PROMOTE);
@@ -99,14 +99,14 @@ final class DefaultReplicationManager implements ReplicationManager {
                                  ack.replicaId(),
                                  ack.confirmedOffset(),
                                  promotionState(ack));
-        ackObserver.acked(ack.streamName(), ack.partition());
+        ackObserver.onPresent(observer -> observer.acked(ack.streamName(), ack.partition()));
         resolvePendingAck(ack.streamName(), ack.partition(), ack.replicaId(), ack.confirmedOffset());
     }
 
     @Contract
     @Override
     public void observeAcks(AckObserver observer) {
-        ackObserver = observer;
+        ackObserver = some(observer);
     }
 
     /// A live ack promotes the replica to CAUGHT_UP only when its confirmed offset reaches back to the
@@ -203,14 +203,20 @@ final class DefaultReplicationManager implements ReplicationManager {
     /// The `minAcks`-th highest confirmed offset among the non-self replicas: every offset at or below it
     /// is covered by at least `minAcks` distinct peers.
     private long minAcksConfirmedOffset(String streamName, int partition, int minAcks) {
+        var descending = peerConfirmedDescending(streamName, partition);
+
+        return descending.size() >= minAcks
+               ? descending.get(minAcks - 1)
+               : -1L;
+    }
+
+    private List<Long> peerConfirmedDescending(String streamName, int partition) {
         var byNode = confirmedByNode(streamName, partition);
 
         return replicationTargets(streamName, partition).stream()
-                                 .map(nodeId -> byNode.getOrDefault(nodeId, -1L))
-                                 .sorted(Comparator.reverseOrder())
-                                 .skip(minAcks - 1)
-                                 .findFirst()
-                                 .orElse(-1L);
+                                                        .map(nodeId -> byNode.getOrDefault(nodeId, -1L))
+                                                        .sorted(Comparator.reverseOrder())
+                                                        .toList();
     }
 
     private Map<NodeId, Long> confirmedByNode(String streamName, int partition) {

@@ -39,8 +39,6 @@ public interface ReplicationManager extends AutoCloseable {
         void acked(String streamName, int partition);
     }
 
-    AckObserver NO_ACK_OBSERVER = (_, _) -> {};
-
     /// Replicate one accepted owner-local append to the partition's replica set, carrying the owner's
     /// `ownerEpoch` fencing token (#345 item 1d-ii) so each replica fences a deposed owner's batch
     /// against its own partition high-water before landing it.

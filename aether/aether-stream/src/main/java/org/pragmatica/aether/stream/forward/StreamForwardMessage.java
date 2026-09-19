@@ -139,13 +139,22 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                    false);
         }
 
-        public static ReadForward catchupReadForward(NodeId sender,
-                                                     String correlationId,
-                                                     String streamName,
-                                                     int partition,
-                                                     long fromOffset,
-                                                     int maxEvents) {
-            return new ReadForward(sender, correlationId, streamName, partition, fromOffset, maxEvents, false, true);
+        public static ReadForward readForward(NodeId sender,
+                                              String correlationId,
+                                              String streamName,
+                                              int partition,
+                                              long fromOffset,
+                                              int maxEvents,
+                                              boolean linearizable,
+                                              boolean catchup) {
+            return new ReadForward(sender,
+                                   correlationId,
+                                   streamName,
+                                   partition,
+                                   fromOffset,
+                                   maxEvents,
+                                   linearizable,
+                                   catchup);
         }
     }
 
