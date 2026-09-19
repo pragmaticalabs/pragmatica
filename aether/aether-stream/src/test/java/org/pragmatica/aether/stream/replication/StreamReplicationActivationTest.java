@@ -95,8 +95,7 @@ class StreamReplicationActivationTest {
                                                     forwardClient,
                                                     OWNER,
                                                     ownerResolver,
-                                                    noHrwResolver,
-                                                    0);
+                                                    noHrwResolver);
     }
 
     @Test
@@ -153,8 +152,7 @@ class StreamReplicationActivationTest {
                                                           Option.some(forwardClient),
                                                           OWNER,
                                                           resolver(REPLICA),
-                                                          noHrwResolver,
-                                                          0);
+                                                          noHrwResolver);
 
         var result = access.publish("forwarded".getBytes()).await();
 
@@ -289,8 +287,7 @@ class StreamReplicationActivationTest {
                                                     Option.none(),
                                                     OWNER,
                                                     resolver(OWNER),
-                                                    noHrwResolver,
-                                                    1);
+                                                    noHrwResolver);
     }
 
     private PartitionedStreamAccess<byte[]> hrwAccess(Function<Integer, Option<NodeId>> partitionOwnerResolver,
@@ -304,8 +301,7 @@ class StreamReplicationActivationTest {
                                                     forwardClient,
                                                     OWNER,
                                                     Option.none(),
-                                                    Option.some(partitionOwnerResolver),
-                                                    0);
+                                                    Option.some(partitionOwnerResolver));
     }
 
     private static Function<Integer, Option<NodeId>> hrwResolver(NodeId owner) {

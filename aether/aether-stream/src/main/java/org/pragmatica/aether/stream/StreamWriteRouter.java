@@ -4,34 +4,43 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.util.function.Function;
+
 import org.pragmatica.aether.stream.ForwardingReadRouter.OwnerResolver;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
 
-/// Raw-payload WRITE router — the publish-side mirror of {@link StreamReadRouter}. Holds the
-/// owner-routing decision for a management/API publish exactly once so it cannot drift from the app
-/// publish path: when this node is the partition's owner it appends locally (and awaits the min-sync
-/// barrier); otherwise it write-forwards to the HRW owner via {@link StreamForwardClient} — the SAME
-/// deterministic owner the read router ({@link StreamReadRouter}) and the app publisher
-/// ({@link DefaultStreamPublisher}) route to.
+/// The ONE owner-routed stream write operation (#1263). All three write entry points delegate here —
+/// the management/API publish directly, the slice {@link DefaultStreamPublisher} and
+/// `StreamAccess.publish` ({@link PartitionedStreamAccess}) after encoding the event and picking its
+/// partition — so owner routing, the STRONG refusal (#1262), write-forwarding with the bounded retry
+/// ({@link StreamForwardRetry}), the committed-owner redirect (#1230) and the min-sync barrier are decided
+/// once and cannot drift between paths. It is also the publish-side mirror of {@link StreamReadRouter}:
+/// when this node is the partition's owner it appends locally and awaits the barrier; otherwise it
+/// write-forwards to the HRW owner via {@link StreamForwardClient} — the SAME deterministic owner the read
+/// router routes to.
+///
+/// The min-sync barrier is the stream's committed `min-sync-replicas`, read live on every publish, never a
+/// value frozen into an entry point at construction. An unknown self never forwards: with no identity to
+/// compare against, "the owner is someone else" cannot be established, so the write lands locally and the
+/// committed-owner admission decides.
 ///
 /// Since #265 made non-owner nodes metadata-only, a management publish landing on an arbitrary node
 /// (the harness hits any node's mgmt API) must reach the owner instead of failing
 /// {@link StreamError.General#PARTITION_NOT_LOCAL} on {@code publishLocal}.
 public final class StreamWriteRouter {
-    private static final NodeId NO_SELF = new NodeId("__no_self__");
-
     private final StreamPartitionManager partitionManager;
     private final Option<StreamForwardClient> forwardClient;
-    private final NodeId selfNodeId;
+    private final Option<NodeId> selfNodeId;
     private final OwnerResolver ownerResolver;
 
     private StreamWriteRouter(StreamPartitionManager partitionManager,
                               Option<StreamForwardClient> forwardClient,
-                              NodeId selfNodeId,
+                              Option<NodeId> selfNodeId,
                               OwnerResolver ownerResolver) {
         this.partitionManager = partitionManager;
         this.forwardClient = forwardClient;
@@ -43,13 +52,32 @@ public final class StreamWriteRouter {
                                                       Option<StreamForwardClient> forwardClient,
                                                       NodeId selfNodeId,
                                                       OwnerResolver ownerResolver) {
+        return new StreamWriteRouter(partitionManager, forwardClient, Option.some(selfNodeId), ownerResolver);
+    }
+
+    /// Entry-point overload for the typed publishers, whose self identity may be unknown (#1263).
+    public static StreamWriteRouter streamWriteRouter(StreamPartitionManager partitionManager,
+                                                      Option<StreamForwardClient> forwardClient,
+                                                      Option<NodeId> selfNodeId,
+                                                      OwnerResolver ownerResolver) {
         return new StreamWriteRouter(partitionManager, forwardClient, selfNodeId, ownerResolver);
     }
 
     /// Minimal-runtime / test writer: no forward client, always appends locally. Mirrors
     /// {@link StreamReadRouter#localOnly}.
     public static StreamWriteRouter localOnly(StreamPartitionManager partitionManager) {
-        return new StreamWriteRouter(partitionManager, Option.none(), NO_SELF, (_, _) -> Option.none());
+        return new StreamWriteRouter(partitionManager, Option.none(), Option.none(), (_, _) -> Option.none());
+    }
+
+    /// The typed publishers' owner rule (#47/#467), once: prefer the partition-aware HRW resolver (the SAME
+    /// `ReplicaSetController` placement that owns the replica set), falling back to the arg-less leader
+    /// resolver only when no HRW resolver is wired (legacy / minimal runtimes). [Option#none] from both keeps
+    /// the fail-soft local write.
+    static Option<NodeId> hrwOwner(Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
+                                   Option<Fn0<Option<NodeId>>> fallbackResolver,
+                                   int partition) {
+        return partitionOwnerResolver.flatMap(resolver -> resolver.apply(partition))
+                                     .orElse(() -> fallbackResolver.flatMap(Fn0::apply));
     }
 
     /// Publish `payload` to `(streamName, partition)`, resolving to the assigned offset. Routes by
@@ -70,9 +98,16 @@ public final class StreamWriteRouter {
 
     private Promise<Long> routePublish(String streamName, int partition, byte[] payload, long timestamp) {
         return ownerResolver.resolve(streamName, partition)
-                            .filter(owner -> !owner.equals(selfNodeId))
+                            .filter(this::isRemote)
                             .flatMap(owner -> forwardTo(owner, streamName, partition, payload, timestamp))
                             .or(() -> publishLocal(streamName, partition, payload, timestamp));
+    }
+
+    /// Forwardable only when known to differ from this node; a self owner, or an unknown self, never forwards,
+    /// so the send-to-self QUIC drop (which hangs the forward) cannot occur.
+    private boolean isRemote(NodeId owner) {
+        return selfNodeId.map(self -> !owner.equals(self))
+                         .or(false);
     }
 
     private Promise<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {

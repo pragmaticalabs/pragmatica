@@ -415,7 +415,6 @@ class PartitionedStreamAccessTest {
                                                         SELF,
                                                         Option.some(() -> owner),
                                                         Option.none(),
-                                                        0,
                                                         Option.none(),
                                                         Option.none(),
                                                         registry);

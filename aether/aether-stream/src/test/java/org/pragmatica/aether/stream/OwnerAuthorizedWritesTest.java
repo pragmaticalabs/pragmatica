@@ -196,8 +196,7 @@ class OwnerAuthorizedWritesTest {
                                                           Option.some(forwardClient),
                                                           SELF,
                                                           Option.<Fn0<Option<NodeId>>> none(),
-                                                          Option.some(ownerResolver),
-                                                          0)
+                                                          Option.some(ownerResolver))
                                    .publish("e0".getBytes())
                                    .await()
                                    .onFailureRun(Assertions::fail)
@@ -217,7 +216,6 @@ class OwnerAuthorizedWritesTest {
                                                       Option.<Function<byte[], Object>> none(),
                                                       ConsistencyMode.EVENTUAL,
                                                       Option.none(),
-                                                      0,
                                                       Option.some(forwardClient),
                                                       Option.<Fn0<Option<NodeId>>> none(),
                                                       Option.some(ownerResolver),
