@@ -257,9 +257,10 @@ class PartitionFencedDurableEntityTimerTest {
         /// discarded the extras only once they finally ran, so a wedged key's queue grew without bound.
         ///
         /// The key's tail is held by an update parked in its append. Every task that runs a fire drives the
-        /// partition's readiness gate first, which asks the substrate `holdsPartition` exactly once, so after
-        /// the ticks the count of those calls up to and including one settling read — queued behind all of
-        /// them on the same tail — is the number of queued fires plus one.
+        /// partition's readiness gate first, which asks the substrate `holdsPartition` exactly once. A read
+        /// asks twice — once to route, once at its own readiness gate — so after the ticks, the count up to
+        /// and including one settling read queued behind all of them on the same tail is the number of
+        /// queued fires plus two. Before the fix, five ticks gave 7 (five fires); now 3 (one).
         @Test
         void fireDueTimers_queuesOneFire_whileTheKeysTailIsStalled() {
             var entity = seededEntity();
@@ -282,8 +283,8 @@ class PartitionFencedDurableEntityTimerTest {
             stalled.await().onFailure(PartitionFencedDurableEntityTimerTest::failCause);
             settle(entity, "k1");
 
-            assertThat(substrate.holdsChecks() - holdsBefore).as("queued fires + the settling read")
-                                                             .isEqualTo(2);
+            assertThat(substrate.holdsChecks() - holdsBefore).as("queued fires + the settling read's two checks")
+                                                             .isEqualTo(3);
             assertThat(substrate.opsOf(EntityLogRecord.Op.TIMER_FIRE)).isEqualTo(1);
         }
 
