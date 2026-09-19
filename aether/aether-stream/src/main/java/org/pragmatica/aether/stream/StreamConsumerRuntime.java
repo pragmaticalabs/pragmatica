@@ -85,6 +85,8 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     /// (#1266) are the holds that stop the delivery loop while a failed head event is being resolved —
     /// a dead-letter append outstanding, or a retry scheduled — so a HELD partition never reads as an
     /// idle one (both are `false` with the cursor frozen when the partition is merely quiet).
+    /// `awaitingCursorFetch` (rev1272 F7 follow-up) is the third non-delivering state: this subscription
+    /// has not STARTED, because its cursor fetch keeps failing and is being retried.
     record SubscriptionSnapshot(String streamName,
                                 int partition,
                                 String consumerGroup,
@@ -93,7 +95,8 @@ public interface StreamConsumerRuntime extends AutoCloseable {
                                 IdlePolicy idlePolicy,
                                 Option<String> lastCursorCommitFailure,
                                 boolean deadLetterInFlight,
-                                boolean retryInFlight) {}
+                                boolean retryInFlight,
+                                boolean awaitingCursorFetch) {}
 
     /// Whether the idle reaper may unsubscribe a consumer that has not polled recently.
     ///

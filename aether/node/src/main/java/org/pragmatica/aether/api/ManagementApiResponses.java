@@ -864,13 +864,16 @@ public sealed interface ManagementApiResponses {
     /// detail while the consumer stays attached, empty when its last commit succeeded — same
     /// empty-for-absent convention as `DeclarativeConsumerDetail#diagnostic`. `deadLetterInFlight` /
     /// `retryInFlight` (#1266): the delivery loop is held behind a dead-letter append or a scheduled
-    /// retry of the head event — a frozen offset with both `false` is a quiet partition.
+    /// retry of the head event — a frozen offset with all three `false` is a quiet partition.
+    /// `awaitingCursorFetch`: the consumer has not started at all, because its cursor fetch keeps failing
+    /// and is being retried.
     record DeclarativeConsumerPartition(int partition,
                                         long committedOffset,
                                         boolean stalled,
                                         String lastCursorCommitFailure,
                                         boolean deadLetterInFlight,
-                                        boolean retryInFlight) {}
+                                        boolean retryInFlight,
+                                        boolean awaitingCursorFetch) {}
 
     /// Per-stream hydration row: `partitionsDeclared` the configured partition count,
     /// `ringsMaterialized` the rings actually built on this node (gated below declared on non-replicas),

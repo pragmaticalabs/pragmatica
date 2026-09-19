@@ -201,7 +201,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                         state.idlePolicy(),
                                         state.lastCursorCommitFailure(),
                                         state.isDeadLetterInFlight(),
-                                        state.isRetryInFlight());
+                                        state.isRetryInFlight(),
+                                        state.isAwaitingCursorFetch());
     }
 
     @Override
@@ -443,6 +444,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// starts from offset 0 on a failed fetch, which replayed the whole retained partition.
     @Contract
     private void fetchCursorAndStart(ConsumerCursorStore store, ConsumerKey key, ConsumerState state, int attempt) {
+        state.markAwaitingCursorFetch();
         lifted(() -> store.fetch(key.groupId(), key.streamName(), key.partition())).onResult(result -> applyCursorAndStart(result,
                                                                                                                            store,
                                                                                                                            key,
@@ -462,6 +464,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     @Contract
     private void startFromCursor(ConsumerKey key, ConsumerState state, Option<Long> cursor) {
+        state.clearAwaitingCursorFetch();
         cursor.onPresent(state::advanceCursor);
         startConsumer(key, state);
     }
@@ -1201,6 +1204,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         private final AtomicBoolean deadLetterInFlight = new AtomicBoolean(false);
         /// #1238: a retry of the head event is scheduled — holds the loop like [#deadLetterInFlight].
         private final AtomicBoolean retryInFlight = new AtomicBoolean(false);
+        /// rev1272 F7 follow-up: the subscribe-time cursor fetch has not succeeded yet.
+        private final AtomicBoolean awaitingCursorFetch = new AtomicBoolean(false);
         /// #1238: a delivery pass is running; only the false->true flip starts one.
         private final AtomicBoolean drainRunning = new AtomicBoolean(false);
         /// #1238: something may have arrived since the running pass read.
@@ -1387,6 +1392,23 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
         boolean isRetryInFlight() {
             return retryInFlight.get();
+        }
+
+        /// rev1272 F7 follow-up: this consumer has not STARTED, because its cursor fetch has not succeeded
+        /// yet and is being retried. Without it a stuck consumer reads as an idle one — cursor 0, nothing
+        /// stalled, no holds — which is the confusion the delivery holds exist to remove.
+        boolean isAwaitingCursorFetch() {
+            return awaitingCursorFetch.get();
+        }
+
+        @Contract
+        void markAwaitingCursorFetch() {
+            awaitingCursorFetch.set(true);
+        }
+
+        @Contract
+        void clearAwaitingCursorFetch() {
+            awaitingCursorFetch.set(false);
         }
 
         @Contract

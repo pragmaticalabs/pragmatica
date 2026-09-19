@@ -171,13 +171,15 @@ public interface StreamConsumerManager {
     /// or if none has failed. Sourced from
     /// [org.pragmatica.aether.stream.StreamConsumerRuntime.SubscriptionSnapshot#lastCursorCommitFailure].
     /// `deadLetterInFlight` / `retryInFlight` (#1266): the holds currently stopping this partition's
-    /// delivery loop, so a held partition is distinguishable from a quiet one.
+    /// delivery loop, so a held partition is distinguishable from a quiet one. `awaitingCursorFetch`: the
+    /// consumer has not started at all, because its cursor fetch keeps failing and is being retried.
     record PartitionCursor(int partition,
                            long cursor,
                            boolean stalled,
                            Option<String> lastCursorCommitFailure,
                            boolean deadLetterInFlight,
-                           boolean retryInFlight) {}
+                           boolean retryInFlight,
+                           boolean awaitingCursorFetch) {}
 
     /// Who consumes one partition, and who owns it. Both are computed locally and identically on every
     /// node, so a single call to any node answers "who consumes partition 3, and does it read locally?"
@@ -762,7 +764,8 @@ public interface StreamConsumerManager {
                                                                                     snapshot.stalled(),
                                                                                     snapshot.lastCursorCommitFailure(),
                                                                                     snapshot.deadLetterInFlight(),
-                                                                                    snapshot.retryInFlight()),
+                                                                                    snapshot.retryInFlight(),
+                                                                                    snapshot.awaitingCursorFetch()),
                                                     (first, _) -> first));
         }
 

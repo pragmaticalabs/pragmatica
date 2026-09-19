@@ -1511,6 +1511,61 @@ class StreamConsumerRuntimeTest {
             }
         }
 
+        /// rev1272 F7 follow-up: a consumer whose cursor fetch keeps failing is retrying, not idle, and the
+        /// snapshot says so — cursor 0 with nothing stalled is otherwise indistinguishable from a quiet
+        /// partition. It clears once the store answers.
+        @Test
+        void subscribe_reportsAwaitingCursorFetch_whileTheCursorStoreKeepsFailing() throws InterruptedException {
+            createTestStream("orders");
+            var failing = new AtomicBoolean(true);
+            var store = new ConsumerCursorStore() {
+                @Override
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    return Promise.success(CommitOutcome.persisted());
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return failing.get()
+                           ? StreamError.General.BUFFER_EMPTY.promise()
+                           : Promise.success(none());
+                }
+            };
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            try {
+                observedRuntime.subscribe("orders",
+                                          0,
+                                          ConsumerConfig.consumerConfig("group-1"),
+                                          (offset, payload, ts) -> recordOffset(delivered, offset));
+                manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+                Thread.sleep(150);
+                assertThat(observedRuntime.subscriptions()).singleElement()
+                          .satisfies(snapshot -> {
+                                         assertThat(snapshot.awaitingCursorFetch()).describedAs("a consumer stuck retrying its cursor fetch must not read as idle")
+                                                   .isTrue();
+                                         assertThat(snapshot.stalled()).isFalse();
+                                         assertThat(snapshot.cursor()).isZero();
+                                     });
+                assertThat(delivered).describedAs("it has not started, so nothing is delivered yet").isEmpty();
+
+                failing.set(false);
+
+                var deadline = System.currentTimeMillis() + 5_000;
+
+                while (delivered.isEmpty() && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertThat(delivered).containsExactly(0L);
+                assertThat(observedRuntime.subscriptions()).singleElement()
+                          .satisfies(snapshot -> assertThat(snapshot.awaitingCursorFetch()).describedAs("cleared once the store answered")
+                                                           .isFalse());
+            } finally {
+                observedRuntime.close();
+            }
+        }
+
         private static Promise<Unit> recordOffset(List<Long> delivered, long offset) {
             delivered.add(offset);
 

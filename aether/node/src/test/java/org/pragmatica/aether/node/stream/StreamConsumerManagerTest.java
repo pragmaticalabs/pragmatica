@@ -782,11 +782,11 @@ class StreamConsumerManagerTest {
             assertThat(manager.activeSubscriptionCount()).isZero();
         }
 
-        /// #1266: the delivery holds reach the per-partition status the declarative-consumers route
-        /// renders, each from its OWN snapshot field — set them asymmetrically so a swapped or dropped
-        /// mapping shows.
+        /// #1266 and rev1272 F7 follow-up: every non-delivering state reaches the per-partition status
+        /// the declarative-consumers route renders, each from its OWN snapshot field — set one at a time
+        /// so a swapped or dropped mapping shows.
         @Test
-        void statuses_carryEachDeliveryHold_fromItsOwnSnapshotField() {
+        void statuses_carryEachNonDeliveringState_fromItsOwnSnapshotField() {
             declareStringConsumer();
             deploySliceLocally();
             ownership.ownedBySelf(0);
@@ -794,19 +794,29 @@ class StreamConsumerManagerTest {
             var manager = manager();
 
             manager.reconcile();
-            runtime.holds(true, false);
+            runtime.states(true, false, false);
             assertThat(manager.statuses()).singleElement()
                       .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
                                                                                   .satisfies(cursor -> {
                                                                                                  assertThat(cursor.deadLetterInFlight()).isTrue();
                                                                                                  assertThat(cursor.retryInFlight()).isFalse();
+                                                                                                 assertThat(cursor.awaitingCursorFetch()).isFalse();
                                                                                              }));
-            runtime.holds(false, true);
+            runtime.states(false, true, false);
             assertThat(manager.statuses()).singleElement()
                       .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
                                                                                   .satisfies(cursor -> {
                                                                                                  assertThat(cursor.deadLetterInFlight()).isFalse();
                                                                                                  assertThat(cursor.retryInFlight()).isTrue();
+                                                                                                 assertThat(cursor.awaitingCursorFetch()).isFalse();
+                                                                                             }));
+            runtime.states(false, false, true);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
+                                                                                  .satisfies(cursor -> {
+                                                                                                 assertThat(cursor.deadLetterInFlight()).isFalse();
+                                                                                                 assertThat(cursor.retryInFlight()).isFalse();
+                                                                                                 assertThat(cursor.awaitingCursorFetch()).isTrue();
                                                                                              }));
         }
 
@@ -905,10 +915,12 @@ class StreamConsumerManagerTest {
         private int subscribeCalls;
         private volatile boolean deadLetterHold;
         private volatile boolean retryHold;
+        private volatile boolean awaitingCursorFetch;
 
-        void holds(boolean deadLetter, boolean retry) {
+        void states(boolean deadLetter, boolean retry, boolean awaitingFetch) {
             deadLetterHold = deadLetter;
             retryHold = retry;
+            awaitingCursorFetch = awaitingFetch;
         }
 
         List<Integer> subscribedPartitions() {
@@ -977,7 +989,8 @@ class StreamConsumerManagerTest {
                                                                        IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
                                                                        Option.none(),
                                                                        deadLetterHold,
-                                                                       retryHold))
+                                                                       retryHold,
+                                                                       awaitingCursorFetch))
                                 .toList();
         }
 
