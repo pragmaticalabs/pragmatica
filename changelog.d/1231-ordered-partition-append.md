@@ -9,11 +9,15 @@
   offset order, and replicas receive events in offset order. Only the group-commit fsync is awaited
   after the section is released, so concurrent publishers still share fsyncs. The ring's own `append`,
   `appendBatch`, `seedHead` and retention sweeps take the same lock, as defence in depth. Append
-  listeners (the consumer runtime's push path) run only after the section is released, on each ring's
-  serial notifier thread and never on a publisher's thread, in offset order. A consumer handler may
-  therefore publish again, to its own partition or another, without deadlock and without breaking WAL
-  order; no publish waits for other publishers' listeners; and a listener that throws is logged without
-  failing any publish or stalling later notifications. The section never waits for an fsync.
+  listeners (the consumer runtime's push wake-up) run only after the section is released, on each ring's
+  serial notifier thread and never on a publisher's thread. A listener learns the offset the ring has
+  advanced to: pending notifications coalesce into one high-water offset, so a slow listener costs O(1)
+  state rather than one entry per publish. A consumer handler may therefore publish again, to its own
+  partition or another, without deadlock and without breaking WAL order, and no publish waits for other
+  publishers' listeners. A listener that throws, including an `Error` such as `StackOverflowError` or
+  `AssertionError`, is logged and counted (`OffHeapRingBuffer.appendListenerFailures`) without failing any
+  publish or stopping later notifications; only a JVM-level `VirtualMachineError` such as `OutOfMemoryError`
+  is rethrown, and the notifier still restarts for later offsets. The section never waits for an fsync.
   `[mechanism: offset assignment, frame write and send share the ring's appendLock; pinned in one JVM by
   StreamPartitionManagerOrderedAppendTest, OffHeapRingBufferConcurrentAppendTest and
   StreamPartitionManagerSectionReentrancyTest]`
@@ -30,7 +34,7 @@
   number them, so a reordered frame swapped payloads between offsets, and a missing or duplicated frame
   shifted every later record relative to replicas, sealed segments and consumer cursors. Recovery now
   places records by their stored offsets. A file whose frames are only out of order recovers correctly.
-  A frame file that needed reordering is WARNed. A gap before the file's first PHYSICAL record is
+  A frame file that needed reordering is WARNed. A gap before the file's lowest stored offset is
   accepted as reclaimed history, since retention removing every sealed segment drops the sealed floor
   below the WAL's first record: the gap reads as expired, it is WARNed with its range, and it is counted
   in `GET /api/v1/storage/retention` as `walRecoveryHeadGapsAccepted`. A missing offset while the file
