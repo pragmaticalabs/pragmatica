@@ -1211,7 +1211,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private boolean isBestEffort(String streamName, int partition) {
-        return !isDurableByName(streamName) && minSyncReplicasFor(streamName) < 2 && walFor(streamName, partition).isEmpty();
+        return ! isDurableByName(streamName)
+               && minSyncReplicasFor(streamName) < 2
+               && walFor(streamName, partition).isEmpty();
     }
 
     private static boolean isDurableByName(String streamName) {

@@ -7,7 +7,8 @@
   Durable topics (EVENTUAL) were affected.
 - The ring now reports a distinct `StreamError.General.EVENT_DROPPED` outcome instead of success, for
   both the single-event and the batch gate. A drop never reaches the WAL or replication, because both
-  run only on a successful append. [verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/StreamPartitionManagerFrozenRingDropTest.java]
+  run only on a successful append. [mechanism: `durablyLog` and `replicateEvent` sit behind the append's
+  success in `publishLocal`; pinned in-JVM by `StreamPartitionManagerFrozenRingDropTest`]
 - **Rule for which streams may absorb a drop.** `StreamConfig` has no explicit best-effort field, so the
   rule is derived. A drop **fails the publish** on any stream with durability semantics:
   `minSyncReplicas >= 2`, **or** a partition WAL, **or** an entity keyspace log (`entity:<keyspace>`),
@@ -17,12 +18,14 @@
   `StreamPartitionManager.refusedPublishDropsSinceBoot()`. Only the remaining app streams are
   best-effort: the drop is absorbed, the publish is acked at the unchanged head, the event is not stored,
   a WARN is logged, and `StreamPartitionManager.droppedEventsSinceBoot()` is incremented. Each clause has
-  its own test. [verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/StreamPartitionManagerFrozenRingDropTest.java]
-  [verified: aether/node/src/test/java/org/pragmatica/aether/node/StreamEntityLogSubstrateTest.java]
+  its own in-JVM test (`StreamPartitionManagerFrozenRingDropTest`, and
+  `StreamEntityLogSubstrateTest` through the real entity substrate). [mechanism: the rule is evaluated
+  on the owner in `StreamPartitionManager.handleDrop`] [unverified: multi-node — not run on a cluster]
 - **Replicas.** A replicated event that a replica's frozen ring cannot fit now fails `appendRecovered`
   with `EVENT_DROPPED`. It is never applied or WAL-written on that replica, and the refusal is logged at
-  WARN and counted in `StreamPartitionManager.refusedReplicaDropsSinceBoot()`.
-  [verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/StreamPartitionManagerFrozenRingDropTest.java]
+  WARN and counted in `StreamPartitionManager.refusedReplicaDropsSinceBoot()`. [mechanism:
+  `appendRecovered` runs `walReplicated` only on a successful append; pinned in-JVM by
+  `StreamPartitionManagerFrozenRingDropTest`]
   The receive handler still acks the events of the same batch that were applied before the refused one,
   then stops. Nothing at or after the refused event is acked.
   [mechanism: `ReplicationReceiveHandler.applyBatch` breaks on the first failed append, and the handler
@@ -36,8 +39,9 @@
 - **Partition bring-up.** Rebuilding a partition ring from its WAL now **fails the bring-up** when the
   WAL tail holds a record larger than the ring can grow to, because the pool refuses growth. The stream is
   then absent on that node rather than served with a hole. Before this change the record was silently
-  skipped and every later record shifted down one offset.
-  [verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/StreamPartitionManagerFrozenRingDropTest.java]
+  skipped and every later record shifted down one offset. [mechanism: WAL recovery appends through
+  the same ring gate, and the failure closes the partition's ring; pinned in-JVM by
+  `StreamPartitionManagerFrozenRingDropTest`]
 - The three counters are accessors only. They are not yet exported to the metrics pipeline or the
   Management API. [design intent — unverified]
 - **Operator recovery.** A refused publish, a refused replicated append, or a failed partition bring-up of
