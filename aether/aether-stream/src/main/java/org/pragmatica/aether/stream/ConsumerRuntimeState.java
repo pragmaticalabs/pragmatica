@@ -20,6 +20,7 @@ import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.CommitOutcome;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -578,7 +579,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                                       ConsumerCursorStore store,
                                                       Promise<CommitOutcome> predecessor) {
         state.clearCursorCommitFailure();
-        var commit = predecessor.fold(_ -> store.commit(key.groupId(), key.streamName(), key.partition(), state.cursor()));
+        var commit = predecessor.fold(_ -> lifted(() -> store.commit(key.groupId(),
+                                                                     key.streamName(),
+                                                                     key.partition(),
+                                                                     state.cursor())));
         var tracked = new TrackedCommit(key, state, commit, new AtomicBoolean(false));
 
         inFlightCommits.add(tracked);
@@ -673,13 +677,46 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     /// One pass of the loop. `dirty` is cleared BEFORE the read, so an append that lands after the read
     /// re-arms it and [#afterDrainPass] runs another pass rather than stranding that event.
+    ///
+    /// Review rev1272 F1: the pass ALWAYS ends in [#afterDrainPass], which is what releases `running`.
+    /// The synchronous part of the cycle runs inside a lift ([#guardedCycle]) — the finally-equivalent for
+    /// this task body — and every foreign call reached asynchronously (handler, read continuation,
+    /// delivery outcome, cursor store) is lifted where it is made, because a throw inside a Promise
+    /// continuation escapes on the resolving thread and the pass would never settle. A literal `finally`
+    /// here would be wrong: the pass usually continues after this method returns, and releasing `running`
+    /// then would start a second pass beside it.
     @Contract
     private void drainPass(ConsumerKey key, ConsumerState state) {
         state.clearDirty();
-        pollCycle(key, state).onFailure(cause -> logPollFailure(key, cause))
-                 .onResult(result -> afterDrainPass(key,
-                                                    state,
-                                                    result.or(false)));
+        guardedCycle(key, state).onResult(result -> afterDrainPass(key, state, result));
+    }
+
+    /// The pass's escape boundary: anything thrown synchronously out of [#pollCycle] — a reader that
+    /// throws instead of returning a failed promise, say — becomes a failed pass instead of escaping the
+    /// scheduler task with `running` still set.
+    private Promise<Boolean> guardedCycle(ConsumerKey key, ConsumerState state) {
+        return Result.lift(() -> pollCycle(key, state))
+                     .onFailure(cause -> passEscaped(key, state, cause))
+                     .async()
+                     .flatMap(cycle -> cycle);
+    }
+
+    /// A throw is a defect in the reader or runtime, not a routine read failure, hence WARNING; it also
+    /// backs off like a failed read, so a reader that keeps throwing cannot spin the poll loop.
+    private static void passEscaped(ConsumerKey key, ConsumerState state, Cause cause) {
+        state.adjustPollInterval(false);
+        LOG.log(System.Logger.Level.WARNING,
+                "Delivery pass for {0}[{1}] group {2} threw; released and retried: {3}",
+                key.streamName(),
+                key.partition(),
+                key.groupId(),
+                cause.message());
+    }
+
+    @Contract
+    private void afterDrainPass(ConsumerKey key, ConsumerState state, Result<Boolean> pass) {
+        pass.onSuccess(batchFull -> afterCompletedPass(key, state, batchFull))
+            .onFailure(cause -> afterFailedPass(key, state, cause));
     }
 
     /// Repeat while the read came back full (more is waiting behind it — the ring notifies ONCE per
@@ -687,13 +724,31 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// re-check of `dirty` after releasing closes the window in which an append saw `running` still set
     /// and left the work to this pass.
     @Contract
-    private void afterDrainPass(ConsumerKey key, ConsumerState state, boolean batchFull) {
+    private void afterCompletedPass(ConsumerKey key, ConsumerState state, boolean batchFull) {
         if (batchFull) {
             continueDrain(key, state);
 
             return;
         }
 
+        releaseDrain(key, state);
+    }
+
+    /// Review rev1272 F2: a push-mode consumer is re-driven only by appends, so a pass whose READ failed
+    /// — the subscribe kick's included — would strand everything already in the ring until the next
+    /// append. It is re-requested after the poll backoff instead; poll mode's own tick already does that.
+    @Contract
+    private void afterFailedPass(ConsumerKey key, ConsumerState state, Cause cause) {
+        logPollFailure(key, cause);
+        releaseDrain(key, state);
+        if (state.pushBuffer().isPresent() && !state.isCancelled() && !closed.get()) {
+            SharedScheduler.schedule(() -> requestDrain(key, state),
+                                     TimeSpan.timeSpan(state.currentPollMs.get()).millis());
+        }
+    }
+
+    @Contract
+    private void releaseDrain(ConsumerKey key, ConsumerState state) {
         state.finishDrain();
         if (state.isDirty() && state.tryStartDrain()) {
             continueDrain(key, state);
@@ -728,8 +783,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                            key.partition(),
                            state.cursor(),
                            MAX_POLL_BATCH)
-                     .fold(result -> result.fold(cause -> pollFailed(state, cause),
-                                                 events -> pollSucceeded(key, state, events)));
+                     .fold(result -> lifted(() -> result.fold(cause -> pollFailed(state, cause),
+                                                              events -> pollSucceeded(key, state, events))));
     }
 
     private Promise<Boolean> pollSucceeded(ConsumerKey key,
@@ -777,11 +832,26 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// form let the next event's delivery start before this one's cursor advance — and let a failure's
     /// hold ([#handleRetry], [#appendDeadLetterThenAdvance]) be set after the pass had already moved on.
     private Promise<Unit> deliverSingleEvent(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
-        return state.callback()
-                    .onEvent(event.offset(),
-                             event.data(),
-                             event.timestamp())
-                    .fold(result -> deliveryOutcome(key, state, event, result));
+        return invokeHandler(state, event).fold(result -> lifted(() -> deliveryOutcome(key, state, event, result)));
+    }
+
+    /// Review rev1272 F1: the handler is code this runtime does not own. A SYNCHRONOUS throw from it is a
+    /// failed delivery, handled by the error strategy (retry, then dead-letter) like any other — never an
+    /// exception escaping the pass.
+    private static Promise<Unit> invokeHandler(ConsumerState state, OffHeapRingBuffer.RawEvent event) {
+        return lifted(() -> state.callback()
+                                 .onEvent(event.offset(),
+                                          event.data(),
+                                          event.timestamp()));
+    }
+
+    /// Flattens a promise-returning call whose synchronous throw must surface as a failed promise — the
+    /// `Result.lift(...).async().flatMap(...)` idiom `StreamConsumerManager` uses for the topic-envelope
+    /// decode.
+    private static <T> Promise<T> lifted(Functions.ThrowingFn0<Promise<T>> call) {
+        return Result.lift(call)
+                     .async()
+                     .flatMap(promise -> promise);
     }
 
     private Promise<Unit> deliveryOutcome(ConsumerKey key,
@@ -853,11 +923,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return;
         }
 
-        state.callback()
-             .onEvent(event.offset(),
-                      event.data(),
-                      event.timestamp())
-             .onSuccess(_ -> completeRetry(key, state, event))
+        invokeHandler(state, event).onSuccess(_ -> completeRetry(key, state, event))
              .onFailure(cause -> handleRetryFailureAgain(key,
                                                          state,
                                                          event,
