@@ -4,9 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Test;
@@ -112,6 +115,74 @@ class PerKeySerialExecutorTest {
         assertThat(second.await(timeSpan(5).seconds()).isSuccess()).as("the second operation must run, not wait"
                                                                     + " on a retired tail")
                                                                 .isTrue();
+    }
+
+    /// Two submits that READ THE SAME TAIL must still run one after the other: each must chain onto the
+    /// tail it actually REPLACED, not the one it read (rev1273 N5; the probe is the reviewer's). The seam
+    /// holds both submits at a barrier after their reads, so both read the same tail before either
+    /// installs. A compare-and-set install makes the loser re-read and queue behind the winner; an install
+    /// that chains onto the value it READ would put both operations behind the same predecessor, running
+    /// concurrently once it resolves. Each operation checks, from inside itself, whether the other started.
+    @Test
+    @Timeout(60)
+    void submit_runsTwoOperationsInTurn_whenBothReadTheSameTailBeforeEitherInstalls() throws InterruptedException {
+        var executor = PerKeySerialExecutor.<String> perKeySerialExecutor();
+        var first = Promise.<Unit> promise();
+        var barrier = new CyclicBarrier(2);
+        var armed = new AtomicInteger(2);
+        var started = new AtomicInteger();
+        var overlap = new AtomicBoolean();
+        var results = new CopyOnWriteArrayList<Promise<Unit>>();
+
+        executor.submit("k", () -> first);
+        executor.tailReadProbe(() -> meetAtBarrier(armed, barrier));
+
+        var submitters = IntStream.range(0, 2)
+                                  .mapToObj(_ -> Thread.ofPlatform()
+                                                       .start(() -> results.add(executor.submit("k",
+                                                                                                () -> waitForAPeer(started,
+                                                                                                                   overlap)))))
+                                  .toList();
+
+        for (var submitter : submitters) {
+            submitter.join();
+        }
+
+        first.succeed(Unit.unit());
+
+        for (var result : results) {
+            assertThat(result.await(timeSpan(20).seconds()).isSuccess()).isTrue();
+        }
+
+        assertThat(results).hasSize(2);
+        assertThat(overlap.get()).as("the two same-key operations ran concurrently").isFalse();
+    }
+
+    private static void meetAtBarrier(AtomicInteger armed, CyclicBarrier barrier) {
+        if (armed.getAndDecrement() > 0) {
+            try {
+                barrier.await(10, TimeUnit.SECONDS);
+            } catch (Exception e) {
+                throw new IllegalStateException("both submits must reach the read-to-install window", e);
+            }
+        }
+    }
+
+    /// The first operation to start waits (bounded) for another to start alongside it. Under a correct
+    /// install none can, so it times out and finishes; under a broken one the second starts at once. The
+    /// bound can only err toward a false green, never a false red.
+    private static Promise<Unit> waitForAPeer(AtomicInteger started, AtomicBoolean overlap) {
+        if (started.incrementAndGet() == 1) {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+
+            while (started.get() < 2 && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+
+            overlap.set(started.get() >= 2);
+        }
+
+        return Promise.unitPromise();
     }
 
     private static void retireInsideTheWindow(PerKeySerialExecutor<String> executor,
