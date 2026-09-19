@@ -773,7 +773,9 @@ class ProjectionTest {
 
             projection.rebuild().await().onFailure(cause -> fail(cause.message()));
             projection.onEvent(new OrderSeen("a"), at("msg-p0-10", 0, 10)).await().onFailure(cause -> fail(cause.message()));
-            projection.onEvent(new OrderSeen("a"), at("msg-p0-11", 0, 11))
+            // Offset 15, not 11: a live partition admits on the generation fence alone, so its offsets
+            // need not follow on from the replay. A partition still held REBUILDING would admit only 11.
+            projection.onEvent(new OrderSeen("a"), at("msg-p0-15", 0, 15))
                       .await()
                       .onFailure(cause -> fail("partition 0 is past its head; its live write must apply: " + cause.message()));
 
