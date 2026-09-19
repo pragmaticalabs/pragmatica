@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.invoke.InvocationHandler;
@@ -115,12 +116,18 @@ class StreamConsumerManagerTest {
     }
 
     private StreamConsumerManager managerFor(NodeId self, StreamConsumerRuntime consumerRuntime) {
+        return managerFor(self, consumerRuntime, ownership);
+    }
+
+    private StreamConsumerManager managerFor(NodeId self,
+                                             StreamConsumerRuntime consumerRuntime,
+                                             PartitionOwnership nodeOwnership) {
         return StreamConsumerManager.streamConsumerManager(registry,
                                                            consumerRuntime,
                                                            invoker,
                                                            invocationHandler,
                                                            FrameworkCodecs.frameworkCodecs(),
-                                                           ownership,
+                                                           nodeOwnership,
                                                            placement,
                                                            self);
     }
@@ -785,6 +792,37 @@ class StreamConsumerManagerTest {
         @Test
         void statuses_areEmpty_whenNothingDeclared() {
             assertThat(manager().statuses()).isEmpty();
+        }
+    }
+
+    /// #1271: consumer-group partition assignment must be FENCED. Two nodes whose local views of the
+    /// partition's owner disagree — each believing it is the assignee — must not both attach: only the
+    /// node named by the COMMITTED assignment record may deliver. Before the fix each node decided from
+    /// its own view alone, so both attached, both delivered, and both wrote the cursor.
+    @Nested
+    class FencedAssignment {
+        @Test
+        void reconcile_attachesAtMostOneNode_whenTwoNodesViewsOfTheOwnerDisagree() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            var selfView = new MutableOwnership();
+            var peerView = new MutableOwnership();
+
+            selfView.ownedBy(SELF, 0);
+            peerView.ownedBy(PEER, 0);
+            var selfRuntime = new RecordingRuntime();
+            var peerRuntime = new RecordingRuntime();
+
+            managerFor(SELF, selfRuntime, selfView).reconcile();
+            managerFor(PEER, peerRuntime, peerView).reconcile();
+
+            var attached = Stream.of(selfRuntime, peerRuntime)
+                                 .filter(nodeRuntime -> nodeRuntime.subscribedPartitions()
+                                                                   .contains(0))
+                                 .count();
+
+            assertThat(attached).describedAs("divergent owner views must not produce two consumers of one (group, partition)")
+                                .isLessThanOrEqualTo(1L);
         }
     }
 
