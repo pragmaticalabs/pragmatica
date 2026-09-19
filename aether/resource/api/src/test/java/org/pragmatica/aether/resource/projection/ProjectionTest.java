@@ -11,15 +11,20 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.slice.topic.Topic;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Pins the D4 substrate half of durable-pubsub-spec §10 — the facade WITHOUT the idempotency
@@ -32,6 +37,8 @@ class ProjectionTest {
     private record OrderSeen(String orderId) {}
 
     private static final Topic<OrderSeen> TOPIC = Topic.of("orders-seen", OrderSeen.class);
+    private static final Cause WRITE_FAILED = Causes.cause("staged read-model write failure");
+    private static final TimeSpan LEASE = timeSpan(30).seconds();
 
     /// In-memory [ProjectionStore] honoring the reset contract: data cleared, generation kept.
     private static final class InMemoryStore implements ProjectionStore<Integer> {
@@ -41,6 +48,8 @@ class ProjectionTest {
         // Counts generation reads so the per-event read can be pinned; a cached read would leave this
         // flat after construction and every other guard test would still pass.
         private final AtomicInteger generationReads = new AtomicInteger();
+        // Writes left to fail, so a failed fold can be staged without a second store type.
+        private final AtomicInteger failingWrites = new AtomicInteger();
 
         @Override
         public Promise<Option<Integer>> read(String key) {
@@ -49,6 +58,9 @@ class ProjectionTest {
 
         @Override
         public Promise<Unit> write(String key, Integer state) {
+            if (failingWrites.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
+                return WRITE_FAILED.promise();
+            }
             data.put(key, state);
 
             return Promise.unitPromise();
@@ -126,7 +138,7 @@ class ProjectionTest {
         void sameMessageId_atADifferentPosition_appliesOnce() {
             var store = new InMemoryStore();
             var claims = new InMemoryClaims();
-            var projection = countingProjection(store).withClaims(claims);
+            var projection = countingProjection(store).withClaims(claims, LEASE);
             var event = new OrderSeen("a");
 
             projection.onEvent(event, FIRST).await().onFailure(cause -> fail(cause.message()));
@@ -142,7 +154,7 @@ class ProjectionTest {
         @Test
         void differentMessageIds_bothApply() {
             var store = new InMemoryStore();
-            var projection = countingProjection(store).withClaims(new InMemoryClaims());
+            var projection = countingProjection(store).withClaims(new InMemoryClaims(), LEASE);
 
             projection.onEvent(new OrderSeen("a"), FIRST).await();
             projection.onEvent(new OrderSeen("a"), MessageContext.messageContext("msg-2", "ns:orders-seen:1.0.0", 0, 11L))
@@ -159,7 +171,7 @@ class ProjectionTest {
         void sameMessageId_appliesAgain_afterAGenerationBump() {
             var store = new InMemoryStore();
             var claims = new InMemoryClaims();
-            var projection = countingProjection(store).withClaims(claims);
+            var projection = countingProjection(store).withClaims(claims, LEASE);
             var event = new OrderSeen("a");
 
             projection.onEvent(event, FIRST).await();
@@ -177,7 +189,7 @@ class ProjectionTest {
         @Test
         void generationIsReadPerEvent_notCachedAtConstruction() {
             var store = new InMemoryStore();
-            var projection = countingProjection(store).withClaims(new InMemoryClaims());
+            var projection = countingProjection(store).withClaims(new InMemoryClaims(), LEASE);
 
             projection.onEvent(new OrderSeen("a"), FIRST).await();
 
@@ -211,17 +223,80 @@ class ProjectionTest {
         void twoConcurrentAttempts_onOneMessageId_foldExactlyOnce() {
             var store = new InMemoryStore();
             var claims = new LatchedClaims();
-            var projection = countingProjection(store).withClaims(claims);
+            var projection = countingProjection(store).withClaims(claims, LEASE);
             var event = new OrderSeen("a");
 
             var first = projection.onEvent(event, FIRST);
             var second = projection.onEvent(event, FIRST);
 
-            first.await();
-            second.await();
+            first.await().onFailure(cause -> fail(cause.message()));
+            second.await()
+                  .onSuccess(_ -> fail("the losing attempt must not be acknowledged while the claim is live"))
+                  .onFailure(cause -> assertThat(cause.message()).contains("live claim"));
 
             assertThat(store.data).describedAs("two racing attempts on one messageId must fold once")
                                   .containsEntry("a", 1);
+
+            // The loser's retry now finds the claim DONE: acknowledged, still one apply.
+            projection.onEvent(event, FIRST).await().onFailure(cause -> fail(cause.message()));
+            assertThat(store.data).containsEntry("a", 1);
+        }
+
+        /// A failed fold RELEASES its claim, so the retry applies. Without the release the retry would
+        /// meet a live PENDING claim and be refused until the lease expired.
+        @Test
+        void failedFold_releasesTheClaim_soTheRetryApplies() {
+            var store = new InMemoryStore();
+            var projection = countingProjection(store).withClaims(new InMemoryClaims(), LEASE);
+            var event = new OrderSeen("a");
+
+            store.failingWrites.set(1);
+            projection.onEvent(event, FIRST)
+                      .await()
+                      .onSuccess(_ -> fail("a failed fold must surface, not be acknowledged"))
+                      .onFailure(cause -> assertThat(cause).isEqualTo(WRITE_FAILED));
+            projection.onEvent(event, FIRST).await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(store.data).containsEntry("a", 1);
+        }
+
+        /// A PENDING claim left by a crashed attempt (claimed, never finalized nor released) refuses
+        /// while its lease is live and is reclaimable once it expires — the crash-between-fold-and-
+        /// finalize re-apply window the class doc names.
+        @Test
+        void expiredPendingLease_isReclaimable() {
+            var store = new InMemoryStore();
+            var claims = new InMemoryClaims();
+            var projection = countingProjection(store).withClaims(claims, LEASE);
+            var event = new OrderSeen("a");
+            var crashedAttemptKey = new Projection.ClaimKey("orders-seen", 0L, "msg-1");
+
+            assertThat(claims.claimIfAbsent(crashedAttemptKey, LEASE).await())
+                .isEqualTo(Result.success(ProjectionClaims.ClaimOutcome.CLAIMED));
+            projection.onEvent(event, FIRST)
+                      .await()
+                      .onSuccess(_ -> fail("a live PENDING claim must refuse the attempt"));
+            assertThat(store.data).doesNotContainKey("a");
+
+            claims.clock.addAndGet(LEASE.nanos() + 1);
+            projection.onEvent(event, FIRST).await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(store.data).containsEntry("a", 1);
+        }
+
+        /// A DONE claim suppresses: the attempt is acknowledged and does not fold.
+        @Test
+        void doneClaim_suppressesTheApply() {
+            var store = new InMemoryStore();
+            var claims = new InMemoryClaims();
+            var projection = countingProjection(store).withClaims(claims, LEASE);
+            var doneKey = new Projection.ClaimKey("orders-seen", 0L, "msg-1");
+
+            claims.claimIfAbsent(doneKey, LEASE).await();
+            claims.finalizeClaim(doneKey).await();
+            projection.onEvent(new OrderSeen("a"), FIRST).await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(store.data).doesNotContainKey("a");
         }
 
         @Test
@@ -235,46 +310,75 @@ class ProjectionTest {
         }
     }
 
-    /// In-memory [ProjectionClaims]. Not atomic and not shared — which is exactly exception (i) of the
-    /// bound stated on [Projection], so this fake models the DEFAULT deployment rather than the
-    /// strongest one.
+    /// In-memory [ProjectionClaims]. The claim step is atomic (`compute`) but NOT shared — it models
+    /// one process; cross-instance suppression needs a backing every instance reads. The clock is
+    /// manual so lease expiry is a test decision, not a sleep.
     private static final class InMemoryClaims implements ProjectionClaims {
-        private final Map<Object, Object> claimed = new ConcurrentHashMap<>();
+        private record Claim(boolean done, long expiresAt) {}
+
+        private final Map<Projection.ClaimKey, Claim> claimed = new ConcurrentHashMap<>();
+        private final AtomicLong clock = new AtomicLong();
 
         @Override
-        public Promise<Option<Object>> get(Object key) {
-            return Promise.success(Option.option(claimed.get(key)));
+        public Promise<ClaimOutcome> claimIfAbsent(Projection.ClaimKey key, TimeSpan lease) {
+            var outcome = new ClaimOutcome[1];
+
+            claimed.compute(key, (_, existing) -> decide(existing, lease, outcome));
+
+            return Promise.success(outcome[0]);
+        }
+
+        private Claim decide(Claim existing, TimeSpan lease, ClaimOutcome[] outcome) {
+            var now = clock.get();
+
+            if (existing == null || (!existing.done() && existing.expiresAt() <= now)) {
+                outcome[0] = ClaimOutcome.CLAIMED;
+                return new Claim(false, now + lease.nanos());
+            }
+            outcome[0] = existing.done() ? ClaimOutcome.DONE : ClaimOutcome.IN_PROGRESS;
+            return existing;
         }
 
         @Override
-        public Promise<Unit> put(Object key, Object value) {
-            claimed.put(key, value);
+        public Promise<Unit> finalizeClaim(Projection.ClaimKey key) {
+            claimed.put(key, new Claim(true, Long.MAX_VALUE));
+
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public Promise<Unit> releaseClaim(Projection.ClaimKey key) {
+            claimed.computeIfPresent(key, (_, existing) -> existing.done() ? existing : null);
 
             return Promise.unitPromise();
         }
     }
 
-    /// Latched [ProjectionClaims]: every claim-step answer is observed on arrival but DELIVERED only
-    /// once two attempts have reached the claim step — so both pass it before either records.
+    /// Latched [ProjectionClaims]: each claim is decided ATOMICALLY on arrival, but the answer is
+    /// DELIVERED only once two attempts have reached the claim step — so both pass it before either
+    /// folds or records. Against a check-then-record guard this is the #1243 race.
     private static final class LatchedClaims implements ProjectionClaims {
-        private final Map<Object, Object> claimed = new ConcurrentHashMap<>();
+        private final InMemoryClaims delegate = new InMemoryClaims();
         private final Promise<Unit> bothArrived = Promise.promise();
         private final AtomicInteger arrivals = new AtomicInteger();
 
         @Override
-        public Promise<Option<Object>> get(Object key) {
-            var observed = Option.option(claimed.get(key));
+        public Promise<ClaimOutcome> claimIfAbsent(Projection.ClaimKey key, TimeSpan lease) {
+            var decided = delegate.claimIfAbsent(key, lease);
 
             arrive();
 
-            return bothArrived.map(_ -> observed);
+            return bothArrived.flatMap(_ -> decided);
         }
 
         @Override
-        public Promise<Unit> put(Object key, Object value) {
-            claimed.put(key, value);
+        public Promise<Unit> finalizeClaim(Projection.ClaimKey key) {
+            return delegate.finalizeClaim(key);
+        }
 
-            return Promise.unitPromise();
+        @Override
+        public Promise<Unit> releaseClaim(Projection.ClaimKey key) {
+            return delegate.releaseClaim(key);
         }
 
         private void arrive() {

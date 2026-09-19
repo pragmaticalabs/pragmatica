@@ -4,28 +4,51 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.projection;
 
-import org.pragmatica.lang.Option;
+import org.pragmatica.aether.resource.projection.Projection.ClaimKey;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 
 
 /// Where a [Projection]'s idempotency claims live (durable-pubsub-spec §8).
 ///
-/// Deliberately the same two operations `CacheBackend` exposes, so a deployment backs this with the
-/// same store §8 names and the aspect's semantics carry over unchanged. It is declared HERE rather
-/// than reusing `CacheBackend` directly for a structural reason, not a design one:
-/// `resource-interceptors` (where `CacheBackend` lives) already depends on `resource-api` (where
-/// [Projection] lives), so importing it the other way would close a dependency cycle. The adapter is
-/// one lambda at the wiring site, which is the only place that legitimately sees both.
+/// The protocol mirrors `IdempotencyMethodInterceptor` — claim, run, finalize on success, release on
+/// failure — with one addition the in-process interceptor does not need: a LEASE, because a claim held
+/// in a shared store outlives the process that took it. A claim is in one of two states: PENDING
+/// (an attempt holds it, until its lease expires) or DONE (the fold was applied).
 ///
-/// **Claim retention is the deployment's choice and it bounds the guarantee.** A claim that is
-/// evicted re-admits the duplicate it was recording — exception (ii) of the bound stated on
-/// [Projection]. Nothing here can compensate for that; it is why the bound is stated rather than
-/// hidden behind the word "idempotent".
+/// **Why a claim step and not get/put.** A separate read and write can never make the
+/// check-then-record PAIR atomic, whatever the atomicity of each call; two attempts that both read
+/// before either writes both apply (#1243). [#claimIfAbsent] is the single step that decides.
+///
+/// **What an implementation must provide.** [#claimIfAbsent] is ONE indivisible step over a store
+/// every instance of the projection reads — a consensus-KV compare-and-set, or a transactional row.
+/// A per-process map meets it only for attempts inside that process. It is declared here rather than
+/// reusing `CacheBackend` because `CacheBackend` offers only get/put, and because `resource-interceptors`
+/// already depends on `resource-api`, so importing it the other way would close a dependency cycle.
+///
+/// **Claim retention is the deployment's choice and it bounds the guarantee.** A DONE claim that is
+/// evicted re-admits the duplicate it was recording — the bound stated on [Projection].
 public interface ProjectionClaims {
-    /// Present iff this exact `(projectionName, generation, messageId)` has already been applied.
-    Promise<Option<Object>> get(Object key);
-    /// Record that the key has been applied. Called AFTER a successful fold — see [Projection]'s
-    /// ordering note for why recording follows the write rather than preceding it.
-    Promise<Unit> put(Object key, Object value);
+    /// What [#claimIfAbsent] found and did.
+    enum ClaimOutcome {
+        /// No claim, or a PENDING claim whose lease had expired: a PENDING claim with a fresh lease is
+        /// now held by the caller, which must fold and then [#finalizeClaim] or [#releaseClaim].
+        CLAIMED,
+        /// The key was already applied; the caller must not fold.
+        DONE,
+        /// Another attempt holds a live PENDING claim; the caller must not fold now.
+        IN_PROGRESS
+    }
+
+    /// In ONE indivisible step: absent or lease-expired PENDING → write PENDING expiring after `lease`,
+    /// answer [ClaimOutcome#CLAIMED]; DONE → [ClaimOutcome#DONE]; live PENDING →
+    /// [ClaimOutcome#IN_PROGRESS].
+    Promise<ClaimOutcome> claimIfAbsent(ClaimKey key, TimeSpan lease);
+    /// Mark the key DONE after a successful fold. Named `finalizeClaim`, not `finalize`, so it does not
+    /// overload `Object#finalize`.
+    Promise<Unit> finalizeClaim(ClaimKey key);
+    /// Drop a PENDING claim after a failed fold, so a retry can claim at once instead of waiting out the
+    /// lease. Must never remove a DONE claim.
+    Promise<Unit> releaseClaim(ClaimKey key);
 }
