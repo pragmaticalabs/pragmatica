@@ -591,6 +591,17 @@ public final class PartitionWal implements AutoCloseable {
             }
         }
 
+        /// An append whose offset does not exceed the last written offset (#1232). File order must be
+        /// offset order — recovery places records by stored offset and refuses a duplicate — so the
+        /// frame is refused before it is written.
+        record OffsetRegression(long offset, long lastOffset) implements WalError {
+            @Override
+            public String message() {
+                return "WAL append refused: offset %d does not follow last written offset %d".formatted(offset,
+                                                                                                        lastOffset);
+            }
+        }
+
         /// Permanent per-instance state after a failed group-commit fsync or a failed
         /// post-compaction reopen (see the fail-stop section of the class doc). Clears on reopen:
         /// recovery re-scans the file and trims the unacked tail.

@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.nio.file.Path;
+
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
@@ -71,6 +73,30 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Ring seed rejected (base=%d, head=%d): requires fresh ring, base>=0".formatted(base, currentHead);
+        }
+    }
+
+    /// WAL recovery refused (#1232): the recovered tail, placed by STORED offset, does not continue the
+    /// ring at `expectedOffset` — `foundOffset` below it is a duplicate, above it a gap. Recovery never
+    /// renumbers (that silently shifts every later record against replicas, segments and cursors), so
+    /// the partition is not rebuilt on this node until an operator acts; the message says how.
+    record WalReplayMismatch(String streamName,
+                             int partition,
+                             Path walFile,
+                             long expectedOffset,
+                             long foundOffset) implements StreamError {
+        @Override
+        public String message() {
+            return ("WAL recovery refused for %s[%d]: expected offset %d but %s holds %d (%s); records are never renumbered."
+                    + " Operator action: move that file aside and restart the node — replicas backfill the un-sealed tail"
+                    + " when replicas >= 2; with replicas = 1 the un-sealed tail is lost").formatted(streamName,
+                                                                                                     partition,
+                                                                                                     expectedOffset,
+                                                                                                     walFile,
+                                                                                                     foundOffset,
+                                                                                                     foundOffset < expectedOffset
+                                                                                                     ? "duplicate"
+                                                                                                     : "gap");
         }
     }
 
