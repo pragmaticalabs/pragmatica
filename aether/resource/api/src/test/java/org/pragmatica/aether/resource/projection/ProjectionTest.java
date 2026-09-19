@@ -819,6 +819,29 @@ class ProjectionTest {
             assertThat(store.data).containsEntry("a", 1).containsEntry("c", 1);
         }
 
+        /// #1304 X6 — a cursor report carrying a PRE-REWIND cursor that ARRIVES after the rewind. Commits
+        /// are batched and asynchronous (§6), and a zombie consumer can still be reporting its old
+        /// position, so arrival order alone does not make a report trustworthy. Honoured, an in-range stale
+        /// cursor makes the replay's own offsets answer ALREADY_APPLIED: they are acknowledged, never
+        /// written, and the rebuilt model silently loses them.
+        @Test
+        void rebuilding_ignoresAStaleInRangeCursorReport_deliveredAfterTheRewind() {
+            var store = new InMemoryStore();
+            var projection = Projection.of(DIGITS)
+                                       .into(store, Digit::key)
+                                       .apply("digits", (current, digit) -> current.or(0) * 10 + digit.value(), new RecordingCursor(store, REPLAY_TEN_TO_TWELVE))
+                                       .withClaims(new InMemoryClaims(), LEASE);
+
+            projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+            projection.onCursorCommitted(0, 12).await();
+            projection.onEvent(new Digit("n", 1), at("msg-10", 10)).await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new Digit("n", 2), at("msg-11", 11)).await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new Digit("n", 3), at("msg-12", 12)).await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(store.data).describedAs("a stale report must not make the replay's own offsets look applied")
+                                  .containsEntry("n", 123);
+        }
+
         /// A commit reported BEFORE the rebuild's rewind reflects the old cursor position, not replay
         /// progress: honouring it would jump the replay over offsets it has not delivered — the loss the
         /// exact rule exists to prevent. The store ignores cursor commits until the rewind is done.
