@@ -9,6 +9,7 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
@@ -133,11 +134,18 @@ class SealedHistoryRecoveryTest {
     /// mapping, and the takeover refusal. Each is RED under the mutation named on it.
     @Nested
     class ReviewPins {
-        /// Fewer than the reviewer's 150k — the race is hit within the first seconds either way, and this
-        /// keeps the test to a few seconds.
-        private static final long CONCURRENT_APPENDS = 40_000;
+        /// An upper bound, not a target: the appender runs until the READER stops it, so the two overlap
+        /// however fast either side turns out to be.
+        private static final long CONCURRENT_APPENDS_CAP = 2_000_000;
+        private static final long BOUNDARY_TARGET_READS = 500;
         private static final int BOUNDARY_BATCH = 64;
         private static final long RECLAIM_AT_LEAST = 500;
+        /// The loop stops with the appender or at this bound, whichever comes first, and a read that waits
+        /// out an in-flight seal costs about 2 s — so a read count is not a time budget.
+        private static final long BOUNDARY_LOOP_SECONDS = 20;
+        /// Deliberately low: a boundary read that waits out an in-flight seal costs about 2 s, so the
+        /// meaningful control is that the ring EVICTED under the reads, asserted separately below.
+        private static final long BOUNDARY_MIN_READS = 3;
 
         /// MA: with `evictedDuringRead` no longer rerouting, a read at the ring's earliest offset surfaces
         /// `CursorExpired` the moment an append evicts under it.
@@ -154,23 +162,31 @@ class SealedHistoryRecoveryTest {
             substrate.ensureLog(KEYSPACE, 1, 1, 1).unwrap();
             appendRecords(substrate);
             var done = new AtomicBoolean(false);
+            var earliestBefore = partitionManager.earliestRetainedOffset(STREAM, PARTITION);
             var appender = Thread.ofPlatform().start(() -> appendMore(substrate, done));
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(BOUNDARY_LOOP_SECONDS);
             var refusals = new StringBuilder();
             var reads = 0L;
+            var transients = 0L;
             var misaligned = 0L;
 
-            while (!done.get() && refusals.length() < 2_000) {
+            while (reads < BOUNDARY_TARGET_READS && !done.get() && System.nanoTime() < deadline && refusals.length() < 2_000) {
                 var from = Math.max(0, partitionManager.earliestRetainedOffset(STREAM, PARTITION) - (reads % 2));
                 var batch = substrate.read(KEYSPACE, PARTITION, from, BOUNDARY_BATCH).await();
 
                 reads++;
-                batch.onFailure(cause -> recordUnexpected(refusals, from, cause));
-                misaligned += batch.map(records -> misalignedIn(records, from)).or(0L);
+                transients += batch.fold(cause -> recordUnlessTransient(refusals, from, cause), _ -> 0L);
+                misaligned += batch.fold(_ -> 0L, records -> misalignedIn(records, from));
             }
 
+            done.set(true);
             appender.join();
-            System.out.println("boundary reads=" + reads + " misaligned(ring torn, #1340)=" + misaligned);
-            assertThat(reads).as("control: the boundary loop must have run").isGreaterThan(100L);
+            System.out.println("boundary reads=" + reads
+                              + " transients(in-flight seal)=" + transients
+                              + " misaligned(ring torn, #1340)=" + misaligned);
+            assertThat(reads).as("control: the boundary loop must have run").isGreaterThanOrEqualTo(BOUNDARY_MIN_READS);
+            assertThat(partitionManager.earliestRetainedOffset(STREAM, PARTITION)).as("control: the ring must have evicted UNDER the reads, or the race was never exercised")
+                      .isGreaterThan(earliestBefore);
             assertThat(refusals.toString()).as("a read at the boundary must reroute to sealed storage, never surface CursorExpired")
                       .isEmpty();
         }
@@ -217,8 +233,16 @@ class SealedHistoryRecoveryTest {
             result.onFailure(cause -> assertThat(cause.message()).contains("checkpoint resumes at 0 but the earliest readable offset here is " + ringEarliest));
         }
 
-        private static void recordUnexpected(StringBuilder refusals, long from, Cause cause) {
+        /// An in-flight seal is the transient the design promises, so it is counted rather than failed;
+        /// anything else at the boundary — `CursorExpired` above all — is the defect this pins.
+        private static long recordUnlessTransient(StringBuilder refusals, long from, Cause cause) {
+            if (cause instanceof EntityLogError.FoldInProgress) {
+                return 1L;
+            }
+
             refusals.append("read@").append(from).append(" failed: ").append(cause.message()).append('\n');
+
+            return 0L;
         }
 
         private static long misalignedIn(List<byte[]> records, long from) {
@@ -230,12 +254,16 @@ class SealedHistoryRecoveryTest {
                             .count();
         }
 
+        /// Appends until the reader stops it (or the cap is reached), so eviction is still running under
+        /// every one of the reader's boundary reads.
         private static void appendMore(EntityLogSubstrate substrate, AtomicBoolean done) {
-            LongStream.range(RECORDS, RECORDS + CONCURRENT_APPENDS).forEach(offset -> substrate.append(KEYSPACE,
-                                                                                                       PARTITION,
-                                                                                                       record(offset))
-                                                                                               .await()
-                                                                                               .unwrap());
+            LongStream.range(RECORDS, RECORDS + CONCURRENT_APPENDS_CAP)
+                      .takeWhile(_ -> !done.get())
+                      .forEach(offset -> substrate.append(KEYSPACE,
+                                                          PARTITION,
+                                                          record(offset))
+                                                  .await()
+                                                  .unwrap());
             done.set(true);
         }
 
