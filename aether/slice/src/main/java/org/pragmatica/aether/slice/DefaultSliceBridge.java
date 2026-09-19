@@ -124,14 +124,14 @@ public record DefaultSliceBridge(Artifact artifact,
     private Promise<byte[]> invokeWithContextChecked(InternalMethod method, byte[] eventBytes, MessageContext context) {
         return this.<Object> deserializeInput(eventBytes)
                    .map(event -> argumentFor(method, event, context))
-                   .flatMap(argument -> invokeAndSerialize(method.method(), argument));
+                   .flatMap(argument -> invokeAndSerialize(method.method(),
+                                                           argument));
     }
 
     /// A generated context-carrying adapter declares [ContextualEvent] as its parameter; every other
     /// method declares the event type itself and keeps receiving the bare event.
     private static Object argumentFor(InternalMethod method, Object event, MessageContext context) {
-        return ContextualEvent.class.equals(method.parameterType()
-                                                  .rawType())
+        return ContextualEvent.class.equals(method.parameterType().rawType())
                ? ContextualEvent.contextualEvent(event, context)
                : event;
     }
