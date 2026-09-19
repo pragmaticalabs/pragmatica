@@ -427,6 +427,72 @@ class AlertManagerThresholdEventTest {
         }
     }
 
+    /// #1302 — the durable-entity checkpoint lag alert. `entity.checkpoint.lag.max` is the node's
+    /// largest per-partition lag (head offset minus last committed checkpoint); a default threshold is
+    /// seeded from node config so a stalled checkpointer is visible with no operator setup.
+    @Nested
+    class EntityCheckpointLag {
+        private static final String LAG = "entity.checkpoint.lag.max";
+
+        @Test
+        void defaultThreshold_firesAboveCritical_andClearsWellBelowWarning() {
+            var manager = newManager();
+            var sink = sinkOn(manager);
+
+            manager.bindAlertConfig(AlertConfig.alertConfig());
+            manager.checkThreshold(LAG, NODE, 12_000);
+
+            assertThat(sink.breaches()).describedAs("a lag past the default critical threshold must raise")
+                                       .hasSize(1);
+            assertThat(sink.breaches().getFirst().details()).containsEntry("alertSeverity", "CRITICAL");
+
+            manager.checkThreshold(LAG, NODE, 100);
+
+            assertThat(sink.clears()).describedAs("a lag far below the warning threshold must clear the alert")
+                                     .hasSize(1);
+            assertThat(manager.activeAlertCount()).isZero();
+        }
+
+        @Test
+        void defaultThreshold_raisesWarning_betweenWarningAndCritical() {
+            var manager = newManager();
+            var sink = sinkOn(manager);
+
+            manager.bindAlertConfig(AlertConfig.alertConfig());
+            manager.checkThreshold(LAG, NODE, 6_000);
+
+            assertThat(sink.breaches()).hasSize(1);
+            assertThat(sink.breaches().getFirst().details()).containsEntry("alertSeverity", "WARNING");
+        }
+
+        @Test
+        void defaultThreshold_isSilent_belowWarning() {
+            var manager = newManager();
+            var sink = sinkOn(manager);
+
+            manager.bindAlertConfig(AlertConfig.alertConfig());
+            manager.checkThreshold(LAG, NODE, 4_000);
+
+            assertThat(sink.breaches()).isEmpty();
+        }
+
+        /// An operator's cluster threshold must survive the config-seeded default: the default is
+        /// installed only when no threshold for the metric exists.
+        @Test
+        void operatorThreshold_isNotOverriddenByTheConfiguredDefault() {
+            var manager = newManager();
+            var sink = sinkOn(manager);
+
+            putThreshold(manager, LAG, 100, 200);
+            manager.bindAlertConfig(AlertConfig.alertConfig());
+            manager.checkThreshold(LAG, NODE, 150);
+
+            assertThat(sink.breaches()).describedAs("150 breaches the operator's WARNING (100) but not the default")
+                                       .hasSize(1);
+            assertThat(sink.breaches().getFirst().details()).containsEntry("alertSeverity", "WARNING");
+        }
+    }
+
     @Nested
     class ConfiguredMargin {
 
