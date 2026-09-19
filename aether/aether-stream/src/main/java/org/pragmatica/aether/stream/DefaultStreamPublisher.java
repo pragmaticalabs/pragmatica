@@ -21,6 +21,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Serializer;
 
@@ -189,8 +190,20 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
         return publishBatchEventual(events);
     }
 
+    /// #1262 B3: with no consensus path the whole batch is refused up front with the same typed cause a single
+    /// publish gets. With one, `Promise.allOf` yields every per-event `Result` and they are folded into ONE
+    /// result, so any refusal fails the batch — `.mapToUnit()` on the list alone had acknowledged a batch of
+    /// refusals as success, a false acknowledgement with nothing written.
     private Promise<Unit> publishBatchStrong(List<T> events) {
-        return Promise.allOf(events.stream().map(this::publish).toList()).mapToUnit();
+        return consensusPath.async(StreamError.General.CONSENSUS_PATH_UNAVAILABLE)
+                            .flatMap(_ -> Promise.allOf(events.stream().map(this::publish).toList()))
+                            .flatMap(DefaultStreamPublisher::allSucceeded);
+    }
+
+    private static Promise<Unit> allSucceeded(List<Result<Unit>> results) {
+        return Result.allOf(results)
+                     .mapToUnit()
+                     .async();
     }
 
     /// #266: an EVENTUAL batch is grouped by each event's COMPUTED partition (not routed wholesale to
@@ -240,7 +253,18 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     /// appends locally rather than sending to self (which QUIC silently drops, hanging the forward). The
     /// local append is admitted only for the committed owner ({@link StreamPartitionManager.OwnerWriteAdmission}).
     /// Mirrors {@link StreamWriteRouter} and {@link PartitionedStreamAccess}'s owner-routed publish.
+    ///
+    /// #1262: the stream's COMMITTED consistency is checked first (the same guard `PartitionedStreamAccess` and
+    /// `StreamWriteRouter` apply), not only the mode this publisher was built with — the hardcoded-EVENTUAL
+    /// system/DLQ publishers, or a config adopted after construction, must not append EVENTUAL to a stream
+    /// committed STRONG or UNKNOWN.
     private Promise<Unit> publishEventual(int partition, byte[] bytes, long timestamp) {
+        return partitionManager.ensureWritableConsistency(streamName)
+                               .async()
+                               .flatMap(_ -> routeEventual(partition, bytes, timestamp));
+    }
+
+    private Promise<Unit> routeEventual(int partition, byte[] bytes, long timestamp) {
         return resolveOwner(partition).filter(this::isRemote)
                            .flatMap(owner -> forwardTo(owner, partition, bytes, timestamp))
                            .or(() -> publishLocalEventual(partition, bytes, timestamp));
