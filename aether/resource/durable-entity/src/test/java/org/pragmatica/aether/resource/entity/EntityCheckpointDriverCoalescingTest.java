@@ -6,6 +6,7 @@ package org.pragmatica.aether.resource.entity;
 
 import java.lang.management.ManagementFactory;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.sun.management.ThreadMXBean;
@@ -73,6 +74,27 @@ class EntityCheckpointDriverCoalescingTest {
         assertThat(substrate.saves.get()).isEqualTo(1);
     }
 
+    /// The in-flight mark must not outlive a checkpoint that THREW while starting: left behind, it would
+    /// stop that partition's checkpoints for the life of the node, silently. Regression fence for the mark
+    /// — the pre-#1269 code passes this too, because it had no mark to leave behind.
+    @Test
+    void tick_retriesNextTick_whenTheSaveThrowsSynchronously() {
+        var substrate = new CountingSubstrate(true);
+        var fold = populatedFold(substrate);
+        var driver = EntityCheckpointDriver.entityCheckpointDriver();
+
+        substrate.throwOnNextSave();
+        driver.register(KEYSPACE, 1, fold, substrate);
+        driver.tick();
+        driver.tick();
+
+        assertThat(substrate.saves.get()).as("the second tick must try again").isEqualTo(2);
+        assertThat(driver.snapshot()
+                         .keyspaces()
+                         .getFirst()
+                         .checkpointedThrough()).containsEntry(PARTITION, (long) KEYS - 1);
+    }
+
     private static EntityFold populatedFold(CountingSubstrate substrate) {
         var fold = EntityFold.entityFold(KEYSPACE, substrate);
 
@@ -95,14 +117,23 @@ class EntityCheckpointDriverCoalescingTest {
     private static final class CountingSubstrate implements EntityLogSubstrate {
         private final boolean savesResolve;
         private final AtomicInteger saves = new AtomicInteger();
+        private final AtomicBoolean throwOnNextSave = new AtomicBoolean();
 
         CountingSubstrate(boolean savesResolve) {
             this.savesResolve = savesResolve;
         }
 
+        void throwOnNextSave() {
+            throwOnNextSave.set(true);
+        }
+
         @Override
         public Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot) {
             saves.incrementAndGet();
+
+            if (throwOnNextSave.compareAndSet(true, false)) {
+                throw new IllegalStateException("substrate threw instead of failing its promise");
+            }
 
             return savesResolve
                    ? Promise.unitPromise()
