@@ -10,6 +10,7 @@ import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -113,6 +114,15 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// sweeps and [#appendOrdered]; reads stay lock-free. A monitor, not a `ReentrantLock` — the JDK 25
     /// baseline does not pin virtual threads on `synchronized` (JEP 491), and [#appendOrdered] re-enters it.
     private final Object appendLock = new Object();
+    /// Offsets whose append listeners are still to be notified, queued INSIDE `appendLock` (so queue
+    /// order is offset order) and drained OUTSIDE it (#1258 review B1). Listeners are foreign code — the
+    /// consumer runtime delivers events synchronously from them, and a handler may publish again — so
+    /// they must never run while the section is held: that deadlocked cross-partition consumers and
+    /// broke WAL order for a consumer publishing to its own partition.
+    private final ConcurrentLinkedQueue<Long> pendingAppendNotifications = new ConcurrentLinkedQueue<>();
+    /// One drainer at a time, so notifications stay in offset order. A thread that finds another
+    /// drainer active (including itself, re-entering from a listener) leaves its offsets to that drainer.
+    private final AtomicBoolean notifying = new AtomicBoolean(false);
 
     private OffHeapRingBuffer(Arena arena,
                               MemorySegment controlSegment,
@@ -299,6 +309,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     public Result<Long> append(byte[] payload, long timestamp) {
+        return notifyingAfter(appendLocked(payload, timestamp));
+    }
+
+    private Result<Long> appendLocked(byte[] payload, long timestamp) {
         if (closed.get()) {
             return StreamError.General.BUFFER_CLOSED.result();
         }
@@ -318,9 +332,44 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// — the WAL frame write, the replication send — happens in offset order across concurrent callers.
     /// `inOrder` must not block on I/O completion (the WAL fsync belongs outside, after this returns);
     /// every append on this partition waits for it. A failed append skips `inOrder`.
+    ///
+    /// Append listeners run only AFTER the section is released — and so after `inOrder` — in offset
+    /// order ([#pendingAppendNotifications]). A listener may therefore append again, to this ring or any
+    /// other: nothing is locked while it runs, and this append is already fully ordered and logged.
     public <T> Result<T> appendOrdered(byte[] payload, long timestamp, Fn1<Result<T>, Long> inOrder) {
+        return notifyingAfter(appendOrderedLocked(payload, timestamp, inOrder));
+    }
+
+    private <T> Result<T> appendOrderedLocked(byte[] payload, long timestamp, Fn1<Result<T>, Long> inOrder) {
         synchronized (appendLock) {
-            return append(payload, timestamp).flatMap(inOrder);
+            return appendLocked(payload, timestamp).flatMap(inOrder);
+        }
+    }
+
+    /// `result` is evaluated by the caller, so `appendLock` is already released here.
+    private <T> Result<T> notifyingAfter(Result<T> result) {
+        drainAppendNotifications();
+
+        return result;
+    }
+
+    /// The `finally` guarantees a throwing listener cannot leave the drainer flag set, which would stop
+    /// every later notification on this ring.
+    @SuppressWarnings("JBCT-EX-01")
+    private void drainAppendNotifications() {
+        while (!pendingAppendNotifications.isEmpty() && notifying.compareAndSet(false, true)) {
+            try {
+                drainQueuedNotifications();
+            } finally {
+                notifying.set(false);
+            }
+        }
+    }
+
+    /// Runs as the single drainer, so a non-empty queue cannot be emptied underneath it.
+    private void drainQueuedNotifications() {
+        while (!pendingAppendNotifications.isEmpty()) {
+            notifyAppendListeners(pendingAppendNotifications.remove());
         }
     }
 
@@ -355,8 +404,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// allocation: a STRONG stream only reports BUFFER_FULL when it genuinely cannot fit even after
     /// growing to the cap. Seam-rejected growth has already returned STREAM_MEMORY_EXCEEDED upstream
     /// (in `ensureGrownFor`). Reached only when the event fits the allocated ring (bug #7 gate above), so
-    /// it never overflows; listener notification fires only here, on a real admission (the frozen-ring
-    /// drop path returns the head WITHOUT notifying). See spec §4.2.
+    /// it never overflows; listener notification is queued only here, on a real admission (the frozen-ring
+    /// drop path returns the head WITHOUT notifying), and delivered after `appendLock` is released
+    /// (#1258 review B1). See spec §4.2.
     private Result<Long> appendWritten(byte[] payload, long timestamp) {
         if (evictionPolicy == EvictionPolicy.REJECT_WHEN_FULL && countEvictionsForSpace(payload.length) > 0) {
             return StreamError.General.BUFFER_FULL.result();
@@ -371,12 +421,16 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         writeDataBytes(dataPos, payload);
         writeIndexEntry(slotIndex, dataPos, payload.length, timestamp);
         updateHeaderAfterAppend(newOffset, payload.length);
-        notifyAppendListeners(newOffset);
+        pendingAppendNotifications.add(newOffset);
 
         return success(newOffset);
     }
 
     public Result<Long> appendBatch(List<byte[]> payloads, long[] timestamps) {
+        return notifyingAfter(appendBatchLocked(payloads, timestamps));
+    }
+
+    private Result<Long> appendBatchLocked(List<byte[]> payloads, long[] timestamps) {
         if (closed.get()) {
             return StreamError.General.BUFFER_CLOSED.result();
         }
@@ -424,7 +478,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         evictForSpace((int) totalSize);
         var lastOffset = appendPayloads(payloads, timestamps);
 
-        notifyAppendListeners(lastOffset);
+        pendingAppendNotifications.add(lastOffset);
 
         return success(lastOffset);
     }

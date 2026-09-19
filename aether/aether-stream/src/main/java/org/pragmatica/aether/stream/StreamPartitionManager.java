@@ -69,8 +69,8 @@ import static org.pragmatica.lang.Unit.unit;
 public final class StreamPartitionManager implements AutoCloseable {
     private static final long DEFAULT_MAX_TOTAL_BYTES = 128 * 1024 * 1024L;
     private static final TimeSpan COMMIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
-
     private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
+
     /// WAL recoveries (node-wide, since process start) that accepted a gap BEFORE the first WAL record as
     /// reclaimed history (#1258 review B2) — each is also WARNed with the range. Non-zero is expected after
     /// retention reclaimed every sealed segment of a partition; an operator seeing it without such
@@ -2797,11 +2797,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                       .or(() -> success(unit()));
         }
 
-        /// Seed the fresh ring above the partition's durable last-sealed offset (so reads at or below it
-        /// cleanly miss and fall through to the tiered reader), then place the WAL's un-sealed tail at its
-        /// STORED offsets (#1232). A `base` of `-1` (nothing sealed) leaves the fresh ring un-seeded and
-        /// replays the whole log from offset 0. A refusal is logged at ERROR here, where the partition is
-        /// named, because it leaves the partition unbuilt on this node until an operator acts.
+        /// Place the WAL's un-sealed tail (records above the durable last-sealed offset `base`) at its
+        /// STORED offsets (#1232), seeding the fresh ring first so reads below the tail cleanly miss and
+        /// fall through to the tiered reader. A refusal is logged at ERROR here, where stream and
+        /// partition are known: it leaves the stream unmaterialized on this node when the stream is being
+        /// created, and this partition unbuilt on a lazy per-partition materialize.
         private static Result<Unit> replayTail(String streamName,
                                                int partition,
                                                OffHeapRingBuffer ring,
@@ -2810,30 +2810,82 @@ public final class StreamPartitionManager implements AutoCloseable {
             var base = lastSealedOffset.lastSealedOffset(streamName, partition);
             var records = new ArrayList<WalRecord>();
 
-            return seedRing(ring, base).flatMap(_ -> wal.replay(base, records::add))
-                           .flatMap(_ -> appendTail(streamName,
+            return wal.replay(base, records::add)
+                      .flatMap(_ -> placeTail(streamName,
+                                              partition,
+                                              wal.path(),
+                                              ring,
+                                              base,
+                                              sortedByOffset(streamName, partition, records)))
+                      .onFailure(cause -> log.error("Stream {} is not materialized on this node: partition {} refused its WAL: {}",
+                                                    streamName,
                                                     partition,
-                                                    wal.path(),
-                                                    ring,
-                                                    records))
-                           .onFailure(cause -> log.error("Stream partition {}[{}] was not rebuilt from its WAL: {}",
-                                                         streamName,
-                                                         partition,
-                                                         cause.message()));
+                                                    cause.message()));
         }
 
-        /// Position the fresh ring so the next append is `base + 1` when sealed segments already cover
-        /// `[0, base]`; a no-op when nothing is sealed (`base < 0`).
-        private static Result<Unit> seedRing(OffHeapRingBuffer ring, long base) {
-            return base >= 0
-                   ? ring.seedHead(base)
+        private static Result<Unit> placeTail(String streamName,
+                                              int partition,
+                                              Path walFile,
+                                              OffHeapRingBuffer ring,
+                                              long base,
+                                              List<WalRecord> records) {
+            return seedRing(ring, seedFor(streamName, partition, walFile, base, records)).flatMap(_ -> appendTail(streamName,
+                                                                                                                  partition,
+                                                                                                                  walFile,
+                                                                                                                  ring,
+                                                                                                                  records));
+        }
+
+        /// Position the fresh ring so the next append is `seed + 1`; a no-op when `seed < 0` (nothing
+        /// sealed, and the WAL starts at offset 0 or is empty).
+        private static Result<Unit> seedRing(OffHeapRingBuffer ring, long seed) {
+            return seed >= 0
+                   ? ring.seedHead(seed)
                    : success(unit());
+        }
+
+        /// The ring seed: `base`, unless the first WAL record sits above `base + 1` (#1258 review B2). That
+        /// head gap is indistinguishable today from retention having reclaimed the partition's sealed
+        /// segments — the durable floor then drops (to -1 when every segment is gone) while WAL compaction
+        /// already removed the records below the old floor — so it is accepted as reclaimed history: the
+        /// ring is seeded just below the first record, reads of the gap miss as expired, and the range is
+        /// WARNed and counted ([#WAL_RECOVERY_HEAD_GAPS]). Gaps BETWEEN records still refuse (see
+        /// [#placeRecord]).
+        private static long seedFor(String streamName,
+                                    int partition,
+                                    Path walFile,
+                                    long base,
+                                    List<WalRecord> records) {
+            return records.isEmpty() || records.getFirst()
+                                               .offset() <= base + 1
+                   ? base
+                   : acceptHeadGap(streamName,
+                                   partition,
+                                   walFile,
+                                   base,
+                                   records.getFirst().offset());
+        }
+
+        private static long acceptHeadGap(String streamName, int partition, Path walFile, long base, long firstOffset) {
+            WAL_RECOVERY_HEAD_GAPS.incrementAndGet();
+            log.warn("Stream {} partition {}: WAL {} starts at offset {} but the durable sealed floor is {} — offsets [{}, {}] are"
+                    + " treated as reclaimed history (their sealed segments were removed by retention) and read as"
+                    + " expired. If no retention reclaimed this partition, those records are LOST.",
+                     streamName,
+                     partition,
+                     walFile,
+                     firstOffset,
+                     base,
+                     base + 1,
+                     firstOffset - 1);
+
+            return firstOffset - 1;
         }
 
         /// Place the recovered records by their STORED offsets (#1232): sorted by offset (stable, so a
         /// duplicate stays adjacent to its twin), each must be exactly the offset the ring assigns next.
         /// A file whose frames are merely out of order — as the pre-#1232 owner path could write — is
-        /// thereby recovered correctly; a gap or a duplicate stops the recovery with
+        /// thereby recovered correctly; a gap between records or a duplicate stops the recovery with
         /// [StreamError.WalReplayMismatch] at the first mismatch. Records are NEVER renumbered: that would
         /// shift every later record against replicas, sealed segments and consumer cursors. The events
         /// are the un-sealed tail, which fits the fresh ring; a normal `append` is used (no
@@ -2846,17 +2898,27 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                List<WalRecord> records) {
             var placed = Result.unitResult();
 
-            for (var record : sortedByOffset(records)) {
+            for (var record : records) {
                 placed = placed.flatMap(_ -> placeRecord(streamName, partition, walFile, ring, record));
             }
 
             return placed;
         }
 
-        private static List<WalRecord> sortedByOffset(List<WalRecord> records) {
-            return records.stream()
-                          .sorted(Comparator.comparingLong(WalRecord::offset))
-                          .toList();
+        /// The fixed writer refuses out-of-order offsets, so a file that needed reordering was written
+        /// by pre-#1232 code or by a writer defect — WARNed, then placed by stored offset.
+        private static List<WalRecord> sortedByOffset(String streamName, int partition, List<WalRecord> records) {
+            var sorted = records.stream().sorted(Comparator.comparingLong(WalRecord::offset)).toList();
+
+            if (!sorted.equals(records)) {
+                log.warn("Stream {} partition {}: WAL frames were out of offset order (a pre-#1232 file or a writer"
+                        + " defect); placing {} records by their stored offsets",
+                         streamName,
+                         partition,
+                         records.size());
+            }
+
+            return sorted;
         }
 
         private static Result<Unit> placeRecord(String streamName,
