@@ -18,9 +18,9 @@
   same way, because the owner may have appended before its response was lost.
   [mechanism: `.mapError(PublishOutcomeUnknown.FACTORY)` on every post-append await; `StreamForwardClient`
   rebuilds the cause from the wire flag and wraps `FORWARD_TIMEOUT`]
-- `PublishOutcomeUnknown` is deliberately **neither transient nor terminal**: a retry facility that
-  re-runs the whole operation would mint a fresh message ID and write a duplicate that dedup cannot
-  collapse. Retry only with the same message ID (#1237).
+- `PublishOutcomeUnknown` is deliberately **not transient**, so the default `RetryOn.TRANSIENT` policy
+  leaves it alone. It is not terminal either, so `RetryOn.NON_TERMINAL` and `Retry` DO retry it: safe
+  for a keyed publish, a duplicate for a keyless one. Retry only with the same message ID (#1237).
 - Contract text now states three outcomes — success (in the log), failure (not in the log),
   outcome-unknown (may be in the log) — in `DurableTopicPublisher`, `durable-pubsub-spec.md` §5 and
   `guarantees.md`. **Breaking** (pre-GA): callers that matched `REPLICATION_TIMEOUT` or

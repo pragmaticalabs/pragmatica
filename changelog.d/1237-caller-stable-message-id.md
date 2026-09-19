@@ -15,6 +15,8 @@
 - The default implementation ignores the key and calls `publish(T)`, which is exact for the ephemeral
   RPC tier (no log, no message ID). A publisher that wraps another publisher must override it or the
   key is lost.
-- **Retry after `PublishOutcomeUnknown` is dedup-safe only through the keyed overload with the same
-  key** — stated in the `Publisher` javadoc and `durable-pubsub-spec.md` §5/§8. [unverified: no
+- A stable key is a **necessary condition** for a dedup-safe retry after `PublishOutcomeUnknown`, not a
+  sufficient one: `messageId` is not yet delivered to subscribers (#1295), and a keyed retry of a
+  keyless-routed durable event may land on another partition and dispatch concurrently with the first
+  copy — stated in the `Publisher` javadoc and `durable-pubsub-spec.md` §5/§8. [unverified: no
   multi-node run exercised a keyed retry end to end; the evidence is in-JVM]
