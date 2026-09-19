@@ -81,7 +81,6 @@ final class DefaultReplicationManager implements ReplicationManager {
     /// limit ([QuicClusterServer#MAX_FRAME_LENGTH]). The other half is headroom for the message's fixed
     /// fields and envelope; the fraction is a chosen margin, not a derived one.
     static final long MAX_REPLICATE_MESSAGE_BYTES = QuicClusterServer.MAX_FRAME_LENGTH / 2;
-
     /// Encoded framing the generic codec adds per event, bounded (#1287 review nit a): the payload's type
     /// tag and length (varints, at most five bytes each) plus the timestamp's tag (at most five) and its
     /// eight bytes — 23 at most, rounded up. Without it, millions of tiny events fit the payload budget
