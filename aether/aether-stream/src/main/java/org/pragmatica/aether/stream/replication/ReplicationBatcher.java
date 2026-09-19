@@ -158,7 +158,6 @@ public final class ReplicationBatcher implements AutoCloseable {
         private Epoch ownerEpoch = Epoch.ZERO;
         private boolean retired;
 
-        @SuppressWarnings("JBCT-EX-01")
         AddOutcome add(long offset, byte[] payload, long timestamp, Epoch ownerEpoch, int maxEvents) {
             lock.lock();
             try {
@@ -187,7 +186,6 @@ public final class ReplicationBatcher implements AutoCloseable {
         /// Retires the accumulator; once retired its lists are never mutated again, so the snapshot
         /// shares them instead of copying. Only the first drain yields the batch — a later drain (the
         /// batch's one-shot firing after a size flush already took it) yields `EMPTY`, never a resend.
-        @SuppressWarnings("JBCT-EX-01")
         BatchSnapshot drain() {
             lock.lock();
             try {
