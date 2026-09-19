@@ -6,11 +6,12 @@
 - The append path now applies the record as a synchronous step of the append's promise chain
   (`withSuccess`), before the chain continues. The fold still takes a record that reached the log when
   the write missed its replication barrier; that apply was already a synchronous step in `mapError`.
-  [verified: aether/resource/durable-entity/src/test/java/org/pragmatica/aether/resource/entity/PartitionFencedDurableEntityApplyTest.java]
-  — an in-JVM test with a stub substrate; no multi-node run.
+  [mechanism: `withSuccess` is a dependent step that runs inline in the append promise's resolution, ahead
+  of every later step] — pinned by the unit test `PartitionFencedDurableEntityApplyTest`, which uses a stub
+  substrate; no live-path or multi-node run.
 - `EntityFold` now refuses to let an older offset overwrite a key that holds a newer one: the check and
   the write happen together under a per-key `compute`, re-checking the watermark as well. A superseded
   record is still counted towards the watermark. Per-key offsets are dropped once the watermark covers
   them, so the guard does not keep an entry for every key.
-  [verified: aether/resource/durable-entity/src/test/java/org/pragmatica/aether/resource/entity/EntityFoldTest.java]
-  (`StaleApply`) — unit level.
+  [mechanism: the check and the write run inside one `ConcurrentHashMap.compute` for the key] — pinned by
+  the unit tests `EntityFoldTest$StaleApply`.
