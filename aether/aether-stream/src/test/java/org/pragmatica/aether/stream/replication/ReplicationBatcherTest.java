@@ -16,6 +16,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.IntStream;
+import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
@@ -231,6 +234,86 @@ class ReplicationBatcherTest {
             manager.close();
             assertThat(sentMessages).hasSize(1);
         }
+    }
+
+    /// #1246: an accumulator exists only while its partition has a pending batch. Before the fix every
+    /// accumulator ever created stayed in the map and was locked on every 1 ms tick, idle or not.
+    @Nested
+    class AccumulatorEviction {
+        private static final int IDLE_PARTITIONS = 10_000;
+
+        @Test
+        void flushAll_tenThousandPartitionsGoneIdle_accumulatorCountReturnsToZero() {
+            batcher = replicationBatcher(countingTransport(new AtomicInteger()), registry, GOVERNOR, 1000,
+                                         TimeSpan.timeSpan(10).seconds());
+
+            addOneEventPerPartition();
+            assertThat(batcher.accumulatorCount()).isEqualTo(IDLE_PARTITIONS);
+
+            batcher.flushAll();
+
+            // flushAll locks exactly the accumulators in the map, so an empty map means the next
+            // flush over these 10k idle partitions performs zero lock acquisitions.
+            assertThat(batcher.accumulatorCount()).isZero();
+
+            batcher.close();
+        }
+
+        @Test
+        void scheduledFlush_tenThousandPartitionsGoneIdle_evictsEveryAccumulator() throws InterruptedException {
+            batcher = replicationBatcher(countingTransport(new AtomicInteger()), registry, GOVERNOR, 1000,
+                                         TimeSpan.timeSpan(20).millis());
+
+            addOneEventPerPartition();
+
+            assertThat(awaitAccumulatorCount(0, 5_000)).isZero();
+
+            batcher.close();
+        }
+
+        @Test
+        void add_concurrentWithSizeAndTimerFlushes_losesNoEvent() throws InterruptedException {
+            var delivered = new AtomicInteger();
+            batcher = replicationBatcher(countingTransport(delivered), registry, GOVERNOR, 7,
+                                         TimeSpan.timeSpan(1).millis());
+
+            var threads = IntStream.range(0, 4)
+                                   .mapToObj(_ -> Thread.ofVirtual().start(this::addBurst))
+                                   .toList();
+
+            for (var thread : threads) {
+                thread.join();
+            }
+
+            batcher.close();
+
+            assertThat(delivered.get()).isEqualTo(4 * 5_000);
+            assertThat(batcher.accumulatorCount()).isZero();
+        }
+
+        private void addOneEventPerPartition() {
+            IntStream.range(0, IDLE_PARTITIONS)
+                     .forEach(partition -> batcher.add(STREAM, partition, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO));
+        }
+
+        private void addBurst() {
+            LongStream.range(0, 5_000)
+                      .forEach(offset -> batcher.add(STREAM, PARTITION, offset, PAYLOAD, TIMESTAMP, Epoch.ZERO));
+        }
+
+        private int awaitAccumulatorCount(int expected, long timeoutMillis) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + timeoutMillis;
+
+            while (batcher.accumulatorCount() != expected && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+
+            return batcher.accumulatorCount();
+        }
+    }
+
+    private ReplicationTransport countingTransport(AtomicInteger delivered) {
+        return (_, message) -> delivered.addAndGet(((ReplicationMessage.ReplicateEvents) message).payloads().size());
     }
 
     private ReplicationTransport capturingTransport() {

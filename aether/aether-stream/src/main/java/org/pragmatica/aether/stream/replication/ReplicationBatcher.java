@@ -80,6 +80,10 @@ public final class ReplicationBatcher implements AutoCloseable {
         accumulators.forEach(this::flushPartition);
     }
 
+    int accumulatorCount() {
+        return accumulators.size();
+    }
+
     private void flushPartition(PartitionKey key, BatchAccumulator accumulator) {
         var snapshot = accumulator.drain();
 
