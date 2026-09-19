@@ -48,6 +48,8 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 
@@ -128,10 +130,9 @@ class StreamConsumerManagerTest {
                                                            self);
     }
 
-    /// A seam for #545's re-resolution race: `reconcile()` and `declarationFor` each re-read
-    /// declarations independently, and a REAL registry answers both reads identically within one
-    /// synchronous call, so the ambiguity branch cannot be driven from a real registry. A mock that
-    /// answers the two reads DIFFERENTLY reproduces the only interleaving in which it matters.
+    /// A seam for a registry whose answer changes BETWEEN reads — a KV notification landing while a
+    /// pass is in flight. A real registry answers every read from its current state, so only a mock can
+    /// script the change deterministically.
     private StreamConsumerManager managerWithRegistry(StreamConsumerRegistry customRegistry) {
         return StreamConsumerManager.streamConsumerManager(customRegistry,
                                                            runtime,
@@ -654,16 +655,16 @@ class StreamConsumerManagerTest {
                       .containsExactlyInAnyOrder(0, 1, 2, 3);
         }
 
-        /// `reconcile()`'s own guard already keeps a colliding declaration's key out of `desired`, so a
-        /// REAL registry can never drive `declarationFor` into an ambiguous match: both reads it takes
-        /// — the one `reconcile()` uses to build `desired` and the one it makes internally to resolve a
-        /// key back to a declaration — see the same snapshot. The only way the ambiguity branch is
-        /// reachable at all is a THIRD declaration landing between those two reads (a KV notification
-        /// racing a `reconcile()` in flight); a mock registry answering the two reads differently is
-        /// the only way to reproduce that interleaving synchronously. Proves the branch is not dead
-        /// code: it is what keeps that race from picking a side.
+        /// #1267 replaced what this test used to pin. A pass used to read the declarations once to build
+        /// `desired` and again, per key, to resolve each key back to a declaration, so a colliding
+        /// declaration landing between those reads reached `declarationFor`'s refusal branch mid-pass.
+        /// A pass now reads ONE snapshot and resolves every key against it, so that interleaving no
+        /// longer exists: a collision landing mid-pass is invisible to that pass and is acted on by the
+        /// next one. Pinned here: the registry is read exactly once per pass, the first pass acts on
+        /// what it read, and the next pass retracts the attachment the moment the collision is visible —
+        /// fail-closed per pass, never an arbitrary winner.
         @Test
-        void declarationFor_refusesToPickAWinner_whenACollisionAppearsBetweenTheTwoDeclarationReads() {
+        void reconcile_readsOneSnapshotPerPass_andRetractsOnTheNextPass_whenACollisionLandsBetweenPasses() {
             var declarationA = new StreamConsumerRegistry.ConsumerDeclaration(STREAM, CONFIG_SECTION, ARTIFACT, METHOD, GROUP, false, "java.lang.String");
             var declarationB = new StreamConsumerRegistry.ConsumerDeclaration(STREAM, CONFIG_SECTION, OTHER_ARTIFACT, METHOD, GROUP, false, "java.lang.String");
             var raceyRegistry = mock(StreamConsumerRegistry.class);
@@ -673,9 +674,17 @@ class StreamConsumerManagerTest {
             deploySliceLocally();
             ownership.ownedBySelf(0, 1, 2, 3);
 
-            managerWithRegistry(raceyRegistry).reconcile();
+            var manager = managerWithRegistry(raceyRegistry);
 
-            assertThat(runtime.subscribedPartitions()).describedAs("the collision surfaced only on re-resolution — `declarationFor` must still refuse to pick a side, never fall back to the first match")
+            manager.reconcile();
+
+            verify(raceyRegistry, times(1)).allDeclarations();
+            assertThat(runtime.subscribedPartitions()).describedAs("the first pass's one snapshot holds no collision — consuming is the correct decision for what it read")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("the next pass sees the collision and retracts — never an arbitrary winner")
                       .isEmpty();
         }
 
