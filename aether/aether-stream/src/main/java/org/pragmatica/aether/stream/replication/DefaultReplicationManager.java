@@ -227,6 +227,7 @@ final class DefaultReplicationManager implements ReplicationManager {
         var byNode = new HashMap<>(confirmedByNode(pending.streamName(), pending.partition()));
 
         byNode.merge(pending.replicaId(), pending.confirmedOffset(), Math::max);
+
         return byNode;
     }
 

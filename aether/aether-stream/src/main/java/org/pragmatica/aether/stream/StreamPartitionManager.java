@@ -1224,8 +1224,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void ackedVisible(OffHeapRingBuffer ring, ReplicationMessage.ReplicateAck ack) {
         ring.advanceVisible(Math.min(ring.durableOffset(),
-                                     replicationManager.replicatedThrough(ack,
-                                                                          minSyncReplicasFor(ack.streamName()) - 1)));
+                                     replicationManager.replicatedThrough(ack, minSyncReplicasFor(ack.streamName()) - 1)));
     }
 
     /// visible = min(durable, the highest offset `minSyncReplicas - 1` distinct peers have acknowledged).

@@ -62,7 +62,6 @@ public interface ReplicationManager extends AutoCloseable {
     /// for (#1235). `-1` when fewer replicas than `minAcks` have acknowledged anything; [Long#MAX_VALUE]
     /// when `minAcks <= 0`, since no ack is required.
     long replicatedThrough(String streamName, int partition, int minAcks);
-
     /// [#replicatedThrough(String, int, int)] as it will read once `pending` is recorded: the ack is
     /// overlaid on the registry rows (never lowering a row), so an [AckObserver] running before the
     /// registry update sees the ack it is being told about.
