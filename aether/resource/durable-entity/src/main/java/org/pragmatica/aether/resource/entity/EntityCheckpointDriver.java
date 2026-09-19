@@ -8,9 +8,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -70,7 +72,8 @@ public final class EntityCheckpointDriver {
                                 Map<Integer, Long> checkpointedThrough,
                                 Map<Integer, Long> inFlight,
                                 AtomicLong writes,
-                                AtomicLong failures) {
+                                AtomicLong failures,
+                                AtomicReference<Runnable> outcomeProbe) {
         static Registration registration(String keyspace,
                                          int partitionCount,
                                          EntityFold fold,
@@ -82,7 +85,8 @@ public final class EntityCheckpointDriver {
                                     new ConcurrentHashMap<>(),
                                     new ConcurrentHashMap<>(),
                                     new AtomicLong(),
-                                    new AtomicLong());
+                                    new AtomicLong(),
+                                    new AtomicReference<>(() -> {}));
         }
     }
 
@@ -333,6 +337,19 @@ public final class EntityCheckpointDriver {
                                                 candidate.throughOffset(),
                                                 cause));
         settle(registration, partition, tick);
+        registration.outcomeProbe()
+                    .get()
+                    .run();
+    }
+
+    /// Test-only seam (#1269 review): runs after a save's outcome has been recorded AND its in-flight mark
+    /// settled, so a test can wait for a late settle to finish instead of sleeping. Production never
+    /// touches it; an unknown keyspace is ignored.
+    @Contract
+    void outcomeProbe(String keyspace, Runnable probe) {
+        Option.option(registrations.get(keyspace))
+              .onPresent(registration -> registration.outcomeProbe()
+                                                     .set(probe));
     }
 
     /// The positive signal. Without a success counter, a driver that silently stopped looks exactly like

@@ -7,10 +7,10 @@ package org.pragmatica.aether.resource.entity;
 import java.lang.management.ManagementFactory;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.LockSupport;
 
 import com.sun.management.ThreadMXBean;
 
@@ -104,7 +104,7 @@ class EntityCheckpointDriverCoalescingTest {
     /// The abandoned save settling LATE must not clear the mark of the save that replaced it — or the very
     /// next tick would start a third save while the second is still in flight.
     @Test
-    void tick_keepsTheReplacementsMark_whenTheAbandonedSaveSettlesLate() {
+    void tick_keepsTheReplacementsMark_whenTheAbandonedSaveSettlesLate() throws InterruptedException {
         var substrate = new CountingSubstrate(false);
         var fold = populatedFold(substrate);
         var driver = EntityCheckpointDriver.entityCheckpointDriver();
@@ -117,8 +117,14 @@ class EntityCheckpointDriverCoalescingTest {
 
         assertThat(substrate.saves.get()).as("the bound elapsed and a replacement save started").isEqualTo(2);
 
+        var lateSettleHandled = new CountDownLatch(1);
+
+        driver.outcomeProbe(KEYSPACE, lateSettleHandled::countDown);
         substrate.settleSave(0);
-        awaitLateSettle(driver);
+
+        assertThat(lateSettleHandled.await(10, TimeUnit.SECONDS)).as("the abandoned save's late settle must have"
+                                                                    + " been handled")
+                                                                 .isTrue();
         driver.tick();
 
         assertThat(substrate.saves.get()).as("the replacement is still in flight").isEqualTo(2);
@@ -176,6 +182,27 @@ class EntityCheckpointDriverCoalescingTest {
                      .writes();
     }
 
+    /// A tick with NOTHING new to checkpoint must clear the mark it took (rev1283 M1). Left set, every idle
+    /// partition would be "taken over" with a false WARN every [EntityCheckpointDriver#IN_FLIGHT_BOUND_TICKS]
+    /// ticks, and a partition becoming active again would wait up to that many ticks for its checkpoint.
+    @Test
+    void tick_checkpointsTheNextAdvance_rightAfterAnIdleTick() {
+        var substrate = new CountingSubstrate(true);
+        var fold = populatedFold(substrate);
+        var driver = EntityCheckpointDriver.entityCheckpointDriver();
+
+        driver.register(KEYSPACE, 1, fold, substrate);
+        driver.tick();
+        driver.tick();
+
+        assertThat(substrate.saves.get()).as("the idle tick saves nothing").isEqualTo(1);
+
+        fold.apply(PARTITION, KEYS, EntityLogRecord.upsert("fresh", new byte[16]));
+        driver.tick();
+
+        assertThat(substrate.saves.get()).as("the tick after the idle one must checkpoint the advance").isEqualTo(2);
+    }
+
     /// The in-flight mark must not outlive a checkpoint that THREW while starting: left behind, it would
     /// stop that partition's checkpoints for the life of the node, silently. Regression fence for the mark
     /// — the pre-#1269 code passes this too, because it had no mark to leave behind.
@@ -195,27 +222,6 @@ class EntityCheckpointDriverCoalescingTest {
                          .keyspaces()
                          .getFirst()
                          .checkpointedThrough()).containsEntry(PARTITION, (long) KEYS - 1);
-    }
-
-    /// The late settle is handled on the promise executor. Its failure count is the observable half; the
-    /// mark it would clear is cleared right after, in the same handler, so a short grace follows. If the
-    /// grace were ever too short the test would pass against the defect, never fail against the fix.
-    private static void awaitLateSettle(EntityCheckpointDriver driver) {
-        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-
-        while (failures(driver) == 0 && System.nanoTime() < deadline) {
-            Thread.onSpinWait();
-        }
-
-        assertThat(failures(driver)).as("the abandoned save's late settle must have been handled").isEqualTo(1L);
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(200));
-    }
-
-    private static long failures(EntityCheckpointDriver driver) {
-        return driver.snapshot()
-                     .keyspaces()
-                     .getFirst()
-                     .failures();
     }
 
     private static EntityFold populatedFold(CountingSubstrate substrate) {
