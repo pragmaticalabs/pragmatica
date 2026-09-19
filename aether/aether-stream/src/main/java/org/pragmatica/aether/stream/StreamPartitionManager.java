@@ -71,6 +71,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     private static final TimeSpan COMMIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
 
     private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
+    /// WAL recoveries (node-wide, since process start) that accepted a gap BEFORE the first WAL record as
+    /// reclaimed history (#1258 review B2) — each is also WARNed with the range. Non-zero is expected after
+    /// retention reclaimed every sealed segment of a partition; an operator seeing it without such
+    /// retention is looking at lost records.
+    private static final AtomicLong WAL_RECOVERY_HEAD_GAPS = new AtomicLong();
 
     /// Absolute per-stream partition ceiling (#265 increment 4, spec §7/§10). Enforced PRE-COMMIT in
     /// {@link #createFreshStream} (mirroring the build-time `StreamConfigParser` check) and surfaced as the
@@ -273,6 +278,11 @@ public final class StreamPartitionManager implements AutoCloseable {
         this.ownerEpochSource = ownerEpochSource;
         this.walBaseDir = walBaseDir;
         this.lastSealedOffset = lastSealedOffset;
+    }
+
+    /// See [#WAL_RECOVERY_HEAD_GAPS].
+    public static long walRecoveryHeadGapsAccepted() {
+        return WAL_RECOVERY_HEAD_GAPS.get();
     }
 
     public static StreamPartitionManager streamPartitionManager() {

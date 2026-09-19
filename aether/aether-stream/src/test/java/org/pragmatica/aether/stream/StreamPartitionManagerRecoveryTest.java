@@ -125,6 +125,41 @@ class StreamPartitionManagerRecoveryTest {
         assertRecoveryRefused(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L)), 4L, 5L);
     }
 
+    /// #1258 review B2 (CTO ruling): a gap BEFORE the first WAL record is indistinguishable today from
+    /// retention having reclaimed every sealed segment (the sealed floor then drops to -1 while compaction
+    /// already removed the records below the old floor). It is accepted: the ring is seeded just below
+    /// the first record, the records land at their stored offsets, and the head gap is counted and WARNed.
+    @Test
+    void rebuild_acceptsLeadingGap_asReclaimedHistory_whenSealedFloorRegressed() throws IOException {
+        writeRawWal(frame(5, "v5"), frame(6, "v6"), frame(7, "v7"));
+        var headGapsBefore = StreamPartitionManager.walRecoveryHeadGapsAccepted();
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+        createStream(recovered);
+
+        var events = readFrom(recovered, 5);
+
+        assertThat(events).extracting(RawEvent::offset).containsExactly(5L, 6L, 7L);
+        assertThat(new String(events.get(0).data(), UTF_8)).isEqualTo("v5");
+        assertCursorExpired(recovered, 0);
+        assertThat(StreamPartitionManager.walRecoveryHeadGapsAccepted() - headGapsBefore).isEqualTo(1);
+
+        recovered.close();
+    }
+
+    @Test
+    void rebuild_acceptsLeadingGap_aboveSealedBound() throws IOException {
+        writeRawWal(frame(4, "v4"), frame(5, "v5"));
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L));
+        createStream(recovered);
+
+        assertThat(readFrom(recovered, 4)).extracting(RawEvent::offset).containsExactly(4L, 5L);
+        assertCursorExpired(recovered, 3);
+
+        recovered.close();
+    }
+
     // === helpers ===
 
     private static void publishAll(StreamPartitionManager manager) {
@@ -180,7 +215,9 @@ class StreamPartitionManagerRecoveryTest {
         assertThat(mismatch.expectedOffset()).isEqualTo(expectedOffset);
         assertThat(mismatch.foundOffset()).isEqualTo(foundOffset);
         assertThat(mismatch.walFile()).isEqualTo(walFile());
-        assertThat(mismatch.message()).contains("move that file aside");
+        assertThat(mismatch.message()).as("names the STREAM, since the whole stream stays unmaterialized")
+                                      .contains("stream 'orders'");
+        assertThat(mismatch.message()).as("advice that cannot discard a correct tail").contains("do not delete");
     }
 
     private Path walFile() {
