@@ -2692,7 +2692,9 @@ A checkpoint is the only thing that bounds an entity log: until a partition is c
 floor reclaims nothing for it. **`writes` climbing is the signal that the driver is alive** — writes and
 reads keep succeeding even when checkpointing has stopped, so a flat `writes` under load is the fault to
 act on. `failures` and `checkpointedThrough` say which partitions are stuck; a partition this node has
-never folded is absent rather than reported as offset 0.
+never folded is absent rather than reported as offset 0. `checkpointLag` (#1302) is, per folded partition,
+the log head minus the last checkpoint this node committed — how far a recovery would replay; its node-wide
+maximum drives the `entity.checkpoint.lag.max` threshold alert (default WARNING 5,000 / CRITICAL 10,000).
 
 Output is the endpoint's JSON, pretty-printed:
 
@@ -2700,7 +2702,8 @@ Output is the endpoint's JSON, pretty-printed:
 {
   "keyspaces": [
     {"keyspace": "orders", "partitionCount": 8, "writes": 214, "failures": 0,
-     "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502}}
+     "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502},
+     "checkpointLag": {"0": 59, "3": 12, "5": 0}}
   ]
 }
 ```

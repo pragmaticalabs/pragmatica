@@ -6,8 +6,10 @@ package org.pragmatica.aether.resource.entity;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -39,13 +41,36 @@ import org.slf4j.LoggerFactory;
 /// abandons every partition and keyspace ordered after it until the next tick.
 public final class EntityCheckpointDriver {
     private static final Logger LOG = LoggerFactory.getLogger(EntityCheckpointDriver.class);
+    /// Node metric carrying this node's LARGEST per-partition checkpoint lag (#1302), evaluated by the
+    /// alert threshold path. The per-(keyspace, partition) values are on [#snapshot].
+    public static final String CHECKPOINT_LAG_METRIC = "entity.checkpoint.lag.max";
 
     private final Map<String, Registration> registrations = new ConcurrentHashMap<>();
+    private final CheckpointLagSink lagSink;
 
-    private EntityCheckpointDriver() {}
+    private EntityCheckpointDriver(CheckpointLagSink lagSink) {
+        this.lagSink = lagSink;
+    }
 
     public static EntityCheckpointDriver entityCheckpointDriver() {
-        return new EntityCheckpointDriver();
+        return entityCheckpointDriver(EntityCheckpointDriver::discardLag);
+    }
+
+    /// The unbound sink: a driver built without a metrics binding (tests, tooling) reports nowhere.
+    @Contract
+    private static void discardLag(long maxCheckpointLag) {}
+
+    /// `lagSink` receives [#maxCheckpointLag] at the end of every tick; the node binds it to its
+    /// metrics collector under [#CHECKPOINT_LAG_METRIC], where the alert threshold path reads it.
+    public static EntityCheckpointDriver entityCheckpointDriver(CheckpointLagSink lagSink) {
+        return new EntityCheckpointDriver(lagSink);
+    }
+
+    /// Narrow report seam so the driver stays independent of the metrics module. `void` + `@Contract`
+    /// deliberately: a notification sink with no outcome the tick could fold.
+    public interface CheckpointLagSink {
+        @Contract
+        void report(long maxCheckpointLag);
     }
 
     private record Registration(String keyspace,
@@ -53,6 +78,7 @@ public final class EntityCheckpointDriver {
                                 EntityFold fold,
                                 EntityLogSubstrate substrate,
                                 Map<Integer, Long> checkpointedThrough,
+                                Set<Integer> folded,
                                 AtomicLong writes,
                                 AtomicLong failures) {
         static Registration registration(String keyspace,
@@ -64,6 +90,7 @@ public final class EntityCheckpointDriver {
                                     fold,
                                     substrate,
                                     new ConcurrentHashMap<>(),
+                                    ConcurrentHashMap.newKeySet(),
                                     new AtomicLong(),
                                     new AtomicLong());
         }
@@ -84,11 +111,19 @@ public final class EntityCheckpointDriver {
     ///                            has never folded is ABSENT rather than reported as 0, because "nothing
     ///                            to say about it" and "checkpointed through offset 0" are different
     ///                            claims and an operator must be able to tell them apart
+    /// @param checkpointLag       per partition this node FOLDS, the log head minus the last checkpoint
+    ///                            this node committed (#1302) — how far a recovery would have to replay.
+    ///                            A partition not folded here is ABSENT, for the same reason as above.
+    ///                            A folded partition this node has not yet checkpointed counts from
+    ///                            offset -1, so right after a takeover it reads the full head distance
+    ///                            until its first checkpoint lands (one tick) — erring toward alerting,
+    ///                            the safe direction for a stall signal
     public record KeyspaceCheckpoints(String keyspace,
                                       int partitionCount,
                                       long writes,
                                       long failures,
-                                      Map<Integer, Long> checkpointedThrough) {}
+                                      Map<Integer, Long> checkpointedThrough,
+                                      Map<Integer, Long> checkpointLag) {}
 
     /// Point-in-time view for the management API.
     public CheckpointSnapshot snapshot() {
@@ -103,7 +138,36 @@ public final class EntityCheckpointDriver {
                                        registration.partitionCount(),
                                        registration.writes().get(),
                                        registration.failures().get(),
-                                       Map.copyOf(registration.checkpointedThrough()));
+                                       Map.copyOf(registration.checkpointedThrough()),
+                                       checkpointLag(registration));
+    }
+
+    /// This node's largest checkpoint lag over every partition it folds, `0` when it folds none — the
+    /// value [#CHECKPOINT_LAG_METRIC] carries.
+    public long maxCheckpointLag() {
+        return registrations.values()
+                            .stream()
+                            .flatMap(registration -> checkpointLag(registration).values()
+                                                                  .stream())
+                            .mapToLong(Long::longValue)
+                            .max()
+                            .orElse(0L);
+    }
+
+    private static Map<Integer, Long> checkpointLag(Registration registration) {
+        return registration.folded()
+                           .stream()
+                           .collect(Collectors.toUnmodifiableMap(partition -> partition,
+                                                                 partition -> partitionLag(registration, partition)));
+    }
+
+    /// Head minus last committed checkpoint, never negative: a local head that has not caught up to a
+    /// checkpoint written from a fuller copy is "nothing to replay", not a negative distance.
+    private static long partitionLag(Registration registration, int partition) {
+        var head = registration.substrate().headOffset(registration.keyspace(), partition);
+        var checkpointed = registration.checkpointedThrough().getOrDefault(partition, -1L);
+
+        return Math.max(0L, head - checkpointed);
     }
 
     /// Register a provisioned keyspace's fold for periodic checkpointing. A second registration of the
@@ -149,6 +213,7 @@ public final class EntityCheckpointDriver {
     public void tick() {
         try {
             registrations.values().forEach(EntityCheckpointDriver::checkpointKeyspace);
+            lagSink.report(maxCheckpointLag());
         } catch (RuntimeException e) {
             LOG.warn("Entity checkpoint tick failed: {} — retried next tick", e.toString(), e);
         }
@@ -172,10 +237,17 @@ public final class EntityCheckpointDriver {
     /// than tidy: read as two calls, a rebuild publishing in between files one fold's contents under
     /// another fold's offset, and the direction that loses data — a high claim over contents folded lower —
     /// is reachable. See [EntityFold#checkpointCandidate].
+    ///
+    /// The same answer decides which partitions carry a checkpoint lag (#1302): a partition folded here
+    /// is one whose recovery this node's checkpoints bound, and one it does not fold is not its to report.
     @Contract
     private static void checkpointPartition(Registration registration, int partition) {
         registration.fold()
                     .checkpointCandidate(partition)
+                    .onPresent(_ -> registration.folded()
+                                                .add(partition))
+                    .onEmpty(() -> registration.folded()
+                                               .remove(partition))
                     .filter(candidate -> isAdvancing(registration, partition, candidate))
                     .onPresent(candidate -> saveCheckpoint(registration, partition, candidate));
     }
