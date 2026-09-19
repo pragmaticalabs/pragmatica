@@ -1,7 +1,7 @@
 # Aether Streams — Architecture & Performance Design Notes
 
 **Status:** Re-verified against source at `ccba0dba5` on 2026-09-19 (#1248) for §1, §3, §4, §5, §6.3, §10 and §11. §2, §6.1–6.2, §7, §8 and §9 carry over from the 2026-04-11 original and were **not** re-verified at that read point; each says so.
-**Measurements:** **None.** This document contains no measured latency, throughput or recovery figure. No benchmark harness for `aether-stream` exists in the repository (searched `git ls-files aether` for `bench|perf|jmh` at `ccba0dba5`; the one code hit, `ObservabilityStep0BenchTest` in `aether/node`, is not a stream benchmark). Every statement is structural (read from source) or analytical (derived from structure).
+**Measurements:** **None.** This document contains no measured latency, throughput or recovery figure. No benchmark harness for `aether-stream` exists in the repository (searched `git ls-files aether` for `bench|perf|jmh` at `ccba0dba5`; the one code hit, `ObservabilityStep0BenchTest` in `aether/node`, is not a stream benchmark). The integration suite's `04-streaming/test-stream-under-load.sh` exercises streams under load but records no figure used here. Every statement is structural (read from source) or analytical (derived from structure).
 **Scope:** The implemented streaming architecture and its performance-relevant properties.
 
 Primary implementation lives in `aether/aether-stream/`, WAL in `aether/aether-stream/.../stream/wal/`, cold-tier storage wiring in `aether/node/`, and codec/storage primitives in `integrations/storage/`.
@@ -32,13 +32,13 @@ Line numbers are deliberately omitted — they rot; symbols do not.
 | Per-partition crash-durable WAL (owner) | `StreamPartitionManager.durablyLog` → `PartitionWal.append` (group-commit `force(false)`) |
 | Replica WAL append + ack barrier | `StreamPartitionManager.appendRecovered` → `walReplicated` → `chainWalWrite`; barrier `syncReplicated`, awaited by `ReplicationReceiveHandler` before acking |
 | Cross-node publish forwarding over QUIC | `stream/forward/`: `StreamForwardMessage`, `StreamForwardClient`, `StreamForwardHandler` |
-| `min-sync-replicas` write-ack floor | `DefaultStreamPublisher.publishLocalEventual`, `PartitionedStreamAccess.publishLocal`, `StreamWriteRouter`, `StreamForwardHandler` → `awaitReplication(..., minSyncReplicas - 1)` |
+| `min-sync-replicas` write-ack floor | `DefaultStreamPublisher.publishLocalEventual`, `PartitionedStreamAccess.publishLocal`, `StreamWriteRouter.publishLocal`, `StreamForwardHandler` → `awaitReplication(..., minSyncReplicas - 1)`. **Exception:** the `StreamWriteRouter.forwardToOwner` fallback (owner unknown or self, or no forward client, with no local ring) calls `publishLocal(...).async()` without the await (§5.1). |
 | Owner → replica push | `DefaultReplicationManager.replicateEvent`. The node wires the **non-batching** manager (`ReplicationManager.replicationManager(...)` in `AetherNode`), so each event is sent by `replicateImmediately`. `ReplicationBatcher` (`DEFAULT_MAX_EVENTS = 100`, `DEFAULT_MAX_DELAY = 1 ms`, **code constants**) exists but `batchingReplicationManager` has no production caller. |
 | Read routing (GOVERNOR / NEAREST / ANY_REPLICA / LINEARIZABLE) | `PartitionedStreamAccess.readWithPreference` → `ForwardingReadRouter` |
 | Consumer group coordination (KV-consensus backed) | `consumer/ConsumerGroupCoordinator` |
 | Transactional cursor commit (PostgreSQL) | `consumer/PgTransactionalCursorCommit` — **library only: no production caller** |
 | Segment sealer (evicted events → sealed segment) | `segment/SegmentSealer` |
-| Segment compression / encryption | `StorageSegmentSink` (compress → encrypt → `putRef`), `SegmentReader` |
+| Segment compression / encryption | `StorageSegmentSink` supports compress → encrypt → `putRef`; the node wires it with neither (`CompressionCodec.NONE`, no encryptor). `SegmentReader` inverts both. |
 | Tiered read (ring buffer → sealed segments) | `segment/TieredStreamReader` |
 | Governor failover | `replication/GovernorFailoverHandler`, `WatermarkTracker`, `StreamPartitionRecovery` |
 | Retention | `RetentionPolicy`, `OffHeapRingBuffer.applyRetention`, `segment/RetentionEnforcer` |
@@ -63,13 +63,13 @@ The 2026-04-11 revision listed cross-node replica reads here. That is no longer 
 
 *Carried over from 2026-04-11; not re-verified at `ccba0dba5` except where marked.*
 
-Streams are modelled as partitioned, append-only logs. Each partition has one owner (the single writer). App EVENTUAL publishes route to the partition's HRW owner via the partition-aware owner resolver; the arg-less leader resolver is a fallback, and a self-resolved owner falls back to a local append (`DefaultStreamPublisher.resolveOwner` / `publishRemote`, re-verified).
+Streams are modelled as partitioned, append-only logs, each partition with one intended writer, its owner. App EVENTUAL publishes (`DefaultStreamPublisher.publishEventual`, re-verified) append locally whenever **this node holds a ring for the partition** (`partitionBuffer(...).isPresent()`), and otherwise route to the partition's HRW owner. The arg-less leader resolver is a fallback, and a self-resolved owner falls back to a local append. Replica nodes also materialise rings, so whether a publish from a replica node can append as a second writer is an open question `[design intent — unverified]`.
 
 **Hot tier.** Events land in an off-heap ring buffer allocated via `Arena.ofShared()`: a 64-byte header (`HEADER_SIZE`, **code constant**), 24-byte index entries (`INDEX_ENTRY_SIZE`, **code constant**), then a data region grown in segments up to the stream's cap.
 
-**Durable log.** On a node with a writable WAL directory, each partition also has a `PartitionWal`. An owner publish is not acknowledged until its record is fsynced there (§3.1, §5). A node whose WAL directory is unwritable refuses to boot unless `aether.allowNonDurableStreams=true` / `AETHER_ALLOW_NON_DURABLE_STREAMS=true` is set; with that opt-in, publishes ack without any fsync `[mechanism: AetherNode.resolveStreamWalDir; durablyLog returns success(offset) when walFor is empty]`.
+**Durable log.** On a node with a writable WAL directory, each partition also has a `PartitionWal`. An owner publish is not acknowledged until its record is fsynced there (§3.1, §5). A node whose WAL directory is unwritable refuses to boot unless `aether.allowNonDurableStreams=true` / `AETHER_ALLOW_NON_DURABLE_STREAMS=true` is set. The refusal is `AetherNode.verifyWalBootable` → `decideWalAvailability`, called from the production entrypoint (`Main`) only. Forge and embedded nodes skip it and degrade via `resolveStreamWalDir` with a WARN. Without a WAL, publishes ack with no fsync `[mechanism: durablyLog returns success(offset) when walFor is empty]`.
 
-**Cold tier.** Evicted events are serialised into a sealed segment by `SegmentSealer` and handed to a `SegmentSink`. The node wires `StorageSegmentSink` (optional compression + encryption). `PgSegmentSink` exists but has no production caller.
+**Cold tier.** Evicted events are serialised into a sealed segment by `SegmentSealer` and handed to a `SegmentSink`. The node wires `StorageSegmentSink` through its two-argument factory: `CompressionCodec.NONE` and no encryptor (re-verified). `PgSegmentSink` exists but has no production caller.
 
 **Reads.** `TieredStreamReader` serves hot reads from the ring and falls back to sealed segments below the ring tail.
 
@@ -94,7 +94,7 @@ Consequences:
 - A successful owner-local publish means the record was fsynced to the owner's WAL `[mechanism: publishLocal chains durablyLog before success; PartitionWal.append resolves only after force(false) covering its record]`, and for `min-sync-replicas ≥ 2`, that `min-sync-replicas − 1` replicas reported their WAL sync for it `[mechanism: ReplicationReceiveHandler acks only on durability.sync success]`. Neither has been exercised by a multi-node crash test for this document.
 - **Visibility precedes durability.** Steps 2 and 3 are ordered ring-append-then-fsync, so a co-located consumer can be notified of, and read, an event whose publish then fails on fsync or replication `[mechanism: notifyAppendListeners runs inside OffHeapRingBuffer.append, before durablyLog]`. Tracked as #1235.
 - Copies on this path: the codec's `byte[]`, the copy into the off-heap ring, and the WAL write (**analytical**). The producer path is not zero-copy and does not claim to be.
-- Recovery action when the WAL fail-stops (a failed fsync): every later append on that partition is refused with `WalError.FailStopped`; restart the node, and recovery trims to the valid prefix. Nothing acked is lost because refused appends were never acked `[mechanism: PartitionWal fail-stop, per its class docs]`.
+- Recovery action when the WAL fail-stops (a failed fsync): every later append on that partition is refused with `WalError.FailStopped`. Restart the node, and recovery trims to the valid prefix. Nothing acked is lost, because refused appends were never acked `[mechanism: a failed force sets PartitionWal.syncFailure; append refuses while it is set]`.
 
 ### 3.2 EVENTUAL, remote (cross-node)
 
@@ -108,7 +108,7 @@ Adds one network round trip plus serialization/deserialization at each end (**an
 
 ### 3.3 STRONG (consensus) — implemented, not wired
 
-`DefaultStreamPublisher.publishStrong` requires a `ConsensusPublishPath`. Every production construction of a publisher (`StreamPublisherFactory`, `SystemStreamFactories`, `AetherNode`) passes `Option.none()` for it, and `ConsensusPublishPath.consensusPublishPath(...)` is called only from tests. A STRONG publish therefore fails with `CONSENSUS_PATH_UNAVAILABLE` `[mechanism: consensusPath.async(StreamError.General.CONSENSUS_PATH_UNAVAILABLE)]`. **No cross-node total-order guarantee is available at `ccba0dba5`.** When wired, `publishBatchStrong` issues one proposal per event (`Promise.allOf` over `publish`).
+`DefaultStreamPublisher.publishStrong` requires a `ConsensusPublishPath`. Every production construction of a publisher (`StreamPublisherFactory`, `SystemStreamFactories`, `AetherNode`) passes `Option.none()` for it, and `ConsensusPublishPath.consensusPublishPath(...)` is called only from tests. A STRONG publish through a `StreamPublisher` therefore fails with `CONSENSUS_PATH_UNAVAILABLE` `[mechanism: consensusPath.async(StreamError.General.CONSENSUS_PATH_UNAVAILABLE)]`. Publishes to a STRONG stream through `PartitionedStreamAccess.publish` or the REST route (`StreamWriteRouter.publish`) do **not** fail. Neither checks the consistency mode, so both silently take the EVENTUAL path `[mechanism: no ConsistencyMode branch in either method]`. **No cross-node total-order guarantee is available at `ccba0dba5`.** When wired, `publishBatchStrong` issues one proposal per event (`Promise.allOf` over `publish`).
 
 ---
 
@@ -116,7 +116,7 @@ Adds one network round trip plus serialization/deserialization at each end (**an
 
 ### 4.1 Push path (co-located, append listener)
 
-`ConsumerRuntimeState.subscribePushOrPoll` registers a `LongConsumer` on the ring's append listeners when the partition is local. On append, the listener calls `onAppend` → `pollCycle` on the appending thread, which reads up to `MAX_POLL_BATCH` events from the cursor and delivers them. The listener fires at ring append, before the WAL fsync (§3.1).
+`ConsumerRuntimeState.subscribePushOrPoll` registers a `LongConsumer` on the ring's append listeners when the partition is local. On append, the listener calls `onAppend` → `pollCycle` on the appending thread. That reads up to `MAX_POLL_BATCH` events from the cursor and starts delivering them. The listener fires at ring append, before the WAL fsync (§3.1). With a local ring the read resolves synchronously, so the publisher's thread also pays for the decode and for starting the consumer invocation before its own fsync (**analytical**; not measured).
 
 ### 4.2 Adaptive poll fallback
 
@@ -124,7 +124,7 @@ When the partition is not local, `ConsumerRuntimeState` polls with an interval b
 
 ### 4.3 Delivery copies — there is no zero-copy read
 
-Storage is off-heap; **delivery copies to heap.** The declarative-consumer path makes three `byte[]` copies per event and then a decode → re-encode → decode round trip `[mechanism: traced below at ccba0dba5]`:
+Storage is off-heap; **delivery copies to heap.** When the consumer runs on the node that holds the ring, the declarative-consumer path makes three `byte[]` copies per event and then a decode → re-encode → decode round trip `[mechanism: traced below at ccba0dba5]`:
 
 1. `OffHeapRingBuffer.readDataBytes` — `new byte[dataLen]`, filled from the off-heap data region (called by `readSingleEvent`).
 2. The `RawEvent` compact constructor — `data = data.clone()`.
@@ -133,11 +133,18 @@ Storage is off-heap; **delivery copies to heap.** The declarative-consumer path 
 
 `OffHeapRingBuffer.readSlice` does not avoid this: `readSliceAtOffset` returns `MemorySegment.ofArray(readDataBytes(...))`, a heap segment over copy 1, and has no production caller. The `StreamConsumerAdapter` that once advertised zero-copy reads was dead code and was deleted in #577.
 
-Allocation per delivered event is therefore at least three payload-sized `byte[]` arrays plus the decoded object twice (**analytical**).
+When the assigned consumer does **not** hold the ring, the node's consumer reader (`streamReadRouter.read(..., GOVERNOR)`) forwards the read to the owner. The copies then roughly double: copies 1–3 plus a `RawEventDto` clone on the owner (`StreamForwardHandler`), the wire encode/decode, and on the consumer side a `RawEventDto` clone, a `dto.data()` clone (`StreamReadRouter.toRawEvent`), and the `RawEvent` constructor and accessor clones, about eight array copies in all. Durable-topic streams add a `TopicEventEnvelope` decode (`StreamConsumerManager.deliverTopicEvent`).
+
+Allocation per delivered event is therefore at least three payload-sized `byte[]` arrays (local ring) or about eight plus the wire buffers (forwarded read), plus the decoded object twice (**analytical**).
 
 ### 4.4 Read routing
 
-`PartitionedStreamAccess.readWithPreference` delegates to `ForwardingReadRouter`. `GOVERNOR` reads the local partition; `NEAREST` / `ANY_REPLICA` read locally when this node is a caught-up replica and otherwise forward to a caught-up replica or the HRW owner; `LINEARIZABLE` runs the committed-owner routing pipeline when its components are wired, and degrades to the replica-routed read when they are not. The 2026-04-11 statement that non-GOVERNOR preferences always fall back to a local read is no longer true.
+`PartitionedStreamAccess.readWithPreference` delegates to `ForwardingReadRouter.route`:
+
+- `GOVERNOR` reads locally and forwards to the owner on `PARTITION_NOT_LOCAL`.
+- `NEAREST` serves any non-empty local read and otherwise goes to the owner.
+- `ANY_REPLICA` prefers a caught-up remote replica, even when this node is itself caught up.
+- `LINEARIZABLE` runs the committed-owner pipeline. It degrades to the replica-routed read when its components are unwired or no committed ownership record exists. The 2026-04-11 statement that non-GOVERNOR preferences always fall back to a local read is no longer true.
 
 ### 4.5 Transactional cursor commit
 
@@ -152,7 +159,7 @@ Allocation per delivered event is therefore at least three payload-sized `byte[]
 After the WAL gate, `publishLocal` calls `ReplicationManager.replicateEvent`. The node constructs its manager with `ReplicationManager.replicationManager(...)`, which has no batcher, so `DefaultReplicationManager.replicateImmediately` sends one `ReplicateEvents` message per event to every registered non-self replica `[mechanism: AetherNode wires the non-batching factory; batchingReplicationManager has no production caller]`. The 2026-04-11 revision described a 100-event / 1 ms `ReplicationBatcher` on this path. That class exists and is unit-tested, but it is not wired.
 
 - **`min-sync-replicas ≤ 1`.** Publish resolves once the owner's WAL fsync completes (or immediately after the ring append when the node runs without a WAL). Replication is sent but not awaited; the caller is not told whether any replica has the event.
-- **`min-sync-replicas ≥ 2`.** Publish additionally awaits `min-sync-replicas − 1` distinct non-self acks (`awaitReplication`). Fewer registered non-self replicas than required fails the await immediately with `NOT_ENOUGH_REPLICAS` rather than acking `[mechanism: DefaultReplicationManager.awaitReplication]`. A failed or timed-out wait does **not** remove the event: it is already in the owner's ring and WAL and continues to replicate, so a caller that retries can publish it twice `[mechanism: publishLocal commits before awaitReplication is called]`.
+- **`min-sync-replicas ≥ 2`.** The one bypass: the REST path's `StreamWriteRouter.forwardToOwner` fallback appends locally without awaiting replication `[mechanism: .or(() -> partitionManager.publishLocal(...).async())]`, so that ack carries only the owner-WAL meaning. Everywhere else, publish additionally awaits `min-sync-replicas − 1` distinct non-self acks (`awaitReplication`). Fewer registered non-self replicas than required fails the await immediately with `NOT_ENOUGH_REPLICAS` rather than acking `[mechanism: DefaultReplicationManager.awaitReplication]`. A failed or timed-out wait does **not** remove the event: it is already in the owner's ring and WAL and continues to replicate, so a caller that retries can publish it twice `[mechanism: publishLocal commits before awaitReplication is called]`.
 
 ### 5.2 Replica side
 
@@ -191,11 +198,13 @@ Retention is driven by `RetentionPolicy`: `ANY` evicts when any configured limit
 
 ### 6.2 Cold: SegmentSink implementations
 
-*Carried over; not re-verified.* `StorageSegmentSink` compresses and optionally encrypts before `putRef`; per-segment metadata lets `SegmentReader` invert the transformations. `PgSegmentSink` persists segments in `aether_stream_segments` but has no production caller at `ccba0dba5`.
+*Carried over; not re-verified except as noted.* `StorageSegmentSink` can compress and encrypt before `putRef`, though the node's instance does neither (re-verified, §2); per-segment metadata lets `SegmentReader` invert the transformations. `PgSegmentSink` persists segments in `aether_stream_segments` but has no production caller at `ccba0dba5`.
 
 ### 6.3 Segment sealing runs partly on the evicting thread (re-verified)
 
-`OffHeapRingBuffer.notifyAndEvict` calls `SegmentSealer.onEviction` on the thread that triggered eviction. That thread builds and serialises the segment and, in `StorageSegmentSink.seal`, compresses and encrypts it. The sealer then **discards** the `Promise` returned by `sink.seal`, so it does not wait for the storage write `[mechanism: SegmentSealer.onEviction does not use the Promise from sink.seal]`. Whether `putRef` does any blocking I/O before returning its `Promise` was not traced `[design intent — unverified]`. Serialisation, compression and encryption costs therefore land on the append path (**analytical**).
+`OffHeapRingBuffer.notifyAndEvict` calls `SegmentSealer.onEviction` on the thread that triggered eviction. That thread builds and serialises the segment and calls `StorageSegmentSink.seal`. The node's sink neither compresses nor encrypts (§2), so `seal` goes straight to `putRef`. The sealer then **discards** the `Promise` returned by `sink.seal`, so it does not wait for the storage write `[mechanism: SegmentSealer.onEviction does not use the Promise from sink.seal]`. Any at-rest encryption happens below `putRef`, in the storage tier. Which thread runs it, and whether `putRef` blocks before returning its `Promise`, was not traced `[design intent — unverified]`. Segment serialisation therefore lands on the append path (**analytical**).
+
+A sink built with an encryptor (not the node's today) writes **plaintext** if encryption fails `[mechanism: StorageSegmentSink.encryptData falls back via .or(ProcessedData.unencrypted(data))]`.
 
 ---
 
@@ -213,7 +222,7 @@ Retention is driven by `RetentionPolicy`: `ANY` evicts when any configured limit
 
 ## 8. Compression & Encryption
 
-*Carried over; not re-verified.* Compression is implemented at the segment sink (`Compression` enum `{NONE, LZ4, ZSTD}` in `integrations/storage/`); hot-tier events are never compressed. Encryption is opt-in per sink via `StorageSegmentSink`; `SegmentReader` uses `"AES/GCM/NoPadding"`. Key management is outside the stream module. Note that `streaming-spec.md` records the `compression` stream key as unwired and rejected by blueprint validation (#576).
+*Carried over; not re-verified except as noted.* The node's sink uses `CompressionCodec.NONE` and no encryptor (re-verified, §2). Compression is implemented at the segment sink (`Compression` enum `{NONE, LZ4, ZSTD}` in `integrations/storage/`); hot-tier events are never compressed. Encryption is opt-in per sink via `StorageSegmentSink`; `SegmentReader` uses `"AES/GCM/NoPadding"`. Key management is outside the stream module. Note that `streaming-spec.md` records the `compression` stream key as unwired and rejected by blueprint validation (#576).
 
 ---
 
@@ -235,14 +244,14 @@ No benchmarks for `aether-stream` exist in the repository. This section describe
 ### What the design does *not* avoid
 
 - **Per-event replication messages.** The production manager sends one `ReplicateEvents` per event; `ReplicationBatcher` is not wired (§5.1).
-- **Copies on delivery.** Three `byte[]` copies plus a decode → re-encode → decode round trip per consumed event (§4.3).
+- **Copies on delivery.** Three `byte[]` copies with a local ring, about eight on a forwarded read, plus a decode → re-encode → decode round trip per consumed event (§4.3).
 - **An fsync per durable publish.** Every acked owner publish on a WAL-backed node waits for a `force(false)` covering its record. Group commit amortises that only across concurrent appenders to the same partition (§5.3).
 
 ### Known latency cliffs and risk surfaces
 
 - **Per-partition serial fsync** on the owner for batched publishes and on replicas for every record (§5.3; #1244, #1245).
 - **Visibility before durability**: consumers can act on events whose publish later fails (§3.1; #1235).
-- **Segment build, compression and encryption on the evicting thread** (§6.3).
+- **Segment build and serialisation on the evicting thread** (§6.3).
 - **Cold-tier reads** replay sealed segments. The size of the step has not been measured.
 - **Index overhead on small events** — 24 bytes per event (**code constant**).
 - **STRONG** is unavailable at `ccba0dba5` (§3.3).
@@ -260,7 +269,7 @@ Each item needs a benchmark harness, which does not exist:
 5. Push-path delivery latency (append → listener → callback), and the cost of the three delivery copies plus the re-encode.
 6. Replication message rate and owner CPU per event with the unbatched manager, and the effect of wiring `ReplicationBatcher`.
 7. Owner failover recovery time: detection, watermark resolution, replay.
-8. Cold-tier read step, and the cost of synchronous segment build/compress/encrypt on append latency.
+8. Cold-tier read step, and the cost of synchronous segment build on append latency.
 9. Compression ratio and CPU cost of LZ4 vs ZSTD on representative segments.
 
 ### Benchmark acceptance — required before any figure here is labelled (measured)
@@ -290,4 +299,4 @@ The report must also state the machine, the stream configuration (`partitions`, 
 | Replication | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/replication/` |
 | Segments (seal, read, index) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/segment/` |
 | Consensus bridge (STRONG, unwired) | `aether/aether-stream/src/main/java/org/pragmatica/aether/stream/consensus/` |
-| WAL directory boot gate | `aether/node/src/main/java/org/pragmatica/aether/node/AetherNode.java` (`resolveStreamWalDir`) |
+| WAL directory boot gate | `aether/node/src/main/java/org/pragmatica/aether/node/AetherNode.java` (`verifyWalBootable`, `decideWalAvailability`; degrade path `resolveStreamWalDir`) |
