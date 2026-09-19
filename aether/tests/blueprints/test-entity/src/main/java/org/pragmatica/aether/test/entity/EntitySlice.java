@@ -37,8 +37,8 @@ import org.pragmatica.lang.Verify;
 /// node provisions (#345 I4): the call answers with a token, the pending timer is a record in the entity's
 /// own log, and the fire applies [OrderCommand.Expire] to the state through the same path an external
 /// update takes. `DurableEntityFactory` provisions only that backing, so `TimerNotSupported` — the answer
-/// of the HA-only in-memory cut (`InMemoryDurableEntity`, `FencedDurableEntity`), which unit tests
-/// construct directly — cannot arrive here. The fixture reports whatever answer it receives as data, so a
+/// of the HA-only in-memory cut (`InMemoryDurableEntity`, `FencedDurableEntity`), which exist only in the
+/// durable-entity module's test sources — cannot arrive here. The fixture reports whatever answer it receives as data, so a
 /// test that ever saw one would name it rather than hang waiting for a fire.
 ///
 /// ## Timer effects are COUNTED, not merely stamped

@@ -22,6 +22,9 @@ import static org.pragmatica.lang.Promise.unitPromise;
 
 /// HA-only, in-memory [DurableEntity] (plan Phase 2a/2b).
 ///
+/// **Test sources only (#1270).** No production path constructs it — a node provisions only
+/// [PartitionFencedDurableEntity] — so it lives beside the tests that use it as a reference backing.
+///
 /// ## Per-key serialization (no locks, no threads)
 ///
 /// State lives in `state` (an in-memory map). Operations serialize per key via a shared

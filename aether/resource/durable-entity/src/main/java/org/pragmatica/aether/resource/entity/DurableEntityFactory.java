@@ -37,7 +37,7 @@ import static org.pragmatica.lang.Result.all;
 ///
 /// ## What it builds, and why the context is mandatory (#345 I1)
 /// Until I1 this factory ignored its config and unconditionally returned the NO-ARG
-/// [InMemoryDurableEntity] — a bare map with no fence and no owner routing — so a five-node cluster gave
+/// `InMemoryDurableEntity` (test sources only since #1270) — a bare map with no fence and no owner routing — so a five-node cluster gave
 /// every node its own private copy of every key. It now builds the fenced
 /// [PartitionFencedDurableEntity] from node-wide SPI extensions registered by
 /// `AetherNode.registerEntityExtensionsOnSpi`, following the `StreamAccessFactory` template.

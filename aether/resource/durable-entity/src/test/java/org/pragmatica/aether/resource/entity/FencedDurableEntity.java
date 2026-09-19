@@ -26,6 +26,9 @@ import org.pragmatica.serialization.Serializer;
 /// rejected at the storage engine's commit point if that epoch is stale — so a deposed owner cannot
 /// double-write across a governor handover (spec §4.2, §6).
 ///
+/// **Test sources only (#1270).** No production path constructs it — see the last bullet below — so it
+/// lives beside the tests that exercise it.
+///
 /// ## What this cut delivers vs defers
 ///
 ///   - **Fenced single-writer correctness.** Commits go through [StorageEngine#putVersioned] with the
