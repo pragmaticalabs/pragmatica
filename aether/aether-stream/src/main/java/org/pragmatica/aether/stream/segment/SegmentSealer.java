@@ -61,7 +61,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///     going past the cap drops heap copies, oldest first, and keeps only the pending RANGE — but only for a
 ///     range already durable in the WAL ([PartitionWal#durableOffset]); a copy whose range the WAL has not yet
 ///     fsynced (the replica path writes its WAL asynchronously) is kept, so the heap can exceed the cap by at
-///     most that not-yet-durable tail. A retry rebuilds a spilled segment from
+///     most that not-yet-durable tail. What bounds the tail is the replica's WAL chain lag: on the owner's
+///     publish path it is empty (a publish is acked only after its fsync); on the replica path it is the
+///     records `appendRecovered` has landed since the last `syncReplicated` — one replication batch on the
+///     live path (the receive handler syncs before acking); during catch-up, every backfilled record since the
+///     last sync (#1244 adds a sync at the end of each backfill run). [design intent — unverified: no
+///     measurement of the tail under a large backfill with storage down]. A retry rebuilds a spilled segment from
 ///     [WalRangeReader#readExactRange] — exactly the range, or a loud [SegmentError.WalRangeMissing], never a
 ///     short segment. Such a hand-over is never refused, so pending-seal pressure never fails an EVENTUAL
 ///     append; the limit moves to the WAL's disk, where a failed write fail-stops the partition loudly
