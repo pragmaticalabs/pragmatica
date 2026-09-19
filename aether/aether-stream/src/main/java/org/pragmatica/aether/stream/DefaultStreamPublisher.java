@@ -143,7 +143,9 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
             return publishBatchStrong(events);
         }
         // #964: an UNKNOWN mode takes the EVENTUAL batch path, where every event reaches the shared write
-        // router and is refused there — the same single guard the single-event path relies on.
+        // router and is refused there — the same single guard the single-event path relies on. The batch
+        // folds its per-group results (allSucceeded), so those refusals fail the batch instead of being
+        // acknowledged as success.
         return publishBatchEventual(events);
     }
 
@@ -168,12 +170,14 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     /// {@link #publish} — local owner publish + replicate + min-sync await, or write-forward to the
     /// remote owner. This preserves key→partition affinity and gives the batch identical replication
     /// semantics to single publish (composes with #262), instead of the prior whole-batch misroute that
-    /// also bypassed replication and failed `PARTITION_NOT_LOCAL` for any non-local partition.
+    /// also bypassed replication and failed `PARTITION_NOT_LOCAL` for any non-local partition. Any group's
+    /// failure fails the batch (#1263): `Promise.allOf(...).mapToUnit()` had acknowledged a batch whose
+    /// events were refused or lost as success.
     private Promise<Unit> publishBatchEventual(List<T> events) {
         var now = System.currentTimeMillis();
         var byPartition = groupByPartition(events);
 
-        return Promise.allOf(byPartition.values().stream().map(group -> publishGroupInOrder(group, now)).toList()).mapToUnit();
+        return Promise.allOf(byPartition.values().stream().map(group -> publishGroupInOrder(group, now)).toList()).flatMap(DefaultStreamPublisher::allSucceeded);
     }
 
     /// Group events by computed partition, preserving encounter order within each partition group so
