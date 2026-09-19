@@ -73,6 +73,11 @@ final class PerKeySerialExecutor<K> {
         return castResult(chainOnto(previous, operation, published));
     }
 
+    /// Package-private test hook: how many keys currently hold an entry.
+    int trackedKeys() {
+        return tails.size();
+    }
+
     private AtomicReference<Promise<Object>> tailRef(K key) {
         return tails.computeIfAbsent(key, _ -> new AtomicReference<>(SEED));
     }
