@@ -205,6 +205,39 @@ class DlqStreamSinkTest {
         assertThat(entries.getFirst().offset()).isEqualTo(9L);
     }
 
+    /// #1266 review: a DLQ record in the pre-`rawEvent` wire shape (the new encoding minus its trailing
+    /// boolean) must not throw out of `read` — it is skipped as a typed decode failure, and the decodable
+    /// entry behind it is still returned.
+    @Test
+    void read_skipsAnOldShapeRecord_insteadOfThrowing() {
+        activateTopic();
+        var sink = new DlqStreamSink(codec,
+                                     manager,
+                                     dlqStream -> DefaultStreamPublisher.streamPublisher(manager,
+                                                                                         codec,
+                                                                                         dlqStream,
+                                                                                         1,
+                                                                                         Option.none()));
+        var current = codec.encode(new DlqEnvelope("old", ADDRESS, 0, 1L, "group-a", 1, "cause", 1L, 2L, "x".getBytes(UTF_8), false));
+        var oldShape = java.util.Arrays.copyOf(current, current.length - 1);
+
+        assertThat(org.pragmatica.lang.Result.lift(() -> codec.<DlqEnvelope>decode(oldShape)).isFailure())
+                  .describedAs("control: the old-shape bytes really fail to decode as the current DlqEnvelope")
+                  .isTrue();
+        manager.publishLocal(DurableTopicNames.dlqStreamForTopicStream(TOPIC_STREAM), 0, oldShape, 1000L)
+               .onFailure(cause -> fail(cause.message()));
+        sink.append(TOPIC_STREAM, 0, 7L, "group-a", encodedEnvelope("msg-7", "bad"), "cause-7", 5)
+            .await()
+            .onFailure(cause -> fail(cause.message()));
+
+        var entries = org.pragmatica.lang.Result.lift(() -> sink.read(TOPIC_STREAM, 10));
+
+        assertThat(entries.isSuccess()).describedAs("read must not throw on an undecodable DLQ record: %s", entries)
+                                       .isTrue();
+        entries.onSuccess(list -> assertThat(list).singleElement()
+                                                  .satisfies(entry -> assertThat(entry.offset()).isEqualTo(7L)));
+    }
+
     /// #1266 acceptance: garbage, then a good event, on a durable-topic partition. The garbage is
     /// dead-lettered raw, the cursor moves past it, and the good event is delivered — the partition does
     /// not wedge behind a sink that throws.

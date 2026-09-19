@@ -647,6 +647,59 @@ class StreamConsumerRuntimeTest {
             }
         }
 
+        /// #1266 review (attack5): a handler that returns `null` instead of a promise once is a failed
+        /// delivery — retried — and the loop moves on.
+        @Test
+        void handlerReturningNull_isADeliveryFailure_andDoesNotWedgeTheLoop() throws Exception {
+            createTestStream("orders");
+            var delivered = new CopyOnWriteArrayList<Long>();
+            var returnedNull = new AtomicBoolean(false);
+
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-null", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY),
+                              (offset, payload, ts) -> nullOnceOnZero(returnedNull, delivered, offset));
+            manager.publishLocal("orders", 0, "e0".getBytes(UTF_8), 1000L);
+            manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+            manager.publishLocal("orders", 0, "e2".getBytes(UTF_8), 3000L);
+            awaitContains(delivered, 2L);
+            assertThat(returnedNull.get()).describedAs("control: the handler really returned null").isTrue();
+            assertThat(delivered).containsExactly(0L, 1L, 2L);
+        }
+
+        /// The discriminating half: a handler that ALWAYS returns `null` goes through the error strategy
+        /// (SKIP dead-letters it), not the read-failure path that would re-read the same offset forever.
+        @Test
+        void handlerAlwaysReturningNull_isDeadLettered() throws Exception {
+            createTestStream("orders");
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-null2", 1, ProcessingMode.ORDERED, ErrorStrategy.SKIP),
+                              (offset, payload, ts) -> nullOnZero(delivered, offset));
+            manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+            manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
+            awaitContains(delivered, 1L);
+            assertThat(delivered).containsExactly(1L);
+            assertThat(runtime.deadLetterHandler().read("orders", 10)).hasSize(1);
+        }
+
+        /// #1266 review F2: every outcome ends with the holds clear — cancellation included.
+        @Test
+        void cancel_releasesBothDeliveryHolds() {
+            var state = ConsumerRuntimeState.ConsumerState.consumerState(ConsumerConfig.consumerConfig("group-c"),
+                                                                          (offset, payload, ts) -> Promise.unitPromise(),
+                                                                          0L,
+                                                                          StreamConsumerRuntime.IdlePolicy.REAP_WHEN_IDLE);
+
+            state.markRetryInFlight();
+            state.markDeadLetterInFlight();
+            state.cancel();
+            assertThat(state.isRetryInFlight()).isFalse();
+            assertThat(state.isDeadLetterInFlight()).isFalse();
+        }
+
         /// #1266: an append that never settles is bounded (shortened here through the constructor seam;
         /// production uses [ConsumerRuntimeState#DEAD_LETTER_APPEND_TIMEOUT]) and takes the retry path —
         /// and while it is outstanding the hold is VISIBLE on the snapshot, never an idle-looking partition.
@@ -718,6 +771,26 @@ class StreamConsumerRuntimeTest {
         private Promise<Unit> failFirst(List<Long> delivered, long offset) {
             if (offset == 0L) {
                 return StreamError.General.BUFFER_EMPTY.promise();
+            }
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+
+        @SuppressWarnings("JBCT-NULL-01")
+        private static Promise<Unit> nullOnceOnZero(AtomicBoolean returnedNull, List<Long> delivered, long offset) {
+            if (offset == 0L && returnedNull.compareAndSet(false, true)) {
+                return null;
+            }
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+
+        @SuppressWarnings("JBCT-NULL-01")
+        private static Promise<Unit> nullOnZero(List<Long> delivered, long offset) {
+            if (offset == 0L) {
+                return null;
             }
             delivered.add(offset);
 

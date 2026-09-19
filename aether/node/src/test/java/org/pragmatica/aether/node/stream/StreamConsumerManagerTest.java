@@ -782,6 +782,34 @@ class StreamConsumerManagerTest {
             assertThat(manager.activeSubscriptionCount()).isZero();
         }
 
+        /// #1266: the delivery holds reach the per-partition status the declarative-consumers route
+        /// renders, each from its OWN snapshot field — set them asymmetrically so a swapped or dropped
+        /// mapping shows.
+        @Test
+        void statuses_carryEachDeliveryHold_fromItsOwnSnapshotField() {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+
+            manager.reconcile();
+            runtime.holds(true, false);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
+                                                                                  .satisfies(cursor -> {
+                                                                                                 assertThat(cursor.deadLetterInFlight()).isTrue();
+                                                                                                 assertThat(cursor.retryInFlight()).isFalse();
+                                                                                             }));
+            runtime.holds(false, true);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
+                                                                                  .satisfies(cursor -> {
+                                                                                                 assertThat(cursor.deadLetterInFlight()).isFalse();
+                                                                                                 assertThat(cursor.retryInFlight()).isTrue();
+                                                                                             }));
+        }
+
         @Test
         void statuses_areEmpty_whenNothingDeclared() {
             assertThat(manager().statuses()).isEmpty();
@@ -875,6 +903,13 @@ class StreamConsumerManagerTest {
 
         private final Map<StreamPartition, String> subscriptions = new ConcurrentHashMap<>();
         private int subscribeCalls;
+        private volatile boolean deadLetterHold;
+        private volatile boolean retryHold;
+
+        void holds(boolean deadLetter, boolean retry) {
+            deadLetterHold = deadLetter;
+            retryHold = retry;
+        }
 
         List<Integer> subscribedPartitions() {
             return subscriptions.keySet().stream().map(StreamPartition::partition).distinct().toList();
@@ -941,8 +976,8 @@ class StreamConsumerManagerTest {
                                                                        false,
                                                                        IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
                                                                        Option.none(),
-                                                                       false,
-                                                                       false))
+                                                                       deadLetterHold,
+                                                                       retryHold))
                                 .toList();
         }
 
