@@ -162,6 +162,27 @@ class StreamRoutesReservedPrefixTest {
         }
     }
 
+    /// Review round 3: the up-front ensure added for F2 must not turn an EMPTY batch into a stream
+    /// creation — a batch with no events publishes nothing and must mint nothing.
+    @Test
+    void catalogPublishBatch_emptyBatch_mintsNoStream() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+
+        try {
+            catalogRoutes(manager, StreamNamespacesService.inMemory())
+                .publishBatch("com.example.app", "orders", "1.0.0", "publish-batch", new StreamApiRoutes.PublishRequest[0])
+                .await()
+                .onFailure(cause -> fail("an empty batch must succeed: " + cause.message()))
+                .onSuccess(response -> assertThat(response.published()).isZero());
+
+            assertThat(manager.streamInfo("com.example.app:orders:1.0.0").isEmpty())
+                .as("an empty batch must not create the stream")
+                .isTrue();
+        } finally {
+            manager.close();
+        }
+    }
+
     /// Review F3/F4: answering `200 "exists"` for a reserved name that already exists is an existence
     /// oracle for internally provisioned streams. The refusal runs BEFORE the existence check.
     @Test
