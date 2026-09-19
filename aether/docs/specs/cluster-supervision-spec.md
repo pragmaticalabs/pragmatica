@@ -39,7 +39,7 @@ closed — the spec's own rule (§3) is that a gap is implemented in its owning 
 | §11.1 durable outbox; any stream-backed event | the stream correctness set #1231–#1239 (append ordering, WAL recovery, drop-as-success, seal-before-reclaim, read visibility, publish outcomes, consumer delivery) |
 | §6.1 conditional admission and reservation sets (P2) | #1250 — the KV applier already fences by epoch/version/monotonic value, but a rejected write is not visible to its submitter and no atomic multi-key command exists |
 | §7.4 replacement adoption, SUP-R03/R04, INV-02 | #1038 — auto-heal deletes an unhealthy node's VM even when auto-heal is disabled |
-| §2.1 10K+ nodes / multi-region, §13.3 scale acceptance | #365, #366, #367 — the per-community and multi-community scale targets in [scaling architecture](../architecture/08-scaling.md) are still pending validation |
+| §2.1 10K+ nodes / multi-region, §13.3 scale acceptance | #365, #366, #367 — 10K worker nodes is the architecture's own shape (~100 nodes per community × ~100 communities, [scaling architecture](../architecture/08-scaling.md)); BOTH factors are design targets pending validation — the single-community cap (#365/#366) and how many communities one core coordinates (#367). Live scale claims wait on those runs; §13.3's synthetic topology does not |
 
 Related: #435 (setpoint controller + TTM forecast) is the narrower predecessor of §9.4 and §12's
 proposal-only TTM; #1021 records why process auto-restart is deliberately absent — no runbook in
