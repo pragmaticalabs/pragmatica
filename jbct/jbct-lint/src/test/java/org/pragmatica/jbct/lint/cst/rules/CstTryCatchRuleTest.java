@@ -1,8 +1,10 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.jbct.lint.Diagnostic;
+import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLinter;
 import org.pragmatica.jbct.shared.SourceFile;
@@ -197,5 +199,192 @@ class CstTryCatchRuleTest {
                 """);
 
         assertTrue(hits.isEmpty(), hits.toString());
+    }
+
+    /// #1247 review N2: the default severity is WARNING until the corpus burn-down (see `LintConfig`).
+    @Test
+    void defaultSeverity_isWarning() {
+        var hits = ruleHits("""
+                package org.example;
+                class Foo {
+                    void run() {
+                        try { go(); } catch (RuntimeException e) { log(e); }
+                    }
+                }
+                """);
+
+        assertEquals(1, hits.size(), hits.toString());
+        assertEquals(DiagnosticSeverity.WARNING, hits.getFirst().severity());
+    }
+
+    /// #1247 review M1: the mark is method-scoped. Fixtures r09-r15 are the reviewer's (rev1294).
+    @Nested
+    class MethodScopedMark {
+
+        @Test
+        void classLevelMark_doesNotExemptUnmarkedMethods() {
+            assertEquals(1, ruleHits("""
+                    package org.example;
+                    @SuppressWarnings("JBCT-EX-03")
+                    class Foo {
+                        void business() {
+                            try { go(); } catch (RuntimeException e) { log(e); }
+                        }
+                    }
+                    """).size());
+        }
+
+        @Test
+        void classLevelContract_doesNotExemptUnmarkedMethods() {
+            assertEquals(1, ruleHits("""
+                    package org.example;
+                    @Contract
+                    class Foo {
+                        void business() {
+                            try { go(); } catch (RuntimeException e) { log(e); }
+                        }
+                    }
+                    """).size());
+        }
+
+        @Test
+        void markedMethod_doesNotCoverAnonymousClassInside() {
+            assertEquals(1, ruleHits("""
+                    package org.example;
+                    class Foo {
+                        @SuppressWarnings("JBCT-EX-03")
+                        Runnable leaf() {
+                            try { go(); } catch (IllegalStateException e) { log(e); }
+                            return new Runnable() {
+                                public void run() {
+                                    try { go(); } catch (RuntimeException e) { log(e); }
+                                }
+                            };
+                        }
+                    }
+                    """).size());
+        }
+
+        @Test
+        void markedMethod_doesNotCoverNestedClassMethod() {
+            assertEquals(1, ruleHits("""
+                    package org.example;
+                    class Foo {
+                        @SuppressWarnings("JBCT-EX-03")
+                        void leaf() {
+                            try { go(); } catch (IllegalStateException e) { log(e); }
+                            class Local {
+                                void run() {
+                                    try { go(); } catch (RuntimeException e) { log(e); }
+                                }
+                            }
+                        }
+                    }
+                    """).size());
+        }
+
+        @Test
+        void parameterMark_exemptsNothing() {
+            assertEquals(1, ruleHits("""
+                    package org.example;
+                    class Foo {
+                        void run(@SuppressWarnings("JBCT-EX-03") int x) { try { go(); } catch (RuntimeException e) { log(e); } }
+                    }
+                    """).size());
+        }
+
+        @Test
+        void localVariableMark_exemptsNothing() {
+            assertEquals(1, ruleHits("""
+                    package org.example;
+                    class Foo {
+                        void run() {
+                            @SuppressWarnings("JBCT-EX-03")
+                            Runnable r = () -> {
+                                try { go(); } catch (RuntimeException e) { log(e); }
+                            };
+                            r.run();
+                        }
+                    }
+                    """).size());
+        }
+
+        @Test
+        void fieldMark_exemptsNothing() {
+            assertEquals(1, ruleHits("""
+                    package org.example;
+                    class Foo {
+                        @SuppressWarnings("JBCT-EX-03")
+                        private final Runnable r = () -> {
+                            try { go(); } catch (RuntimeException e) { log(e); }
+                        };
+                    }
+                    """).size());
+        }
+
+        @Test
+        void sameLineSibling_isNotCovered() {
+            assertEquals(1, ruleHits("""
+                    package org.example;
+                    class Foo {
+                        @SuppressWarnings("JBCT-EX-03")
+                        void leaf() { try { go(); } catch (IllegalStateException e) { log(e); } } void business() { try { go(); } catch (RuntimeException e) { log(e); } }
+                    }
+                    """).size());
+        }
+
+        @Test
+        void markedMethod_coversLambdaInside() {
+            assertTrue(ruleHits("""
+                    package org.example;
+                    class Foo {
+                        @SuppressWarnings("JBCT-EX-03")
+                        Runnable leaf() {
+                            return () -> {
+                                try { go(); } catch (IllegalStateException e) { log(e); }
+                            };
+                        }
+                    }
+                    """).isEmpty());
+        }
+
+        @Test
+        void markedConstructor_isAllowed() {
+            assertTrue(ruleHits("""
+                    package org.example;
+                    class Foo {
+                        @SuppressWarnings("JBCT-EX-03")
+                        Foo() {
+                            try { go(); } catch (IllegalStateException e) { log(e); }
+                        }
+                    }
+                    """).isEmpty());
+        }
+
+        @Test
+        void contractMethod_isAllowed() {
+            assertTrue(ruleHits("""
+                    package org.example;
+                    class Foo {
+                        @Contract
+                        void run() {
+                            try { go(); } catch (RuntimeException e) { log(e); }
+                        }
+                    }
+                    """).isEmpty());
+        }
+
+        @Test
+        void markedInterfaceDefaultMethod_isAllowed() {
+            assertTrue(ruleHits("""
+                    package org.example;
+                    interface Foo {
+                        @SuppressWarnings("JBCT-EX-03")
+                        default void run() {
+                            try { go(); } catch (IllegalStateException e) { log(e); }
+                        }
+                    }
+                    """).isEmpty());
+        }
     }
 }
