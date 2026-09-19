@@ -170,7 +170,13 @@ public interface StreamConsumerManager {
     /// failure while the consumer stays attached; [Option#none] once it commits successfully again,
     /// or if none has failed. Sourced from
     /// [org.pragmatica.aether.stream.StreamConsumerRuntime.SubscriptionSnapshot#lastCursorCommitFailure].
-    record PartitionCursor(int partition, long cursor, boolean stalled, Option<String> lastCursorCommitFailure) {}
+    /// `awaitingCursorFetch`: the consumer has not started, because its cursor fetch keeps failing and is
+    /// being retried (rev1272 F7 follow-up).
+    record PartitionCursor(int partition,
+                           long cursor,
+                           boolean stalled,
+                           Option<String> lastCursorCommitFailure,
+                           boolean awaitingCursorFetch) {}
 
     /// Who consumes one partition, and who owns it. Both are computed locally and identically on every
     /// node, so a single call to any node answers "who consumes partition 3, and does it read locally?"
@@ -753,7 +759,8 @@ public interface StreamConsumerManager {
                                                     snapshot -> new PartitionCursor(snapshot.partition(),
                                                                                     snapshot.cursor(),
                                                                                     snapshot.stalled(),
-                                                                                    snapshot.lastCursorCommitFailure()),
+                                                                                    snapshot.lastCursorCommitFailure(),
+                                                                                    snapshot.awaitingCursorFetch()),
                                                     (first, _) -> first));
         }
 

@@ -44,7 +44,9 @@
   registered but never started, and every resubscribe was refused as already subscribed. The fetch is
   now lifted, and a failed fetch is retried with backoff until the store answers; the consumer then
   starts from the stored cursor. It no longer starts from offset 0 after a failed fetch, which replayed
-  the whole retained partition. [mechanism: `fetchCursorAndStart`; pinned by
+  the whole retained partition. While it retries, the subscription reports `awaitingCursorFetch` on
+  `SubscriptionSnapshot` and on `GET /api/streams/declarative-consumers`, so a consumer that never
+  started is distinguishable from a quiet one. [mechanism: `fetchCursorAndStart`; pinned by
   `StreamConsumerRuntimeTest$CursorCommitObservability.cursorFetchSyncThrow_atSubscribe_doesNotStrandTheConsumer`]
 - **A consumer whose ring was released on role loss now falls back to polling.** Releasing the ring
   cleared its listeners, but the assignment could keep the consumer on this node, which left it with

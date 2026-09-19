@@ -782,6 +782,27 @@ class StreamConsumerManagerTest {
             assertThat(manager.activeSubscriptionCount()).isZero();
         }
 
+        /// rev1272 F7 follow-up: the "not started, retrying its cursor fetch" state reaches the
+        /// per-partition status the declarative-consumers route renders.
+        @Test
+        void statuses_carryAwaitingCursorFetch_fromTheSnapshot() {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+
+            manager.reconcile();
+            runtime.awaitingCursorFetch(true);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
+                                                     .satisfies(cursor -> assertThat(cursor.awaitingCursorFetch()).isTrue()));
+            runtime.awaitingCursorFetch(false);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
+                                                     .satisfies(cursor -> assertThat(cursor.awaitingCursorFetch()).isFalse()));
+        }
+
         @Test
         void statuses_areEmpty_whenNothingDeclared() {
             assertThat(manager().statuses()).isEmpty();
@@ -875,6 +896,11 @@ class StreamConsumerManagerTest {
 
         private final Map<StreamPartition, String> subscriptions = new ConcurrentHashMap<>();
         private int subscribeCalls;
+        private volatile boolean awaitingCursorFetch;
+
+        void awaitingCursorFetch(boolean awaiting) {
+            awaitingCursorFetch = awaiting;
+        }
 
         List<Integer> subscribedPartitions() {
             return subscriptions.keySet().stream().map(StreamPartition::partition).distinct().toList();
@@ -940,7 +966,8 @@ class StreamConsumerManagerTest {
                                                                        0L,
                                                                        false,
                                                                        IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
-                                                                       Option.none()))
+                                                                       Option.none(),
+                                                                       awaitingCursorFetch))
                                 .toList();
         }
 
