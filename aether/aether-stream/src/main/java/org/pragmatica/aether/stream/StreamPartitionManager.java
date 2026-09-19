@@ -271,6 +271,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         this.ownerEpochSource = ownerEpochSource;
         this.walBaseDir = walBaseDir;
         this.lastSealedOffset = lastSealedOffset;
+        // #1234: the sealer may drop heap copies of pending seals and rebuild them from the WAL, but only
+        // for partitions that have one; with no WAL directory every partition reads as not durable.
+        evictionListener.attachWalReader(WalRangeReader.walRangeReader(this::walFor));
     }
 
     public static StreamPartitionManager streamPartitionManager() {

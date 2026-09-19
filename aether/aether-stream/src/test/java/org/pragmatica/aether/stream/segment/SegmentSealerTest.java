@@ -14,7 +14,10 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.WalRangeReader;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
@@ -212,9 +215,11 @@ class SegmentSealerTest {
         }
     }
 
-    /// #1234: the retained copies are BOUNDED. Only once they reach the pending-seal cap does the sealer
-    /// refuse a hand-over; the ring then keeps its events and refuses the append that needed their room with
-    /// `SEALING_BEHIND`, and admission resumes as soon as a pending seal lands.
+    /// #1234, WAL OFF: a ring with no WAL behind it (here a bare ring; in production a manager built with no
+    /// WAL directory — Ember or Forge without a data dir) has no durable holder, so the heap copies are
+    /// BOUNDED by refusal. Only once they reach the pending-seal cap does the sealer refuse a hand-over; the
+    /// ring then keeps its events and refuses the append that needed their room with `SEALING_BEHIND`, and
+    /// admission resumes as soon as a pending seal lands. The one case an EVENTUAL append can fail.
     @Nested
     class PendingSealCap {
         /// A one-event segment of a 3-byte payload is 23 bytes (20-byte event header), so a 64-byte cap admits
@@ -372,6 +377,73 @@ class SegmentSealerTest {
             attempts.incrementAndGet();
 
             return Causes.cause("storage down").promise();
+        }
+    }
+
+    /// #1234, WAL ON: when a pending range must be rebuilt from the WAL and the WAL cannot supply EXACTLY that
+    /// range, the seal fails loudly and the segment stays pending — the sink never sees a short or gapped
+    /// segment. A zero cap spills every heap copy at once, so every attempt is a WAL rebuild.
+    @Nested
+    class WalRebuildMissingRange {
+
+        @Test
+        void seal_walRangeMissing_neverSealsShortSegment_keepsItPending_countsFailure() {
+            var sink = new ManualSink();
+            var spillingSealer = segmentSealer(sink, 0);
+
+            spillingSealer.attachWalReader(new MissingRangeWal());
+            spillingSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(5L, "a".getBytes(), 1L),
+                                                                  RawEvent.rawEvent(6L, "b".getBytes(), 2L)))
+                          .onFailure(cause -> fail("a partition with a WAL must never refuse: " + cause.message()));
+
+            awaitCondition(() -> spillingSealer.sealFailureCount() >= 1);
+
+            assertThat(sink.calls()).as("no segment may reach the sink").isZero();
+            assertThat(spillingSealer.spillCount()).isEqualTo(1L);
+            assertThat(spillingSealer.pendingBytes()).isZero();
+            assertThat(spillingSealer.holdsUnsealed(STREAM, PARTITION, 5L)).isTrue();
+            assertThat(spillingSealer.lowestUnsealed(STREAM, PARTITION)).isEqualTo(Option.some(5L));
+        }
+
+        /// A partition that has a WAL, but whose WAL has lost the requested range.
+        private record MissingRangeWal() implements WalRangeReader {
+            @Override
+            public boolean durable(String streamName, int partition) {
+                return true;
+            }
+
+            @Override
+            public Result<List<RawEvent>> read(String streamName, int partition, long fromOffset, long toOffset) {
+                return new SegmentError.WalRangeMissing(streamName, partition, fromOffset, toOffset, 1).result();
+            }
+        }
+    }
+
+    /// #1234 / #1240: the lowest offset still held for sealing — none when nothing is pending, else the head of
+    /// the partition's queue, advancing as each seal lands.
+    @Nested
+    class LowestUnsealed {
+
+        @Test
+        void lowestUnsealed_noneWhenEmpty_thenLowestPending_thenAdvancesAsSealsLand() {
+            var sink = new ManualSink();
+            var trackingSealer = segmentSealer(sink);
+
+            assertThat(trackingSealer.lowestUnsealed(STREAM, PARTITION)).isEqualTo(Option.none());
+
+            trackingSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(10L, "a".getBytes(), 1L),
+                                                                  RawEvent.rawEvent(11L, "b".getBytes(), 2L)));
+            trackingSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(12L, "c".getBytes(), 3L)));
+
+            assertThat(trackingSealer.lowestUnsealed(STREAM, PARTITION)).isEqualTo(Option.some(10L));
+            assertThat(trackingSealer.lowestUnsealed(STREAM, 1)).isEqualTo(Option.none());
+
+            sink.succeed(0);
+            awaitCondition(() -> sink.calls() == 2);
+            assertThat(trackingSealer.lowestUnsealed(STREAM, PARTITION)).isEqualTo(Option.some(12L));
+
+            sink.succeed(1);
+            awaitCondition(() -> trackingSealer.lowestUnsealed(STREAM, PARTITION).isEmpty());
         }
     }
 

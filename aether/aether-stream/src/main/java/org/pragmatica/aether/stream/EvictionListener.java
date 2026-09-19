@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream;
 
 import java.util.List;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -13,7 +14,8 @@ import org.pragmatica.lang.Unit;
 /// Takes the events a ring is about to reclaim (#1234). Success means the listener now owns them — the ring
 /// reclaims their space at once, and making them durable is the listener's job (the partition WAL holds them
 /// meanwhile). A failure is a refusal: the ring keeps the events, and an append that needed their room fails
-/// with the listener's cause. [#NOOP] persists nothing and never refuses.
+/// with the listener's cause. The segment sealer refuses only for a partition with no WAL (see its class doc).
+/// [#NOOP] persists nothing and never refuses.
 @FunctionalInterface
 public interface EvictionListener {
     Result<Unit> onEviction(String streamName, int partition, List<OffHeapRingBuffer.RawEvent> events);
@@ -27,6 +29,18 @@ public interface EvictionListener {
     /// `streamName` was deleted: drop whatever of it is still waiting to be made durable. Its WAL is deleted
     /// with it, so nothing is left to protect, and retained copies must not keep holding shared capacity.
     default Unit onStreamDeleted(String streamName) {
+        return Unit.unit();
+    }
+
+    /// The lowest offset of `(streamName, partition)` handed over and not yet durably sealed, or none when
+    /// nothing is pending. Only a listener that persists can answer.
+    default Option<Long> lowestUnsealed(String streamName, int partition) {
+        return Option.none();
+    }
+
+    /// Give the listener read access to the partitions' WALs, the durable holder of every range it has taken
+    /// but not yet sealed (#1234). A manager with WALs attaches its reader once, at construction.
+    default Unit attachWalReader(WalRangeReader walReader) {
         return Unit.unit();
     }
 

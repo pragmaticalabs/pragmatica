@@ -56,4 +56,21 @@ public sealed interface SegmentError extends Cause {
                                                                                                              partition);
         }
     }
+
+    /// A pending segment's range could not be read back from its partition's WAL in full (#1234): the WAL is
+    /// absent or closed, or it holds only `found` of the `[fromOffset, toOffset]` records. The sealer rebuilds
+    /// a heap-spilled segment only from the EXACT range, so this is reported instead of sealing a short or
+    /// gapped segment — the segment stays pending, ERROR-logged each retry cycle. No retry can fill the range;
+    /// the operator's recovery is a partition recovery, which replays whatever the WAL still holds.
+    record WalRangeMissing(String streamName, int partition, long fromOffset, long toOffset, int found) implements SegmentError, Cause.Terminal {
+        @Override
+        public String message() {
+            return "WAL of %s/%d holds %d of the %d records [%d-%d] a pending seal needs".formatted(streamName,
+                                                                                                    partition,
+                                                                                                    found,
+                                                                                                    toOffset - fromOffset + 1,
+                                                                                                    fromOffset,
+                                                                                                    toOffset);
+        }
+    }
 }

@@ -321,7 +321,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     ///     existing non-fatal EVENTUAL contract (an EVENTUAL append never fails for size; the exhaustion
     ///     event was already emitted via the growth seam). See spec §4.2 / bug #7. The one refusal an
     ///     EVENTUAL append can meet is the eviction listener's: `SEALING_BEHIND` once the pending-seal cap
-    ///     is reached (#1234, [#evictForSpace]).
+    ///     is reached on a partition with NO WAL — the non-crash-durable mode, where the sealer's heap copy
+    ///     is the only holder (#1234, [#evictForSpace]). With a WAL the sealer never refuses.
     private Result<Long> appendIfFitsAllocated(byte[] payload, long timestamp) {
         if (payload.length <= allocatedDataBytes) {
             return appendWritten(payload, timestamp);

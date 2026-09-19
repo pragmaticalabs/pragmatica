@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.aether.stream.segment.SegmentSink;
 import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.lang.Option;
@@ -25,6 +26,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -58,6 +60,10 @@ class StreamPartitionManagerWalTruncateTest {
     private static final int SMALL_EVENTS = 6;
     private static final int RING_EVENTS = 4;
     private static final int SEAL_FAILURES = 2;
+    /// 40 one-event segments of ~1 KiB each during the outage against a cap of ~5 of them.
+    private static final int SPILL_EVENTS = 40;
+    private static final int SPILL_PAYLOAD_BYTES = 1024;
+    private static final long SPILL_CAP_BYTES = 5L * (SPILL_PAYLOAD_BYTES + 20);
     private static final long ONE_GB = 1024 * 1024 * 1024L;
     private static final long AWAIT_MS = 10_000;
     private static final long POLL_NANOS = 10_000_000;
@@ -173,6 +179,37 @@ class StreamPartitionManagerWalTruncateTest {
             .containsExactlyElementsOf(offsets(EVENTS - RING_EVENTS));
     }
 
+    /// #1234 over-cap ruling, WAL ON: storage is down for longer than the pending-seal heap cap can cover.
+    /// The sealer drops heap copies (oldest first) and keeps only their pending ranges, so EVERY append keeps
+    /// succeeding and the heap never holds more than the cap. Once storage recovers, every evicted segment
+    /// seals — the spilled ones rebuilt from the WAL — with content byte-identical to what was published.
+    @Test
+    void storageOutagePastPendingCap_appendsNeverRefused_heapBounded_allSealByteIdenticalAfterRecovery() {
+        var storage = StorageInstance.storageInstance("wal-spill", List.of(MemoryTier.memoryTier(ONE_GB)));
+        var index = new SegmentIndex();
+        var storageSink = storageSegmentSink(storage, index);
+        var storageDown = new AtomicBoolean(true);
+        var sealer = segmentSealer(segment -> sealUnlessDown(storageDown, storageSink, segment), SPILL_CAP_BYTES);
+        var manager = streamPartitionManager(Long.MAX_VALUE, sealer, Option.some(walDir), index::lastSealedOffset);
+        var maxHeapPending = new AtomicLong();
+
+        createSmallRingStream(manager);
+        IntStream.range(0, SPILL_EVENTS).forEach(i -> publishTracking(manager, i, sealer, maxHeapPending));
+
+        assertThat(maxHeapPending.get()).as("heap pending bytes never exceed the cap").isLessThanOrEqualTo(SPILL_CAP_BYTES);
+        assertThat(sealer.spillCount()).as("the outage outgrew the cap").isPositive();
+        assertThat(sealer.refusalCount()).isZero();
+
+        storageDown.set(false);
+        awaitCondition(() -> index.lastSealedOffset(STREAM, PARTITION) == SPILL_EVENTS - RING_EVENTS - 1);
+        manager.close();
+
+        var sealed = tieredStreamReader(index, storage).read(STREAM, PARTITION, 0, SPILL_EVENTS).await().unwrap();
+
+        assertThat(sealed).hasSize(SPILL_EVENTS - RING_EVENTS);
+        IntStream.range(0, sealed.size()).forEach(i -> assertPublished(sealed.get(i), i));
+    }
+
     // === helpers ===
 
     /// Storage refuses every seal while it is down (disk full, DHT error), then accepts.
@@ -180,6 +217,29 @@ class StreamPartitionManagerWalTruncateTest {
         return storageDown.get()
                ? Causes.cause("disk full").promise()
                : storageSink.seal(segment);
+    }
+
+    private static void publishTracking(StreamPartitionManager manager,
+                                        int i,
+                                        SegmentSealer sealer,
+                                        AtomicLong maxHeapPending) {
+        publish(manager, i, spillPayload(i));
+        maxHeapPending.accumulateAndGet(sealer.pendingBytes(), Math::max);
+    }
+
+    private static byte[] spillPayload(int i) {
+        var payload = new byte[SPILL_PAYLOAD_BYTES];
+
+        Arrays.fill(payload, (byte) (i * 31 + 7));
+        payload[0] = (byte) i;
+
+        return payload;
+    }
+
+    private static void assertPublished(RawEvent event, int i) {
+        assertThat(event.offset()).isEqualTo((long) i);
+        assertThat(event.timestamp()).isEqualTo(1000L + i);
+        assertThat(event.data()).isEqualTo(spillPayload(i));
     }
 
     private static void awaitCondition(BooleanSupplier condition) {

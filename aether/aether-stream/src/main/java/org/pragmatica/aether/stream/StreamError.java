@@ -32,7 +32,7 @@ public sealed interface StreamError extends Cause {
         AHSE_REQUIRED_FOR_STRONG("STRONG consistency requires AHSE storage (EvictionListener must not be NOOP)"),
         STREAM_CONFIG_COMMIT_FAILED("Stream config consensus commit failed"),
         PARTITION_NOT_LOCAL("Stream partition is not owned by this node"),
-        SEALING_BEHIND("Pending-seal cap reached: storage has not accepted enough sealed segments for the ring to hand over more; append refused until sealing catches up");
+        SEALING_BEHIND("Pending-seal cap reached on a partition with no WAL: storage has not accepted enough sealed segments for the ring to hand over more; append refused until sealing catches up");
         private final String message;
         General(String message) {
             this.message = message;
@@ -42,8 +42,10 @@ public sealed interface StreamError extends Cause {
             return message;
         }
         /// `STREAM_MEMORY_EXCEEDED` (the pool may clear as other streams are destroyed / right-sized) and
-        /// `SEALING_BEHIND` (the segment sealer's retained copies have reached their cap; it clears as pending
-        /// seals land, #1234) are transient capacity shortages; every other constant is a non-capacity error.
+        /// `SEALING_BEHIND` (a partition WITHOUT a WAL — the non-crash-durable mode, e.g. Ember or Forge with no
+        /// data dir — whose segment sealer's heap copies have reached their cap; it clears as pending seals land,
+        /// #1234) are transient capacity shortages; every other constant is a non-capacity error. With a WAL the
+        /// sealer spills to WAL-backed ranges instead and never raises it.
         @Override
         public boolean transientCapacity() {
             return this == STREAM_MEMORY_EXCEEDED || this == SEALING_BEHIND;

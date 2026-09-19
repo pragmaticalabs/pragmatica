@@ -12,13 +12,16 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.stream.WalRangeReader;
 import org.pragmatica.aether.stream.segment.SegmentIndex.PartitionKey;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -30,7 +33,10 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -44,13 +50,20 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///   - **Ordered per partition.** One seal is in flight per `(stream, partition)`; the next segment is sent
 ///     only after the previous one succeeded, so a later segment can never be sealed past an earlier one
 ///     that is still failing and the sealed range grows without holes.
-///   - **Retried from a retained copy.** Each pending segment is kept on the heap until its seal succeeds and
-///     is retried with exponential backoff; every failure is a WARN and a counted failure
-///     ([#sealFailureCount]), and every [#ERROR_AFTER_FAILURES] consecutive failures of one segment an ERROR.
-///     A pending segment is never dropped.
-///   - **Bounded.** The retained copies are capped at `pendingCapBytes`. Only once that cap is reached does
-///     [#onEviction] refuse a hand-over, with `SEALING_BEHIND`: the ring then keeps the events and refuses
-///     the append that needed their room, so appends fail only when sealing has fallen a whole budget behind.
+///   - **Retried.** A failed seal is retried with exponential backoff; every failure is a WARN and a counted
+///     failure ([#sealFailureCount]), and every [#ERROR_AFTER_FAILURES] consecutive failures of one segment an
+///     ERROR. A pending segment is never dropped (only a deleted stream's are cancelled, [#onStreamDeleted]).
+///   - **Heap copies are bounded by `pendingCapBytes`; the WAL is the holder.** Each pending segment starts
+///     with a heap copy. For a partition WITH a WAL, going past the cap drops heap copies, oldest first, and
+///     keeps only the pending RANGE: a retry rebuilds that segment from [WalRangeReader#read] — exactly the
+///     range, or a loud [SegmentError.WalRangeMissing], never a short segment. Such a hand-over is never
+///     refused, so pending-seal pressure never fails an EVENTUAL append; the limit moves to the WAL's disk,
+///     where a failed write fail-stops the partition loudly (#634-7, #1231).
+///   - **The one refusal: no WAL.** A partition WITHOUT a WAL (a manager built with no WAL directory — the
+///     non-crash-durable mode, e.g. Ember or Forge without a data dir) has no durable holder, so its heap copy
+///     is the only one. There, once the cap is reached, [#onEviction] refuses with `SEALING_BEHIND`: the ring
+///     keeps the events and the append needing their room FAILS. This is the only case in which an EVENTUAL
+///     append can fail for pending-seal pressure.
 public final class SegmentSealer implements EvictionListener {
     private static final Logger log = LoggerFactory.getLogger(SegmentSealer.class);
     private static final int PER_EVENT_HEADER = Long.BYTES + Long.BYTES + Integer.BYTES;
@@ -80,6 +93,11 @@ public final class SegmentSealer implements EvictionListener {
     /// Set by the first refused hand-over and cleared by the next accepted one, so a refusal episode logs one
     /// WARN while [#refusalCount] counts every refusal.
     private final AtomicBoolean refusing = new AtomicBoolean(false);
+    private final AtomicLong spills = new AtomicLong(0);
+    /// Set by the first spill of an episode and cleared by the next hand-over that fits under the cap, so a
+    /// spill episode logs one WARN while [#spillCount] counts every dropped heap copy.
+    private final AtomicBoolean spilling = new AtomicBoolean(false);
+    private final AtomicReference<Option<WalRangeReader>> walReader = new AtomicReference<>(none());
 
     private SegmentSealer(SegmentSink sink, long pendingCapBytes) {
         this.sink = sink;
@@ -94,18 +112,37 @@ public final class SegmentSealer implements EvictionListener {
         return new SegmentSealer(sink, pendingCapBytes);
     }
 
-    /// Take ownership of `events` as one segment and seal it in the background, or refuse with
-    /// `SEALING_BEHIND` when the retained copies have reached the pending-seal cap. The sink is never awaited
-    /// here: the appending thread does not wait on storage.
+    /// Take ownership of `events` as one segment and seal it in the background. A partition with a WAL is
+    /// never refused (past the cap, heap copies spill to WAL-backed ranges); one without refuses with
+    /// `SEALING_BEHIND` once the cap is reached — see the class doc. The sink is never awaited here: the
+    /// appending thread does not wait on storage.
     @Override
     public Result<Unit> onEviction(String streamName, int partition, List<RawEvent> events) {
         if (events.isEmpty()) {
             return unitResult();
         }
 
-        var segment = PendingSegment.pendingSegment(buildSegment(streamName, partition, events));
+        var segment = PendingSegment.retained(buildSegment(streamName, partition, events));
 
-        return reserve(segment).map(_ -> enqueue(segment));
+        return durable(streamName, partition)
+               ? success(admitSpilling(segment))
+               : reserve(segment).map(_ -> enqueue(segment));
+    }
+
+    @Override
+    public Unit attachWalReader(WalRangeReader reader) {
+        walReader.set(some(reader));
+
+        return unit();
+    }
+
+    /// The lowest start offset among `(streamName, partition)`'s pending segments — heap-held or WAL-backed —
+    /// or none when nothing is pending. The queue is in offset order and a segment leaves it only once sealed.
+    @Override
+    public Option<Long> lowestUnsealed(String streamName, int partition) {
+        return option(pending.get(PartitionKey.partitionKey(streamName, partition))).flatMap(seals -> option(seals.queue()
+                                                                                                                  .peek()))
+                     .map(PendingSegment::startOffset);
     }
 
     /// Whether a segment holding `offset` of `(streamName, partition)` is still waiting to be sealed. The
@@ -138,9 +175,72 @@ public final class SegmentSealer implements EvictionListener {
         return refusals.get();
     }
 
-    /// Bytes currently retained for segments not yet sealed.
+    /// Heap copies dropped past the cap, their pending ranges left to be rebuilt from the WAL.
+    public long spillCount() {
+        return spills.get();
+    }
+
+    /// Heap bytes currently retained for segments not yet sealed (WAL-backed ranges hold none).
     public long pendingBytes() {
         return pendingBytes.get();
+    }
+
+    private boolean durable(String streamName, int partition) {
+        return walReader.get()
+                        .map(reader -> reader.durable(streamName, partition))
+                        .or(false);
+    }
+
+    /// With a WAL behind the partition the hand-over always succeeds: the new segment joins with its heap
+    /// copy, then copies are dropped oldest-first — the new one last — until the heap is back under the cap.
+    private Unit admitSpilling(PendingSegment segment) {
+        var seals = sealsFor(segment);
+
+        pendingBytes.addAndGet(segment.bytes());
+        seals.queue().add(segment);
+        spillOverCap(seals, segment);
+        drain(seals);
+
+        return unit();
+    }
+
+    private void spillOverCap(PendingSeals seals, PendingSegment admitted) {
+        var dropped = 0;
+
+        for (var candidate : seals.queue()) {
+            if (pendingBytes.get() <= pendingCapBytes) {
+                break;
+            }
+
+            if (releaseCopy(candidate)) {
+                dropped++;
+            }
+        }
+
+        reportSpill(admitted, dropped);
+    }
+
+    private void reportSpill(PendingSegment admitted, int dropped) {
+        if (dropped == 0) {
+            spilling.set(false);
+
+            return;
+        }
+
+        var total = spills.addAndGet(dropped);
+
+        if (spilling.compareAndSet(false, true)) {
+            log.warn("Pending-seal heap cap {} reached at {}/{} offsets [{}-{}]: dropped {} heap copy(ies), oldest first, "
+                    + "keeping their pending ranges — those seals rebuild from the WAL on their next attempt "
+                    + "(spill {} on this node); appends are not refused",
+                     pendingCapBytes,
+                     admitted.streamName(),
+                     admitted.partition(),
+                     admitted.startOffset(),
+                     admitted.endOffset(),
+                     dropped,
+                     total);
+        }
     }
 
     private Result<Unit> reserve(PendingSegment segment) {
@@ -148,7 +248,7 @@ public final class SegmentSealer implements EvictionListener {
 
         return before < pendingCapBytes
                ? accepted()
-               : refuse(segment.segment(), before);
+               : refuse(segment, before);
     }
 
     /// The cap is checked against what is already retained, so a segment is admitted while anything below the
@@ -166,13 +266,13 @@ public final class SegmentSealer implements EvictionListener {
         return unitResult();
     }
 
-    private Result<Unit> refuse(SealedSegment segment, long retained) {
+    private Result<Unit> refuse(PendingSegment segment, long retained) {
         var count = refusals.incrementAndGet();
 
         if (refusing.compareAndSet(false, true)) {
-            log.warn("Pending-seal cap reached: {} bytes retained for unsealed segments (cap {}); refusing to take {}/{} "
-                    + "offsets [{}-{}] — the ring keeps them and refuses appends that need their room until sealing "
-                    + "catches up (refusal {})",
+            log.warn("Pending-seal cap reached: {} bytes retained for unsealed segments (cap {}); {}/{} has no WAL, so the "
+                    + "heap copy is the only holder — refusing to take offsets [{}-{}]; the ring keeps them and refuses "
+                    + "appends that need their room until sealing catches up (refusal {})",
                      retained,
                      pendingCapBytes,
                      segment.streamName(),
@@ -186,14 +286,17 @@ public final class SegmentSealer implements EvictionListener {
     }
 
     private Unit enqueue(PendingSegment segment) {
-        var seals = pending.computeIfAbsent(PartitionKey.partitionKey(segment.segment().streamName(),
-                                                                      segment.segment().partition()),
-                                            _ -> PendingSeals.pendingSeals());
+        var seals = sealsFor(segment);
 
         seals.queue().add(segment);
         drain(seals);
 
         return unit();
+    }
+
+    private PendingSeals sealsFor(PendingSegment segment) {
+        return pending.computeIfAbsent(PartitionKey.partitionKey(segment.streamName(), segment.partition()),
+                                       _ -> PendingSeals.pendingSeals());
     }
 
     private void drain(PendingSeals seals) {
@@ -221,22 +324,46 @@ public final class SegmentSealer implements EvictionListener {
     /// index update). The order index-then-release is therefore a data dependency of this chain, not a matter
     /// of which callback happens to be scheduled first.
     private void sealWithRetry(PendingSeals seals, PendingSegment segment) {
-        SEAL_RETRY.execute(() -> attempt(seals,
-                                         segment.segment()))
+        SEAL_RETRY.execute(() -> attempt(seals, segment))
                   .map(_ -> released(seals, segment))
                   .onSuccess(_ -> sealHead(seals))
                   .onFailure(cause -> retryCycleExhausted(seals, segment, cause));
     }
 
-    private Promise<Unit> attempt(PendingSeals seals, SealedSegment segment) {
+    private Promise<Unit> attempt(PendingSeals seals, PendingSegment segment) {
         return seals.cancelled()
                     .get()
                ? SegmentError.General.SEAL_CANCELLED.promise()
-               : sink.seal(segment)
-                     .onFailure(cause -> recordFailure(segment, cause));
+               : segmentToSeal(segment).async()
+                              .flatMap(sink::seal)
+                              .onFailure(cause -> recordFailure(segment, cause));
     }
 
-    private void recordFailure(SealedSegment segment, Cause cause) {
+    /// The heap copy while it is retained; after a spill, the segment rebuilt from exactly its WAL range.
+    private Result<SealedSegment> segmentToSeal(PendingSegment segment) {
+        return segment.heapCopy()
+                      .get()
+                      .fold(() -> rebuildFromWal(segment),
+                            Result::success);
+    }
+
+    private Result<SealedSegment> rebuildFromWal(PendingSegment segment) {
+        return walReader.get()
+                        .toResult(new SegmentError.WalRangeMissing(segment.streamName(),
+                                                                   segment.partition(),
+                                                                   segment.startOffset(),
+                                                                   segment.endOffset(),
+                                                                   0))
+                        .flatMap(reader -> reader.read(segment.streamName(),
+                                                       segment.partition(),
+                                                       segment.startOffset(),
+                                                       segment.endOffset()))
+                        .map(events -> buildSegment(segment.streamName(),
+                                                    segment.partition(),
+                                                    events));
+    }
+
+    private void recordFailure(PendingSegment segment, Cause cause) {
         var failures = sealFailures.incrementAndGet();
 
         log.warn("Sealing {}/{} offsets [{}-{}] failed (seal failure {} on this node); the segment stays pending and "
@@ -249,13 +376,23 @@ public final class SegmentSealer implements EvictionListener {
                  cause.message());
     }
 
-    /// Releases the bytes only if the segment was still queued: a cancelled stream already released them.
+    /// Dequeue the sealed segment and release its heap bytes, if it still holds any: a spill or a stream
+    /// deletion may already have released them, and [#releaseCopy] releases each copy exactly once.
     private Unit released(PendingSeals seals, PendingSegment segment) {
-        if (seals.queue().remove(segment)) {
+        seals.queue().remove(segment);
+        releaseCopy(segment);
+
+        return unit();
+    }
+
+    private boolean releaseCopy(PendingSegment segment) {
+        var hadCopy = segment.dropCopy();
+
+        if (hadCopy) {
             pendingBytes.addAndGet(-segment.bytes());
         }
 
-        return unit();
+        return hadCopy;
     }
 
     private void cancel(PartitionKey key) {
@@ -265,10 +402,9 @@ public final class SegmentSealer implements EvictionListener {
     private void cancelSeals(PartitionKey key, PendingSeals seals) {
         seals.cancelled().set(true);
         var dropped = Stream.generate(seals.queue()::poll).takeWhile(Objects::nonNull).toList();
-        var bytes = dropped.stream().mapToLong(PendingSegment::bytes).sum();
+        var bytes = dropped.stream().filter(this::releaseCopy).mapToLong(PendingSegment::bytes).sum();
 
-        pendingBytes.addAndGet(-bytes);
-        log.info("Stream {} deleted: cancelled {} pending seal(s) of partition {}, releasing {} bytes",
+        log.info("Stream {} deleted: cancelled {} pending seal(s) of partition {}, releasing {} heap bytes",
                  key.streamName(),
                  dropped.size(),
                  key.partition(),
@@ -287,10 +423,10 @@ public final class SegmentSealer implements EvictionListener {
 
         log.error("Sealing {}/{} offsets [{}-{}] failed through a retry cycle of up to {} attempts; the segment stays "
                  + "pending, the partition's later segments wait behind it, and a new cycle starts in {}: {}",
-                  segment.segment().streamName(),
-                  segment.segment().partition(),
-                  segment.segment().startOffset(),
-                  segment.segment().endOffset(),
+                  segment.streamName(),
+                  segment.partition(),
+                  segment.startOffset(),
+                  segment.endOffset(),
                   ERROR_AFTER_FAILURES,
                   CYCLE_PAUSE,
                   cause.message());
@@ -358,14 +494,31 @@ public final class SegmentSealer implements EvictionListener {
         }
     }
 
-    /// A retained segment and its size, measured once: [SealedSegment#serializedEvents] copies on every call.
-    private record PendingSegment(SealedSegment segment, int bytes) {
-        static PendingSegment pendingSegment(SealedSegment segment) {
-            return new PendingSegment(segment, segment.serializedEvents().length);
+    /// A pending range and, until it is spilled or released, its heap copy. `bytes` is the copy's size,
+    /// measured once ([SealedSegment#serializedEvents] copies on every call).
+    private record PendingSegment(String streamName,
+                                  int partition,
+                                  long startOffset,
+                                  long endOffset,
+                                  AtomicReference<Option<SealedSegment>> heapCopy,
+                                  int bytes) {
+        static PendingSegment retained(SealedSegment segment) {
+            return new PendingSegment(segment.streamName(),
+                                      segment.partition(),
+                                      segment.startOffset(),
+                                      segment.endOffset(),
+                                      new AtomicReference<>(some(segment)),
+                                      segment.serializedEvents().length);
+        }
+
+        /// True only for the one call that actually dropped the copy.
+        boolean dropCopy() {
+            return heapCopy.getAndSet(none())
+                           .isPresent();
         }
 
         boolean covers(long offset) {
-            return segment.startOffset() <= offset && offset <= segment.endOffset();
+            return startOffset <= offset && offset <= endOffset;
         }
     }
 }
