@@ -164,7 +164,6 @@ class StreamWritePathContractTest {
                                                       Option.<Function<byte[], Object>> none(),
                                                       mode,
                                                       Option.none(),
-                                                      0,
                                                       Option.some(forwardClient),
                                                       Option.<Fn0<Option<NodeId>>> none(),
                                                       Option.some(ownerResolver),
@@ -183,8 +182,7 @@ class StreamWritePathContractTest {
                                                              Option.some(forwardClient),
                                                              SELF,
                                                              Option.<Fn0<Option<NodeId>>> none(),
-                                                             Option.some(ownerResolver),
-                                                             0);
+                                                             Option.some(ownerResolver));
     }
 
     private long localHead(String stream) {

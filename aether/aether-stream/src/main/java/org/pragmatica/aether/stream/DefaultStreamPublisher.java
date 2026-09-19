@@ -15,7 +15,6 @@ import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.consensus.ConsensusPublishPath;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
-import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Functions.Fn0;
@@ -34,7 +33,6 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     private static final Cause UNREADABLE_CONSISTENCY_MODE = Causes.cause("Stream consistency mode was written by a node running a newer ConsistencyMode and cannot be"
                                                                          + " read here (#964); nothing is published rather than defaulting to EVENTUAL or STRONG");
 
-    private final StreamPartitionManager partitionManager;
     private final Serializer serializer;
     private final String streamName;
     private final int partitionCount;
@@ -42,25 +40,15 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     private final AtomicLong roundRobinCounter;
     private final ConsistencyMode consistencyMode;
     private final Option<ConsensusPublishPath> consensusPath;
-    private final int minSyncReplicas;
-    private final Option<StreamForwardClient> forwardClient;
-    private final Option<Fn0<Option<NodeId>>> governorResolver;
-    private final Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver;
-    private final Option<NodeId> selfNodeId;
+    private final StreamWriteRouter writeRouter;
 
-    private DefaultStreamPublisher(StreamPartitionManager partitionManager,
-                                   Serializer serializer,
+    private DefaultStreamPublisher(Serializer serializer,
                                    String streamName,
                                    int partitionCount,
                                    Option<Function<T, Object>> partitionKeyExtractor,
                                    ConsistencyMode consistencyMode,
                                    Option<ConsensusPublishPath> consensusPath,
-                                   int minSyncReplicas,
-                                   Option<StreamForwardClient> forwardClient,
-                                   Option<Fn0<Option<NodeId>>> governorResolver,
-                                   Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
-                                   Option<NodeId> selfNodeId) {
-        this.partitionManager = partitionManager;
+                                   StreamWriteRouter writeRouter) {
         this.serializer = serializer;
         this.streamName = streamName;
         this.partitionCount = partitionCount;
@@ -68,11 +56,7 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
         this.roundRobinCounter = new AtomicLong(0);
         this.consistencyMode = consistencyMode;
         this.consensusPath = consensusPath;
-        this.minSyncReplicas = minSyncReplicas;
-        this.forwardClient = forwardClient;
-        this.governorResolver = governorResolver;
-        this.partitionOwnerResolver = partitionOwnerResolver;
-        this.selfNodeId = selfNodeId;
+        this.writeRouter = writeRouter;
     }
 
     public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
@@ -80,18 +64,13 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                                                 String streamName,
                                                                 int partitionCount,
                                                                 Option<Function<T, Object>> partitionKeyExtractor) {
-        return new DefaultStreamPublisher<>(partitionManager,
-                                            serializer,
-                                            streamName,
-                                            partitionCount,
-                                            partitionKeyExtractor,
-                                            ConsistencyMode.EVENTUAL,
-                                            Option.none(),
-                                            0,
-                                            Option.none(),
-                                            Option.none(),
-                                            Option.none(),
-                                            Option.none());
+        return streamPublisher(partitionManager,
+                               serializer,
+                               streamName,
+                               partitionCount,
+                               partitionKeyExtractor,
+                               ConsistencyMode.EVENTUAL,
+                               Option.none());
     }
 
     public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
@@ -101,20 +80,24 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                                                 Option<Function<T, Object>> partitionKeyExtractor,
                                                                 ConsistencyMode consistencyMode,
                                                                 Option<ConsensusPublishPath> consensusPath) {
-        return new DefaultStreamPublisher<>(partitionManager,
-                                            serializer,
-                                            streamName,
-                                            partitionCount,
-                                            partitionKeyExtractor,
-                                            consistencyMode,
-                                            consensusPath,
-                                            0,
-                                            Option.none(),
-                                            Option.none(),
-                                            Option.none(),
-                                            Option.none());
+        return streamPublisher(partitionManager,
+                               serializer,
+                               streamName,
+                               partitionCount,
+                               partitionKeyExtractor,
+                               consistencyMode,
+                               consensusPath,
+                               Option.none(),
+                               Option.none(),
+                               Option.none(),
+                               Option.none());
     }
 
+    /// Full overload. The EVENTUAL write is delegated whole to {@link StreamWriteRouter} (#1263), built here
+    /// from the forward client, the owner rule ({@link StreamWriteRouter#hrwOwner} over the partition-aware
+    /// HRW resolver with the arg-less leader resolver as fallback) and the self identity. The min-sync
+    /// barrier is no longer a constructor argument: the router reads the stream's committed
+    /// `min-sync-replicas` live on every publish.
     public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
                                                                 Serializer serializer,
                                                                 String streamName,
@@ -122,45 +105,24 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                                                 Option<Function<T, Object>> partitionKeyExtractor,
                                                                 ConsistencyMode consistencyMode,
                                                                 Option<ConsensusPublishPath> consensusPath,
-                                                                int minSyncReplicas) {
-        return new DefaultStreamPublisher<>(partitionManager,
-                                            serializer,
-                                            streamName,
-                                            partitionCount,
-                                            partitionKeyExtractor,
-                                            consistencyMode,
-                                            consensusPath,
-                                            minSyncReplicas,
-                                            Option.none(),
-                                            Option.none(),
-                                            Option.none(),
-                                            Option.none());
-    }
-
-    public static <T> DefaultStreamPublisher<T> streamPublisher(StreamPartitionManager partitionManager,
-                                                                Serializer serializer,
-                                                                String streamName,
-                                                                int partitionCount,
-                                                                Option<Function<T, Object>> partitionKeyExtractor,
-                                                                ConsistencyMode consistencyMode,
-                                                                Option<ConsensusPublishPath> consensusPath,
-                                                                int minSyncReplicas,
                                                                 Option<StreamForwardClient> forwardClient,
                                                                 Option<Fn0<Option<NodeId>>> governorResolver,
                                                                 Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
                                                                 Option<NodeId> selfNodeId) {
-        return new DefaultStreamPublisher<>(partitionManager,
-                                            serializer,
+        var writeRouter = StreamWriteRouter.streamWriteRouter(partitionManager,
+                                                              forwardClient,
+                                                              selfNodeId,
+                                                              (_, partition) -> StreamWriteRouter.hrwOwner(partitionOwnerResolver,
+                                                                                                           governorResolver,
+                                                                                                           partition));
+
+        return new DefaultStreamPublisher<>(serializer,
                                             streamName,
                                             partitionCount,
                                             partitionKeyExtractor,
                                             consistencyMode,
                                             consensusPath,
-                                            minSyncReplicas,
-                                            forwardClient,
-                                            governorResolver,
-                                            partitionOwnerResolver,
-                                            selfNodeId);
+                                            writeRouter);
     }
 
     @Override
@@ -239,76 +201,13 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
         return chain;
     }
 
-    /// Route by AUTHORITY, never by ring presence (#1230): a replica holds the same materialized ring the
-    /// owner does, so "a ring exists here" let replicas append locally and assign offsets the owner also
-    /// assigned. The partition's HRW owner is resolved via the partition-aware resolver (the SAME
-    /// `ReplicaSetController` placement that owns the replica set), falling back to the arg-less leader
-    /// resolver only when no HRW resolver is wired (legacy / minimal runtimes). A remote owner is
-    /// write-forwarded; a resolved owner that is THIS node — or the absence of an owner or forward client —
-    /// appends locally rather than sending to self (which QUIC silently drops, hanging the forward). The
-    /// local append is admitted only for the committed owner ({@link StreamPartitionManager.OwnerWriteAdmission}).
-    /// Mirrors {@link StreamWriteRouter} and {@link PartitionedStreamAccess}'s owner-routed publish.
+    /// EVENTUAL write: delegated whole to the ONE write operation, {@link StreamWriteRouter} (#1263) — owner
+    /// routing by authority rather than ring presence (#1230), the committed-owner redirect, the bounded
+    /// forward retry (#485) and the min-sync barrier read live. STRONG takes the explicit consensus
+    /// alternative in {@link #publishStrong}, never this path.
     private Promise<Unit> publishEventual(int partition, byte[] bytes, long timestamp) {
-        return resolveOwner(partition).filter(this::isRemote)
-                           .flatMap(owner -> forwardTo(owner, partition, bytes, timestamp))
-                           .or(() -> publishLocalEventual(partition, bytes, timestamp));
-    }
-
-    /// Owner-local append; with `minSyncReplicas > 1` it also awaits `minSyncReplicas - 1` peer acks. A
-    /// refusal because the committed owner is another node (the #1230 ownership-lag window) is redirected
-    /// to that owner via {@link StreamForwardRetry#redirectNotOwner}.
-    private Promise<Unit> publishLocalEventual(int partition, byte[] bytes, long timestamp) {
-        return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
-                               .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
-                                                                                  owner -> forwardTo(owner,
-                                                                                                     partition,
-                                                                                                     bytes,
-                                                                                                     timestamp)),
-                                     offset -> awaitMinSync(partition, offset));
-    }
-
-    private Promise<Unit> awaitMinSync(int partition, long offset) {
-        return minSyncReplicas > 1
-               ? partitionManager.awaitReplication(streamName, partition, offset, minSyncReplicas - 1)
-               : Promise.unitPromise();
-    }
-
-    private Option<Promise<Unit>> forwardTo(NodeId owner, int partition, byte[] bytes, long timestamp) {
-        return forwardClient.map(client -> forwardToOwner(client, owner, partition, bytes, timestamp));
-    }
-
-    /// #467: prefer the partition-aware HRW owner-resolver (the placement authority that owns the replica
-    /// set); fall back to the arg-less leader resolver only when no HRW resolver is wired.
-    private Option<NodeId> resolveOwner(int partition) {
-        return partitionOwnerResolver.flatMap(resolver -> resolver.apply(partition))
-                                     .orElse(() -> governorResolver.flatMap(Fn0::apply));
-    }
-
-    /// A resolved owner is forwardable only when it is known to differ from this node; a self-owner (or an
-    /// unknown self) never forwards, so the send-to-self QUIC drop cannot occur.
-    private boolean isRemote(NodeId owner) {
-        return ! selfNodeId.map(owner::equals)
-                           .or(true);
-    }
-
-    /// Forward the publish to the partition's HRW owner with the shared BOUNDED forward-retry (#485): the
-    /// app publish path previously forwarded exactly once, so a transient owner-config-lag race — the
-    /// owner's committed-config view not yet caught up to the config this sender just committed and
-    /// forwarded — surfaced to the app as a permanent failure. The forge warm-up gate hides this in-JVM,
-    /// but real deployments must absorb it the same way the management/API write path does; the retry
-    /// policy lives once in {@link StreamForwardRetry} (parity with {@link StreamWriteRouter} and
-    /// {@link PartitionedStreamAccess}). Only the owner's explicit retryable signal
-    /// ({@link StreamForwardError.RemotePublishRetryable}) is retried; every other failure stays permanent.
-    private Promise<Unit> forwardToOwner(StreamForwardClient client,
-                                         NodeId owner,
-                                         int partition,
-                                         byte[] bytes,
-                                         long timestamp) {
-        return StreamForwardRetry.withBoundedRetry(() -> client.publishRemote(owner,
-                                                                              streamName,
-                                                                              partition,
-                                                                              bytes,
-                                                                              timestamp)).mapToUnit();
+        return writeRouter.publish(streamName, partition, bytes, timestamp)
+                          .mapToUnit();
     }
 
     private Promise<Unit> publishStrong(int partition, byte[] bytes, long timestamp) {

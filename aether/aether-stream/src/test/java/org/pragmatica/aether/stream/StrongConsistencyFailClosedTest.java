@@ -89,8 +89,7 @@ class StrongConsistencyFailClosedTest {
                                                              Option.none(),
                                                              SELF,
                                                              Option.<Fn0<Option<NodeId>>> none(),
-                                                             Option.none(),
-                                                             0);
+                                                             Option.none());
     }
 
     private static StreamConfig config(String name, ConsistencyMode mode) {
