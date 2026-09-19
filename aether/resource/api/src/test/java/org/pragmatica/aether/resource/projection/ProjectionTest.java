@@ -270,6 +270,8 @@ class ProjectionTest {
         // FIRST sits at partition 0, offset 10: a replay of exactly that one offset.
         private static final ProjectionStore.ReplayRange REPLAY_FIRST = new ProjectionStore.ReplayRange(Map.of(0,
                                                                                                              new ProjectionStore.PartitionRange(10L, 10L)));
+        private static final ProjectionStore.ReplayRange REPLAY_TEN_TO_ELEVEN = new ProjectionStore.ReplayRange(Map.of(0,
+                                                                                                                     new ProjectionStore.PartitionRange(10L, 11L)));
         private static final ProjectionStore.ReplayRange REPLAY_TEN_TO_TWELVE = new ProjectionStore.ReplayRange(Map.of(0,
                                                                                                                      new ProjectionStore.PartitionRange(10L, 12L)));
         private static final Projection.ClaimKey CLAIM_KEY = new Projection.ClaimKey("orders-seen", 0L, "msg-1");
@@ -700,7 +702,66 @@ class ProjectionTest {
         }
 
         private static MessageContext at(String messageId, long offset) {
-            return MessageContext.messageContext(messageId, "ns:orders-seen:1.0.0", 0, offset);
+            return at(messageId, 0, offset);
+        }
+
+        private static MessageContext at(String messageId, int partition, long offset) {
+            return MessageContext.messageContext(messageId, "ns:orders-seen:1.0.0", partition, offset);
+        }
+
+        /// #1304 round 2, X1 — a duplicate messageId inside the replay range (a #1237 publisher retry at a
+        /// NEW offset) finds its claim DONE and completes WITHOUT a write. That completion must still
+        /// advance the partition's replay position, or every later offset is refused forever, silently.
+        @Test
+        void rebuilding_aDeduplicatedReplayOffset_stillAdvancesTheReplay() {
+            var store = new InMemoryStore();
+            var projection = rebuildable(store, REPLAY_TEN_TO_TWELVE).withClaims(new InMemoryClaims(), LEASE);
+
+            projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new OrderSeen("a"), at("msg-10", 10)).await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new OrderSeen("a"), at("msg-10", 11)).await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new OrderSeen("b"), at("msg-12", 12))
+                      .await()
+                      .onFailure(cause -> fail("offset 12 follows a deduplicated 11 and must apply: " + cause.message()));
+
+            assertThat(store.data).containsEntry("a", 1).containsEntry("b", 1);
+        }
+
+        /// X1 at the HEAD: when the deduplicated offset is the captured head itself, completing it must
+        /// take the partition LIVE, so the next live delivery applies instead of being refused forever.
+        @Test
+        void rebuilding_aDeduplicatedHeadOffset_takesThePartitionLive() {
+            var store = new InMemoryStore();
+            var projection = rebuildable(store, REPLAY_TEN_TO_ELEVEN).withClaims(new InMemoryClaims(), LEASE);
+
+            projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new OrderSeen("a"), at("msg-10", 10)).await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new OrderSeen("a"), at("msg-10", 11)).await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new OrderSeen("b"), at("msg-12", 12))
+                      .await()
+                      .onFailure(cause -> fail("the partition passed its head and must be live: " + cause.message()));
+
+            assertThat(store.data).containsEntry("a", 1).containsEntry("b", 1);
+        }
+
+        /// #1304 round 2, X3 — LIVE is per partition. A partition that has replayed through its head admits
+        /// its live deliveries at once; it does not wait for a slower partition's replay.
+        @Test
+        void rebuilding_aFinishedPartition_admitsLiveWrites_whileAnotherStillReplays() {
+            var store = new InMemoryStore();
+            var range = new ProjectionStore.ReplayRange(Map.of(0,
+                                                              new ProjectionStore.PartitionRange(10L, 10L),
+                                                              1,
+                                                              new ProjectionStore.PartitionRange(20L, 25L)));
+            var projection = rebuildable(store, range).withClaims(new InMemoryClaims(), LEASE);
+
+            projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new OrderSeen("a"), at("msg-p0-10", 0, 10)).await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new OrderSeen("a"), at("msg-p0-11", 0, 11))
+                      .await()
+                      .onFailure(cause -> fail("partition 0 is past its head; its live write must apply: " + cause.message()));
+
+            assertThat(store.data).containsEntry("a", 2);
         }
 
         /// A negative lease is refused the same way — the check is `> 0`, not `!= 0`.
@@ -1071,6 +1132,29 @@ class ProjectionTest {
         // #1304: the refusal now happens at CAPTURE, before the store is touched. The previous version of
         // this test pinned the opposite — generation bumped and model cleared by a rebuild that then
         // refused — which was the partial completion the reordering removes, not a property to keep.
+        assertThat(store.generation.get()).isZero();
+        assertThat(store.data).containsEntry("a", 1);
+    }
+
+    /// #1304 round 2, X2 — a projection with no claims guard receives no delivery positions (the
+    /// single-argument path), so a rebuild could neither order nor deduplicate its replay: every replay
+    /// write would be refused and the cleared model would never go live. rebuild() refuses UP FRONT, with a
+    /// typed error, before capture — nothing is touched.
+    @Test
+    void rebuild_ofAnUnguardedProjection_isRefusedBeforeAnythingIsTouched() {
+        var store = new InMemoryStore();
+        var cursor = new RecordingCursor(store, NOTHING_TO_REPLAY);
+        var projection = Projection.of(TOPIC)
+                                   .into(store, OrderSeen::orderId)
+                                   .apply("orders-proj", (current, event) -> current.or(0) + 1, cursor);
+
+        projection.onEvent(new OrderSeen("a")).await().onFailure(cause -> fail(cause.message()));
+        projection.rebuild()
+                  .await()
+                  .onSuccess(_ -> fail("an unguarded projection must refuse to rebuild"))
+                  .onFailure(cause -> assertThat(cause.message()).contains("unguarded"));
+
+        assertThat(cursor.calls).describedAs("refused before capture").isEmpty();
         assertThat(store.generation.get()).isZero();
         assertThat(store.data).containsEntry("a", 1);
     }
