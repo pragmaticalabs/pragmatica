@@ -1083,6 +1083,51 @@ class StreamConsumerManagerTest {
             assertThat(payload.getValue()).isEqualTo(appEvent);
         }
 
+        /// #1238: the runtime runs ONE serial delivery loop per (group, partition), so a handler that
+        /// never resolves must not hold that partition forever — the declarative path bounds each
+        /// invocation, and the timeout surfaces as a delivery failure for the error strategy to handle.
+        /// The bound is shortened through the constructor seam; production uses
+        /// [StreamConsumerManager.ManagerState#HANDLER_TIMEOUT].
+        @Test
+        void delivery_failsWithTimeout_whenTheSliceHandlerNeverResolves() throws InterruptedException {
+            subscribeTopic(ARTIFACT);
+            deployDecodingSliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            when(invoker.invokeLocal(any(), any(), any(), any())).thenAnswer(_ -> Promise.promise());
+            new StreamConsumerManager.ManagerState(registry,
+                                                   capturingRuntime,
+                                                   invoker,
+                                                   invocationHandler,
+                                                   topicAwareCodec,
+                                                   ownership,
+                                                   placement,
+                                                   SELF,
+                                                   TopicGroupDeclarationSource.topicGroupDeclarationSource(topicRegistry,
+                                                                                                           name -> ownership.partitionCount(name)
+                                                                                                                            .isPresent()),
+                                                   org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis()).reconcile();
+            var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
+            var envelope = new org.pragmatica.aether.stream.topic.TopicEventEnvelope("msg-1",
+                                                                                     1234L,
+                                                                                     sliceCodec.encode(new AppEvent("order-42")));
+            var settled = new java.util.concurrent.CountDownLatch(1);
+            var outcome = new java.util.concurrent.atomic.AtomicReference<Result<Unit>>();
+
+            capturingRuntime.callbackFor(TOPIC_STREAM, 0)
+                            .onEvent(0L,
+                                     topicAwareCodec.encode(envelope),
+                                     1234L)
+                            .onResult(result -> {
+                                          outcome.set(result);
+                                          settled.countDown();
+                                      });
+            assertThat(settled.await(2, java.util.concurrent.TimeUnit.SECONDS)).describedAs("a hung handler must end its delivery, not hold the partition's loop forever")
+                      .isTrue();
+            assertThat(outcome.get().isFailure()).describedAs("a timed-out invocation is a delivery failure")
+                      .isTrue();
+        }
+
         private record DecodingBridge(SliceCodec codec) implements SliceBridge {
             @Override
             public Option<SliceCodec> sliceCodec() {
