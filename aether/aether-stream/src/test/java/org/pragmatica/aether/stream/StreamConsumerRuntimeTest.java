@@ -647,6 +647,34 @@ class StreamConsumerRuntimeTest {
             }
         }
 
+        /// rev1272 F5, the reviewer's probe verbatim: the dead-letter sink throws synchronously once, SKIP
+        /// strategy, offset 0 is poison, then e1 and e2. On #1285 alone (sink call not lifted) the result
+        /// was `delivered=[] cursor=Some(0)` — `deadLetterInFlight` stuck true. The sink call is lifted, so
+        /// the throw takes the retry-with-backoff path and the partition moves on.
+        @Test
+        void reviewProbe_deadLetterSinkSyncThrowOnce_doesNotHoldTheLoopForever() throws Exception {
+            createTestStream("orders");
+            var sink = new ThrowingOnceDeadLetterSink();
+            var probeRuntime = streamConsumerRuntime(manager, sink);
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            try {
+                probeRuntime.subscribe("orders",
+                                       0,
+                                       ConsumerConfig.consumerConfig("group-f5", 1, ProcessingMode.ORDERED, ErrorStrategy.SKIP),
+                                       (offset, payload, ts) -> failFirst(delivered, offset));
+                manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
+                manager.publishLocal("orders", 0, "e2".getBytes(UTF_8), 3000L);
+                awaitContains(delivered, 2L);
+                assertThat(sink.thrown.get()).describedAs("control: the sink really threw").isEqualTo(1);
+                assertThat(delivered).containsExactly(1L, 2L);
+                assertThat(probeRuntime.cursorPosition("orders", 0, "group-f5").or(-1L)).isEqualTo(3L);
+            } finally {
+                probeRuntime.close();
+            }
+        }
+
         /// #1266 review (attack5): a handler that returns `null` instead of a promise once is a failed
         /// delivery — retried — and the loop moves on.
         @Test
