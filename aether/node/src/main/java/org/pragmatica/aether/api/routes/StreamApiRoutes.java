@@ -716,17 +716,28 @@ public final class StreamApiRoutes implements RouteSource {
     /// call path entirely. So it must never be swallowed: on success `streams` is guaranteed to hold
     /// the entry (making [#validatePartition]'s read safe), and on failure this reports a typed 409
     /// naming the stream and cause instead of silently proceeding with an unknown partition count.
+    ///
+    /// #1282: the management default is never fabricated under a reserved kind prefix — a `topic`/`entity`
+    /// namespace address yields a `topic:`/`entity:` engine key, which only internal provisioning may
+    /// mint. A committed config for such a name is the real resource's and is still adopted.
     private Result<Unit> ensureStreamExists(String streamName) {
-        var config = nodeSupplier.get()
-                                 .kvStore()
-                                 .getTyped(StreamConfigKey.streamConfigKey(streamName),
-                                           StreamConfigValue.class)
-                                 .map(StreamConfigValue::config)
-                                 .or(() -> StreamConfig.streamConfig(streamName,
-                                                                     DEFAULT_PARTITIONS,
-                                                                     MANAGEMENT_API_RETENTION,
-                                                                     "latest"));
+        return nodeSupplier.get()
+                           .kvStore()
+                           .getTyped(StreamConfigKey.streamConfigKey(streamName),
+                                     StreamConfigValue.class)
+                           .map(value -> Result.success(value.config()))
+                           .or(() -> managementDefaultConfig(streamName))
+                           .flatMap(config -> materializeForPublish(streamName, config));
+    }
 
+    private static Result<StreamConfig> managementDefaultConfig(String streamName) {
+        return ReservedStreamNames.requireUnreserved(streamName).map(unreserved -> StreamConfig.streamConfig(unreserved,
+                                                                                                             DEFAULT_PARTITIONS,
+                                                                                                             MANAGEMENT_API_RETENTION,
+                                                                                                             "latest"));
+    }
+
+    private Result<Unit> materializeForPublish(String streamName, StreamConfig config) {
         return streamManager().ensureStreamMaterialized(config)
                             .mapError(cause -> new ManagementServerError.StreamUnavailable(streamName,
                                                                                            cause.message()));
@@ -762,17 +773,23 @@ public final class StreamApiRoutes implements RouteSource {
     /// which is the ASYNC publish-auto-create path used by [#ensureStreamExists]), tolerating its
     /// `STREAM_ALREADY_EXISTS` duplicate-create sentinel via [StreamCreateOutcome] like every other
     /// idempotent caller of that method.
+    ///
+    /// #1282: refused before anything is minted or registered when the engine key carries a reserved
+    /// kind prefix ([ReservedStreamNames]) — a `topic` or `entity` namespace address would otherwise plant
+    /// an operator-chosen config under a name only internal provisioning may create.
     private Result<CreateResponse> materializeAndRegister(ResourceAddress addr, CreateRequest request) {
-        var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
-        var config = StreamConfig.streamConfig(StreamManager.engineKey(addr),
-                                               partitions,
-                                               MANAGEMENT_API_RETENTION,
-                                               "latest");
-
-        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config))
+        return ReservedStreamNames.requireUnreserved(StreamManager.engineKey(addr))
+                                  .flatMap(engineKey -> mintOperatorStream(engineKey, request))
                                   .flatMap(_ -> registerCatalogEntry(addr))
                                   .map(_ -> new CreateResponse(addr.asString(),
                                                                "created"));
+    }
+
+    private Result<Unit> mintOperatorStream(String engineKey, CreateRequest request) {
+        var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
+        var config = StreamConfig.streamConfig(engineKey, partitions, MANAGEMENT_API_RETENTION, "latest");
+
+        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config));
     }
 
     private Result<StreamRegistryEntry> registerCatalogEntry(ResourceAddress addr) {

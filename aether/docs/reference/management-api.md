@@ -5333,6 +5333,11 @@ POST /api/v1/streams
 
 Creates a stream with the given name and optional partition count. Idempotent — returns success if stream already exists.
 
+A name carrying a reserved stream-kind prefix — `system:`, `topic:` or `entity:` — is refused with
+`400 Bad Request` (`ReservedStreamName`, naming the prefix) and nothing is created; see
+[Reserved stream-name prefixes](#reserved-stream-name-prefixes-400). The enumerated system streams keep
+their `405` refusal ([`system:*` write gate](#system-write-gate-405)).
+
 **Request:**
 ```json
 {
@@ -5555,6 +5560,20 @@ GET /api/v1/streams/tail/{namespace}/{stream}/{version}
 Reserved for the deferred SSE/WebSocket subscription (#212). Operators tail via polling
 `/api/v1/streams/events/...` in the interim.
 
+### Create Stream Version
+
+```
+POST /api/v1/streams/{namespace}/{stream}/{version}
+```
+
+**Auth:** OPERATOR_AND_ABOVE. Materializes the stream under the address's engine key and registers
+an `OPERATOR` catalog entry (`aether stream create`). Idempotent: an already-registered address
+reports `"exists"`. Optional body `{"partitions": <int>}`. An address whose engine key carries a
+reserved stream-kind prefix — a `topic` or `entity` namespace — is refused with `400 Bad Request`
+before anything is materialized or registered; see
+[Reserved stream-name prefixes](#reserved-stream-name-prefixes-400). A `system`-namespace address
+reduces to its bare name (the flat operator-stream spelling) and is not reserved.
+
 ### Publish
 
 ```
@@ -5579,6 +5598,12 @@ materialize the stream locally (capacity exhausted, or `STRONG` consistency requ
 storage) — the request is rejected with `409 Conflict`, naming the stream and the underlying
 cause, rather than validated against a guessed count. `[mechanism: ManagementServerError.StreamUnavailable,
 ProblemResponses HttpStatusAware dispatch]`
+
+The auto-create never fabricates a stream under a reserved stream-kind prefix: a publish to a `topic`
+or `entity` namespace address with no committed config is refused with `400 Bad Request`
+(`ReservedStreamName`) instead. A committed config under such a name belongs to the real resource and
+is adopted as usual. `[mechanism: ReservedStreamNames.requireUnreserved on the management-default
+branch only]`
 
 **Batch publish is not atomic.** `publish-batch` validates and writes each item independently and
 concurrently; when one item names an out-of-range `partition`, items before it (and possibly after
@@ -5666,6 +5691,31 @@ named stream.
 Reads of `system:*` streams (e.g. `system:cluster-events`) are unaffected; only writes are gated.
 The compile-time SPI split already blocks application code from producing into system streams;
 this is the HTTP-path guard.
+
+### Reserved stream-name prefixes (400)
+
+A stream's kind is carried by its engine-name prefix, and runtime rules key off it:
+
+- `system:` — system streams, named from their `system`-namespace address;
+- `topic:` — durable topics and their DLQs (`DurableTopicNames`);
+- `entity:` — entity keyspace logs (`EntityPartitionArc`).
+
+Only internal provisioning creates streams under these prefixes. Every Management-API path that could
+mint a stream refuses such an engine name with **`400 Bad Request`** and a
+`ReservedStreamName` problem naming the stream and the prefix. Nothing is created or registered. The
+paths are:
+
+- `POST /api/v1/streams` (body name);
+- `POST /api/v1/streams/{namespace}/{stream}/{version}` (engine key);
+- the publish auto-create fallback.
+
+Without the refusal, a stream minted ahead of the real resource would plant an operator-chosen config
+(partitions, replicas, min-sync, retention) that the resource later finds already in place.
+`[mechanism: ReservedStreamNames.requireUnreserved runs before each mint; prefixes are read from their
+canonical owners]`
+
+Reads are unaffected. The `405` refusal of the enumerated system streams
+([`system:*` write gate](#system-write-gate-405)) still applies first.
 
 ### Stream metadata registries
 

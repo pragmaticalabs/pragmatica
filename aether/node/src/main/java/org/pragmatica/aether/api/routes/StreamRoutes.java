@@ -293,12 +293,18 @@ public final class StreamRoutes implements RouteSource {
     /// This closes the narrow window `createStreamWithConfig`'s idempotent "already exists" check
     /// does not: a create racing ahead of [SystemStreamBootstrap]'s registration at cluster startup
     /// would otherwise find `streamManager().streamInfo(name)` empty and mint a caller-controlled
-    /// config under a reserved name.
+    /// config under a reserved name. #1282 widens it past the enumerated system streams to every reserved
+    /// kind prefix ([ReservedStreamNames]) — `system:`, `topic:`, `entity:` streams are minted only by
+    /// internal provisioning.
     private Result<StreamCreateResponse> createFreshStream(String name, int partitions) {
         if (namesSystemStream(name)) {
             return Result.failure(SYSTEM_STREAM_NAME_FORBIDDEN);
         }
 
+        return ReservedStreamNames.requireUnreserved(name).flatMap(_ -> mintStream(name, partitions));
+    }
+
+    private Result<StreamCreateResponse> mintStream(String name, int partitions) {
         var config = StreamConfig.streamConfig(name, partitions, MANAGEMENT_API_RETENTION, "latest");
 
         return streamManager().createStream(config)
@@ -329,19 +335,24 @@ public final class StreamRoutes implements RouteSource {
     /// `replicas` / `minSyncReplicas` durability knobs) lands in applied KV state at slice activation but
     /// may not yet be in the manager's local materialized map when a first publish races in. Prefer that
     /// committed config so the auto-create preserves RF; fall back to the management default only for a
-    /// genuinely management-only stream that has no committed entry.
+    /// genuinely management-only stream that has no committed entry — and never under a reserved kind
+    /// prefix (#1282): a committed config for such a name is the real resource's and is adopted, but a
+    /// fabricated default would plant an operator-side config the real resource later finds in place.
     private Result<Unit> materializeAbsentStream(String name) {
-        var config = nodeSupplier.get()
-                                 .kvStore()
-                                 .getTyped(StreamConfigKey.streamConfigKey(name),
-                                           StreamConfigValue.class)
-                                 .map(StreamConfigValue::config)
-                                 .or(() -> StreamConfig.streamConfig(name,
-                                                                     DEFAULT_PARTITIONS,
-                                                                     MANAGEMENT_API_RETENTION,
-                                                                     "latest"));
+        return nodeSupplier.get()
+                           .kvStore()
+                           .getTyped(StreamConfigKey.streamConfigKey(name),
+                                     StreamConfigValue.class)
+                           .map(value -> Result.success(value.config()))
+                           .or(() -> managementDefaultConfig(name))
+                           .flatMap(config -> StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config)));
+    }
 
-        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config));
+    private static Result<StreamConfig> managementDefaultConfig(String name) {
+        return ReservedStreamNames.requireUnreserved(name).map(unreserved -> StreamConfig.streamConfig(unreserved,
+                                                                                                       DEFAULT_PARTITIONS,
+                                                                                                       MANAGEMENT_API_RETENTION,
+                                                                                                       "latest"));
     }
 
     private Result<StreamConsumersResponse> streamConsumers(String name) {
