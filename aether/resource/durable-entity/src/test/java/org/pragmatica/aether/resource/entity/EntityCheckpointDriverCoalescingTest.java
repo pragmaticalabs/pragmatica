@@ -6,8 +6,11 @@ package org.pragmatica.aether.resource.entity;
 
 import java.lang.management.ManagementFactory;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 
 import com.sun.management.ThreadMXBean;
 
@@ -16,6 +19,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -74,6 +78,52 @@ class EntityCheckpointDriverCoalescingTest {
         assertThat(substrate.saves.get()).isEqualTo(1);
     }
 
+    /// ...but the in-flight mark is BOUNDED: a save whose promise never settles must not hold the partition's
+    /// checkpoints for the life of the node. Once the mark is [EntityCheckpointDriver#IN_FLIGHT_BOUND_TICKS]
+    /// ticks old, the next tick starts another save.
+    @Test
+    void tick_startsAnotherSave_onceAnUnsettledSaveOutlivesItsBound() {
+        var substrate = new CountingSubstrate(false);
+        var fold = populatedFold(substrate);
+        var driver = EntityCheckpointDriver.entityCheckpointDriver();
+
+        driver.register(KEYSPACE, 1, fold, substrate);
+
+        for (var tick = 0; tick < EntityCheckpointDriver.IN_FLIGHT_BOUND_TICKS; tick++) {
+            driver.tick();
+        }
+
+        assertThat(substrate.saves.get()).as("within the bound the unsettled save still holds the partition")
+                                         .isEqualTo(1);
+
+        driver.tick();
+
+        assertThat(substrate.saves.get()).as("past the bound the next tick must start another save").isEqualTo(2);
+    }
+
+    /// The abandoned save settling LATE must not clear the mark of the save that replaced it — or the very
+    /// next tick would start a third save while the second is still in flight.
+    @Test
+    void tick_keepsTheReplacementsMark_whenTheAbandonedSaveSettlesLate() {
+        var substrate = new CountingSubstrate(false);
+        var fold = populatedFold(substrate);
+        var driver = EntityCheckpointDriver.entityCheckpointDriver();
+
+        driver.register(KEYSPACE, 1, fold, substrate);
+
+        for (var tick = 0; tick <= EntityCheckpointDriver.IN_FLIGHT_BOUND_TICKS; tick++) {
+            driver.tick();
+        }
+
+        assertThat(substrate.saves.get()).as("the bound elapsed and a replacement save started").isEqualTo(2);
+
+        substrate.settleSave(0);
+        awaitLateSettle(driver);
+        driver.tick();
+
+        assertThat(substrate.saves.get()).as("the replacement is still in flight").isEqualTo(2);
+    }
+
     /// The in-flight mark must not outlive a checkpoint that THREW while starting: left behind, it would
     /// stop that partition's checkpoints for the life of the node, silently. Regression fence for the mark
     /// — the pre-#1269 code passes this too, because it had no mark to leave behind.
@@ -93,6 +143,27 @@ class EntityCheckpointDriverCoalescingTest {
                          .keyspaces()
                          .getFirst()
                          .checkpointedThrough()).containsEntry(PARTITION, (long) KEYS - 1);
+    }
+
+    /// The late settle is handled on the promise executor. Its failure count is the observable half; the
+    /// mark it would clear is cleared right after, in the same handler, so a short grace follows. If the
+    /// grace were ever too short the test would pass against the defect, never fail against the fix.
+    private static void awaitLateSettle(EntityCheckpointDriver driver) {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (failures(driver) == 0 && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        assertThat(failures(driver)).as("the abandoned save's late settle must have been handled").isEqualTo(1L);
+        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(200));
+    }
+
+    private static long failures(EntityCheckpointDriver driver) {
+        return driver.snapshot()
+                     .keyspaces()
+                     .getFirst()
+                     .failures();
     }
 
     private static EntityFold populatedFold(CountingSubstrate substrate) {
@@ -118,9 +189,16 @@ class EntityCheckpointDriverCoalescingTest {
         private final boolean savesResolve;
         private final AtomicInteger saves = new AtomicInteger();
         private final AtomicBoolean throwOnNextSave = new AtomicBoolean();
+        private final List<Promise<Unit>> pending = new CopyOnWriteArrayList<>();
 
         CountingSubstrate(boolean savesResolve) {
             this.savesResolve = savesResolve;
+        }
+
+        /// Fail the `index`-th save that was left pending — a save the driver may already have written off.
+        void settleSave(int index) {
+            pending.get(index)
+                   .fail(Causes.cause("abandoned save settled late"));
         }
 
         void throwOnNextSave() {
@@ -135,9 +213,15 @@ class EntityCheckpointDriverCoalescingTest {
                 throw new IllegalStateException("substrate threw instead of failing its promise");
             }
 
-            return savesResolve
-                   ? Promise.unitPromise()
-                   : Promise.promise();
+            if (savesResolve) {
+                return Promise.unitPromise();
+            }
+
+            var save = Promise.<Unit> promise();
+
+            pending.add(save);
+
+            return save;
         }
 
         @Override

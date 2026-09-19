@@ -6,7 +6,6 @@ package org.pragmatica.aether.resource.entity;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -47,7 +46,13 @@ import static org.pragmatica.lang.Unit.unit;
 public final class EntityCheckpointDriver {
     private static final Logger LOG = LoggerFactory.getLogger(EntityCheckpointDriver.class);
 
+    /// How many ticks an in-flight checkpoint holds its partition before the next tick starts another.
+    /// Three: with the node's 30 s interval that is 90 s, two whole intervals of grace for a slow but live
+    /// save (a consensus put under load) before a save that never settles is written off.
+    static final long IN_FLIGHT_BOUND_TICKS = 3L;
+
     private final Map<String, Registration> registrations = new ConcurrentHashMap<>();
+    private final AtomicLong ticks = new AtomicLong();
 
     private EntityCheckpointDriver() {}
 
@@ -55,15 +60,16 @@ public final class EntityCheckpointDriver {
         return new EntityCheckpointDriver();
     }
 
-    /// `inFlight` holds the partitions whose checkpoint has started and not yet settled (#1269). The tick is
-    /// fixed-rate and a save is asynchronous, so without it a save slower than the tick interval was started
-    /// again — a second full encode and a second consensus put for the same claim.
+    /// `inFlight` maps each partition whose checkpoint has started and not yet settled to the tick it
+    /// started on (#1269). The tick is fixed-rate and a save is asynchronous, so without it a save slower
+    /// than the tick interval was started again — a second full encode and a second consensus put for the
+    /// same claim. See [#claim] for the bound on how long a mark can hold.
     private record Registration(String keyspace,
                                 int partitionCount,
                                 EntityFold fold,
                                 EntityLogSubstrate substrate,
                                 Map<Integer, Long> checkpointedThrough,
-                                Set<Integer> inFlight,
+                                Map<Integer, Long> inFlight,
                                 AtomicLong writes,
                                 AtomicLong failures) {
         static Registration registration(String keyspace,
@@ -75,7 +81,7 @@ public final class EntityCheckpointDriver {
                                     fold,
                                     substrate,
                                     new ConcurrentHashMap<>(),
-                                    ConcurrentHashMap.newKeySet(),
+                                    new ConcurrentHashMap<>(),
                                     new AtomicLong(),
                                     new AtomicLong());
         }
@@ -161,16 +167,18 @@ public final class EntityCheckpointDriver {
     @Contract
     public void tick() {
         try {
-            registrations.values().forEach(EntityCheckpointDriver::checkpointKeyspace);
+            var tick = ticks.incrementAndGet();
+
+            registrations.values().forEach(registration -> checkpointKeyspace(registration, tick));
         } catch (RuntimeException e) {
             LOG.warn("Entity checkpoint tick failed: {} — retried next tick", e.toString(), e);
         }
     }
 
     @Contract
-    private static void checkpointKeyspace(Registration registration) {
+    private static void checkpointKeyspace(Registration registration, long tick) {
         for (var partition = 0; partition < registration.partitionCount(); partition++) {
-            checkpointPartition(registration, partition);
+            checkpointPartition(registration, partition, tick);
         }
     }
 
@@ -193,23 +201,58 @@ public final class EntityCheckpointDriver {
     /// partition's checkpoints for the life of the node, which is exactly the silent stop this driver
     /// exists to prevent.
     @Contract
-    private static void checkpointPartition(Registration registration, int partition) {
-        if (!registration.inFlight().add(partition)) {
+    private static void checkpointPartition(Registration registration, int partition, long tick) {
+        if (!claim(registration, partition, tick)) {
             return;
         }
 
-        Result.lift(() -> startCheckpoint(registration, partition)).onFailure(cause -> abandonCheckpoint(registration,
-                                                                                                         partition,
-                                                                                                         cause));
+        Result.lift(() -> startCheckpoint(registration, partition, tick))
+              .onFailure(cause -> abandonCheckpoint(registration, partition, tick, cause));
     }
 
-    private static Unit startCheckpoint(Registration registration, int partition) {
+    /// Mark `partition` in flight as of `tick`, or report that an earlier checkpoint still holds it.
+    ///
+    /// The mark is BOUNDED: one older than [#IN_FLIGHT_BOUND_TICKS] ticks is taken over, with a WARN naming
+    /// the partition. Without the bound a save whose promise never settles would hold the partition's
+    /// checkpoints for the life of the node — the silent stop this driver exists to prevent. Taking over
+    /// is safe even if the abandoned save lands later: checkpoint writes are `MonotonicFenced` (#700), so
+    /// a late, lower claim is refused by the consensus applier, and [#recordWrite] keeps the local record
+    /// at its maximum. Every clear is conditional on the tick the mark was taken on, so a late settle of
+    /// the abandoned save cannot clear the mark of the checkpoint that replaced it.
+    private static boolean claim(Registration registration, int partition, long tick) {
+        var held = registration.inFlight()
+                               .putIfAbsent(partition, tick);
+
+        if (held == null) {
+            return true;
+        }
+
+        if (tick - held < IN_FLIGHT_BOUND_TICKS) {
+            return false;
+        }
+
+        var takenOver = registration.inFlight()
+                                    .replace(partition, held, tick);
+
+        if (takenOver) {
+            LOG.warn("Entity checkpoint for '{}' partition {} has not settled in {} ticks — starting another;"
+                    + " the abandoned save may still land, which is harmless because checkpoint writes are"
+                    + " monotonic-fenced",
+                     registration.keyspace(),
+                     partition,
+                     tick - held);
+        }
+
+        return takenOver;
+    }
+
+    private static Unit startCheckpoint(Registration registration, int partition, long tick) {
         registration.fold()
                     .checkpointCandidate(partition,
                                          lastWritten(registration, partition))
                     .filter(candidate -> isAdvancing(registration, partition, candidate))
-                    .onPresent(candidate -> saveCheckpoint(registration, partition, candidate))
-                    .onEmpty(() -> settle(registration, partition));
+                    .onPresent(candidate -> saveCheckpoint(registration, partition, candidate, tick))
+                    .onEmpty(() -> settle(registration, partition, tick));
 
         return unit();
     }
@@ -220,8 +263,8 @@ public final class EntityCheckpointDriver {
     }
 
     @Contract
-    private static void abandonCheckpoint(Registration registration, int partition, Cause cause) {
-        settle(registration, partition);
+    private static void abandonCheckpoint(Registration registration, int partition, long tick, Cause cause) {
+        settle(registration, partition, tick);
         registration.failures().incrementAndGet();
         LOG.warn("Entity checkpoint for '{}' partition {} threw before its save settled: {} — retried next tick",
                  registration.keyspace(),
@@ -230,8 +273,9 @@ public final class EntityCheckpointDriver {
     }
 
     @Contract
-    private static void settle(Registration registration, int partition) {
-        registration.inFlight().remove(partition);
+    private static void settle(Registration registration, int partition, long tick) {
+        registration.inFlight()
+                    .remove(partition, tick);
     }
 
     /// A checkpoint is written only when it ADVANCES the last one this node wrote, and that is a safety
@@ -265,13 +309,14 @@ public final class EntityCheckpointDriver {
     @Contract
     private static void saveCheckpoint(Registration registration,
                                        int partition,
-                                       EntityFold.CheckpointCandidate candidate) {
+                                       EntityFold.CheckpointCandidate candidate,
+                                       long tick) {
         registration.substrate()
                     .saveCheckpoint(registration.keyspace(),
                                     partition,
                                     candidate.throughOffset(),
                                     candidate.snapshot())
-                    .onResult(result -> recordOutcome(registration, partition, candidate, result));
+                    .onResult(result -> recordOutcome(registration, partition, candidate, tick, result));
     }
 
     /// Record first, THEN clear the in-flight mark: cleared first, a tick landing in between would find the
@@ -280,6 +325,7 @@ public final class EntityCheckpointDriver {
     private static void recordOutcome(Registration registration,
                                       int partition,
                                       EntityFold.CheckpointCandidate candidate,
+                                      long tick,
                                       Result<Unit> result) {
         result.onSuccess(_ -> recordWrite(registration,
                                           partition,
@@ -288,16 +334,20 @@ public final class EntityCheckpointDriver {
                                                 partition,
                                                 candidate.throughOffset(),
                                                 cause));
-        settle(registration, partition);
+        settle(registration, partition, tick);
     }
 
     /// The positive signal. Without a success counter, a driver that silently stopped looks exactly like
     /// one that is working — writes and reads keep succeeding either way, and the only symptom is an
     /// entity log that is never reclaimed, appearing hours later as disk growth with nothing pointing
     /// here.
+    ///
+    /// Kept at its MAXIMUM rather than overwritten: once [#claim] can take over a stalled checkpoint, the
+    /// abandoned save may settle after its replacement, and its lower offset must not pull the record back.
     @Contract
     private static void recordWrite(Registration registration, int partition, long through) {
-        registration.checkpointedThrough().put(partition, through);
+        registration.checkpointedThrough()
+                    .merge(partition, through, Math::max);
         registration.writes().incrementAndGet();
     }
 
