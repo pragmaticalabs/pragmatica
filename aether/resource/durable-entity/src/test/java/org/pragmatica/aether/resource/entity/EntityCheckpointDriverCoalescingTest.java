@@ -124,6 +124,58 @@ class EntityCheckpointDriverCoalescingTest {
         assertThat(substrate.saves.get()).as("the replacement is still in flight").isEqualTo(2);
     }
 
+    /// Taking over a stalled checkpoint lets the abandoned save land LATE, after its replacement. The
+    /// committed side of that is closed in the substrate — checkpoint writes are `MonotonicFenced` (#700),
+    /// so the consensus applier refuses the lower claim — and this pins the local side: the driver's own
+    /// record of what it wrote must not be pulled back to the late save's lower offset, or the next tick
+    /// would re-encode and re-save work already checkpointed.
+    @Test
+    void tick_keepsTheHigherCheckpointRecorded_whenTheAbandonedLowerSaveLandsLate() {
+        var substrate = new CountingSubstrate(false);
+        var fold = populatedFold(substrate);
+        var driver = EntityCheckpointDriver.entityCheckpointDriver();
+
+        driver.register(KEYSPACE, 1, fold, substrate);
+        driver.tick();
+
+        for (var i = KEYS; i < 2 * KEYS; i++) {
+            fold.apply(PARTITION, i, EntityLogRecord.upsert("k" + i, new byte[16]));
+        }
+
+        for (var tick = 0; tick < EntityCheckpointDriver.IN_FLIGHT_BOUND_TICKS; tick++) {
+            driver.tick();
+        }
+
+        assertThat(substrate.saves.get()).as("the replacement save claims the advanced fold").isEqualTo(2);
+
+        substrate.succeedSave(1);
+        awaitWrites(driver, 1);
+        substrate.succeedSave(0);
+        awaitWrites(driver, 2);
+
+        assertThat(driver.snapshot()
+                         .keyspaces()
+                         .getFirst()
+                         .checkpointedThrough()).containsEntry(PARTITION, 2L * KEYS - 1);
+    }
+
+    private static void awaitWrites(EntityCheckpointDriver driver, long expected) {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (writes(driver) < expected && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        assertThat(writes(driver)).as("the save's settle must have been recorded").isEqualTo(expected);
+    }
+
+    private static long writes(EntityCheckpointDriver driver) {
+        return driver.snapshot()
+                     .keyspaces()
+                     .getFirst()
+                     .writes();
+    }
+
     /// The in-flight mark must not outlive a checkpoint that THREW while starting: left behind, it would
     /// stop that partition's checkpoints for the life of the node, silently. Regression fence for the mark
     /// — the pre-#1269 code passes this too, because it had no mark to leave behind.
@@ -199,6 +251,11 @@ class EntityCheckpointDriverCoalescingTest {
         void settleSave(int index) {
             pending.get(index)
                    .fail(Causes.cause("abandoned save settled late"));
+        }
+
+        void succeedSave(int index) {
+            pending.get(index)
+                   .succeed(Unit.unit());
         }
 
         void throwOnNextSave() {
