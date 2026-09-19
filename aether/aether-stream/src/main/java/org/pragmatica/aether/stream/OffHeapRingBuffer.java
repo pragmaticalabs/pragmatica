@@ -316,9 +316,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     ///   - REJECT_WHEN_FULL (STRONG) and does not fit — the same loud `STREAM_MEMORY_EXCEEDED` it returns
     ///     when it cannot make room by growing.
     ///   - DROP_OLDEST (EVENTUAL) and does not fit — the event genuinely cannot be stored in the frozen
-    ///     ring; drop it (NO write, no corruption) and report success at the current head, mirroring the
-    ///     existing non-fatal EVENTUAL contract (EVENTUAL appends never fail; the exhaustion event was
-    ///     already emitted via the growth seam). See spec §4.2 / bug #7.
+    ///     ring; drop it (NO write, no corruption) and report the distinct `EVENT_DROPPED` outcome. Never
+    ///     success at the current head (#1233): that offset belongs to an already-stored event, and a
+    ///     caller treating it as the new event's offset WAL-writes and replicates a phantom under it. The
+    ///     publish path decides whether the stream may absorb the drop. See spec §4.2 / bug #7.
     private Result<Long> appendIfFitsAllocated(byte[] payload, long timestamp) {
         if (payload.length <= allocatedDataBytes) {
             return appendWritten(payload, timestamp);
@@ -328,7 +329,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.STREAM_MEMORY_EXCEEDED.result();
         }
 
-        return success(rawHeadOffset());
+        return StreamError.General.EVENT_DROPPED.result();
     }
 
     /// Runs AFTER growth so the REJECT_WHEN_FULL fullness check is evaluated against the grown
@@ -336,7 +337,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// growing to the cap. Seam-rejected growth has already returned STREAM_MEMORY_EXCEEDED upstream
     /// (in `ensureGrownFor`). Reached only when the event fits the allocated ring (bug #7 gate above), so
     /// it never overflows; listener notification fires only here, on a real admission (the frozen-ring
-    /// drop path returns the head WITHOUT notifying). See spec §4.2.
+    /// drop path returns `EVENT_DROPPED` WITHOUT notifying). See spec §4.2.
     private Result<Long> appendWritten(byte[] payload, long timestamp) {
         if (evictionPolicy == EvictionPolicy.REJECT_WHEN_FULL && countEvictionsForSpace(payload.length) > 0) {
             return StreamError.General.BUFFER_FULL.result();
@@ -379,7 +380,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Batch analogue of `appendIfFitsAllocated` (bug #7): after growth was attempted, the batch total
     /// must still fit the **allocated** data bytes, otherwise a frozen-ring batch write would overflow
     /// the ring (corruption / segment overrun). STRONG rejects loud; EVENTUAL drops the whole batch (no
-    /// write) and reports success at the current head. See spec §4.2 / bug #7.
+    /// write) and reports `EVENT_DROPPED`, never success at the current head (#1233, same reason as the
+    /// single-event gate). See spec §4.2 / bug #7.
     private Result<Long> appendBatchIfFitsAllocated(List<byte[]> payloads, long[] timestamps, long totalSize) {
         if (totalSize <= allocatedDataBytes) {
             return appendBatchWritten(payloads, timestamps);
@@ -389,7 +391,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.STREAM_MEMORY_EXCEEDED.result();
         }
 
-        return success(rawHeadOffset());
+        return StreamError.General.EVENT_DROPPED.result();
     }
 
     private Result<Long> appendBatchWritten(List<byte[]> payloads, long[] timestamps) {

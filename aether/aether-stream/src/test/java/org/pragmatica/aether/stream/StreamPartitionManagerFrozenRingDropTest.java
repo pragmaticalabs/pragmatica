@@ -34,7 +34,8 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 ///
 /// The drop must FAIL the publish for anything with durability semantics — `minSyncReplicas >= 2`
 /// (durable topics and their DLQs are parse-enforced to `min-sync == replicas >= 2`) OR a partition WAL.
-/// Each disjunct is pinned by its own test so neither can be weakened unnoticed.
+/// Each disjunct is pinned by its own test so neither can be weakened unnoticed. Any other stream is
+/// best-effort: the drop is absorbed, counted and logged, and never stored.
 class StreamPartitionManagerFrozenRingDropTest {
 
     private static final int PARTITION = 0;
@@ -57,7 +58,9 @@ class StreamPartitionManagerFrozenRingDropTest {
 
         manager.publishLocal(config.name(), PARTITION, new byte[OVERSIZED], 9_999L)
                .onSuccess(offset -> fail("a dropped event on a durable topic must fail the publish, but it"
-                                         + " was acked at offset " + offset));
+                                         + " was acked at offset " + offset))
+               .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.EVENT_DROPPED));
+        assertThat(manager.droppedEventsSinceBoot()).as("a failed publish is not a best-effort drop").isZero();
 
         assertThat(walLastOffset(config)).as("WAL lastOffset after the drop").isEqualTo(walLastOffsetBefore);
         assertThat(walRecords(config)).as("a dropped event must never reach the WAL (not even at the old"
@@ -107,6 +110,33 @@ class StreamPartitionManagerFrozenRingDropTest {
         manager.close();
 
         assertRebuiltRingHoldsExactly(config, 2);
+    }
+
+    /// Best-effort (min-sync < 2, no WAL): the drop is absorbed — acked at the UNCHANGED head, counted,
+    /// logged — and nothing is stored, so the next event still takes the next contiguous offset.
+    @Test
+    void publishLocal_absorbsDropAtUnchangedHead_andCountsIt_onBestEffortStream() {
+        var config = plainConfig();
+        var manager = streamPartitionManager(floorBudget(config), Option.none());
+        create(manager, config);
+
+        publishExpecting(manager, config, 0, 0);
+
+        manager.publishLocal(config.name(), PARTITION, new byte[OVERSIZED], 9_999L)
+               .onFailure(cause -> fail("best-effort drop must be absorbed, but failed: " + cause.message()))
+               .onSuccess(offset -> assertThat(offset).as("acked at the unchanged head").isZero());
+        assertThat(manager.droppedEventsSinceBoot()).isEqualTo(1L);
+
+        publishExpecting(manager, config, 1, 1);
+
+        var events = manager.readLocal(config.name(), PARTITION, 0, 100)
+                            .onFailure(cause -> fail(cause.message()))
+                            .unwrap();
+
+        assertThat(events).as("the dropped event was never stored").hasSize(2);
+        IntStream.range(0, 2).forEach(i -> assertEvent(events.get(i), i));
+
+        manager.close();
     }
 
     // === helpers ===

@@ -254,6 +254,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final AtomicLong reconcileTick = new AtomicLong(0);
     /// Count of partition rings released on role loss since boot (#265 increment 5 observability).
     private final AtomicLong releasedSinceBoot = new AtomicLong(0);
+    /// Best-effort-stream events dropped by a frozen ring since boot (#1233 observability).
+    private final AtomicLong droppedEventsSinceBoot = new AtomicLong(0);
 
     private StreamPartitionManager(long maxTotalBytes,
                                    EvictionListener evictionListener,
@@ -1173,7 +1175,43 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                         offset,
                                                                                         payload,
                                                                                         timestamp,
-                                                                                        ownerEpoch));
+                                                                                        ownerEpoch))
+                                 .fold(cause -> absorbBestEffortDrop(cause, streamName, partition), Result::success);
+    }
+
+    /// Frozen-ring drop handling (#1233). The ring reports [StreamError.General#EVENT_DROPPED] BEFORE
+    /// `durablyLog` / `replicateEvent`, so a dropped event is never WAL-written or replicated. The drop
+    /// FAILS the publish for any stream with durability semantics — `minSyncReplicas >= 2` (durable topics
+    /// and their DLQs, parse-enforced to `min-sync == replicas >= 2`) OR a partition WAL. `StreamConfig`
+    /// carries no explicit best-effort flag, so the remaining streams are the best-effort class: the drop
+    /// is absorbed as FER (degrade forward — the event is lost, the stream keeps accepting), made
+    /// observable by [#droppedEventsSinceBoot] and a WARN, and acked at the unchanged ring head, exactly
+    /// the offset such a stream reported before this change. Every other failure propagates unchanged.
+    private Result<Long> absorbBestEffortDrop(Cause cause, String streamName, int partition) {
+        return cause == StreamError.General.EVENT_DROPPED && isBestEffort(streamName, partition)
+               ? recordBestEffortDrop(streamName, partition)
+               : cause.result();
+    }
+
+    private boolean isBestEffort(String streamName, int partition) {
+        return minSyncReplicasFor(streamName) < 2 && walFor(streamName, partition).isEmpty();
+    }
+
+    private Result<Long> recordBestEffortDrop(String streamName, int partition) {
+        var dropped = droppedEventsSinceBoot.incrementAndGet();
+
+        log.warn("Dropped event on best-effort stream '{}' partition {}: larger than the frozen ring's allocation ({} dropped since boot)",
+                 streamName,
+                 partition,
+                 dropped);
+
+        return resolvePartitionBuffer(streamName, partition).map(OffHeapRingBuffer::headOffset);
+    }
+
+    /// Events dropped since boot on best-effort streams because a frozen ring could not fit them (#1233).
+    /// Drops on streams with durability semantics are not counted here — they fail the publish instead.
+    public long droppedEventsSinceBoot() {
+        return droppedEventsSinceBoot.get();
     }
 
     /// Gate the publish ack on WAL fsync (streaming-persistence W3). With no WAL configured for

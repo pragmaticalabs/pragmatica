@@ -226,12 +226,13 @@ class OffHeapRingBufferGrowthTest {
 
     /// Bug #7 (DROP_OLDEST): a frozen-below-cap ring (zero growth granted, allocated == floor 256 KiB)
     /// receiving an event LARGER than the allocated ring (300_000 > 262_144) must NOT write it — doing so
-    /// would self-overlap the ring or index a non-existent segment. The event is dropped (EVENTUAL
-    /// contract: append still reports success at the current head) and every previously-stored event
-    /// reads back byte-identical. Exercised at dataPos == 0 AND at dataPos ~= 200 KiB (after a smaller
+    /// would self-overlap the ring or index a non-existent segment. The event is dropped and the append
+    /// reports the distinct `EVENT_DROPPED` outcome — never success at the current head (#1233: this test
+    /// previously asserted drop-as-success, which let `publishLocal` WAL-write and replicate the dropped
+    /// payload under the previous head's offset). Every previously-stored event reads back byte-identical. Exercised at dataPos == 0 AND at dataPos ~= 200 KiB (after a smaller
     /// pre-append), the two layouts that trigger the corruption / IndexOutOfBounds in the unfixed code.
     @Test
-    void frozenRing_eventLargerThanAllocated_dropOldest_doesNotCorruptOrThrow() {
+    void frozenRing_eventLargerThanAllocated_dropOldest_returnsEventDropped_withoutStoringOrCorrupting() {
         var capacity = 1_000L;
         var maxBytes = 5L * SEGMENT;
         LongPredicate reserveNever = _ -> false; // freeze at the floor segment (no growth ever)
@@ -249,7 +250,8 @@ class OffHeapRingBufferGrowthTest {
             // --- Case A: dataPos == 0 (fresh ring) ---
             var headBefore = buffer.headOffset();
             buffer.append(oversized, 1L)
-                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("EVENTUAL oversized-for-allocated must drop, not fail"));
+                  .onSuccess(offset -> org.junit.jupiter.api.Assertions.fail("dropped event reported as stored at " + offset))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.EVENT_DROPPED));
             // Dropped: head unchanged, nothing stored, no corruption/exception.
             assertThat(buffer.headOffset()).as("oversized event dropped at dataPos=0").isEqualTo(headBefore);
             assertThat(buffer.eventCount()).isEqualTo(0L);
@@ -263,7 +265,8 @@ class OffHeapRingBufferGrowthTest {
             // --- Case B: dataPos ~= 200 KiB, append oversized again ---
             var headBeforeB = buffer.headOffset();
             buffer.append(oversized, 3L)
-                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("EVENTUAL oversized-for-allocated must drop, not fail"));
+                  .onSuccess(offset -> org.junit.jupiter.api.Assertions.fail("dropped event reported as stored at " + offset))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.EVENT_DROPPED));
             assertThat(buffer.headOffset()).as("oversized event dropped at dataPos~=200K").isEqualTo(headBeforeB);
 
             // The previously-stored fitting event survives byte-identical (no corruption from the drop).
@@ -315,8 +318,9 @@ class OffHeapRingBufferGrowthTest {
     }
 
     /// Bug #7 property variant: a FROZEN regime (seam rejects ALL growth, ring fixed at the 256 KiB
-    /// floor) driven with mixed payload sizes — many fit, some exceed the allocated ring. The buffer
-    /// must match a reference oracle that drops oversized-for-allocated events (DROP_OLDEST), with NO
+    /// floor) driven with mixed payload sizes — many fit, some exceed the allocated ring. Every
+    /// oversized-for-allocated event must be reported as `EVENT_DROPPED` and leave the ring untouched
+    /// (#1233), and the buffer must match a reference oracle fed only the stored events, with NO
     /// IndexOutOfBounds and NO corruption, across thousands of frozen-ring wraps + segment splits.
     @Test
     void frozenRing_property_dropsOversizedForAllocated_matchesOracle() {
@@ -330,8 +334,8 @@ class OffHeapRingBufferGrowthTest {
         LongConsumer release = _ -> {};
         var buffer = unwrap(offHeapRingBuffer("frozen-prop", 0, capacity, maxBytes, EvictionListener.NOOP,
                                               EvictionPolicy.DROP_OLDEST, reserveNever, release));
-        // Oracle's effective data capacity is the FROZEN allocated bytes, and it drops events that
-        // exceed that allocation (mirroring the buffer's bug-#7 gate).
+        // Oracle's effective data capacity is the FROZEN allocated bytes; events exceeding that
+        // allocation never reach it (mirroring the buffer's bug-#7 gate).
         var oracle = new RingOracle(capacity, allocated);
         var rng = new Lcg(seed);
 
@@ -345,11 +349,7 @@ class OffHeapRingBufferGrowthTest {
                     var payload = patterned(size, rng.nextInt(251) + 1);
                     var ts = 5_000L + step;
 
-                    var actual = appendOffset(buffer.append(payload, ts));
-                    var expected = oracle.appendDroppingOversized(payload, ts, allocated);
-                    assertThat(actual)
-                            .as("append/drop offset at step %d (size %d)", step, size)
-                            .isEqualTo(expected);
+                    assertAppendOrDrop(buffer, oracle, payload, ts, allocated, step);
                 } else {
                     var from = oracle.tail() + rng.nextInt(4);
                     var max = rng.nextInt(8) + 1;
@@ -498,6 +498,24 @@ class OffHeapRingBufferGrowthTest {
               });
     }
 
+    /// Oversized-for-allocated: the buffer must report `EVENT_DROPPED` and the oracle stays untouched
+    /// (#1233 — a drop is never an offset). Fitting: the append offset must match the oracle's.
+    private static void assertAppendOrDrop(OffHeapRingBuffer buffer, RingOracle oracle, byte[] payload, long ts,
+                                           long allocated, int step) {
+        var result = buffer.append(payload, ts);
+
+        if (payload.length > allocated) {
+            result.onSuccess(offset -> org.junit.jupiter.api.Assertions.fail(
+                          "step %d: dropped event (size %d) reported as stored at %d".formatted(step, payload.length, offset)))
+                  .onFailure(cause -> assertThat(cause).as("drop outcome at step %d", step)
+                                                       .isEqualTo(StreamError.General.EVENT_DROPPED));
+            return;
+        }
+
+        assertThat(appendOffset(result)).as("append offset at step %d (size %d)", step, payload.length)
+                                        .isEqualTo(oracle.append(payload, ts));
+    }
+
     private static long appendOffset(org.pragmatica.lang.Result<Long> result) {
         var holder = new AtomicLong(Long.MIN_VALUE);
         result.onFailure(_ -> org.junit.jupiter.api.Assertions.fail("append failed"))
@@ -574,13 +592,6 @@ class OffHeapRingBufferGrowthTest {
         /// Frozen-ring (bug #7) variant: an event larger than the FROZEN allocated bytes can never be
         /// stored, so it is DROPPED (no store, no offset advance) and the current head is returned —
         /// exactly what the buffer does under DROP_OLDEST. Otherwise behaves like `append`.
-        long appendDroppingOversized(byte[] payload, long timestamp, long allocated) {
-            if (payload.length > allocated) {
-                return head;
-            }
-            return append(payload, timestamp);
-        }
-
         private void dropOldest() {
             if (live.isEmpty()) {
                 return;
