@@ -168,6 +168,18 @@ class StrongConsistencyFailClosedTest {
         owner.close();
     }
 
+    /// N1: the owner-append choke point itself refuses. A publisher built EVENTUAL over a stream whose committed
+    /// config is STRONG — the hardcoded-EVENTUAL system/DLQ publishers, or a config adopted after
+    /// construction — must not land an EVENTUAL append on it.
+    @Test
+    void eventualBuiltStreamPublisher_isRefused_overAStrongStream() {
+        publisher(STRONG_STREAM, ConsistencyMode.EVENTUAL).publish("e0".getBytes())
+                                                          .await()
+                                                          .onSuccessRun(Assertions::fail)
+                                                          .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.CONSENSUS_PATH_UNAVAILABLE));
+        assertThat(partitionManager.nextExpectedOffset(STRONG_STREAM, PARTITION)).isZero();
+    }
+
     private DefaultStreamPublisher<byte[]> publisher(String stream, ConsistencyMode mode) {
         return DefaultStreamPublisher.<byte[]> streamPublisher(partitionManager,
                                                                identitySerializer(),
