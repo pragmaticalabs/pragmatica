@@ -10,7 +10,10 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
@@ -19,7 +22,9 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 
@@ -34,6 +39,8 @@ class SegmentSealerTest {
     private static final int PARTITION = 0;
     private static final long AWAIT_MS = 10_000;
     private static final long POLL_NANOS = 10_000_000;
+    /// Longer than the next three backoff delays (100 + 200 + 400 ms plus jitter).
+    private static final long RETRY_WINDOW_NANOS = 1_000_000_000L;
 
     private final List<SealedSegment> captured = new CopyOnWriteArrayList<>();
     private SegmentSealer sealer;
@@ -241,6 +248,130 @@ class SegmentSealerTest {
                     .onFailure(cause -> fail("still refused after a pending seal landed: " + cause.message()))
                     .onSuccess(offset -> assertThat(offset).isEqualTo(7L));
             }
+        }
+    }
+
+    /// #1234: the sealer drops its retained copy only AFTER the sink has made the segment readable. The sink
+    /// here models `StorageSegmentSink`: durable once the gate opens, then indexed in a dependent step. At that
+    /// index step the sealer must still hold the copy; releasing earlier opens a window in which an evicted
+    /// offset is in neither the sealer nor the index, and a read of it is misreported.
+    @Nested
+    class ReleaseAfterIndex {
+
+        @Test
+        void seal_retainedCopyReleasedOnlyAfterIndexUpdate() {
+            var gate = Promise.<Unit>promise();
+            var index = new SegmentIndex();
+            var heldAtIndexUpdate = new AtomicBoolean(false);
+            var sealerRef = new AtomicReference<SegmentSealer>();
+            var orderedSealer = segmentSealer(segment -> gate.map(_ -> indexWhileObserving(index,
+                                                                                            segment,
+                                                                                            sealerRef,
+                                                                                            heldAtIndexUpdate)));
+
+            sealerRef.set(orderedSealer);
+            orderedSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(3L, "a".getBytes(), 1L)));
+
+            assertThat(orderedSealer.holdsUnsealed(STREAM, PARTITION, 3L)).isTrue();
+            assertThat(index.lastSealedOffset(STREAM, PARTITION)).isEqualTo(-1L);
+
+            gate.succeed(unit());
+            awaitCondition(() -> !orderedSealer.holdsUnsealed(STREAM, PARTITION, 3L));
+
+            assertThat(heldAtIndexUpdate.get()).as("sealer still held the copy when the index was updated").isTrue();
+            assertThat(index.findSegment(STREAM, PARTITION, 3L).isPresent()).isTrue();
+            assertThat(orderedSealer.pendingBytes()).isZero();
+        }
+
+        private static Unit indexWhileObserving(SegmentIndex index,
+                                                SealedSegment segment,
+                                                AtomicReference<SegmentSealer> sealer,
+                                                AtomicBoolean heldAtIndexUpdate) {
+            heldAtIndexUpdate.set(sealer.get().holdsUnsealed(segment.streamName(), segment.partition(), segment.startOffset()));
+            index.addSegment(segment.streamName(), segment.partition(), segment.startOffset(), segment.endOffset());
+
+            return unit();
+        }
+    }
+
+    /// #1234: pending seals of a DELETED stream are cancelled — their WAL is gone with the stream, so there is
+    /// nothing left to protect, and retrying them forever would hold the shared pending-seal cap.
+    @Nested
+    class StreamDeletion {
+        private static final String DOOMED = "doomed-stream";
+
+        @Test
+        void onStreamDeleted_cancelsPendingSeals_releasesTheirBytes_otherStreamsUntouched() {
+            var sink = new ManualSink();
+            var deletingSealer = segmentSealer(sink);
+
+            deletingSealer.onEviction(DOOMED, PARTITION, List.of(RawEvent.rawEvent(0L, "a".getBytes(), 1L)));
+            deletingSealer.onEviction(DOOMED, PARTITION, List.of(RawEvent.rawEvent(1L, "b".getBytes(), 2L)));
+            deletingSealer.onEviction(DOOMED, 1, List.of(RawEvent.rawEvent(0L, "c".getBytes(), 3L)));
+            deletingSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(0L, "d".getBytes(), 4L)));
+
+            var oneSegment = deletingSealer.pendingBytes() / 4;
+
+            deletingSealer.onStreamDeleted(DOOMED);
+
+            assertThat(deletingSealer.pendingBytes()).isEqualTo(oneSegment);
+            assertThat(deletingSealer.holdsUnsealed(DOOMED, PARTITION, 1L)).isFalse();
+            assertThat(deletingSealer.holdsUnsealed(STREAM, PARTITION, 0L)).isTrue();
+
+            sink.succeed(0);
+            sink.succeed(1);
+
+            assertThat(deletingSealer.pendingBytes()).as("a cancelled seal that lands releases nothing twice")
+                                                     .isEqualTo(oneSegment);
+            assertThat(sink.calls()).as("the doomed partition's queued segment is never sent").isEqualTo(3);
+
+            sink.succeed(2);
+            awaitCondition(() -> deletingSealer.pendingBytes() == 0);
+        }
+
+        @Test
+        void onStreamDeleted_stopsRetryingAFailingSeal() {
+            var attempts = new AtomicInteger();
+            var failingSealer = segmentSealer(_ -> failAndCount(attempts));
+
+            failingSealer.onEviction(DOOMED, PARTITION, List.of(RawEvent.rawEvent(0L, "a".getBytes(), 1L)));
+            awaitCondition(() -> attempts.get() >= 2);
+
+            failingSealer.onStreamDeleted(DOOMED);
+            var attemptsAtDeletion = attempts.get();
+
+            LockSupport.parkNanos(RETRY_WINDOW_NANOS);
+
+            assertThat(attempts.get()).isLessThanOrEqualTo(attemptsAtDeletion + 1);
+            assertThat(failingSealer.pendingBytes()).isZero();
+        }
+
+        /// The manager wiring: deleting a stream hands the deletion to its eviction listener, which frees the
+        /// cap the stream's unsealed segments held.
+        @Test
+        void destroyStream_freesPendingSealBytes() {
+            var neverSeals = new ManualSink();
+            var managedSealer = segmentSealer(neverSeals);
+            var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE, managedSealer);
+
+            manager.createStream(StreamConfig.streamConfig(DOOMED, 1, RetentionPolicy.retentionPolicy(4, 4096, 600_000), "earliest"))
+                   .onFailure(cause -> fail(cause.message()));
+            for (int i = 0; i < 10; i++) {
+                manager.publishLocal(DOOMED, 0, ("e-" + i).getBytes(), 1000L + i).onFailure(cause -> fail(cause.message()));
+            }
+
+            assertThat(managedSealer.pendingBytes()).isPositive();
+
+            manager.destroyStream(DOOMED).onFailure(cause -> fail(cause.message()));
+            manager.close();
+
+            assertThat(managedSealer.pendingBytes()).isZero();
+        }
+
+        private static Promise<Unit> failAndCount(AtomicInteger attempts) {
+            attempts.incrementAndGet();
+
+            return Causes.cause("storage down").promise();
         }
     }
 

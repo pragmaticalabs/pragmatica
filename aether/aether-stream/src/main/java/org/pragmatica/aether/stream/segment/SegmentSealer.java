@@ -7,10 +7,12 @@ package org.pragmatica.aether.stream.segment;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
@@ -115,6 +117,17 @@ public final class SegmentSealer implements EvictionListener {
                      .or(false);
     }
 
+    /// Cancel every pending seal of the deleted `streamName` and release the bytes they held against the cap.
+    /// A seal already in flight may still land; it then releases nothing twice (see [#released]), and a
+    /// scheduled retry of a cancelled segment stops at its next attempt without calling the sink.
+    @Override
+    public Unit onStreamDeleted(String streamName) {
+        pending.keySet().stream().filter(key -> key.streamName()
+                                                   .equals(streamName)).toList().forEach(this::cancel);
+
+        return unit();
+    }
+
     /// Seal attempts that failed. Each failed segment stays pending and is retried.
     public long sealFailureCount() {
         return sealFailures.get();
@@ -203,15 +216,24 @@ public final class SegmentSealer implements EvictionListener {
         }
     }
 
+    /// The retained copy is released in [#released], a DEPENDENT continuation of the seal promise, which the
+    /// [SegmentSink] contract resolves only once the segment is readable (for [StorageSegmentSink]: after its
+    /// index update). The order index-then-release is therefore a data dependency of this chain, not a matter
+    /// of which callback happens to be scheduled first.
     private void sealWithRetry(PendingSeals seals, PendingSegment segment) {
-        SEAL_RETRY.execute(() -> attempt(segment.segment()))
-                  .onSuccess(_ -> sealed(seals, segment))
+        SEAL_RETRY.execute(() -> attempt(seals,
+                                         segment.segment()))
+                  .map(_ -> released(seals, segment))
+                  .onSuccess(_ -> sealHead(seals))
                   .onFailure(cause -> retryCycleExhausted(seals, segment, cause));
     }
 
-    private Promise<Unit> attempt(SealedSegment segment) {
-        return sink.seal(segment)
-                   .onFailure(cause -> recordFailure(segment, cause));
+    private Promise<Unit> attempt(PendingSeals seals, SealedSegment segment) {
+        return seals.cancelled()
+                    .get()
+               ? SegmentError.General.SEAL_CANCELLED.promise()
+               : sink.seal(segment)
+                     .onFailure(cause -> recordFailure(segment, cause));
     }
 
     private void recordFailure(SealedSegment segment, Cause cause) {
@@ -227,16 +249,42 @@ public final class SegmentSealer implements EvictionListener {
                  cause.message());
     }
 
-    private void sealed(PendingSeals seals, PendingSegment segment) {
-        seals.queue().poll();
-        pendingBytes.addAndGet(-segment.bytes());
-        sealHead(seals);
+    /// Releases the bytes only if the segment was still queued: a cancelled stream already released them.
+    private Unit released(PendingSeals seals, PendingSegment segment) {
+        if (seals.queue().remove(segment)) {
+            pendingBytes.addAndGet(-segment.bytes());
+        }
+
+        return unit();
+    }
+
+    private void cancel(PartitionKey key) {
+        option(pending.remove(key)).onPresent(seals -> cancelSeals(key, seals));
+    }
+
+    private void cancelSeals(PartitionKey key, PendingSeals seals) {
+        seals.cancelled().set(true);
+        var dropped = Stream.generate(seals.queue()::poll).takeWhile(Objects::nonNull).toList();
+        var bytes = dropped.stream().mapToLong(PendingSegment::bytes).sum();
+
+        pendingBytes.addAndGet(-bytes);
+        log.info("Stream {} deleted: cancelled {} pending seal(s) of partition {}, releasing {} bytes",
+                 key.streamName(),
+                 dropped.size(),
+                 key.partition(),
+                 bytes);
     }
 
     /// Absorbing the exhausted cycle is design-out, not loss: the segment stays at the head of its queue (so
     /// nothing later in the partition is sealed past it), its retained copy and the WAL both still hold its
     /// offsets, and a fresh retry cycle starts after [#CYCLE_PAUSE].
     private void retryCycleExhausted(PendingSeals seals, PendingSegment segment, Cause cause) {
+        if (seals.cancelled().get()) {
+            release(seals);
+
+            return;
+        }
+
         log.error("Sealing {}/{} offsets [{}-{}] failed through a retry cycle of up to {} attempts; the segment stays "
                  + "pending, the partition's later segments wait behind it, and a new cycle starts in {}: {}",
                   segment.segment().streamName(),
@@ -297,9 +345,11 @@ public final class SegmentSealer implements EvictionListener {
 
     /// One partition's segments awaiting their seal, in offset order, and the flag that keeps a single seal in
     /// flight for the partition.
-    private record PendingSeals(ConcurrentLinkedQueue<PendingSegment> queue, AtomicBoolean inFlight) {
+    private record PendingSeals(ConcurrentLinkedQueue<PendingSegment> queue,
+                                AtomicBoolean inFlight,
+                                AtomicBoolean cancelled) {
         static PendingSeals pendingSeals() {
-            return new PendingSeals(new ConcurrentLinkedQueue<>(), new AtomicBoolean(false));
+            return new PendingSeals(new ConcurrentLinkedQueue<>(), new AtomicBoolean(false), new AtomicBoolean(false));
         }
 
         boolean covers(long offset) {

@@ -1717,6 +1717,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     private Result<Unit> closeAndRelease(StreamEntry entry) {
         releaseEntry(entry);
         entry.deleteWals();
+        evictionListener.onStreamDeleted(entry.config().name());
 
         return success(unit());
     }

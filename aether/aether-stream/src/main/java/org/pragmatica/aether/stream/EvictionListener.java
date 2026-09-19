@@ -24,5 +24,11 @@ public interface EvictionListener {
         return false;
     }
 
+    /// `streamName` was deleted: drop whatever of it is still waiting to be made durable. Its WAL is deleted
+    /// with it, so nothing is left to protect, and retained copies must not keep holding shared capacity.
+    default Unit onStreamDeleted(String streamName) {
+        return Unit.unit();
+    }
+
     EvictionListener NOOP = (_, _, _) -> Result.unitResult();
 }

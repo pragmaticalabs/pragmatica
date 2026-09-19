@@ -10,7 +10,14 @@ import org.pragmatica.lang.Cause;
 public sealed interface SegmentError extends Cause {
     enum General implements SegmentError {
         SEGMENT_REF_NOT_FOUND("Segment named reference not found in storage"),
-        SEGMENT_DATA_NOT_FOUND("Segment data block not found in storage");
+        SEGMENT_DATA_NOT_FOUND("Segment data block not found in storage"),
+        /// The segment's stream was deleted while its seal was pending (#1234); retrying cannot help.
+        SEAL_CANCELLED("Stream deleted; its pending segment seal was cancelled") {
+            @Override
+            public boolean isTerminal() {
+                return true;
+            }
+        };
         private final String message;
         General(String message) {
             this.message = message;
