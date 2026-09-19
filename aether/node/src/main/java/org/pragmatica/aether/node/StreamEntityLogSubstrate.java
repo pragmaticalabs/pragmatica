@@ -325,9 +325,12 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// Both tiers hold APPENDED records, as the #1274 ruling requires of entity folds: the ring read is
     /// unbounded by any visibility watermark, and a sealed record was appended before it was evicted.
     ///
-    /// A different node taking the partition over reads nothing sealed here — its segment index holds only
-    /// the segments IT sealed — so [#earliestRetainedOffset] stays at its ring and the fold's gap check
-    /// refuses exactly as before.
+    /// A node reads only the segments IT sealed — the index is node-local — so a node that never held the
+    /// partition still refuses exactly as before: [#earliestRetainedOffset] stays at its ring. A PROMOTED
+    /// REPLICA is the case this widens: replica rings are materialized with the same node-wide eviction
+    /// listener as owner rings, so a replica has sealed segments of the partition, and after promotion it
+    /// can rebuild from that history where it previously refused. A suffix sealed only after it joined
+    /// leaves a hole below, and the read that reaches the hole refuses loudly rather than folding around it.
     @Override
     public Promise<List<byte[]>> read(String keyspace, int partition, long fromOffset, int maxRecords) {
         var stream = EntityPartitionArc.arcName(keyspace);
@@ -363,23 +366,29 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                      events -> Promise.success(payloads(events)));
     }
 
-    /// The ring evicted `fromOffset` between the tier choice and the ring read. The offset is then in the
-    /// sealer or in a segment, and the sealed read picks it up at the ring's new earliest bound.
+    /// The ring evicted `fromOffset` between the tier choice and the ring read — a real race under a
+    /// concurrently appending partition, and the reroute is what absorbs it. The offset is then in the
+    /// sealer or in a segment, and the sealed read picks it up.
+    ///
+    /// The bound comes from the refusal's own `tailOffset` rather than a fresh
+    /// `earliestRetainedOffset` read: the two can differ, and a ring replaced between them would answer
+    /// `-1`, which would make the bound negative.
     private Promise<List<byte[]>> evictedDuringRead(String keyspace,
                                                     String stream,
                                                     int partition,
                                                     long fromOffset,
                                                     int maxRecords,
                                                     Cause cause) {
-        return cause instanceof StreamError.CursorExpired
-               ? readSealed(keyspace,
-                            stream,
-                            partition,
-                            fromOffset,
-                            sealedBound(fromOffset,
-                                        maxRecords,
-                                        partitionManager.earliestRetainedOffset(stream, partition)))
-               : cause.promise();
+        return switch (cause) {
+            case StreamError.CursorExpired expired -> readSealed(keyspace,
+                                                                 stream,
+                                                                 partition,
+                                                                 fromOffset,
+                                                                 sealedBound(fromOffset,
+                                                                             maxRecords,
+                                                                             expired.tailOffset()));
+            default -> cause.promise();
+        };
     }
 
     /// An evicted offset whose seal has not landed is IN FLIGHT (#1234): the sealer retains it and the WAL

@@ -4,23 +4,21 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
-import io.netty.buffer.ByteBuf;
-
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.node.StreamEntityLogSubstrate;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.stream.EvictionListener;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
@@ -39,9 +37,15 @@ import org.pragmatica.serialization.Serializer;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
+import io.netty.buffer.ByteBuf;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
+import static org.pragmatica.aether.stream.segment.SealedSegment.sealedSegment;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.pragmatica.aether.stream.segment.SealedSegment.sealedSegment;
+
 
 /// #1240: a durable entity partition whose checkpoint lags further behind than its ring reaches must be
 /// rebuilt from the history this node sealed to storage, not refused. Reads cross from sealed segments
@@ -70,7 +74,8 @@ class SealedHistoryRecoveryTest {
 
     @BeforeEach
     void setUpStorage() {
-        storage = StorageInstance.storageInstance("entity-sealed-history", List.of(MemoryTier.memoryTier(ONE_GB)));
+        storage = StorageInstance.storageInstance("entity-sealed-history",
+                                                  List.of(MemoryTier.memoryTier(ONE_GB)));
         index = new SegmentIndex();
     }
 
@@ -98,14 +103,12 @@ class SealedHistoryRecoveryTest {
         @Test
         void ready_rebuildsEveryKeyFromSealedHistory_whenHistoryHasLeftTheRingAndNoCheckpointExists() {
             assertThat(partitionManager.earliestRetainedOffset(STREAM, PARTITION)).as("control: the oldest records must have left the ring, or this test never reaches sealed storage")
-                                                                                 .isGreaterThan(0L);
-
+                      .isGreaterThan(0L);
             var fold = EntityFold.entityFold(KEYSPACE, substrate);
 
             fold.ready(PARTITION)
                 .await()
                 .onFailure(cause -> fail("rebuild must succeed from sealed history: " + cause.message()));
-
             assertThat(missingKeys(fold)).as("every key written must be in the rebuilt fold with its value").isZero();
         }
 
@@ -123,6 +126,133 @@ class SealedHistoryRecoveryTest {
         @Test
         void earliestRetainedOffset_reachesBackIntoSealedHistory() {
             assertThat(substrate.earliestRetainedOffset(KEYSPACE, PARTITION)).isZero();
+        }
+    }
+
+    /// The three paths the #1332 review found unpinned: the eviction-race reroute, the reclaimed-offset
+    /// mapping, and the takeover refusal. Each is RED under the mutation named on it.
+    @Nested
+    class ReviewPins {
+        /// Fewer than the reviewer's 150k — the race is hit within the first seconds either way, and this
+        /// keeps the test to a few seconds.
+        private static final long CONCURRENT_APPENDS = 40_000;
+        private static final int BOUNDARY_BATCH = 64;
+        private static final long RECLAIM_AT_LEAST = 500;
+
+        /// MA: with `evictedDuringRead` no longer rerouting, a read at the ring's earliest offset surfaces
+        /// `CursorExpired` the moment an append evicts under it.
+        ///
+        /// Offset ALIGNMENT is counted and reported but deliberately not asserted: under concurrent
+        /// eviction the ring itself can answer one offset's slot with another's record (#1340, pre-existing
+        /// and rc4-wide), and this test is about the reroute, not about that defect.
+        @Test
+        void read_staysAtTheBoundary_whileTheRingEvictsUnderIt() throws InterruptedException {
+            var sealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(storage, index));
+            var partitionManager = sealingManager(sealer);
+            var substrate = substrate(partitionManager, sealer);
+
+            substrate.ensureLog(KEYSPACE, 1, 1, 1).unwrap();
+            appendRecords(substrate);
+            var done = new AtomicBoolean(false);
+            var appender = Thread.ofPlatform().start(() -> appendMore(substrate, done));
+            var refusals = new StringBuilder();
+            var reads = 0L;
+            var misaligned = 0L;
+
+            while (!done.get() && refusals.length() < 2_000) {
+                var from = Math.max(0, partitionManager.earliestRetainedOffset(STREAM, PARTITION) - (reads % 2));
+                var batch = substrate.read(KEYSPACE, PARTITION, from, BOUNDARY_BATCH).await();
+
+                reads++;
+                batch.onFailure(cause -> recordUnexpected(refusals, from, cause));
+                misaligned += batch.map(records -> misalignedIn(records, from)).or(0L);
+            }
+
+            appender.join();
+            System.out.println("boundary reads=" + reads + " misaligned(ring torn, #1340)=" + misaligned);
+            assertThat(reads).as("control: the boundary loop must have run").isGreaterThan(100L);
+            assertThat(refusals.toString()).as("a read at the boundary must reroute to sealed storage, never surface CursorExpired")
+                      .isEmpty();
+        }
+
+        /// MC: with the `CursorExpired` arm of `sealedReadFailure` dropped, a read of an offset retention
+        /// has reclaimed leaks the raw stream cause instead of refusing the fold.
+        @Test
+        void read_refusesAsFoldFailedNamingCursorExpired_whenRetentionReclaimedTheOffset() throws InterruptedException {
+            var sealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(storage, index));
+            var substrate = substrate(sealingManager(sealer), sealer);
+
+            substrate.ensureLog(KEYSPACE, 1, 1, 1).unwrap();
+            appendRecords(substrate);
+            awaitAllSealed(sealer);
+            reclaimPrefix();
+            var read = substrate.read(KEYSPACE, PARTITION, 0, READ_BATCH).await();
+
+            assertThat(read.isFailure()).isTrue();
+            read.onFailure(cause -> assertThat(cause).isInstanceOf(EntityLogError.FoldFailed.class)
+                                              .extracting(failed -> ((EntityLogError.FoldFailed) failed).reason())
+                                              .isInstanceOf(StreamError.CursorExpired.class));
+        }
+
+        /// MD: a node that never sealed any of this partition has an EMPTY index, so its earliest readable
+        /// offset stays at its ring and the fold refuses with the pre-#1240 gap message. A promoted REPLICA
+        /// is the opposite case and is covered by the recovery tests: it sealed its own segments and reads
+        /// them.
+        @Test
+        void ready_refusesWithThePreFixGapMessage_whenThisNodeSealedNoneOfThePartition() {
+            var substrate = substrate(StreamPartitionManager.streamPartitionManager(MANAGER_BUDGET_BYTES,
+                                                                                    EvictionListener.NOOP,
+                                                                                    Option.none(),
+                                                                                    index::lastSealedOffset),
+                                      EvictionListener.NOOP);
+
+            substrate.ensureLog(KEYSPACE, 1, 1, 1).unwrap();
+            appendRecords(substrate);
+            var ringEarliest = substrate.earliestRetainedOffset(KEYSPACE, PARTITION);
+
+            assertThat(ringEarliest).as("control: history left the ring and nothing was sealed").isGreaterThan(0L);
+            var result = EntityFold.entityFold(KEYSPACE, substrate).ready(PARTITION).await();
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("checkpoint resumes at 0 but the earliest readable offset here is " + ringEarliest));
+        }
+
+        private static void recordUnexpected(StringBuilder refusals, long from, Cause cause) {
+            refusals.append("read@").append(from).append(" failed: ").append(cause.message()).append('\n');
+        }
+
+        private static long misalignedIn(List<byte[]> records, long from) {
+            return IntStream.range(0,
+                                   records.size())
+                            .filter(position -> !key(from + position).equals(EntityLogRecord.decode(records.get(position))
+                                                                                            .map(EntityLogRecord::key)
+                                                                                            .or("<undecodable>")))
+                            .count();
+        }
+
+        private static void appendMore(EntityLogSubstrate substrate, AtomicBoolean done) {
+            LongStream.range(RECORDS, RECORDS + CONCURRENT_APPENDS).forEach(offset -> substrate.append(KEYSPACE,
+                                                                                                       PARTITION,
+                                                                                                       record(offset))
+                                                                                               .await()
+                                                                                               .unwrap());
+            done.set(true);
+        }
+
+        /// What `RetentionEnforcer` does below the checkpoint floor: drop the lowest sealed segments.
+        private void reclaimPrefix() {
+            var through = -1L;
+
+            for (var ref : index.listSegments(STREAM, PARTITION)) {
+                if (through >= RECLAIM_AT_LEAST) {
+                    break;
+                }
+
+                index.removeSegment(STREAM, PARTITION, ref.startOffset());
+                through = ref.endOffset();
+            }
+
+            assertThat(through).as("control: a sealed prefix was reclaimed").isGreaterThanOrEqualTo(RECLAIM_AT_LEAST);
         }
     }
 
@@ -150,14 +280,13 @@ class SealedHistoryRecoveryTest {
         @Test
         void earliestRetainedOffset_countsHistoryStillInFlight() {
             assertThat(substrate.earliestRetainedOffset(KEYSPACE, PARTITION)).as("nothing is sealed yet; the in-flight history starts at 0")
-                                                                             .isZero();
+                      .isZero();
         }
 
         @Test
         void ready_succeedsWithoutFoldInProgress_whenTheSealLandsInsideTheRetryWindow() throws InterruptedException {
             var opener = Thread.ofPlatform().start(() -> openAfter(sink, GATE_OPENS_INSIDE_WINDOW_MILLIS));
             var fold = EntityFold.entityFold(KEYSPACE, substrate);
-
             var result = fold.ready(PARTITION).await();
 
             opener.join();
@@ -168,16 +297,13 @@ class SealedHistoryRecoveryTest {
         @Test
         void ready_failsFoldInProgress_whileTheSealPersists_andSucceedsOnReaccessOnceItLands() throws InterruptedException {
             var fold = EntityFold.entityFold(KEYSPACE, substrate);
-
             var first = fold.ready(PARTITION).await();
 
             assertThat(first.isFailure()).isTrue();
             first.onFailure(cause -> assertThat(cause).as("in flight is retried, never skipped and never refused")
-                                                      .isInstanceOf(EntityLogError.FoldInProgress.class));
-
+                                               .isInstanceOf(EntityLogError.FoldInProgress.class));
             sink.open();
             awaitAllSealed(sealer);
-
             fold.ready(PARTITION)
                 .await()
                 .onFailure(cause -> fail("re-access after the seal landed must rebuild: " + cause.message()));
@@ -215,11 +341,13 @@ class SealedHistoryRecoveryTest {
 
         @Test
         void read_crossesIntoTheRing_whenTheSealedHistoryIsIntact() {
-            sealOffsets(0, ringEarliest - 1, LongStream.range(0, ringEarliest).boxed().toList());
-
-            assertThat(readAllKeys(substrate, substrate.headOffset(KEYSPACE, PARTITION))).containsExactlyElementsOf(LongStream.range(0, RECORDS)
-                                                                                                                        .mapToObj(SealedHistoryRecoveryTest::key)
-                                                                                                                        .toList());
+            sealOffsets(0,
+                        ringEarliest - 1,
+                        LongStream.range(0, ringEarliest).boxed().toList());
+            assertThat(readAllKeys(substrate, substrate.headOffset(KEYSPACE, PARTITION))).containsExactlyElementsOf(LongStream.range(0,
+                                                                                                                                     RECORDS)
+                                                                                                                              .mapToObj(SealedHistoryRecoveryTest::key)
+                                                                                                                              .toList());
         }
 
         @Test
@@ -228,11 +356,10 @@ class SealedHistoryRecoveryTest {
 
             skipped.remove(Long.valueOf(5));
             sealOffsets(0, ringEarliest - 1, skipped);
-
             var read = substrate.read(KEYSPACE, PARTITION, 0, READ_BATCH).await();
 
             assertThat(read.isFailure()).as("a skipped offset must be refused, not folded as if the next record were it")
-                                        .isTrue();
+                      .isTrue();
             read.onFailure(cause -> assertThat(cause.message()).contains("expected offset 5, found 6"));
         }
 
@@ -242,7 +369,6 @@ class SealedHistoryRecoveryTest {
 
             repeated.add(6, 5L);
             sealOffsets(0, ringEarliest - 1, repeated);
-
             var read = substrate.read(KEYSPACE, PARTITION, 0, READ_BATCH).await();
 
             assertThat(read.isFailure()).as("a repeated offset must be refused, not applied twice").isTrue();
@@ -251,12 +377,13 @@ class SealedHistoryRecoveryTest {
 
         @Test
         void ready_refusesLoudly_whenTheSealedHistoryHasAHole() {
-            sealOffsets(0, 99, LongStream.range(0, 100).boxed().toList());
-            sealOffsets(200, ringEarliest - 1, LongStream.range(200, ringEarliest).boxed().toList());
-
-            var result = EntityFold.entityFold(KEYSPACE, substrate)
-                                   .ready(PARTITION)
-                                   .await();
+            sealOffsets(0,
+                        99,
+                        LongStream.range(0, 100).boxed().toList());
+            sealOffsets(200,
+                        ringEarliest - 1,
+                        LongStream.range(200, ringEarliest).boxed().toList());
+            var result = EntityFold.entityFold(KEYSPACE, substrate).ready(PARTITION).await();
 
             assertThat(result.isFailure()).isTrue();
             result.onFailure(cause -> assertThat(cause).isInstanceOf(EntityLogError.FoldFailed.class));
@@ -266,24 +393,33 @@ class SealedHistoryRecoveryTest {
         /// that reaches the hole is refused as a failed fold naming the missing range, never served.
         @Test
         void read_refusesLoudly_whenAHoleSitsBetweenTheLowestSealedOffsetAndTheRing() {
-            sealOffsets(0, 99, LongStream.range(0, 100).boxed().toList());
-            sealOffsets(200, ringEarliest - 1, LongStream.range(200, ringEarliest).boxed().toList());
-
+            sealOffsets(0,
+                        99,
+                        LongStream.range(0, 100).boxed().toList());
+            sealOffsets(200,
+                        ringEarliest - 1,
+                        LongStream.range(200, ringEarliest).boxed().toList());
             assertThat(substrate.earliestRetainedOffset(KEYSPACE, PARTITION)).isZero();
-
             var read = substrate.read(KEYSPACE, PARTITION, 100, READ_BATCH).await();
 
             assertThat(read.isFailure()).isTrue();
             read.onFailure(cause -> assertThat(cause).isInstanceOf(EntityLogError.FoldFailed.class)
-                                                     .extracting(Cause::message)
-                                                     .asString()
-                                                     .contains("[100, 200)"));
+                                              .extracting(Cause::message)
+                                              .asString()
+                                              .contains("[100, 200)"));
         }
 
         /// A segment claiming `[start, end]` whose CONTENT is the given offsets, in the given order.
         private void sealOffsets(long start, long end, List<Long> offsets) {
             StorageSegmentSink.storageSegmentSink(storage, index)
-                              .seal(sealedSegment(STREAM, PARTITION, start, end, offsets.size(), 0L, 0L, serialize(offsets)))
+                              .seal(sealedSegment(STREAM,
+                                                  PARTITION,
+                                                  start,
+                                                  end,
+                                                  offsets.size(),
+                                                  0L,
+                                                  0L,
+                                                  serialize(offsets)))
                               .await()
                               .unwrap();
         }
@@ -303,7 +439,8 @@ class SealedHistoryRecoveryTest {
 
     private static long missingKeys(EntityFold fold) {
         return LongStream.range(0, RECORDS)
-                         .filter(offset -> !fold.get(PARTITION, key(offset))
+                         .filter(offset -> !fold.get(PARTITION,
+                                                     key(offset))
                                                 .map(state -> new String(state, StandardCharsets.UTF_8))
                                                 .map(value(offset)::equals)
                                                 .or(false))
@@ -326,6 +463,13 @@ class SealedHistoryRecoveryTest {
         }
     }
 
+    private StreamPartitionManager sealingManager(SegmentSealer sealer) {
+        return StreamPartitionManager.streamPartitionManager(MANAGER_BUDGET_BYTES,
+                                                             sealer,
+                                                             Option.none(),
+                                                             index::lastSealedOffset);
+    }
+
     private static void awaitAllSealed(SegmentSealer sealer) throws InterruptedException {
         var deadline = System.currentTimeMillis() + SEAL_WAIT_MILLIS;
 
@@ -343,9 +487,7 @@ class SealedHistoryRecoveryTest {
         var from = 0L;
 
         while (from <= head) {
-            var batch = substrate.read(KEYSPACE, PARTITION, from, READ_BATCH)
-                                 .await()
-                                 .unwrap();
+            var batch = substrate.read(KEYSPACE, PARTITION, from, READ_BATCH).await().unwrap();
 
             assertThat(batch).as("read at %d below head %d", from, head).isNotEmpty();
             batch.forEach(raw -> keys.add(EntityLogRecord.decode(raw).unwrap().key()));
@@ -356,7 +498,9 @@ class SealedHistoryRecoveryTest {
     }
 
     private static byte[] record(long offset) {
-        return EntityLogRecord.upsert(key(offset), value(offset).getBytes(StandardCharsets.UTF_8)).encode();
+        return EntityLogRecord.upsert(key(offset),
+                                      value(offset).getBytes(StandardCharsets.UTF_8))
+                              .encode();
     }
 
     private static String key(long offset) {
@@ -419,9 +563,8 @@ class SealedHistoryRecoveryTest {
         }
 
         private void sealOffThread(HeldSeal seal) {
-            Thread.ofVirtual()
-                  .start(() -> delegate.seal(seal.segment())
-                                       .onResult(seal.promise()::resolve));
+            Thread.ofVirtual().start(() -> delegate.seal(seal.segment())
+                                                   .onResult(seal.promise()::resolve));
         }
 
         private record HeldSeal(SealedSegment segment, Promise<Unit> promise) {}
