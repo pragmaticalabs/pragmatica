@@ -81,6 +81,8 @@ class ProjectionTest {
         // empty means LIVE.
         private final Map<Integer, Long> nextReplayOffset = new ConcurrentHashMap<>();
         private final Map<Integer, Long> replayThrough = new ConcurrentHashMap<>();
+        // The generation whose rewind has completed; cursor commits count only for it.
+        private long rewoundGeneration = -1L;
         // Runs at the first moment a new generation is visible to writers — after the reset returns.
         private volatile Runnable onNewGeneration = () -> {};
 
@@ -147,6 +149,23 @@ class ProjectionTest {
                 nextReplayOffset.remove(partition);
                 replayThrough.remove(partition);
             }
+        }
+
+        @Override
+        public synchronized Promise<Unit> replayRewound(long expectedGeneration) {
+            if (generation.get() == expectedGeneration) {
+                rewoundGeneration = expectedGeneration;
+            }
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public synchronized Promise<Unit> cursorCommitted(int partition, long committedCursor) {
+            if (rewoundGeneration == generation.get() && replayThrough.containsKey(partition)
+                && committedCursor > nextReplayOffset.get(partition)) {
+                advance(partition, committedCursor - 1);
+            }
+            return Promise.unitPromise();
         }
 
         @Override
@@ -758,6 +777,63 @@ class ProjectionTest {
                       .onFailure(cause -> fail("the partition passed its head and must be live: " + cause.message()));
 
             assertThat(store.data).containsEntry("a", 1).containsEntry("b", 1);
+        }
+
+        /// #1304 (a) — a replay offset DEAD-LETTERED by the runtime never reaches the fold, so exact
+        /// admission alone would hold the partition forever. The consumer commits its cursor past a
+        /// dead-lettered event (ConsumerRuntimeState.completeDeadLetter), and that commit is the positive
+        /// skip signal: the partition resumes at the committed cursor, the remaining offsets apply exactly
+        /// once, and it goes LIVE at its head.
+        @Test
+        void rebuilding_skipsADeadLetteredReplayOffset_onTheCommittedCursor() {
+            var store = new InMemoryStore();
+            var projection = rebuildable(store, REPLAY_TEN_TO_TWELVE).withClaims(new InMemoryClaims(), LEASE);
+
+            projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new OrderSeen("a"), at("msg-10", 10)).await().onFailure(cause -> fail(cause.message()));
+            // offset 11 is dead-lettered: it never reaches onEvent, and the runtime commits past it
+            projection.onCursorCommitted(0, 12).await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new OrderSeen("b"), at("msg-12", 12)).await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new OrderSeen("c"), at("msg-13", 13))
+                      .await()
+                      .onFailure(cause -> fail("the partition passed its head and must be live: " + cause.message()));
+
+            assertThat(store.data).containsEntry("a", 1).containsEntry("b", 1).containsEntry("c", 1);
+        }
+
+        /// When the dead-lettered offsets reach the head, the committed cursor passing the head is what
+        /// takes the partition LIVE — no replay write is left to do it.
+        @Test
+        void rebuilding_goesLive_whenTheCommittedCursorPassesTheHead() {
+            var store = new InMemoryStore();
+            var projection = rebuildable(store, REPLAY_TEN_TO_TWELVE).withClaims(new InMemoryClaims(), LEASE);
+
+            projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new OrderSeen("a"), at("msg-10", 10)).await().onFailure(cause -> fail(cause.message()));
+            projection.onCursorCommitted(0, 13).await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new OrderSeen("c"), at("msg-13", 13))
+                      .await()
+                      .onFailure(cause -> fail("the committed cursor passed the head; the partition must be live: "
+                                               + cause.message()));
+
+            assertThat(store.data).containsEntry("a", 1).containsEntry("c", 1);
+        }
+
+        /// A commit reported BEFORE the rebuild's rewind reflects the old cursor position, not replay
+        /// progress: honouring it would jump the replay over offsets it has not delivered — the loss the
+        /// exact rule exists to prevent. The store ignores cursor commits until the rewind is done.
+        @Test
+        void rebuilding_ignoresACursorCommitReportedBeforeTheRewind() {
+            var store = new InMemoryStore();
+            var projection = rebuildable(store, REPLAY_TEN_TO_TWELVE).withClaims(new InMemoryClaims(), LEASE);
+
+            store.onNewGeneration = () -> projection.onCursorCommitted(0, 50).await();
+            projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+            projection.onEvent(new OrderSeen("a"), at("msg-10", 10))
+                      .await()
+                      .onFailure(cause -> fail("the pre-rewind commit must not have skipped offset 10: " + cause.message()));
+
+            assertThat(store.data).containsEntry("a", 1);
         }
 
         /// #1304 round 2, X3 — LIVE is per partition. A partition that has replayed through its head admits

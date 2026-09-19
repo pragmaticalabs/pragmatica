@@ -335,8 +335,19 @@ public record Projection<S, T>(String name,
 
     private Promise<Unit> rebuildGuarded() {
         return replayCursor.capture()
-                           .ensureWith(store::resetToNewGeneration)
-                           .flatMap(replayCursor::rewind);
+                           .mapWith(store::resetToNewGeneration, Rebuild::new)
+                           .ensureWith(rebuild -> replayCursor.rewind(rebuild.range()))
+                           .flatMap(rebuild -> store.replayRewound(rebuild.generation()));
+    }
+
+    /// The range a rebuild replays and the generation it reset to.
+    private record Rebuild(ProjectionStore.ReplayRange range, long generation) {}
+
+    /// The runtime reports a committed cursor for this projection's consumer group (#1304): the
+    /// positive signal that lets a rebuilding partition skip a replay offset that was dead-lettered and
+    /// so never reached the fold. See [ProjectionStore#cursorCommitted].
+    public Promise<Unit> onCursorCommitted(int partition, long committedCursor) {
+        return store.cursorCommitted(partition, committedCursor);
     }
 
     public static <T> Builder<T> of(Topic<T> topic) {

@@ -46,6 +46,16 @@ import org.pragmatica.lang.Unit;
 /// once it passes its `throughOffset`, and a partition outside the range is live from the start; a live
 /// partition admits writes on the generation fence alone. Ordering decides admission, never timing.
 ///
+/// **Skipping what never reaches the fold (#1304, ruling (a)).** A replay offset the runtime
+/// dead-lettered — a poison fold, an undecodable event quarantined raw — never arrives as a write, so
+/// exact admission alone would hold its partition forever. The group's COMMITTED CURSOR is the positive
+/// skip signal: the consumer commits past an event only once it is acknowledged or dead-lettered, so
+/// [#cursorCommitted] moves the partition's next offset to `max(next, cursor)` and takes it LIVE once the
+/// cursor passes its head. It can never skip an offset the replay has not finished, which is what makes
+/// it safe where "accept any higher offset" is not: an early or zombie delivery would skip — and so lose —
+/// every replay offset below it. Commits count only after [#replayRewound]: a commit from before the
+/// rewind reflects the old cursor position, not replay progress.
+///
 /// **Generation slot durability:** the counter must survive both [#reset] and process restart with
 /// the same durability as the read model itself — it versions that model, and a model that
 /// outlives its version marker dedups or replays wrongly after recovery.
@@ -86,6 +96,13 @@ public interface ProjectionStore<S> {
     /// is current and its partition is REBUILDING at exactly that offset, advance the partition past it —
     /// and take it LIVE if that was its head — as an admitted write would; otherwise change nothing.
     Promise<Unit> markReplayed(long generation, DeliveryPosition position);
+    /// The rebuild's rewind for `generation` has completed: cursor commits reported from now on reflect
+    /// replay progress. A stale generation changes nothing.
+    Promise<Unit> replayRewound(long generation);
+    /// The group's committed cursor for `partition` — the next offset it will read. After the rewind and
+    /// while that partition is REBUILDING, advance its next replay offset to `max(next, committedCursor)`
+    /// and take it LIVE once the cursor passes its head; otherwise change nothing.
+    Promise<Unit> cursorCommitted(int partition, long committedCursor);
     /// Current generation; 0 when never reset.
     Promise<Long> generation();
 }
