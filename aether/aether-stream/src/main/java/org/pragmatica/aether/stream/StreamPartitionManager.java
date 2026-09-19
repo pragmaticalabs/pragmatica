@@ -1350,7 +1350,15 @@ public final class StreamPartitionManager implements AutoCloseable {
                               .toList();
 
         return Result.allOf(writes).map(writeSeqs -> new LoggedAppend(firstOffset + payloads.size() - 1,
-                                                                      wal.commit(writeSeqs.getLast())));
+                                                                      commitLast(wal, writeSeqs)));
+    }
+
+    /// One group commit covering the whole run (its last write covers every earlier one); an empty run
+    /// wrote nothing, so there is nothing to wait for.
+    private static Promise<Unit> commitLast(PartitionWal wal, List<Long> writeSeqs) {
+        return writeSeqs.isEmpty()
+               ? Promise.unitPromise()
+               : wal.commit(writeSeqs.getLast());
     }
 
     /// The configured [PartitionWal] for `(streamName, partition)`, or [Option#none] when no WAL base
