@@ -20,6 +20,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -379,6 +380,101 @@ class SegmentReaderTest {
                                                      RawEvent.rawEvent(1L, "b".getBytes(), 20L)));
 
             assertThat(decoded(serialized, 0, 1)).extracting(RawEvent::offset).containsExactly(0L);
+        }
+    }
+
+    /// Boundary sweeps over `(fromOffset, maxEvents)`, adopted from the round-3 review of PR #1291. The
+    /// `maxEvents` guard on the truncated-tail check must neither mis-report a VALID segment nor let a read
+    /// that stops on a full batch SKIP a truncated record and serve the next segment's offsets instead.
+    @Nested
+    class MaxEventsBoundary {
+        private static final int JUNK_TAIL_BYTES = 11;
+
+        /// No `(from, max)` over valid segments may report truncation: a well-formed segment ends exactly
+        /// on a record boundary, so nothing is left over once the loop has consumed it. Zero-length
+        /// payloads are included, since they are the shortest record a boundary can land on.
+        @Test
+        void readEvents_neverReportsTruncation_forAnyFromAndMaxOverValidSegments() {
+            sealValidSegments();
+
+            for (var from = 0L; from <= 4L; from++) {
+                for (var max = 1; max <= 7; max++) {
+                    assertSlice(from, max);
+                }
+            }
+        }
+
+        /// No `(from, max)` may read PAST a truncated tail into the next segment. Each read either fails
+        /// with [SegmentError.CorruptRecord] or returns a contiguous prefix that stops at the tail.
+        @Test
+        void readEvents_neverSkipsIntoTheNextSegment_forAnyFromAndMaxOverATruncatedTail() {
+            sealTruncatedTailThenHealthySegment();
+            var refusals = new AtomicInteger();
+
+            for (var from = 0L; from <= 3L; from++) {
+                for (var max = 1; max <= 7; max++) {
+                    assertStopsAtTheTail(from, max, refusals);
+                }
+            }
+
+            assertThat(refusals.get()).describedAs("non-vacuity: reads that reach the tail without filling"
+                                                   + " their batch must refuse, or this sweep asserts nothing")
+                                      .isPositive();
+        }
+
+        private void assertSlice(long from, int max) {
+            var expected = LongStream.rangeClosed(from, Math.min(4L, from + max - 1))
+                                     .boxed()
+                                     .toList();
+
+            reader.readEvents(STREAM, PARTITION, from, max)
+                  .await()
+                  .onFailure(cause -> fail("a valid segment must never report truncation — from=" + from
+                                           + " max=" + max + ": " + cause.message()))
+                  .onSuccess(list -> assertThat(list).extracting(RawEvent::offset)
+                                                     .describedAs("from=%d max=%d", from, max)
+                                                     .containsExactlyElementsOf(expected));
+        }
+
+        private void assertStopsAtTheTail(long from, int max, AtomicInteger refusals) {
+            reader.readEvents(STREAM, PARTITION, from, max)
+                  .await()
+                  .onFailure(cause -> refusals.incrementAndGet())
+                  .onFailure(cause -> assertThat(cause).describedAs("from=%d max=%d", from, max)
+                                                       .isInstanceOf(SegmentError.CorruptRecord.class))
+                  .onSuccess(list -> assertThat(list).extracting(RawEvent::offset)
+                                                     .describedAs("from=%d max=%d must stop at the truncated"
+                                                                  + " tail, not serve the next segment", from, max)
+                                                     .containsExactlyElementsOf(LongStream.rangeClosed(from,
+                                                                                                       Math.min(2L, from + max - 1))
+                                                                                          .boxed()
+                                                                                          .toList()));
+        }
+
+        /// Offsets 0-2 and 3-4, each segment ending in a zero-length payload.
+        private void sealValidSegments() {
+            var first = serializeEvents(List.of(RawEvent.rawEvent(0L, "a".getBytes(), 10L),
+                                                RawEvent.rawEvent(1L, "b".getBytes(), 20L),
+                                                RawEvent.rawEvent(2L, new byte[0], 30L)));
+            var second = serializeEvents(List.of(RawEvent.rawEvent(3L, "d".getBytes(), 40L),
+                                                 RawEvent.rawEvent(4L, new byte[0], 50L)));
+
+            sink.seal(sealedSegment(STREAM, PARTITION, 0, 2, 3, 10L, 30L, first)).await();
+            sink.seal(sealedSegment(STREAM, PARTITION, 3, 4, 2, 40L, 50L, second)).await();
+        }
+
+        /// Offsets 0-2 followed by junk too short to be a header, under metadata claiming through offset 3
+        /// — a segment whose last record was cut — and then a healthy segment holding 4-5.
+        private void sealTruncatedTailThenHealthySegment() {
+            var whole = serializeEvents(List.of(RawEvent.rawEvent(0L, "a".getBytes(), 10L),
+                                                RawEvent.rawEvent(1L, "b".getBytes(), 20L),
+                                                RawEvent.rawEvent(2L, "c".getBytes(), 30L)));
+            var truncated = Arrays.copyOf(whole, whole.length + JUNK_TAIL_BYTES);
+            var healthy = serializeEvents(List.of(RawEvent.rawEvent(4L, "e".getBytes(), 50L),
+                                                  RawEvent.rawEvent(5L, "f".getBytes(), 60L)));
+
+            sink.seal(sealedSegment(STREAM, PARTITION, 0, 3, 4, 10L, 40L, truncated)).await();
+            sink.seal(sealedSegment(STREAM, PARTITION, 4, 5, 2, 50L, 60L, healthy)).await();
         }
     }
 
