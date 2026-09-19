@@ -27,7 +27,8 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 /// only while its partition has a pending batch. Idle or released partitions cost nothing — no lock
 /// acquisition, no map entry. An `add` racing with the drain sees the accumulator retired and retries on
 /// a fresh one, so no event is lost to eviction. Every event is still flushed within `maxDelay` of its
-/// `add`, the same bound the former fixed-rate scan gave.
+/// `add`, the same bound the former fixed-rate scan gave. The trade: a lone event now waits the full
+/// `maxDelay` (mean latency up from about `maxDelay/2` under the scan); the bound is unchanged.
 public final class ReplicationBatcher implements AutoCloseable {
     static final int DEFAULT_MAX_EVENTS = 100;
     static final TimeSpan DEFAULT_MAX_DELAY = TimeSpan.timeSpan(1).millis();

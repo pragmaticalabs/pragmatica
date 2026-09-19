@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
@@ -198,6 +199,32 @@ class ReplicationBatcherTest {
             // Wait for time-based flush (50ms interval + margin)
             assertThat(latch.await(500, TimeUnit.MILLISECONDS)).isTrue();
             assertThat(sentMessages).hasSize(1);
+
+            batcher.close();
+        }
+
+        /// #1246 review N2: pins the documented `maxDelay` bound. A lone event is flushed by its batch's
+        /// one-shot at `maxDelay` — not immediately (lower bound) and not late (upper bound, with 3x margin
+        /// for a loaded box; a 5x-delayed one-shot fails it).
+        @Test
+        void scheduledFlush_loneEvent_sentWithinMaxDelayBound() throws InterruptedException {
+            var sentAt = new AtomicLong();
+            var latch = new CountDownLatch(1);
+            ReplicationTransport timingTransport = (_, _) -> {
+                sentAt.set(System.nanoTime());
+                latch.countDown();
+            };
+
+            batcher = replicationBatcher(timingTransport, registry, GOVERNOR, 1000, TimeSpan.timeSpan(200).millis());
+
+            var addedAt = System.nanoTime();
+            batcher.add(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
+
+            assertThat(latch.await(2, TimeUnit.SECONDS)).isTrue();
+
+            var elapsedMillis = TimeUnit.NANOSECONDS.toMillis(sentAt.get() - addedAt);
+
+            assertThat(elapsedMillis).isBetween(150L, 600L);
 
             batcher.close();
         }
