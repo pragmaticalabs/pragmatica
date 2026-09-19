@@ -167,7 +167,6 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private static final long INITIAL_MAX_DATA = 64_000_000;
     private static final long INITIAL_MAX_STREAM_DATA = 32_000_000;
     private static final long INITIAL_MAX_STREAMS = 64;
-    private static final int MAX_FRAME_LENGTH = 32 * 1024 * 1024;
 
     private final NodeId selfId;
     private final NodeAddress selfAddress;

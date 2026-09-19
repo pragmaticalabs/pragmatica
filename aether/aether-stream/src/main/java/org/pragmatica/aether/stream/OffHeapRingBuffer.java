@@ -458,8 +458,66 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                                    long[] timestamps,
                                                    Fn1<Result<T>, Long> inOrder) {
         synchronized (appendLock) {
-            return appendBatchLocked(payloads, timestamps).flatMap(inOrder);
+            return appendRunLocked(payloads, timestamps).flatMap(inOrder);
         }
+    }
+
+    /// Append `payloads` as ONE contiguous run, never worse than appending them one by one (#1287 review
+    /// K1). A run that fits the ring after growth goes in as one batch. A run larger than that — up to
+    /// the whole data region and beyond — is appended event by event under the same lock, each event
+    /// evicting exactly as a sequential append would, so the run is still contiguous. Only when some event
+    /// can never fit the allocation (a frozen ring) does the run refuse with
+    /// [StreamError.General#RUN_DOES_NOT_FIT], appending nothing, so the caller can give each event
+    /// the single-publish treatment instead.
+    private Result<Long> appendRunLocked(List<byte[]> payloads, long[] timestamps) {
+        var total = totalPayloadSize(payloads);
+
+        return total <= dataRegionSize
+               ? guardedAccess(() -> ensureGrownFor((int) total)).flatMap(_ -> appendRunGrown(payloads,
+                                                                                              timestamps,
+                                                                                              total))
+               : appendEachLocked(payloads, timestamps);
+    }
+
+    private Result<Long> appendRunGrown(List<byte[]> payloads, long[] timestamps, long total) {
+        return total <= allocatedDataBytes
+               ? appendBatchLocked(payloads, timestamps)
+               : appendEachLocked(payloads, timestamps);
+    }
+
+    /// Grows for the largest event first; the allocation never shrinks, so if the largest fits every
+    /// event does, and no append below can take the drop branch.
+    private Result<Long> appendEachLocked(List<byte[]> payloads, long[] timestamps) {
+        var largest = largestPayloadSize(payloads);
+
+        return guardedAccess(() -> ensureGrownFor(largest)).flatMap(_ -> appendEachIfEveryEventFits(payloads,
+                                                                                                    timestamps,
+                                                                                                    largest));
+    }
+
+    private Result<Long> appendEachIfEveryEventFits(List<byte[]> payloads, long[] timestamps, int largest) {
+        return largest <= allocatedDataBytes
+               ? appendEach(payloads, timestamps)
+               : StreamError.General.RUN_DOES_NOT_FIT.result();
+    }
+
+    private Result<Long> appendEach(List<byte[]> payloads, long[] timestamps) {
+        var last = success(rawHeadOffset());
+
+        for (int i = 0; i < payloads.size(); i++) {
+            var index = i;
+
+            last = last.flatMap(_ -> appendLocked(payloads.get(index), timestamps[index]));
+        }
+
+        return last;
+    }
+
+    private static int largestPayloadSize(List<byte[]> payloads) {
+        return payloads.stream()
+                       .mapToInt(payload -> payload.length)
+                       .max()
+                       .orElse(0);
     }
 
     private Result<Long> appendBatchLocked(List<byte[]> payloads, long[] timestamps) {

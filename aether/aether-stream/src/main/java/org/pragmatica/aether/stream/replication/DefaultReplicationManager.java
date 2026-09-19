@@ -12,6 +12,7 @@ import java.util.stream.IntStream;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.quic.QuicClusterServer;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -96,6 +97,11 @@ final class DefaultReplicationManager implements ReplicationManager {
     /// #1245: a contiguous run goes out as ONE `ReplicateEvents` message per replica (the receive handler
     /// already applies multi-record batches and acks their last offset). With a batcher wired, the run is
     /// handed to it event by event, as single publishes are.
+    /// Payload bytes per `ReplicateEvents` message (#1287 review K3): half the cluster transport's frame
+    /// limit ([QuicClusterServer#MAX_FRAME_LENGTH]). The other half is headroom for the message's own
+    /// encoding (offsets, timestamps, epoch, envelope); the fraction is a chosen margin, not a derived one.
+    static final long MAX_REPLICATE_PAYLOAD_BYTES = QuicClusterServer.MAX_FRAME_LENGTH / 2;
+
     @Contract
     @Override
     public void replicateEvents(String streamName,
@@ -223,6 +229,10 @@ final class DefaultReplicationManager implements ReplicationManager {
                       .collect(Collectors.toSet());
     }
 
+    /// #1287 review K3: one run is sent as consecutive chunks, each at most [#MAX_REPLICATE_PAYLOAD_BYTES]
+    /// of payload, so no message exceeds the cluster transport's frame limit. Chunks go out in offset
+    /// order; the receive handler verifies each chunk's `fromOffset`, and the owner still awaits one
+    /// cumulative ack on the run's last offset.
     private void sendToAllReplicas(List<NodeId> replicas,
                                    String streamName,
                                    int partition,
@@ -230,15 +240,38 @@ final class DefaultReplicationManager implements ReplicationManager {
                                    List<byte[]> payloads,
                                    List<Long> timestamps,
                                    Epoch ownerEpoch) {
-        var message = ReplicationMessage.ReplicateEvents.replicateEvents(governorId,
+        for (int start = 0; start < payloads.size();) {
+            var end = chunkEnd(payloads, start);
+
+            sendChunk(replicas,
+                      ReplicationMessage.ReplicateEvents.replicateEvents(governorId,
                                                                          streamName,
                                                                          partition,
-                                                                         fromOffset,
-                                                                         payloads,
-                                                                         timestamps,
-                                                                         ownerEpoch);
+                                                                         fromOffset + start,
+                                                                         List.copyOf(payloads.subList(start, end)),
+                                                                         List.copyOf(timestamps.subList(start, end)),
+                                                                         ownerEpoch));
+            start = end;
+        }
+    }
 
+    @Contract
+    private void sendChunk(List<NodeId> replicas, ReplicationMessage.ReplicateEvents message) {
         replicas.forEach(replica -> transport.send(replica, message));
+    }
+
+    /// Exclusive end of the chunk starting at `start`: as many events as fit the payload cap, and at least
+    /// one — a single event above the cap goes out alone, as every event did before batching.
+    private static int chunkEnd(List<byte[]> payloads, int start) {
+        var end = start + 1;
+        var bytes = (long) payloads.get(start).length;
+
+        while (end < payloads.size() && bytes + payloads.get(end).length <= MAX_REPLICATE_PAYLOAD_BYTES) {
+            bytes += payloads.get(end).length;
+            end++;
+        }
+
+        return end;
     }
 
     private Promise<Unit> registerPendingAck(String streamName,

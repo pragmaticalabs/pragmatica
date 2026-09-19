@@ -1269,7 +1269,38 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                      payloads,
                                                                                      timestamp,
                                                                                      ownerEpoch))
-                                 .flatMap(this::awaitDurable);
+                                 .flatMap(this::awaitDurable)
+                                 .fold(cause -> publishEachIfRunDoesNotFit(cause,
+                                                                           streamName,
+                                                                           partition,
+                                                                           payloads,
+                                                                           timestamp),
+                                       Result::success);
+    }
+
+    /// #1287 review K1. Not an absorbed failure: a run the ring cannot hold as one contiguous unit (an
+    /// event larger than the frozen ring can ever allocate) is published event by event instead, in
+    /// order, stopping at the first failure — so a batch is never worse than the single publishes it
+    /// replaces, and the oversized event gets exactly a single publish's outcome (#1233). Any other
+    /// failure propagates unchanged.
+    private Result<Long> publishEachIfRunDoesNotFit(Cause cause,
+                                                    String streamName,
+                                                    int partition,
+                                                    List<byte[]> payloads,
+                                                    long timestamp) {
+        return cause == StreamError.General.RUN_DOES_NOT_FIT
+               ? publishEachInOrder(streamName, partition, payloads, timestamp)
+               : cause.result();
+    }
+
+    private Result<Long> publishEachInOrder(String streamName, int partition, List<byte[]> payloads, long timestamp) {
+        Result<Long> last = success(-1L);
+
+        for (var payload : payloads) {
+            last = last.flatMap(_ -> publishLocal(streamName, partition, payload, timestamp));
+        }
+
+        return last;
     }
 
     private Result<LoggedAppend> publishBatchInSection(StreamEntry entry,
