@@ -124,12 +124,11 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
         var timestamp = System.currentTimeMillis();
 
         return switch (consistencyMode) {
-            case EVENTUAL -> publishEventual(partition, bytes, timestamp);
+            // #964 / #1262: UNKNOWN is NOT decided here. It takes the shared write path, whose single
+            // consistency guard (StreamPartitionManager#ensureWritableConsistency, reading the stream's
+            // committed config) refuses it with UNREADABLE_CONSISTENCY_MODE for every entry point alike.
+            case EVENTUAL, UNKNOWN -> publishEventual(partition, bytes, timestamp);
             case STRONG -> publishStrong(partition, bytes, timestamp);
-            // #964, fail closed: EVENTUAL and STRONG differ in what the caller is promised on
-            // acknowledgement, so guessing either one is a durability claim this node cannot back.
-            // Refusing hands the choice back to the caller with a diagnosable cause.
-            case UNKNOWN -> StreamError.General.UNREADABLE_CONSISTENCY_MODE.promise();
         };
     }
 
@@ -142,11 +141,8 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
         if (consistencyMode == ConsistencyMode.STRONG) {
             return publishBatchStrong(events);
         }
-        // #964: the batch path tested only for STRONG, so an UNKNOWN mode would have taken the
-        // EVENTUAL branch by default -- the same fail-open the single-event switch above refuses.
-        if (consistencyMode == ConsistencyMode.UNKNOWN) {
-            return StreamError.General.UNREADABLE_CONSISTENCY_MODE.promise();
-        }
+        // #964: an UNKNOWN mode takes the EVENTUAL batch path, where every event reaches the shared write
+        // router and is refused there — the same single guard the single-event path relies on.
 
         return publishBatchEventual(events);
     }
