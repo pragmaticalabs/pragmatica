@@ -105,10 +105,11 @@ class HonestPublishOutcomeTest {
 
                 var result = publisher.publish("order-1").await();
 
-                assertThat(result.isFailure()).isTrue();
-                result.onFailure(cause -> assertThat(cause).isEqualTo(ReplicationError.General.NOT_ENOUGH_REPLICAS));
-                // Soft, so a regression reports BOTH halves of the log rather than stopping at the ring.
+                // Soft, so a regression reports the cause AND both halves of the log, rather than stopping
+                // at the first mismatch — the WAL half is otherwise never shown able to fail.
                 SoftAssertions.assertSoftly(softly -> {
+                    softly.assertThat(result.isFailure()).isTrue();
+                    result.onFailure(cause -> softly.assertThat(cause).isEqualTo(ReplicationError.General.NOT_ENOUGH_REPLICAS));
                     softly.assertThat(ringHead(manager)).as("a failed publish must not be readable from the ring")
                                                         .isEqualTo(NO_OFFSET);
                     softly.assertThat(walLastOffset()).as("a failed publish must not be in the WAL")
