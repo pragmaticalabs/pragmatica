@@ -5,6 +5,7 @@
 package org.pragmatica.aether.api.routes;
 
 import java.lang.reflect.Proxy;
+import java.time.Instant;
 import java.util.List;
 
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
@@ -15,12 +16,15 @@ import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.StreamEntityLogSubstrate;
 import org.pragmatica.aether.resource.DurableTopicSpec;
+import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
+import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamWriteRouter;
@@ -128,6 +132,71 @@ class StreamRoutesReservedPrefixTest {
 
             assertThat(manager.streamInfo("topic:foo").isPresent()).isTrue();
             assertThat(manager.streamInfo("topic:foo.dlq").isPresent()).isTrue();
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// Review F2: a batch publish fans out per event and aggregates with `Result.allOf`, whose composite
+    /// cause is not `HttpStatusAware` — the reserved-name refusal left the wire as 500. It must be the same
+    /// 400 `ReservedStreamName` the single publish answers.
+    @Test
+    void catalogPublishBatch_reservedNamespaceWithoutCommittedConfig_isRefusedWith400() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+
+        try {
+            catalogRoutes(manager, StreamNamespacesService.inMemory())
+                .publishBatch("topic",
+                              "foo",
+                              "1.0.0",
+                              "publish-batch",
+                              new StreamApiRoutes.PublishRequest[]{new StreamApiRoutes.PublishRequest("a", null),
+                                                                   new StreamApiRoutes.PublishRequest("b", null)})
+                .await()
+                .onSuccess(_ -> fail("a batch publish must not mint 'topic:foo:1.0.0'"))
+                .onFailure(cause -> assertReserved(cause, "topic:foo:1.0.0", "topic:"));
+
+            assertThat(manager.streamInfo("topic:foo:1.0.0").isEmpty()).isTrue();
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// Review F3/F4: answering `200 "exists"` for a reserved name that already exists is an existence
+    /// oracle for internally provisioned streams. The refusal runs BEFORE the existence check.
+    @Test
+    void createStream_existingReservedName_isRefusedRatherThanReportedAsExisting() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+
+        try {
+            manager.createStream(StreamConfig.streamConfig("topic:foo"))
+                   .onFailure(cause -> fail("internal creation must succeed: " + cause.message()));
+
+            legacyRoutes(manager).createStream(new StreamCreateRequest("topic:foo", 4))
+                                 .onSuccess(response -> fail("an existing reserved name must be refused, not reported as '"
+                                                             + response.status() + "'"))
+                                 .onFailure(cause -> assertReserved(cause, "topic:foo", "topic:"));
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
+    void catalogCreate_existingReservedAddress_isRefusedRatherThanReportedAsExisting() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+        var namespacesService = StreamNamespacesService.inMemory();
+        var address = ResourceAddress.resourceAddress("topic", "foo", "1.0.0").unwrap();
+
+        try {
+            namespacesService.registry()
+                             .register(StreamRegistryEntry.operator(address, RetentionPolicy.retentionPolicy(), Instant.now()))
+                             .onFailure(cause -> fail("seeding the catalog must succeed: " + cause.message()));
+
+            catalogRoutes(manager, namespacesService)
+                .createStream("topic", "foo", "1.0.0", new StreamApiRoutes.CreateRequest(null))
+                .onSuccess(response -> fail("an existing reserved address must be refused, not reported as '"
+                                            + response.status() + "'"))
+                .onFailure(cause -> assertReserved(cause, "topic:foo:1.0.0", "topic:"));
         } finally {
             manager.close();
         }
