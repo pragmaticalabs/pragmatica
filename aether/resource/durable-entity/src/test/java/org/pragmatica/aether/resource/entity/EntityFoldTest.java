@@ -471,6 +471,30 @@ class EntityFoldTest {
             assertThat(text(fold, "a")).isEqualTo("1");
             assertThat(text(fold, "b")).isEqualTo("2");
         }
+
+        /// The guard's per-key offsets must not become a per-key leak: an entry is dropped as soon as the
+        /// watermark covers it, and an entry whose offset PARKED is swept by the next checkpoint.
+        @Test
+        void apply_retainsNoPerKeyOffset_onceTheWatermarkCoversIt() {
+            var fold = readyFold(new FakeSubstrate());
+            var keys = 1000;
+
+            for (var i = 0; i < keys; i++) {
+                fold.apply(PARTITION, i, EntityLogRecord.upsert("k" + i, bytes("v")));
+            }
+
+            assertThat(fold.trackedKeyOffsets(PARTITION)).as("in-order applies are covered at once").isZero();
+
+            fold.apply(PARTITION, keys + 1, EntityLogRecord.upsert("parked", bytes("v")));
+            fold.apply(PARTITION, keys, EntityLogRecord.upsert("gap", bytes("v")));
+
+            assertThat(fold.trackedKeyOffsets(PARTITION)).as("the parked offset was not covered when applied")
+                                                         .isEqualTo(1);
+
+            fold.checkpointCandidate(PARTITION);
+
+            assertThat(fold.trackedKeyOffsets(PARTITION)).as("the checkpoint sweeps it once covered").isZero();
+        }
     }
 
     private static EntityFold readyFold(FakeSubstrate substrate) {
