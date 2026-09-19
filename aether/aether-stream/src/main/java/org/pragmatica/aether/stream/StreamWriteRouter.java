@@ -59,7 +59,16 @@ public final class StreamWriteRouter {
     /// local append only when the owner is unknown or no forward client is wired (bootstrap / minimal
     /// runtime), matching the read router's soft-fail-to-local posture. The local append is admitted only
     /// for the committed owner; a refusal in the ownership-lag window redirects to that owner.
+    ///
+    /// **STRONG (#1262):** a stream declared `STRONG` is refused with `CONSENSUS_PATH_UNAVAILABLE` before
+    /// routing — see {@link StreamPartitionManager#ensureConsensusPathNotRequired}.
     public Promise<Long> publish(String streamName, int partition, byte[] payload, long timestamp) {
+        return partitionManager.ensureConsensusPathNotRequired(streamName)
+                               .async()
+                               .flatMap(_ -> routePublish(streamName, partition, payload, timestamp));
+    }
+
+    private Promise<Long> routePublish(String streamName, int partition, byte[] payload, long timestamp) {
         return ownerResolver.resolve(streamName, partition)
                             .filter(owner -> !owner.equals(selfNodeId))
                             .flatMap(owner -> forwardTo(owner, streamName, partition, payload, timestamp))

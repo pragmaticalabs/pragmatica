@@ -181,7 +181,7 @@ Two kinds of item:
 | D8 | `:180` (row 139) | "Sync replication ack … Complete" | See **C1** — Partial / unsatisfiable. |
 | D9 | `:177` (row 146) | "cursor persistence (push + pull)" | "in-RAM cursors with periodic checkpoint; durable persistence depends on the (unwired) cursor-store overload." |
 | D10 | `:177` | "zero-copy MemorySegment reads" | "zero-copy **consumer-slice read**; the producer path copies into off-heap." |
-| D11 | `:318` (row 192) | "Stream consensus publish path \| Complete" | "STRONG/consensus publish implemented + unit-tested; **not wired** into the node publish path — verify before claiming Complete." |
+| D11 | `:318` (row 192) | "Stream consensus publish path \| Complete" | "STRONG/consensus publish implemented + unit-tested; **not wired** into the node publish path — verify before claiming Complete." **Applied 2026-09-19 (#1262): row 192 now reads Planned, and STRONG fails closed on every write path.** |
 | D12 | `:311/185/317` | "EvictionListener is NOOP / `CursorStore` never constructed" | **Stale under-claim**: `AetherNode.java:2622-2632` now constructs the segment sink + cursor store + default-on WAL (Phase-A wired; these rows predate it). |
 | D13 | `:140` (row 217, durable-entity) | "8 prod classes … HA-oriented" | "process-local in-memory (single-replica, **not** HA, **not** restart-durable); module **not yet a node dependency** — no deployed slice injects it; reachable only as a library." |
 

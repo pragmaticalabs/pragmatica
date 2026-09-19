@@ -1241,6 +1241,23 @@ public final class StreamPartitionManager implements AutoCloseable {
         return replicationManager.awaitReplication(streamName, partition, offset, minAcks);
     }
 
+    /// #1262 fail-closed guard for the write entry points that have no consensus path: a stream declared
+    /// `STRONG` promises consensus-ordered acknowledgement, and `ConsensusPublishPath` has no production
+    /// caller, so a write would land as EVENTUAL — a weaker guarantee than declared. Refused with
+    /// [StreamError.General#CONSENSUS_PATH_UNAVAILABLE], the cause `DefaultStreamPublisher` already uses. An
+    /// unknown stream passes; the append path reports it. `StreamResourceValidator` rejects STRONG at deploy
+    /// time first, so this is defence in depth for streams created by other routes.
+    public Result<Unit> ensureConsensusPathNotRequired(String streamName) {
+        return option(streams.get(streamName)).filter(StreamPartitionManager::declaresStrong)
+                     .map(_ -> StreamError.General.CONSENSUS_PATH_UNAVAILABLE.<Unit> result())
+                     .or(Result::unitResult);
+    }
+
+    private static boolean declaresStrong(StreamEntry entry) {
+        return entry.config()
+                    .consistencyMode() == ConsistencyMode.STRONG;
+    }
+
     /// The configured `min-sync-replicas` write-ack requirement for `streamName` (in-sync count incl.
     /// owner), or `0` when the stream is unknown. `<= 1` means no peer-ack barrier; `>= 2` means a
     /// publish must await `minSyncReplicas - 1` distinct non-self replica acks. Read straight from the
