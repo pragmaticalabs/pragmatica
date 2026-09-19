@@ -473,6 +473,56 @@ class ProjectionTest {
                                   .containsEntry("a", 1);
         }
 
+        /// #1304 (review R5) — a live event whose write lands between the rebuild's generation bump and
+        /// its reset is keyed and admitted under the NEW generation, then wiped by the reset while its
+        /// claim stays DONE, so the replay is suppressed and the event is silently missing.
+        @Test
+        void rebuild_liveWriteBetweenBumpAndReset_isNotLost() {
+            var store = new InMemoryStore();
+            var projection = rebuildingProjection(store);
+            var event = new OrderSeen("a");
+
+            store.bumpGeneration().await();
+            projection.onEvent(event, FIRST).await();
+            store.reset().await();
+            projection.onEvent(event, FIRST).await();
+
+            assertThat(store.data).describedAs("the event must be in the rebuilt model exactly once")
+                                  .containsEntry("a", 1);
+        }
+
+        /// #1304 (review R6) — the StaleGeneration attempt's own RETRY landing between bump and reset
+        /// meets the same fate as R5: admitted at the new generation, wiped, and suppressing the replay.
+        @Test
+        void rebuild_staleGenerationRetryBetweenBumpAndReset_isNotLost() {
+            var store = new InMemoryStore();
+            var projection = rebuildingProjection(store);
+            var gate = Promise.<Unit> promise();
+            var event = new OrderSeen("a");
+
+            store.writeGate = gate;
+
+            var inFlight = projection.onEvent(event, FIRST);
+
+            store.bumpGeneration().await();
+            gate.succeed(Unit.unit());
+            inFlight.await();
+            store.writeGate = Promise.unitPromise();
+            projection.onEvent(event, FIRST).await();
+            store.reset().await();
+            projection.onEvent(event, FIRST).await();
+
+            assertThat(store.data).describedAs("the retried event must be in the rebuilt model exactly once")
+                                  .containsEntry("a", 1);
+        }
+
+        private static Projection<Integer, OrderSeen> rebuildingProjection(InMemoryStore store) {
+            return Projection.of(TOPIC)
+                             .into(store, OrderSeen::orderId)
+                             .apply("orders-seen", (current, event) -> current.or(0) + 1, Promise::unitPromise)
+                             .withClaims(new InMemoryClaims(), LEASE);
+        }
+
         /// A negative lease is refused the same way — the check is `> 0`, not `!= 0`.
         @Test
         void negativeLease_isRefused() {
