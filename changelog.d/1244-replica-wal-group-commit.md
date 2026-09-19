@@ -7,16 +7,17 @@
   batch now costs one fsync, and replay order equals offset order.
   `[mechanism: frames are written in-section and the barrier commits the latest write sequence once; pinned
   in one JVM by ReplicaWalGroupCommitTest]`
-- **Every catch-up run commits what it re-appended**, exactly once and never per record, even on a quiet
-  partition that receives no later live batch. A `PartitionBackfill` run commits **before** it marks the
-  replica CAUGHT_UP and acks the owner; a failed commit fails the run, and the replica stays SYNCING.
-  Failover replay from sealed segments (`GovernorFailoverHandler`) commits after each replayed range, and
-  `FailoverRecovery` commits after each fetched range.
-  `[mechanism: each run awaits syncReplicated before completing; pinned against a real WAL by
+- **Backfill commits before it promotes.** Replica frames no longer carry their own fsync, so a
+  `PartitionBackfill` run commits what it applied, exactly once and never per record, **before** it
+  marks the replica CAUGHT_UP and acks the owner. This holds even on a quiet partition that receives no
+  later live batch. A failed commit fails the run, and the replica stays SYNCING. (The failover replay
+  paths are exempt by CTO waiver: `FailoverRecovery` has no production caller, and `GovernorFailoverHandler`
+  replays already-sealed segments and never acks.)
+  `[mechanism: the run awaits syncReplicated before promote; pinned against a real WAL's fsync counter by
   CatchUpWalDurabilityTest and PartitionBackfillDurabilityTest]`
-- A failed replica frame write still stops acks for that partition: the failure is sticky against later
-  writes to the same WAL. A rebuilt partition, with a new WAL instance, starts clean; previously its
-  predecessor's failure poisoned it until restart.
+- A failed replica frame write or fsync still stops acks for that partition, because it fail-stops that
+  WAL. The latest-write entry is forgotten when its WAL is released, so a rebuilt partition's first
+  barrier never targets the closed WAL. Previously the per-key chain stayed poisoned until restart.
 - `[unverified: live replication sends one record per ReplicateEvents message (#263), so each message
   still pays one barrier; batching fsyncs across back-to-back messages depends on group-commit timing and
   is not bounded by a test]`
