@@ -37,6 +37,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -235,7 +236,8 @@ public interface StreamConsumerManager {
                                        ownership,
                                        placement,
                                        self,
-                                       topicGroups);
+                                       topicGroups,
+                                       ManagerState.HANDLER_TIMEOUT);
 
         registry.setChangeListener(manager::onDeclarationChange);
 
@@ -246,6 +248,13 @@ public interface StreamConsumerManager {
         private static final Logger log = LoggerFactory.getLogger(StreamConsumerManager.class);
 
         private static final TypeToken<Unit> UNIT_TYPE_TOKEN = new TypeToken<>() {};
+        /// #1238: bound on one handler invocation. The consumer runtime runs ONE serial delivery loop per
+        /// (group, partition), so a handler that never resolves would hold that partition forever; a
+        /// timed-out invocation is a delivery FAILURE and goes through the group's error strategy (retry,
+        /// then dead-letter). 30s is the value the deleted `StreamConsumerAdapter` used (#577); no
+        /// configuration surface for it exists. [design intent — unverified: not derived from a measured
+        /// handler-latency distribution.]
+        static final TimeSpan HANDLER_TIMEOUT = TimeSpan.timeSpan(30).seconds();
 
         private final StreamConsumerRegistry registry;
         private final StreamConsumerRuntime runtime;
@@ -256,6 +265,7 @@ public interface StreamConsumerManager {
         private final SlicePlacement placement;
         private final NodeId self;
         private final TopicGroupDeclarationSource topicGroups;
+        private final TimeSpan handlerTimeout;
         private final Map<SubscriptionKey, ConsumerDeclaration> active = new ConcurrentHashMap<>();
         private final Map<String, Diagnosis> diagnoses = new ConcurrentHashMap<>();
 
@@ -267,7 +277,8 @@ public interface StreamConsumerManager {
                      PartitionOwnership ownership,
                      SlicePlacement placement,
                      NodeId self,
-                     TopicGroupDeclarationSource topicGroups) {
+                     TopicGroupDeclarationSource topicGroups,
+                     TimeSpan handlerTimeout) {
             this.registry = registry;
             this.runtime = runtime;
             this.invoker = invoker;
@@ -277,6 +288,7 @@ public interface StreamConsumerManager {
             this.placement = placement;
             this.self = self;
             this.topicGroups = topicGroups;
+            this.handlerTimeout = handlerTimeout;
         }
 
         private void onDeclarationChange(Object key, Option<ConsumerDeclaration> declaration) {
@@ -653,6 +665,7 @@ public interface StreamConsumerManager {
                                        declaration.methodName(),
                                        payloadFor(declaration, event),
                                        UNIT_TYPE_TOKEN)
+                          .timeout(handlerTimeout)
                           .mapToUnit();
         }
 

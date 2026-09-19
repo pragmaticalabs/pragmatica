@@ -15,12 +15,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.LongStream;
 
+import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.slice.ConsumerConfig.ProcessingMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.DeadLetterHandler.DeadLetterEntry;
+import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -1037,6 +1040,110 @@ class StreamConsumerRuntimeTest {
             latch.countDown();
 
             return Promise.unitPromise();
+        }
+    }
+
+    /// #1238 [unverified] item, traced: a ring released on role loss (`completeRelease` -> `ring.close()`,
+    /// which clears the append listeners) leaves a consumer that stays assigned here with neither a
+    /// listener nor a poller. The periodic attachment check must notice and fall back to polling.
+    @Nested
+    class RingReleasedUnderConsumer {
+        private static final long REMOTE_HEAD_EXCLUSIVE = 3L;
+
+        @Test
+        void revalidatePushAttachments_fallsBackToPolling_whenTheRingIsReleased() throws Exception {
+            var releasing = streamPartitionManager(64 * 1024 * 1024L);
+            var role = new AtomicReference<>(Role.OWNER);
+            var delivered = new CopyOnWriteArrayList<Long>();
+            var consumer = new ConsumerRuntimeState(releasing,
+                                                    DeadLetterHandler.deadLetterHandler(),
+                                                    none(),
+                                                    none(),
+                                                    (stream, partition, from, max) -> localOrRemote(releasing,
+                                                                                                    stream,
+                                                                                                    partition,
+                                                                                                    from,
+                                                                                                    max));
+
+            try {
+                releasing.placementRoleSupplier((_, _) -> role.get());
+                releasing.clusterSizeSupplier(() -> 3);
+                releasing.replicaCatchupSource((_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(3, true));
+                releasing.ownerReleaseGuard((_, _) -> true);
+                releasing.createStream(singlePartition("s"))
+                         .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("create should succeed"));
+                consumer.subscribe("s",
+                                   0,
+                                   ConsumerConfig.consumerConfig("group-1"),
+                                   (offset, payload, ts) -> record(delivered, offset),
+                                   StreamConsumerRuntime.IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED);
+                releasing.publishLocal("s", 0, "local-0".getBytes(UTF_8), 1000L);
+                awaitSize(delivered, 1);
+                assertThat(delivered).describedAs("push delivery from the local ring").containsExactly(0L);
+
+                role.set(Role.NONE);
+                releasing.reconcileReshuffle();
+                releasing.reconcileReshuffle();
+                releasing.reconcileReshuffle();
+                assertThat(releasing.partitionBuffer("s", 0).isPresent()).describedAs("ring released on role loss")
+                          .isFalse();
+                Thread.sleep(300);
+                assertThat(delivered).describedAs("the defect state: listener cleared by close, no poller — nothing moves")
+                          .containsExactly(0L);
+
+                consumer.revalidatePushAttachments();
+                awaitSize(delivered, 3);
+                assertThat(delivered).describedAs("the consumer falls back to polling and reads through the reader")
+                          .containsExactly(0L, 1L, 2L);
+            } finally {
+                consumer.close();
+                releasing.close();
+            }
+        }
+
+        private static StreamConfig singlePartition(String name) {
+            return StreamConfig.streamConfig(name,
+                                             1,
+                                             RetentionPolicy.retentionPolicy(100, 64 * 1024L, 3_600_000L),
+                                             "latest",
+                                             1_048_576L,
+                                             ConsistencyMode.EVENTUAL,
+                                             1,
+                                             0,
+                                             StreamCompression.NONE,
+                                             none());
+        }
+
+        /// Stands in for the node's routed reader: local while the ring is here, else the owner's log
+        /// (offsets `from` .. [#REMOTE_HEAD_EXCLUSIVE]).
+        private static Promise<List<OffHeapRingBuffer.RawEvent>> localOrRemote(StreamPartitionManager local,
+                                                                                String stream,
+                                                                                int partition,
+                                                                                long from,
+                                                                                int max) {
+            if (local.partitionBuffer(stream, partition).isPresent()) {
+                return local.readLocal(stream, partition, from, max).async();
+            }
+
+            return Promise.success(LongStream.range(from, REMOTE_HEAD_EXCLUSIVE)
+                                             .mapToObj(offset -> new OffHeapRingBuffer.RawEvent(offset,
+                                                                                                ("remote-" + offset).getBytes(UTF_8),
+                                                                                                0L))
+                                             .toList());
+        }
+
+        private static Promise<Unit> record(List<Long> delivered, long offset) {
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+
+        private static void awaitSize(List<Long> delivered, int size) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + 2_000;
+
+            while (delivered.size() < size && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
         }
     }
 

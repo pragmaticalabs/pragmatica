@@ -109,7 +109,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         this.cursorStore = cursorStore;
         this.transactionalCommit = transactionalCommit;
         this.reader = reader;
-        this.idleConsumerChecker = SharedScheduler.scheduleAtFixedRate(this::reapIdleConsumers,
+        this.idleConsumerChecker = SharedScheduler.scheduleAtFixedRate(this::periodicConsumerCheck,
                                                                        TimeSpan.timeSpan(IDLE_CHECK_INTERVAL_MS).millis());
     }
 
@@ -315,8 +315,47 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// the bound check and the commit's own resolution).
     private record TrackedCommit(ConsumerKey key, ConsumerState state, Promise<Unit> commit, AtomicBoolean reported) {}
 
-    private void reapIdleConsumers() {
+    @Contract
+    private void periodicConsumerCheck() {
         reapIdleConsumers(System.currentTimeMillis());
+        revalidatePushAttachments();
+    }
+
+    /// #1238: a push consumer is driven only by its ring's append listener, and releasing that ring on
+    /// role loss (`StreamPartitionManager.completeRelease` -> `OffHeapRingBuffer.close`, which clears
+    /// every listener) does not detach the consumer — the assignment can keep it here (the HRW pick over
+    /// slice-bearing nodes does not depend on this node's replica role). Left alone it has neither a
+    /// listener nor a poller and never delivers again. This check re-attaches any consumer whose ring is
+    /// no longer the partition's current one: to the new ring if it re-materialized, else to the poll
+    /// loop, whose reader forwards to the owner. Runs on the idle-check tick, so recovery is bounded by
+    /// [#IDLE_CHECK_INTERVAL_MS]. Package-private seam for [StreamConsumerRuntimeTest].
+    @Contract
+    void revalidatePushAttachments() {
+        if (closed.get()) {
+            return;
+        }
+
+        consumers.forEach(this::reattachIfRingReplaced);
+    }
+
+    private void reattachIfRingReplaced(ConsumerKey key, ConsumerState state) {
+        if (state.isCancelled() || state.pushBuffer().isEmpty() || attachedToCurrentRing(key, state)) {
+            return;
+        }
+
+        LOG.log(System.Logger.Level.INFO,
+                "Partition ring for {0}[{1}] was released under consumer group {2}; re-attaching",
+                key.streamName(),
+                key.partition(),
+                key.groupId());
+        removePushListener(key, state);
+        subscribePushOrPoll(key, state);
+    }
+
+    private boolean attachedToCurrentRing(ConsumerKey key, ConsumerState state) {
+        return partitionManager.partitionBuffer(key.streamName(), key.partition())
+                               .flatMap(current -> state.pushBuffer().filter(attached -> attached == current))
+                               .isPresent();
     }
 
     /// Time-injected seam: the reap threshold is 60s, so a test that waited for wall-clock would be
@@ -390,18 +429,24 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                         .onEmpty(() -> scheduleNextPoll(key, state));
     }
 
+    /// #1238: the listener only reports FUTURE appends, so the loop is kicked once right after it is
+    /// installed — events already in the ring (a restart resuming behind the head, a warm-up event
+    /// published before attach) are delivered now instead of waiting for the next append.
     private void registerPushListener(OffHeapRingBuffer buffer, ConsumerKey key, ConsumerState state) {
         LongConsumer listener = _ -> onAppend(key, state);
 
-        state.pushListener(listener);
+        state.pushAttachment(buffer, listener);
         buffer.addAppendListener(listener);
+        requestDrain(key, state);
     }
 
+    /// Detaches from the ring the listener was REGISTERED on, not whatever ring the partition resolves
+    /// to now — after a release and re-materialization those differ (#1238).
     private void removePushListener(ConsumerKey key, ConsumerState state) {
-        state.pushListener()
-             .onPresent(listener -> partitionManager.partitionBuffer(key.streamName(),
-                                                                     key.partition())
-                                                    .onPresent(buffer -> buffer.removeAppendListener(listener)));
+        state.pushBuffer()
+             .onPresent(buffer -> state.pushListener()
+                                       .onPresent(buffer::removeAppendListener));
+        state.clearPushAttachment();
     }
 
     private void checkpointIfNeeded(ConsumerKey key, ConsumerState state) {
@@ -498,34 +543,74 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         state.scheduledFuture(future);
     }
 
-    /// The scheduled poll loop is SERIAL: the next poll is scheduled only once the current cycle —
-    /// read AND delivery — has completed.
-    ///
-    /// The previous shape rescheduled eagerly, so a second poll could read from a cursor the first poll
-    /// had not yet advanced and re-deliver the same events. That was harmless while every read was a
-    /// synchronous local one, but it becomes a duplicate generator the moment a consumer assigned to a
-    /// non-owner node reads THROUGH the owner (#535): those reads take a network round trip, during
-    /// which the eager 1ms reschedule would stack further reads on the same offset.
+    /// Poll-mode tick: a TRIGGER for the consumer's one delivery loop ([#requestDrain]), then the next
+    /// tick. Reads cannot stack on one offset — the #535 hazard of a routed read's network round trip —
+    /// because a tick that lands while a pass is running only marks the loop dirty (#1238).
     @Contract
     private void pollAndReschedule(ConsumerKey key, ConsumerState state) {
-        pollCycle(key, state).onFailure(cause -> logPollFailure(key, cause)).onResult(_ -> scheduleNextPoll(key, state));
+        requestDrain(key, state);
+        scheduleNextPoll(key, state);
     }
 
-    /// Push-listener entry point. An append notification is fire-and-forget by construction — the ring
-    /// buffer hands out a `LongConsumer` — so the cycle's outcome has no caller to return to and is
-    /// logged instead. Only reachable when the ring IS local, where the read resolves without I/O.
+    /// Push-listener entry point, run synchronously on the APPENDING thread. It only requests a drain; a
+    /// pass already running for this consumer picks the new event up instead of a second cycle starting
+    /// beside it (#1238).
     @Contract
     private void onAppend(ConsumerKey key, ConsumerState state) {
-        pollCycle(key, state).onFailure(cause -> logPollFailure(key, cause));
+        requestDrain(key, state);
+    }
+
+    /// #1238: the single entry to the consumer's delivery loop — push notifications, poll ticks, subscribe,
+    /// and the release of a retry or dead-letter hold all come through here. `dirty` records that there
+    /// may be something new to read; only the caller that flips `running` false->true starts a pass, so
+    /// at most one pass per (group, partition) runs at any instant and nothing ever delivers one offset
+    /// twice concurrently.
+    @Contract
+    private void requestDrain(ConsumerKey key, ConsumerState state) {
+        state.markDirty();
+        if (state.tryStartDrain()) {
+            drainPass(key, state);
+        }
+    }
+
+    /// One pass of the loop. `dirty` is cleared BEFORE the read, so an append that lands after the read
+    /// re-arms it and [#afterDrainPass] runs another pass rather than stranding that event. The
+    /// continuation is an `onResult` handler, which runs on another thread — a fresh stack per pass, so
+    /// draining an arbitrarily deep backlog cannot grow the stack.
+    @Contract
+    private void drainPass(ConsumerKey key, ConsumerState state) {
+        state.clearDirty();
+        pollCycle(key, state).onFailure(cause -> logPollFailure(key, cause))
+                             .onResult(result -> afterDrainPass(key, state, result.or(false)));
+    }
+
+    /// Repeat while the read came back full (more is waiting behind it — the ring notifies ONCE per
+    /// `appendBatch`) or while an append arrived during the pass; otherwise release the loop. The
+    /// re-check of `dirty` after releasing closes the window in which an append saw `running` still set
+    /// and left the work to this pass.
+    @Contract
+    private void afterDrainPass(ConsumerKey key, ConsumerState state, boolean batchFull) {
+        if (batchFull) {
+            drainPass(key, state);
+
+            return;
+        }
+
+        state.finishDrain();
+        if (state.isDirty() && state.tryStartDrain()) {
+            drainPass(key, state);
+        }
     }
 
     /// One poll cycle: read the partition, then deliver what came back. The returned promise resolves
-    /// when the cycle is DONE. It fails only when the READ failed; a DELIVERY failure is handled by the
-    /// consumer's error strategy ([#handleDeliveryFailure]) and deliberately never surfaces here, so a
-    /// handler error cannot be mistaken for an unreachable partition.
-    private Promise<Unit> pollCycle(ConsumerKey key, ConsumerState state) {
-        if (closed.get() || state.isCancelled() || state.isStalled() || state.isDeadLetterInFlight()) {
-            return Promise.unitPromise();
+    /// when the cycle is DONE, with `true` when the read filled a whole batch and more may be waiting.
+    /// It fails only when the READ failed; a DELIVERY failure is handled by the consumer's error strategy
+    /// ([#handleDeliveryFailure]) and deliberately never surfaces here, so a handler error cannot be
+    /// mistaken for an unreachable partition. A held consumer (stalled, retry backoff, dead-letter append
+    /// in flight) reads nothing and reports `false`, so the loop idles until the hold's owner re-drives it.
+    private Promise<Boolean> pollCycle(ConsumerKey key, ConsumerState state) {
+        if (closed.get() || state.isCancelled() || state.isStalled() || state.isDeliveryHeld()) {
+            return Promise.success(false);
         }
 
         state.touchLastPollTime();
@@ -538,10 +623,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                                  events -> pollSucceeded(key, state, events)));
     }
 
-    private Promise<Unit> pollSucceeded(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
+    private Promise<Boolean> pollSucceeded(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
         state.adjustPollInterval(!events.isEmpty());
 
-        return deliverEvents(key, state, events);
+        return deliverEvents(key, state, events).map(_ -> events.size() >= MAX_POLL_BATCH);
     }
 
     /// Back off on failure too, not just on an empty successful read.
@@ -552,7 +637,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// each on its own virtual thread. The declarative path (#488) can enter that window legitimately:
     /// HRW can name this node OWNER of a partition whose ring is still materializing, so the poll path
     /// is reachable before the push listener exists.
-    private Promise<Unit> pollFailed(ConsumerState state, Cause cause) {
+    private Promise<Boolean> pollFailed(ConsumerState state, Cause cause) {
         state.adjustPollInterval(false);
 
         return cause.promise();
@@ -566,7 +651,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                            ConsumerState state,
                                            List<OffHeapRingBuffer.RawEvent> events,
                                            int index) {
-        if (index >= events.size() || state.isCancelled() || state.isStalled() || state.isDeadLetterInFlight()) {
+        if (index >= events.size() || state.isCancelled() || state.isStalled() || state.isDeliveryHeld()) {
             return Promise.unitPromise();
         }
 
@@ -576,18 +661,41 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                                                                                index + 1));
     }
 
+    /// #1238: the outcome is folded INSIDE the chain. `onSuccess`/`onFailure` on a still-pending promise
+    /// are dispatched to another thread while `flatMap` dependents run inline, so the old side-effect
+    /// form let the next event's delivery start before this one's cursor advance — and let a failure's
+    /// hold ([#handleRetry], [#appendDeadLetterThenAdvance]) be set after the pass had already moved on.
     private Promise<Unit> deliverSingleEvent(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
         return state.callback()
                     .onEvent(event.offset(),
                              event.data(),
                              event.timestamp())
-                    .onSuccess(_ -> advanceCursor(key,
-                                                  state,
-                                                  event.offset()))
-                    .onFailure(cause -> handleDeliveryFailure(key,
-                                                              state,
-                                                              event,
-                                                              cause.message()));
+                    .fold(result -> deliveryOutcome(key, state, event, result));
+    }
+
+    private Promise<Unit> deliveryOutcome(ConsumerKey key,
+                                          ConsumerState state,
+                                          OffHeapRingBuffer.RawEvent event,
+                                          Result<Unit> result) {
+        return result.fold(cause -> deliveryFailed(key, state, event, cause),
+                           _ -> deliverySucceeded(key, state, event));
+    }
+
+    private Promise<Unit> deliverySucceeded(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
+        advanceCursor(key, state, event.offset());
+
+        return Promise.unitPromise();
+    }
+
+    /// Applies the error strategy (which sets any hold synchronously) and keeps the failure, so the rest
+    /// of this batch is not delivered past the failed event.
+    private Promise<Unit> deliveryFailed(ConsumerKey key,
+                                         ConsumerState state,
+                                         OffHeapRingBuffer.RawEvent event,
+                                         Cause cause) {
+        handleDeliveryFailure(key, state, event, cause.message());
+
+        return cause.promise();
     }
 
     private void advanceCursor(ConsumerKey key, ConsumerState state, long offset) {
@@ -623,9 +731,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         var backoffMs = computeBackoff(attempt);
         var delay = TimeSpan.timeSpan(backoffMs).millis();
 
+        state.markRetryInFlight();
         SharedScheduler.schedule(() -> retryDeliverEvent(key, state, event), delay);
     }
 
+    /// #1238: runs while [ConsumerState#isRetryInFlight] holds the loop — the same discipline
+    /// [#appendDeadLetterThenAdvance] applies — so an append arriving during the backoff cannot re-read
+    /// the un-advanced cursor and deliver this event in parallel with its own retry.
     private void retryDeliverEvent(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
         if (state.isCancelled() || state.isStalled()) {
             return;
@@ -635,13 +747,20 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
              .onEvent(event.offset(),
                       event.data(),
                       event.timestamp())
-             .onSuccess(_ -> advanceCursor(key,
+             .onSuccess(_ -> completeRetry(key,
                                            state,
-                                           event.offset()))
+                                           event))
              .onFailure(cause -> handleRetryFailureAgain(key,
                                                          state,
                                                          event,
                                                          cause.message()));
+    }
+
+    /// Released strictly AFTER the cursor advance, so the pass it re-drives reads past this event.
+    private void completeRetry(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
+        advanceCursor(key, state, event.offset());
+        state.clearRetryInFlight();
+        requestDrain(key, state);
     }
 
     private void handleRetryFailureAgain(ConsumerKey key,
@@ -651,7 +770,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         var attempt = state.incrementRetryCount();
 
         if (attempt >= state.maxRetries()) {
+            // The dead-letter hold is taken before the retry hold is released, so the loop is never
+            // unheld in between.
             appendDeadLetterThenAdvance(key, state, event, errorMessage, attempt, 1);
+            state.clearRetryInFlight();
 
             return;
         }
@@ -730,10 +852,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// that arrived while the dead-letter append was in flight was absorbed by the guard — so
     /// releasing the hold must also re-drive the loop, or events already in the ring sit
     /// undelivered until the NEXT append happens to arrive. Poll-mode consumers resume on their
-    /// own schedule and treat this as one extra cycle.
+    /// own schedule and treat this as one extra request on the same loop.
     @Contract
     private void resumeAfterDeadLetter(ConsumerKey key, ConsumerState state) {
-        pollCycle(key, state).onFailure(cause -> logPollFailure(key, cause));
+        requestDrain(key, state);
     }
 
     private void retryDeadLetterAppend(ConsumerKey key,
@@ -799,8 +921,15 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
         private final AtomicBoolean cursorInitialized = new AtomicBoolean(false);
         private final AtomicBoolean deadLetterInFlight = new AtomicBoolean(false);
+        /// #1238: a retry of the head event is scheduled — holds the loop like [#deadLetterInFlight].
+        private final AtomicBoolean retryInFlight = new AtomicBoolean(false);
+        /// #1238: a delivery pass is running; only the false->true flip starts one.
+        private final AtomicBoolean drainRunning = new AtomicBoolean(false);
+        /// #1238: something may have arrived since the running pass read.
+        private final AtomicBoolean drainDirty = new AtomicBoolean(false);
         private volatile ScheduledFuture<?> future;
         private volatile LongConsumer pushListenerRef;
+        private volatile OffHeapRingBuffer pushBufferRef;
         private final AtomicLong currentPollMs = new AtomicLong(MIN_POLL_MS);
         private final AtomicLong lastCheckpointTime = new AtomicLong(System.currentTimeMillis());
         private final AtomicLong lastPollTime = new AtomicLong(System.currentTimeMillis());
@@ -851,9 +980,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return cursor.get();
         }
 
+        /// Monotonic (#1238): a late retry or dead-letter completion, or a stored cursor fetched after
+        /// delivery started, can never move the cursor — and so the checkpointed cursor — backwards.
         @Contract
         void advanceCursor(long offset) {
-            cursor.set(offset);
+            cursor.accumulateAndGet(offset, Math::max);
         }
 
         @Contract
@@ -924,6 +1055,49 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             deadLetterInFlight.set(false);
         }
 
+        boolean isRetryInFlight() {
+            return retryInFlight.get();
+        }
+
+        @Contract
+        void markRetryInFlight() {
+            retryInFlight.set(true);
+        }
+
+        @Contract
+        void clearRetryInFlight() {
+            retryInFlight.set(false);
+        }
+
+        /// The loop reads and delivers nothing while an earlier failure of the head event is still
+        /// being resolved — by a scheduled retry or by a dead-letter append.
+        boolean isDeliveryHeld() {
+            return isDeadLetterInFlight() || isRetryInFlight();
+        }
+
+        boolean tryStartDrain() {
+            return drainRunning.compareAndSet(false, true);
+        }
+
+        @Contract
+        void finishDrain() {
+            drainRunning.set(false);
+        }
+
+        @Contract
+        void markDirty() {
+            drainDirty.set(true);
+        }
+
+        @Contract
+        void clearDirty() {
+            drainDirty.set(false);
+        }
+
+        boolean isDirty() {
+            return drainDirty.get();
+        }
+
         @Contract
         void stall() {
             stalled.set(true);
@@ -939,12 +1113,23 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
 
         @Contract
-        void pushListener(LongConsumer listener) {
+        void pushAttachment(OffHeapRingBuffer buffer, LongConsumer listener) {
             this.pushListenerRef = listener;
+            this.pushBufferRef = buffer;
+        }
+
+        @Contract
+        void clearPushAttachment() {
+            this.pushBufferRef = null;
+            this.pushListenerRef = null;
         }
 
         Option<LongConsumer> pushListener() {
             return option(pushListenerRef);
+        }
+
+        Option<OffHeapRingBuffer> pushBuffer() {
+            return option(pushBufferRef);
         }
 
         @Contract
