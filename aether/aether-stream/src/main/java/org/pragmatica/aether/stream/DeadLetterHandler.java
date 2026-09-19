@@ -91,7 +91,15 @@ public interface DeadLetterHandler {
                                                       String errorMessage,
                                                       int attemptCount,
                                                       long timestamp) {
-            return deadLetterEntry(streamName, partition, offset, failingGroup, payload, errorMessage, attemptCount, timestamp, false);
+            return deadLetterEntry(streamName,
+                                   partition,
+                                   offset,
+                                   failingGroup,
+                                   payload,
+                                   errorMessage,
+                                   attemptCount,
+                                   timestamp,
+                                   false);
         }
 
         public static DeadLetterEntry deadLetterEntry(String streamName,

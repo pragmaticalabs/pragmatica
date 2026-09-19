@@ -816,7 +816,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// (#1266) — the `Result.lift(...).async().flatMap(...)` idiom `StreamConsumerManager` uses for the
     /// topic-envelope decode.
     private static Promise<Unit> lifted(Functions.ThrowingFn0<Promise<Unit>> call) {
-        return Result.lift(call).async().flatMap(promise -> promise);
+        return Result.lift(call)
+                     .async()
+                     .flatMap(promise -> promise);
     }
 
     private Promise<Unit> deliveryOutcome(ConsumerKey key,
@@ -889,10 +891,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
 
         invokeHandler(state, event).onSuccess(_ -> completeRetry(key, state, event))
-             .onFailure(cause -> handleRetryFailureAgain(key,
-                                                         state,
-                                                         event,
-                                                         cause.message()));
+                     .onFailure(cause -> handleRetryFailureAgain(key,
+                                                                 state,
+                                                                 event,
+                                                                 cause.message()));
     }
 
     /// Released strictly AFTER the cursor advance, so the pass it re-drives reads past this event.
@@ -965,13 +967,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                              int appendAttempt) {
         state.markDeadLetterInFlight();
         appendDeadLetter(key, event, errorMessage, attemptCount).onSuccess(_ -> completeDeadLetter(key, state, event))
-                 .onFailure(cause -> retryDeadLetterAppend(key,
-                                                           state,
-                                                           event,
-                                                           errorMessage,
-                                                           attemptCount,
-                                                           appendAttempt,
-                                                           cause));
+                        .onFailure(cause -> retryDeadLetterAppend(key,
+                                                                  state,
+                                                                  event,
+                                                                  errorMessage,
+                                                                  attemptCount,
+                                                                  appendAttempt,
+                                                                  cause));
     }
 
     /// #1266: lifted and bounded. A sink that THROWS synchronously used to escape before the callbacks

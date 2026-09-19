@@ -52,22 +52,21 @@ public record DlqStreamSink(Deserializer deserializer,
                                 byte[] payload,
                                 String errorMessage,
                                 int attemptCount) {
-        var entry = Result.lift(() -> deserializer.<TopicEventEnvelope>decode(payload))
-                          .fold(cause -> quarantined(streamName,
-                                                     partition,
-                                                     offset,
-                                                     failingGroup,
-                                                     payload,
-                                                     errorMessage,
-                                                     attemptCount,
-                                                     cause),
-                                envelope -> deadLettered(streamName,
-                                                         partition,
-                                                         offset,
-                                                         failingGroup,
-                                                         errorMessage,
-                                                         attemptCount,
-                                                         envelope));
+        var entry = Result.lift(() -> deserializer.<TopicEventEnvelope> decode(payload)).fold(cause -> quarantined(streamName,
+                                                                                                                   partition,
+                                                                                                                   offset,
+                                                                                                                   failingGroup,
+                                                                                                                   payload,
+                                                                                                                   errorMessage,
+                                                                                                                   attemptCount,
+                                                                                                                   cause),
+                                                                                              envelope -> deadLettered(streamName,
+                                                                                                                       partition,
+                                                                                                                       offset,
+                                                                                                                       failingGroup,
+                                                                                                                       errorMessage,
+                                                                                                                       attemptCount,
+                                                                                                                       envelope));
 
         return dlqPublisherFor.apply(DurableTopicNames.dlqStreamForTopicStream(streamName))
                               .publish(entry);
