@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.stream;
 
-
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
@@ -71,7 +70,10 @@ public record ClusterCursorStore(ConsumerCursorStore local,
     /// FER: a failed consensus publish degrades this commit to [CommitOutcome.LocalOnly] instead of
     /// failing it — the local write stands, and the caller learns from the outcome that the cluster
     /// checkpoint did not land.
-    private Promise<CommitOutcome> publishCheckpoint(String consumerGroup, String streamName, int partition, long offset) {
+    private Promise<CommitOutcome> publishCheckpoint(String consumerGroup,
+                                                     String streamName,
+                                                     int partition,
+                                                     long offset) {
         return commandWriter.apply(checkpointCommand(consumerGroup, streamName, partition, offset))
                             .map(_ -> CommitOutcome.persisted())
                             .recover(cause -> localOnly(consumerGroup, streamName, partition, cause));

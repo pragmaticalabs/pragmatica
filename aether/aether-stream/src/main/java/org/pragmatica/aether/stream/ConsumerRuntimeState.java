@@ -320,7 +320,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// commit shared that one flag, so a genuine failure on the periodic commit could be silently
     /// uncounted (already "spent" by the final commit's bound report) or double-counted (a race between
     /// the bound check and the commit's own resolution).
-    private record TrackedCommit(ConsumerKey key, ConsumerState state, Promise<CommitOutcome> commit, AtomicBoolean reported) {}
+    private record TrackedCommit(ConsumerKey key,
+                                 ConsumerState state,
+                                 Promise<CommitOutcome> commit,
+                                 AtomicBoolean reported) {}
 
     @Contract
     private void periodicConsumerCheck() {
@@ -499,8 +502,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// checkpoint did not land has not persisted the cursor where failover reads it (#1239).
     @Contract
     private void afterCheckpoint(ConsumerKey key, ConsumerState state, Result<CommitOutcome> result) {
-        result.onSuccess(outcome -> checkpointSettled(key, state, outcome))
-              .onFailure(_ -> retryCheckpoint(key, state));
+        result.onSuccess(outcome -> checkpointSettled(key, state, outcome)).onFailure(_ -> retryCheckpoint(key, state));
     }
 
     @Contract
