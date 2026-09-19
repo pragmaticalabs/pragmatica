@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -16,6 +17,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionAssignment;
+import org.pragmatica.aether.node.stream.StreamConsumerManager.AssignmentAuthority;
 import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionOwnership;
 import org.pragmatica.aether.node.stream.StreamConsumerManager.SlicePlacement;
 import org.pragmatica.aether.slice.ConsumerConfig;
@@ -23,8 +25,13 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.ObservabilityStrategyCell;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue;
+import org.pragmatica.aether.stream.ConsumerFence;
 import org.pragmatica.aether.stream.DeadLetterHandler;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
@@ -32,6 +39,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -92,6 +101,9 @@ class StreamConsumerManagerTest {
     /// Wide enough that HRW concentrating every partition on one of three candidates has probability
     /// 3 x (1/3)^32 — the point at which a distribution assertion stops being a coin flip.
     private static final int WIDE_PARTITION_COUNT = 32;
+    private static final Epoch EPOCH_1 = Epoch.epoch(1L, 1L);
+    private static final Epoch EPOCH_2 = Epoch.epoch(1L, 2L);
+    private static final Epoch EPOCH_3 = Epoch.epoch(1L, 3L);
 
     private StreamConsumerRegistry registry;
     private RecordingRuntime runtime;
@@ -99,9 +111,14 @@ class StreamConsumerManagerTest {
     private SliceInvoker invoker;
     private MutableOwnership ownership;
     private MutablePlacement placement;
+    /// #1271: the committed consumer assignments every manager in a test reads — the stand-in for the
+    /// consensus KV. Writes land synchronously, so a leader's reconcile commits its computed assignment
+    /// and admits itself in the same pass, exactly the steady state the pre-#1271 tests describe.
+    private Map<ConsumerAssignmentKey, ConsumerAssignmentValue> committedAssignments;
 
     @BeforeEach
     void setUp() {
+        committedAssignments = new ConcurrentHashMap<>();
         registry = StreamConsumerRegistry.streamConsumerRegistry();
         runtime = new RecordingRuntime();
         invocationHandler = mock(InvocationHandler.class);
@@ -122,6 +139,13 @@ class StreamConsumerManagerTest {
     private StreamConsumerManager managerFor(NodeId self,
                                              StreamConsumerRuntime consumerRuntime,
                                              PartitionOwnership nodeOwnership) {
+        return managerFor(self, consumerRuntime, nodeOwnership, true);
+    }
+
+    private StreamConsumerManager managerFor(NodeId self,
+                                             StreamConsumerRuntime consumerRuntime,
+                                             PartitionOwnership nodeOwnership,
+                                             boolean leader) {
         return StreamConsumerManager.streamConsumerManager(registry,
                                                            consumerRuntime,
                                                            invoker,
@@ -129,7 +153,44 @@ class StreamConsumerManagerTest {
                                                            FrameworkCodecs.frameworkCodecs(),
                                                            nodeOwnership,
                                                            placement,
-                                                           self);
+                                                           self,
+                                                           authority(leader));
+    }
+
+    /// The committed-assignment authority over [#committedAssignments]; `leader` gates its writer the
+    /// way the node's leadership does.
+    private AssignmentAuthority authority(boolean leader) {
+        ConsumerAssignmentWriter.CommittedAssignments committed = (stream, partition, group) -> Option.option(committedAssignments.get(ConsumerAssignmentKey.consumerAssignmentKey(stream,
+                                                                                                                                                                           partition,
+                                                                                                                                                                           group)));
+
+        return AssignmentAuthority.assignmentAuthority(committed,
+                                                       ConsumerAssignmentWriter.consumerAssignmentWriter(() -> leader,
+                                                                                                         () -> 1L,
+                                                                                                         HlcClock.hlcClock(SELF),
+                                                                                                         committed),
+                                                       this::applyAssignments);
+    }
+
+    private Promise<Unit> applyAssignments(List<KVCommand<AetherKey>> commands) {
+        commands.forEach(this::applyAssignment);
+
+        return Promise.unitPromise();
+    }
+
+    private void applyAssignment(KVCommand<AetherKey> command) {
+        if (command instanceof KVCommand.Put<?, ?> put && put.key() instanceof ConsumerAssignmentKey key && put.value() instanceof ConsumerAssignmentValue value) {
+            committedAssignments.put(key, value);
+        }
+    }
+
+    /// Commit an assignment directly — a leader elsewhere reassigning the partition.
+    private void commitAssignment(int partition, NodeId assignee, Epoch epoch) {
+        committedAssignments.put(ConsumerAssignmentKey.consumerAssignmentKey(STREAM, partition, GROUP),
+                                 ConsumerAssignmentValue.consumerAssignmentValue(assignee,
+                                                                                 epoch,
+                                                                                 epoch.localCounter(),
+                                                                                 HlcTimestamp.ZERO));
     }
 
     /// A seam for #545's re-resolution race: `reconcile()` and `declarationFor` each re-read
@@ -144,7 +205,8 @@ class StreamConsumerManagerTest {
                                                            FrameworkCodecs.frameworkCodecs(),
                                                            ownership,
                                                            placement,
-                                                           SELF);
+                                                           SELF,
+                                                           authority(true));
     }
 
     private void declare(String eventType, boolean batchMode) {
@@ -813,8 +875,10 @@ class StreamConsumerManagerTest {
             var selfRuntime = new RecordingRuntime();
             var peerRuntime = new RecordingRuntime();
 
-            managerFor(SELF, selfRuntime, selfView).reconcile();
-            managerFor(PEER, peerRuntime, peerView).reconcile();
+            // One cluster, one leader: SELF's node leads and commits the assignment; PEER follows. Both
+            // compute themselves as the consumer of partition 0 from their own views.
+            managerFor(SELF, selfRuntime, selfView, true).reconcile();
+            managerFor(PEER, peerRuntime, peerView, false).reconcile();
 
             var attached = Stream.of(selfRuntime, peerRuntime)
                                  .filter(nodeRuntime -> nodeRuntime.subscribedPartitions()
@@ -823,6 +887,138 @@ class StreamConsumerManagerTest {
 
             assertThat(attached).describedAs("divergent owner views must not produce two consumers of one (group, partition)")
                                 .isLessThanOrEqualTo(1L);
+        }
+
+        /// The follower whose OWN view names itself still attaches nothing: its view is not the authority.
+        @Test
+        void reconcile_attachesOnlyWhereTheCommittedRecordNamesThisNode_evenAgainstItsOwnView() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            var peerView = new MutableOwnership();
+
+            peerView.ownedBy(PEER, 0, 1, 2, 3);
+            commitAssignment(0, SELF, EPOCH_1);
+            commitAssignment(1, PEER, EPOCH_1);
+            var peerRuntime = new RecordingRuntime();
+
+            managerFor(PEER, peerRuntime, peerView, false).reconcile();
+
+            assertThat(peerRuntime.subscribedPartitions()).describedAs("committed: 0→SELF, 1→PEER, 2 and 3 → none")
+                                                          .containsExactly(1);
+        }
+
+        @Test
+        void reconcile_attachesNothing_whenNoAssignmentIsCommitted() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            ownership.ownedBySelf(0, 1, 2, 3);
+
+            managerFor(SELF, runtime, ownership, false).reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("admitting on absence is exactly the unfenced behaviour")
+                                                      .isEmpty();
+        }
+
+        @Test
+        void attach_carriesTheCommittedEpoch_andTheFenceTracksTheCommittedRecord() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+
+            managerFor(SELF, runtime, ownership, false).reconcile();
+            var fence = runtime.fenceOf(0);
+
+            assertThat(fence.map(ConsumerFence::epoch)).isEqualTo(Option.some(EPOCH_1));
+            assertThat(fence.map(ConsumerFence::admitted)).isEqualTo(Option.some(true));
+            commitAssignment(0, PEER, EPOCH_2);
+            assertThat(fence.map(ConsumerFence::admitted)).describedAs("delivery pauses at the next pass once the mirror shows the move")
+                                                          .isEqualTo(Option.some(false));
+        }
+
+        @Test
+        void reconcile_abandonsWithoutFlush_whenTheAssignmentMovesAway() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+            commitAssignment(0, PEER, EPOCH_2);
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).isEmpty();
+            assertThat(runtime.abandoned).describedAs("the loser detaches without the final flush").containsExactly(0);
+            assertThat(runtime.gracefullyUnsubscribed).isEmpty();
+        }
+
+        @Test
+        void reconcile_detachesWithFlush_whenStillTheAssignee() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+            undeclare();
+            manager.reconcile();
+
+            assertThat(runtime.gracefullyUnsubscribed).describedAs("still the assignee: the final flush is the cursor's last word")
+                                                      .containsExactly(0);
+            assertThat(runtime.abandoned).isEmpty();
+        }
+
+        /// A→B→A between two reconciles: the subscription from the first tenure is abandoned and replaced
+        /// by one under the current epoch — its cursor state predates B's tenure.
+        @Test
+        void reconcile_reattachesUnderTheCurrentEpoch_afterAnAwayAndBackMove() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+            commitAssignment(0, PEER, EPOCH_2);
+            commitAssignment(0, SELF, EPOCH_3);
+            manager.reconcile();
+
+            assertThat(runtime.abandoned).containsExactly(0);
+            assertThat(runtime.fenceOf(0).map(ConsumerFence::epoch)).isEqualTo(Option.some(EPOCH_3));
+        }
+
+        @Test
+        void abandonAll_detachesEverySubscriptionWithoutFlush() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+            commitAssignment(1, SELF, EPOCH_1);
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+            manager.abandonAll();
+
+            assertThat(manager.activeSubscriptionCount()).isZero();
+            assertThat(runtime.abandoned).containsExactlyInAnyOrder(0, 1);
+            assertThat(runtime.gracefullyUnsubscribed).isEmpty();
+        }
+
+        /// The quorum-loss listener stops delivery BEFORE the drain chain runs — the drain ends in a halt
+        /// that may be seconds away.
+        @Test
+        void abandoningOnQuorumLoss_abandonsConsumersBeforeTheDrainChain() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+            var manager = managerFor(SELF, runtime, ownership, false);
+            var seenByChain = new ArrayList<Integer>();
+
+            manager.reconcile();
+            StreamConsumerManager.<String>abandoningOnQuorumLoss(_ -> seenByChain.add(manager.activeSubscriptionCount()),
+                                                                 manager)
+                                 .accept("quorum-lost");
+
+            assertThat(seenByChain).describedAs("the drain chain runs, and it runs after the consumers are gone")
+                                   .containsExactly(0);
+            assertThat(runtime.abandoned).containsExactly(0);
         }
     }
 
@@ -912,7 +1108,34 @@ class StreamConsumerManagerTest {
         private record StreamPartition(String streamName, int partition) {}
 
         private final Map<StreamPartition, String> subscriptions = new ConcurrentHashMap<>();
+        private final Map<StreamPartition, ConsumerFence> fences = new ConcurrentHashMap<>();
+        private final List<Integer> abandoned = new CopyOnWriteArrayList<>();
+        private final List<Integer> gracefullyUnsubscribed = new CopyOnWriteArrayList<>();
         private int subscribeCalls;
+
+        Option<ConsumerFence> fenceOf(int partition) {
+            return Option.option(fences.get(new StreamPartition(STREAM, partition)));
+        }
+
+        @Override
+        public Result<Unit> subscribe(String streamName,
+                                      int partition,
+                                      ConsumerConfig config,
+                                      ConsumerCallback callback,
+                                      IdlePolicy idlePolicy,
+                                      ConsumerFence fence) {
+            fences.put(new StreamPartition(streamName, partition), fence);
+
+            return subscribe(streamName, partition, config, callback, idlePolicy);
+        }
+
+        @Override
+        public Result<Unit> abandon(String streamName, int partition, String consumerGroup) {
+            abandoned.add(partition);
+            subscriptions.remove(new StreamPartition(streamName, partition));
+
+            return Result.unitResult();
+        }
 
         List<Integer> subscribedPartitions() {
             return subscriptions.keySet().stream().map(StreamPartition::partition).distinct().toList();
@@ -948,6 +1171,7 @@ class StreamConsumerManagerTest {
 
         @Override
         public Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup) {
+            gracefullyUnsubscribed.add(partition);
             subscriptions.remove(new StreamPartition(streamName, partition));
 
             return Result.unitResult();
@@ -1038,7 +1262,8 @@ class StreamConsumerManagerTest {
                                                                SELF,
                                                                TopicGroupDeclarationSource.topicGroupDeclarationSource(topicRegistry,
                                                                                                                        name -> ownership.partitionCount(name)
-                                                                                                                                        .isPresent()));
+                                                                                                                                        .isPresent()),
+                                                               authority(true));
         }
 
         private void deployDecodingSliceLocally() {
@@ -1144,7 +1369,8 @@ class StreamConsumerManagerTest {
                                                    TopicGroupDeclarationSource.topicGroupDeclarationSource(topicRegistry,
                                                                                                            name -> ownership.partitionCount(name)
                                                                                                                             .isPresent()),
-                                                   org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis()).reconcile();
+                                                   org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis(),
+                                                   authority(true)).reconcile();
             var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
             var envelope = new org.pragmatica.aether.stream.topic.TopicEventEnvelope("msg-1",
                                                                                      1234L,

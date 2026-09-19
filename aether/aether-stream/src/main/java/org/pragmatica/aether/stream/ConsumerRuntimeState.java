@@ -32,6 +32,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -123,19 +124,38 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         return subscribe(streamName, partition, config, callback, IdlePolicy.REAP_WHEN_IDLE);
     }
 
-    @SuppressWarnings("JBCT-NULL-01")
     @Override
     public Result<Unit> subscribe(String streamName,
                                   int partition,
                                   ConsumerConfig config,
                                   ConsumerCallback callback,
                                   IdlePolicy idlePolicy) {
+        return subscribeWith(streamName, partition, config, callback, idlePolicy, none());
+    }
+
+    @Override
+    public Result<Unit> subscribe(String streamName,
+                                  int partition,
+                                  ConsumerConfig config,
+                                  ConsumerCallback callback,
+                                  IdlePolicy idlePolicy,
+                                  ConsumerFence fence) {
+        return subscribeWith(streamName, partition, config, callback, idlePolicy, some(fence));
+    }
+
+    @SuppressWarnings("JBCT-NULL-01")
+    private Result<Unit> subscribeWith(String streamName,
+                                       int partition,
+                                       ConsumerConfig config,
+                                       ConsumerCallback callback,
+                                       IdlePolicy idlePolicy,
+                                       Option<ConsumerFence> fence) {
         if (closed.get()) {
             return StreamError.General.CONSUMER_RUNTIME_CLOSED.result();
         }
 
         var key = ConsumerKey.consumerKey(streamName, partition, config.groupId());
-        var state = ConsumerState.consumerState(config, callback, 0L, idlePolicy);
+        var state = ConsumerState.consumerState(config, callback, 0L, idlePolicy, fence);
 
         if (consumers.putIfAbsent(key, state) != null) {
             return StreamError.General.CONSUMER_ALREADY_SUBSCRIBED.result();
@@ -179,13 +199,31 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                      .mapToUnit();
     }
 
+    /// #1271: removes the consumer WITHOUT a final flush — its assignment is gone, so the store would
+    /// refuse the flush, and nothing it could write belongs to this node any more.
+    @Override
+    public Result<Unit> abandon(String streamName, int partition, String consumerGroup) {
+        var key = ConsumerKey.consumerKey(streamName, partition, consumerGroup);
+
+        return option(consumers.remove(key)).toResult(StreamError.General.CONSUMER_NOT_FOUND)
+                     .onSuccess(state -> detachWithoutFlush(key, state))
+                     .mapToUnit();
+    }
+
     /// Cancel FIRST (#1239): a cancelled consumer issues no further periodic commit, so the detach flush
     /// — chained behind any periodic commit still in flight ([#flushCursorForKey]) — is the last commit
-    /// this consumer ever makes.
+    /// this consumer ever makes. A consumer whose commit was already refused as `Fenced` (#1271) skips
+    /// the flush: it is no longer the assignee, and the store would refuse it the same way.
     private void cleanupConsumer(ConsumerKey key, ConsumerState state) {
+        detachWithoutFlush(key, state);
+        if (!state.isFenced()) {
+            flushCursorForKey(key, state);
+        }
+    }
+
+    private void detachWithoutFlush(ConsumerKey key, ConsumerState state) {
         state.cancel();
         removePushListener(key, state);
-        flushCursorForKey(key, state);
     }
 
     @Override
@@ -402,9 +440,24 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                     String groupId,
                                     String streamName,
                                     int partition) {
-        cursorStore.onPresent(store -> store.fetch(groupId, streamName, partition)
-                                            .onResult(result -> applyCursorAndStart(result, key, state)))
+        cursorStore.onPresent(store -> fetchCursor(store, state, groupId, streamName, partition).onResult(result -> applyCursorAndStart(result,
+                                                                                                                                        key,
+                                                                                                                                        state)))
                    .onEmpty(() -> startConsumer(key, state));
+    }
+
+    /// #1271: a fenced consumer resumes only from a cursor written under ITS assignment epoch.
+    private static Promise<Option<Long>> fetchCursor(ConsumerCursorStore store,
+                                                     ConsumerState state,
+                                                     String groupId,
+                                                     String streamName,
+                                                     int partition) {
+        return state.fence()
+                    .fold(() -> store.fetch(groupId, streamName, partition),
+                          fence -> store.fetch(groupId,
+                                               streamName,
+                                               partition,
+                                               fence.epoch()));
     }
 
     private void applyCursorAndStart(Result<Option<Long>> result, ConsumerKey key, ConsumerState state) {
@@ -498,7 +551,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     @Contract
     private void issueCheckpoint(ConsumerKey key, ConsumerState state) {
-        if (closed.get() || state.isCancelled()) {
+        if (closed.get() || state.isCancelled() || state.isFenced()) {
             state.finishCheckpoint();
 
             return;
@@ -522,6 +575,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         switch (outcome) {
             case CommitOutcome.Persisted _ -> checkpointPersisted(key, state);
             case CommitOutcome.LocalOnly _ -> retryCheckpoint(key, state);
+            case CommitOutcome.Fenced _ -> state.finishCheckpoint();
         }
     }
 
@@ -590,10 +644,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                                       ConsumerCursorStore store,
                                                       Promise<CommitOutcome> predecessor) {
         state.clearCursorCommitFailure();
-        var commit = predecessor.fold(_ -> lifted(() -> store.commit(key.groupId(),
-                                                                     key.streamName(),
-                                                                     key.partition(),
-                                                                     state.cursor())));
+        var commit = predecessor.fold(_ -> lifted(() -> commitCursor(store, key, state)));
         var tracked = new TrackedCommit(key, state, commit, new AtomicBoolean(false));
 
         inFlightCommits.add(tracked);
@@ -601,6 +652,23 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         return commit.onResult(_ -> inFlightCommits.remove(tracked))
                      .onSuccess(outcome -> reportIfLocalOnly(tracked, outcome))
                      .onFailure(cause -> onCursorCommitFailure(tracked, cause));
+    }
+
+    /// #1271: a fenced consumer commits under ITS assignment epoch, so the store can refuse it once the
+    /// assignment has moved.
+    private static Promise<CommitOutcome> commitCursor(ConsumerCursorStore store,
+                                                       ConsumerKey key,
+                                                       ConsumerState state) {
+        return state.fence()
+                    .fold(() -> store.commit(key.groupId(),
+                                             key.streamName(),
+                                             key.partition(),
+                                             state.cursor()),
+                          fence -> store.commit(key.groupId(),
+                                                key.streamName(),
+                                                key.partition(),
+                                                state.cursor(),
+                                                fence.epoch()));
     }
 
     /// #654 round 2 / #1239: `commit(...)` settled successfully but its cluster checkpoint did not land —
@@ -611,9 +679,26 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// already reported this commit unsettled logs WARNING, not a second ERROR, and does not increment
     /// [#cursorCommitFailureCount] again.
     private void reportIfLocalOnly(TrackedCommit tracked, CommitOutcome outcome) {
-        if (outcome instanceof CommitOutcome.LocalOnly(var cause)) {
-            reportCheckpointRecovered(tracked, cause.message());
+        switch (outcome) {
+            case CommitOutcome.LocalOnly(var cause) -> reportCheckpointRecovered(tracked, cause.message());
+            case CommitOutcome.Fenced(var detail) -> reportFenced(tracked, detail);
+            case CommitOutcome.Persisted _ -> {}
         }
+    }
+
+    /// #1271: the store refused a commit because this node no longer holds the consumer assignment.
+    /// Not a failure to retry or count — a verdict: delivery stops at the next pass (the fence is
+    /// latched here, before any later pass can read it) and the node's reconcile detaches without a
+    /// final flush.
+    private void reportFenced(TrackedCommit tracked, String detail) {
+        tracked.state().markFenced();
+        tracked.state().recordCursorCommitFailure("fenced: " + detail);
+        LOG.log(System.Logger.Level.WARNING,
+                "Cursor commit refused — consumer assignment moved away from this node; delivery stopped for consumer group {0} on stream {1} partition {2}: {3}",
+                tracked.key().groupId(),
+                tracked.key().streamName(),
+                tracked.key().partition(),
+                detail);
     }
 
     private void reportCheckpointRecovered(TrackedCommit tracked, String detail) {
@@ -783,8 +868,12 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// ([#handleDeliveryFailure]) and deliberately never surfaces here, so a handler error cannot be
     /// mistaken for an unreachable partition. A held consumer (stalled, retry backoff, dead-letter append
     /// in flight) reads nothing and reports `false`, so the loop idles until the hold's owner re-drives it.
+    ///
+    /// #1271: a fenced subscription also reads nothing while [ConsumerState#deliveryAdmitted] is false —
+    /// re-checked on EVERY pass, so the node stops delivering at its next pass once its committed-state
+    /// mirror shows the assignment has moved, not at the next reconcile tick.
     private Promise<Boolean> pollCycle(ConsumerKey key, ConsumerState state) {
-        if (closed.get() || state.isCancelled() || state.isStalled() || state.isDeliveryHeld()) {
+        if (closed.get() || state.isCancelled() || state.isStalled() || state.isDeliveryHeld() || !state.deliveryAdmitted()) {
             return Promise.success(false);
         }
 
@@ -1132,22 +1221,56 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         /// removes the entry from [ConsumerRuntimeState#consumers] and this per-consumer detail goes
         /// with it. What survives detach is the node-wide [ConsumerRuntimeState#cursorCommitFailureCount].
         private volatile String lastCursorCommitFailure;
+        /// #1271: the committed assignment this consumer was admitted under; none for an unfenced one.
+        private final Option<ConsumerFence> fence;
+        /// #1271: latched once the store refuses a commit as `Fenced` — delivery never resumes.
+        private final AtomicBoolean fenced = new AtomicBoolean(false);
 
         private ConsumerState(ConsumerConfig config,
                               ConsumerCallback callback,
                               long initialCursor,
-                              IdlePolicy idlePolicy) {
+                              IdlePolicy idlePolicy,
+                              Option<ConsumerFence> fence) {
             this.config = config;
             this.callback = callback;
             this.idlePolicy = idlePolicy;
             this.cursor = new AtomicLong(initialCursor);
+            this.fence = fence;
         }
 
         static ConsumerState consumerState(ConsumerConfig config,
                                            ConsumerCallback callback,
                                            long initialCursor,
                                            IdlePolicy idlePolicy) {
-            return new ConsumerState(config, callback, initialCursor, idlePolicy);
+            return consumerState(config, callback, initialCursor, idlePolicy, Option.none());
+        }
+
+        static ConsumerState consumerState(ConsumerConfig config,
+                                           ConsumerCallback callback,
+                                           long initialCursor,
+                                           IdlePolicy idlePolicy,
+                                           Option<ConsumerFence> fence) {
+            return new ConsumerState(config, callback, initialCursor, idlePolicy, fence);
+        }
+
+        Option<ConsumerFence> fence() {
+            return fence;
+        }
+
+        boolean isFenced() {
+            return fenced.get();
+        }
+
+        @Contract
+        void markFenced() {
+            fenced.set(true);
+        }
+
+        /// May this consumer deliver right now: not latched fenced, and — when fenced by an assignment —
+        /// still the committed assignee as this node's mirror shows it.
+        boolean deliveryAdmitted() {
+            return ! fenced.get() && fence.map(ConsumerFence::admitted)
+                                          .or(true);
         }
 
         IdlePolicy idlePolicy() {

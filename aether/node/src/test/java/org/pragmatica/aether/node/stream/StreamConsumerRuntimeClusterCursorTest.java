@@ -9,6 +9,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 
 import org.pragmatica.aether.slice.ConsumerConfig;
@@ -16,17 +17,23 @@ import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.slice.ConsumerConfig.ProcessingMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
+import org.pragmatica.aether.stream.ConsumerFence;
 import org.pragmatica.aether.stream.DeadLetterHandler;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
+import org.pragmatica.aether.stream.StreamConsumerRuntime.IdlePolicy;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.CommitOutcome;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import org.junit.jupiter.api.AfterEach;
@@ -49,6 +56,8 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 /// right thing in the first place — the exact gap #654 round 2 exists to close.
 class StreamConsumerRuntimeClusterCursorTest {
     private static final String GROUP = "group-1";
+    private static final NodeId SELF = NodeId.nodeId("node-1").unwrap();
+    private static final Epoch EPOCH = Epoch.epoch(1L, 1L);
     private StreamPartitionManager manager;
 
     @BeforeEach
@@ -92,9 +101,49 @@ class StreamConsumerRuntimeClusterCursorTest {
     }
 
     private static ConsumerCursorStore clusterStoreWith(Promise<Unit> publishResult) {
+        return clusterStore(_ -> publishResult);
+    }
+
+    /// #1271: the runtime commits under the fence's epoch, and the store's verdict re-reads the committed
+    /// checkpoint. The mirror here is an ACCEPTING applier: whatever checkpoint a publish that settled
+    /// successfully carried becomes the committed one. These tests are about the LocalOnly/failure
+    /// surface; the refused (Fenced) path is pinned in `ClusterCursorStoreTest` against the real applier.
+    private static ConsumerCursorStore clusterStore(Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> writer) {
+        var committed = new AtomicReference<Option<StreamCursorCheckpointValue>>(Option.none());
+
         return ClusterCursorStore.clusterCursorStore(succeedingLocal(),
-                                                     _ -> Option.none(),
-                                                     _ -> publishResult);
+                                                     SELF,
+                                                     _ -> committed.get(),
+                                                     commands -> writer.apply(commands)
+                                                                       .onSuccess(_ -> remember(committed, commands)),
+                                                     () -> false);
+    }
+
+    private static void remember(AtomicReference<Option<StreamCursorCheckpointValue>> committed,
+                                 List<KVCommand<AetherKey>> commands) {
+        if (commands.getFirst() instanceof KVCommand.Put<?, ?> put && put.value() instanceof StreamCursorCheckpointValue value) {
+            committed.set(Option.some(value));
+        }
+    }
+
+    private static final ConsumerFence ADMITTED = new ConsumerFence() {
+        @Override
+        public Epoch epoch() {
+            return EPOCH;
+        }
+
+        @Override
+        public boolean admitted() {
+            return true;
+        }
+    };
+
+    private static Result<Unit> subscribeFenced(StreamConsumerRuntime runtime,
+                                                String stream,
+                                                int partition,
+                                                ConsumerConfig config,
+                                                StreamConsumerRuntime.ConsumerCallback callback) {
+        return runtime.subscribe(stream, partition, config, callback, IdlePolicy.REAP_WHEN_IDLE, ADMITTED);
     }
 
     @Test
@@ -102,7 +151,7 @@ class StreamConsumerRuntimeClusterCursorTest {
         var store = clusterStoreWith(CheckpointRejected.INSTANCE.promise());
         var runtime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
 
-        runtime.subscribe("orders",
+        subscribeFenced(runtime, "orders",
                           0,
                           ConsumerConfig.consumerConfig(GROUP),
                           (offset, payload, ts) -> Promise.unitPromise());
@@ -128,7 +177,7 @@ class StreamConsumerRuntimeClusterCursorTest {
         var latch = new CountDownLatch(1);
 
         try {
-            runtime.subscribe("orders",
+            subscribeFenced(runtime, "orders",
                               0,
                               config,
                               (offset, payload, ts) -> {
@@ -168,7 +217,7 @@ class StreamConsumerRuntimeClusterCursorTest {
         var store = clusterStoreWith(pending);
         var runtime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
 
-        runtime.subscribe("orders",
+        subscribeFenced(runtime, "orders",
                           0,
                           ConsumerConfig.consumerConfig(GROUP),
                           (offset, payload, ts) -> Promise.unitPromise());
@@ -209,7 +258,7 @@ class StreamConsumerRuntimeClusterCursorTest {
         var store = clusterStoreWith(pending);
         var runtime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
 
-        runtime.subscribe("orders",
+        subscribeFenced(runtime, "orders",
                           0,
                           ConsumerConfig.consumerConfig(GROUP),
                           (offset, payload, ts) -> Promise.unitPromise());
@@ -244,7 +293,7 @@ class StreamConsumerRuntimeClusterCursorTest {
         var store = clusterStoreWith(Promise.unitPromise());
         var runtime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
 
-        runtime.subscribe("orders",
+        subscribeFenced(runtime, "orders",
                           0,
                           ConsumerConfig.consumerConfig(GROUP),
                           (offset, payload, ts) -> Promise.unitPromise());
@@ -263,14 +312,12 @@ class StreamConsumerRuntimeClusterCursorTest {
     void periodicCheckpoint_retriesALocalOnlyOutcome_untilTheClusterCheckpointLands() throws InterruptedException {
         var calls = new AtomicInteger();
         var clusterPersisted = new CopyOnWriteArrayList<Long>();
-        var store = ClusterCursorStore.clusterCursorStore(succeedingLocal(),
-                                                          _ -> Option.none(),
-                                                          command -> firstRejected(calls, clusterPersisted, command));
+        var store = clusterStore(commands -> firstRejected(calls, clusterPersisted, commands));
         var runtime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
         var config = ConsumerConfig.consumerConfig(GROUP, 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
 
         try {
-            runtime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
+            subscribeFenced(runtime, "orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
             // The 10ms interval elapses first, so the single delivery trips the time-based checkpoint.
             Thread.sleep(50);
             manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
@@ -299,14 +346,12 @@ class StreamConsumerRuntimeClusterCursorTest {
     void detachFlush_waitsForTheInFlightPeriodicCommit_andEachCommitReportsOnlyItsOwnOutcome() throws InterruptedException {
         var calls = new AtomicInteger();
         Promise<Unit> heldA = Promise.promise();
-        var store = ClusterCursorStore.clusterCursorStore(succeedingLocal(),
-                                                          _ -> Option.none(),
-                                                          _ -> calls.incrementAndGet() == 1 ? heldA : Promise.unitPromise());
+        var store = clusterStore(_ -> calls.incrementAndGet() == 1 ? heldA : Promise.unitPromise());
         var runtime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
         var config = ConsumerConfig.consumerConfig(GROUP, 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
 
         try {
-            runtime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
+            subscribeFenced(runtime, "orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
             Thread.sleep(50);
             manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
             awaitCount(calls::get, 1L);
@@ -330,11 +375,11 @@ class StreamConsumerRuntimeClusterCursorTest {
         }
     }
 
-    private static Promise<Unit> firstRejected(AtomicInteger calls, List<Long> persisted, KVCommand<AetherKey> command) {
+    private static Promise<Unit> firstRejected(AtomicInteger calls, List<Long> persisted, List<KVCommand<AetherKey>> commands) {
         if (calls.incrementAndGet() == 1) {
             return CheckpointRejected.INSTANCE.promise();
         }
-        if (command instanceof KVCommand.Put<?, ?> put && put.value() instanceof StreamCursorCheckpointValue value) {
+        if (commands.getFirst() instanceof KVCommand.Put<?, ?> put && put.value() instanceof StreamCursorCheckpointValue value) {
             persisted.add(value.committedOffset());
         }
 
