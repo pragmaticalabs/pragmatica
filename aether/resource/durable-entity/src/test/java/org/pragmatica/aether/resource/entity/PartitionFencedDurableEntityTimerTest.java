@@ -252,6 +252,41 @@ class PartitionFencedDurableEntityTimerTest {
             assertThat(substrate.opsOf(EntityLogRecord.Op.TIMER_FIRE)).isEqualTo(1);
         }
 
+        /// #1269 — a stalled key must not accumulate one queued fire per due timer per TICK. The tick runs
+        /// every second, and before this each one queued a fresh fire behind the stall; `fireStillPending`
+        /// discarded the extras only once they finally ran, so a wedged key's queue grew without bound.
+        ///
+        /// The key's tail is held by an update parked in its append. Every task that runs a fire drives the
+        /// partition's readiness gate first, which asks the substrate `holdsPartition` exactly once, so after
+        /// the ticks the count of those calls up to and including one settling read — queued behind all of
+        /// them on the same tail — is the number of queued fires plus one.
+        @Test
+        void fireDueTimers_queuesOneFire_whileTheKeysTailIsStalled() {
+            var entity = seededEntity();
+            var ticks = 5;
+
+            schedule(entity, "k1", new IntOp.Add(41));
+            substrate.gateAppends();
+
+            var stalled = entity.update("k1", new IntOp.Add(100));
+
+            awaitCondition(() -> substrate.gatedCount() == 1, "the update must park in its append");
+
+            for (var tick = 0; tick < ticks; tick++) {
+                entity.fireDueTimers(farFuture());
+            }
+
+            var holdsBefore = substrate.holdsChecks();
+
+            substrate.releaseGate();
+            stalled.await().onFailure(PartitionFencedDurableEntityTimerTest::failCause);
+            settle(entity, "k1");
+
+            assertThat(substrate.holdsChecks() - holdsBefore).as("queued fires + the settling read")
+                                                             .isEqualTo(2);
+            assertThat(substrate.opsOf(EntityLogRecord.Op.TIMER_FIRE)).isEqualTo(1);
+        }
+
         /// ONE record carrying the POST-FIRE state, which is what makes replay of a fired timer produce the
         /// fired state instead of re-arming it.
         @Test
@@ -756,6 +791,7 @@ class PartitionFencedDurableEntityTimerTest {
         private final List<GatedAppend> gatedAppends = new CopyOnWriteArrayList<>();
         private final List<byte[]> attempts = new CopyOnWriteArrayList<>();
         private final AtomicInteger checkpointLoads = new AtomicInteger();
+        private final AtomicInteger holdsChecks = new AtomicInteger();
         private volatile boolean gated;
         private volatile Option<Cause> appendFailure = Option.none();
         private volatile boolean checkpointLoadFails;
@@ -900,8 +936,16 @@ class PartitionFencedDurableEntityTimerTest {
             return true;
         }
 
+        /// How many times anything asked whether this node holds a partition — see
+        /// [Firing#fireDueTimers_queuesOneFire_whileTheKeysTailIsStalled].
+        int holdsChecks() {
+            return holdsChecks.get();
+        }
+
         @Override
         public boolean holdsPartition(String keyspace, int partition) {
+            holdsChecks.incrementAndGet();
+
             return true;
         }
 
