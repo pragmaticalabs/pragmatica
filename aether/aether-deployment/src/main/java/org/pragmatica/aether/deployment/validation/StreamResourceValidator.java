@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.Set;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -132,7 +133,8 @@ public sealed interface StreamResourceValidator {
     /// — mirroring [org.pragmatica.aether.config.cluster.ClusterBootstrapConfigValidator]'s `PF-25`
     /// (#575) treatment of `[operations.auto_heal] enabled`. Only non-default values are rejected: a
     /// key that happens to equal the hardcoded default does not assert anything false, even though it
-    /// is equally inert.
+    /// is equally inert. #1262 adds `consistency = strong`: `ConsensusPublishPath` has no production
+    /// caller, so the declared guarantee cannot be honoured on any write path.
     private static void guardInertConfig(Map<String, StreamResource> resources,
                                          Option<String> resourcesConfig,
                                          List<StreamValidationFailure> failures) {
@@ -162,6 +164,14 @@ public sealed interface StreamResourceValidator {
                                                                         + "' has no runtime effect — segments are always written uncompressed "
                                                                         + "regardless of this setting. Remove the key or set it to 'none'; stream "
                                                                         + "compression is not supported in 1.0 (descoped in #677)."));
+        }
+
+        if (config.consistencyMode() == ConsistencyMode.STRONG) {
+            failures.add(StreamValidationFailure.streamValidationFailure(field,
+                                                                         RULE_INERT_STREAM_CONFIG,
+                                                                         "consistency 'strong' cannot be honoured — the consensus publish path is not "
+                                                                        + "wired in this release, so STRONG writes would either fail or land as EVENTUAL "
+                                                                        + "depending on the API used (#1262). Remove the key or set it to 'eventual'."));
         }
 
         if (!"earliest".equalsIgnoreCase(config.autoOffsetReset())) {
