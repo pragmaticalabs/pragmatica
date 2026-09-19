@@ -356,10 +356,8 @@ public final class EntityCheckpointDriver {
     /// cannot see that, the same detection limit #700 records.
     @Contract
     private static void recordWrite(Registration registration, int partition, long through) {
-        if (registration.checkpointedThrough()
-                        .merge(partition, through, Math::max) == through) {
-            registration.writes()
-                        .incrementAndGet();
+        if (registration.checkpointedThrough().merge(partition, through, Math::max) == through) {
+            registration.writes().incrementAndGet();
         }
     }
 

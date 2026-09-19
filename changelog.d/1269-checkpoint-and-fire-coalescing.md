@@ -20,3 +20,13 @@
   its own mark, never its replacement's.
   [mechanism: the in-flight mark is taken over by a compare-and-set on the tick it was set on; the
   written-offset record is merged with max] — pinned by unit tests.
+- The checkpoint snapshot's `writes` counter now counts only saves that reached or raised the recorded
+  offset. A late save below it, which the fence refuses although the Put still resolves successfully, is
+  no longer counted. A claim refused because another node committed higher cannot be seen from this node
+  and is still counted, the detection limit #700 records.
+  [mechanism: the counter increments only when the max-merge leaves the save's own offset recorded] —
+  pinned by a unit test.
+- Not pinned by any test, and harmless if broken: the driver records a save's outcome before clearing its
+  in-flight mark, and getting that order wrong costs one duplicate save at an equal offset, which the fence
+  accepts. The timer's in-flight mark is cleared inside the fire's own chain, and getting that wrong costs
+  up to one tick of fire delay.
