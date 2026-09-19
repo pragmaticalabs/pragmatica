@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -126,6 +127,55 @@ class StrongConsistencyFailClosedTest {
                               .onSuccessRun(Assertions::fail)
                               .onFailure(StrongConsistencyFailClosedTest::assertUnreadableMode);
         assertThat(partitionManager.nextExpectedOffset(UNKNOWN_STREAM, PARTITION)).isZero();
+    }
+
+    /// #1262 B3: a batch on a STRONG stream is a batch of refusals. It must fail with the same typed cause a
+    /// single publish does — `Promise.allOf(...).mapToUnit()` had folded every per-event failure into a
+    /// SUCCESS that wrote nothing, a false acknowledgement.
+    @Test
+    void streamPublisherPublishBatch_refusesWithConsensusPathUnavailable_forStrongStream() {
+        publisher(STRONG_STREAM, ConsistencyMode.STRONG).publishBatch(List.of("e0".getBytes(), "e1".getBytes()))
+                                                        .await()
+                                                        .onSuccessRun(Assertions::fail)
+                                                        .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.CONSENSUS_PATH_UNAVAILABLE));
+        assertThat(partitionManager.nextExpectedOffset(STRONG_STREAM, PARTITION)).isZero();
+    }
+
+    @Test
+    void streamPublisherPublishBatch_refusesUnreadableConsistencyMode() {
+        publisher(UNKNOWN_STREAM, ConsistencyMode.UNKNOWN).publishBatch(List.of("e0".getBytes(), "e1".getBytes()))
+                                                          .await()
+                                                          .onSuccessRun(Assertions::fail)
+                                                          .onFailure(StrongConsistencyFailClosedTest::assertUnreadableMode);
+        assertThat(partitionManager.nextExpectedOffset(UNKNOWN_STREAM, PARTITION)).isZero();
+    }
+
+    /// The config-lag race the forwarded path recovers from: the stream is not yet materialized on the owner,
+    /// so the first append fails `StreamNotFound` and the owner materializes from the committed config and
+    /// retries. That retry is guarded too — a STRONG committed config is refused, never appended.
+    @Test
+    void publishForwarded_refusesStrongStream_onTheMaterializeAndRetryAttempt() {
+        var owner = streamPartitionManager(Long.MAX_VALUE, (_, _, _) -> {});
+        var lagging = config("lagging-strong-stream", ConsistencyMode.STRONG);
+        owner.committedConfigSource(name -> name.equals(lagging.name())
+                                            ? Option.some(lagging)
+                                            : Option.none());
+
+        owner.publishForwarded(lagging.name(), PARTITION, "e0".getBytes(), 1L)
+             .onSuccessRun(Assertions::fail)
+             .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.CONSENSUS_PATH_UNAVAILABLE));
+        assertThat(owner.nextExpectedOffset(lagging.name(), PARTITION)).isZero();
+        owner.close();
+    }
+
+    private DefaultStreamPublisher<byte[]> publisher(String stream, ConsistencyMode mode) {
+        return DefaultStreamPublisher.<byte[]> streamPublisher(partitionManager,
+                                                               identitySerializer(),
+                                                               stream,
+                                                               1,
+                                                               Option.<Function<byte[], Object>> none(),
+                                                               mode,
+                                                               Option.none());
     }
 
     private static void assertUnreadableMode(Cause cause) {
