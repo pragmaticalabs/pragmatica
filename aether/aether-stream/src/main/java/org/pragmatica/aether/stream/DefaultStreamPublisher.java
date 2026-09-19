@@ -143,7 +143,6 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
         }
         // #964: an UNKNOWN mode takes the EVENTUAL batch path, where every event reaches the shared write
         // router and is refused there — the same single guard the single-event path relies on.
-
         return publishBatchEventual(events);
     }
 
