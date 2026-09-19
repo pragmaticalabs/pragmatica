@@ -11,12 +11,14 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -25,6 +27,7 @@ import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
 import static org.pragmatica.aether.stream.replication.ReplicationBatcher.replicationBatcher;
 
@@ -412,6 +415,77 @@ class ReplicationBatcherTest {
 
             assertThat(sentMessages).isEmpty();
             assertThat(batcher.accumulatorCount()).isZero();
+        }
+
+        @Test
+        void addAfterClose_isRefusedWithBatcherClosed() {
+            batcher = replicationBatcher(capturingTransport(), registry, GOVERNOR, 1000, TimeSpan.timeSpan(10).seconds());
+            batcher.close();
+
+            batcher.add(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO)
+                   .onSuccess(_ -> fail("an add after close must be refused"))
+                   .onFailure(cause -> assertThat(cause).isEqualTo(ReplicationError.Lifecycle.BATCHER_CLOSED));
+            assertThat(ReplicationError.Lifecycle.BATCHER_CLOSED.isTerminal()).isTrue();
+        }
+
+        @Test
+        void close_cancelsPendingOneShot_andDrainsAcceptedEvents() {
+            var scheduled = new ArrayList<ScheduledFuture<?>>();
+            ReplicationBatcher.FlushScheduler capturing = (flush, delay) -> record(scheduled,
+                                                                                   SharedScheduler.schedule(flush, delay));
+
+            batcher = replicationBatcher(capturingTransport(), registry, GOVERNOR, 1000, TimeSpan.timeSpan(10).seconds(), capturing);
+            batcher.add(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
+
+            assertThat(scheduled).hasSize(1);
+            assertThat(scheduled.getFirst().isCancelled()).isFalse();
+
+            batcher.close();
+
+            assertThat(scheduled.getFirst().isCancelled()).as("close() must cancel the pending one-shot").isTrue();
+            assertThat(sentMessages).as("close() drains the accepted event").hasSize(1);
+        }
+
+        private static ScheduledFuture<?> record(List<ScheduledFuture<?>> scheduled, ScheduledFuture<?> future) {
+            scheduled.add(future);
+
+            return future;
+        }
+    }
+
+    /// #1246 review N4: deterministic interleaving of "drainer retired the accumulator but is descheduled
+    /// before its `remove`". The test drains the live accumulator directly — retiring it without evicting — and
+    /// then adds. The retry path must evict the retired accumulator itself and land the event on a fresh one;
+    /// without that eviction every retry finds the same retired accumulator and recursion never ends.
+    @Nested
+    class RetryPath {
+
+        @Test
+        void add_onRetiredButNotEvictedAccumulator_evictsItAndAppendsToFreshOne() {
+            batcher = replicationBatcher(capturingTransport(), registry, GOVERNOR, 1000, TimeSpan.timeSpan(10).seconds());
+            batcher.add(STREAM, PARTITION, 0L, PAYLOAD, TIMESTAMP, Epoch.ZERO);
+
+            var stalled = batcher.accumulatorFor(STREAM, PARTITION)
+                                 .fold(() -> fail("accumulator expected after add"), accumulator -> accumulator);
+
+            stalled.drain();
+
+            batcher.add(STREAM, PARTITION, 1L, "second".getBytes(), TIMESTAMP + 1, Epoch.ZERO)
+                   .onFailure(cause -> fail(cause.message()));
+
+            assertThat(batcher.accumulatorCount()).isEqualTo(1);
+            assertThat(batcher.accumulatorFor(STREAM, PARTITION)
+                              .map(fresh -> fresh != stalled)
+                              .or(false)).as("the retired accumulator was replaced").isTrue();
+
+            batcher.flushAll();
+
+            var message = (ReplicationMessage.ReplicateEvents) sentMessages.getFirst().message();
+
+            assertThat(message.fromOffset()).isEqualTo(1L);
+            assertThat(message.payloads()).hasSize(1);
+
+            batcher.close();
         }
     }
 
