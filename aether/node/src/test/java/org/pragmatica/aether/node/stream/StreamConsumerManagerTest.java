@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -20,13 +21,20 @@ import org.pragmatica.aether.node.stream.StreamConsumerManager.SlicePlacement;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.ObservabilityStrategyCell;
+import org.pragmatica.aether.slice.DefaultSliceBridge;
 import org.pragmatica.aether.slice.SliceBridge;
+import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue;
+import org.pragmatica.aether.slice.topic.ContextualEvent;
+import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.stream.DeadLetterHandler;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
+import org.pragmatica.aether.stream.topic.DurableGroupIdentity;
+import org.pragmatica.aether.stream.topic.DurableTopicPublisher;
+import org.pragmatica.aether.stream.topic.TopicEventEnvelope;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -35,6 +43,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -43,6 +52,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -966,6 +976,8 @@ class StreamConsumerManagerTest {
         private static final String TOPIC_ADDRESS = "org.example:order-events:1.0.0";
         private static final String TOPIC_STREAM = "topic:" + TOPIC_ADDRESS;
         private static final String TOPIC_GROUP = "org.example:orders#" + METHOD.name();
+        private static final MethodName ON_PLACED = MethodName.methodName("onPlaced").unwrap();
+        private static final MethodName ON_PLACED_WITH_CONTEXT = MethodName.methodName("onPlacedWithContext").unwrap();
 
         private org.pragmatica.aether.endpoint.TopicSubscriptionRegistry topicRegistry;
         private CapturingRuntime capturingRuntime;
@@ -980,10 +992,14 @@ class StreamConsumerManagerTest {
         }
 
         private void subscribeTopic(Artifact artifact) {
+            subscribeTopic(artifact, METHOD);
+        }
+
+        private void subscribeTopic(Artifact artifact, MethodName method) {
             var address = org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress(TOPIC_ADDRESS).unwrap();
             var key = org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey.topicSubscriptionKey(address,
                                                                                                               artifact,
-                                                                                                              METHOD);
+                                                                                                              method);
             var value = org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue.topicSubscriptionValue(SELF);
 
             topicRegistry.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
@@ -1051,36 +1067,131 @@ class StreamConsumerManagerTest {
         }
 
         /// The unwrap seam end to end at the delivery boundary: the captured callback receives a
-        /// node-codec-encoded [TopicEventEnvelope]; the slice's invoker must see the DECODED
-        /// application payload — never the envelope, never raw bytes.
+        /// node-codec-encoded [TopicEventEnvelope]; the slice must be handed the APPLICATION payload —
+        /// never the envelope — together with the envelope's delivery context (#1295: before it, the
+        /// node decoded the payload and invoked with the bare event, so no context ever existed). The
+        /// subscribing slice's own bridge decodes the payload bytes.
         @Test
-        void delivery_unwrapsEnvelope_andInvokesSliceWithApplicationPayload() {
+        void delivery_unwrapsEnvelope_andInvokesSliceWithApplicationPayloadAndContext() {
             subscribeTopic(ARTIFACT);
             deployDecodingSliceLocally();
             ownership.ownedBySelf(0);
             ownership.withPartitionCount(1);
-            when(invoker.invokeLocal(any(), any(), any(), any())).thenAnswer(_ -> Promise.unitPromise());
+            when(invoker.invokeLocalWithContext(any(), any(), any(), any())).thenAnswer(_ -> Promise.unitPromise());
             topicManager().reconcile();
-            var appEvent = new AppEvent("order-42");
             var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
-            var envelope = new org.pragmatica.aether.stream.topic.TopicEventEnvelope("msg-1",
-                                                                                     1234L,
-                                                                                     sliceCodec.encode(appEvent));
+            var appPayload = sliceCodec.encode(new AppEvent("order-42"));
+            var envelope = new TopicEventEnvelope("msg-1", 1234L, appPayload);
 
             capturingRuntime.callbackFor(TOPIC_STREAM, 0)
-                            .onEvent(0L,
+                            .onEvent(3L,
                                      topicAwareCodec.encode(envelope),
                                      1234L)
                             .await()
-                            .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
-            var payload = org.mockito.ArgumentCaptor.forClass(Object.class);
+                            .onFailure(cause -> fail(cause.message()));
+            var payload = org.mockito.ArgumentCaptor.forClass(byte[].class);
+            var context = org.mockito.ArgumentCaptor.forClass(MessageContext.class);
 
             org.mockito.Mockito.verify(invoker)
-                               .invokeLocal(org.mockito.ArgumentMatchers.eq(ARTIFACT),
-                                            org.mockito.ArgumentMatchers.eq(METHOD),
-                                            payload.capture(),
-                                            any());
-            assertThat(payload.getValue()).isEqualTo(appEvent);
+                               .invokeLocalWithContext(org.mockito.ArgumentMatchers.eq(ARTIFACT),
+                                                       org.mockito.ArgumentMatchers.eq(METHOD),
+                                                       payload.capture(),
+                                                       context.capture());
+            assertThat(payload.getValue()).isEqualTo(appPayload);
+            assertThat(context.getValue()).isEqualTo(MessageContext.messageContext("msg-1", TOPIC_ADDRESS, 0, 3L));
+        }
+
+        /// #1295, end to end at the node boundary: a REAL [DurableTopicPublisher]
+        /// stamps the envelope's messageId; the manager's dispatch delivers it through a REAL
+        /// [DefaultSliceBridge] holding a 1-arg subscriber and a 2-arg subscriber
+        /// in the exact adapter shape the slice processor generates, both on the SAME topic. The 2-arg
+        /// subscriber must observe the PUBLISHER's messageId with the topic, partition and offset of the
+        /// delivery; the 1-arg subscriber must receive the bare event, as before. Before #1295 the 2-arg
+        /// subscriber failed every delivery with a ClassCastException and never saw anything.
+        @Test
+        void delivery_givesTwoArgSubscriberThePublishersMessageId_andOneArgSubscriberTheBareEvent() {
+            var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
+            var bare = new AtomicReference<Object>();
+            var contextual = new AtomicReference<ContextualEvent>();
+            var subscriber = DefaultSliceBridge.defaultSliceBridge(ARTIFACT,
+                                                                                                () -> List.of(bareSubscriber(bare),
+                                                                                                              contextualSubscriber(contextual)),
+                                                                                                sliceCodec);
+
+            subscribeTopic(ARTIFACT, ON_PLACED);
+            subscribeTopic(ARTIFACT, ON_PLACED_WITH_CONTEXT);
+            deployDecodingSliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            when(invoker.invokeLocalWithContext(any(), any(), any(), any())).thenAnswer(call -> subscriber.invokeWithContext(call.<MethodName> getArgument(1)
+                                                                                                                                  .name(),
+                                                                                                                              call.getArgument(2),
+                                                                                                                              call.getArgument(3))
+                                                                                                                          .mapToUnit());
+            topicManager().reconcile();
+
+            var published = publishThroughTheRealPublisher(sliceCodec, new AppEvent("order-42"));
+
+            deliver(ON_PLACED, published, 5L);
+            deliver(ON_PLACED_WITH_CONTEXT, published, 5L);
+
+            assertThat(bare.get()).isEqualTo(new AppEvent("order-42"));
+            assertThat(contextual.get()).isEqualTo(ContextualEvent.contextualEvent(new AppEvent("order-42"),
+                                                                                                                      MessageContext.messageContext(published.messageId(),
+                                                                                                                                                                                      TOPIC_ADDRESS,
+                                                                                                                                                                                      0,
+                                                                                                                                                                                      5L)));
+        }
+
+        private void deliver(MethodName method,
+                             TopicEventEnvelope envelope,
+                             long offset) {
+            capturingRuntime.callbackFor(TOPIC_STREAM,
+                                         0,
+                                         DurableGroupIdentity.groupId(ARTIFACT, method))
+                            .onEvent(offset, topicAwareCodec.encode(envelope), 1234L)
+                            .await()
+                            .onFailure(cause -> fail(method.name() + " delivery failed: "
+                                                                                      + cause.message()));
+        }
+
+        private static TopicEventEnvelope publishThroughTheRealPublisher(SliceCodec sliceCodec,
+                                                                                                            AppEvent event) {
+            var captured = new AtomicReference<TopicEventEnvelope>();
+
+            new DurableTopicPublisher<AppEvent>(sliceCodec, envelope -> capture(captured, envelope))
+                .publish(event)
+                .await();
+
+            return captured.get();
+        }
+
+        private static Promise<Unit> capture(AtomicReference<TopicEventEnvelope> captured,
+                                             TopicEventEnvelope envelope) {
+            captured.set(envelope);
+            return Promise.unitPromise();
+        }
+
+        private static SliceMethod<Unit, AppEvent> bareSubscriber(AtomicReference<Object> seen) {
+            return new SliceMethod<>(ON_PLACED,
+                                                                 event -> record(seen, event),
+                                                                 new TypeToken<Unit>() {},
+                                                                 new TypeToken<AppEvent>() {});
+        }
+
+        /// The exact adapter `FactoryClassGenerator` emits for `onPlacedWithContext(AppEvent, MessageContext)`.
+        private static SliceMethod<Unit, ContextualEvent> contextualSubscriber(AtomicReference<ContextualEvent> seen) {
+            return new SliceMethod<>(ON_PLACED_WITH_CONTEXT,
+                                                                 contextual -> record(seen,
+                                                                                      ContextualEvent.contextualEvent((AppEvent) contextual.event(),
+                                                                                                                                                        contextual.context())),
+                                                                 new TypeToken<Unit>() {},
+                                                                 new TypeToken<ContextualEvent>() {});
+        }
+
+        private static <T> Promise<Unit> record(AtomicReference<T> seen, T value) {
+            seen.set(value);
+            return Promise.unitPromise();
         }
 
         private record DecodingBridge(SliceCodec codec) implements SliceBridge {
@@ -1127,11 +1238,17 @@ class StreamConsumerManagerTest {
 
         private static final class CapturingRuntime implements StreamConsumerRuntime {
             private final Map<String, ConsumerCallback> callbacks = new ConcurrentHashMap<>();
+            private final Map<String, ConsumerCallback> callbacksByGroup = new ConcurrentHashMap<>();
             private final Map<String, ConsumerConfig> byKey = new ConcurrentHashMap<>();
             private final Map<String, Integer> subscribeCalls = new ConcurrentHashMap<>();
 
             ConsumerCallback callbackFor(String streamName, int partition) {
                 return callbacks.get(streamName + "[" + partition + "]");
+            }
+
+            /// Two topic groups share one `stream[partition]` key; this resolves a group's own callback.
+            ConsumerCallback callbackFor(String streamName, int partition, String groupId) {
+                return callbacksByGroup.get(streamName + "[" + partition + "]#" + groupId);
             }
 
             List<String> streams() {
@@ -1177,6 +1294,7 @@ class StreamConsumerManagerTest {
 
                 subscribeCalls.merge(key, 1, Integer::sum);
                 callbacks.put(key, callback);
+                callbacksByGroup.put(key + "#" + config.groupId(), callback);
                 byKey.put(key, config);
 
                 return Result.unitResult();
