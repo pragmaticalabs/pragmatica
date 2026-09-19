@@ -5,12 +5,15 @@
   partition's ordered append section with no per-record fsync, and `syncReplicated` (the barrier the
   receive handler awaits before acking) commits everything written so far in **one** group commit. The same
   batch now costs one fsync, and replay order equals offset order.
-  `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/replication/ReplicaWalGroupCommitTest.java]`
-  (unit level, one JVM.)
-- **Backfill now commits before it promotes.** Replica frames no longer carry their own fsync, so a
-  `PartitionBackfill` run awaits the same barrier after applying the pulled events and **before** marking
-  the replica CAUGHT_UP and acking the owner. A failed commit fails the run, and the replica stays SYNCING.
-  `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/replication/PartitionBackfillDurabilityTest.java]`
+  `[mechanism: frames are written in-section and the barrier commits the latest write sequence once; pinned
+  in one JVM by ReplicaWalGroupCommitTest]`
+- **Every catch-up run commits what it re-appended**, exactly once and never per record, even on a quiet
+  partition that receives no later live batch. A `PartitionBackfill` run commits **before** it marks the
+  replica CAUGHT_UP and acks the owner; a failed commit fails the run, and the replica stays SYNCING.
+  Failover replay from sealed segments (`GovernorFailoverHandler`) commits after each replayed range, and
+  `FailoverRecovery` commits after each fetched range.
+  `[mechanism: each run awaits syncReplicated before completing; pinned against a real WAL by
+  CatchUpWalDurabilityTest and PartitionBackfillDurabilityTest]`
 - A failed replica frame write still stops acks for that partition: the failure is sticky against later
   writes to the same WAL. A rebuilt partition, with a new WAL instance, starts clean; previously its
   predecessor's failure poisoned it until restart.
