@@ -2288,13 +2288,15 @@ the view actionable (see recovery below).
       "violated": false,
       "violation": ""
     }
-  ]
+  ],
+  "walRecoveryHeadGapsAccepted": 0
 }
 ```
 
 | Field | Description |
 |-------|-------------|
 | `walTotalBytes` | Total live WAL bytes across every partition on this node — the same number the `streams` storage instance reports as `wal.totalBytes` (both derive from one snapshot) |
+| `walRecoveryHeadGapsAccepted` | WAL recoveries on this node, since process start, that accepted a gap BEFORE a WAL file's first record as reclaimed history (the partition's sealed segments were removed by retention after the WAL was compacted). Each one is also logged at WARN, naming the stream, partition and offset range. Expected after retention reclaimed a partition's every sealed segment; otherwise the records in that range are lost. A gap BETWEEN records, or a duplicate offset, is never accepted: it refuses the stream on the node with an ERROR |
 | `partitions[]` | One row per `(stream, partition)` this node holds anything for — materialized (ring/WAL) or held only as sealed segments — sorted by stream, then partition |
 | `stream` / `partition` | The partition coordinate (`entity:`-prefixed streams are durable-entity logs) |
 | `wal` | The partition's live WAL counters; `null` when it has no WAL (non-durable path, or a segment-only row) |

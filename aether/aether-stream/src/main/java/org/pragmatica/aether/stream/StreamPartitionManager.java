@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.List;
 import java.util.Map;
@@ -36,16 +37,20 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
+import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
+import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.aether.stream.wal.PartitionWal.WalRecord;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -67,8 +72,13 @@ import static org.pragmatica.lang.Unit.unit;
 public final class StreamPartitionManager implements AutoCloseable {
     private static final long DEFAULT_MAX_TOTAL_BYTES = 128 * 1024 * 1024L;
     private static final TimeSpan COMMIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
-
     private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
+
+    /// WAL recoveries (node-wide, since process start) that accepted a gap BEFORE the first WAL record as
+    /// reclaimed history (#1258 review B2) — each is also WARNed with the range. Non-zero is expected after
+    /// retention reclaimed every sealed segment of a partition; an operator seeing it without such
+    /// retention is looking at lost records.
+    private static final AtomicLong WAL_RECOVERY_HEAD_GAPS = new AtomicLong();
 
     /// Absolute per-stream partition ceiling (#265 increment 4, spec §7/§10). Enforced PRE-COMMIT in
     /// {@link #createFreshStream} (mirroring the build-time `StreamConfigParser` check) and surfaced as the
@@ -271,6 +281,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         this.ownerEpochSource = ownerEpochSource;
         this.walBaseDir = walBaseDir;
         this.lastSealedOffset = lastSealedOffset;
+        replicationManager.observeAcks(this::onReplicaAck);
+    }
+
+    /// See [#WAL_RECOVERY_HEAD_GAPS].
+    public static long walRecoveryHeadGapsAccepted() {
+        return WAL_RECOVERY_HEAD_GAPS.get();
     }
 
     public static StreamPartitionManager streamPartitionManager() {
@@ -1150,45 +1166,145 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// the deposed owner identically. The no-epoch overload above stamps the node's current owner epoch
     /// from the injected [StreamOwnerEpochSource] (floor [Epoch#ZERO] when unowned/non-fenced).
     ///
-    /// Crash durability (streaming-persistence W3): when a per-partition WAL is configured the ring
-    /// assigns the offset first, then the event is appended to that partition's [PartitionWal] and the
-    /// publish does NOT resolve as success until the WAL `append` is fsync-durable. A crash after the
-    /// ring append but before fsync loses the event AND fails the publish (the caller was never acked,
-    /// so it retries) — only WAL-durable events ack. With no WAL configured this is a no-op gate and
-    /// behavior is exactly as before.
+    /// Crash durability (streaming-persistence W3): when a per-partition WAL is configured the event's
+    /// frame is written to that partition's [PartitionWal] and the publish does NOT resolve as success
+    /// until the frame is fsync-durable. A crash before the fsync loses the event AND fails the publish
+    /// (the caller was never acked, so it retries) — only WAL-durable events ack. With no WAL configured
+    /// this is a no-op gate and behavior is exactly as before.
+    ///
+    /// Ordering (#1231/#1232): offset assignment, the WAL frame write and the replication send run in the
+    /// partition's ordered append section ([OffHeapRingBuffer#appendOrdered]), so concurrent publishers
+    /// get distinct contiguous offsets, the WAL file is in offset order (recovery places records by it) and
+    /// replicas receive events in offset order (their `fromOffset` check rejects anything else). Only the
+    /// group-commit fsync is awaited after the section is released, so concurrent publishers still share
+    /// fsyncs. A publish whose fsync then fails has already been replicated.
+    ///
+    /// Visibility (#1235): the appended event is NOT readable by consumers and wakes no push listener
+    /// until it is durable here AND acknowledged by `minSyncReplicas - 1` distinct peers ([#refreshVisible]).
+    /// A failed frame write or fsync therefore never exposes the event, even when a peer acks it later.
     public Result<Long> publishLocal(String streamName,
                                      int partition,
                                      byte[] payload,
                                      long timestamp,
                                      Epoch ownerEpoch) {
-        return resolveStreamEntry(streamName).flatMap(entry -> appendToPartition(entry,
-                                                                                 streamName,
-                                                                                 partition,
-                                                                                 payload,
-                                                                                 timestamp,
-                                                                                 ownerEpoch))
-                                 .flatMap(offset -> durablyLog(streamName, partition, offset, payload, timestamp))
-                                 .onSuccess(offset -> replicationManager.replicateEvent(streamName,
-                                                                                        partition,
-                                                                                        offset,
-                                                                                        payload,
-                                                                                        timestamp,
-                                                                                        ownerEpoch));
+        return resolveStreamEntry(streamName).flatMap(entry -> publishInSection(entry,
+                                                                                streamName,
+                                                                                partition,
+                                                                                payload,
+                                                                                timestamp,
+                                                                                ownerEpoch))
+                                 .flatMap(this::awaitDurable)
+                                 .onSuccess(offset -> ownerDurable(streamName, partition, offset));
     }
 
-    /// Gate the publish ack on WAL fsync (streaming-persistence W3). With no WAL configured for
-    /// `(streamName, partition)` this returns the offset unchanged. With a WAL present, the record is
-    /// appended and the GROUP-COMMIT fsync is awaited at this durability barrier — the event is acked
-    /// only once it survives `kill -9`. [TerminalOperation]: the blocking await IS the durability
-    /// contract (publish does not resolve until fsync), and the WAL's group-commit batches concurrent
-    /// publishers into a single fsync so the barrier does not serialize throughput.
-    @TerminalOperation
-    private Result<Long> durablyLog(String streamName, int partition, long offset, byte[] payload, long timestamp) {
-        return walFor(streamName, partition).map(wal -> wal.append(offset, payload, timestamp)
-                                                           .await()
-                                                           .map(_ -> offset))
-                     .or(() -> success(offset));
+    /// The owner's append at `offset` is durable — its group commit resolved, and group commit resolves in
+    /// offset order, so the whole prefix is. Visibility is recomputed BEFORE the publish returns, so an
+    /// owner-only (`minSyncReplicas <= 1`) publisher can read its own write. A ring released in the
+    /// meantime has no reader left to expose the event to, so its absence is ignored.
+    @Contract
+    private void ownerDurable(String streamName, int partition, long offset) {
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> ownerDurable(ring, streamName, partition, offset));
     }
+
+    @Contract
+    private void ownerDurable(OffHeapRingBuffer ring, String streamName, int partition, long offset) {
+        ring.markDurable(offset);
+        refreshVisible(ring, streamName, partition);
+    }
+
+    /// Owner-side ack observer (#1235). The replication manager runs it BEFORE it records the ack in the
+    /// registry, so no waiter can be resolved — by an await or a registry read — before the event is
+    /// visible. It runs a second time after the registry update; see [#refreshVisible] for why.
+    @Contract
+    private void onReplicaAck(ReplicationMessage.ReplicateAck ack) {
+        resolvePartitionBuffer(ack.streamName(), ack.partition()).onSuccess(ring -> ackedVisible(ring, ack));
+    }
+
+    /// Reads the ack through the overlay, because this observer runs BEFORE the registry records it.
+    @Contract
+    private void ackedVisible(OffHeapRingBuffer ring, ReplicationMessage.ReplicateAck ack) {
+        ring.advanceVisible(Math.min(ring.durableOffset(),
+                                     replicationManager.replicatedThrough(ack, minSyncReplicasFor(ack.streamName()) - 1)));
+    }
+
+    /// visible = min(durable, the highest offset `minSyncReplicas - 1` distinct peers have acknowledged).
+    /// Both inputs cover a contiguous prefix — group commit resolves in offset order, and a replica acks
+    /// only its verified contiguous run (#260) — so the minimum is a prefix too. No advance is lost to a
+    /// race between the fsync path and the ack path. The fsync path writes `durable` and then reads the
+    /// registry. The ack's second observer call runs after the registry write and then reads `durable`.
+    /// Both are volatile accesses, so at least one of the two sees both inputs.
+    @Contract
+    private void refreshVisible(OffHeapRingBuffer ring, String streamName, int partition) {
+        ring.advanceVisible(Math.min(ring.durableOffset(), peerAcknowledgedThrough(streamName, partition)));
+    }
+
+    private long peerAcknowledgedThrough(String streamName, int partition) {
+        return replicationManager.replicatedThrough(streamName, partition, minSyncReplicasFor(streamName) - 1);
+    }
+
+    private Result<LoggedAppend> publishInSection(StreamEntry entry,
+                                                  String streamName,
+                                                  int partition,
+                                                  byte[] payload,
+                                                  long timestamp,
+                                                  Epoch ownerEpoch) {
+        return appendToPartition(entry,
+                                 streamName,
+                                 partition,
+                                 payload,
+                                 timestamp,
+                                 ownerEpoch,
+                                 offset -> logAndReplicate(streamName, partition, offset, payload, timestamp, ownerEpoch));
+    }
+
+    /// The in-section half of an owner publish — runs under the partition's append lock, right after the
+    /// ring assigned `offset`: write the WAL frame (no fsync), start its group commit, then send the event
+    /// to the replicas. A failed frame write fails the publish and sends nothing.
+    private Result<LoggedAppend> logAndReplicate(String streamName,
+                                                 int partition,
+                                                 long offset,
+                                                 byte[] payload,
+                                                 long timestamp,
+                                                 Epoch ownerEpoch) {
+        return writeWalFrame(walFor(streamName, partition), offset, payload, timestamp).onSuccess(_ -> replicationManager.replicateEvent(streamName,
+                                                                                                                                         partition,
+                                                                                                                                         offset,
+                                                                                                                                         payload,
+                                                                                                                                         timestamp,
+                                                                                                                                         ownerEpoch));
+    }
+
+    private static Result<LoggedAppend> writeWalFrame(Option<PartitionWal> wal,
+                                                      long offset,
+                                                      byte[] payload,
+                                                      long timestamp) {
+        return wal.map(w -> writeWalFrame(w, offset, payload, timestamp))
+                  .or(() -> success(new LoggedAppend(offset,
+                                                     Promise.unitPromise())));
+    }
+
+    private static Result<LoggedAppend> writeWalFrame(PartitionWal wal, long offset, byte[] payload, long timestamp) {
+        return wal.write(offset, payload, timestamp)
+                  .map(writeSeq -> new LoggedAppend(offset,
+                                                    wal.commit(writeSeq)));
+    }
+
+    /// Gate the publish ack on WAL fsync (streaming-persistence W3), OUTSIDE the ordered section. With no
+    /// WAL configured the barrier is already resolved. With a WAL present the GROUP-COMMIT fsync is
+    /// awaited here — the event is acked only once it survives `kill -9`. [TerminalOperation]: the
+    /// blocking await IS the durability contract (publish does not resolve until fsync), and the WAL's
+    /// group commit batches concurrent publishers into a single fsync so the barrier does not serialize
+    /// throughput.
+    @TerminalOperation
+    private Result<Long> awaitDurable(LoggedAppend logged) {
+        return logged.durable()
+                     .await()
+                     .map(_ -> logged.offset());
+    }
+
+    /// An owner append that has left the ordered section: its offset, and the group-commit fsync its WAL
+    /// frame waits on (already resolved when the partition has no WAL).
+    private record LoggedAppend(long offset, Promise<Unit> durable) {}
 
     /// The configured [PartitionWal] for `(streamName, partition)`, or [Option#none] when no WAL base
     /// dir is wired (the steady-state legacy/Forge path) or the partition is out of range.
@@ -1230,13 +1346,65 @@ public final class StreamPartitionManager implements AutoCloseable {
                                         byte[] payload,
                                         long timestamp,
                                         Epoch ownerEpoch) {
-        return resolveStreamEntry(streamName).flatMap(entry -> appendToPartition(entry,
-                                                                                 streamName,
-                                                                                 partition,
-                                                                                 payload,
-                                                                                 timestamp,
-                                                                                 ownerEpoch))
-                                 .onSuccess(offset -> walReplicated(streamName, partition, offset, payload, timestamp));
+        return resolveStreamEntry(streamName).flatMap(entry -> appendReplicatedInSection(entry,
+                                                                                         streamName,
+                                                                                         partition,
+                                                                                         payload,
+                                                                                         timestamp,
+                                                                                         ownerEpoch))
+                                 .onSuccess(offset -> visibleWhenReplicaDurable(streamName, partition, offset));
+    }
+
+    /// #1235, replica side: a replicated record becomes visible to reads served BY THIS NODE once its own
+    /// WAL write is durable (at once with no WAL). A replica does not learn the owner's visible position,
+    /// so this bounds a replica-local read by the replica's durability, not by the owner's min-sync acks.
+    /// A failed WAL write poisons the chain, so the failure is dropped here by design: nothing at or after
+    /// it becomes visible, and the failure itself surfaces where the receive handler awaits
+    /// [#syncReplicated] before acking.
+    @Contract
+    private void visibleWhenReplicaDurable(String streamName, int partition, long offset) {
+        syncReplicated(streamName, partition).onSuccess(_ -> replicaDurable(streamName, partition, offset));
+    }
+
+    @Contract
+    private void replicaDurable(String streamName, int partition, long offset) {
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> replicaDurable(ring, offset));
+    }
+
+    @Contract
+    private static void replicaDurable(OffHeapRingBuffer ring, long offset) {
+        ring.markDurable(offset);
+        ring.advanceVisible(offset);
+    }
+
+    /// The replica append shares the owner's ordered section (#1231): it and any concurrent local append
+    /// on this partition are serialized, and its WAL write is chained in offset order.
+    private Result<Long> appendReplicatedInSection(StreamEntry entry,
+                                                   String streamName,
+                                                   int partition,
+                                                   byte[] payload,
+                                                   long timestamp,
+                                                   Epoch ownerEpoch) {
+        return appendToPartition(entry,
+                                 streamName,
+                                 partition,
+                                 payload,
+                                 timestamp,
+                                 ownerEpoch,
+                                 offset -> walReplicatedInOrder(streamName, partition, offset, payload, timestamp));
+    }
+
+    /// Chains the replicated record's WAL append in offset order and reports `offset` as the in-section
+    /// result. It cannot fail here by design: a failed WAL append poisons the chain and surfaces at
+    /// [#syncReplicated], the barrier the acking replica awaits.
+    private Result<Long> walReplicatedInOrder(String streamName,
+                                              int partition,
+                                              long offset,
+                                              byte[] payload,
+                                              long timestamp) {
+        walReplicated(streamName, partition, offset, payload, timestamp);
+
+        return success(offset);
     }
 
     /// #634 item 1: a replicated/backfilled record enters the SAME per-partition WAL the owner's publish
@@ -1257,11 +1425,10 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                      timestamp));
     }
 
-    /// Appends are CHAINED per partition — each starts only after its predecessor is durable — because
-    /// [PartitionWal#append] runs its file write on a per-call async supplier: unchained concurrent calls
-    /// race the FILE order, and file order is load-bearing (recovery derives `lastOffset` from the last
-    /// record; truncation assumes monotonic offsets). The cost per record equals what the owner's own
-    /// publish path already pays in `durablyLog`. A failed append deliberately POISONS the chain: a later
+    /// Appends are CHAINED per partition — each starts only after its predecessor is durable — and the
+    /// chain is extended inside the partition's ordered append section, so it is in offset order; file
+    /// order is load-bearing (recovery places records by stored offset and refuses a gap or duplicate;
+    /// truncation assumes monotonic offsets). The chain costs one fsync per record (#1244). A failed append deliberately POISONS the chain: a later
     /// success after a mid-chain failure would leave a hole the ring does not have, so `localLogComplete`
     /// would lie — instead every later [#syncReplicated] fails, acks stop, and the owner's barrier
     /// degrades honestly until the replica is repaired or restarted.
@@ -1309,15 +1476,18 @@ public final class StreamPartitionManager implements AutoCloseable {
                                      .or(-1L);
     }
 
-    private Result<Long> appendToPartition(StreamEntry entry,
-                                           String streamName,
-                                           int partition,
-                                           byte[] payload,
-                                           long timestamp,
-                                           Epoch ownerEpoch) {
+    /// Append into the partition's ordered section: `inOrder` runs with the assigned offset before any
+    /// other append on this partition is assigned one (see [OffHeapRingBuffer#appendOrdered]).
+    private <T> Result<T> appendToPartition(StreamEntry entry,
+                                            String streamName,
+                                            int partition,
+                                            byte[] payload,
+                                            long timestamp,
+                                            Epoch ownerEpoch,
+                                            Fn1<Result<T>, Long> inOrder) {
         return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> checkEventSize(entry, payload))
                              .flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
-                             .flatMap(buffer -> buffer.append(payload, timestamp))
+                             .flatMap(buffer -> buffer.appendOrdered(payload, timestamp, inOrder))
                              .onSuccess(_ -> entry.updateActivity());
     }
 
@@ -1373,11 +1543,33 @@ public final class StreamPartitionManager implements AutoCloseable {
         return resolvePartitionBuffer(streamName, partition).option();
     }
 
+    /// Consumer read of the local ring, bounded by the partition's VISIBLE position (#1235).
     public Result<List<OffHeapRingBuffer.RawEvent>> readLocal(String streamName,
                                                               int partition,
                                                               long fromOffset,
                                                               int maxEvents) {
         return resolvePartitionBuffer(streamName, partition).flatMap(buffer -> buffer.read(fromOffset, maxEvents));
+    }
+
+    /// Whether `nodeId` is a registered replica of `(streamName, partition)` in the SAME registry the
+    /// replication manager sends to and counts acks from (#1235). Gates the appended-head catch-up read:
+    /// a node outside the replica set gets a consumer read instead.
+    public boolean isRegisteredReplica(String streamName, int partition, NodeId nodeId) {
+        return replicationManager.registry()
+                                 .replicasFor(streamName, partition)
+                                 .stream()
+                                 .map(ReplicaDescriptor::nodeId)
+                                 .anyMatch(nodeId::equals);
+    }
+
+    /// Replication read of the local ring, bounded by the APPENDED head (#1235): serves replica catch-up
+    /// and survivor pulls, which must see events that are not yet visible, and the entity log fold, whose
+    /// head is the appended head. Never a consumer path.
+    public Result<List<OffHeapRingBuffer.RawEvent>> readAppended(String streamName,
+                                                                 int partition,
+                                                                 long fromOffset,
+                                                                 int maxEvents) {
+        return resolvePartitionBuffer(streamName, partition).flatMap(buffer -> buffer.readAppended(fromOffset, maxEvents));
     }
 
     public Option<StreamInfo> streamInfo(String streamName) {
@@ -2703,11 +2895,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                       .or(() -> success(unit()));
         }
 
-        /// Seed the fresh ring above the partition's durable last-sealed offset (so reads at or below it
-        /// cleanly miss and fall through to the tiered reader), then append the WAL's un-sealed tail in
-        /// order. The ring assigns `base + 1, base + 2, …`, exactly matching the records' original
-        /// offsets. A `base` of `-1` (nothing sealed) leaves the fresh ring un-seeded and replays the
-        /// whole log from offset 0.
+        /// Place the WAL's un-sealed tail (records above the durable last-sealed offset `base`) at its
+        /// STORED offsets (#1232), seeding the fresh ring first so reads below the tail cleanly miss and
+        /// fall through to the tiered reader. A refusal is logged at ERROR here, where stream and
+        /// partition are known: it leaves the stream unmaterialized on this node when the stream is being
+        /// created, and this partition unbuilt on a lazy per-partition materialize.
         private static Result<Unit> replayTail(String streamName,
                                                int partition,
                                                OffHeapRingBuffer ring,
@@ -2716,30 +2908,141 @@ public final class StreamPartitionManager implements AutoCloseable {
             var base = lastSealedOffset.lastSealedOffset(streamName, partition);
             var records = new ArrayList<WalRecord>();
 
-            return seedRing(ring, base).flatMap(_ -> wal.replay(base, records::add))
-                           .flatMap(_ -> appendTail(ring, records));
+            return wal.replay(-1L, records::add)
+                      .flatMap(_ -> placeTail(streamName,
+                                              partition,
+                                              wal.path(),
+                                              ring,
+                                              base,
+                                              sortedByOffset(streamName, partition, records)))
+                      .onFailure(cause -> log.error("Stream {} is not materialized on this node: partition {} refused its WAL: {}",
+                                                    streamName,
+                                                    partition,
+                                                    cause.message()));
         }
 
-        /// Position the fresh ring so the next append is `base + 1` when sealed segments already cover
-        /// `[0, base]`; a no-op when nothing is sealed (`base < 0`).
-        private static Result<Unit> seedRing(OffHeapRingBuffer ring, long base) {
-            return base >= 0
-                   ? ring.seedHead(base)
+        /// `fileRecords` is the whole file in offset order — the records at or below `base` too (lazy
+        /// truncation keeps them until compaction) — because only the file's FIRST PHYSICAL record can
+        /// tell reclaimed history from a hole (see [#seedFor]). The tail placed is the records above `base`.
+        private static Result<Unit> placeTail(String streamName,
+                                              int partition,
+                                              Path walFile,
+                                              OffHeapRingBuffer ring,
+                                              long base,
+                                              List<WalRecord> fileRecords) {
+            var tail = recordsAbove(fileRecords, base);
+
+            return seedRing(ring, seedFor(streamName, partition, walFile, base, fileRecords)).flatMap(_ -> appendTail(streamName,
+                                                                                                                      partition,
+                                                                                                                      walFile,
+                                                                                                                      ring,
+                                                                                                                      tail));
+        }
+
+        private static List<WalRecord> recordsAbove(List<WalRecord> fileRecords, long base) {
+            return fileRecords.stream()
+                              .filter(record -> record.offset() > base)
+                              .toList();
+        }
+
+        /// Position the fresh ring so the next append is `seed + 1`; a no-op when `seed < 0` (nothing
+        /// sealed, and the WAL starts at offset 0 or is empty).
+        private static Result<Unit> seedRing(OffHeapRingBuffer ring, long seed) {
+            return seed >= 0
+                   ? ring.seedHead(seed)
                    : success(unit());
         }
 
-        /// Append the recovered records into the ring in scan order (their original offsets), failing the
-        /// recovery if any append fails. The events are the un-sealed tail, which fits the fresh ring;
-        /// a normal `append` is used (no quiet/recovered variant exists), so a recovered event may
-        /// re-trigger the eviction→seal listener — idempotent for the tail being recovered.
-        private static Result<Unit> appendTail(OffHeapRingBuffer ring, List<WalRecord> records) {
-            var results = records.stream().map(record -> appendRecord(ring, record)).toList();
-
-            return Result.allOf(results).mapToUnit();
+        /// The ring seed: `base`, unless the file's FIRST PHYSICAL record sits above `base + 1` (#1258 review
+        /// B2, R2-3). That head gap is indistinguishable today from retention having reclaimed the
+        /// partition's sealed segments — the durable floor then drops (to -1 when every segment is gone)
+        /// while WAL compaction already removed the records below the old floor — so it is accepted as
+        /// reclaimed history: the ring is seeded just below the first record, reads of the gap miss as
+        /// expired, and the range is WARNed and counted ([#WAL_RECOVERY_HEAD_GAPS]). When the file still
+        /// holds records at or below `floor + 1`, a missing offset above them is a HOLE, never reclaimed
+        /// history: the ring stays at `base` and [#placeRecord] refuses at the first missing offset.
+        private static long seedFor(String streamName,
+                                    int partition,
+                                    Path walFile,
+                                    long base,
+                                    List<WalRecord> fileRecords) {
+            return fileRecords.isEmpty() || fileRecords.getFirst()
+                                                       .offset() <= base + 1
+                   ? base
+                   : acceptHeadGap(streamName,
+                                   partition,
+                                   walFile,
+                                   base,
+                                   fileRecords.getFirst().offset());
         }
 
-        private static Result<Long> appendRecord(OffHeapRingBuffer ring, WalRecord record) {
-            return ring.append(record.payload(), record.timestampMillis());
+        private static long acceptHeadGap(String streamName, int partition, Path walFile, long base, long firstOffset) {
+            WAL_RECOVERY_HEAD_GAPS.incrementAndGet();
+            log.warn("Stream {} partition {}: WAL {} starts at offset {} but the durable sealed floor is {} — offsets [{}, {}] are"
+                    + " treated as reclaimed history (their sealed segments were removed by retention) and read as"
+                    + " expired. If no retention reclaimed this partition, those records are LOST.",
+                     streamName,
+                     partition,
+                     walFile,
+                     firstOffset,
+                     base,
+                     base + 1,
+                     firstOffset - 1);
+
+            return firstOffset - 1;
+        }
+
+        /// Place the recovered records by their STORED offsets (#1232): sorted by offset (stable, so a
+        /// duplicate stays adjacent to its twin), each must be exactly the offset the ring assigns next.
+        /// A file whose frames are merely out of order — as the pre-#1232 owner path could write — is
+        /// thereby recovered correctly; a gap between records or a duplicate stops the recovery with
+        /// [StreamError.WalReplayMismatch] at the first mismatch. Records are NEVER renumbered: that would
+        /// shift every later record against replicas, sealed segments and consumer cursors. The events
+        /// are the un-sealed tail, which fits the fresh ring; a normal `append` is used (no
+        /// quiet/recovered variant exists), so a recovered event may re-trigger the eviction→seal listener
+        /// — idempotent for the tail being recovered.
+        private static Result<Unit> appendTail(String streamName,
+                                               int partition,
+                                               Path walFile,
+                                               OffHeapRingBuffer ring,
+                                               List<WalRecord> records) {
+            var placed = Result.unitResult();
+
+            for (var record : records) {
+                placed = placed.flatMap(_ -> placeRecord(streamName, partition, walFile, ring, record));
+            }
+
+            return placed;
+        }
+
+        /// The fixed writer refuses out-of-order offsets, so a file that needed reordering was written
+        /// by pre-#1232 code or by a writer defect — WARNed, then placed by stored offset.
+        private static List<WalRecord> sortedByOffset(String streamName, int partition, List<WalRecord> records) {
+            var sorted = records.stream().sorted(Comparator.comparingLong(WalRecord::offset)).toList();
+
+            if (!sorted.equals(records)) {
+                log.warn("Stream {} partition {}: WAL frames were out of offset order (a pre-#1232 file or a writer"
+                        + " defect); placing {} records by their stored offsets",
+                         streamName,
+                         partition,
+                         records.size());
+            }
+
+            return sorted;
+        }
+
+        private static Result<Unit> placeRecord(String streamName,
+                                                int partition,
+                                                Path walFile,
+                                                OffHeapRingBuffer ring,
+                                                WalRecord record) {
+            var expected = ring.headOffset() + 1;
+
+            return record.offset() == expected
+                   ? ring.append(record.payload(),
+                                 record.timestampMillis())
+                         .mapToUnit()
+                   : new StreamError.WalReplayMismatch(streamName, partition, walFile, expected, record.offset()).result();
         }
 
         private static Result<List<Option<PartitionWal>>> openWals(StreamConfig config,

@@ -2792,7 +2792,9 @@ WAL counters (`sizeBytes`, replayable window `(truncatedUpto, lastOffset]`, fsyn
 `sealedThrough` / `earliestSegment` — the durable sealed bound and the earliest retained sealed
 segment; `checkpointFloor` — the entity checkpoint; `coveredFrom` — earliest offset reachable from
 any local source; `violated` / `violation` — the tri-floor invariant verdict. `walTotalBytes` at the
-root is this node's total live WAL footprint. Full schema and the precise invariant in the
+root is this node's total live WAL footprint; `walRecoveryHeadGapsAccepted` counts WAL recoveries that
+accepted a gap before a WAL file's first record as reclaimed history (non-zero without retention
+having reclaimed that partition means records were lost — the WARN log names the range). Full schema and the precise invariant in the
 Management API section linked above.
 
 **A `violated: true` row means this node cannot rebuild that partition from its checkpoint** — the

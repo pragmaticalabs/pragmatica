@@ -100,20 +100,26 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
     /// check + epoch fence + no-op round + catch-up gate) instead of an unguarded local read — closing
     /// the forward-guard asymmetry. A `false` value (the default factory) means a replica-class read
     /// served by a plain local read, exactly as before.
+    ///
+    /// `catchup` (#1235) marks a replication read — a replica backfilling, or a new owner pulling from a
+    /// survivor — which the serving node answers up to its APPENDED head. Every other forwarded read is a
+    /// consumer read and is answered only up to the VISIBLE position. A catch-up bounded by visibility
+    /// could deadlock: the events it cannot fetch are the ones only its own ack would make visible.
     record ReadForward(NodeId sender,
                        String correlationId,
                        String streamName,
                        int partition,
                        long fromOffset,
                        int maxEvents,
-                       boolean linearizable) implements StreamForwardMessage {
+                       boolean linearizable,
+                       boolean catchup) implements StreamForwardMessage {
         public static ReadForward readForward(NodeId sender,
                                               String correlationId,
                                               String streamName,
                                               int partition,
                                               long fromOffset,
                                               int maxEvents) {
-            return new ReadForward(sender, correlationId, streamName, partition, fromOffset, maxEvents, false);
+            return new ReadForward(sender, correlationId, streamName, partition, fromOffset, maxEvents, false, false);
         }
 
         public static ReadForward readForward(NodeId sender,
@@ -123,7 +129,32 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                               long fromOffset,
                                               int maxEvents,
                                               boolean linearizable) {
-            return new ReadForward(sender, correlationId, streamName, partition, fromOffset, maxEvents, linearizable);
+            return new ReadForward(sender,
+                                   correlationId,
+                                   streamName,
+                                   partition,
+                                   fromOffset,
+                                   maxEvents,
+                                   linearizable,
+                                   false);
+        }
+
+        public static ReadForward readForward(NodeId sender,
+                                              String correlationId,
+                                              String streamName,
+                                              int partition,
+                                              long fromOffset,
+                                              int maxEvents,
+                                              boolean linearizable,
+                                              boolean catchup) {
+            return new ReadForward(sender,
+                                   correlationId,
+                                   streamName,
+                                   partition,
+                                   fromOffset,
+                                   maxEvents,
+                                   linearizable,
+                                   catchup);
         }
     }
 

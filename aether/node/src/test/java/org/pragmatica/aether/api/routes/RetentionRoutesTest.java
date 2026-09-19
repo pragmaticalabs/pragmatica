@@ -226,6 +226,15 @@ class RetentionRoutesTest {
                 .isEqualTo(390L);
         }
 
+        /// #1258: the node-wide count of WAL recoveries that accepted a head gap as reclaimed history
+        /// reaches the operator surface, not only the WARN log.
+        @Test
+        void assembleRetention_reportsWalRecoveryHeadGapsAccepted() {
+            var response = RetentionRoutes.assembleRetention(new WalSnapshot(List.of()), new SegmentIndex(), emptyStore(), 7L);
+
+            assertThat(response.walRecoveryHeadGapsAccepted()).isEqualTo(7L);
+        }
+
         @Test
         void walTotalBytes_isZero_whenNoPartitionHasAWal() {
             var snapshot = new WalSnapshot(List.of(new StreamWalView("alpha", List.of(wallessPartition(0)))));
@@ -467,7 +476,7 @@ class RetentionRoutesTest {
     }
 
     private static RetentionResponse responseOf(RetentionPartitionView row) {
-        return new RetentionResponse(0L, List.of(row));
+        return new RetentionResponse(0L, List.of(row), 0L);
     }
 
     private static RetentionPartitionView violatedRow() {

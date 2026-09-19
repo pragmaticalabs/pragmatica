@@ -272,12 +272,16 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// [#earliestRetainedOffset], so every offset it asks for is one the ring still holds. Falling back to
     /// the tiered segment reader would be dead code that looked like a safety net — worse, it would look
     /// like one on a node where the segment index cannot resolve another node's segments anyway.
+    ///
+    /// The read is bounded by the APPENDED head, not the stream-consumer visible position (#1235): the
+    /// fold replays up to [#headOffset], which is the appended head, and treats a short read below it as a
+    /// truncated log. Entity-log visibility is the fold's own contract, not a stream consumer's.
     @Override
     public Promise<List<byte[]>> read(String keyspace, int partition, long fromOffset, int maxRecords) {
-        return partitionManager.readLocal(EntityPartitionArc.arcName(keyspace),
-                                          partition,
-                                          fromOffset,
-                                          maxRecords)
+        return partitionManager.readAppended(EntityPartitionArc.arcName(keyspace),
+                                             partition,
+                                             fromOffset,
+                                             maxRecords)
                                .map(events -> events.stream()
                                                     .map(RawEvent::data)
                                                     .toList())
