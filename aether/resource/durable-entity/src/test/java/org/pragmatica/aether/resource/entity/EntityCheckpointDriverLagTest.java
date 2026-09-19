@@ -63,6 +63,32 @@ class EntityCheckpointDriverLagTest {
                             .containsExactly(3L, 8L, 5L);
     }
 
+    /// A TAKEOVER: the previous owner committed a checkpoint through offset 4, and this node's fold resumed
+    /// from it. The lag is head minus that RESUMED checkpoint — the true replay distance — even before this
+    /// node has committed a checkpoint of its own. Measuring from offset -1 instead would report the whole
+    /// log and raise a spurious alert on every failover.
+    @Test
+    void checkpointLag_afterTakeover_isHeadMinusTheResumedCheckpoint() {
+        var substrate = new LagSubstrate();
+        var reported = new CopyOnWriteArrayList<Long>();
+        var driver = EntityCheckpointDriver.entityCheckpointDriver(reported::add);
+        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        substrate.appendUpserts(10);
+        substrate.committedCheckpoint = Option.some(EntityLogSubstrate.EntityCheckpoint.entityCheckpoint(4,
+                                                                                                        EntityFoldSnapshot.encode(Map.of(),
+                                                                                                                                  Map.of())));
+        fold.ready(FOLDED).await().onFailure(cause -> fail("fold must resume from the checkpoint: " + cause.message()));
+        driver.register(KEYSPACE, 2, fold, substrate);
+
+        substrate.saveFails = true;
+        driver.tick();
+
+        assertThat(lagOf(driver)).describedAs("head 9 minus the resumed checkpoint 4, not minus -1")
+                                 .containsEntry(FOLDED, 5L);
+        assertThat(reported).containsExactly(5L);
+    }
+
     /// Only partitions this node FOLDS carry a lag: the second partition was never rebuilt here, so its
     /// recovery is not bounded by this node's checkpoints and it must be absent, not reported as 0.
     @Test
@@ -101,6 +127,8 @@ class EntityCheckpointDriverLagTest {
     private static final class LagSubstrate implements EntityLogSubstrate {
         private final List<byte[]> records = new CopyOnWriteArrayList<>();
         private volatile boolean saveFails;
+        // The checkpoint a previous owner committed, which a fold on this node resumes from.
+        private volatile Option<EntityCheckpoint> committedCheckpoint = Option.none();
 
         void appendUpserts(int count) {
             for (var i = 0; i < count; i++) {
@@ -164,7 +192,7 @@ class EntityCheckpointDriverLagTest {
 
         @Override
         public Promise<Option<EntityCheckpoint>> loadCheckpoint(String keyspace, int partition) {
-            return Promise.success(Option.none());
+            return Promise.success(committedCheckpoint);
         }
     }
 }
