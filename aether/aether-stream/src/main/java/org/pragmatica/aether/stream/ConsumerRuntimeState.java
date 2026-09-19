@@ -935,10 +935,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
 
         invokeHandler(state, event).onSuccess(_ -> completeRetry(key, state, event))
-             .onFailure(cause -> handleRetryFailureAgain(key,
-                                                         state,
-                                                         event,
-                                                         cause.message()));
+                     .onFailure(cause -> handleRetryFailureAgain(key,
+                                                                 state,
+                                                                 event,
+                                                                 cause.message()));
     }
 
     /// Released strictly AFTER the cursor advance, so the pass it re-drives reads past this event.
