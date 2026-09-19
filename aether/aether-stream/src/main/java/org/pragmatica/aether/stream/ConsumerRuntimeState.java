@@ -353,8 +353,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     }
 
     private boolean attachedToCurrentRing(ConsumerKey key, ConsumerState state) {
-        return partitionManager.partitionBuffer(key.streamName(), key.partition())
-                               .flatMap(current -> state.pushBuffer().filter(attached -> attached == current))
+        return partitionManager.partitionBuffer(key.streamName(),
+                                                key.partition())
+                               .flatMap(current -> state.pushBuffer()
+                                                        .filter(attached -> attached == current))
                                .isPresent();
     }
 
@@ -443,9 +445,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// Detaches from the ring the listener was REGISTERED on, not whatever ring the partition resolves
     /// to now — after a release and re-materialization those differ (#1238).
     private void removePushListener(ConsumerKey key, ConsumerState state) {
-        state.pushBuffer()
-             .onPresent(buffer -> state.pushListener()
-                                       .onPresent(buffer::removeAppendListener));
+        state.pushBuffer().onPresent(buffer -> state.pushListener()
+                                                    .onPresent(buffer::removeAppendListener));
         state.clearPushAttachment();
     }
 
@@ -482,8 +483,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     @Contract
     private void afterCheckpoint(ConsumerKey key, ConsumerState state, Result<Unit> result) {
-        result.onSuccess(_ -> checkpointPersisted(key, state))
-              .onFailure(_ -> retryCheckpoint(key, state));
+        result.onSuccess(_ -> checkpointPersisted(key, state)).onFailure(_ -> retryCheckpoint(key, state));
     }
 
     /// The trigger counters reset only here, on a commit that SUCCEEDED. A request absorbed while that
@@ -508,7 +508,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private void retryCheckpoint(ConsumerKey key, ConsumerState state) {
         var attempt = Math.min(state.incrementCheckpointAttempts(), 30);
 
-        scheduleCheckpoint(key, state, TimeSpan.timeSpan(computeBackoff(attempt)).millis());
+        scheduleCheckpoint(key,
+                           state,
+                           TimeSpan.timeSpan(computeBackoff(attempt)).millis());
     }
 
     @Contract
@@ -639,7 +641,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private void drainPass(ConsumerKey key, ConsumerState state) {
         state.clearDirty();
         pollCycle(key, state).onFailure(cause -> logPollFailure(key, cause))
-                             .onResult(result -> afterDrainPass(key, state, result.or(false)));
+                 .onResult(result -> afterDrainPass(key,
+                                                    state,
+                                                    result.or(false)));
     }
 
     /// Repeat while the read came back full (more is waiting behind it — the ring notifies ONCE per
@@ -666,7 +670,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// the stack.
     @Contract
     private void continueDrain(ConsumerKey key, ConsumerState state) {
-        SharedScheduler.schedule(() -> drainPass(key, state), TimeSpan.timeSpan(0).millis());
+        SharedScheduler.schedule(() -> drainPass(key, state),
+                                 TimeSpan.timeSpan(0).millis());
     }
 
     /// One poll cycle: read the partition, then deliver what came back. The returned promise resolves
@@ -690,7 +695,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                                  events -> pollSucceeded(key, state, events)));
     }
 
-    private Promise<Boolean> pollSucceeded(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
+    private Promise<Boolean> pollSucceeded(ConsumerKey key,
+                                           ConsumerState state,
+                                           List<OffHeapRingBuffer.RawEvent> events) {
         state.adjustPollInterval(!events.isEmpty());
 
         return deliverEvents(key, state, events).map(_ -> events.size() >= MAX_POLL_BATCH);
@@ -744,8 +751,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                           ConsumerState state,
                                           OffHeapRingBuffer.RawEvent event,
                                           Result<Unit> result) {
-        return result.fold(cause -> deliveryFailed(key, state, event, cause),
-                           _ -> deliverySucceeded(key, state, event));
+        return result.fold(cause -> deliveryFailed(key, state, event, cause), _ -> deliverySucceeded(key, state, event));
     }
 
     private Promise<Unit> deliverySucceeded(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
@@ -814,9 +820,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
              .onEvent(event.offset(),
                       event.data(),
                       event.timestamp())
-             .onSuccess(_ -> completeRetry(key,
-                                           state,
-                                           event))
+             .onSuccess(_ -> completeRetry(key, state, event))
              .onFailure(cause -> handleRetryFailureAgain(key,
                                                          state,
                                                          event,

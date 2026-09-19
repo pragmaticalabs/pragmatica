@@ -248,6 +248,7 @@ public interface StreamConsumerManager {
         private static final Logger log = LoggerFactory.getLogger(StreamConsumerManager.class);
 
         private static final TypeToken<Unit> UNIT_TYPE_TOKEN = new TypeToken<>() {};
+
         /// #1238: bound on one handler invocation. The consumer runtime runs ONE serial delivery loop per
         /// (group, partition), so a handler that never resolves would hold that partition forever; a
         /// timed-out invocation is a delivery FAILURE and goes through the group's error strategy (retry,
