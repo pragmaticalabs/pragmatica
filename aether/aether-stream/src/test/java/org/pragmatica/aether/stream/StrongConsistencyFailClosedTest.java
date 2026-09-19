@@ -8,6 +8,7 @@ import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Deserializer;
@@ -32,6 +33,7 @@ class StrongConsistencyFailClosedTest {
     private static final NodeId SELF = new NodeId("self-node");
     private static final String STRONG_STREAM = "strong-stream";
     private static final String EVENTUAL_STREAM = "eventual-stream";
+    private static final String UNKNOWN_STREAM = "unknown-mode-stream";
     private static final int PARTITION = 0;
 
     private StreamPartitionManager partitionManager;
@@ -42,6 +44,7 @@ class StrongConsistencyFailClosedTest {
         partitionManager = streamPartitionManager(Long.MAX_VALUE, (_, _, _) -> {});
         partitionManager.createStream(config(STRONG_STREAM, ConsistencyMode.STRONG)).onFailureRun(Assertions::fail);
         partitionManager.createStream(config(EVENTUAL_STREAM, ConsistencyMode.EVENTUAL)).onFailureRun(Assertions::fail);
+        partitionManager.createStream(config(UNKNOWN_STREAM, ConsistencyMode.UNKNOWN)).onFailureRun(Assertions::fail);
     }
 
     @AfterEach
@@ -66,6 +69,67 @@ class StrongConsistencyFailClosedTest {
                          .onSuccessRun(Assertions::fail)
                          .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.CONSENSUS_PATH_UNAVAILABLE));
         assertThat(partitionManager.nextExpectedOffset(STRONG_STREAM, PARTITION)).isZero();
+    }
+
+    /// The owner-side entry for a write-forwarded publish re-checks the mode itself: a forwarder that did not
+    /// refuse (an older node, or any future path) must not get a STRONG append landed as EVENTUAL here.
+    @Test
+    void publishForwarded_refusesWithConsensusPathUnavailable_forStrongStream() {
+        partitionManager.publishForwarded(STRONG_STREAM, PARTITION, "e0".getBytes(), 1L)
+                        .onSuccessRun(Assertions::fail)
+                        .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.CONSENSUS_PATH_UNAVAILABLE));
+        assertThat(partitionManager.nextExpectedOffset(STRONG_STREAM, PARTITION)).isZero();
+    }
+
+    /// #964 on every entry point: a mode that decoded to UNKNOWN was written by a node running a newer
+    /// `ConsistencyMode` and may be STRONG there. Appending it would be a silent EVENTUAL write, so every
+    /// path refuses it with the same cause the slice publisher already used.
+    @Test
+    void streamAccessPublish_refusesUnreadableConsistencyMode() {
+        access(UNKNOWN_STREAM).publish("e0".getBytes())
+                              .await()
+                              .onSuccessRun(Assertions::fail)
+                              .onFailure(StrongConsistencyFailClosedTest::assertUnreadableMode);
+        assertThat(partitionManager.nextExpectedOffset(UNKNOWN_STREAM, PARTITION)).isZero();
+    }
+
+    @Test
+    void writeRouterPublish_refusesUnreadableConsistencyMode() {
+        StreamWriteRouter.localOnly(partitionManager)
+                         .publish(UNKNOWN_STREAM, PARTITION, "e0".getBytes(), 1L)
+                         .await()
+                         .onSuccessRun(Assertions::fail)
+                         .onFailure(StrongConsistencyFailClosedTest::assertUnreadableMode);
+        assertThat(partitionManager.nextExpectedOffset(UNKNOWN_STREAM, PARTITION)).isZero();
+    }
+
+    @Test
+    void publishForwarded_refusesUnreadableConsistencyMode() {
+        partitionManager.publishForwarded(UNKNOWN_STREAM, PARTITION, "e0".getBytes(), 1L)
+                        .onSuccessRun(Assertions::fail)
+                        .onFailure(StrongConsistencyFailClosedTest::assertUnreadableMode);
+        assertThat(partitionManager.nextExpectedOffset(UNKNOWN_STREAM, PARTITION)).isZero();
+    }
+
+    /// Symmetry: the slice publisher, which refused UNKNOWN first (#964), refuses with the same cause.
+    @Test
+    void streamPublisherPublish_refusesUnreadableConsistencyMode() {
+        DefaultStreamPublisher.<byte[]> streamPublisher(partitionManager,
+                                                        identitySerializer(),
+                                                        UNKNOWN_STREAM,
+                                                        1,
+                                                        Option.<Function<byte[], Object>> none(),
+                                                        ConsistencyMode.UNKNOWN,
+                                                        Option.none())
+                              .publish("e0".getBytes())
+                              .await()
+                              .onSuccessRun(Assertions::fail)
+                              .onFailure(StrongConsistencyFailClosedTest::assertUnreadableMode);
+        assertThat(partitionManager.nextExpectedOffset(UNKNOWN_STREAM, PARTITION)).isZero();
+    }
+
+    private static void assertUnreadableMode(Cause cause) {
+        assertThat(cause.message()).contains("#964");
     }
 
     /// Control: the refusal is keyed on the declared mode, not on these entry points being broken.

@@ -212,6 +212,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// refused on ownership grounds. Forge/unit/legacy managers keep this; `AetherNode` late-binds the real
     /// committed-`StreamPartitionOwnershipValue` check.
     private static final OwnerWriteAdmission ADMIT_ALL = (_, _) -> Option.none();
+    /// Replication receipt and backfill land the COMMITTED owner's events on a replica, so they carry no
+    /// owner-write admission (#1230) — only the epoch fence applies to them.
+    private static final Result<Unit> RECEIPT_NEEDS_NO_ADMISSION = Result.unitResult();
 
     /// Live committed-ownership admission for application appends (#1230). Consulted by [#publishLocal]
     /// ONLY — never by [#appendRecovered], which lands the committed owner's replicated/backfilled events on
@@ -1127,13 +1130,17 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// backs off and retries rather than surfacing a spurious permanent failure. Any OTHER `publishLocal`
     /// failure (event too large, partition out of range, a genuine non-owner `PARTITION_NOT_LOCAL`, a stale
     /// epoch) propagates UNCHANGED — no lazy create, no retry.
+    ///
+    /// The owner re-checks the stream's consistency ({@link #ensureWritableConsistency}, #1262) on BOTH
+    /// attempts — the first append and the post-materialize retry — rather than trusting the forwarder to
+    /// have refused: a STRONG or UNKNOWN stream is never appended here as EVENTUAL.
     public Result<Long> publishForwarded(String streamName, int partition, byte[] payload, long timestamp) {
-        return publishLocal(streamName, partition, payload, timestamp).fold(cause -> recoverForwardedPublish(cause,
-                                                                                                             streamName,
-                                                                                                             partition,
-                                                                                                             payload,
-                                                                                                             timestamp),
-                                                                            Result::success);
+        return writableAppend(streamName, partition, payload, timestamp).fold(cause -> recoverForwardedPublish(cause,
+                                                                                                               streamName,
+                                                                                                               partition,
+                                                                                                               payload,
+                                                                                                               timestamp),
+                                                                              Result::success);
     }
 
     private Result<Long> recoverForwardedPublish(Cause cause,
@@ -1164,7 +1171,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                 int partition,
                                                 byte[] payload,
                                                 long timestamp) {
-        return ensureStreamMaterialized(config).flatMap(_ -> publishLocal(streamName, partition, payload, timestamp));
+        return ensureStreamMaterialized(config).flatMap(_ -> writableAppend(streamName, partition, payload, timestamp));
+    }
+
+    private Result<Long> writableAppend(String streamName, int partition, byte[] payload, long timestamp) {
+        return ensureWritableConsistency(streamName).flatMap(_ -> publishLocal(streamName, partition, payload, timestamp));
     }
 
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
@@ -1188,27 +1199,30 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// so it retries) — only WAL-durable events ack. With no WAL configured this is a no-op gate and
     /// behavior is exactly as before.
     ///
-    /// Owner admission (#1230): refused with [StreamError.NotOwnerAppend] before anything else when the
-    /// committed owner of `(streamName, partition)` is another node — see [OwnerWriteAdmission].
+    /// Owner admission (#1230): refused with [StreamError.NotOwnerAppend] when the committed owner of
+    /// `(streamName, partition)` is another node — see [OwnerWriteAdmission]. It runs AFTER the epoch fence,
+    /// so a deposed writer presenting a stale epoch is told it is deposed ([StreamError.StaleEpochAppend],
+    /// permanent) rather than being redirected (`NotOwnerAppend`, transient); a current-epoch append from a
+    /// live non-owner passes the fence and is refused here.
     public Result<Long> publishLocal(String streamName,
                                      int partition,
                                      byte[] payload,
                                      long timestamp,
                                      Epoch ownerEpoch) {
-        return admitOwnerWrite(streamName, partition).flatMap(_ -> resolveStreamEntry(streamName))
-                              .flatMap(entry -> appendToPartition(entry,
-                                                                  streamName,
-                                                                  partition,
-                                                                  payload,
-                                                                  timestamp,
-                                                                  ownerEpoch))
-                              .flatMap(offset -> durablyLog(streamName, partition, offset, payload, timestamp))
-                              .onSuccess(offset -> replicationManager.replicateEvent(streamName,
-                                                                                     partition,
-                                                                                     offset,
-                                                                                     payload,
-                                                                                     timestamp,
-                                                                                     ownerEpoch));
+        return resolveStreamEntry(streamName).flatMap(entry -> appendToPartition(entry,
+                                                                                 streamName,
+                                                                                 partition,
+                                                                                 payload,
+                                                                                 timestamp,
+                                                                                 ownerEpoch,
+                                                                                 admitOwnerWrite(streamName, partition)))
+                                 .flatMap(offset -> durablyLog(streamName, partition, offset, payload, timestamp))
+                                 .onSuccess(offset -> replicationManager.replicateEvent(streamName,
+                                                                                        partition,
+                                                                                        offset,
+                                                                                        payload,
+                                                                                        timestamp,
+                                                                                        ownerEpoch));
     }
 
     private Result<Unit> admitOwnerWrite(String streamName, int partition) {
@@ -1241,21 +1255,27 @@ public final class StreamPartitionManager implements AutoCloseable {
         return replicationManager.awaitReplication(streamName, partition, offset, minAcks);
     }
 
-    /// #1262 fail-closed guard for the write entry points that have no consensus path: a stream declared
-    /// `STRONG` promises consensus-ordered acknowledgement, and `ConsensusPublishPath` has no production
-    /// caller, so a write would land as EVENTUAL — a weaker guarantee than declared. Refused with
-    /// [StreamError.General#CONSENSUS_PATH_UNAVAILABLE], the cause `DefaultStreamPublisher` already uses. An
-    /// unknown stream passes; the append path reports it. `StreamResourceValidator` rejects STRONG at deploy
-    /// time first, so this is defence in depth for streams created by other routes.
-    public Result<Unit> ensureConsensusPathNotRequired(String streamName) {
-        return option(streams.get(streamName)).filter(StreamPartitionManager::declaresStrong)
-                     .map(_ -> StreamError.General.CONSENSUS_PATH_UNAVAILABLE.<Unit> result())
+    /// #1262 fail-closed guard, applied by every write entry point (`PartitionedStreamAccess`,
+    /// `StreamWriteRouter`) and by the owner-side {@link #publishForwarded}: a stream whose declared
+    /// consistency no write path can honour is refused rather than appended as EVENTUAL.
+    ///   - `STRONG` promises consensus-ordered acknowledgement, and `ConsensusPublishPath` has no production
+    ///     caller → [StreamError.General#CONSENSUS_PATH_UNAVAILABLE], the cause `DefaultStreamPublisher`
+    ///     already used.
+    ///   - `UNKNOWN` (#964) was written by a node running a newer `ConsistencyMode` and may be STRONG there →
+    ///     [StreamError.General#UNREADABLE_CONSISTENCY_MODE].
+    /// An unknown stream passes; the append path reports it. `StreamResourceValidator` rejects STRONG at
+    /// deploy time first, so this is defence in depth for streams created by other routes.
+    public Result<Unit> ensureWritableConsistency(String streamName) {
+        return option(streams.get(streamName)).map(entry -> writableConsistency(entry.config().consistencyMode()))
                      .or(Result::unitResult);
     }
 
-    private static boolean declaresStrong(StreamEntry entry) {
-        return entry.config()
-                    .consistencyMode() == ConsistencyMode.STRONG;
+    private static Result<Unit> writableConsistency(ConsistencyMode mode) {
+        return switch (mode) {
+            case EVENTUAL -> Result.unitResult();
+            case STRONG -> StreamError.General.CONSENSUS_PATH_UNAVAILABLE.result();
+            case UNKNOWN -> StreamError.General.UNREADABLE_CONSISTENCY_MODE.result();
+        };
     }
 
     /// The configured `min-sync-replicas` write-ack requirement for `streamName` (in-sync count incl.
@@ -1293,7 +1313,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                  partition,
                                                                                  payload,
                                                                                  timestamp,
-                                                                                 ownerEpoch))
+                                                                                 ownerEpoch,
+                                                                                 RECEIPT_NEEDS_NO_ADMISSION))
                                  .onSuccess(offset -> walReplicated(streamName, partition, offset, payload, timestamp));
     }
 
@@ -1372,8 +1393,10 @@ public final class StreamPartitionManager implements AutoCloseable {
                                            int partition,
                                            byte[] payload,
                                            long timestamp,
-                                           Epoch ownerEpoch) {
-        return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> checkEventSize(entry, payload))
+                                           Epoch ownerEpoch,
+                                           Result<Unit> admission) {
+        return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> admission)
+                             .flatMap(_ -> checkEventSize(entry, payload))
                              .flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
                              .flatMap(buffer -> buffer.append(payload, timestamp))
                              .onSuccess(_ -> entry.updateActivity());

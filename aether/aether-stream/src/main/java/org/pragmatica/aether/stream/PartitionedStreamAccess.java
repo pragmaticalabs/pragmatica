@@ -562,7 +562,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     }
 
     /// A6 owner-routed publish, delegated whole to the ONE write operation, {@link StreamWriteRouter} (#1263):
-    /// this class only encodes the event and picks its partition. Ownership routing, the STRONG refusal
+    /// this class only encodes the event and picks its partition. Ownership routing, the STRONG / UNKNOWN refusal
     /// (#1262), write-forwarding with the bounded retry, the committed-owner redirect (#1230) and the min-sync
     /// barrier — read live from the stream's committed config — all live there, shared with the slice
     /// {@link DefaultStreamPublisher} and the management publish, so the three entry points cannot drift.
