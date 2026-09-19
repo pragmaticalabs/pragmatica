@@ -161,7 +161,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final Option<Path> walBaseDir;
     /// The latest replicated WAL write per `(stream, partition)` key (#1244): what [#syncReplicated]
     /// commits. Updated inside the partition's ordered append section, so it always holds the highest
-    /// offset written; a failed write stays recorded until a different WAL instance replaces it.
+    /// offset written.
     private final ConcurrentHashMap<String, ReplicatedWrite> lastReplicatedWalWrite = new ConcurrentHashMap<>();
     /// Source of the durable last-sealed offset per `(stream, partition)` (streaming-persistence W4).
     /// Bounds WAL replay when a partition ring is (re)built: sealed segments already serve
@@ -1344,7 +1344,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private void recordReplicatedWrite(String streamName, int partition, ReplicatedWrite write) {
-        lastReplicatedWalWrite.merge(partitionKeyOf(streamName, partition), write, ReplicatedWrite::supersededBy);
+        lastReplicatedWalWrite.put(partitionKeyOf(streamName, partition), write);
     }
 
     /// The durability barrier for replicated records: ONE group commit covering every WAL frame
@@ -1359,21 +1359,15 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// A replicated WAL frame write: the WAL it went to and its write sequence (or the write failure).
     ///
-    /// A failure is sticky per WAL instance — [#supersededBy] keeps it against a later write to the SAME
-    /// WAL — because a later success after a failed write would leave a hole the ring does not have, and
-    /// acking past it would make the replica's durable copy lie. A failed frame write fail-stops the WAL
-    /// anyway (so later writes fail too); stickiness also covers a refused write that does not fail-stop.
-    /// A rebuilt partition (a new WAL instance) starts clean.
+    /// The latest write replaces the previous one; no separate poison flag is kept. A later success after
+    /// a failed write would leave a hole the ring does not have, but a failed frame write or fsync
+    /// FAIL-STOPS the WAL, so every later write on that instance fails too and acks stay withheld. The
+    /// one refusal that does not fail-stop, [PartitionWal.WalError.OffsetRegression], means the offset is
+    /// already in the file — a duplicate, not a hole. A rebuilt partition (a new WAL instance) starts clean.
     private record ReplicatedWrite(PartitionWal wal, Result<Long> writeSeq) {
         Promise<Unit> commit() {
             return writeSeq.async()
                            .flatMap(wal::commit);
-        }
-
-        ReplicatedWrite supersededBy(ReplicatedWrite next) {
-            return wal == next.wal() && writeSeq.isFailure()
-                   ? this
-                   : next;
         }
     }
 
