@@ -9,6 +9,8 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
@@ -16,6 +18,8 @@ import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
@@ -31,7 +35,9 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -43,6 +49,12 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 /// all three (one `@Nested` subclass per entry point), so a defect in the shared router reddens all three
 /// rather than one, and a path that drifts reddens alone.
 ///
+/// One deliberate exception: a STRONG stream on the slice-publisher path is not served by the shared router.
+/// STRONG takes `DefaultStreamPublisher`'s explicit consensus alternative (#1263: "an explicit alternative, not
+/// a hidden branch"), because when a consensus path IS wired it must be used rather than refused. With none
+/// wired it refuses with the same `CONSENSUS_PATH_UNAVAILABLE`. So the two STRONG cells of
+/// `StreamPublisherPath` pin that consensus branch, not the router; every other cell is served by the router.
+///
 /// Fixture: the partition ring is materialized on this node, then its placement role flips to REPLICA —
 /// the state a replica ring is in on a real node (#1230). The stream declares `min-sync-replicas = 2`.
 class StreamWritePathContractTest {
@@ -53,6 +65,7 @@ class StreamWritePathContractTest {
     private static final String UNKNOWN_STREAM = "contract-unknown-stream";
     private static final int PARTITION = 0;
     private static final int DECLARED_MIN_SYNC = 2;
+    private static final int RAISED_MIN_SYNC = 3;
     private static final long FORWARDED_OFFSET = 42L;
 
     private final List<Integer> awaitedMinAcks = new ArrayList<>();
@@ -60,8 +73,17 @@ class StreamWritePathContractTest {
     private RecordingForwardClient forwardClient;
 
     /// The scenarios every write entry point must satisfy; each `@Nested` subclass supplies one entry point.
+    /// An entry point is built once per `(stream, owner)` and reused, so a scenario publishing twice exercises
+    /// the SAME instance — what a slice holding its publisher does.
     abstract class Contract {
-        abstract Promise<Unit> publish(String stream, NodeId hrwOwner);
+        private final Map<String, Fn0<Promise<Unit>>> entryPoints = new HashMap<>();
+
+        abstract Fn0<Promise<Unit>> entryPoint(String stream, NodeId hrwOwner);
+
+        Promise<Unit> publish(String stream, NodeId hrwOwner) {
+            return entryPoints.computeIfAbsent(stream + "@" + hrwOwner.id(), _ -> entryPoint(stream, hrwOwner))
+                              .apply();
+        }
 
         @BeforeEach
         void setUp() {
@@ -101,6 +123,17 @@ class StreamWritePathContractTest {
             publish(STREAM, SELF).await().onFailureRun(Assertions::fail);
 
             assertThat(awaitedMinAcks).containsExactly(DECLARED_MIN_SYNC - 1);
+        }
+
+        /// "Read live" means per publish, not per construction: the committed config is raised between two
+        /// publishes on the SAME entry point instance, and the second publish must wait for the new barrier.
+        @Test
+        void publish_awaitsTheRaisedMinSyncBarrier_afterTheCommittedConfigChanges() {
+            publish(STREAM, SELF).await().onFailureRun(Assertions::fail);
+            partitionManager.onStreamConfigPut(configPut(config(STREAM, ConsistencyMode.EVENTUAL, RAISED_MIN_SYNC)));
+            publish(STREAM, SELF).await().onFailureRun(Assertions::fail);
+
+            assertThat(awaitedMinAcks).containsExactly(DECLARED_MIN_SYNC - 1, RAISED_MIN_SYNC - 1);
         }
 
         @Test
@@ -145,34 +178,90 @@ class StreamWritePathContractTest {
     @Nested
     class StreamPublisherPath extends Contract {
         @Override
-        Promise<Unit> publish(String stream, NodeId hrwOwner) {
-            return publisher(stream, hrwOwner).publish("e0".getBytes());
+        Fn0<Promise<Unit>> entryPoint(String stream, NodeId hrwOwner) {
+            var publisher = publisher(stream, hrwOwner, Option.some(SELF));
+
+            return () -> publisher.publish("e0".getBytes());
         }
     }
 
     @Nested
     class StreamAccessPath extends Contract {
         @Override
-        Promise<Unit> publish(String stream, NodeId hrwOwner) {
-            return access(stream, hrwOwner).publish("e0".getBytes())
-                                           .mapToUnit();
+        Fn0<Promise<Unit>> entryPoint(String stream, NodeId hrwOwner) {
+            var access = access(stream, hrwOwner, SELF);
+
+            return () -> access.publish("e0".getBytes())
+                               .mapToUnit();
         }
     }
 
     @Nested
     class ManagementPath extends Contract {
         @Override
-        Promise<Unit> publish(String stream, NodeId hrwOwner) {
-            return StreamWriteRouter.streamWriteRouter(partitionManager,
-                                                       Option.some(forwardClient),
-                                                       SELF,
-                                                       (_, _) -> Option.some(hrwOwner))
-                                    .publish(stream, PARTITION, "e0".getBytes(), 1L)
-                                    .mapToUnit();
+        Fn0<Promise<Unit>> entryPoint(String stream, NodeId hrwOwner) {
+            var router = StreamWriteRouter.streamWriteRouter(partitionManager,
+                                                             Option.some(forwardClient),
+                                                             SELF,
+                                                             (_, _) -> Option.some(hrwOwner));
+
+            return () -> router.publish(stream, PARTITION, "e0".getBytes(), 1L)
+                               .mapToUnit();
         }
     }
 
-    private DefaultStreamPublisher<byte[]> publisher(String stream, NodeId hrwOwner) {
+    /// An entry point that does not know its own identity cannot establish that the HRW owner is another
+    /// node, so it never forwards on the routing arm — it appends locally and the committed-owner admission
+    /// decides. (The committed-owner REDIRECT arm is different: the refusal itself names the owner as another
+    /// node, so it forwards whatever this node knows about itself — see `OwnerAuthorizedWritesTest`.)
+    @Nested
+    class UnknownSelf {
+        @BeforeEach
+        void setUp() {
+            partitionManager = streamPartitionManager(Long.MAX_VALUE, (_, _, _) -> {}, recordingReplication());
+            partitionManager.createStream(config(STREAM, ConsistencyMode.EVENTUAL)).onFailureRun(Assertions::fail);
+            forwardClient = new RecordingForwardClient();
+        }
+
+        @AfterEach
+        void tearDown() {
+            partitionManager.close();
+        }
+
+        @Test
+        void streamPublisher_neverForwards_whenSelfIsUnknown() {
+            publisher(STREAM, OWNER, Option.none()).publish("e0".getBytes()).await().onFailureRun(Assertions::fail);
+
+            assertUnforwardedLocalAppend();
+        }
+
+        @Test
+        void streamAccess_neverForwards_whenSelfIsTheNoSelfSentinel() {
+            access(STREAM, OWNER, new NodeId("__no_self__")).publish("e0".getBytes()).await().onFailureRun(Assertions::fail);
+
+            assertUnforwardedLocalAppend();
+        }
+
+        @Test
+        void managementPublish_neverForwards_whenSelfIsUnknown() {
+            StreamWriteRouter.streamWriteRouter(partitionManager,
+                                                Option.some(forwardClient),
+                                                Option.<NodeId> none(),
+                                                (_, _) -> Option.some(OWNER))
+                             .publish(STREAM, PARTITION, "e0".getBytes(), 1L)
+                             .await()
+                             .onFailureRun(Assertions::fail);
+
+            assertUnforwardedLocalAppend();
+        }
+
+        private void assertUnforwardedLocalAppend() {
+            assertThat(forwardClient.owners).isEmpty();
+            assertThat(localHead(STREAM)).isZero();
+        }
+    }
+
+    private DefaultStreamPublisher<byte[]> publisher(String stream, NodeId hrwOwner, Option<NodeId> self) {
         Function<Integer, Option<NodeId>> ownerResolver = _ -> Option.some(hrwOwner);
         var mode = declaredMode(stream);
 
@@ -186,7 +275,7 @@ class StreamWritePathContractTest {
                                                       Option.some(forwardClient),
                                                       Option.<Fn0<Option<NodeId>>> none(),
                                                       Option.some(ownerResolver),
-                                                      Option.some(SELF));
+                                                      self);
     }
 
     private static ConsistencyMode declaredMode(String stream) {
@@ -197,7 +286,7 @@ class StreamWritePathContractTest {
         };
     }
 
-    private PartitionedStreamAccess<byte[]> access(String stream, NodeId hrwOwner) {
+    private PartitionedStreamAccess<byte[]> access(String stream, NodeId hrwOwner, NodeId self) {
         Function<Integer, Option<NodeId>> ownerResolver = _ -> Option.some(hrwOwner);
 
         return PartitionedStreamAccess.<byte[]> streamAccess(partitionManager,
@@ -207,7 +296,7 @@ class StreamWritePathContractTest {
                                                              1,
                                                              Option.<Function<byte[], Object>> none(),
                                                              Option.some(forwardClient),
-                                                             SELF,
+                                                             self,
                                                              Option.<Fn0<Option<NodeId>>> none(),
                                                              Option.some(ownerResolver));
     }
@@ -219,6 +308,16 @@ class StreamWritePathContractTest {
     }
 
     private static StreamConfig config(String name, ConsistencyMode mode) {
+        return config(name, mode, DECLARED_MIN_SYNC);
+    }
+
+    private static ValuePut<StreamConfigKey, StreamConfigValue> configPut(StreamConfig config) {
+        return new ValuePut<>(new KVCommand.Put<>(StreamConfigKey.streamConfigKey(config.name()),
+                                                  StreamConfigValue.streamConfigValue(config)),
+                              Option.none());
+    }
+
+    private static StreamConfig config(String name, ConsistencyMode mode, int minSyncReplicas) {
         return StreamConfig.streamConfig(name,
                                          1,
                                          RetentionPolicy.retentionPolicy(1_000, 1024 * 1024, 60_000),
@@ -226,7 +325,7 @@ class StreamWritePathContractTest {
                                          1_048_576L,
                                          mode,
                                          3,
-                                         DECLARED_MIN_SYNC,
+                                         minSyncReplicas,
                                          StreamCompression.NONE,
                                          Option.none());
     }
