@@ -117,7 +117,6 @@ public final class PartitionBackfill {
     /// ANOTHER node blocks self-election. Strict equality would starve a just-promoted owner by one commit.
     /// Defaults to {@link CommittedStreamOwnerSource#none} in the legacy/test factories (behavior unchanged).
     private final CommittedStreamOwnerSource committedOwnerSource;
-
     /// #1244 (ruling know 801a8b54e): the replica WAL durability barrier. Replica frames are written with
     /// no per-record fsync, so a backfill run commits what it applied through this barrier before it
     /// promotes self to CAUGHT_UP and acks the owner. Production wires
@@ -675,11 +674,29 @@ public final class PartitionBackfill {
         var watermark = Math.max(response.toOffset(), sourceConfirmedOffset);
 
         return applyEvents(streamName, partition, response).fold(cause -> failApply(streamName, partition, cause),
-                                                                 applied -> promote(streamName,
-                                                                                    partition,
-                                                                                    fromOffset,
-                                                                                    watermark,
-                                                                                    applied));
+                                                                 applied -> commitThenPromote(streamName,
+                                                                                              partition,
+                                                                                              fromOffset,
+                                                                                              watermark,
+                                                                                              applied));
+    }
+
+    /// #1244: commit what this run applied through the replica WAL [#durability] barrier BEFORE [#promote]
+    /// counts self as a copy — replica frames carry no per-record fsync, and a quiet partition would
+    /// otherwise never sync what backfill pulled. A failed commit fails the run; self stays SYNCING.
+    private Promise<Long> commitThenPromote(String streamName,
+                                            int partition,
+                                            long fromOffset,
+                                            long watermark,
+                                            long applied) {
+        return durability.sync(streamName, partition)
+                         .onFailure(cause -> log.warn("Backfill {}[{}] applied {} events but could not make them durable: {}"
+                                                     + " — staying SYNCING",
+                                                      streamName,
+                                                      partition,
+                                                      applied,
+                                                      cause.message()))
+                         .flatMap(_ -> promote(streamName, partition, fromOffset, watermark, applied));
     }
 
     /// Promote self to CAUGHT_UP only when the highest applied offset actually reaches the source
