@@ -32,7 +32,7 @@ Line numbers are deliberately omitted — they rot; symbols do not.
 | Per-partition crash-durable WAL (owner) | `StreamPartitionManager.durablyLog` → `PartitionWal.append` (group-commit `force(false)`) |
 | Replica WAL append + ack barrier | `StreamPartitionManager.appendRecovered` → `walReplicated` → `chainWalWrite`; barrier `syncReplicated`, awaited by `ReplicationReceiveHandler` before acking |
 | Cross-node publish forwarding over QUIC | `stream/forward/`: `StreamForwardMessage`, `StreamForwardClient`, `StreamForwardHandler` |
-| `min-sync-replicas` write-ack floor | `DefaultStreamPublisher.publishLocalEventual`, `PartitionedStreamAccess.publishLocal`, `StreamWriteRouter.publishLocal`, `StreamForwardHandler` → `awaitReplication(..., minSyncReplicas - 1)`. **Exception:** the `StreamWriteRouter.forwardToOwner` fallback (owner unknown or self, or no forward client, with no local ring) calls `publishLocal(...).async()` without the await (§5.1). |
+| `min-sync-replicas` write-ack floor | `DefaultStreamPublisher.publishLocalEventual`, `PartitionedStreamAccess.publishLocal`, `StreamWriteRouter.publishLocal`, `StreamForwardHandler` → `awaitReplication(..., minSyncReplicas - 1)`. **Exception:** the `StreamWriteRouter.forwardToOwner` fallback (owner unknown or self, or no forward client, with no local ring) calls `publishLocal(...).async()` without the await (§5.1; #1230). |
 | Owner → replica push | `DefaultReplicationManager.replicateEvent`. The node wires the **non-batching** manager (`ReplicationManager.replicationManager(...)` in `AetherNode`), so each event is sent by `replicateImmediately`. `ReplicationBatcher` (`DEFAULT_MAX_EVENTS = 100`, `DEFAULT_MAX_DELAY = 1 ms`, **code constants**) exists but `batchingReplicationManager` has no production caller. |
 | Read routing (GOVERNOR / NEAREST / ANY_REPLICA / LINEARIZABLE) | `PartitionedStreamAccess.readWithPreference` → `ForwardingReadRouter` |
 | Consumer group coordination (KV-consensus backed) | `consumer/ConsumerGroupCoordinator` |
@@ -63,7 +63,7 @@ The 2026-04-11 revision listed cross-node replica reads here. That is no longer 
 
 *Carried over from 2026-04-11; not re-verified at `ccba0dba5` except where marked.*
 
-Streams are modelled as partitioned, append-only logs, each partition with one intended writer, its owner. App EVENTUAL publishes (`DefaultStreamPublisher.publishEventual`, re-verified) append locally whenever **this node holds a ring for the partition** (`partitionBuffer(...).isPresent()`), and otherwise route to the partition's HRW owner. The arg-less leader resolver is a fallback, and a self-resolved owner falls back to a local append. Replica nodes also materialise rings, so whether a publish from a replica node can append as a second writer is an open question `[design intent — unverified]`.
+Streams are modelled as partitioned, append-only logs, each partition with one intended writer, its owner. App EVENTUAL publishes (`DefaultStreamPublisher.publishEventual`, re-verified) append locally whenever **this node holds a ring for the partition** (`partitionBuffer(...).isPresent()`), and otherwise route to the partition's HRW owner. The arg-less leader resolver is a fallback, and a self-resolved owner falls back to a local append. Replica nodes also materialise rings, so a publish on a replica node can append locally as a second writer. The append fence checks the epoch but not the owner's identity `[mechanism: StreamPartitionManager.rejectIfStale tests only highWater.isStale(domain, ownerEpoch)]`. Tracked as #1230.
 
 **Hot tier.** Events land in an off-heap ring buffer allocated via `Arena.ofShared()`: a 64-byte header (`HEADER_SIZE`, **code constant**), 24-byte index entries (`INDEX_ENTRY_SIZE`, **code constant**), then a data region grown in segments up to the stream's cap.
 
@@ -108,7 +108,7 @@ Adds one network round trip plus serialization/deserialization at each end (**an
 
 ### 3.3 STRONG (consensus) — implemented, not wired
 
-`DefaultStreamPublisher.publishStrong` requires a `ConsensusPublishPath`. Every production construction of a publisher (`StreamPublisherFactory`, `SystemStreamFactories`, `AetherNode`) passes `Option.none()` for it, and `ConsensusPublishPath.consensusPublishPath(...)` is called only from tests. A STRONG publish through a `StreamPublisher` therefore fails with `CONSENSUS_PATH_UNAVAILABLE` `[mechanism: consensusPath.async(StreamError.General.CONSENSUS_PATH_UNAVAILABLE)]`. Publishes to a STRONG stream through `PartitionedStreamAccess.publish` or the REST route (`StreamWriteRouter.publish`) do **not** fail. Neither checks the consistency mode, so both silently take the EVENTUAL path `[mechanism: no ConsistencyMode branch in either method]`. **No cross-node total-order guarantee is available at `ccba0dba5`.** When wired, `publishBatchStrong` issues one proposal per event (`Promise.allOf` over `publish`).
+`DefaultStreamPublisher.publishStrong` requires a `ConsensusPublishPath`. Every production construction of a publisher (`StreamPublisherFactory`, `SystemStreamFactories`, `AetherNode`) passes `Option.none()` for it, and `ConsensusPublishPath.consensusPublishPath(...)` is called only from tests. A STRONG publish through a `StreamPublisher` therefore fails with `CONSENSUS_PATH_UNAVAILABLE` `[mechanism: consensusPath.async(StreamError.General.CONSENSUS_PATH_UNAVAILABLE)]`. Publishes to a STRONG stream through `PartitionedStreamAccess.publish` or the REST route (`StreamWriteRouter.publish`) do **not** fail. Neither checks the consistency mode, so both silently take the EVENTUAL path `[mechanism: no ConsistencyMode branch in either method]`. Tracked as #1262. **No cross-node total-order guarantee is available at `ccba0dba5`.** When wired, `publishBatchStrong` issues one proposal per event (`Promise.allOf` over `publish`).
 
 ---
 
@@ -116,7 +116,7 @@ Adds one network round trip plus serialization/deserialization at each end (**an
 
 ### 4.1 Push path (co-located, append listener)
 
-`ConsumerRuntimeState.subscribePushOrPoll` registers a `LongConsumer` on the ring's append listeners when the partition is local. On append, the listener calls `onAppend` → `pollCycle` on the appending thread. That reads up to `MAX_POLL_BATCH` events from the cursor and starts delivering them. The listener fires at ring append, before the WAL fsync (§3.1). With a local ring the read resolves synchronously, so the publisher's thread also pays for the decode and for starting the consumer invocation before its own fsync (**analytical**; not measured).
+`ConsumerRuntimeState.subscribePushOrPoll` registers a `LongConsumer` on the ring's append listeners when the partition is local. On append, the listener calls `onAppend` → `pollCycle` on the appending thread. That reads up to `MAX_POLL_BATCH` events from the cursor and starts delivering them. The listener fires at ring append, before the WAL fsync (§3.1). With a local ring the read resolves synchronously, so the publisher's thread also pays for the decode and for starting the consumer invocation before its own fsync (**analytical**; not measured). Tracked as #1235 and #1238.
 
 ### 4.2 Adaptive poll fallback
 
@@ -159,7 +159,7 @@ Allocation per delivered event is therefore at least three payload-sized `byte[]
 After the WAL gate, `publishLocal` calls `ReplicationManager.replicateEvent`. The node constructs its manager with `ReplicationManager.replicationManager(...)`, which has no batcher, so `DefaultReplicationManager.replicateImmediately` sends one `ReplicateEvents` message per event to every registered non-self replica `[mechanism: AetherNode wires the non-batching factory; batchingReplicationManager has no production caller]`. The 2026-04-11 revision described a 100-event / 1 ms `ReplicationBatcher` on this path. That class exists and is unit-tested, but it is not wired.
 
 - **`min-sync-replicas ≤ 1`.** Publish resolves once the owner's WAL fsync completes (or immediately after the ring append when the node runs without a WAL). Replication is sent but not awaited; the caller is not told whether any replica has the event.
-- **`min-sync-replicas ≥ 2`.** The one bypass: the REST path's `StreamWriteRouter.forwardToOwner` fallback appends locally without awaiting replication `[mechanism: .or(() -> partitionManager.publishLocal(...).async())]`, so that ack carries only the owner-WAL meaning. Everywhere else, publish additionally awaits `min-sync-replicas − 1` distinct non-self acks (`awaitReplication`). Fewer registered non-self replicas than required fails the await immediately with `NOT_ENOUGH_REPLICAS` rather than acking `[mechanism: DefaultReplicationManager.awaitReplication]`. A failed or timed-out wait does **not** remove the event: it is already in the owner's ring and WAL and continues to replicate, so a caller that retries can publish it twice `[mechanism: publishLocal commits before awaitReplication is called]`.
+- **`min-sync-replicas ≥ 2`.** The one bypass: the REST path's `StreamWriteRouter.forwardToOwner` fallback appends locally without awaiting replication `[mechanism: .or(() -> partitionManager.publishLocal(...).async())]`, so that ack carries only the owner-WAL meaning (#1230). Everywhere else, publish additionally awaits `min-sync-replicas − 1` distinct non-self acks (`awaitReplication`). Fewer registered non-self replicas than required fails the await immediately with `NOT_ENOUGH_REPLICAS` rather than acking `[mechanism: DefaultReplicationManager.awaitReplication]`. A failed or timed-out wait does **not** remove the event: it is already in the owner's ring and WAL and continues to replicate, so a caller that retries can publish it twice `[mechanism: publishLocal commits before awaitReplication is called]`.
 
 ### 5.2 Replica side
 
@@ -179,12 +179,16 @@ None of the latencies in these bounds has been measured for this document.
 
 ### 5.4 Pending changes (not shipped at `ccba0dba5`)
 
-The following open tickets change the behaviour described in §3.1, §4.1 and §5.3. **None is merged at `ccba0dba5`.** Until they merge, the text above is what ships; after they merge, this section must be rewritten from the merged code, not from the tickets.
+The following open tickets change the behaviour described in the sections they cite. **None is merged at `ccba0dba5`.** Until they merge, the text above is what ships; after they merge, this section must be rewritten from the merged code, not from the tickets.
 
 - **#1235** — reads and push notifications expose events before they are WAL-durable or replicated (§3.1, §4.1).
 - **#1244** — replica WAL appends are chained one record at a time, defeating group commit (§5.2, §5.3).
 - **#1245** — `publishBatch` serialises every event through its own fsync and replication round trip (§5.3).
 - **#1236 / #1237** (PR #1257, open) — the outcomes a durable publish reports (§5.1).
+- **#1230** — replica nodes accept application writes (ring-presence routing), and the REST fallback skips the min-sync await (§2, §5.1).
+- **#1238** — push-path delivery defects (§4.1).
+- **#1262** — STRONG streams are written as EVENTUAL through `StreamAccess` and the management API (§3.3).
+- **#1261** — sealed-segment codec metadata and raw-bytes fallbacks (§6.3). Latent.
 
 ---
 
@@ -204,7 +208,7 @@ Retention is driven by `RetentionPolicy`: `ANY` evicts when any configured limit
 
 `OffHeapRingBuffer.notifyAndEvict` calls `SegmentSealer.onEviction` on the thread that triggered eviction. That thread builds and serialises the segment and calls `StorageSegmentSink.seal`. The node's sink neither compresses nor encrypts (§2), so `seal` goes straight to `putRef`. The sealer then **discards** the `Promise` returned by `sink.seal`, so it does not wait for the storage write `[mechanism: SegmentSealer.onEviction does not use the Promise from sink.seal]`. Any at-rest encryption happens below `putRef`, in the storage tier. Which thread runs it, and whether `putRef` blocks before returning its `Promise`, was not traced `[design intent — unverified]`. Segment serialisation therefore lands on the append path (**analytical**).
 
-A sink built with an encryptor (not the node's today) writes **plaintext** if encryption fails `[mechanism: StorageSegmentSink.encryptData falls back via .or(ProcessedData.unencrypted(data))]`.
+A sink built with an encryptor (not the node's today) writes **plaintext** if encryption fails `[mechanism: StorageSegmentSink.encryptData falls back via .or(ProcessedData.unencrypted(data))]`. Both this fallback and the node's uncompressed, unencrypted sealing are tracked as #1261. They are latent, because blueprint validation rejects the `compression` and non-default `encryption-key-id` stream keys (#576; see `streaming-spec.md` header).
 
 ---
 
