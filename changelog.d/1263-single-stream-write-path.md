@@ -8,7 +8,16 @@
 - **The min-sync barrier is read live** from the stream's committed `min-sync-replicas` on every publish.
   Before, the typed publishers froze the value at construction. `DefaultStreamPublisher.streamPublisher`
   and `PartitionedStreamAccess.streamAccess` no longer take a `minSyncReplicas` argument (pre-GA API change).
-- **An unknown self never forwards** on any path (the rule `DefaultStreamPublisher` always applied).
-  `PartitionedStreamAccess`'s no-self sentinel previously compared unequal to every owner. The factories
-  that use the sentinel wire no forward client, so this changes no observable behaviour today.
-  [mechanism: `StreamWriteRouter.isRemote` over `Option<NodeId>`]
+- **An unknown self never forwards on the routing arm** (the rule `DefaultStreamPublisher` always applied):
+  with no identity to compare against, the HRW owner cannot be established as another node, so the write
+  lands locally and the committed-owner admission decides. The committed-owner redirect (#1230) still
+  forwards, because the refusal itself names the owner as another node. `PartitionedStreamAccess`'s no-self
+  sentinel previously compared unequal to every owner and forwarded.
+  [mechanism: `StreamWriteRouter.isRemote` over `Option<NodeId>`; pinned at unit level by `StreamWritePathContractTest$UnknownSelf`]
+- **Behaviour changes beyond the minSync read.**
+  - A publisher built EVENTUAL over a stream whose committed config is STRONG or UNKNOWN is now refused
+    (the shared guard reads the committed config, not the mode the publisher was built with).
+  - An EVENTUAL `publishBatch` whose group fails now fails the batch; it was acknowledged as success.
+  - A STRONG stream on the slice publisher keeps its explicit consensus alternative and does not go through
+    the shared router; with no consensus path wired it refuses with `CONSENSUS_PATH_UNAVAILABLE`, as the
+    router does.
