@@ -18,12 +18,12 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.quic.QuicClusterServer;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.Serializer;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -159,13 +159,15 @@ class DefaultStreamPublisherBatchTest {
                                                                                                                                             STREAM,
                                                                                                                                             0));
         var publisher = streamPublisher(manager, identitySerializer(), STREAM, 1, Option.<java.util.function.Function<byte[], Object>> none());
-        var batch = publisher.publishBatch(events(10));
+        // The local batch blocks its caller at the durability barrier, so it runs on its own thread.
+        var batch = CompletableFuture.supplyAsync(() -> publisher.publishBatch(events(10)).await());
 
         assertThat(gate.forceEntered.await(10, TimeUnit.SECONDS)).as("the batch reached its group commit").isTrue();
-        assertThat(batch.await(TimeSpan.timeSpan(300).millis()).isFailure()).as("no ack while the fsync is parked").isTrue();
+        Thread.sleep(300);
+        assertThat(batch.isDone()).as("no ack while the fsync is parked").isFalse();
 
         gate.forceProceed.countDown();
-        batch.await().onFailure(cause -> fail(cause.message()));
+        batch.get(10, TimeUnit.SECONDS).onFailure(cause -> fail(cause.message()));
         manager.close();
     }
 
