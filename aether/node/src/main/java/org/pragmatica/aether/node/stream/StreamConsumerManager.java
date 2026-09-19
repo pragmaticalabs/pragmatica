@@ -96,7 +96,8 @@ public interface StreamConsumerManager {
     void reconcile();
 
     /// Unsubscribe everything (flushing cursors) — called from node stop, before the partition
-    /// manager closes.
+    /// manager closes. Waits for a pass already in flight, and no pass runs after it, so nothing is
+    /// attached once it returns.
     @Contract
     void stop();
 
@@ -263,6 +264,7 @@ public interface StreamConsumerManager {
         private final Map<SubscriptionKey, ConsumerDeclaration> active = new ConcurrentHashMap<>();
         private final Map<String, Diagnosis> diagnoses = new ConcurrentHashMap<>();
         private final AtomicBoolean passRequested = new AtomicBoolean();
+        private final AtomicBoolean stopped = new AtomicBoolean();
         private final Object passLock = new Object();
 
         ManagerState(StreamConsumerRegistry registry,
@@ -298,12 +300,14 @@ public interface StreamConsumerManager {
         /// find the request already consumed and return. The pass reads its snapshot after consuming
         /// the request, so it sees every state change that preceded those triggers. A monitor, not a
         /// flag-only gate, so a pass that throws still releases it and cannot wedge reconciliation.
+        ///
+        /// A pass that finds the manager stopped attaches nothing; see [#stop].
         @Contract
         @Override
         public void reconcile() {
             passRequested.set(true);
             synchronized (passLock) {
-                if (passRequested.getAndSet(false)) {
+                if (passRequested.getAndSet(false) && !stopped.get()) {
                     runPass();
                 }
             }
@@ -738,11 +742,18 @@ public interface StreamConsumerManager {
                                                  cause.message()));
         }
 
+        /// The detach sweep holds `passLock`, so a pass already in flight finishes first and whatever it
+        /// attached is swept. The lock alone is not enough: a caller queued behind it, or a tick that
+        /// outlives the stop, would run a pass afterwards and re-attach — so `stopped` is set first and
+        /// every later pass sees it.
         @Contract
         @Override
         public void stop() {
-            active.keySet().stream().toList().forEach(this::detach);
-            diagnoses.clear();
+            stopped.set(true);
+            synchronized (passLock) {
+                active.keySet().stream().toList().forEach(this::detach);
+                diagnoses.clear();
+            }
             log.info("Declarative stream consumer manager stopped");
         }
 
