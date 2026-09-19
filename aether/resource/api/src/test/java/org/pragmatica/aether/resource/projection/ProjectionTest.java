@@ -56,7 +56,9 @@ class ProjectionTest {
     private static final Cause WRITE_FAILED = Causes.cause("staged read-model write failure");
     private static final TimeSpan LEASE = timeSpan(30).seconds();
 
-    /// In-memory [ProjectionStore] honoring the reset contract: data cleared, generation kept.
+    /// In-memory [ProjectionStore] honoring the reset contract (data cleared, generation kept) and the
+    /// generation fence: the fenced write and the bump share one monitor, so each is indivisible with
+    /// respect to the other.
     private static final class InMemoryStore implements ProjectionStore<Integer> {
         private final Map<String, Integer> data = new ConcurrentHashMap<>();
         private final AtomicLong generation = new AtomicLong();
@@ -75,17 +77,20 @@ class ProjectionTest {
         }
 
         @Override
-        public Promise<Unit> write(String key, Integer state) {
+        public Promise<ProjectionStore.WriteOutcome> write(String key, Integer state, long expectedGeneration) {
             if (failingWrites.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
                 return WRITE_FAILED.promise();
             }
-            return writeGate.map(_ -> put(key, state));
+            return writeGate.map(_ -> putIfCurrent(key, state, expectedGeneration));
         }
 
-        private Unit put(String key, Integer state) {
+        private synchronized ProjectionStore.WriteOutcome putIfCurrent(String key, Integer state, long expectedGeneration) {
+            if (generation.get() != expectedGeneration) {
+                return ProjectionStore.WriteOutcome.STALE_GENERATION;
+            }
             data.put(key, state);
 
-            return Unit.unit();
+            return ProjectionStore.WriteOutcome.WRITTEN;
         }
 
         @Override
@@ -104,7 +109,7 @@ class ProjectionTest {
         }
 
         @Override
-        public Promise<Long> bumpGeneration() {
+        public synchronized Promise<Long> bumpGeneration() {
             return Promise.success(generation.incrementAndGet());
         }
     }
@@ -432,7 +437,9 @@ class ProjectionTest {
 
             projection.rebuild().await().onFailure(cause -> fail(cause.message()));
             gate.succeed(Unit.unit());
-            inFlight.await();
+            inFlight.await()
+                    .onSuccess(_ -> fail("the in-flight fold's late write must be refused, not applied"))
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(Projection.ProjectionError.StaleGeneration.class));
             projection.onEvent(event, FIRST).await().onFailure(cause -> fail(cause.message()));
 
             assertThat(store.data).describedAs("rebuilt model after the replay: the in-flight fold must not count")
@@ -756,7 +763,9 @@ class ProjectionTest {
 
         projection.rebuild().await().onFailure(cause -> fail(cause.message()));
         gate.succeed(Unit.unit());
-        inFlight.await();
+        inFlight.await()
+                .onSuccess(_ -> fail("the in-flight fold's late write must be refused, not applied"))
+                .onFailure(cause -> assertThat(cause).isInstanceOf(Projection.ProjectionError.StaleGeneration.class));
 
         assertThat(store.data).describedAs("a fold that read the pre-reset model must not write into the rebuilt one")
                               .doesNotContainKey("a");

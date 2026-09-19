@@ -25,12 +25,28 @@ import org.pragmatica.lang.Unit;
 /// generation would resurrect the prior pass's keys and dedup the entire replay into a no-op —
 /// the exact failure the generation exists to prevent (spec review finding 3).
 ///
+/// **The generation fence (#1298):** [#write] carries the generation its fold was keyed under and
+/// writes only while that is still the current generation, deciding it in ONE indivisible step with
+/// [#bumpGeneration]. Because rebuild bumps BEFORE it resets, every write lands either before the
+/// bump — and the reset clears it — or after it, and is refused. A fold in flight across a rebuild
+/// therefore never writes into the rebuilt model, however late it arrives: the replay is the only
+/// writer. Ordering decides it, not timing, so no drain and no timeout is needed.
+///
 /// **Generation slot durability:** the counter must survive both [#reset] and process restart with
 /// the same durability as the read model itself — it versions that model, and a model that
 /// outlives its version marker dedups or replays wrongly after recovery.
 public interface ProjectionStore<S> {
+    /// What a generation-fenced [#write] did.
+    enum WriteOutcome {
+        /// The generation was still current; the state is written.
+        WRITTEN,
+        /// The generation has moved on (a rebuild bumped it); nothing was written.
+        STALE_GENERATION
+    }
+
     Promise<Option<S>> read(String key);
-    Promise<Unit> write(String key, S state);
+    /// Write `state` only while `generation` is still the current generation — see the fence above.
+    Promise<WriteOutcome> write(String key, S state, long generation);
     /// Clear the read model, preserving the generation slot. See the reset contract above.
     Promise<Unit> reset();
     /// Current generation; 0 when never bumped.

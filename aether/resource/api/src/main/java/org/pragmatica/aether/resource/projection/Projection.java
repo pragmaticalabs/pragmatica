@@ -8,6 +8,7 @@ import org.pragmatica.aether.resource.projection.ProjectionClaims.ClaimOutcome;
 import org.pragmatica.aether.resource.projection.ProjectionClaims.Claimed;
 import org.pragmatica.aether.resource.projection.ProjectionClaims.Held;
 import org.pragmatica.aether.resource.projection.ProjectionClaims.Settlement;
+import org.pragmatica.aether.resource.projection.ProjectionStore.WriteOutcome;
 import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.slice.topic.Topic;
 import org.pragmatica.lang.Functions.Fn0;
@@ -87,7 +88,9 @@ import org.slf4j.LoggerFactory;
 /// REFUSES loudly — a rebuild that silently skipped the cursor step would clear the model and then
 /// replay nothing, converging to an empty projection that looks caught-up. A rebuild replays only
 /// what retention still holds; older history is a partial rebuild, reported by the same cursor
-/// machinery (`CURSOR_GAP` semantics when that surface lands).
+/// machinery (`CURSOR_GAP` semantics when that surface lands). A fold in flight across the rebuild
+/// is refused at its write ([ProjectionError.StaleGeneration]) by the store's generation fence, so
+/// the replay is the only writer of the rebuilt model and applies each event once.
 public record Projection<S, T>(String name,
                                Topic<T> topic,
                                ProjectionStore<S> store,
@@ -128,6 +131,17 @@ public record Projection<S, T>(String name,
             static final Fn1<NonPositiveLease, TimeSpan> FACTORY = Causes.forOneValue("Projection: claim lease %s is not positive — a claim that expires the instant it is"
                                                                                      + " taken suppresses nothing, so the guarded apply is refused",
                                                                                       NonPositiveLease::new);
+        }
+
+        /// A rebuild moved the generation while this fold was in flight, so its write was refused: the
+        /// fold read the pre-rebuild model, and the replay is the only writer of the rebuilt one.
+        /// Retryable — a retry runs under the new generation, where the §8 claim deduplicates it against
+        /// the replay.
+        record StaleGeneration(Long generation, String message) implements ProjectionError {
+            static final Fn1<StaleGeneration, Long> FACTORY = Causes.forOneValue("Projection: fold keyed under generation %s was refused — a rebuild moved the"
+                                                                                + " generation while it was in flight, and the replay is the only writer of the"
+                                                                                + " rebuilt model",
+                                                                                 StaleGeneration::new);
         }
     }
 
@@ -178,8 +192,11 @@ public record Projection<S, T>(String name,
         };
     }
 
+    /// The fold is fenced on the CLAIM's generation, never a fresh read: a fold that re-read the
+    /// generation after a rebuild's bump would write legitimately under the new generation while the
+    /// replay applied the same event under a different claim key.
     private Promise<Unit> applyUnderClaim(T event, ProjectionClaims backing, ClaimKey claimKey, long token) {
-        return onEvent(event).fold(folded -> settleClaim(folded, backing, claimKey, token));
+        return foldAt(event, claimKey.generation()).fold(folded -> settleClaim(folded, backing, claimKey, token));
     }
 
     /// Success finalizes; failure releases, then reports the FOLD's cause. Both carry the claim's token,
@@ -211,19 +228,37 @@ public record Projection<S, T>(String name,
 
     /// Apply one durably-delivered event: read the keyed state, fold, write back. **At-least-once
     /// applied** — no idempotency guard runs on this path, because without a [MessageContext] there is
-    /// no key to guard by. Use [#onEvent(Object, MessageContext)] for the guarded shape.
+    /// no key to guard by. Use [#onEvent(Object, MessageContext)] for the guarded shape. The write is
+    /// still generation-fenced, so a fold in flight across a rebuild cannot carry pre-rebuild state
+    /// into the rebuilt model.
     public Promise<Unit> onEvent(T event) {
+        return store.generation()
+                    .flatMap(generation -> foldAt(event, generation));
+    }
+
+    /// Read the keyed state, fold, and write it back under the generation fence ([ProjectionStore]).
+    private Promise<Unit> foldAt(T event, long generation) {
         var eventKey = key.apply(event);
 
         return store.read(eventKey)
                     .flatMap(current -> store.write(eventKey,
-                                                    fold.apply(current, event)));
+                                                    fold.apply(current, event),
+                                                    generation))
+                    .flatMap(outcome -> writeAccepted(outcome, generation));
+    }
+
+    private static Promise<Unit> writeAccepted(WriteOutcome outcome, long generation) {
+        return switch (outcome) {
+            case WRITTEN -> Promise.unitPromise();
+            case STALE_GENERATION -> ProjectionError.StaleGeneration.FACTORY.apply(generation).promise();
+        };
     }
 
     /// Bump generation → reset read model → reset the group cursor. Order is load-bearing: the
     /// generation moves FIRST so every replayed event lands under the new generation's idempotency
-    /// keys instead of being dedup'd into a no-op by the prior pass's
-    /// claims.
+    /// keys instead of being dedup'd into a no-op by the prior pass's claims, and so every fold still
+    /// in flight under the old generation is refused at its write rather than landing in the reset
+    /// model (the [ProjectionStore] generation fence).
     public Promise<Unit> rebuild() {
         return store.bumpGeneration()
                     .flatMap(_ -> store.reset())
