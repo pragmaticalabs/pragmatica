@@ -754,6 +754,7 @@ public interface StreamConsumerManager {
                 active.keySet().stream().toList().forEach(this::detach);
                 diagnoses.clear();
             }
+
             log.info("Declarative stream consumer manager stopped");
         }
 
