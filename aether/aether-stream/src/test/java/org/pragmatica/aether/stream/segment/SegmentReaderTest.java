@@ -9,6 +9,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.lang.Result;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
@@ -30,6 +31,7 @@ import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSeg
 class SegmentReaderTest {
 
     private static final String STREAM = "test-stream";
+    private static final String SEGMENT = "streams/test-stream/0/0-1";
     private static final int PARTITION = 0;
     private static final long ONE_GB = 1024 * 1024 * 1024L;
 
@@ -181,7 +183,7 @@ class SegmentReaderTest {
                 RawEvent.rawEvent(1L, "y".getBytes(), 20L)
             ));
 
-            var result = SegmentReader.deserializeAndFilter(serialized, 0, 100);
+            var result = decoded(serialized, 0, 100);
 
             assertThat(result).hasSize(2);
         }
@@ -193,7 +195,7 @@ class SegmentReaderTest {
                 RawEvent.rawEvent(6L, "keep".getBytes(), 20L)
             ));
 
-            var result = SegmentReader.deserializeAndFilter(serialized, 6, 100);
+            var result = decoded(serialized, 6, 100);
 
             assertThat(result).hasSize(1);
             assertThat(result.getFirst().offset()).isEqualTo(6L);
@@ -207,7 +209,7 @@ class SegmentReaderTest {
                 RawEvent.rawEvent(2L, "c".getBytes(), 30L)
             ));
 
-            var result = SegmentReader.deserializeAndFilter(serialized, 0, 2);
+            var result = decoded(serialized, 0, 2);
 
             assertThat(result).hasSize(2);
         }
@@ -229,10 +231,10 @@ class SegmentReaderTest {
             var lastOffset = EVENT_COUNT - 1;
 
             // Warm-up: class loading and first-call allocations belong to no decode.
-            SegmentReader.deserializeAndFilter(serialized, lastOffset, 1);
+            decoded(serialized, lastOffset, 1);
 
             var before = allocatedBytes();
-            var result = SegmentReader.deserializeAndFilter(serialized, lastOffset, 1);
+            var result = decoded(serialized, lastOffset, 1);
             var allocated = allocatedBytes() - before;
 
             assertThat(result).hasSize(1);
@@ -242,27 +244,27 @@ class SegmentReaderTest {
         }
 
         @Test
-        void deserializeAndFilter_stopsWithoutAllocating_whenLengthExceedsRemainingBytes() {
+        void deserializeAndFilter_failsWithoutAllocating_whenLengthExceedsRemainingBytes() {
             var serialized = serializeEvents(List.of(RawEvent.rawEvent(0L, "ok".getBytes(), 10L),
                                                      RawEvent.rawEvent(1L, "cut".getBytes(), 20L)));
             var truncated = Arrays.copyOf(serialized, serialized.length - 1);
+            var secondRecordAt = Long.BYTES + Long.BYTES + Integer.BYTES + "ok".length();
 
-            var result = SegmentReader.deserializeAndFilter(truncated, 0, 100);
-
-            assertThat(result).extracting(RawEvent::offset).containsExactly(0L);
+            assertCorruptRecord(SegmentReader.deserializeAndFilter(SEGMENT, truncated, 0, 100),
+                                secondRecordAt,
+                                "cut".length());
         }
 
         @Test
-        void deserializeAndFilter_stopsWithoutAllocating_whenLengthIsNegative() {
+        void deserializeAndFilter_failsWithoutAllocating_whenLengthIsNegative() {
             var serialized = serializeEvents(List.of(RawEvent.rawEvent(0L, "ok".getBytes(), 10L),
                                                      RawEvent.rawEvent(1L, "bad".getBytes(), 20L)));
-            var secondLengthAt = 2 * (Long.BYTES + Long.BYTES) + Integer.BYTES + "ok".length();
+            var secondRecordAt = Long.BYTES + Long.BYTES + Integer.BYTES + "ok".length();
+            var secondLengthAt = secondRecordAt + Long.BYTES + Long.BYTES;
 
             ByteBuffer.wrap(serialized).order(ByteOrder.BIG_ENDIAN).putInt(secondLengthAt, -1);
 
-            var result = SegmentReader.deserializeAndFilter(serialized, 0, 100);
-
-            assertThat(result).extracting(RawEvent::offset).containsExactly(0L);
+            assertCorruptRecord(SegmentReader.deserializeAndFilter(SEGMENT, serialized, 0, 100), secondRecordAt, -1);
         }
 
         @Test
@@ -318,8 +320,26 @@ class SegmentReaderTest {
             var events = reader.readEvents(STREAM, PARTITION, 0, 100).await();
 
             events.onSuccess(list -> fail("a corrupt record length must fail the read, not return "
-                                          + list.stream().map(RawEvent::offset).toList()));
+                                          + list.stream().map(RawEvent::offset).toList()))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(SegmentError.CorruptRecord.FACTORY.apply("streams/test-stream/0/0-2",
+                                                                                                           secondLengthAt
+                                                                                                           - Long.BYTES
+                                                                                                           - Long.BYTES,
+                                                                                                           -1)));
         }
+    }
+
+    private static List<RawEvent> decoded(byte[] serialized, long fromOffset, int maxEvents) {
+        return SegmentReader.deserializeAndFilter(SEGMENT, serialized, fromOffset, maxEvents)
+                            .onFailure(cause -> fail(cause.message()))
+                            .unwrap();
+    }
+
+    private static void assertCorruptRecord(Result<List<RawEvent>> result, int position, int length) {
+        result.onSuccess(list -> fail("a corrupt record length must fail the decode, not return " + list))
+              .onFailure(cause -> assertThat(cause).isEqualTo(SegmentError.CorruptRecord.FACTORY.apply(SEGMENT,
+                                                                                                        position,
+                                                                                                        length)));
     }
 
     /// Serialize events using the same format as SegmentSealer: [offset:8][timestamp:8][len:4][data:len]

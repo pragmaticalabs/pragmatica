@@ -90,7 +90,7 @@ public final class SegmentReader {
                       .flatMap(storage::get)
                       .flatMap(opt -> opt.async(SegmentError.General.SEGMENT_DATA_NOT_FOUND))
                       .map(bytes -> decryptAndDecompress(bytes, ref))
-                      .map(bytes -> deserializeAndFilter(bytes, fromOffset, remaining))
+                      .flatMap(bytes -> deserializeAndFilter(refName, bytes, fromOffset, remaining).async())
                       .flatMap(events -> continueWithAccumulation(streamName,
                                                                   partition,
                                                                   refs,
@@ -198,24 +198,27 @@ public final class SegmentReader {
     /// #1265: the header is parsed first and a record below `fromOffset` is skipped by moving the buffer
     /// position — no payload is allocated or copied for it. Before, every skipped payload was allocated
     /// and copied, so a sequential consumer reading a segment m events at a time allocated the segment
-    /// about S/(2m) times over. A `len` that is negative or exceeds the remaining bytes is a truncated or
-    /// corrupt tail: decoding stops there, before any allocation, keeping the records already decoded —
-    /// the same treatment the loop condition already gives a truncated header.
-    static List<RawEvent> deserializeAndFilter(byte[] serialized, long fromOffset, int maxEvents) {
+    /// about S/(2m) times over.
+    ///
+    /// A `len` that is negative or exceeds the remaining bytes FAILS the decode with
+    /// [SegmentError.CorruptRecord], before any allocation. Stopping and keeping the records already decoded
+    /// would be a truncated success: the read would carry on into the next segment and the offsets between
+    /// the corrupt record and that segment would vanish without anything failing.
+    static Result<List<RawEvent>> deserializeAndFilter(String segment,
+                                                       byte[] serialized,
+                                                       long fromOffset,
+                                                       int maxEvents) {
         var buffer = ByteBuffer.wrap(serialized).order(ByteOrder.BIG_ENDIAN);
         var result = new ArrayList<RawEvent>();
 
         while (buffer.remaining() >= PER_EVENT_HEADER && result.size() < maxEvents) {
+            var position = buffer.position();
             var offset = buffer.getLong();
             var timestamp = buffer.getLong();
             var len = buffer.getInt();
 
             if (len < 0 || len > buffer.remaining()) {
-                log.warn("Segment record at offset {} declares {} payload bytes with {} remaining; stopping decode",
-                         offset,
-                         len,
-                         buffer.remaining());
-                break;
+                return corruptRecord(segment, position, offset, len, buffer.remaining());
             }
 
             if (offset < fromOffset) {
@@ -226,7 +229,24 @@ public final class SegmentReader {
             result.add(readPayload(buffer, offset, timestamp, len));
         }
 
-        return List.copyOf(result);
+        return Result.success(List.copyOf(result));
+    }
+
+    private static Result<List<RawEvent>> corruptRecord(String segment,
+                                                        int position,
+                                                        long offset,
+                                                        int len,
+                                                        int remaining) {
+        log.error("Segment {} has a corrupt record at byte position {} (offset field {}): declared payload length {}"
+                  + " with {} bytes remaining; failing the read",
+                  segment,
+                  position,
+                  offset,
+                  len,
+                  remaining);
+
+        return SegmentError.CorruptRecord.FACTORY.apply(segment, position, len)
+                                                 .result();
     }
 
     private static RawEvent readPayload(ByteBuffer buffer, long offset, long timestamp, int len) {

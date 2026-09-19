@@ -5,6 +5,8 @@
 package org.pragmatica.aether.stream.segment;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn3;
+import org.pragmatica.lang.utils.Causes;
 
 
 public sealed interface SegmentError extends Cause {
@@ -19,5 +21,14 @@ public sealed interface SegmentError extends Cause {
         public String message() {
             return message;
         }
+    }
+
+    /// A record whose declared payload length is negative or exceeds the bytes left in its segment. The
+    /// segment is corrupt from that record on, so the read fails rather than return what came before it.
+    record CorruptRecord(String segment, int position, int length, String message) implements SegmentError {
+        static final Fn3<CorruptRecord, String, Integer, Integer> FACTORY =
+            Causes.forThreeValues("Segment %s has a corrupt record at byte position %d: declared payload length %d"
+                                  + " is negative or exceeds the bytes remaining",
+                                  CorruptRecord::new);
     }
 }
