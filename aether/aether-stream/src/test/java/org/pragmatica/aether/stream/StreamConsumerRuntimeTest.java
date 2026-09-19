@@ -731,6 +731,115 @@ class StreamConsumerRuntimeTest {
             }
         }
 
+        /// #1239 acceptance: a periodic checkpoint that fails is RETRIED until it persists, and its
+        /// trigger counters are not reset by the failure. One event, then silence — nothing else would
+        /// ever trigger another checkpoint, so only the retry can land the cursor.
+        @Test
+        void checkpointIfNeeded_retriesUntilPersisted_whenFirstCommitFails_onAQuietPartition() throws InterruptedException {
+            createTestStream("orders");
+            var commits = new CopyOnWriteArrayList<Long>();
+            var persisted = new CopyOnWriteArrayList<Long>();
+            var store = failingFirst(commits, persisted);
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 10L, 3, "");
+
+            try {
+                observedRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
+                // The 10ms interval elapses first, so the one delivery trips the time-based checkpoint.
+                Thread.sleep(50);
+                manager.publishLocal("orders", 0, "event-1".getBytes(UTF_8), 1000L);
+
+                var deadline = System.currentTimeMillis() + 3_000;
+
+                while (persisted.isEmpty() && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertThat(commits).describedAs("the first commit was attempted and failed").isNotEmpty();
+                assertThat(persisted).describedAs("a failed periodic commit is retried until the store accepts the cursor")
+                          .isNotEmpty();
+                assertThat(persisted.getLast()).isEqualTo(observedRuntime.cursorPosition("orders", 0, "group-1").or(-1L));
+            } finally {
+                observedRuntime.close();
+            }
+        }
+
+        /// #1239: at most one periodic commit in flight per consumer, coalescing to the latest cursor, so
+        /// two commits for one key can never land out of order.
+        @Test
+        void checkpointIfNeeded_keepsOneCommitInFlight_andCoalescesToTheLatestCursor() throws InterruptedException {
+            createTestStream("orders");
+            var outstanding = new AtomicInteger();
+            var peakOutstanding = new AtomicInteger();
+            var persisted = new CopyOnWriteArrayList<Long>();
+            var store = new ConsumerCursorStore() {
+                @Override
+                public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    Promise<Unit> pending = Promise.promise();
+
+                    peakOutstanding.accumulateAndGet(outstanding.incrementAndGet(), Math::max);
+                    CompletableFuture.delayedExecutor(100, TimeUnit.MILLISECONDS)
+                                     .execute(() -> settle(pending, offset));
+
+                    return pending;
+                }
+
+                private void settle(Promise<Unit> pending, long offset) {
+                    outstanding.decrementAndGet();
+                    persisted.add(offset);
+                    pending.succeed(Unit.unit());
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 1L, 3, "");
+
+            try {
+                observedRuntime.subscribe("orders", 0, config, (offset, payload, ts) -> Promise.unitPromise());
+                Thread.sleep(20);
+                for (int i = 0; i < 20; i++) {
+                    manager.publishLocal("orders", 0, ("event-" + i).getBytes(UTF_8), 1000L + i);
+                    Thread.sleep(5);
+                }
+
+                var deadline = System.currentTimeMillis() + 3_000;
+
+                while (!persisted.contains(20L) && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertThat(peakOutstanding.get()).describedAs("one periodic commit in flight per consumer")
+                          .isEqualTo(1);
+                assertThat(persisted).describedAs("coalesced commits land in cursor order and reach the latest cursor")
+                          .isSorted()
+                          .contains(20L);
+            } finally {
+                observedRuntime.close();
+            }
+        }
+
+        private static ConsumerCursorStore failingFirst(List<Long> commits, List<Long> persisted) {
+            return new ConsumerCursorStore() {
+                @Override
+                public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    commits.add(offset);
+                    if (commits.size() == 1) {
+                        return StreamError.General.BUFFER_EMPTY.promise();
+                    }
+                    persisted.add(offset);
+
+                    return Promise.unitPromise();
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+        }
+
         /// #654 round 4 (D1 regression): `checkpointIfNeeded` and `close()`'s `flushCursorForKey` can
         /// each issue their own commit for the SAME consumer inside one `close()` — the periodic one is
         /// still in flight when the final one is issued, and nothing drains it (`closed` only stops new
