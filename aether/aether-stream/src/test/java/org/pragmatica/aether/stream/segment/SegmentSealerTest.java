@@ -8,13 +8,14 @@ package org.pragmatica.aether.stream.segment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
-import org.pragmatica.aether.stream.WalRangeReader;
+import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -23,6 +24,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -385,13 +387,18 @@ class SegmentSealerTest {
     /// segment. A zero cap spills every heap copy at once, so every attempt is a WAL rebuild.
     @Nested
     class WalRebuildMissingRange {
+        @TempDir
+        Path walDir;
 
+        /// The WAL holds offsets 0-4 and 7-9, all durable: the pending range [5-6] is below its durable offset,
+        /// so the heap copy is spilled — and the WAL cannot give it back.
         @Test
         void seal_walRangeMissing_neverSealsShortSegment_keepsItPending_countsFailure() {
             var sink = new ManualSink();
             var spillingSealer = segmentSealer(sink, 0);
+            var wal = walWith(walDir, 0, 1, 2, 3, 4, 7, 8, 9);
 
-            spillingSealer.attachWalReader(new MissingRangeWal());
+            spillingSealer.walAttached(STREAM, PARTITION, wal);
             spillingSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(5L, "a".getBytes(), 1L),
                                                                   RawEvent.rawEvent(6L, "b".getBytes(), 2L)))
                           .onFailure(cause -> fail("a partition with a WAL must never refuse: " + cause.message()));
@@ -403,20 +410,49 @@ class SegmentSealerTest {
             assertThat(spillingSealer.pendingBytes()).isZero();
             assertThat(spillingSealer.holdsUnsealed(STREAM, PARTITION, 5L)).isTrue();
             assertThat(spillingSealer.lowestUnsealed(STREAM, PARTITION)).isEqualTo(Option.some(5L));
+            wal.close();
+        }
+    }
+
+    /// #1234 (review of 510829642, the replica race): a heap copy may be dropped only for a range already
+    /// DURABLE in the WAL. The replica path writes its WAL asynchronously, so a range can be handed over
+    /// before its WAL write lands; spilling it then made the rebuild read a WAL that did not yet hold it.
+    @Nested
+    class SpillOnlyDurableRanges {
+        @TempDir
+        Path walDir;
+
+        @Test
+        void onEviction_rangeAboveWalDurableOffset_keepsHeapCopyPastCap_andSealsIt() {
+            var sink = new ManualSink();
+            var sealer = segmentSealer(sink, 0);
+            var wal = walWith(walDir, 0, 1, 2);
+
+            sealer.walAttached(STREAM, PARTITION, wal);
+            sealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(3L, "late".getBytes(), 3L)))
+                  .onFailure(cause -> fail("a partition with a WAL must never refuse: " + cause.message()));
+
+            assertThat(wal.durableOffset()).isEqualTo(2L);
+            assertThat(sealer.spillCount()).as("nothing durable to spill").isZero();
+            assertThat(sealer.pendingBytes()).as("the not-yet-durable copy is kept past the cap").isPositive();
+
+            sink.succeed(0);
+            awaitCondition(() -> sealer.pendingBytes() == 0);
+
+            assertThat(sink.startOffsets()).containsExactly(3L);
+            assertThat(sealer.sealFailureCount()).isZero();
+            wal.close();
+        }
+    }
+
+    private static PartitionWal walWith(Path dir, long... offsets) {
+        var wal = PartitionWal.open(dir.resolve("p.wal")).onFailure(cause -> fail(cause.message())).unwrap();
+
+        for (var offset : offsets) {
+            wal.append(offset, ("w-" + offset).getBytes(), offset).await().onFailure(cause -> fail(cause.message()));
         }
 
-        /// A partition that has a WAL, but whose WAL has lost the requested range.
-        private record MissingRangeWal() implements WalRangeReader {
-            @Override
-            public boolean durable(String streamName, int partition) {
-                return true;
-            }
-
-            @Override
-            public Result<List<RawEvent>> read(String streamName, int partition, long fromOffset, long toOffset) {
-                return new SegmentError.WalRangeMissing(streamName, partition, fromOffset, toOffset, 1).result();
-            }
-        }
+        return wal;
     }
 
     /// #1234 / #1240: the lowest offset still held for sealing — none when nothing is pending, else the head of

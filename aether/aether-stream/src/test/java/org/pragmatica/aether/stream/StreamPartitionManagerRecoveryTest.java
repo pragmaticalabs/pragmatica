@@ -39,6 +39,9 @@ class StreamPartitionManagerRecoveryTest {
     private static final int PARTITION = 0;
     private static final int EVENTS = 6;
     private static final int SMALL_RING_EVENTS = 4;
+    private static final int RECOVERY_EVENTS = 30;
+    /// Two pending one-event segments of an `evt-N` payload (20-byte header + up to 6 bytes each).
+    private static final long TWO_SEGMENTS_BYTES = 2 * (20 + 6);
 
     @TempDir
     Path walDir;
@@ -148,6 +151,39 @@ class StreamPartitionManagerRecoveryTest {
 
         recovered.close();
         // Let the orphaned sealer's next retry succeed, so it stops retrying for the rest of the test JVM.
+        storageDown.set(false);
+    }
+
+    /// #1234 (review of 510829642, the recovery path): a restart replays the WAL into the ring BEFORE the
+    /// stream is registered with the manager. With storage down and the replay evicting past the pending-seal
+    /// cap, every recovery-time hand-over must already see the partition as WAL-backed — spill, never refuse.
+    /// Keyed on manager registration instead, recovery refused each hand-over as "no WAL" and createStream
+    /// failed.
+    @Test
+    void rebuild_replayPastPendingCapWhileStorageDown_neverRefused_spillsToWal() {
+        var index = new SegmentIndex();
+        var writer = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+
+        createStream(writer, RECOVERY_EVENTS * 2);
+        IntStream.range(0, RECOVERY_EVENTS).forEach(i -> publishOne(writer, i));
+        writer.close();
+
+        var storageDown = new AtomicBoolean(true);
+        var sealer = segmentSealer(segment -> sealUnlessDown(storageDown, index, segment), TWO_SEGMENTS_BYTES);
+        var recovered = streamPartitionManager(Long.MAX_VALUE, sealer, Option.some(walDir), index::lastSealedOffset);
+
+        createStream(recovered, SMALL_RING_EVENTS);
+
+        assertThat(sealer.refusalCount()).isZero();
+        assertThat(sealer.spillCount()).isPositive();
+        assertThat(sealer.pendingBytes()).isLessThanOrEqualTo(TWO_SEGMENTS_BYTES);
+
+        var tail = readFrom(recovered, RECOVERY_EVENTS - SMALL_RING_EVENTS);
+
+        assertThat(tail).hasSize(SMALL_RING_EVENTS);
+        IntStream.range(0, tail.size()).forEach(i -> assertEvent(tail.get(i), RECOVERY_EVENTS - SMALL_RING_EVENTS + i));
+
+        recovered.close();
         storageDown.set(false);
     }
 

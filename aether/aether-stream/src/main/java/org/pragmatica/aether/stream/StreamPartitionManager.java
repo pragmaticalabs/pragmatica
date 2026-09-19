@@ -271,9 +271,6 @@ public final class StreamPartitionManager implements AutoCloseable {
         this.ownerEpochSource = ownerEpochSource;
         this.walBaseDir = walBaseDir;
         this.lastSealedOffset = lastSealedOffset;
-        // #1234: the sealer may drop heap copies of pending seals and rebuild them from the WAL, but only
-        // for partitions that have one; with no WAL directory every partition reads as not durable.
-        evictionListener.attachWalReader(WalRangeReader.walRangeReader(this::walFor));
     }
 
     public static StreamPartitionManager streamPartitionManager() {
@@ -2719,14 +2716,16 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         /// Replay one partition's WAL tail into its ring, or a no-op when the partition has no WAL
-        /// ([Option#none]). The fresh ring is seeded above the durable last-sealed offset and only records
+        /// ([Option#none]). The WAL is attached to the ring's eviction listener FIRST (#1234): replay can evict,
+        /// and those hand-overs must already see the partition as WAL-backed. The fresh ring is seeded above the durable last-sealed offset and only records
         /// with `offset > lastSealedOffset` are appended (PartitionWal.replay already filters them).
         private static Result<Unit> recoverPartition(String streamName,
                                                      int partition,
                                                      OffHeapRingBuffer ring,
                                                      Option<PartitionWal> wal,
                                                      LastSealedOffsetSource lastSealedOffset) {
-            return wal.map(w -> replayTail(streamName, partition, ring, w, lastSealedOffset))
+            return wal.onPresent(ring::attachWal)
+                      .map(w -> replayTail(streamName, partition, ring, w, lastSealedOffset))
                       .or(() -> success(unit()));
         }
 

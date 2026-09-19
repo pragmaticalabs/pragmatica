@@ -19,6 +19,7 @@ import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.WalRangeReader;
+import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.aether.stream.segment.SegmentIndex.PartitionKey;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -54,11 +55,15 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///     failure ([#sealFailureCount]), and every [#ERROR_AFTER_FAILURES] consecutive failures of one segment an
 ///     ERROR. A pending segment is never dropped (only a deleted stream's are cancelled, [#onStreamDeleted]).
 ///   - **Heap copies are bounded by `pendingCapBytes`; the WAL is the holder.** Each pending segment starts
-///     with a heap copy. For a partition WITH a WAL, going past the cap drops heap copies, oldest first, and
-///     keeps only the pending RANGE: a retry rebuilds that segment from [WalRangeReader#read] — exactly the
-///     range, or a loud [SegmentError.WalRangeMissing], never a short segment. Such a hand-over is never
-///     refused, so pending-seal pressure never fails an EVENTUAL append; the limit moves to the WAL's disk,
-///     where a failed write fail-stops the partition loudly (#634-7, #1231).
+///     with a heap copy. For a partition WITH a WAL (attached by its ring at construction, [#walAttached]),
+///     going past the cap drops heap copies, oldest first, and keeps only the pending RANGE — but only for a
+///     range already durable in the WAL ([PartitionWal#durableOffset]); a copy whose range the WAL has not yet
+///     fsynced (the replica path writes its WAL asynchronously) is kept, so the heap can exceed the cap by at
+///     most that not-yet-durable tail. A retry rebuilds a spilled segment from
+///     [WalRangeReader#readExactRange] — exactly the range, or a loud [SegmentError.WalRangeMissing], never a
+///     short segment. Such a hand-over is never refused, so pending-seal pressure never fails an EVENTUAL
+///     append; the limit moves to the WAL's disk, where a failed write fail-stops the partition loudly
+///     (#634-7, #1231).
 ///   - **The one refusal: no WAL.** A partition WITHOUT a WAL (a manager built with no WAL directory — the
 ///     non-crash-durable mode, e.g. Ember or Forge without a data dir) has no durable holder, so its heap copy
 ///     is the only one. There, once the cap is reached, [#onEviction] refuses with `SEALING_BEHIND`: the ring
@@ -97,7 +102,7 @@ public final class SegmentSealer implements EvictionListener {
     /// Set by the first spill of an episode and cleared by the next hand-over that fits under the cap, so a
     /// spill episode logs one WARN while [#spillCount] counts every dropped heap copy.
     private final AtomicBoolean spilling = new AtomicBoolean(false);
-    private final AtomicReference<Option<WalRangeReader>> walReader = new AtomicReference<>(none());
+    private final ConcurrentHashMap<PartitionKey, PartitionWal> wals = new ConcurrentHashMap<>();
 
     private SegmentSealer(SegmentSink sink, long pendingCapBytes) {
         this.sink = sink;
@@ -129,9 +134,11 @@ public final class SegmentSealer implements EvictionListener {
                : reserve(segment).map(_ -> enqueue(segment));
     }
 
+    /// Registered per partition by its ring before anything is replayed into it, so recovery-time hand-overs
+    /// already see the partition as WAL-backed; a re-materialized partition replaces its closed WAL here.
     @Override
-    public Unit attachWalReader(WalRangeReader reader) {
-        walReader.set(some(reader));
+    public Unit walAttached(String streamName, int partition, PartitionWal wal) {
+        wals.put(PartitionKey.partitionKey(streamName, partition), wal);
 
         return unit();
     }
@@ -161,6 +168,8 @@ public final class SegmentSealer implements EvictionListener {
     public Unit onStreamDeleted(String streamName) {
         pending.keySet().stream().filter(key -> key.streamName()
                                                    .equals(streamName)).toList().forEach(this::cancel);
+        wals.keySet().removeIf(key -> key.streamName()
+                                         .equals(streamName));
 
         return unit();
     }
@@ -186,9 +195,17 @@ public final class SegmentSealer implements EvictionListener {
     }
 
     private boolean durable(String streamName, int partition) {
-        return walReader.get()
-                        .map(reader -> reader.durable(streamName, partition))
-                        .or(false);
+        return wals.containsKey(PartitionKey.partitionKey(streamName, partition));
+    }
+
+    private Option<PartitionWal> walOf(PendingSegment segment) {
+        return option(wals.get(PartitionKey.partitionKey(segment.streamName(), segment.partition())));
+    }
+
+    /// A heap copy may be dropped only when the WAL already holds its whole range durably.
+    private boolean spillable(PendingSegment segment) {
+        return walOf(segment).map(wal -> segment.endOffset() <= wal.durableOffset())
+                    .or(false);
     }
 
     /// With a WAL behind the partition the hand-over always succeeds: the new segment joins with its heap
@@ -212,7 +229,7 @@ public final class SegmentSealer implements EvictionListener {
                 break;
             }
 
-            if (releaseCopy(candidate)) {
+            if (spillable(candidate) && releaseCopy(candidate)) {
                 dropped++;
             }
         }
@@ -348,19 +365,19 @@ public final class SegmentSealer implements EvictionListener {
     }
 
     private Result<SealedSegment> rebuildFromWal(PendingSegment segment) {
-        return walReader.get()
-                        .toResult(new SegmentError.WalRangeMissing(segment.streamName(),
-                                                                   segment.partition(),
-                                                                   segment.startOffset(),
-                                                                   segment.endOffset(),
-                                                                   0))
-                        .flatMap(reader -> reader.read(segment.streamName(),
-                                                       segment.partition(),
-                                                       segment.startOffset(),
-                                                       segment.endOffset()))
-                        .map(events -> buildSegment(segment.streamName(),
-                                                    segment.partition(),
-                                                    events));
+        return walOf(segment).toResult(new SegmentError.WalRangeMissing(segment.streamName(),
+                                                                        segment.partition(),
+                                                                        segment.startOffset(),
+                                                                        segment.endOffset(),
+                                                                        0))
+                    .flatMap(wal -> WalRangeReader.readExactRange(wal,
+                                                                  segment.streamName(),
+                                                                  segment.partition(),
+                                                                  segment.startOffset(),
+                                                                  segment.endOffset()))
+                    .map(events -> buildSegment(segment.streamName(),
+                                                segment.partition(),
+                                                events));
     }
 
     private void recordFailure(PendingSegment segment, Cause cause) {

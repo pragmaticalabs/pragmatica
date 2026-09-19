@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream;
 
 import java.util.List;
 
+import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -38,9 +39,10 @@ public interface EvictionListener {
         return Option.none();
     }
 
-    /// Give the listener read access to the partitions' WALs, the durable holder of every range it has taken
-    /// but not yet sealed (#1234). A manager with WALs attaches its reader once, at construction.
-    default Unit attachWalReader(WalRangeReader walReader) {
+    /// `(streamName, partition)` has `wal`, the durable holder of every range the listener takes from it but
+    /// has not yet sealed (#1234). Called by the ring when its partition is constructed — before its WAL tail is
+    /// replayed — so it never depends on the stream being registered anywhere yet.
+    default Unit walAttached(String streamName, int partition, PartitionWal wal) {
         return Unit.unit();
     }
 
