@@ -53,8 +53,14 @@ import org.pragmatica.lang.Unit;
 /// [#cursorCommitted] moves the partition's next offset to `max(next, cursor)` and takes it LIVE once the
 /// cursor passes its head. It can never skip an offset the replay has not finished, which is what makes
 /// it safe where "accept any higher offset" is not: an early or zombie delivery would skip — and so lose —
-/// every replay offset below it. Commits count only after [#replayRewound]: a commit from before the
-/// rewind reflects the old cursor position, not replay progress.
+/// every replay offset below it.
+///
+/// **Every report is STAMPED, because arrival order is not enough (#1304 X6).** Cursor commits are batched
+/// and asynchronous (§6), and a zombie consumer can still be reporting its pre-rewind position, so a report
+/// computed before the rewind can ARRIVE after it. Honoured, an in-range stale cursor makes the replay's own
+/// offsets answer [WriteOutcome#ALREADY_APPLIED] — acknowledged, never written, silently lost. So
+/// [#replayRewound] mints a [RewindToken] which the rebuild hands to whatever rewinds the cursor, every
+/// report carries it, and a report stamped by any other rewind is ignored.
 ///
 /// **Generation slot durability:** the counter must survive both [#reset] and process restart with
 /// the same durability as the read model itself — it versions that model, and a model that
@@ -96,13 +102,19 @@ public interface ProjectionStore<S> {
     /// is current and its partition is REBUILDING at exactly that offset, advance the partition past it —
     /// and take it LIVE if that was its head — as an admitted write would; otherwise change nothing.
     Promise<Unit> markReplayed(long generation, DeliveryPosition position);
-    /// The rebuild's rewind for `generation` has completed: cursor commits reported from now on reflect
-    /// replay progress. A stale generation changes nothing.
-    Promise<Unit> replayRewound(long generation);
-    /// The group's committed cursor for `partition` — the next offset it will read. After the rewind and
-    /// while that partition is REBUILDING, advance its next replay offset to `max(next, committedCursor)`
-    /// and take it LIVE once the cursor passes its head; otherwise change nothing.
-    Promise<Unit> cursorCommitted(int partition, long committedCursor);
+
+    /// Identifies ONE rebuild's rewind. Only cursor reports stamped with the current rewind's token are
+    /// honoured, so a report produced before it — however late it arrives — cannot move the replay.
+    record RewindToken(long generation, long rewind) {}
+
+    /// Mint the token for `generation`'s rewind, which the rebuild hands to whatever rewinds the cursor.
+    /// Minting VOIDS any earlier token. A stale generation changes nothing and its token is already dead.
+    Promise<RewindToken> replayRewound(long generation);
+    /// The group's committed cursor for `partition` — the next offset it will read — as reported by the
+    /// consumer the rewind started, stamped with that rewind's `token`. While that partition is REBUILDING,
+    /// advance its next replay offset to `max(next, committedCursor)` and take it LIVE once the cursor
+    /// passes its head. A report stamped by any other rewind, or arriving before one, changes nothing.
+    Promise<Unit> cursorCommitted(RewindToken token, int partition, long committedCursor);
     /// Current generation; 0 when never reset.
     Promise<Long> generation();
 }

@@ -81,8 +81,9 @@ class ProjectionTest {
         // empty means LIVE.
         private final Map<Integer, Long> nextReplayOffset = new ConcurrentHashMap<>();
         private final Map<Integer, Long> replayThrough = new ConcurrentHashMap<>();
-        // The generation whose rewind has completed; cursor commits count only for it.
-        private long rewoundGeneration = -1L;
+        // The CURRENT rewind's token: cursor reports carrying any other are ignored, whenever they arrive.
+        private Option<ProjectionStore.RewindToken> currentRewind = Option.none();
+        private long rewinds;
         // Runs at the first moment a new generation is visible to writers — after the reset returns.
         private volatile Runnable onNewGeneration = () -> {};
 
@@ -152,16 +153,20 @@ class ProjectionTest {
         }
 
         @Override
-        public synchronized Promise<Unit> replayRewound(long expectedGeneration) {
+        public synchronized Promise<ProjectionStore.RewindToken> replayRewound(long expectedGeneration) {
+            var minted = new ProjectionStore.RewindToken(expectedGeneration, ++rewinds);
+
             if (generation.get() == expectedGeneration) {
-                rewoundGeneration = expectedGeneration;
+                currentRewind = Option.some(minted);
             }
-            return Promise.unitPromise();
+            return Promise.success(minted);
         }
 
         @Override
-        public synchronized Promise<Unit> cursorCommitted(int partition, long committedCursor) {
-            if (rewoundGeneration == generation.get() && replayThrough.containsKey(partition)
+        public synchronized Promise<Unit> cursorCommitted(ProjectionStore.RewindToken token,
+                                                          int partition,
+                                                          long committedCursor) {
+            if (currentRewind.filter(token::equals).isPresent() && replayThrough.containsKey(partition)
                 && committedCursor > nextReplayOffset.get(partition)) {
                 advance(partition, committedCursor - 1);
             }
@@ -203,6 +208,7 @@ class ProjectionTest {
             resets.incrementAndGet();
             nextReplayOffset.clear();
             replayThrough.clear();
+            currentRewind = Option.none();
             range.partitions()
                  .forEach((partition, span) -> startReplay(partition, span));
         }
@@ -244,18 +250,32 @@ class ProjectionTest {
             return Promise.success(range);
         }
 
+        private volatile Option<ProjectionStore.RewindToken> token = Option.none();
+
         @Override
-        public Promise<Unit> rewind(ProjectionStore.ReplayRange rewound) {
+        public Promise<Unit> rewind(ProjectionStore.ReplayRange rewound, ProjectionStore.RewindToken rewindToken) {
             calls.add("rewind@gen" + store.generation.get() + "/resets" + store.resets.get());
+            token = Option.some(rewindToken);
 
             return Promise.unitPromise();
+        }
+
+        /// The token this rewind handed the consumer — what a cursor report must carry.
+        ProjectionStore.RewindToken token() {
+            return token.or(new ProjectionStore.RewindToken(-1L, -1L));
         }
     }
 
     private static Projection<Integer, OrderSeen> rebuildable(InMemoryStore store, ProjectionStore.ReplayRange range) {
+        return rebuildableWith(store, new RecordingCursor(store, range));
+    }
+
+    /// Same projection, with the cursor held by the caller — a test that reports a committed cursor needs the
+    /// token that cursor's rewind was handed.
+    private static Projection<Integer, OrderSeen> rebuildableWith(InMemoryStore store, RecordingCursor cursor) {
         return Projection.of(TOPIC)
                          .into(store, OrderSeen::orderId)
-                         .apply("orders-seen", (current, event) -> current.or(0) + 1, new RecordingCursor(store, range));
+                         .apply("orders-seen", (current, event) -> current.or(0) + 1, cursor);
     }
 
     private static Projection<Integer, OrderSeen> countingProjection(InMemoryStore store) {
@@ -787,12 +807,13 @@ class ProjectionTest {
         @Test
         void rebuilding_skipsADeadLetteredReplayOffset_onTheCommittedCursor() {
             var store = new InMemoryStore();
-            var projection = rebuildable(store, REPLAY_TEN_TO_TWELVE).withClaims(new InMemoryClaims(), LEASE);
+            var cursor = new RecordingCursor(store, REPLAY_TEN_TO_TWELVE);
+            var projection = rebuildableWith(store, cursor).withClaims(new InMemoryClaims(), LEASE);
 
             projection.rebuild().await().onFailure(cause -> fail(cause.message()));
             projection.onEvent(new OrderSeen("a"), at("msg-10", 10)).await().onFailure(cause -> fail(cause.message()));
             // offset 11 is dead-lettered: it never reaches onEvent, and the runtime commits past it
-            projection.onCursorCommitted(0, 12).await().onFailure(cause -> fail(cause.message()));
+            projection.onCursorCommitted(cursor.token(), 0, 12).await().onFailure(cause -> fail(cause.message()));
             projection.onEvent(new OrderSeen("b"), at("msg-12", 12)).await().onFailure(cause -> fail(cause.message()));
             projection.onEvent(new OrderSeen("c"), at("msg-13", 13))
                       .await()
@@ -806,11 +827,12 @@ class ProjectionTest {
         @Test
         void rebuilding_goesLive_whenTheCommittedCursorPassesTheHead() {
             var store = new InMemoryStore();
-            var projection = rebuildable(store, REPLAY_TEN_TO_TWELVE).withClaims(new InMemoryClaims(), LEASE);
+            var cursor = new RecordingCursor(store, REPLAY_TEN_TO_TWELVE);
+            var projection = rebuildableWith(store, cursor).withClaims(new InMemoryClaims(), LEASE);
 
             projection.rebuild().await().onFailure(cause -> fail(cause.message()));
             projection.onEvent(new OrderSeen("a"), at("msg-10", 10)).await().onFailure(cause -> fail(cause.message()));
-            projection.onCursorCommitted(0, 13).await().onFailure(cause -> fail(cause.message()));
+            projection.onCursorCommitted(cursor.token(), 0, 13).await().onFailure(cause -> fail(cause.message()));
             projection.onEvent(new OrderSeen("c"), at("msg-13", 13))
                       .await()
                       .onFailure(cause -> fail("the committed cursor passed the head; the partition must be live: "
@@ -827,13 +849,20 @@ class ProjectionTest {
         @Test
         void rebuilding_ignoresAStaleInRangeCursorReport_deliveredAfterTheRewind() {
             var store = new InMemoryStore();
+            var cursor = new RecordingCursor(store, REPLAY_TEN_TO_TWELVE);
             var projection = Projection.of(DIGITS)
                                        .into(store, Digit::key)
-                                       .apply("digits", (current, digit) -> current.or(0) * 10 + digit.value(), new RecordingCursor(store, REPLAY_TEN_TO_TWELVE))
+                                       .apply("digits", (current, digit) -> current.or(0) * 10 + digit.value(), cursor)
                                        .withClaims(new InMemoryClaims(), LEASE);
 
             projection.rebuild().await().onFailure(cause -> fail(cause.message()));
-            projection.onCursorCommitted(0, 12).await();
+
+            var stale = cursor.token();
+
+            // A second rebuild: `stale` now belongs to the PREVIOUS rewind, which is exactly the shape of a
+            // report computed before this rewind and delivered after it.
+            projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+            projection.onCursorCommitted(stale, 0, 12).await();
             projection.onEvent(new Digit("n", 1), at("msg-10", 10)).await().onFailure(cause -> fail(cause.message()));
             projection.onEvent(new Digit("n", 2), at("msg-11", 11)).await().onFailure(cause -> fail(cause.message()));
             projection.onEvent(new Digit("n", 3), at("msg-12", 12)).await().onFailure(cause -> fail(cause.message()));
@@ -848,12 +877,13 @@ class ProjectionTest {
         @Test
         void rebuilding_ignoresACursorCommitReportedBeforeTheRewind() {
             var store = new InMemoryStore();
-            var projection = rebuildable(store, REPLAY_TEN_TO_TWELVE).withClaims(new InMemoryClaims(), LEASE);
+            var cursor = new RecordingCursor(store, REPLAY_TEN_TO_TWELVE);
+            var projection = rebuildableWith(store, cursor).withClaims(new InMemoryClaims(), LEASE);
 
             // Cursor 12 is INSIDE the range (10..12): honoured, it would make offset 10 look already
             // applied and drop it. (A cursor past the head would instead take the partition live, which
             // admits 10 anyway — that shape could not tell the gate from its absence.)
-            store.onNewGeneration = () -> projection.onCursorCommitted(0, 12).await();
+            store.onNewGeneration = () -> projection.onCursorCommitted(cursor.token(), 0, 12).await();
             projection.rebuild().await().onFailure(cause -> fail(cause.message()));
             projection.onEvent(new OrderSeen("a"), at("msg-10", 10))
                       .await()

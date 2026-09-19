@@ -102,8 +102,9 @@ import org.slf4j.LoggerFactory;
 /// already DONE still advances its partition ([ProjectionStore#markReplayed]). LIVE is per partition: a
 /// partition past its captured head admits live writes without waiting for the others. A replay offset
 /// that never reaches the fold (dead-lettered, quarantined) is skipped on the group's COMMITTED CURSOR
-/// ([#onCursorCommitted]), never on a later delivery, so an early or zombie delivery cannot skip — and
-/// lose — replay offsets below it; that event is absent from the rebuilt model until redriven. A refused
+/// ([#onCursorCommitted], stamped with the rewind's token so a pre-rewind position arriving late is
+/// ignored), never on a later delivery, so an early or zombie delivery cannot skip — and lose — replay
+/// offsets below it; that event is absent from the rebuilt model until redriven. A refused
 /// live delivery that exhausts its retry budget is dead-lettered and applies when redriven.
 public record Projection<S, T>(String name,
                                Topic<T> topic,
@@ -125,7 +126,7 @@ public record Projection<S, T>(String name,
         }
 
         @Override
-        public Promise<Unit> rewind(ProjectionStore.ReplayRange range) {
+        public Promise<Unit> rewind(ProjectionStore.ReplayRange range, ProjectionStore.RewindToken token) {
             return CURSOR_RESET_PENDING.promise();
         }
     };
@@ -135,7 +136,10 @@ public record Projection<S, T>(String name,
     /// then sends the group's cursor back over exactly that range.
     public interface ReplayCursor {
         Promise<ProjectionStore.ReplayRange> capture();
-        Promise<Unit> rewind(ProjectionStore.ReplayRange range);
+        /// Rewind the group's cursor over `range`. `token` stamps every cursor commit the rewound consumer
+        /// reports back through [Projection#onCursorCommitted]; a report carrying any other token is ignored,
+        /// so a pre-rewind position cannot be mistaken for replay progress (#1304 X6).
+        Promise<Unit> rewind(ProjectionStore.ReplayRange range, ProjectionStore.RewindToken token);
     }
 
     private static final Cause CLAIMS_UNWIRED = Causes.cause("Projection: a context-carrying event arrived but no ProjectionClaims backing is wired, so the §8"
@@ -336,18 +340,30 @@ public record Projection<S, T>(String name,
     private Promise<Unit> rebuildGuarded() {
         return replayCursor.capture()
                            .mapWith(store::resetToNewGeneration, Rebuild::new)
-                           .ensureWith(rebuild -> replayCursor.rewind(rebuild.range()))
-                           .flatMap(rebuild -> store.replayRewound(rebuild.generation()));
+                           .mapWith(rebuild -> store.replayRewound(rebuild.generation()),
+                                    Projection::rewound)
+                           .flatMap(rewound -> replayCursor.rewind(rewound.range(),
+                                                                   rewound.token()));
     }
 
     /// The range a rebuild replays and the generation it reset to.
     private record Rebuild(ProjectionStore.ReplayRange range, long generation) {}
 
+    /// The same range, once its rewind token is minted — the token the rewound consumer stamps its cursor
+    /// reports with.
+    private record Rewound(ProjectionStore.ReplayRange range, ProjectionStore.RewindToken token) {}
+
+    private static Rewound rewound(Rebuild rebuild, ProjectionStore.RewindToken token) {
+        return new Rewound(rebuild.range(), token);
+    }
+
     /// The runtime reports a committed cursor for this projection's consumer group (#1304): the
     /// positive signal that lets a rebuilding partition skip a replay offset that was dead-lettered and
-    /// so never reached the fold. See [ProjectionStore#cursorCommitted].
-    public Promise<Unit> onCursorCommitted(int partition, long committedCursor) {
-        return store.cursorCommitted(partition, committedCursor);
+    /// so never reached the fold. `token` is the one its rewind handed the consumer; a report carrying any
+    /// other is ignored, because a pre-rewind position arriving late would otherwise make the replay's own
+    /// offsets look applied (X6). See [ProjectionStore#cursorCommitted].
+    public Promise<Unit> onCursorCommitted(ProjectionStore.RewindToken token, int partition, long committedCursor) {
+        return store.cursorCommitted(token, partition, committedCursor);
     }
 
     public static <T> Builder<T> of(Topic<T> topic) {
