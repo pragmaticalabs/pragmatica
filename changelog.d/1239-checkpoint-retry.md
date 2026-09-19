@@ -15,8 +15,15 @@
 - Corrected the stale "30 seconds" checkpoint cadence in `ClusterCursorStore`, `StreamConsumerManager`
   and feature-catalog row 488. The time bound is the group's checkpoint interval: 1s for declarative
   consumers, 500ms for durable-topic groups.
-- [unverified: the detach-time final commit is still issued independently of an in-flight periodic
-  commit. If the periodic one lands after it, the stored cursor can step back by at most one checkpoint
-  interval, which means redelivery on the next attach, never loss. No store-level monotonic guard is
-  added pending a ruling, because `CursorStore` is also the pull API's commit path, where a lower
-  commit is a legitimate rewind.]
+- **Monotonicity is enforced in the consumer runtime, not the store (CTO ruling, 2026-09-19).** The
+  ticket asked for a store-level guard. That premise was wrong: `CursorStore` is also the public pull
+  API's writer (`StreamAccessFactory` takes it as an SPI extension), and committing a lower offset there
+  is a legitimate rewind. The runtime's in-memory cursor only moves forward, and every commit reads it
+  when issued, so the runtime never issues a commit below one that already succeeded. [mechanism:
+  `ConsumerState.advanceCursor` uses `accumulateAndGet(max)`; pinned by
+  `StreamConsumerRuntimeTest$CursorCommitObservability.runtime_neverIssuesACommitBelowItsLastSuccessfulOne`]
+- [unverified: the detach-time final commit is issued independently of an in-flight periodic commit, so
+  a periodic commit landing after it can step the stored cursor back by at most one checkpoint interval.
+  The consequence is redelivery on the next attach, not loss.]
+- [unverified: two nodes briefly delivering one (group, partition) during reassignment can interleave
+  checkpoint commits; consequence is bounded redelivery, not loss]
