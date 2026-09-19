@@ -4314,6 +4314,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                             config.self(),
                                                                                                                             stream,
                                                                                                                             partition),
+                                                                                   streamTieredReader,
                                                                                    streamStorage,
                                                                                    kvStore,
                                                                                    clusterCommandApplier);
