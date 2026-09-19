@@ -425,6 +425,54 @@ class EntityFoldTest {
         }
     }
 
+    /// #1241 — a delayed apply of an OLDER record must not overwrite a key a newer record has already
+    /// written. Before the fix the append path applied from an asynchronous `onSuccess`, so an
+    /// `apply(N)` could pass its watermark check, stall, and land after `N+1` had been applied for the
+    /// same key; the watermark does not move for it, so nothing ever re-applies `N+1`, and the next
+    /// checkpoint persists the regressed state. The late arrival is driven here by call order: offset 1
+    /// lands first and PARKS (0 is still outstanding), so the stale offset 0 still passes the watermark
+    /// check — exactly the state the stalled apply was in.
+    @Nested
+    class StaleApply {
+        @Test
+        void apply_keepsNewerState_whenAnOlderOffsetForTheSameKeyLandsLate() {
+            var fold = readyFold(new FakeSubstrate());
+
+            fold.apply(PARTITION, 1, EntityLogRecord.upsert("k", bytes("new")));
+            fold.apply(PARTITION, 0, EntityLogRecord.upsert("k", bytes("old")));
+
+            assertThat(text(fold, "k")).as("the older record must not win over the newer one for the same key")
+                                       .isEqualTo("new");
+            assertThat(fold.checkpointableThrough(PARTITION)).as("the superseded offset is still ACCOUNTED, or"
+                                                                 + " the watermark would hold below it forever")
+                                                              .isEqualTo(1);
+        }
+
+        @Test
+        void apply_keepsKeyDeleted_whenAnOlderUpsertLandsAfterTheTombstone() {
+            var fold = readyFold(new FakeSubstrate());
+
+            fold.apply(PARTITION, 1, EntityLogRecord.delete("k"));
+            fold.apply(PARTITION, 0, EntityLogRecord.upsert("k", bytes("resurrected")));
+
+            assertThat(fold.get(PARTITION, "k")).as("a late upsert must not resurrect a deleted key")
+                                                .isEqualTo(Option.none());
+        }
+
+        /// Records of DIFFERENT keys arriving out of order are not stale relative to each other — each
+        /// still applies. Pins that the guard is per key, not a partition-wide maximum.
+        @Test
+        void apply_appliesOlderOffset_whenTheNewerOneBelongsToADifferentKey() {
+            var fold = readyFold(new FakeSubstrate());
+
+            fold.apply(PARTITION, 1, EntityLogRecord.upsert("b", bytes("2")));
+            fold.apply(PARTITION, 0, EntityLogRecord.upsert("a", bytes("1")));
+
+            assertThat(text(fold, "a")).isEqualTo("1");
+            assertThat(text(fold, "b")).isEqualTo("2");
+        }
+    }
+
     private static EntityFold readyFold(FakeSubstrate substrate) {
         var fold = EntityFold.entityFold(KEYSPACE, substrate);
 
