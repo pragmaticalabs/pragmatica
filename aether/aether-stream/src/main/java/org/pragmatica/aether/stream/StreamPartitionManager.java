@@ -202,7 +202,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// `AetherNode` binds it to the [org.pragmatica.aether.stream.replication.ReplicaRegistry]. Default:
     /// [#ALL_CAUGHT_UP]. Volatile: set once at wiring, read on the reconcile tick.
     private volatile ReplicaCatchupSource catchupSource = ALL_CAUGHT_UP;
-
     /// Live committed-ownership guard for the owner release rule (#265 increment 5): a node never releases a
     /// partition whose COMMITTED owner is still itself. `AetherNode` binds it to the committed
     /// `StreamPartitionOwnershipValue`. Default: [#OWNER_ELSEWHERE]. Volatile: set once at wiring, read on
@@ -1188,24 +1187,34 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// ring append but before fsync loses the event AND fails the publish (the caller was never acked,
     /// so it retries) — only WAL-durable events ack. With no WAL configured this is a no-op gate and
     /// behavior is exactly as before.
+    ///
+    /// Owner admission (#1230): refused with [StreamError.NotOwnerAppend] before anything else when the
+    /// committed owner of `(streamName, partition)` is another node — see [OwnerWriteAdmission].
     public Result<Long> publishLocal(String streamName,
                                      int partition,
                                      byte[] payload,
                                      long timestamp,
                                      Epoch ownerEpoch) {
-        return resolveStreamEntry(streamName).flatMap(entry -> appendToPartition(entry,
-                                                                                 streamName,
-                                                                                 partition,
-                                                                                 payload,
-                                                                                 timestamp,
-                                                                                 ownerEpoch))
-                                 .flatMap(offset -> durablyLog(streamName, partition, offset, payload, timestamp))
-                                 .onSuccess(offset -> replicationManager.replicateEvent(streamName,
-                                                                                        partition,
-                                                                                        offset,
-                                                                                        payload,
-                                                                                        timestamp,
-                                                                                        ownerEpoch));
+        return admitOwnerWrite(streamName, partition).flatMap(_ -> resolveStreamEntry(streamName))
+                              .flatMap(entry -> appendToPartition(entry,
+                                                                  streamName,
+                                                                  partition,
+                                                                  payload,
+                                                                  timestamp,
+                                                                  ownerEpoch))
+                              .flatMap(offset -> durablyLog(streamName, partition, offset, payload, timestamp))
+                              .onSuccess(offset -> replicationManager.replicateEvent(streamName,
+                                                                                     partition,
+                                                                                     offset,
+                                                                                     payload,
+                                                                                     timestamp,
+                                                                                     ownerEpoch));
+    }
+
+    private Result<Unit> admitOwnerWrite(String streamName, int partition) {
+        return ownerWriteAdmission.remoteCommittedOwner(streamName, partition)
+                                  .map(owner -> new StreamError.NotOwnerAppend(streamName, partition, owner).<Unit> result())
+                                  .or(Result::unitResult);
     }
 
     /// Gate the publish ack on WAL fsync (streaming-persistence W3). With no WAL configured for
@@ -1358,7 +1367,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// metadata-only partition is materialized ONLY when this node is its OWNER/REPLICA (a publish/replica-
     /// receive that lands here because reconcile has not fired yet must not drop the write); a genuine
     /// non-replica (`NONE`) is rejected with `PARTITION_NOT_LOCAL` so the caller forwards to a holder (the
-    /// read/write routers already fall back to owner-forward on an absent local buffer — spec §8). The
+    /// read router forwards on an absent local buffer, the write routers route by owner (#1230) — spec §8). The
     /// READ path never materializes — it forwards.
     private Result<OffHeapRingBuffer> resolveAppendTarget(String streamName, int partition, StreamEntry entry) {
         if (partition < 0 || partition >= entry.declaredPartitions()) {

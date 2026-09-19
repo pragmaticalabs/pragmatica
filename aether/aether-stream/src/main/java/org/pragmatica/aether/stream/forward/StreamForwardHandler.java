@@ -133,8 +133,9 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
 
     /// The min-sync barrier belongs HERE, on the owner, because this is where the ack for a forwarded
     /// publish is produced. Both writer paths ([org.pragmatica.aether.stream.DefaultStreamPublisher] and
-    /// [org.pragmatica.aether.stream.StreamWriteRouter]) route on LOCAL RING PRESENCE, not ownership, and
-    /// each awaits replication only on its local-append arm — so before this, every publish that was
+    /// [org.pragmatica.aether.stream.StreamWriteRouter]) await replication only on their local-append arm
+    /// (they routed on local ring presence until #1230; they now route on the resolved owner) — so before
+    /// this, every publish that was
     /// forwarded to the owner acked on the owner's local fsync ALONE, silently dropping `min-sync-replicas`
     /// to 1. Measured 2026-08-16 (02y-stream-crash, remote cluster B): 80/80 events ACKED, then a SIGKILL of
     /// the node owning partitions 0 and 2 lost BOTH partitions whole — 41 acked events gone, with the
@@ -216,8 +217,10 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
 
     /// Owner-side forwarded-publish failure dispatch (write-forward race fix): a cause the owner deems
     /// transient — its committed config not yet visible ({@link StreamError.StreamConfigNotYetVisible}) or a
-    /// capacity-deferred partition ({@link ResourceCapacityExhausted}) — is sent as a RETRYABLE response so
-    /// the forwarder backs off and retries a bounded number of times; every other cause is permanent.
+    /// capacity-deferred partition ({@link ResourceCapacityExhausted}), or a committed owner that is not yet
+    /// this node ({@link StreamError.NotOwnerAppend}, #1230: the HRW-routed target during a reshuffle, before
+    /// the leader commits the ownership change) — is sent as a RETRYABLE response so the forwarder backs off
+    /// and retries a bounded number of times; every other cause is permanent.
     @Contract
     private void sendPublishFailure(PublishForward request, Cause cause) {
         if (isRetryable(cause)) {
@@ -228,7 +231,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     }
 
     private static boolean isRetryable(Cause cause) {
-        return cause instanceof StreamError.StreamConfigNotYetVisible || ResourceCapacityExhausted.isTransientCapacity(cause);
+        return cause instanceof StreamError.StreamConfigNotYetVisible || cause instanceof StreamError.NotOwnerAppend || ResourceCapacityExhausted.isTransientCapacity(cause);
     }
 
     @Contract

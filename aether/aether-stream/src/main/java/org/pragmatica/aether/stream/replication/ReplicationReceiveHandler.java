@@ -51,6 +51,12 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 /// `StreamPartitionManager::appendRecovered`) which appends WITHOUT re-invoking the replication
 /// manager — this is what stops an infinite replicate→apply→replicate loop.
 ///
+/// ## Sender validation (#1230)
+/// Before anything else, a batch whose sender cannot be the committed owner of the partition at the batch's
+/// epoch is refused: nothing applied, nothing acked (not even a stale-duplicate re-ack) — see
+/// `senderMayBeCommittedOwner`. The factories without a {@link CommittedStreamOwnerSource} validate
+/// nothing (the no-owner source), exactly as before.
+///
 /// ## Ack
 /// After applying the verified portion of a batch up to highest offset `H`, `H` is acked back so
 /// {@link DefaultReplicationManager#handleAck} can advance the watermark and resolve any pending
@@ -208,6 +214,13 @@ public final class ReplicationReceiveHandler {
         var timestamps = message.timestamps();
         var fromOffset = message.fromOffset();
         var batchEnd = fromOffset + payloads.size() - 1;
+
+        if (!senderMayBeCommittedOwner(message)) {
+            refuseUnauthorizedSender(message);
+
+            return;
+        }
+
         var localNext = resolveLocalNext(streamName, partition, fromOffset);
 
         if (fromOffset > localNext) {
@@ -223,6 +236,47 @@ public final class ReplicationReceiveHandler {
         }
 
         applyContiguous(message, streamName, partition, fromOffset, payloads, timestamps, localNext);
+    }
+
+    /// #1230: a batch is landed and acked only when its sender can be the committed owner of the partition
+    /// at the batch's epoch. The owner for an epoch is known only when this replica's committed record is AT
+    /// that epoch; there the sender must equal the recorded owner. A batch OLDER than the record comes from a
+    /// deposed owner. A batch NEWER than the record means this replica's view lags a commit the sender has
+    /// already observed — the owner-handoff flow — so it is not judged here. No record (cold start, or a
+    /// dead holder under the #568 liveness filter) leaves nothing to judge against.
+    private boolean senderMayBeCommittedOwner(ReplicationMessage.ReplicateEvents message) {
+        return committedOwners.committedOwner(message.streamName(),
+                                              message.partition())
+                              .map(committed -> senderMatches(committed, message))
+                              .or(true);
+    }
+
+    private static boolean senderMatches(CommittedStreamOwnerSource.CommittedOwner committed,
+                                         ReplicationMessage.ReplicateEvents message) {
+        var batchEpoch = message.ownerEpoch();
+        var committedEpoch = committed.ownerEpoch();
+
+        return batchEpoch.isStrictlyAfter(committedEpoch) || batchEpoch.equals(committedEpoch) && isCommittedSender(committed,
+                                                                                                                    message);
+    }
+
+    private static boolean isCommittedSender(CommittedStreamOwnerSource.CommittedOwner committed,
+                                             ReplicationMessage.ReplicateEvents message) {
+        return committed.owner()
+                        .equals(message.governorId());
+    }
+
+    /// A batch from a node that cannot be the committed owner: nothing is applied and nothing is acked —
+    /// not even the stale-duplicate re-ack, which would otherwise count this replica toward a non-owner's
+    /// min-sync barrier for an offset holding a DIFFERENT event here. No gap repair either: this node's
+    /// log is intact; the batch is simply not authoritative.
+    private void refuseUnauthorizedSender(ReplicationMessage.ReplicateEvents message) {
+        log.warn("ReplicationReceiveHandler: refusing batch for {}[{}] from {} at epoch {} — sender is not the committed owner "
+                + "(#1230), nothing applied or acked",
+                 message.streamName(),
+                 message.partition(),
+                 message.governorId(),
+                 message.ownerEpoch());
     }
 
     /// `fromOffset > localNext`: an earlier batch is missing. Applying now would diverge — reject the

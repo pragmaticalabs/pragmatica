@@ -14,6 +14,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import org.junit.jupiter.api.AfterEach;
@@ -177,6 +178,35 @@ class OwnerAuthorizedWritesTest {
         }
     }
 
+    /// The already-owner-routed access path keeps its routing; only its local arm gains the lag redirect.
+    @Nested
+    class PartitionedAccessRouting {
+        @Test
+        void publish_redirectsToCommittedOwner_whenSelfIsHrwOwnerButCommitIsElsewhere() {
+            var forwardClient = new RecordingForwardClient();
+            Function<Integer, Option<NodeId>> ownerResolver = _ -> Option.some(SELF);
+            partitionManager.ownerWriteAdmission((_, _) -> Option.some(OWNER));
+
+            PartitionedStreamAccess.<byte[]> streamAccess(partitionManager,
+                                                          identitySerializer(),
+                                                          identityDeserializer(),
+                                                          STREAM,
+                                                          1,
+                                                          Option.<Function<byte[], Object>> none(),
+                                                          Option.some(forwardClient),
+                                                          SELF,
+                                                          Option.<Fn0<Option<NodeId>>> none(),
+                                                          Option.some(ownerResolver),
+                                                          0)
+                                   .publish("e0".getBytes())
+                                   .await()
+                                   .onFailureRun(Assertions::fail)
+                                   .onSuccess(offset -> assertThat(offset).isEqualTo(FORWARDED_OFFSET));
+            assertThat(forwardClient.owners).containsExactly(OWNER);
+            assertThat(localHead()).isEqualTo(-1L);
+        }
+    }
+
     private DefaultStreamPublisher<byte[]> publisher(StreamForwardClient forwardClient, NodeId hrwOwner) {
         Function<Integer, Option<NodeId>> ownerResolver = _ -> Option.some(hrwOwner);
 
@@ -205,6 +235,26 @@ class OwnerAuthorizedWritesTest {
             @Override
             public <T> void write(io.netty.buffer.ByteBuf byteBuf, T object) {
                 byteBuf.writeBytes((byte[]) object);
+            }
+        };
+    }
+
+    private static Deserializer identityDeserializer() {
+        return new Deserializer() {
+            @SuppressWarnings("unchecked")
+            @Override
+            public <T> T decode(byte[] bytes) {
+                return (T) bytes;
+            }
+
+            @SuppressWarnings("unchecked")
+            @Override
+            public <T> T read(io.netty.buffer.ByteBuf byteBuf) {
+                var bytes = new byte[byteBuf.readableBytes()];
+
+                byteBuf.readBytes(bytes);
+
+                return (T) bytes;
             }
         };
     }

@@ -239,44 +239,42 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
         return chain;
     }
 
+    /// Route by AUTHORITY, never by ring presence (#1230): a replica holds the same materialized ring the
+    /// owner does, so "a ring exists here" let replicas append locally and assign offsets the owner also
+    /// assigned. The partition's HRW owner is resolved via the partition-aware resolver (the SAME
+    /// `ReplicaSetController` placement that owns the replica set), falling back to the arg-less leader
+    /// resolver only when no HRW resolver is wired (legacy / minimal runtimes). A remote owner is
+    /// write-forwarded; a resolved owner that is THIS node — or the absence of an owner or forward client —
+    /// appends locally rather than sending to self (which QUIC silently drops, hanging the forward). The
+    /// local append is admitted only for the committed owner ({@link StreamPartitionManager.OwnerWriteAdmission}).
+    /// Mirrors {@link StreamWriteRouter} and {@link PartitionedStreamAccess}'s owner-routed publish.
     private Promise<Unit> publishEventual(int partition, byte[] bytes, long timestamp) {
-        if (partitionManager.partitionBuffer(streamName, partition).isPresent()) {
-            return publishLocalEventual(partition, bytes, timestamp);
-        }
-
-        return publishRemote(partition, bytes, timestamp);
-    }
-
-    private Promise<Unit> publishLocalEventual(int partition, byte[] bytes, long timestamp) {
-        if (minSyncReplicas <= 1) {
-            return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
-                                   .mapToUnit()
-                                   .async();
-        }
-
-        return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
-                               .async()
-                               .flatMap(offset -> partitionManager.awaitReplication(streamName,
-                                                                                    partition,
-                                                                                    offset,
-                                                                                    minSyncReplicas - 1));
-    }
-
-    /// Non-materialized publish: route to the partition's HRW owner instead of the STREAMING leader. The
-    /// owner is resolved via the partition-aware HRW resolver (the SAME `ReplicaSetController` placement
-    /// that owns the replica set), falling back to the arg-less leader resolver only when no HRW resolver
-    /// is wired (legacy / minimal runtimes). A resolved owner that is THIS node — or the absence of an
-    /// owner or forward client — falls back to a local append rather than a send-to-self (which QUIC
-    /// silently drops, hanging the forward). Mirrors {@link StreamWriteRouter}'s `forwardToOwner` and
-    /// {@link PartitionedStreamAccess}'s owner-routed publish.
-    private Promise<Unit> publishRemote(int partition, byte[] bytes, long timestamp) {
         return resolveOwner(partition).filter(this::isRemote)
-                           .flatMap(owner -> forwardClient.map(client -> forwardToOwner(client,
-                                                                                        owner,
-                                                                                        partition,
-                                                                                        bytes,
-                                                                                        timestamp)))
+                           .flatMap(owner -> forwardTo(owner, partition, bytes, timestamp))
                            .or(() -> publishLocalEventual(partition, bytes, timestamp));
+    }
+
+    /// Owner-local append; with `minSyncReplicas > 1` it also awaits `minSyncReplicas - 1` peer acks. A
+    /// refusal because the committed owner is another node (the #1230 ownership-lag window) is redirected
+    /// to that owner via {@link StreamForwardRetry#redirectNotOwner}.
+    private Promise<Unit> publishLocalEventual(int partition, byte[] bytes, long timestamp) {
+        return partitionManager.publishLocal(streamName, partition, bytes, timestamp)
+                               .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
+                                                                                  owner -> forwardTo(owner,
+                                                                                                     partition,
+                                                                                                     bytes,
+                                                                                                     timestamp)),
+                                     offset -> awaitMinSync(partition, offset));
+    }
+
+    private Promise<Unit> awaitMinSync(int partition, long offset) {
+        return minSyncReplicas > 1
+               ? partitionManager.awaitReplication(streamName, partition, offset, minSyncReplicas - 1)
+               : Promise.unitPromise();
+    }
+
+    private Option<Promise<Unit>> forwardTo(NodeId owner, int partition, byte[] bytes, long timestamp) {
+        return forwardClient.map(client -> forwardToOwner(client, owner, partition, bytes, timestamp));
     }
 
     /// #467: prefer the partition-aware HRW owner-resolver (the placement authority that owns the replica

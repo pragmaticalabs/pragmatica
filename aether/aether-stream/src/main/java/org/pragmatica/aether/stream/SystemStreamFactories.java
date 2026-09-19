@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.util.function.Function;
+
+import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -68,6 +71,37 @@ public final class SystemStreamFactories {
                                                                    config.name(),
                                                                    config.partitions(),
                                                                    Option.none());
+
+        return FrameworkStreamPublishers.systemStreamPublisher(address, transport);
+    }
+
+    /// #1230: construct a forward-capable {@link FrameworkStreamPublisher} for a REPLICATED system address —
+    /// the write-side counterpart of the forward-capable consumer below. `system:cluster-events` has
+    /// whole-cluster RF, so EVERY node holds a replica ring; the local-only overloads above wire no forward
+    /// client, so every non-owner emit (`ClusterEventAggregator.emitAsLeader` / `emitLocal`) appended to its
+    /// replica ring as an undeclared second writer. This one threads the `forwardClient`, the partition-aware
+    /// HRW `partitionOwnerResolver` and the `self` id, so a non-owner write-forwards to the owner exactly like
+    /// an app-stream publish. The config's `name` must equal `address.asString()`.
+    public static <T> Result<FrameworkStreamPublisher<T>> systemStreamPublisher(ResourceAddress address,
+                                                                                StreamPartitionManager partitionManager,
+                                                                                Serializer serializer,
+                                                                                StreamConfig config,
+                                                                                Option<StreamForwardClient> forwardClient,
+                                                                                NodeId self,
+                                                                                Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver) {
+        ensureLocalPartition(partitionManager, config);
+        var transport = DefaultStreamPublisher.<T> streamPublisher(partitionManager,
+                                                                   serializer,
+                                                                   config.name(),
+                                                                   config.partitions(),
+                                                                   Option.none(),
+                                                                   ConsistencyMode.EVENTUAL,
+                                                                   Option.none(),
+                                                                   0,
+                                                                   forwardClient,
+                                                                   Option.none(),
+                                                                   partitionOwnerResolver,
+                                                                   Option.some(self));
 
         return FrameworkStreamPublishers.systemStreamPublisher(address, transport);
     }
