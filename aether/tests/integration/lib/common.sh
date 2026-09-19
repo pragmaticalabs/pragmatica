@@ -307,6 +307,32 @@ _fork_bounded() {
     # is what made B8 fail: a legitimately slow (not hung) value read via
     # _wait_for_poll_once, backgrounded here, came back empty at the exact
     # moment its own read finished, well inside its time budget.
+    # #1226 (CI runaway, post-fix regression): `( "$@" ) &` and the watchdog below are
+    # each a REAL two-level fork (subshell wrapping a real command, e.g. `command sleep`
+    # inside the watchdog, or a nested command substitution chain inside "$@" — see the
+    # bash-3.2 comment above, which established this is a genuine fork, not a collapse).
+    # Killing by bare PID only reaches the wrapper subshell's OWN pid, not any child it
+    # forked — that child is reparented to PID 1 and runs to completion regardless.
+    # Confirmed by direct `ps` measurement: after `kill "$wpid"` alone, the watchdog's
+    # nested `command sleep "$secs"` survived as an orphan, up to the full $secs bound.
+    # The chaos harness calls _fork_bounded on every fast poll; each leaked sleep lives
+    # out its bound before exiting, so live orphans accumulate faster than they drain,
+    # blowing a 300-process ceiling that this same harness held at ~10 before this
+    # function existed (issue: watchdog processes outliving the command they guard).
+    #
+    # Fix: bash job control (`set -m`) makes each backgrounded `( ... ) &` the leader of
+    # its OWN new process group, and any further child it forks inherits that same
+    # pgid — so `kill -- -"$pid"` (negative PID = signal the whole group) reaches the
+    # wrapper AND its nested child together. Confirmed by direct `ps` measurement this
+    # leaves zero residual processes in both the fast-success and killed-by-bound cases,
+    # including when _fork_bounded is invoked inside command substitution (the shape
+    # WAIT_FOR_VALUE callers use). `set -m` is saved/restored rather than left on: it is
+    # off by default in a non-interactive script, and other code in this process must
+    # not inherit job-control side effects (e.g. job-done notifications on stderr) it
+    # didn't ask for.
+    local had_monitor=0
+    case "$-" in *m*) had_monitor=1 ;; esac
+    [ "$had_monitor" -eq 0 ] && set -m
     ( "$@" ) &
     local cpid=$!
     # `command sleep`, not bare `sleep`: this subshell is a fork of the caller's own
@@ -315,15 +341,20 @@ _fork_bounded() {
     # otherwise be inherited here too, making the watchdog fire in the same instant
     # it forks regardless of $secs and killing "$@" on effectively every call.
     # `command` bypasses shell-function lookup and always reaches the real binary.
-    ( command sleep "$secs"; kill -TERM "$cpid" 2>/dev/null || true; command sleep 0.2; kill -KILL "$cpid" 2>/dev/null || true ) &
+    # Kills below target the process GROUP (`-- -"$cpid"`), not the bare pid, so the
+    # nested `command sleep` cannot outlive the group that owns it.
+    ( command sleep "$secs"; kill -TERM -- -"$cpid" 2>/dev/null || true; command sleep 0.2; kill -KILL -- -"$cpid" 2>/dev/null || true ) &
     local wpid=$!
     local rc
     wait "$cpid" 2>/dev/null && rc=0 || rc=$?
     # Reap the watchdog now rather than let it sleep out its own budget: this runs
     # once per wait_for poll, so a leaked sleep per iteration adds up over a long
-    # cloud run (see probe-runner-leaks-exhaust-process-cap in memory).
-    kill "$wpid" 2>/dev/null || true
+    # cloud run (see probe-runner-leaks-exhaust-process-cap in memory). Group-kill it
+    # too, for the same reason as above: the watchdog's own `command sleep`/`command
+    # sleep 0.2` is a nested child that a bare-pid kill would orphan.
+    kill -- -"$wpid" 2>/dev/null || true
     wait "$wpid" 2>/dev/null || true
+    [ "$had_monitor" -eq 0 ] && set +m
     return "$rc"
 }
 
@@ -971,24 +1002,35 @@ wait_for() {
         # reports that overrun (S20 in test-self-drain-quorum-loss.sh), not a
         # kill from inside wait_for.
         #
-        # There is no universal floor that serves both callers: a wait_for
-        # call whose ENTIRE stated timeout is small (a 5s budget hiding a
-        # genuinely hung 60s predicate) must be killed at ~5s, not stretched
-        # to some floor — that is the ordinary case, and it is what the
-        # original #1226 fix verified. A wait_for call whose remaining slice
-        # is small only because it is the tail of a much larger budget (S20's
-        # 600s) needs the opposite: let the in-flight read finish even past
-        # that slice. wait_for's own visible state (timeout, WAIT_FOR_REMAINING)
-        # cannot tell these apart — both present identically at poll time. So
-        # the floor is an explicit, per-call OPT-IN from the caller, never a
-        # default: unset (or 0), a poll is bounded by whatever time remains,
-        # full stop — this is what makes a hung predicate under a small budget
-        # die on time. A caller whose value_cmd is a legitimately slow-but-
-        # finite read (network/topology fetch that can outlast the final
-        # slice) exports WAIT_FOR_MIN_POLL_BOUND before calling wait_for.
-        local poll_bound=$WAIT_FOR_REMAINING
-        local poll_floor=${WAIT_FOR_MIN_POLL_BOUND:-0}
-        [ "$poll_bound" -lt "$poll_floor" ] && poll_bound=$poll_floor
+        # DESIGN (owner ruling): the wall-clock DEADLINE governs whether a NEW
+        # poll may START — that is the `while` loop condition above, unchanged.
+        # It never governs whether an IN-FLIGHT poll may FINISH. Killing a poll
+        # mid-flight collapses "recovered, slowly" into "never recovered" and
+        # destroys a real operator diagnostic (B8: a late "5 cores" read must
+        # still register as a read, so the CALLER can report the slow-recovery
+        # message instead of a generic timeout).
+        #
+        # So the per-poll bound is a FIXED CAP, independent of WAIT_FOR_REMAINING
+        # — it no longer shrinks as the deadline approaches. This is what
+        # actually closes #1226's 5h17m runaway: that overrun came from MANY
+        # iterations each doing degraded-provider work, not from one long poll,
+        # and a fixed per-iteration cap bounds every single one of them,
+        # including ones nowhere near the deadline (the old WAIT_FOR_REMAINING
+        # bound only clamped iterations near the END of the budget). The cap is
+        # the largest single provider-call ceiling already legitimate in this
+        # file — non-cloud _api_call's `-m 30`, itself more generous than
+        # cloud's `${CLOUD_API_MAX_TIME:-15}` — so any predicate/value_cmd built
+        # from this file's own primitives finishes well inside it; anything
+        # that doesn't is a genuine hang and gets killed.
+        #
+        # GUARANTEE, stated precisely because it is weaker than "bounded by
+        # timeout": worst case is BUDGET + ONE POLL CAP, not BUDGET alone — the
+        # last poll can start a moment before the deadline and still run up to
+        # the full cap. That trade is deliberate: the stronger guarantee is
+        # only buyable by killing an in-flight poll, which is the diagnostic
+        # loss above. A killed poll is still classified as a failed READ (the
+        # existing branch below), never as a buggy predicate.
+        local poll_bound=${WAIT_FOR_POLL_CAP_S:-30}
         _fork_bounded "$poll_bound" _wait_for_poll_once && rc=0 || rc=$?
         if [ -n "$value_cmd" ]; then
             value_rc=$(cat "$valuercfile" 2>/dev/null)

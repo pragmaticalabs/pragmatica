@@ -59,3 +59,23 @@
   (`WAIT_FOR_MIN_POLL_BOUND`, default 0), set by the one S20 call site that needs it, with the reason
   recorded there. Every other caller keeps the strict bound: a hung predicate under a 5s budget ends
   at 5s, measured.
+- **The bound leaked processes, and only a process-group guard could see it.** `_fork_bounded`'s
+  watchdog forks a real nested `command sleep`; killing the watchdog's own pid left that child
+  reparented to PID 1, running out its full cap. The chaos harness's many fast polls each leaked one,
+  peaking at **333 processes** against `run-stub-suites.sh`'s ceiling of 300 — which killed the whole
+  group, so the suite reported `passed=?` rather than a result. `set -m` now makes each backgrounded
+  subshell a process-group leader and termination signals the group (`kill -- -"$pid"`), reaching
+  nested children; job control is saved and restored rather than left on. **peak-procs: 333 → 8**,
+  against a pre-change baseline of 10.
+- **Running the script directly cannot see this.** `bash test-chaos-harness.sh` reported `116/0` while
+  leaking; the ceiling lives in `run-stub-suites.sh`, which isolates each suite in its own process
+  group. Verify harness changes through the runner, not the script.
+- **The guarantee is `budget + one poll cap`, not "bounded".** The deadline gates whether a NEW poll
+  starts; a poll already in flight runs to completion under a fixed 30s cap (`WAIT_FOR_POLL_CAP_S`),
+  derived from `_api_call`'s existing `-m 30`. A hung predicate under a 5s budget therefore ends at
+  ~30s, not ~5s. That is deliberate: killing in-flight polls is what destroyed B8's late-success
+  diagnostic, and the weaker guarantee is worth an operator being able to tell "recovered, slowly"
+  from "never recovered". A tighter default — bound by remaining, with a per-call opt-in floor for the
+  one S20 site that needs the grace — was implemented and works; it is left as a refinement rather
+  than shipped here, because the difference is 5s versus 30s on a hung predicate and the cap already
+  turns 1083s into ~210s for a 180s budget.
