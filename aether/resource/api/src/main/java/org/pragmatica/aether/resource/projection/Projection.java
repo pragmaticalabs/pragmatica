@@ -5,18 +5,25 @@
 package org.pragmatica.aether.resource.projection;
 
 import org.pragmatica.aether.resource.projection.ProjectionClaims.ClaimOutcome;
+import org.pragmatica.aether.resource.projection.ProjectionClaims.Claimed;
+import org.pragmatica.aether.resource.projection.ProjectionClaims.Held;
+import org.pragmatica.aether.resource.projection.ProjectionClaims.Settlement;
 import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.slice.topic.Topic;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /// A projection is NOTHING BUT a durable subscriber with an idempotent apply (durable-pubsub-spec
@@ -43,10 +50,15 @@ import org.pragmatica.lang.utils.Causes;
 ///     a success, so the dispatcher retries it until the key is DONE or released; acknowledging it
 ///     would lose the event if the holder's fold then failed.
 ///   - **A failed fold releases its claim**, so the retry applies instead of being suppressed.
+///   - **An attempt that outlives its lease cannot finalize or release its successor's claim.** Every
+///     claim carries a fencing token, and [ProjectionClaims#finalizeClaim] and
+///     [ProjectionClaims#releaseClaim] act only while the stored claim still carries the caller's
+///     token; otherwise they change nothing, answer STALE, and are logged at WARN.
 ///   - **A crash BETWEEN fold and finalize re-applies after the lease expires.** A non-idempotent fold
-///     is therefore at-least-once in that window, and so is an attempt that outlives its lease: once
-///     the lease lapses another attempt may claim and fold alongside it. Exactly-once apply needs the
-///     store to apply fold and claim in ONE transaction — the named path, not built.
+///     is therefore at-least-once in that window, and so is an attempt that outlives its lease: the
+///     token fences the CLAIM, not the read-model write, so its late fold still lands beside the
+///     successor's. Exactly-once apply needs the store to apply fold and claim in ONE transaction —
+///     the named path, not built.
 ///   - **Beyond the claim store's retention or durability**, an evicted or lost DONE claim re-admits
 ///     the duplicate it was recording.
 ///
@@ -76,6 +88,8 @@ public record Projection<S, T>(String name,
                                Fn2<S, Option<S>, T> fold,
                                Fn0<Promise<Unit>> cursorReset,
                                Option<ClaimGuard> claims) {
+    private static final Logger LOG = LoggerFactory.getLogger(Projection.class);
+
     private static final Cause CURSOR_RESET_PENDING = Causes.cause("Projection rebuild: group-cursor reset is not wired yet (arrives with the durable pub-sub"
                                                                   + " operator surface, #386 D3) — rebuild refused rather than silently replaying nothing");
 
@@ -129,24 +143,41 @@ public record Projection<S, T>(String name,
 
     private Promise<Unit> resolveClaim(ClaimOutcome outcome, T event, ProjectionClaims backing, ClaimKey claimKey) {
         return switch (outcome) {
-            case CLAIMED -> applyUnderClaim(event, backing, claimKey);
-            case DONE -> Promise.unitPromise();
-            case IN_PROGRESS -> CLAIM_IN_PROGRESS.promise();
+            case Claimed(var token) -> applyUnderClaim(event, backing, claimKey, token);
+            case Held.DONE -> Promise.unitPromise();
+            case Held.IN_PROGRESS -> CLAIM_IN_PROGRESS.promise();
         };
     }
 
-    private Promise<Unit> applyUnderClaim(T event, ProjectionClaims backing, ClaimKey claimKey) {
-        return onEvent(event).fold(folded -> settleClaim(folded, backing, claimKey));
+    private Promise<Unit> applyUnderClaim(T event, ProjectionClaims backing, ClaimKey claimKey, long token) {
+        return onEvent(event).fold(folded -> settleClaim(folded, backing, claimKey, token));
     }
 
-    /// Success finalizes; failure releases, then reports the FOLD's cause. A failed release is
-    /// absorbed (FER): the PENDING claim is still reclaimable once its lease expires, so it delays the
-    /// retry by at most one lease and never loses the event — while replacing the fold's cause with
-    /// the release's would hide why the apply failed.
-    private Promise<Unit> settleClaim(Result<Unit> folded, ProjectionClaims backing, ClaimKey claimKey) {
-        return folded.fold(cause -> backing.releaseClaim(claimKey)
+    /// Success finalizes; failure releases, then reports the FOLD's cause. Both carry the claim's token,
+    /// so an attempt whose lease expired changes nothing: its finalize or release answers STALE and is
+    /// logged. A failed release is absorbed (FER): the PENDING claim is still reclaimable once its lease
+    /// expires, so it delays the retry by at most one lease and never loses the event — while replacing
+    /// the fold's cause with the release's would hide why the apply failed.
+    private Promise<Unit> settleClaim(Result<Unit> folded, ProjectionClaims backing, ClaimKey claimKey, long token) {
+        return folded.fold(cause -> backing.releaseClaim(claimKey, token)
+                                           .onSuccess(settlement -> warnIfStale(settlement, "release", claimKey))
                                            .fold(_ -> cause.promise()),
-                           _ -> backing.finalizeClaim(claimKey));
+                           _ -> backing.finalizeClaim(claimKey, token)
+                                       .onSuccess(settlement -> warnIfStale(settlement, "finalize", claimKey))
+                                       .mapToUnit());
+    }
+
+    /// A STALE settlement means this attempt no longer holds the claim — its lease expired and the key
+    /// was reclaimed, or the claim is gone. Nothing was changed. On `finalize` the fold has already
+    /// run, so a successor may apply the event again — the overlap the class doc names.
+    @Contract
+    private static void warnIfStale(Settlement settlement, String step, ClaimKey claimKey) {
+        if (settlement == Settlement.STALE) {
+            LOG.warn("Projection claim {} was stale on {}: this attempt no longer holds it (lease expired and"
+                    + " reclaimed, or claim gone), so nothing was changed",
+                     claimKey,
+                     step);
+        }
     }
 
     /// Apply one durably-delivered event: read the keyed state, fold, write back. **At-least-once
@@ -177,7 +208,7 @@ public record Projection<S, T>(String name,
     /// Supply the §8 claims backing and the lease each claim is taken for, enabling
     /// [#onEvent(Object, MessageContext)]. Without it that method refuses rather than applying
     /// unguarded. The lease should exceed the longest fold an attempt can run: a fold that outlives
-    /// its lease can be overlapped by a reclaiming attempt (class doc).
+    /// its lease can be overlapped by a reclaiming attempt's fold (class doc).
     public Projection<S, T> withClaims(ProjectionClaims backing, TimeSpan lease) {
         return new Projection<>(name, topic, store, key, fold, cursorReset, Option.some(new ClaimGuard(backing, lease)));
     }

@@ -279,8 +279,7 @@ class ProjectionTest {
             var event = new OrderSeen("a");
             var crashedAttemptKey = new Projection.ClaimKey("orders-seen", 0L, "msg-1");
 
-            assertThat(claims.claimIfAbsent(crashedAttemptKey, LEASE).await())
-                .isEqualTo(Result.success(ProjectionClaims.ClaimOutcome.CLAIMED));
+            claimToken(claims, crashedAttemptKey);
             projection.onEvent(event, FIRST)
                       .await()
                       .onSuccess(_ -> fail("a live PENDING claim must refuse the attempt"));
@@ -307,13 +306,18 @@ class ProjectionTest {
             var holder = projection.onEvent(new OrderSeen("a"), FIRST);
 
             claims.clock.addAndGet(LEASE.nanos() + 1);
-            assertThat(claims.claimIfAbsent(CLAIM_KEY, LEASE).await().isSuccess()).isTrue();
+
+            var successorToken = claimToken(claims, CLAIM_KEY);
+
             gate.succeed(Unit.unit());
             holder.await();
 
             assertThat(claims.claimed.get(CLAIM_KEY)).describedAs("the successor's claim must survive the expired holder's finalize")
                                                      .isNotNull()
-                                                     .matches(claim -> !claim.done());
+                                                     .matches(claim -> !claim.done() && claim.token() == successorToken);
+            assertThat(claims.finalizeClaim(CLAIM_KEY, successorToken).await())
+                .describedAs("the successor still owns its claim and may finalize it")
+                .isEqualTo(Result.success(ProjectionClaims.Settlement.APPLIED));
         }
 
         /// An expired holder cannot RELEASE its successor's claim. Were it released, a third attempt
@@ -330,13 +334,34 @@ class ProjectionTest {
             var holder = projection.onEvent(new OrderSeen("a"), FIRST);
 
             claims.clock.addAndGet(LEASE.nanos() + 1);
-            assertThat(claims.claimIfAbsent(CLAIM_KEY, LEASE).await().isSuccess()).isTrue();
+
+            var successorToken = claimToken(claims, CLAIM_KEY);
+
             gate.fail(WRITE_FAILED);
             holder.await();
 
             assertThat(claims.claimed.get(CLAIM_KEY)).describedAs("the successor's claim must survive the expired holder's release")
                                                      .isNotNull()
-                                                     .matches(claim -> !claim.done());
+                                                     .matches(claim -> !claim.done() && claim.token() == successorToken);
+        }
+
+        /// The contract itself, below the facade: a token that no longer matches the stored claim is
+        /// refused as STALE by both finalize and release, and the claim is left untouched.
+        @Test
+        void staleToken_isRefused_byFinalizeAndRelease() {
+            var claims = new InMemoryClaims();
+            var expiredToken = claimToken(claims, CLAIM_KEY);
+
+            claims.clock.addAndGet(LEASE.nanos() + 1);
+
+            var successorToken = claimToken(claims, CLAIM_KEY);
+
+            assertThat(successorToken).isNotEqualTo(expiredToken);
+            assertThat(claims.finalizeClaim(CLAIM_KEY, expiredToken).await())
+                .isEqualTo(Result.success(ProjectionClaims.Settlement.STALE));
+            assertThat(claims.releaseClaim(CLAIM_KEY, expiredToken).await())
+                .isEqualTo(Result.success(ProjectionClaims.Settlement.STALE));
+            assertThat(claims.claimed.get(CLAIM_KEY)).matches(claim -> !claim.done() && claim.token() == successorToken);
         }
 
         /// A DONE claim suppresses: the attempt is acknowledged and does not fold.
@@ -347,11 +372,19 @@ class ProjectionTest {
             var projection = countingProjection(store).withClaims(claims, LEASE);
             var doneKey = new Projection.ClaimKey("orders-seen", 0L, "msg-1");
 
-            claims.claimIfAbsent(doneKey, LEASE).await();
-            claims.finalizeClaim(doneKey).await();
+            claims.finalizeClaim(doneKey, claimToken(claims, doneKey)).await();
             projection.onEvent(new OrderSeen("a"), FIRST).await().onFailure(cause -> fail(cause.message()));
 
             assertThat(store.data).doesNotContainKey("a");
+        }
+
+        /// Claim `key` directly, as another attempt would, and return the token it was issued.
+        private static long claimToken(InMemoryClaims claims, Projection.ClaimKey key) {
+            return claims.claimIfAbsent(key, LEASE)
+                         .await()
+                         .map(ProjectionClaims.Claimed.class::cast)
+                         .map(ProjectionClaims.Claimed::token)
+                         .unwrap();
         }
 
         @Test
@@ -365,14 +398,15 @@ class ProjectionTest {
         }
     }
 
-    /// In-memory [ProjectionClaims]. The claim step is atomic (`compute`) but NOT shared — it models
+    /// In-memory [ProjectionClaims]. Each operation is atomic (`compute`) but NOT shared — it models
     /// one process; cross-instance suppression needs a backing every instance reads. The clock is
     /// manual so lease expiry is a test decision, not a sleep.
     private static final class InMemoryClaims implements ProjectionClaims {
-        private record Claim(boolean done, long expiresAt) {}
+        private record Claim(boolean done, long expiresAt, long token) {}
 
         private final Map<Projection.ClaimKey, Claim> claimed = new ConcurrentHashMap<>();
         private final AtomicLong clock = new AtomicLong();
+        private final AtomicLong tokens = new AtomicLong();
 
         @Override
         public Promise<ClaimOutcome> claimIfAbsent(Projection.ClaimKey key, TimeSpan lease) {
@@ -386,39 +420,48 @@ class ProjectionTest {
         private Claim decide(Option<Claim> existing, TimeSpan lease, ClaimOutcome[] outcome) {
             var now = clock.get();
             var live = existing.filter(claim -> claim.done() || claim.expiresAt() > now);
+            var fresh = new Claim(false, now + lease.nanos(), tokens.incrementAndGet());
 
             outcome[0] = live.map(InMemoryClaims::outcomeOf)
-                             .or(ClaimOutcome.CLAIMED);
+                             .or(new Claimed(fresh.token()));
 
-            return live.or(() -> new Claim(false, now + lease.nanos()));
+            return live.or(fresh);
         }
 
         private static ClaimOutcome outcomeOf(Claim claim) {
             return claim.done()
-                   ? ClaimOutcome.DONE
-                   : ClaimOutcome.IN_PROGRESS;
+                   ? Held.DONE
+                   : Held.IN_PROGRESS;
         }
 
         @Override
-        public Promise<Unit> finalizeClaim(Projection.ClaimKey key) {
-            claimed.put(key, new Claim(true, Long.MAX_VALUE));
-
-            return Promise.unitPromise();
+        public Promise<Settlement> finalizeClaim(Projection.ClaimKey key, long token) {
+            return settle(key, token, new Claim(true, Long.MAX_VALUE, token));
         }
 
         @Override
-        public Promise<Unit> releaseClaim(Projection.ClaimKey key) {
-            claimed.computeIfPresent(key, (_, existing) -> keepIfDone(existing));
-
-            return Promise.unitPromise();
+        public Promise<Settlement> releaseClaim(Projection.ClaimKey key, long token) {
+            return settle(key, token, null);
         }
 
-        /// `computeIfPresent` removes the entry on null: a PENDING claim is dropped, a DONE one kept.
+        /// Replace the claim with `next` (null removes it) only while it is PENDING with `token`.
+        private Promise<Settlement> settle(Projection.ClaimKey key, long token, Claim next) {
+            var settlement = new Settlement[] {Settlement.STALE};
+
+            claimed.computeIfPresent(key, (_, existing) -> settleIfHeld(existing, token, next, settlement));
+
+            return Promise.success(settlement[0]);
+        }
+
+        /// `computeIfPresent` removes the entry on null — the release case.
         @NullReturn
-        private static Claim keepIfDone(Claim claim) {
-            return claim.done()
-                   ? claim
-                   : null;
+        private static Claim settleIfHeld(Claim existing, long token, Claim next, Settlement[] settlement) {
+            if (existing.done() || existing.token() != token) {
+                return existing;
+            }
+            settlement[0] = Settlement.APPLIED;
+
+            return next;
         }
     }
 
@@ -440,13 +483,13 @@ class ProjectionTest {
         }
 
         @Override
-        public Promise<Unit> finalizeClaim(Projection.ClaimKey key) {
-            return delegate.finalizeClaim(key);
+        public Promise<Settlement> finalizeClaim(Projection.ClaimKey key, long token) {
+            return delegate.finalizeClaim(key, token);
         }
 
         @Override
-        public Promise<Unit> releaseClaim(Projection.ClaimKey key) {
-            return delegate.releaseClaim(key);
+        public Promise<Settlement> releaseClaim(Projection.ClaimKey key, long token) {
+            return delegate.releaseClaim(key, token);
         }
 
         private void arrive() {
