@@ -788,6 +788,7 @@ class StreamConsumerManagerTest {
     @Nested
     class ReconcilePasses {
         private static final long PARK_TIMEOUT_SECONDS = 10;
+        private static final int BURST_SIZE = 5;
 
         @Test
         void reconcile_readsTopicDeclarationsExactlyOnce_perPass() {
@@ -827,6 +828,77 @@ class StreamConsumerManagerTest {
             assertThat(runtime.subscribedPartitions()).describedAs("the newer registration's partitions stay attached once both passes are done")
                                                       .containsExactlyInAnyOrder(0, 1, 2, 3);
             assertThat(manager.activeSubscriptionCount()).isEqualTo(4);
+        }
+
+        /// Coalescing (#1267): every trigger that arrives while a pass is in flight is covered by ONE
+        /// follow-up pass, not one pass per trigger. Counted by declaration reads — one per pass.
+        @Test
+        void reconcile_runsExactlyOneFollowUpPass_forABurstOfTriggersDuringABusyPass() throws InterruptedException {
+            var topicGroups = new ParkingTopicGroups();
+            var manager = managerWithTopicGroups(topicGroups);
+            var busyPass = Thread.ofPlatform().start(manager::reconcile);
+
+            assertThat(topicGroups.parked.await(PARK_TIMEOUT_SECONDS, TimeUnit.SECONDS)).describedAs("the busy pass reached its declaration read")
+                                                                                   .isTrue();
+            var burst = IntStream.range(0, BURST_SIZE)
+                                 .mapToObj(_ -> Thread.ofPlatform().start(manager::reconcile))
+                                 .toList();
+
+            for (var trigger : burst) {
+                awaitFinishedOrBlocked(trigger);
+            }
+            topicGroups.release.countDown();
+            busyPass.join(PARK_TIMEOUT_SECONDS * 1_000);
+            for (var trigger : burst) {
+                trigger.join(PARK_TIMEOUT_SECONDS * 1_000);
+            }
+
+            assertThat(topicGroups.calls.get()).describedAs("the busy pass plus ONE follow-up pass for all %d triggers", BURST_SIZE)
+                                               .isEqualTo(2);
+        }
+
+        /// `stop()` waits for an in-flight pass, so a pass parked past its snapshot cannot attach after
+        /// `stop()` returns: the stop's detach sweep runs after that pass has finished.
+        @Test
+        void stop_leavesNothingAttached_whenAPassInFlightFinishesAfterStopWasCalled() throws InterruptedException {
+            var topicGroups = new ParkingTopicGroups();
+
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(topicGroups);
+            var inFlightPass = Thread.ofPlatform().start(manager::reconcile);
+
+            assertThat(topicGroups.parked.await(PARK_TIMEOUT_SECONDS, TimeUnit.SECONDS)).describedAs("the pass holds its snapshot and has not attached yet")
+                                                                                   .isTrue();
+            var stopping = Thread.ofPlatform().start(manager::stop);
+
+            awaitFinishedOrBlocked(stopping);
+            topicGroups.release.countDown();
+            inFlightPass.join(PARK_TIMEOUT_SECONDS * 1_000);
+            stopping.join(PARK_TIMEOUT_SECONDS * 1_000);
+
+            assertThat(inFlightPass.isAlive() || stopping.isAlive()).describedAs("the pass and the stop completed").isFalse();
+            assertThat(runtime.subscribedPartitions()).describedAs("nothing may stay attached once stop() has returned")
+                                                      .isEmpty();
+            assertThat(manager.activeSubscriptionCount()).isZero();
+        }
+
+        /// The lock alone is not enough: a trigger after `stop()` — a queued caller, or a tick that
+        /// outlives it — must not run a pass that re-attaches.
+        @Test
+        void reconcile_attachesNothing_afterStop() {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(new CountingTopicGroups());
+
+            manager.reconcile();
+            manager.stop();
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("a stopped manager must not re-attach").isEmpty();
+            assertThat(manager.activeSubscriptionCount()).isZero();
         }
 
         private void declareOnListenerThread() {
