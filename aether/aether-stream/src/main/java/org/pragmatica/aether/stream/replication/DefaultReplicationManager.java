@@ -7,11 +7,14 @@ package org.pragmatica.aether.stream.replication;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -31,6 +34,7 @@ import static org.pragmatica.lang.Unit.unit;
 
 final class DefaultReplicationManager implements ReplicationManager {
     private static final TimeSpan DEFAULT_ACK_TIMEOUT = TimeSpan.timeSpan(5).seconds();
+    private static final Runnable NO_OP = () -> {};
 
     private final NodeId governorId;
     private final ReplicaRegistry registry;
@@ -38,6 +42,9 @@ final class DefaultReplicationManager implements ReplicationManager {
     private final Option<ReplicationBatcher> batcher;
     private final EarliestRetainedOffset earliestRetained;
     private final ConcurrentHashMap<PendingAckKey, PendingAck> pendingAcks = new ConcurrentHashMap<>();
+    private final Runnable betweenSteps;
+    private final Fn2<ScheduledFuture<?>, Runnable, TimeSpan> timerScheduler;
+    private final AtomicLong ackVisits = new AtomicLong();
 
     DefaultReplicationManager(NodeId governorId, ReplicaRegistry registry, ReplicationTransport transport) {
         this(governorId, registry, transport, none(), ALWAYS_PROMOTE);
@@ -65,16 +72,40 @@ final class DefaultReplicationManager implements ReplicationManager {
         this(governorId, registry, transport, some(batcher), earliestRetained);
     }
 
+    /// Test seam (#1259/#1260): `betweenSteps` runs inside [#awaitReplication] right after the registry
+    /// snapshot, so a test can land an ack at exactly that point; `timerScheduler` replaces the shared
+    /// scheduler so a test can observe whether the ack timer is cancelled. Production passes a no-op and
+    /// [SharedScheduler#schedule].
+    DefaultReplicationManager(NodeId governorId,
+                              ReplicaRegistry registry,
+                              ReplicationTransport transport,
+                              Runnable betweenSteps,
+                              Fn2<ScheduledFuture<?>, Runnable, TimeSpan> timerScheduler) {
+        this(governorId, registry, transport, none(), ALWAYS_PROMOTE, betweenSteps, timerScheduler);
+    }
+
     private DefaultReplicationManager(NodeId governorId,
                                       ReplicaRegistry registry,
                                       ReplicationTransport transport,
                                       Option<ReplicationBatcher> batcher,
                                       EarliestRetainedOffset earliestRetained) {
+        this(governorId, registry, transport, batcher, earliestRetained, NO_OP, SharedScheduler::schedule);
+    }
+
+    private DefaultReplicationManager(NodeId governorId,
+                                      ReplicaRegistry registry,
+                                      ReplicationTransport transport,
+                                      Option<ReplicationBatcher> batcher,
+                                      EarliestRetainedOffset earliestRetained,
+                                      Runnable betweenSteps,
+                                      Fn2<ScheduledFuture<?>, Runnable, TimeSpan> timerScheduler) {
         this.governorId = governorId;
         this.registry = registry;
         this.transport = transport;
         this.batcher = batcher;
         this.earliestRetained = earliestRetained;
+        this.betweenSteps = betweenSteps;
+        this.timerScheduler = timerScheduler;
     }
 
     @Contract
@@ -173,6 +204,7 @@ final class DefaultReplicationManager implements ReplicationManager {
         // awaited offset — a race-won ack is honored instead of waiting out the 5s timeout.
         var alreadyAcked = peersAtOrAbove(targets, streamName, partition, offset);
 
+        betweenSteps.run();
         if (alreadyAcked.size() >= minAcks) {
             return Promise.success(unit());
         }
@@ -224,7 +256,7 @@ final class DefaultReplicationManager implements ReplicationManager {
         var pending = new PendingAck(promise, acked, minAcks);
 
         pendingAcks.put(key, pending);
-        SharedScheduler.schedule(() -> timeoutPendingAck(key), DEFAULT_ACK_TIMEOUT);
+        timerScheduler.apply(() -> timeoutPendingAck(key), DEFAULT_ACK_TIMEOUT);
 
         return promise;
     }
@@ -243,6 +275,7 @@ final class DefaultReplicationManager implements ReplicationManager {
 
         pendingAcks.entrySet()
                    .stream()
+                   .peek(_ -> ackVisits.incrementAndGet())
                    .filter(entry -> matchesAwait(entry.getKey(),
                                                  streamName,
                                                  partition,
@@ -270,6 +303,11 @@ final class DefaultReplicationManager implements ReplicationManager {
     private void timeoutPendingAck(PendingAckKey key) {
         option(pendingAcks.remove(key)).onPresent(pending -> pending.promise()
                                                                     .resolve(REPLICATION_TIMEOUT.result()));
+    }
+
+    /// Test probe (#1260): pending-await entries visited by ack resolution since construction.
+    long ackVisitCount() {
+        return ackVisits.get();
     }
 
     record PendingAckKey(String streamName, int partition, long offset) {}
