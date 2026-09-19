@@ -69,6 +69,7 @@ class StreamPartitionManagerSectionReentrancyTest {
 
         var outer = manager.publishLocal("s", 0, "a".getBytes(UTF_8), 1L);
 
+        awaitSet(inner);
         runtime.close();
         manager.close();
 
@@ -135,6 +136,16 @@ class StreamPartitionManagerSectionReentrancyTest {
     }
 
     // === helpers ===
+
+    /// Listeners run on the ring's notifier thread (#1258 round 2), so the handler's inner publish
+    /// completes asynchronously to the outer one.
+    private static void awaitSet(AtomicReference<Result<Long>> inner) {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (inner.get() == null && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+    }
 
     private static StreamConfig config(String name, int partitions) {
         return StreamConfig.streamConfig(name,

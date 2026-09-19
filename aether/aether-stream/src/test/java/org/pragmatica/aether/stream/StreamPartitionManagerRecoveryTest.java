@@ -147,6 +147,19 @@ class StreamPartitionManagerRecoveryTest {
         recovered.close();
     }
 
+    /// #1258 review round 2 (R2-3, reviewer probe D): the file still physically holds records at and below
+    /// the floor (lazy truncation), so a missing offset right above the floor is a HOLE, not reclaimed
+    /// history. A leading gap is accepted only when the file's FIRST PHYSICAL record is above floor + 1.
+    @Test
+    void rebuild_failsLoudly_whenHoleSitsDirectlyAboveTheFloor_andEarlierRecordsExist() throws IOException {
+        writeRawWal(frame(0, "v0"), frame(1, "v1"), frame(2, "v2"), frame(4, "v4"), frame(5, "v5"));
+        var headGapsBefore = StreamPartitionManager.walRecoveryHeadGapsAccepted();
+
+        assertRecoveryRefused(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L)), 3L, 4L);
+        assertThat(StreamPartitionManager.walRecoveryHeadGapsAccepted() - headGapsBefore).as("not counted as reclaimed")
+                                                                                         .isZero();
+    }
+
     @Test
     void rebuild_acceptsLeadingGap_aboveSealedBound() throws IOException {
         writeRawWal(frame(4, "v4"), frame(5, "v5"));
