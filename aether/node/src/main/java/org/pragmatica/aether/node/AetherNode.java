@@ -4016,10 +4016,13 @@ public interface AetherNode extends ManageableNode {
                                                                                                 partition));
         // #1230: application appends are admitted only on the committed owner. Ring possession authorizes
         // reads and replication receipt, never a write: the epoch fence cannot tell a live replica from the
-        // owner, because both stamp the same committed epoch. The SAME liveness-filtered committed source the
-        // release guard reads (#568), so a dead holder's record does not wedge writes; no record admits (the
-        // cold-start window, where the fence is inert and HRW routing alone picks the writer).
-        streamPartitionManager.ownerWriteAdmission((stream, partition) -> remoteCommittedOwner(streamCommittedOwnerSource,
+        // owner, because both stamp the same committed epoch. Reads the RAW committed record, deliberately NOT
+        // the #568 liveness-filtered view: liveness is a suspicion, not a fence — filtering would turn a
+        // partitioned-but-alive owner into "absent" and admit a second writer while the first still writes.
+        // A dead owner's partition is unwedged only by the leader committing a new ownership record; until
+        // then writes fail retryable NotOwnerAppend (CTO ruling on #1230). No record admits (the cold-start
+        // window, where the fence is inert and HRW routing alone picks the writer).
+        streamPartitionManager.ownerWriteAdmission((stream, partition) -> remoteCommittedOwner(rawStreamCommittedOwnerSource,
                                                                                                config.self(),
                                                                                                stream,
                                                                                                partition));
@@ -4275,7 +4278,8 @@ public interface AetherNode extends ManageableNode {
         // partition ring offset-preserving via appendRecovered (NON-replicating — a replicated event is
         // never re-emitted, so there is no replicate→apply→replicate loop), then the highest applied
         // offset is acked back. #1230: a batch whose sender cannot be the committed owner at the batch's
-        // epoch is neither applied nor acked (same liveness-filtered committed source as the admission). ReplicateAck flows into the active DefaultReplicationManager so it can
+        // epoch is neither applied nor acked (the same RAW committed record as the admission — not the #568
+        // liveness-filtered view, which is for routing/backfill only). ReplicateAck flows into the active DefaultReplicationManager so it can
         // advance the watermark and resolve any awaitReplication(minAcks) promise. Routed on the same
         // partition message transport as the forward handler.
         var streamReplicationReceiveHandler = ReplicationReceiveHandler.replicationReceiveHandler(config.self(),
@@ -4285,7 +4289,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                   (streamName, partition) -> streamBackfillExecutor.execute(() -> streamPartitionBackfill.backfill(streamName,
                                                                                                                                                                                                    partition)),
                                                                                                   streamPartitionManager::syncReplicated,
-                                                                                                  streamCommittedOwnerSource);
+                                                                                                  rawStreamCommittedOwnerSource);
 
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateEvents.class,
                                                  streamReplicationReceiveHandler::onReplicateEvents));

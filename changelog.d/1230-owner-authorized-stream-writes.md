@@ -12,9 +12,13 @@
   [verified: `aether/aether-stream/src/test/java/org/pragmatica/aether/stream/OwnerAuthorizedWritesTest.java`, unit level]
 - `StreamPartitionManager.publishLocal` refuses with the transient `StreamError.NotOwnerAppend` when
   the committed `StreamPartitionOwnershipValue` names another node (`OwnerWriteAdmission`, bound in
-  `AetherNode` to the #568 liveness-filtered committed-owner source). `appendRecovered` (replication
-  receipt and backfill) is exempt. When no ownership record is committed yet, the append is admitted,
-  unchanged from before.
+  `AetherNode` to the RAW committed record — not the #568 liveness-filtered view, because liveness is a
+  suspicion, not a fence; a dead owner's partition is unwedged only when the leader commits a new owner,
+  and until then writes fail retryable). `appendRecovered` (replication receipt and backfill) is exempt.
+  When no ownership record is committed yet, the append is admitted, unchanged from before.
+  [unverified: before the first ownership commit, admission is fence-inert; HRW routing is the only
+  single-writer mechanism in that window, and two nodes with divergent membership views could both route
+  to themselves]
   [verified: `aether/aether-stream/src/test/java/org/pragmatica/aether/stream/OwnerAuthorizedWritesTest.java`, unit level]
 - Ownership-lag window (HRW has moved, the leader has not yet committed): a forwarded publish refused
   this way is answered retryable, so the existing bounded forward retry (#485) handles it. A refused
