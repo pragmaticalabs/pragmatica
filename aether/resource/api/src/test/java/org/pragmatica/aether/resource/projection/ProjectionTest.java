@@ -51,6 +51,8 @@ class ProjectionTest {
         private final AtomicInteger generationReads = new AtomicInteger();
         // Writes left to fail, so a failed fold can be staged without a second store type.
         private final AtomicInteger failingWrites = new AtomicInteger();
+        // Every write completes only when this does, so a fold can be held past its claim's lease.
+        private volatile Promise<Unit> writeGate = Promise.unitPromise();
 
         @Override
         public Promise<Option<Integer>> read(String key) {
@@ -62,9 +64,13 @@ class ProjectionTest {
             if (failingWrites.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
                 return WRITE_FAILED.promise();
             }
+            return writeGate.map(_ -> put(key, state));
+        }
+
+        private Unit put(String key, Integer state) {
             data.put(key, state);
 
-            return Promise.unitPromise();
+            return Unit.unit();
         }
 
         @Override
@@ -131,6 +137,7 @@ class ProjectionTest {
     @Nested
     class IdempotencyGuard {
         private static final MessageContext FIRST = MessageContext.messageContext("msg-1", "ns:orders-seen:1.0.0", 0, 10L);
+        private static final Projection.ClaimKey CLAIM_KEY = new Projection.ClaimKey("orders-seen", 0L, "msg-1");
 
         /// THE pin. The same messageId redelivered at a DIFFERENT source position — which is exactly
         /// what a redelivery or a DLQ redrive looks like — must apply ONCE. Keying on the position
@@ -283,6 +290,53 @@ class ProjectionTest {
             projection.onEvent(event, FIRST).await().onFailure(cause -> fail(cause.message()));
 
             assertThat(store.data).containsEntry("a", 1);
+        }
+
+        /// An expired holder cannot FINALIZE its successor's claim. A's fold is held past its lease, B
+        /// reclaims, then A's late fold completes: B's claim must survive as PENDING — A's late fold
+        /// must not produce a DONE that B never earned.
+        @Test
+        void expiredHolder_lateFinalize_leavesTheSuccessorsClaimPending() {
+            var store = new InMemoryStore();
+            var claims = new InMemoryClaims();
+            var projection = countingProjection(store).withClaims(claims, LEASE);
+            var gate = Promise.<Unit> promise();
+
+            store.writeGate = gate;
+
+            var holder = projection.onEvent(new OrderSeen("a"), FIRST);
+
+            claims.clock.addAndGet(LEASE.nanos() + 1);
+            assertThat(claims.claimIfAbsent(CLAIM_KEY, LEASE).await().isSuccess()).isTrue();
+            gate.succeed(Unit.unit());
+            holder.await();
+
+            assertThat(claims.claimed.get(CLAIM_KEY)).describedAs("the successor's claim must survive the expired holder's finalize")
+                                                     .isNotNull()
+                                                     .matches(claim -> !claim.done());
+        }
+
+        /// An expired holder cannot RELEASE its successor's claim. Were it released, a third attempt
+        /// could claim and fold alongside the successor.
+        @Test
+        void expiredHolder_lateRelease_leavesTheSuccessorsClaimHeld() {
+            var store = new InMemoryStore();
+            var claims = new InMemoryClaims();
+            var projection = countingProjection(store).withClaims(claims, LEASE);
+            var gate = Promise.<Unit> promise();
+
+            store.writeGate = gate;
+
+            var holder = projection.onEvent(new OrderSeen("a"), FIRST);
+
+            claims.clock.addAndGet(LEASE.nanos() + 1);
+            assertThat(claims.claimIfAbsent(CLAIM_KEY, LEASE).await().isSuccess()).isTrue();
+            gate.fail(WRITE_FAILED);
+            holder.await();
+
+            assertThat(claims.claimed.get(CLAIM_KEY)).describedAs("the successor's claim must survive the expired holder's release")
+                                                     .isNotNull()
+                                                     .matches(claim -> !claim.done());
         }
 
         /// A DONE claim suppresses: the attempt is acknowledged and does not fold.
