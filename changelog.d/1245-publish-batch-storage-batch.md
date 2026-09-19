@@ -24,6 +24,7 @@
   `[mechanism: OffHeapRingBuffer.appendRunLocked plus RUN_DOES_NOT_FIT routing; pinned by
   DefaultStreamPublisherBatchTest's batch-versus-per-event comparisons]`
 - **Replication messages are split by bytes** below the cluster transport's frame limit
-  (`QuicClusterServer.MAX_FRAME_LENGTH`, now declared once for server and client). Each chunk carries at
-  most half of it; the batch still awaits one ack on its last offset.
+  (`QuicClusterServer.MAX_FRAME_LENGTH`, now declared once for server and client). Each chunk's encoded
+  size (payload plus a bounded per-event framing cost, so millions of tiny events split too) is at most half
+  of it; the batch still awaits one ack on its last offset.
   `[mechanism: DefaultReplicationManager.chunkEnd; pinned by DefaultStreamPublisherBatchTest]`
