@@ -8,9 +8,13 @@
   and the replication send, so concurrent publishers get distinct contiguous offsets, the WAL file is in
   offset order, and replicas receive events in offset order. Only the group-commit fsync is awaited
   after the section is released, so concurrent publishers still share fsyncs. The ring's own `append`,
-  `appendBatch`, `seedHead` and retention sweeps take the same lock, as defence in depth.
+  `appendBatch`, `seedHead` and retention sweeps take the same lock, as defence in depth. Append
+  listeners (the consumer runtime's synchronous push path) run only after the section is released, in
+  offset order, so a consumer handler may publish again, to its own partition or another, without
+  deadlock and without breaking WAL order. The section never waits for an fsync.
   `[mechanism: offset assignment, frame write and send share the ring's appendLock; pinned in one JVM by
-  StreamPartitionManagerOrderedAppendTest and OffHeapRingBufferConcurrentAppendTest]`
+  StreamPartitionManagerOrderedAppendTest, OffHeapRingBufferConcurrentAppendTest and
+  StreamPartitionManagerSectionReentrancyTest]`
   `[design intent — unverified: no multi-node run]`
 - **`PartitionWal.append` wrote its frame on a pooled task, so file order was lock-acquisition order.**
   The frame is now written in the caller's thread (`write`); only the group commit (`commit`) is
@@ -24,11 +28,16 @@
   number them, so a reordered frame swapped payloads between offsets, and a missing or duplicated frame
   shifted every later record relative to replicas, sealed segments and consumer cursors. Recovery now
   places records by their stored offsets. A file whose frames are only out of order recovers correctly.
-  A gap or a duplicate refuses the partition with `StreamError.WalReplayMismatch`, logged at ERROR, and
-  the stream is not materialized on that node. Records are never renumbered.
-  **Operator action:** move the named `<wal-dir>/<stream>/<partition>.wal` aside and restart the node.
-  With `replicas >= 2`, replica backfill restores the un-sealed tail; with `replicas = 1`, the un-sealed
-  tail is lost.
+  A frame file that needed reordering is WARNed. A gap BEFORE the first record is accepted as reclaimed
+  history, since retention removing every sealed segment drops the sealed floor below the WAL's first
+  record: the gap reads as expired, and it is WARNed with its range and counted. A gap BETWEEN records,
+  or a duplicate, refuses with `StreamError.WalReplayMismatch`, logged at ERROR. The stream is then not
+  materialized on that node (a lazy per-partition materialize leaves only that partition unbuilt).
+  Records are never renumbered.
+  **Operator action:** keep the named `<wal-dir>/<stream>/<partition>.wal`; do not delete, truncate or
+  move it, because the records below the mismatch are intact and may be the only copy. Archive a copy for
+  diagnosis. The other nodes keep serving the stream when `replicas >= 2`. Remove the file from the node
+  only after confirming another replica holds that partition beyond the reported offset.
   `[mechanism: records are sorted by stored offset and each must equal the ring's next offset; pinned by
   StreamPartitionManagerRecoveryTest]`
 - `PartitionWalTest`'s concurrent-append case asserted an order-insensitive `containsAll`, so it accepted
