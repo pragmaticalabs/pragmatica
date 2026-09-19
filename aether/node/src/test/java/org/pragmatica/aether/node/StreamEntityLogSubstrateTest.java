@@ -28,8 +28,8 @@ import static org.pragmatica.aether.node.StreamEntityLogSubstrate.streamEntityLo
 /// `StreamPartitionManager` is a concrete `final` class with no test seam of its own, but the collaborator
 /// that actually receives the barrier count — `ReplicationManager` — is an interface the manager is built
 /// with, so a capturing fake there observes the exact argument `awaitBarrier` passes without needing to
-/// fake `StreamPartitionManager` itself. `storage`, `kvStore`, and `applier` are real constructor
-/// parameters of `StreamEntityLogSubstrate` but are never touched by `ensureLog`/`append` — both methods
+/// fake `StreamPartitionManager` itself. `tieredReader`, `storage`, `kvStore`, and `applier` are real
+/// constructor parameters of `StreamEntityLogSubstrate` but are never touched by `ensureLog`/`append` — both methods
 /// go through `partitionManager` alone — so they are passed as `null` rather than built for no purpose.
 class StreamEntityLogSubstrateTest {
 
@@ -42,6 +42,7 @@ class StreamEntityLogSubstrateTest {
         var partitionManager = StreamPartitionManager.streamPartitionManager(64L * 1024 * 1024);
         var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
                                                                                                                                           false),
+                                                 null,
                                                  null,
                                                  null,
                                                  null);
@@ -65,6 +66,7 @@ class StreamEntityLogSubstrateTest {
                                                                                                                                           false),
                                                  null,
                                                  null,
+                                                 null,
                                                  null);
 
         substrate.ensureLog("orders", 8, 3, 2).unwrap();
@@ -84,6 +86,7 @@ class StreamEntityLogSubstrateTest {
                                                                                                                                           false),
                                                  null,
                                                  null,
+                                                 null,
                                                  null);
 
         // minSyncReplicas=2 ("owner plus one peer") must await exactly ONE non-self ack.
@@ -101,6 +104,7 @@ class StreamEntityLogSubstrateTest {
                                                                               capturingReplicationManager(capturedMinAcks));
         var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
                                                                                                                                           false),
+                                                 null,
                                                  null,
                                                  null,
                                                  null);

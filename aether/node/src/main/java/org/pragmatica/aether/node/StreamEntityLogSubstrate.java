@@ -24,6 +24,7 @@ import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.replication.StreamCatalog;
+import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -80,17 +81,20 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
 
     private final StreamPartitionManager partitionManager;
     private final StreamPartitionManager.ReplicaCatchupSource catchupSource;
+    private final TieredStreamReader tieredReader;
     private final StorageInstance storage;
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier;
 
     private StreamEntityLogSubstrate(StreamPartitionManager partitionManager,
                                      StreamPartitionManager.ReplicaCatchupSource catchupSource,
+                                     TieredStreamReader tieredReader,
                                      StorageInstance storage,
                                      KVStore<AetherKey, AetherValue> kvStore,
                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
         this.partitionManager = partitionManager;
         this.catchupSource = catchupSource;
+        this.tieredReader = tieredReader;
         this.storage = storage;
         this.kvStore = kvStore;
         this.applier = applier;
@@ -98,10 +102,11 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
 
     public static EntityLogSubstrate streamEntityLogSubstrate(StreamPartitionManager partitionManager,
                                                               StreamPartitionManager.ReplicaCatchupSource catchupSource,
+                                                              TieredStreamReader tieredReader,
                                                               StorageInstance storage,
                                                               KVStore<AetherKey, AetherValue> kvStore,
                                                               Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
-        return new StreamEntityLogSubstrate(partitionManager, catchupSource, storage, kvStore, applier);
+        return new StreamEntityLogSubstrate(partitionManager, catchupSource, tieredReader, storage, kvStore, applier);
     }
 
     @Override
