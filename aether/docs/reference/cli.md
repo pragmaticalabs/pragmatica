@@ -1818,8 +1818,10 @@ already exists reports `exists`. `--partitions N` overrides the server-side defa
 Wraps `POST /api/v1/streams/{namespace}/{stream}/{version}`.
 
 An address in the `topic` or `entity` namespace is refused with `400` (`ReservedStreamName`), because
-those stream kinds are created only by internal provisioning (durable topics, entity keyspaces). See
-the management API's *Reserved stream-name prefixes*.
+those stream kinds are created only by internal provisioning (durable topics, entity keyspaces). The
+command prints the server's problem detail, for example `Failed to create stream: Stream name
+'topic:foo:1.0.0' uses the reserved prefix 'topic:'; streams under it are created only by internal
+provisioning`, and exits non-zero. See the management API's *Reserved stream-name prefixes*.
 
 ```bash
 aether stream create orders:order-events:1.0.0

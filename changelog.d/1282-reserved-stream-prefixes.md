@@ -22,8 +22,13 @@
 
   [mechanism: the guard sits only in the Management-API routes and only on the management-default
   branch; pinned in-JVM by `StreamRoutesReservedPrefixTest`]
+- Internal provisioning is pinned separately for each kind: durable topic (`DurableTopicSubstrate`),
+  entity keyspace (`StreamEntityLogSubstrate`), and a system stream created directly through
+  `StreamPartitionManager`.
 - Docs: `management-api.md` gains a *Reserved stream-name prefixes* section and documents the catalog
-  create endpoint. `cli.md` documents `aether stream create` and marks the removed
-  `aether streams create` as removed, which #1224 had left stale.
+  create endpoint. `cli.md` documents `aether stream create`, including the error text it prints, and
+  marks the removed `aether streams create` as removed, which #1224 had left stale. The CLI needs no code
+  change: it already prints the server's problem detail. Dashboard: no surface, because this is only an
+  error response on a write path. The dormant slot is deliberate.
 - Operator action: create a durable topic, entity keyspace or system stream through its own declaration
   (blueprint/resources), never through the stream-create API.

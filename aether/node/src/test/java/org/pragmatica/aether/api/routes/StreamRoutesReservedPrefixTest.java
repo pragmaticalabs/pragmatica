@@ -11,13 +11,17 @@ import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.api.routes.StreamRoutes.StreamCreateRequest;
+import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.node.StreamEntityLogSubstrate;
 import org.pragmatica.aether.resource.DurableTopicSpec;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
+import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.topic.DurableTopicSubstrate;
@@ -124,6 +128,46 @@ class StreamRoutesReservedPrefixTest {
 
             assertThat(manager.streamInfo("topic:foo").isPresent()).isTrue();
             assertThat(manager.streamInfo("topic:foo.dlq").isPresent()).isTrue();
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// Internal entity-keyspace provisioning (`StreamEntityLogSubstrate.ensureLog`) still creates the
+    /// `entity:<keyspace>` log on the same manager the Management API refuses to mint it on.
+    @Test
+    void entityKeyspaceProvisioning_stillCreatesEntityPrefixedStream() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+        var substrate = StreamEntityLogSubstrate.streamEntityLogSubstrate(manager,
+                                                                          (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
+                                                                                                                                                false),
+                                                                          null,
+                                                                          null,
+                                                                          null);
+
+        try {
+            substrate.ensureLog("ledger", 2, 1, 1)
+                     .onFailure(cause -> fail("internal entity provisioning must succeed: " + cause.message()));
+
+            assertThat(manager.streamInfo(EntityPartitionArc.arcName("ledger")).isPresent()).isTrue();
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// Internal system-stream provisioning creates its stream straight through
+    /// `StreamPartitionManager.createStream` (as `AetherNode` does for `SystemStreams.CLUSTER_EVENTS`); the
+    /// refusal is a Management-API boundary and does not reach it.
+    @Test
+    void systemStreamProvisioning_stillCreatesSystemPrefixedStream() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+        var name = SystemStreams.CLUSTER_EVENTS.asString();
+
+        try {
+            manager.createStream(StreamConfig.streamConfig(name))
+                   .onFailure(cause -> fail("internal system-stream provisioning must succeed: " + cause.message()));
+
+            assertThat(manager.streamInfo(name).isPresent()).isTrue();
         } finally {
             manager.close();
         }
