@@ -19,15 +19,19 @@
 - **No existence oracle.** On both create routes the refusal runs before the existence check, so an
   existing reserved name is refused instead of being answered `"exists"`. [mechanism: pinned by
   `StreamRoutesReservedPrefixTest`]
-- **Batch publish answers `400`, not `500`.** `publish-batch` ensures the stream once, before the
-  per-item fan-out. The refusal therefore surfaces as itself, rather than inside a composite cause that
+- **Batch publish answers `400`, not `500`.** A non-empty `publish-batch` ensures the stream once,
+  before the per-item fan-out; an empty batch creates nothing. The refusal therefore surfaces as itself, rather than inside a composite cause that
   is not `HttpStatusAware` and was rendered as 500. [mechanism: pinned by `StreamRoutesReservedPrefixTest`]
-- **Blueprints:** a reserved `External` source is refused at blueprint validation with the typed
-  `StreamSourceError.ReservedKindSource` under rule `source-reserved-kind`. A validation failure publishes
-  empty bindings, so the alias then fails as `UnboundStreamAlias` rather than minting. A
-  `system`-namespace source and another blueprint's namespace still parse. No legitimate reference
-  exists, for two reasons: spec §11.2 limits External sources to another blueprint's namespace or
-  `system`, and a real durable-topic stream is not addressable in the three-part form. [mechanism:
+- **Blueprints:** the blueprint parser now rejects a reserved `External` source with the typed
+  `StreamSourceError.ReservedKindSource`, which `StreamResourceValidator` reports under rule
+  `source-reserved-kind`. The stream is therefore never minted. **What an operator sees today is
+  coarser:** `BlueprintService` swallows any validator failure and publishes EMPTY stream bindings for the
+  whole blueprint. So one reserved External source drops **every** stream binding in that blueprint,
+  including valid ones. Each of its slices later fails stream provisioning with a generic
+  `UnboundStreamAlias`, and the typed rule is never surfaced. Surfacing validator failures at deploy is
+  #1336. A `system`-namespace source and another blueprint's namespace still parse. No legitimate
+  reference exists, for two reasons: spec §11.2 limits External sources to another blueprint's namespace
+  or `system`, and a real durable-topic stream is not addressable in the three-part form. [mechanism:
   pinned by `StreamConfigParserReservedSourceTest` and `StreamResourceValidatorTest`]
 - The prefixes are declared once, as `StreamEngineKey.RESERVED_KIND_PREFIXES` in `slice-api`, because
   the blueprint parser cannot see the modules that own these names. `ReservedStreamNamesTest` pins that

@@ -639,8 +639,15 @@ public final class StreamApiRoutes implements RouteSource {
     /// The stream is ensured ONCE, before the fan-out: every event targets the same address, and a failure
     /// here — a reserved-name refusal (#1282), an unavailable stream — then surfaces as ITSELF, with its own
     /// HTTP status. Left to the per-event path it arrived wrapped in `Result.allOf`'s composite cause, which
-    /// is not `HttpStatusAware` and left the wire as 500.
+    /// is not `HttpStatusAware` and left the wire as 500. An EMPTY batch publishes nothing and so ensures
+    /// (and creates) nothing, exactly as the per-event path never did.
     private Promise<PublishBatchResponse> publishMany(ResourceAddress addr, PublishRequest[] requests) {
+        return requests.length == 0
+               ? publishEach(addr, requests)
+               : ensureThenPublishEach(addr, requests);
+    }
+
+    private Promise<PublishBatchResponse> ensureThenPublishEach(ResourceAddress addr, PublishRequest[] requests) {
         return ensureStreamExists(StreamManager.engineKey(addr)).async()
                                  .flatMap(_ -> publishEach(addr, requests));
     }

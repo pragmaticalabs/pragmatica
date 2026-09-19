@@ -5605,9 +5605,10 @@ or `entity` namespace address with no committed config is refused with `400 Bad 
 is adopted as usual. `[mechanism: ReservedStreamNames.requireUnreserved on the management-default
 branch only]`
 
-**`publish-batch` ensures the stream once, before any item is written.** A stream-level failure (a
-reserved name `400`, or an unavailable stream `409`) fails the whole batch with its own status and
-writes nothing. `[mechanism: publishMany runs ensureStreamExists before the per-item fan-out]`
+**A non-empty `publish-batch` ensures the stream once, before any item is written.** A stream-level
+failure (a reserved name `400`, or an unavailable stream `409`) fails the whole batch with its own
+status and writes nothing. An empty batch publishes nothing and creates no stream. `[mechanism:
+publishMany runs ensureStreamExists before the per-item fan-out, and only when there are items]`
 
 **Batch publish is not atomic.** `publish-batch` validates and writes each item independently and
 concurrently; when one item names an out-of-range `partition`, items before it (and possibly after
@@ -5718,9 +5719,12 @@ refused, never answered with `"exists"`, so the API is not an oracle for which i
 streams exist.
 
 Blueprints are covered as well. A `[streams.X]` section whose `source` names a `topic` or `entity`
-namespace address would otherwise make the slice's stream factories mint that stream. Such a section is
-refused when the blueprint is validated, under rule `source-reserved-kind`. A `system`-namespace source
-is unaffected, because its engine key is the bare name.
+namespace address would otherwise make the slice's stream factories mint that stream. The blueprint
+validator rejects such a section under rule `source-reserved-kind`, so the stream is never minted. What
+an operator sees today is coarser. The deploy path swallows validator failures and publishes EMPTY
+stream bindings for the whole blueprint, so every stream alias in it fails later with a generic
+`UnboundStreamAlias`, including valid ones, and the typed rule is not shown (#1336). A
+`system`-namespace source is unaffected, because its engine key is the bare name.
 
 Without the refusal, a stream minted ahead of the real resource would plant an operator-chosen config
 (partitions, replicas, min-sync, retention) that the resource later finds already in place. For
