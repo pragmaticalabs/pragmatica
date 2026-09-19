@@ -8,6 +8,7 @@ import java.util.Map;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 
 /// The read-model half of a [Projection] (durable-pubsub-spec §10): where folded state lives, plus
@@ -38,10 +39,12 @@ import org.pragmatica.lang.Promise;
 /// (starting at the range's `fromOffset`); admitting it advances that partition. A position BELOW the
 /// next offset answers [WriteOutcome#ALREADY_APPLIED] without writing — offsets are admitted strictly in
 /// order exactly once, so its effect is already in the model (a redelivery after a crash between write
-/// and claim finalize). Anything else — a later offset, a partition outside the range, or no position
-/// at all — answers [WriteOutcome#REBUILDING] and writes nothing. A partition is done once it passes its
-/// `throughOffset`; when every partition is done the generation goes LIVE and the position is ignored.
-/// Ordering decides admission, never timing.
+/// and claim finalize). A later offset, or a write with no position while any partition is still
+/// replaying, answers [WriteOutcome#REBUILDING] and writes nothing. A replay delivery that completes
+/// WITHOUT a write — its claim was already DONE (#1304 X1) — reports [#markReplayed], which advances the
+/// position exactly as an admitted write would. LIVE is PER PARTITION (#1304 X3): a partition goes live
+/// once it passes its `throughOffset`, and a partition outside the range is live from the start; a live
+/// partition admits writes on the generation fence alone. Ordering decides admission, never timing.
 ///
 /// **Generation slot durability:** the counter must survive both [#reset] and process restart with
 /// the same durability as the read model itself — it versions that model, and a model that
@@ -79,6 +82,10 @@ public interface ProjectionStore<S> {
     /// In ONE indivisible step: advance the generation, clear the read model (preserving the generation
     /// slot), and enter REBUILDING over `range`. Returns the new generation.
     Promise<Long> resetToNewGeneration(ReplayRange range);
+    /// A delivery at `position` completed without writing (its claim was already DONE). While `generation`
+    /// is current and its partition is REBUILDING at exactly that offset, advance the partition past it —
+    /// and take it LIVE if that was its head — as an admitted write would; otherwise change nothing.
+    Promise<Unit> markReplayed(long generation, DeliveryPosition position);
     /// Current generation; 0 when never reset.
     Promise<Long> generation();
 }

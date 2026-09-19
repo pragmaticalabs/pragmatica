@@ -107,41 +107,55 @@ class ProjectionTest {
             if (generation.get() != expectedGeneration) {
                 return ProjectionStore.WriteOutcome.STALE_GENERATION;
             }
-            if (replayThrough.isEmpty()) {
-                data.put(key, state);
-
-                return ProjectionStore.WriteOutcome.WRITTEN;
-            }
-            return position.map(at -> admitReplay(key, state, at))
-                           .or(ProjectionStore.WriteOutcome.REBUILDING);
+            return position.map(at -> admitAt(key, state, at))
+                           .or(() -> admitPositionless(key, state));
         }
 
-        private ProjectionStore.WriteOutcome admitReplay(String key, Integer state, ProjectionStore.DeliveryPosition at) {
+        private ProjectionStore.WriteOutcome admitPositionless(String key, Integer state) {
+            return replayThrough.isEmpty()
+                   ? written(key, state)
+                   : ProjectionStore.WriteOutcome.REBUILDING;
+        }
+
+        private ProjectionStore.WriteOutcome admitAt(String key, Integer state, ProjectionStore.DeliveryPosition at) {
             if (!replayThrough.containsKey(at.partition())) {
-                return ProjectionStore.WriteOutcome.REBUILDING;
+                return written(key, state);
             }
             var next = nextReplayOffset.get(at.partition());
 
             if (at.offset() < next) {
                 return ProjectionStore.WriteOutcome.ALREADY_APPLIED;
             }
-            if (at.offset() > next || at.offset() > replayThrough.get(at.partition())) {
+            if (at.offset() != next) {
                 return ProjectionStore.WriteOutcome.REBUILDING;
             }
+            advance(at.partition(), at.offset());
+
+            return written(key, state);
+        }
+
+        private ProjectionStore.WriteOutcome written(String key, Integer state) {
             data.put(key, state);
-            nextReplayOffset.put(at.partition(), next + 1);
-            goLiveOnceReplayed();
 
             return ProjectionStore.WriteOutcome.WRITTEN;
         }
 
-        private void goLiveOnceReplayed() {
-            if (replayThrough.entrySet()
-                             .stream()
-                             .allMatch(entry -> nextReplayOffset.get(entry.getKey()) > entry.getValue())) {
-                replayThrough.clear();
-                nextReplayOffset.clear();
+        /// Step a replaying partition past `offset`; past its head it goes LIVE on its own.
+        private void advance(int partition, long offset) {
+            nextReplayOffset.put(partition, offset + 1);
+            if (offset + 1 > replayThrough.get(partition)) {
+                nextReplayOffset.remove(partition);
+                replayThrough.remove(partition);
             }
+        }
+
+        @Override
+        public synchronized Promise<Unit> markReplayed(long expectedGeneration, ProjectionStore.DeliveryPosition at) {
+            if (generation.get() == expectedGeneration && replayThrough.containsKey(at.partition())
+                && nextReplayOffset.get(at.partition()) == at.offset()) {
+                advance(at.partition(), at.offset());
+            }
+            return Promise.unitPromise();
         }
 
         @Override
@@ -172,12 +186,14 @@ class ProjectionTest {
             replayThrough.clear();
             range.partitions()
                  .forEach((partition, span) -> startReplay(partition, span));
-            goLiveOnceReplayed();
         }
 
+        /// An empty span (head below from) has nothing to replay: that partition is LIVE at once.
         private void startReplay(int partition, ProjectionStore.PartitionRange span) {
-            nextReplayOffset.put(partition, span.fromOffset());
-            replayThrough.put(partition, span.throughOffset());
+            if (span.throughOffset() >= span.fromOffset()) {
+                nextReplayOffset.put(partition, span.fromOffset());
+                replayThrough.put(partition, span.throughOffset());
+            }
         }
 
         @Override
@@ -690,7 +706,7 @@ class ProjectionTest {
         @Test
         void rebuilding_refusesAPositionlessWrite() {
             var store = new InMemoryStore();
-            var projection = rebuildable(store, REPLAY_TEN_TO_TWELVE);
+            var projection = rebuildable(store, REPLAY_TEN_TO_TWELVE).withClaims(new InMemoryClaims(), LEASE);
 
             projection.rebuild().await().onFailure(cause -> fail(cause.message()));
             projection.onEvent(new OrderSeen("a"))
@@ -1084,7 +1100,8 @@ class ProjectionTest {
         var cursor = new RecordingCursor(store, NOTHING_TO_REPLAY);
         var projection = Projection.of(TOPIC)
                                    .into(store, OrderSeen::orderId)
-                                   .apply("orders-proj", (current, event) -> current.or(0) + 1, cursor);
+                                   .apply("orders-proj", (current, event) -> current.or(0) + 1, cursor)
+                                   .withClaims(new InMemoryClaims(), LEASE);
 
         projection.onEvent(new OrderSeen("a")).await().onFailure(cause -> fail(cause.message()));
         projection.rebuild().await().onFailure(cause -> fail(cause.message()));
@@ -1101,7 +1118,8 @@ class ProjectionTest {
         var store = new InMemoryStore();
         var projection = Projection.of(TOPIC)
                                    .into(store, OrderSeen::orderId)
-                                   .apply("orders-seen", (current, event) -> current.or(0) + 1, new RecordingCursor(store, NOTHING_TO_REPLAY));
+                                   .apply("orders-seen", (current, event) -> current.or(0) + 1, new RecordingCursor(store, NOTHING_TO_REPLAY))
+                                   .withClaims(new InMemoryClaims(), LEASE);
         var gate = Promise.<Unit> promise();
 
         projection.onEvent(new OrderSeen("a")).await().onFailure(cause -> fail(cause.message()));
@@ -1122,7 +1140,7 @@ class ProjectionTest {
     @Test
     void rebuild_refusesLoudly_whenCursorResetNotWired() {
         var store = new InMemoryStore();
-        var projection = countingProjection(store);
+        var projection = countingProjection(store).withClaims(new InMemoryClaims(), LEASE);
 
         projection.onEvent(new OrderSeen("a")).await().onFailure(cause -> fail(cause.message()));
         projection.rebuild()

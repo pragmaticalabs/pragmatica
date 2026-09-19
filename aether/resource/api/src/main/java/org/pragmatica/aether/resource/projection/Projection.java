@@ -81,8 +81,9 @@ import org.slf4j.LoggerFactory;
 /// failed or crashed fold never looks applied — it is released, or reclaimed after its lease — and
 /// the event is not lost silently. The cost is the re-apply window named above.
 ///
-/// **Rebuild (one operator procedure of three ordered steps, spec §10):** [#rebuild] asks the
-/// [ReplayCursor] to CAPTURE what it will replay (per partition, earliest retained offset through the
+/// **Rebuild (one operator procedure of three ordered steps, spec §10):** [#rebuild] — refused up
+/// front on an unguarded projection ([ProjectionError.UnguardedRebuild]), whose deliveries carry neither
+/// the position nor the dedup key a replay needs — asks the [ReplayCursor] to CAPTURE what it will replay (per partition, earliest retained offset through the
 /// head), then resets the store to a new generation in ONE step
 /// ([ProjectionStore#resetToNewGeneration]: generation advanced, model cleared, REBUILDING over that
 /// range), then REWINDS the group's cursor to replay it. The cursor moves only after the store is
@@ -178,6 +179,17 @@ public record Projection<S, T>(String name,
         /// The generation is REBUILDING and this write is not its partition's next replay offset, so it
         /// was refused. Retryable — once the replay passes it (or the generation goes LIVE) a retry either
         /// finds it already applied or applies it in order.
+        /// A rebuild was requested on a projection with no §8 claims guard. Its deliveries carry no
+        /// position and no dedup key, so a replay could neither be ordered nor deduplicated: every replay
+        /// write would be refused and the cleared model would never go live. Refused before anything is
+        /// touched.
+        record UnguardedRebuild(String projectionName, String message) implements ProjectionError {
+            static final Fn1<UnguardedRebuild, String> FACTORY = Causes.forOneValue("Projection %s: rebuild refused — the projection is unguarded (no ProjectionClaims),"
+                                                                                   + " so its replay has neither delivery positions nor dedup keys and could"
+                                                                                   + " never be admitted; nothing was touched",
+                                                                                    UnguardedRebuild::new);
+        }
+
         record Rebuilding(Long generation, String message) implements ProjectionError {
             static final Fn1<Rebuilding, Long> FACTORY = Causes.forOneValue("Projection: generation %s is rebuilding and this write is not the next replay"
                                                                            + " offset of its partition — refused so the replay stays the only, in-order writer",
@@ -231,7 +243,8 @@ public record Projection<S, T>(String name,
     private Promise<Unit> resolveClaim(ClaimOutcome outcome, Delivery<T> delivery, ProjectionClaims backing) {
         return switch (outcome) {
             case Claimed(var token) -> applyUnderClaim(delivery, backing, token);
-            case Held.DONE -> Promise.unitPromise();
+            case Held.DONE -> store.markReplayed(delivery.claimKey().generation(),
+                                                 delivery.position());
             case Held.IN_PROGRESS -> CLAIM_IN_PROGRESS.promise();
         };
     }
@@ -315,6 +328,11 @@ public record Projection<S, T>(String name,
     /// refused capture touches nothing; the rewind comes LAST so no replay delivery arrives while the
     /// old generation is still current.
     public Promise<Unit> rebuild() {
+        return claims.fold(() -> ProjectionError.UnguardedRebuild.FACTORY.apply(name).promise(),
+                           _ -> rebuildGuarded());
+    }
+
+    private Promise<Unit> rebuildGuarded() {
         return replayCursor.capture()
                            .ensureWith(store::resetToNewGeneration)
                            .flatMap(replayCursor::rewind);
