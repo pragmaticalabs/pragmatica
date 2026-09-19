@@ -862,11 +862,15 @@ public sealed interface ManagementApiResponses {
     /// `committedOffset` is the next offset this consumer will read — one past the last delivered
     /// event. `lastCursorCommitFailure` (#654) is this partition's most recent cursor commit failure
     /// detail while the consumer stays attached, empty when its last commit succeeded — same
-    /// empty-for-absent convention as `DeclarativeConsumerDetail#diagnostic`.
+    /// empty-for-absent convention as `DeclarativeConsumerDetail#diagnostic`. `deadLetterInFlight` /
+    /// `retryInFlight` (#1266): the delivery loop is held behind a dead-letter append or a scheduled
+    /// retry of the head event — a frozen offset with both `false` is a quiet partition.
     record DeclarativeConsumerPartition(int partition,
                                         long committedOffset,
                                         boolean stalled,
-                                        String lastCursorCommitFailure) {}
+                                        String lastCursorCommitFailure,
+                                        boolean deadLetterInFlight,
+                                        boolean retryInFlight) {}
 
     /// Per-stream hydration row: `partitionsDeclared` the configured partition count,
     /// `ringsMaterialized` the rings actually built on this node (gated below declared on non-replicas),

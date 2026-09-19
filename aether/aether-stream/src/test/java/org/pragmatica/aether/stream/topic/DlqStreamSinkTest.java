@@ -75,6 +75,8 @@ class DlqStreamSinkTest {
         assertThat(captured.getFirst().lastFailureCause()).isEqualTo("boom");
         assertThat(captured.getFirst().publishedAtMs()).isEqualTo(1234L);
         assertThat(captured.getFirst().payload()).isEqualTo("poison".getBytes(UTF_8));
+        assertThat(captured.getFirst().rawEvent()).describedAs("a decodable event carries its application payload")
+                                                  .isFalse();
     }
 
     @Test
@@ -112,6 +114,7 @@ class DlqStreamSinkTest {
         assertThat(entries.getFirst().offset()).isEqualTo(7L);
         assertThat(entries.getFirst().failingGroup()).isEqualTo("group-a");
         assertThat(entries.getFirst().payload()).isEqualTo("bad".getBytes(UTF_8));
+        assertThat(entries.getFirst().rawEvent()).isFalse();
     }
 
     @Test
@@ -174,6 +177,32 @@ class DlqStreamSinkTest {
         assertThat(captured.getFirst().sourcePartition()).isEqualTo(3);
         assertThat(captured.getFirst().sourceOffset()).isEqualTo(11L);
         assertThat(captured.getFirst().failingGroup()).isEqualTo("group-a");
+        assertThat(captured.getFirst().rawEvent()).describedAs("the discriminator marks the payload as raw event bytes")
+                                                  .isTrue();
+    }
+
+    /// #1266: the read side carries the discriminator, so a reader never decodes raw bytes as a payload.
+    @Test
+    void read_marksAQuarantinedEntryRaw() {
+        activateTopic();
+        var sink = new DlqStreamSink(codec,
+                                     manager,
+                                     dlqStream -> DefaultStreamPublisher.streamPublisher(manager,
+                                                                                         codec,
+                                                                                         dlqStream,
+                                                                                         1,
+                                                                                         Option.none()));
+        var garbage = undecodable();
+
+        sink.append(TOPIC_STREAM, 0, 9L, "group-a", garbage, "undecodable", 1)
+            .await()
+            .onFailure(cause -> fail(cause.message()));
+        var entries = sink.read(TOPIC_STREAM, 10);
+
+        assertThat(entries).hasSize(1);
+        assertThat(entries.getFirst().rawEvent()).isTrue();
+        assertThat(entries.getFirst().payload()).isEqualTo(garbage);
+        assertThat(entries.getFirst().offset()).isEqualTo(9L);
     }
 
     /// #1266 acceptance: garbage, then a good event, on a durable-topic partition. The garbage is

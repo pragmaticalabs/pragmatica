@@ -437,6 +437,45 @@ class StreamConsumerRuntimeTest {
                                  .containsExactly(0L, 1L);
         }
 
+        /// #1266: an append that never settles is bounded (shortened here through the constructor seam;
+        /// production uses [ConsumerRuntimeState#DEAD_LETTER_APPEND_TIMEOUT]) and takes the retry path —
+        /// and while it is outstanding the hold is VISIBLE on the snapshot, never an idle-looking partition.
+        @Test
+        void deadLetterAppendNeverSettles_doesNotHoldForever_andTheHoldIsVisible() throws Exception {
+            createTestStream("orders");
+            var sink = new NeverSettlingOnceDeadLetterSink();
+            var boundedRuntime = new ConsumerRuntimeState(manager,
+                                                          sink,
+                                                          none(),
+                                                          none(),
+                                                          StreamConsumerRuntime.localPartitionReader(manager),
+                                                          org.pragmatica.lang.io.TimeSpan.timeSpan(300).millis());
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            try {
+                boundedRuntime.subscribe("orders",
+                                         0,
+                                         ConsumerConfig.consumerConfig("group-n", 1, ProcessingMode.ORDERED, ErrorStrategy.SKIP),
+                                         (offset, payload, ts) -> failFirst(delivered, offset));
+                manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
+                Thread.sleep(100);
+                assertThat(boundedRuntime.subscriptions()).singleElement()
+                          .satisfies(snapshot -> assertThat(snapshot.deadLetterInFlight())
+                                                          .describedAs("the outstanding dead-letter append is visible as a hold")
+                                                          .isTrue());
+                awaitContains(delivered, 1L);
+                assertThat(sink.calls.get()).describedAs("control: the first append never settled, a retry followed")
+                                            .isGreaterThanOrEqualTo(2);
+                assertThat(delivered).describedAs("the timeout released the loop and the next event was delivered")
+                                     .contains(1L);
+                assertThat(boundedRuntime.subscriptions()).singleElement()
+                          .satisfies(snapshot -> assertThat(snapshot.deadLetterInFlight()).isFalse());
+            } finally {
+                boundedRuntime.close();
+            }
+        }
+
         private Promise<Unit> failFirst(List<Long> delivered, long offset) {
             if (offset == 0L) {
                 return StreamError.General.BUFFER_EMPTY.promise();
@@ -464,9 +503,9 @@ class StreamConsumerRuntimeTest {
         }
     }
 
-    /// Throws synchronously from `append` exactly once, then delegates to the in-memory default.
-    static final class ThrowingOnceDeadLetterSink implements DeadLetterHandler {
-        final AtomicInteger thrown = new AtomicInteger();
+    /// Returns a promise that never settles from the FIRST `append`, then delegates.
+    static final class NeverSettlingOnceDeadLetterSink implements DeadLetterHandler {
+        final AtomicInteger calls = new AtomicInteger();
         private final DeadLetterHandler delegate = DeadLetterHandler.deadLetterHandler();
 
         @Override
@@ -477,7 +516,35 @@ class StreamConsumerRuntimeTest {
                                     byte[] payload,
                                     String errorMessage,
                                     int attemptCount) {
-            if (thrown.getAndIncrement() == 0) {
+            if (calls.getAndIncrement() == 0) {
+                return Promise.promise();
+            }
+
+            return delegate.append(streamName, partition, offset, failingGroup, payload, errorMessage, attemptCount);
+        }
+
+        @Override
+        public List<DeadLetterEntry> read(String streamName, int maxCount) {
+            return delegate.read(streamName, maxCount);
+        }
+    }
+
+    /// Throws synchronously from `append` exactly once, then delegates to the in-memory default.
+    static final class ThrowingOnceDeadLetterSink implements DeadLetterHandler {
+        final AtomicInteger thrown = new AtomicInteger();
+        private final AtomicBoolean armed = new AtomicBoolean(true);
+        private final DeadLetterHandler delegate = DeadLetterHandler.deadLetterHandler();
+
+        @Override
+        public Promise<Unit> append(String streamName,
+                                    int partition,
+                                    long offset,
+                                    String failingGroup,
+                                    byte[] payload,
+                                    String errorMessage,
+                                    int attemptCount) {
+            if (armed.compareAndSet(true, false)) {
+                thrown.incrementAndGet();
                 throw new IllegalStateException("sink blew up synchronously");
             }
 

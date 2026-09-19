@@ -5284,8 +5284,8 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
       "sliceDeployedLocally": true,
       "eventTypePublishable": true,
       "assignedPartitions": [
-        {"partition": 0, "committedOffset": 42, "stalled": false, "lastCursorCommitFailure": ""},
-        {"partition": 2, "committedOffset": 17, "stalled": false, "lastCursorCommitFailure": ""}
+        {"partition": 0, "committedOffset": 42, "stalled": false, "lastCursorCommitFailure": "", "deadLetterInFlight": false, "retryInFlight": false},
+        {"partition": 2, "committedOffset": 17, "stalled": false, "lastCursorCommitFailure": "", "deadLetterInFlight": false, "retryInFlight": false}
       ],
       "partitionAssignments": [
         {"partition": 0, "consumerNode": "node-1", "ownerNode": "node-1"},
@@ -5316,7 +5316,7 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
 | `consumers[].eventType` | Declared event type |
 | `consumers[].sliceDeployedLocally` | Whether the declaring slice is loaded on THIS node |
 | `consumers[].eventTypePublishable` | Whether the slice's own codec registry knows the event type (#526). **Absent when this node cannot know** — the probe needs the slice's codec, which only a node hosting the slice has |
-| `consumers[].assignedPartitions` | Live subscriptions on this node: `partition`, `committedOffset` (next offset to read — one past the last delivered), `stalled`, `lastCursorCommitFailure` (this partition's most recent cursor commit failure detail while attached; empty when its last commit succeeded, #654; prefixed `local commit:` when the node-local write itself failed or `checkpoint publish:` when the local write succeeded but the consensus checkpoint publish was the one recovered, #654 round 2) |
+| `consumers[].assignedPartitions` | Live subscriptions on this node: `partition`, `committedOffset` (next offset to read — one past the last delivered), `stalled`, `lastCursorCommitFailure` (this partition's most recent cursor commit failure detail while attached; empty when its last commit succeeded, #654; prefixed `local commit:` when the node-local write itself failed or `checkpoint publish:` when the local write succeeded but the consensus checkpoint publish was the one recovered, #654 round 2), `deadLetterInFlight` and `retryInFlight` (#1266: the partition's delivery loop is HELD behind an outstanding dead-letter append or a scheduled retry of the head event; a frozen `committedOffset` with both `false` is a quiet partition, not a held one. A dead-letter append that has not settled is bounded at 30s, then retried with backoff; the hold clears when the append lands) |
 | `consumers[].unassignedPartitions` | **The loud gap:** partitions no node can consume because the slice is `ACTIVE` nowhere. Absent when there is no gap. It is NOT a gap for this node to lack the slice — since #535 the owner need not host it. During a deploy the same emptiness is reported as "not being consumed YET" in `diagnostic` rather than as a gap |
 | `consumers[].partitionAssignments` | Full partition→node map: `consumerNode` (who consumes it), `ownerNode` (who owns it). Reads are forwarded whenever they differ. Either is `null` during the bootstrap window; `consumerNode` is also `null` when nothing can consume |
 | `consumers[].diagnostic` | Operator-facing explanation of whichever condition applies — including a #545 cross-artifact group collision, which names every colliding artifact, the stream, and the group on BOTH entries; empty when the consumer is healthy and reading locally |
