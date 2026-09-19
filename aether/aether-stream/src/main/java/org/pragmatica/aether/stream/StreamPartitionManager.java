@@ -384,6 +384,23 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           lastSealedOffset);
     }
 
+    /// Test/standalone factory wiring an eviction listener (the segment sealer) together with a per-partition
+    /// WAL root and a last-sealed source, with the no-replication / no-cluster / fence-free defaults — the
+    /// seal → sealed-watermark → WAL-truncation → recovery chain end to end without a cluster (#1234).
+    public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
+                                                                EvictionListener evictionListener,
+                                                                Option<Path> walBaseDir,
+                                                                LastSealedOffsetSource lastSealedOffset) {
+        return new StreamPartitionManager(maxTotalBytes,
+                                          evictionListener,
+                                          ReplicationManager.NONE,
+                                          Option.none(),
+                                          Option.none(),
+                                          StreamOwnerEpochSource.zero(),
+                                          walBaseDir,
+                                          lastSealedOffset);
+    }
+
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes,
                                                                 ClusterNode<KVCommand<AetherKey>> clusterNode) {
         return new StreamPartitionManager(maxTotalBytes,

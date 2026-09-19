@@ -8,14 +8,18 @@ package org.pragmatica.aether.stream.segment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
@@ -109,6 +113,65 @@ class SegmentSealerTest {
             assertThat(segment.endOffset()).isEqualTo(42L);
             assertThat(segment.minTimestamp()).isEqualTo(9999L);
             assertThat(segment.maxTimestamp()).isEqualTo(9999L);
+        }
+    }
+
+    /// #1234: the ring must keep evicted events until the sink has DURABLY sealed them. A sink that fails
+    /// (disk full, DHT error) used to be ignored: the ring advanced its sealed watermark and reclaimed the
+    /// slots anyway, so the only in-memory copy was gone and nothing had been persisted.
+    @Nested
+    class SealFailure {
+        private static final int EVENTS = 5;
+        private static final long RETAIN = 2;
+        private static final long RECOVERY_DEADLINE_MS = 10_000;
+
+        private final AtomicBoolean storageDown = new AtomicBoolean(true);
+
+        private Promise<Unit> sealWhileStorageUp(SealedSegment segment) {
+            return storageDown.get()
+                   ? Causes.cause("storage down").promise()
+                   : captureSegment(segment);
+        }
+
+        @Test
+        void onEviction_firstSealFails_ringRetainsEventsAndSealedOffsetDoesNotAdvance() {
+            try (var ring = OffHeapRingBuffer.offHeapRingBuffer(STREAM, PARTITION, 16, 4096, segmentSealer(this::sealWhileStorageUp))) {
+                appendEvents(ring);
+
+                ring.applyRetention(RetentionPolicy.retentionPolicy(RETAIN, Long.MAX_VALUE, Long.MAX_VALUE));
+
+                assertThat(ring.tailOffset()).isEqualTo(0L);
+                assertThat(ring.eventCount()).isEqualTo((long) EVENTS);
+                assertThat(ring.lastSealedOffset()).isEqualTo(-1L);
+                assertThat(ring.read(0, EVENTS).unwrap()).hasSize(EVENTS);
+            }
+        }
+
+        @Test
+        void onEviction_sealSucceedsAfterFailure_ringReclaimsSealedEvents() throws InterruptedException {
+            try (var ring = OffHeapRingBuffer.offHeapRingBuffer(STREAM, PARTITION, 16, 4096, segmentSealer(this::sealWhileStorageUp))) {
+                appendEvents(ring);
+                ring.applyRetention(RetentionPolicy.retentionPolicy(RETAIN, Long.MAX_VALUE, Long.MAX_VALUE));
+                storageDown.set(false);
+
+                var deadline = System.currentTimeMillis() + RECOVERY_DEADLINE_MS;
+
+                while (ring.tailOffset() < EVENTS - RETAIN && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(20);
+                    ring.applyRetention(RetentionPolicy.retentionPolicy(RETAIN, Long.MAX_VALUE, Long.MAX_VALUE));
+                }
+
+                assertThat(ring.tailOffset()).isEqualTo(EVENTS - RETAIN);
+                assertThat(ring.lastSealedOffset()).isGreaterThanOrEqualTo(EVENTS - RETAIN - 1);
+                assertThat(captured).isNotEmpty();
+                assertThat(captured.getFirst().startOffset()).isEqualTo(0L);
+            }
+        }
+
+        private void appendEvents(OffHeapRingBuffer ring) {
+            for (int i = 0; i < EVENTS; i++) {
+                ring.append(("e-" + i).getBytes(), 1000L + i).unwrap();
+            }
         }
     }
 

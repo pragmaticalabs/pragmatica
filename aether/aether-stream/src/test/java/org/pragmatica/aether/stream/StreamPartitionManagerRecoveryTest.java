@@ -7,9 +7,15 @@ package org.pragmatica.aether.stream;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.aether.stream.segment.SealedSegment;
+import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -20,6 +26,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
+import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 
 /// Proves streaming-persistence W4 (replay-on-recovery): when a partition ring is rebuilt and a WAL
 /// exists, the un-sealed tail is recovered into the fresh ring at its ORIGINAL offsets — bounded by the
@@ -30,6 +37,7 @@ class StreamPartitionManagerRecoveryTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
     private static final int EVENTS = 6;
+    private static final int SMALL_RING_EVENTS = 4;
 
     @TempDir
     Path walDir;
@@ -86,7 +94,54 @@ class StreamPartitionManagerRecoveryTest {
         rebuilt.close();
     }
 
+    /// #1234: segment 1 fails to seal while a later segment succeeds, then the node restarts. Recovery seeds
+    /// the ring at the sealed watermark and replays only the WAL above it, so the watermark must stop below
+    /// the failed segment: the failed range comes back from the WAL. Before the fix recovery seeded above
+    /// the later segment and the failed range was in neither the ring, the segments nor the replay.
+    @Test
+    void rebuild_replaysFailedSegmentRangeFromWal_whenLaterSegmentSealed() {
+        var index = new SegmentIndex();
+        var failing = streamPartitionManager(Long.MAX_VALUE,
+                                             segmentSealer(segment -> sealUnlessFirstSegment(index, segment)),
+                                             Option.some(walDir),
+                                             index::lastSealedOffset);
+
+        createStream(failing, SMALL_RING_EVENTS);
+        // Results deliberately ignored: once the ring is full of events it could not seal, it may refuse.
+        IntStream.range(0, EVENTS).forEach(i -> failing.publishLocal(STREAM, PARTITION, payload(i), 1000L + i));
+        failing.close();
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), index::lastSealedOffset);
+        createStream(recovered, EVENTS * 10);
+
+        var events = readFrom(recovered, 0);
+
+        assertThat(events).isNotEmpty();
+        assertEvent(events.getFirst(), 0);
+
+        recovered.close();
+    }
+
     // === helpers ===
+
+    /// A sink that fails the partition's first segment (offset 0) and durably records every other segment in
+    /// the index, as `StorageSegmentSink` does on success.
+    private static Promise<Unit> sealUnlessFirstSegment(SegmentIndex index, SealedSegment segment) {
+        if (segment.startOffset() == 0) {
+            return Causes.cause("disk full").promise();
+        }
+
+        index.addSegment(segment.streamName(), segment.partition(), segment.startOffset(), segment.endOffset());
+
+        return Promise.unitPromise();
+    }
+
+    private static void createStream(StreamPartitionManager manager, int ringEvents) {
+        var retention = RetentionPolicy.retentionPolicy(ringEvents, 64 * 1024, 600_000);
+
+        manager.createStream(StreamConfig.streamConfig(STREAM, 1, retention, "earliest"))
+               .onFailure(cause -> fail(cause.message()));
+    }
 
     private static void publishAll(StreamPartitionManager manager) {
         createStream(manager);

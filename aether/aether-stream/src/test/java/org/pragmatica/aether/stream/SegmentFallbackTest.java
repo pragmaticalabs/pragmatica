@@ -139,6 +139,35 @@ class SegmentFallbackTest {
         }
     }
 
+    /// #1234: an offset the ring has already dropped and the cold tier never received must surface as an
+    /// explicit error. Answering `[]` for it stalls the consumer at that cursor forever.
+    @Nested
+    class UnsealedHole {
+
+        @Test
+        void fetch_offsetInNeitherTier_failsExplicitly_insteadOfEmpty() {
+            var unsealedManager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP);
+            var retention = RetentionPolicy.retentionPolicy(RING_CAPACITY, RING_DATA_BYTES, 600_000);
+
+            unsealedManager.createStream(StreamConfig.streamConfig(STREAM, PARTITION_COUNT, retention, "earliest"));
+
+            PartitionedStreamAccess.CursorCheckpointWriter noopWriter = (_, _, _, _) -> org.pragmatica.lang.Promise.unitPromise();
+            var unsealedAccess = streamAccess(unsealedManager, identitySerializer(), identityDeserializer(),
+                                              STREAM, PARTITION_COUNT, Option.<Function<byte[], Object>>none(),
+                                              noopWriter, tieredReader);
+
+            for (int i = 0; i < 10; i++) {
+                unsealedManager.publishLocal(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i);
+            }
+
+            var result = unsealedAccess.fetch(PARTITION, 0, 3).await();
+
+            unsealedManager.close();
+            result.onSuccess(events -> org.junit.jupiter.api.Assertions.fail("Expected an explicit error, got " + events.size() + " events"))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.CursorExpired.class));
+        }
+    }
+
     private void publishEvents(int count) {
         for (int i = 0; i < count; i++) {
             var payload = ("event-" + i).getBytes();
