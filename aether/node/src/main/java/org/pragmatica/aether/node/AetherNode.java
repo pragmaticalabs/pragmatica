@@ -1206,6 +1206,35 @@ public interface AetherNode extends ManageableNode {
                      .filter(owner -> !owner.equals(self));
     }
 
+    /// The two views of committed stream-partition ownership, and which consumer gets which (#1230 ruling 3).
+    ///
+    /// `writeAuthority` is the RAW committed `StreamPartitionOwnershipValue`: it gates application appends
+    /// ([#writeAdmission]) and validates replication senders. `routing` is the #568 liveness-filtered view
+    /// ([#committedOwnerStillAlive]): it drives backfill self-election and the release guard, where treating a
+    /// dead holder as absent is what unwedges the partition. Liveness is a suspicion, not a fence — fed to the
+    /// write side, the filtered view would turn a partitioned-but-alive owner into "absent", which admission
+    /// admits, so a second writer would append while the first still writes. A dead owner's partition is
+    /// unwedged for writes only when the leader commits a new ownership record; until then appends fail with
+    /// the retryable `NotOwnerAppend`.
+    record StreamOwnershipViews(CommittedStreamOwnerSource writeAuthority, CommittedStreamOwnerSource routing) {
+        static StreamOwnershipViews streamOwnershipViews(CommittedStreamOwnerSource committed,
+                                                         MembershipFsm membershipFsm) {
+            return new StreamOwnershipViews(committed, liveOnly(committed, membershipFsm));
+        }
+
+        /// Application-append admission over [#writeAuthority]: the committed owner when it is not `self`.
+        StreamPartitionManager.OwnerWriteAdmission writeAdmission(NodeId self) {
+            return (stream, partition) -> remoteCommittedOwner(writeAuthority, self, stream, partition);
+        }
+
+        private static CommittedStreamOwnerSource liveOnly(CommittedStreamOwnerSource committed,
+                                                           MembershipFsm membershipFsm) {
+            return (stream, partition) -> committed.committedOwner(stream, partition)
+                                                   .filter(owner -> committedOwnerStillAlive(membershipFsm,
+                                                                                             owner.owner()));
+        }
+    }
+
     /// Whether a committed stream-partition owner is still a live cluster member (#568).
     ///
     /// Committed stream ownership has no relinquish path other than the owner releasing it, so a record
@@ -3915,11 +3944,13 @@ public interface AetherNode extends ManageableNode {
         // The empty-set guard is load-bearing: before the FSM has any members (boot window) an unguarded
         // filter would reject EVERY committed owner and reintroduce the #491 F4 self-promote this gate
         // exists to prevent. Empty membership means "cannot judge liveness", not "nobody is alive".
-        var rawStreamCommittedOwnerSource = KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore);
-        CommittedStreamOwnerSource streamCommittedOwnerSource = (stream, partition) -> rawStreamCommittedOwnerSource.committedOwner(stream,
-                                                                                                                                    partition)
-                                                                                                                    .filter(committed -> committedOwnerStillAlive(membershipFsm,
-                                                                                                                                                                  committed.owner()));
+        //
+        // #1230 ruling 3: the write-authority half (admission + replication sender check) is the RAW record;
+        // only the routing half (backfill self-election, release guard) is liveness-filtered. Both come from
+        // StreamOwnershipViews so the split is decided — and pinned by StreamOwnershipViewsTest — in one place.
+        var streamOwnershipViews = StreamOwnershipViews.streamOwnershipViews(KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore),
+                                                                             membershipFsm);
+        var streamCommittedOwnerSource = streamOwnershipViews.routing();
         var streamPartitionBackfill = PartitionBackfill.partitionBackfill(streamReplicaRegistry,
                                                                           streamPartitionRecovery,
                                                                           streamCatchupTransport,
@@ -4022,10 +4053,7 @@ public interface AetherNode extends ManageableNode {
         // A dead owner's partition is unwedged only by the leader committing a new ownership record; until
         // then writes fail retryable NotOwnerAppend (CTO ruling on #1230). No record admits (the cold-start
         // window, where the fence is inert and HRW routing alone picks the writer).
-        streamPartitionManager.ownerWriteAdmission((stream, partition) -> remoteCommittedOwner(rawStreamCommittedOwnerSource,
-                                                                                               config.self(),
-                                                                                               stream,
-                                                                                               partition));
+        streamPartitionManager.ownerWriteAdmission(streamOwnershipViews.writeAdmission(config.self()));
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
         wireMembershipDecisionTail(allEntries, streamReplicaSetController::onMembershipDecision);
@@ -4289,7 +4317,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                   (streamName, partition) -> streamBackfillExecutor.execute(() -> streamPartitionBackfill.backfill(streamName,
                                                                                                                                                                                                    partition)),
                                                                                                   streamPartitionManager::syncReplicated,
-                                                                                                  rawStreamCommittedOwnerSource);
+                                                                                                  streamOwnershipViews.writeAuthority());
 
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateEvents.class,
                                                  streamReplicationReceiveHandler::onReplicateEvents));
