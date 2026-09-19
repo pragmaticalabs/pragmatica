@@ -207,7 +207,7 @@ class StreamPartitionManagerSectionReentrancyTest {
     }
 
     @SuppressWarnings("unchecked")
-    private static PartitionWal walOf(StreamPartitionManager manager, String stream, int partition) throws Exception {
+    static PartitionWal walOf(StreamPartitionManager manager, String stream, int partition) throws Exception {
         var walFor = StreamPartitionManager.class.getDeclaredMethod("walFor", String.class, int.class);
 
         walFor.setAccessible(true);
@@ -224,7 +224,7 @@ class StreamPartitionManagerSectionReentrancyTest {
     }
 
     /// Delegates everything to the WAL's real channel, except that `force` parks until released.
-    private static final class GatedForceChannel extends FileChannel {
+    static final class GatedForceChannel extends FileChannel {
         final FileChannel delegate;
         final CountDownLatch forceEntered = new CountDownLatch(1);
         final CountDownLatch forceProceed = new CountDownLatch(1);

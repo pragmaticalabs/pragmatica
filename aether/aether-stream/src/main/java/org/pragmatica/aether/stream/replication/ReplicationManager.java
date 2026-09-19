@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import java.util.List;
+import java.util.stream.IntStream;
+
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
@@ -39,6 +42,26 @@ public interface ReplicationManager extends AutoCloseable {
                         byte[] payload,
                         long timestamp,
                         Epoch ownerEpoch);
+
+    /// Replicate a CONTIGUOUS run of accepted owner-local appends, `fromOffset` onward (#1245). The
+    /// default sends each event on its own; an implementation that can batch overrides it to send one
+    /// message.
+    @Contract
+    default void replicateEvents(String streamName,
+                                 int partition,
+                                 long fromOffset,
+                                 List<byte[]> payloads,
+                                 List<Long> timestamps,
+                                 Epoch ownerEpoch) {
+        IntStream.range(0,
+                        payloads.size())
+                 .forEach(i -> replicateEvent(streamName,
+                                              partition,
+                                              fromOffset + i,
+                                              payloads.get(i),
+                                              timestamps.get(i),
+                                              ownerEpoch));
+    }
 
     @Contract
     void handleAck(ReplicationMessage.ReplicateAck ack);

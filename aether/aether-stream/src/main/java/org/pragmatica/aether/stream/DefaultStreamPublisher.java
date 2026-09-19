@@ -202,16 +202,20 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     }
 
     /// #266: an EVENTUAL batch is grouped by each event's COMPUTED partition (not routed wholesale to
-    /// the first event's partition) and each group is routed through the SAME per-event path as single
-    /// {@link #publish} — local owner publish + replicate + min-sync await, or write-forward to the
-    /// remote owner. This preserves key→partition affinity and gives the batch identical replication
-    /// semantics to single publish (composes with #262), instead of the prior whole-batch misroute that
-    /// also bypassed replication and failed `PARTITION_NOT_LOCAL` for any non-local partition.
+    /// the first event's partition), and each group is routed like a single {@link #publish} — local owner
+    /// publish + replicate + min-sync await, or write-forward to the remote owner. This preserves
+    /// key→partition affinity and gives the batch the same replication semantics as single publish
+    /// (composes with #262). A local group is ONE storage batch (#1245, see {@link #publishGroupInOrder}).
     private Promise<Unit> publishBatchEventual(List<T> events) {
         var now = System.currentTimeMillis();
         var byPartition = groupByPartition(events);
 
-        return Promise.allOf(byPartition.values().stream().map(group -> publishGroupInOrder(group, now)).toList()).mapToUnit();
+        return Promise.allOf(byPartition.entrySet()
+                                        .stream()
+                                        .map(group -> publishGroupInOrder(group.getKey(),
+                                                                          group.getValue(),
+                                                                          now))
+                                        .toList()).mapToUnit();
     }
 
     /// Group events by computed partition, preserving encounter order within each partition group so
@@ -226,14 +230,42 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
         return groups;
     }
 
-    /// Publish one partition's events strictly in order: each event awaits the previous so the
-    /// partition's append/forward sequence preserves per-key ordering. Different partition groups run
+    /// Publish one partition's group, in order, to the partition it was GROUPED under (#1245): the
+    /// partition is never re-resolved, because a keyless re-resolution advances the round-robin counter
+    /// again and scatters the group. A local ring takes the whole group as ONE storage batch — one ordered
+    /// section, one WAL group commit, one replication message and one replication await on its last
+    /// offset — so per-partition order holds by construction. A remote owner still receives the events one
+    /// by one, each awaiting the previous (no batch forward exists). Different partition groups run
     /// concurrently (the caller's `allOf`).
-    private Promise<Unit> publishGroupInOrder(List<T> group, long timestamp) {
+    private Promise<Unit> publishGroupInOrder(int partition, List<T> group, long timestamp) {
+        var payloads = group.stream().map(serializer::encode).toList();
+
+        return partitionManager.partitionBuffer(streamName, partition)
+                               .isPresent()
+               ? publishLocalBatch(partition, payloads, timestamp)
+               : publishRemoteInOrder(partition, payloads, timestamp);
+    }
+
+    private Promise<Unit> publishLocalBatch(int partition, List<byte[]> payloads, long timestamp) {
+        if (minSyncReplicas <= 1) {
+            return partitionManager.publishLocalBatch(streamName, partition, payloads, timestamp)
+                                   .mapToUnit()
+                                   .async();
+        }
+
+        return partitionManager.publishLocalBatch(streamName, partition, payloads, timestamp)
+                               .async()
+                               .flatMap(lastOffset -> partitionManager.awaitReplication(streamName,
+                                                                                        partition,
+                                                                                        lastOffset,
+                                                                                        minSyncReplicas - 1));
+    }
+
+    private Promise<Unit> publishRemoteInOrder(int partition, List<byte[]> payloads, long timestamp) {
         var chain = Promise.<Unit> unitPromise();
 
-        for (var event : group) {
-            chain = chain.flatMap(_ -> publishEventual(resolvePartition(event), serializer.encode(event), timestamp));
+        for (var bytes : payloads) {
+            chain = chain.flatMap(_ -> publishRemote(partition, bytes, timestamp));
         }
 
         return chain;
