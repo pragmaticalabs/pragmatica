@@ -627,10 +627,10 @@ public final class StreamApiRoutes implements RouteSource {
 
     /// Package-visible for direct unit coverage, like [#publishEvent].
     Promise<PublishBatchResponse> publishBatch(String namespace,
-                                                       String stream,
-                                                       String version,
-                                                       String publishBatchLiteral,
-                                                       PublishRequest[] requests) {
+                                               String stream,
+                                               String version,
+                                               String publishBatchLiteral,
+                                               PublishRequest[] requests) {
         return ResourceAddress.resourceAddress(namespace, stream, version)
                               .async()
                               .flatMap(addr -> publishMany(addr, requests));
@@ -642,7 +642,7 @@ public final class StreamApiRoutes implements RouteSource {
     /// is not `HttpStatusAware` and left the wire as 500.
     private Promise<PublishBatchResponse> publishMany(ResourceAddress addr, PublishRequest[] requests) {
         return ensureStreamExists(StreamManager.engineKey(addr)).async()
-                                                                .flatMap(_ -> publishEach(addr, requests));
+                                 .flatMap(_ -> publishEach(addr, requests));
     }
 
     private Promise<PublishBatchResponse> publishEach(ResourceAddress addr, PublishRequest[] requests) {
@@ -773,11 +773,14 @@ public final class StreamApiRoutes implements RouteSource {
     /// #1282: the reserved-kind refusal runs BEFORE the catalog lookup, so an existing reserved address is
     /// refused rather than reported `"exists"` — no existence oracle for internally provisioned streams.
     private Result<CreateResponse> createAtAddress(ResourceAddress addr, CreateRequest request) {
-        return ReservedStreamNames.requireUnreserved(StreamManager.engineKey(addr))
-                                  .flatMap(engineKey -> createOrReportExisting(addr, engineKey, request));
+        return ReservedStreamNames.requireUnreserved(StreamManager.engineKey(addr)).flatMap(engineKey -> createOrReportExisting(addr,
+                                                                                                                                engineKey,
+                                                                                                                                request));
     }
 
-    private Result<CreateResponse> createOrReportExisting(ResourceAddress addr, String engineKey, CreateRequest request) {
+    private Result<CreateResponse> createOrReportExisting(ResourceAddress addr,
+                                                          String engineKey,
+                                                          CreateRequest request) {
         return namespacesService.lookup(addr)
                                 .map(_ -> Result.success(new CreateResponse(addr.asString(),
                                                                             "exists")))
@@ -793,10 +796,12 @@ public final class StreamApiRoutes implements RouteSource {
     /// idempotent caller of that method.
     ///
     /// Reached only through [#createAtAddress], whose reserved-kind refusal has already run on `engineKey`.
-    private Result<CreateResponse> materializeAndRegister(ResourceAddress addr, String engineKey, CreateRequest request) {
+    private Result<CreateResponse> materializeAndRegister(ResourceAddress addr,
+                                                          String engineKey,
+                                                          CreateRequest request) {
         return mintOperatorStream(engineKey, request).flatMap(_ -> registerCatalogEntry(addr))
-                                  .map(_ -> new CreateResponse(addr.asString(),
-                                                               "created"));
+                                 .map(_ -> new CreateResponse(addr.asString(),
+                                                              "created"));
     }
 
     private Result<Unit> mintOperatorStream(String engineKey, CreateRequest request) {

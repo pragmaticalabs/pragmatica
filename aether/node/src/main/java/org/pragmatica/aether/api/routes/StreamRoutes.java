@@ -281,8 +281,7 @@ public final class StreamRoutes implements RouteSource {
             return Result.failure(SYSTEM_STREAM_NAME_FORBIDDEN);
         }
 
-        return ReservedStreamNames.requireUnreserved(name)
-                                  .flatMap(_ -> createOrReportExisting(name, request));
+        return ReservedStreamNames.requireUnreserved(name).flatMap(_ -> createOrReportExisting(name, request));
     }
 
     private Result<StreamCreateResponse> createOrReportExisting(String name, StreamCreateRequest request) {

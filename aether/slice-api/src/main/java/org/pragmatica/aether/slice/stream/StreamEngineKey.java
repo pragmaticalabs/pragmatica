@@ -51,9 +51,7 @@ public sealed interface StreamEngineKey {
 
     /// The reserved kind prefix `engineKey` starts with, or none.
     static Option<String> reservedKindPrefixOf(String engineKey) {
-        return Option.from(RESERVED_KIND_PREFIXES.stream()
-                                                 .filter(engineKey::startsWith)
-                                                 .findFirst());
+        return Option.from(RESERVED_KIND_PREFIXES.stream().filter(engineKey::startsWith).findFirst());
     }
 
     record unused() implements StreamEngineKey {}

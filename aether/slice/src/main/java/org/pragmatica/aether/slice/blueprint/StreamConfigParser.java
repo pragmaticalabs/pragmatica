@@ -240,8 +240,9 @@ public interface StreamConfigParser {
     /// [StreamSourceError.ReservedKindSource].
     private static Result<ResourceAddress> refuseReservedKind(String streamName, String source, ResourceAddress addr) {
         return StreamEngineKey.reservedKindPrefixOf(StreamEngineKey.engineKey(addr))
-                              .map(prefix -> StreamSourceError.ReservedKindSource.FACTORY.apply(streamName, source, prefix)
-                                                                                         .<ResourceAddress> result())
+                              .map(prefix -> StreamSourceError.ReservedKindSource.FACTORY.apply(streamName,
+                                                                                                source,
+                                                                                                prefix).<ResourceAddress> result())
                               .or(() -> success(addr));
     }
 

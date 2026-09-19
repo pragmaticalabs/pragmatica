@@ -8,6 +8,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// A blueprint `External` stream `source` the parser refuses (#1282).
 public sealed interface StreamSourceError extends Cause {
     /// The source resolves to an engine key carrying a reserved stream-kind prefix
@@ -17,10 +18,8 @@ public sealed interface StreamSourceError extends Cause {
     /// exists: spec §11.2 lets an External source name another blueprint's namespace or `system`, and a
     /// real durable-topic stream is not addressable in the three-part form.
     record ReservedKindSource(String alias, String sourceAddress, String prefix, String message) implements StreamSourceError {
-        static final Fn3<ReservedKindSource, String, String, String> FACTORY = Causes.forThreeValues("Stream resource '%s' names source '%s', whose stream name carries the reserved "
-                                                                                                    + "stream-kind prefix '%s': those streams are provisioned only by the runtime "
-                                                                                                    + "and cannot be referenced from a blueprint",
-                                                                                                    ReservedKindSource::new);
+        static final Fn3<ReservedKindSource, String, String, String> FACTORY = Causes.forThreeValues("Stream resource '%s' names source '%s', whose stream name carries the reserved stream-kind prefix '%s': those streams are provisioned only by the runtime and cannot be referenced from a blueprint",
+                                                                                                     ReservedKindSource::new);
     }
 
     record unused() implements StreamSourceError {
