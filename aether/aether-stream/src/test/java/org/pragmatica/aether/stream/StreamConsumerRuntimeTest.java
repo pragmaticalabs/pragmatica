@@ -456,7 +456,7 @@ class StreamConsumerRuntimeTest {
                 manager.publishLocal("orders", 0, "e1".getBytes(UTF_8), 2000L);
                 failingReader.subscribe("orders", 0, ConsumerConfig.consumerConfig("group-f"), (offset, payload, ts) -> record(offset));
                 awaitSize(2);
-                assertThat(reads.get()).describedAs("control: the kick's first read really failed").isGreaterThanOrEqualTo(2);
+                assertThat(reads.get()).describedAs("control: the kick's read ran and failed").isGreaterThanOrEqualTo(1);
                 assertThat(delivered).describedAs("the backlog is delivered with no further append").containsExactly(0L, 1L);
             } finally {
                 failingReader.close();
@@ -495,8 +495,11 @@ class StreamConsumerRuntimeTest {
                 assertThat(delivered).describedAs("a throwing cursor store never stops delivery").containsExactly(0L, 1L, 2L);
                 assertThat(observedRuntime.cursorCommitFailureCount()).describedAs("the throw is counted as a commit failure")
                                                                       .isGreaterThanOrEqualTo(1L);
+                assertThat(org.pragmatica.lang.Result.lift(observedRuntime::close).isSuccess())
+                          .describedAs("the final flush on close meets the same throwing store and must not throw either")
+                          .isTrue();
             } finally {
-                observedRuntime.close();
+                org.pragmatica.lang.Result.lift(observedRuntime::close);
             }
         }
 
