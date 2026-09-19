@@ -29,11 +29,12 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupResponse.catchupResponse;
 
-/// #1244 (ruling know 801a8b54e, B2): replica WAL frames carry no per-record fsync, so a backfill run —
+/// #1244 (backfill-commit ruling, know 801a8b54e): replica WAL frames carry no per-record fsync, so a backfill run —
 /// the catch-up that precedes promotion — commits what it re-appended before it completes. Runs against
 /// a REAL WAL and asserts exactly ONE fsync with NO later live batch: one proves the run is durable on a
 /// quiet partition, and not more than one proves the commit is per run, never per record. (The CTO
-/// waived B2 for `DefaultFailoverRecovery` and `GovernorFailoverHandler`, 2026-09-19.)
+/// waived the backfill-commit ruling for the failover paths, `DefaultFailoverRecovery` and
+/// `GovernorFailoverHandler`, 2026-09-19.)
 class CatchUpWalDurabilityTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;

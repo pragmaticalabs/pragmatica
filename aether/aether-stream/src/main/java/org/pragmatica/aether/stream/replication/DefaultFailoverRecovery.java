@@ -15,8 +15,8 @@ import static org.pragmatica.aether.stream.replication.FailoverRecovery.Recovery
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupRequest.catchupRequest;
 
 
-/// OBLIGATION (#1244, ruling B2 waived here by the CTO on 2026-09-19 because this class has no production
-/// caller): replica WAL frames carry no per-record fsync, so if this ever gains a caller, commit each
+/// OBLIGATION (#1244 backfill-commit ruling, waived for failover paths by the CTO on 2026-09-19 because this
+/// class has no production caller): replica WAL frames carry no per-record fsync, so if this ever gains a caller, commit each
 /// recovered partition through the replica WAL barrier (`StreamPartitionManager::syncReplicated`) before
 /// counting it as recovered.
 final class DefaultFailoverRecovery implements FailoverRecovery {
