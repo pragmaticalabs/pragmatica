@@ -2733,6 +2733,48 @@ reap_cloud_cluster() {
 ## the VM apart from the CREATE DATABASE itself; NEVER drops or alters anything.
 ## Requires the PG firewall to be open (caller runs after pg-firewall.sh open) and
 ## the ambient PG_HOST/PG_USER/PG_PASSWORD env vars run-tests.sh already relies on.
+# Drop and recreate a cloud test database so a suite that asserts FIRST-TIME behaviour
+# gets a first-time database.
+#
+# The Hetzner PG VM is long-lived and shared across runs, so `ensure_cloud_pg_database`
+# — which creates only when absent — leaves migration state behind forever. Suite 10
+# baselines `database.testpersistence`; the first run that ever did so succeeded, and
+# every run since gets a CORRECT 409 from the server:
+#
+#   "Baseline conflict for datasource 'database.testpersistence':
+#    versioned migrations already applied up to version 900"
+#
+# Measured 2026-09-18: 10-database 2p/1f on four consecutive runs across BOTH runtimes.
+# The server was right every time; the test's premise had expired. Same class as the
+# url-shortener fixture gap — a test depending on ambient shared state rather than a
+# provisioned one.
+#
+# Guarded to names ending in `_testpersistence`: this DROPs a database, and it must not
+# be reachable for anything but the suite fixture it exists for.
+reset_cloud_pg_database() {
+    local dbname="$1"
+    case "$dbname" in
+        *_testpersistence) ;;
+        *) log_warn "reset_cloud_pg_database(${dbname}): REFUSING — only *_testpersistence may be dropped"
+           return 1 ;;
+    esac
+    local pg_ssh_user="${PG_VM_SSH_USER:-root}"
+    if [ -z "${PG_HOST:-}" ] || [ -z "${PG_USER:-}" ] || [ -z "${PG_PASSWORD:-}" ]; then
+        log_warn "reset_cloud_pg_database(${dbname}): PG_HOST/PG_USER/PG_PASSWORD not set"
+        return 1
+    fi
+    local ssh_opts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR -i "$AETHER_SSH_KEY")
+    local dropped
+    # Runs BEFORE cluster bootstrap, so no slice holds a connection yet.
+    dropped=$(ssh "${ssh_opts[@]}" "${pg_ssh_user}@${PG_HOST}" \
+        "docker exec -e PGPASSWORD='${PG_PASSWORD}' aether-pg psql -U '${PG_USER}' -d postgres -c 'DROP DATABASE IF EXISTS ${dbname}'" 2>&1) || {
+        log_warn "reset_cloud_pg_database(${dbname}): DROP failed: $(printf '%s' "$dropped" | head -c 200)"
+        return 1
+    }
+    log_info "reset_cloud_pg_database(${dbname}): dropped (was: $(printf '%s' "$dropped" | tr -d '\n' | head -c 60))"
+    ensure_cloud_pg_database "$dbname"
+}
+
 ensure_cloud_pg_database() {
     local dbname="$1"
     local pg_ssh_user="${PG_VM_SSH_USER:-root}"

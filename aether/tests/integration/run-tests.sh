@@ -1154,8 +1154,11 @@ if [ "$ENV_TYPE" = "cloud" ]; then
     # docker-exec pattern as tools/provision-test-pg.sh's smoke test. Non-fatal on
     # failure: suite 10 will surface it loudly, and a wedged SSH here must not kill
     # runs that never touch PG.
-    ensure_cloud_pg_database "${PG_DB}_testpersistence" \
-        || log_warn "could not ensure PG database ${PG_DB}_testpersistence — suite 10 (test-persistence) will fail if it runs"
+    # Reset rather than ensure: suite 10 asserts FIRST-TIME baseline behaviour, and the
+    # shared PG VM keeps migration state across runs, so `ensure` handed it an already-
+    # baselined database and the server correctly answered 409 (#1228).
+    reset_cloud_pg_database "${PG_DB}_testpersistence" \
+        || log_warn "could not reset PG database ${PG_DB}_testpersistence — suite 10 (test-persistence) will fail if it runs"
 fi
 
 # --- Step 1.5: CLI / node-image version-parity preflight (#440) ---
