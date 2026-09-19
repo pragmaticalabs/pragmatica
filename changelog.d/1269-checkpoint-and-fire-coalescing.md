@@ -12,7 +12,10 @@
   fire is queued or running; the re-checks inside the key's tail are unchanged.
   [mechanism: a per-registration in-flight partition set and a per-entity in-flight `TimerId` set] —
   pinned by unit tests.
-- **Known limit:** a save whose promise never settles now holds its partition's checkpoints until it does,
-  where before each tick started another. `writes` and `checkpointedThrough` on the checkpoint snapshot
-  surface stop advancing for that partition.
-  [design intent — unverified: no timeout is applied to a save]
+- The in-flight mark on a checkpoint save is bounded at three ticks, which is 90 s at the node's 30 s
+  interval. After that a WARN names the partition and the next tick starts another save. The abandoned save
+  may still land. That is harmless: the substrate refuses a lower claim, because checkpoint writes are
+  `MonotonicFenced` (#700), and the driver keeps its own record at the maximum. A late settle clears only
+  its own mark, never its replacement's.
+  [mechanism: the in-flight mark is taken over by a compare-and-set on the tick it was set on; the
+  written-offset record is merged with max] — pinned by unit tests.
