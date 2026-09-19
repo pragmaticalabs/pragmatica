@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
@@ -901,6 +902,34 @@ class StreamConsumerManagerTest {
             assertThat(manager.activeSubscriptionCount()).isZero();
         }
 
+        /// `stopped` must be set BEFORE the sweep, not after it. A pass triggered while the sweep holds
+        /// the lock — here re-entrantly from inside the sweep, which is the one interleaving a test can
+        /// force without a scheduler — must find the manager already stopped; with the flag set after
+        /// the sweep it runs, re-attaches what the sweep had just detached, and survives `stop()`.
+        @Test
+        void stop_leavesNothingAttached_whenAPassIsTriggeredDuringTheDetachSweep() {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(new CountingTopicGroups());
+            var triggered = new AtomicBoolean();
+
+            manager.reconcile();
+            runtime.afterUnsubscribe = () -> triggerOnce(manager, triggered);
+            manager.stop();
+
+            assertThat(triggered.get()).describedAs("a pass was triggered from inside the sweep").isTrue();
+            assertThat(runtime.subscribedPartitions()).describedAs("a pass triggered during stop() must not re-attach")
+                                                      .isEmpty();
+            assertThat(manager.activeSubscriptionCount()).isZero();
+        }
+
+        private static void triggerOnce(StreamConsumerManager manager, AtomicBoolean triggered) {
+            if (triggered.compareAndSet(false, true)) {
+                manager.reconcile();
+            }
+        }
+
         private void declareOnListenerThread() {
             declareStringConsumer();
         }
@@ -1085,6 +1114,9 @@ class StreamConsumerManagerTest {
 
         private final Map<StreamPartition, String> subscriptions = new ConcurrentHashMap<>();
         private int subscribeCalls;
+        // Runs on the unsubscribing thread after each unsubscribe — lets a test trigger a pass from INSIDE
+        // the stop sweep, while that thread holds the pass lock. Inert by default.
+        private volatile Runnable afterUnsubscribe = () -> {};
 
         List<Integer> subscribedPartitions() {
             return subscriptions.keySet().stream().map(StreamPartition::partition).distinct().toList();
@@ -1121,6 +1153,7 @@ class StreamConsumerManagerTest {
         @Override
         public Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup) {
             subscriptions.remove(new StreamPartition(streamName, partition));
+            afterUnsubscribe.run();
 
             return Result.unitResult();
         }
