@@ -133,6 +133,11 @@ class DurableTopicDeliveryForgeTest {
 
     /// The id both readiness gates publish under. No arm counts it: every arm counts only the ids it
     /// published itself, which is what removes baseline carryover rather than draining around it.
+    ///
+    /// The number of warm-up events is NOT fixed. A gate publish can time out after its event landed
+    /// (#1236), and the gate then publishes again under a new message id (#1237); one run in eight left
+    /// two warm-up events. No verdict depends on it: [PreAttachBacklog]'s tripwire asserts zero
+    /// deliveries and its real arm at least one.
     private static final String WARMUP_ID = "__warmup__";
 
     /// The fixture acks orders carrying this prefix late (`DurableTopicSlice.durableTopicSlice.SLOW_ACK_PREFIX`).

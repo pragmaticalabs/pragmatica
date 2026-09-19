@@ -159,6 +159,11 @@ public interface DurableTopicSlice {
         static final String SLOW_ACK_PREFIX = "slow-";
         static final TimeSpan SLOW_ACK = TimeSpan.timeSpan(150).millis();
 
+        // TODO(#1257): publish orders and poison events keyed by their id with
+        // `publish(message, idempotencyKey)` once #1257 lands. A publish that times out after its event
+        // landed is otherwise retried by the forge readiness gate as a SECOND event (observed once in 8
+        // runs: two warm-up events at offsets 0 and 1). No forge arm counts the warm-up, so no verdict
+        // depends on it today, but the key makes the log hold what the caller meant to publish.
         @Override
         public Promise<PublishResponse> publishOrder(PublishOrder request) {
             return orderPublisher.publish(request.event())
