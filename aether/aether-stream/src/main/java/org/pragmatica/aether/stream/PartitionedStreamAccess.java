@@ -71,6 +71,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     private final Option<LinearizableBarrier> barrier;
     private final AtomicLong roundRobinCounter;
     private final ConcurrentHashMap<ConsumerPartitionKey, Long> committedOffsets;
+    private final ForwardingReadRouter<StreamEvent<T>> readRouter;
 
     private PartitionedStreamAccess(StreamPartitionManager partitionManager,
                                     Serializer serializer,
@@ -113,7 +114,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
 
     /// #345 item 1e-c: full constructor adding the three `LINEARIZABLE` pipeline components — the
     /// committed-owner source, the ownership epoch high-water, and the no-op-round barrier — that the
-    /// typed read path threads into {@link #readRouter()} so a `LINEARIZABLE` read runs the
+    /// typed read path threads into {@link #buildReadRouter()} so a `LINEARIZABLE` read runs the
     /// same owner-routed fence/round/catch-up pipeline as the raw {@link StreamReadRouter} path. Every
     /// other overload delegates here with [Option#none] components (no behaviour change).
     private PartitionedStreamAccess(StreamPartitionManager partitionManager,
@@ -158,6 +159,7 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
         this.barrier = barrier;
         this.roundRobinCounter = new AtomicLong(0);
         this.committedOffsets = new ConcurrentHashMap<>();
+        this.readRouter = buildReadRouter();
     }
 
     public static <T> PartitionedStreamAccess<T> streamAccess(StreamPartitionManager partitionManager,
@@ -755,7 +757,11 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
     /// fence/round/catch-up pipeline as the raw {@link StreamReadRouter} path (1e-a). With [Option#none]
     /// components the `LINEARIZABLE` arm degrades to the replica-routed read; the non-linearizable arms
     /// ignore all three.
-    ForwardingReadRouter<StreamEvent<T>> readRouter() {
+    ///
+    /// #1264: built ONCE, as the constructor's last step, from `final` fields only — not per partition
+    /// read. What is cached is the mechanism, never the answer: {@link #resolveOwner} runs inside the
+    /// router at route time, so an ownership change between two reads reaches the new owner.
+    private ForwardingReadRouter<StreamEvent<T>> buildReadRouter() {
         return ForwardingReadRouter.forwardingReadRouter(replicaRegistry,
                                                          selfNodeId,
                                                          forwardClient,
@@ -769,6 +775,10 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                          committedOwnerSource,
                                                          epochHighWater,
                                                          barrier);
+    }
+
+    ForwardingReadRouter<StreamEvent<T>> readRouter() {
+        return readRouter;
     }
 
     private List<StreamEvent<T>> decodeAll(List<RawEventDto> events, int partition) {

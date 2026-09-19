@@ -5,7 +5,9 @@
 package org.pragmatica.aether.stream;
 
 import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
@@ -37,6 +39,7 @@ public final class StreamReadRouter {
     private final Option<CommittedStreamOwnerSource> committedOwnerSource;
     private final Option<OwnershipEpochHighWater> epochHighWater;
     private final Option<LinearizableBarrier> barrier;
+    private final Map<ReadPreference, ForwardingReadRouter<OffHeapRingBuffer.RawEvent>> readRouters;
 
     private StreamReadRouter(StreamPartitionManager partitionManager,
                              Option<ReplicaRegistry> replicaRegistry,
@@ -56,6 +59,7 @@ public final class StreamReadRouter {
         this.committedOwnerSource = committedOwnerSource;
         this.epochHighWater = epochHighWater;
         this.barrier = barrier;
+        this.readRouters = buildReadRouters();
     }
 
     public static StreamReadRouter streamReadRouter(StreamPartitionManager partitionManager,
@@ -120,6 +124,25 @@ public final class StreamReadRouter {
     }
 
     ForwardingReadRouter<OffHeapRingBuffer.RawEvent> readRouter(ReadPreference preference) {
+        return readRouters.get(preference);
+    }
+
+    /// #1264: one router per {@link ReadPreference}, built ONCE as the constructor's last step from
+    /// `final` fields only — `read` varies the preference per call, so the routers are keyed by it
+    /// rather than rebuilt per read. What is cached is the mechanism, never the answer: the owner
+    /// resolver runs inside the router at route time, so an ownership change between two reads reaches
+    /// the new owner.
+    private Map<ReadPreference, ForwardingReadRouter<OffHeapRingBuffer.RawEvent>> buildReadRouters() {
+        var routers = new EnumMap<ReadPreference, ForwardingReadRouter<OffHeapRingBuffer.RawEvent>>(ReadPreference.class);
+
+        for (var preference : ReadPreference.values()) {
+            routers.put(preference, buildReadRouter(preference));
+        }
+
+        return routers;
+    }
+
+    private ForwardingReadRouter<OffHeapRingBuffer.RawEvent> buildReadRouter(ReadPreference preference) {
         return ForwardingReadRouter.<OffHeapRingBuffer.RawEvent> forwardingReadRouter(replicaRegistry,
                                                                                       selfNodeId,
                                                                                       forwardClient,
