@@ -136,12 +136,21 @@ final class EntityFold {
         }
 
         var started = Promise.<Unit> promise();
-
+        // Lost the CAS: the winner's rebuild may ALREADY have failed and cleared the slot — synchronously,
+        // inside its own call, for a partition not held — so re-reading it here could return null (#1268,
+        // the sibling of #701's fix in caughtUp). Re-entering re-reads under the same guards as a fresh call.
         if (!fold.rebuild.compareAndSet(null, started)) {
-            return fold.rebuild.get();
+            return ready(partition);
         }
-
-        rebuild(partition, fold).onResult(result -> completeRebuild(fold, started, result));
+        // A synchronous throw out of rebuild would otherwise escape BETWEEN the won CAS and the onResult
+        // attach, leaving the slot holding a promise nothing will ever resolve — every later caller then
+        // waits on it forever (#1268). Lifting converts the throw into a resolved failure through the same
+        // completion, which also clears the slot.
+        Result.lift(() -> rebuild(partition, fold))
+              .onSuccess(run -> run.onResult(result -> completeRebuild(fold, started, result)))
+              .onFailure(cause -> completeRebuild(fold,
+                                                  started,
+                                                  cause.result()));
 
         return started;
     }
