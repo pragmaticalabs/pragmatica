@@ -45,7 +45,6 @@ import static org.pragmatica.lang.Unit.unit;
 /// ordered after it until the next tick.
 public final class EntityCheckpointDriver {
     private static final Logger LOG = LoggerFactory.getLogger(EntityCheckpointDriver.class);
-
     /// How many ticks an in-flight checkpoint holds its partition before the next tick starts another.
     /// Three: with the node's 30 s interval that is 90 s, two whole intervals of grace for a slow but live
     /// save (a consensus put under load) before a save that never settles is written off.
@@ -206,8 +205,10 @@ public final class EntityCheckpointDriver {
             return;
         }
 
-        Result.lift(() -> startCheckpoint(registration, partition, tick))
-              .onFailure(cause -> abandonCheckpoint(registration, partition, tick, cause));
+        Result.lift(() -> startCheckpoint(registration, partition, tick)).onFailure(cause -> abandonCheckpoint(registration,
+                                                                                                               partition,
+                                                                                                               tick,
+                                                                                                               cause));
     }
 
     /// Mark `partition` in flight as of `tick`, or report that an earlier checkpoint still holds it.
@@ -220,8 +221,7 @@ public final class EntityCheckpointDriver {
     /// at its maximum. Every clear is conditional on the tick the mark was taken on, so a late settle of
     /// the abandoned save cannot clear the mark of the checkpoint that replaced it.
     private static boolean claim(Registration registration, int partition, long tick) {
-        var held = registration.inFlight()
-                               .putIfAbsent(partition, tick);
+        var held = registration.inFlight().putIfAbsent(partition, tick);
 
         if (held == null) {
             return true;
@@ -231,8 +231,7 @@ public final class EntityCheckpointDriver {
             return false;
         }
 
-        var takenOver = registration.inFlight()
-                                    .replace(partition, held, tick);
+        var takenOver = registration.inFlight().replace(partition, held, tick);
 
         if (takenOver) {
             LOG.warn("Entity checkpoint for '{}' partition {} has not settled in {} ticks — starting another;"
@@ -274,8 +273,7 @@ public final class EntityCheckpointDriver {
 
     @Contract
     private static void settle(Registration registration, int partition, long tick) {
-        registration.inFlight()
-                    .remove(partition, tick);
+        registration.inFlight().remove(partition, tick);
     }
 
     /// A checkpoint is written only when it ADVANCES the last one this node wrote, and that is a safety
@@ -346,8 +344,7 @@ public final class EntityCheckpointDriver {
     /// abandoned save may settle after its replacement, and its lower offset must not pull the record back.
     @Contract
     private static void recordWrite(Registration registration, int partition, long through) {
-        registration.checkpointedThrough()
-                    .merge(partition, through, Math::max);
+        registration.checkpointedThrough().merge(partition, through, Math::max);
         registration.writes().incrementAndGet();
     }
 
