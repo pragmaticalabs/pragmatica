@@ -329,6 +329,36 @@ class SegmentReaderTest {
         }
     }
 
+    /// A segment whose last record header is cut short is corrupt too — the same loss mode as a corrupt
+    /// length. Found by the round-2 review of PR #1291: the decode loop ended quietly on fewer than a
+    /// header's worth of bytes, the read continued into the next segment, and returned `[0, 1, 3, 4]`.
+    @Nested
+    class TruncatedTailHeader {
+        private static final int RECORD_BYTES = Long.BYTES + Long.BYTES + Integer.BYTES + 1;
+        private static final int KEPT_OF_LAST_RECORD = 10;
+
+        @Test
+        void readEvents_failsWithCorruptRecord_whenASegmentEndsInATruncatedHeaderAndAHealthySegmentFollows() {
+            var whole = serializeEvents(List.of(RawEvent.rawEvent(0L, "a".getBytes(), 10L),
+                                                RawEvent.rawEvent(1L, "b".getBytes(), 20L),
+                                                RawEvent.rawEvent(2L, "c".getBytes(), 30L)));
+            var first = Arrays.copyOf(whole, 2 * RECORD_BYTES + KEPT_OF_LAST_RECORD);
+            var second = serializeEvents(List.of(RawEvent.rawEvent(3L, "d".getBytes(), 40L),
+                                                 RawEvent.rawEvent(4L, "e".getBytes(), 50L)));
+
+            sink.seal(sealedSegment(STREAM, PARTITION, 0, 2, 3, 10L, 30L, first)).await();
+            sink.seal(sealedSegment(STREAM, PARTITION, 3, 4, 2, 40L, 50L, second)).await();
+
+            var events = reader.readEvents(STREAM, PARTITION, 0, 100).await();
+
+            events.onSuccess(list -> fail("a truncated tail header must fail the read, not return "
+                                          + list.stream().map(RawEvent::offset).toList()))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(SegmentError.CorruptRecord.class))
+                  .onFailure(cause -> assertThat(((SegmentError.CorruptRecord) cause).position())
+                          .isEqualTo(2 * RECORD_BYTES));
+        }
+    }
+
     private static List<RawEvent> decoded(byte[] serialized, long fromOffset, int maxEvents) {
         return SegmentReader.deserializeAndFilter(SEGMENT, serialized, fromOffset, maxEvents)
                             .onFailure(cause -> fail(cause.message()))
