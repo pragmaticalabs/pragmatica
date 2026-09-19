@@ -7,5 +7,6 @@
   contends for on the same reference, so an operation submitted during retirement still runs strictly
   after its predecessor. A plain check-then-remove would not keep that order; the test for it forces the
   window open and fails against that form.
-  [verified: aether/resource/durable-entity/src/test/java/org/pragmatica/aether/resource/entity/PerKeySerialExecutorTest.java]
-  — unit level: 100,000 distinct keys leave 0 entries, and the ordering case is driven deterministically.
+  [mechanism: retirement and submit contend for the same compare-and-set on the key's tail reference] —
+  pinned by the unit tests in `PerKeySerialExecutorTest`: 100,000 distinct keys leave 0 entries, and the
+  ordering case is driven deterministically. Heap use is not measured.
