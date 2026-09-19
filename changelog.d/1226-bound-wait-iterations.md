@@ -26,3 +26,12 @@
   predicate's slow primitive already self-bounds (`curl -m 2`, hcloud via `_run_with_timeout 10`), so
   real orphans die within seconds. A process-group kill was ruled out empirically — backgrounded jobs
   here share the script's own pgid, so it would kill the test script — and `setsid` is Linux-only.
+
+- **`wait "$pid"` followed by `rc=$?` aborts under `set -e`.** Every suite sets `set -euo pipefail`,
+  so a non-zero child killed the shell before the status was captured — in the one function whose
+  whole purpose is capturing it. Now captured in the condition (`rc=0; wait "$pid" || rc=$?`).
+- Pre-existing and reachable only on a box with neither `timeout` nor `gtimeout`, so it has never
+  fired here or on CI. Found while reviewing #1226 and fixed rather than recorded as folklore: the
+  failure it would produce — a suite vanishing mid-run with no message — is expensive to diagnose
+  and cheap to prevent. [verified: forcing the fallback with both binaries shadowed, a child exiting
+  7 now returns 7 instead of aborting the shell]
