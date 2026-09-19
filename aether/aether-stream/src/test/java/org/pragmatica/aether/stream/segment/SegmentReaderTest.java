@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 import static org.pragmatica.aether.stream.segment.SegmentReader.segmentReader;
 import static org.pragmatica.aether.stream.segment.SealedSegment.sealedSegment;
 import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
@@ -291,6 +292,33 @@ class SegmentReaderTest {
             var threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
 
             return threads.getThreadAllocatedBytes(Thread.currentThread().threadId());
+        }
+    }
+
+    /// A corrupt record length is a typed failure of the read — never a truncated success. Found by the
+    /// adversarial review of PR #1291: stopping the decode at the corrupt record let the read continue into
+    /// the next segment and return `[0, 3, 4]`, so offsets 1 and 2 vanished with nothing failing.
+    @Nested
+    class CorruptRecordLength {
+        @Test
+        void readEvents_failsWithCorruptRecord_whenALengthMidSegmentIsCorruptAndAHealthySegmentFollows() {
+            var first = serializeEvents(List.of(RawEvent.rawEvent(0L, "a".getBytes(), 10L),
+                                                RawEvent.rawEvent(1L, "b".getBytes(), 20L),
+                                                RawEvent.rawEvent(2L, "c".getBytes(), 30L)));
+            var secondLengthAt = (Long.BYTES + Long.BYTES + Integer.BYTES + "a".length()) + Long.BYTES + Long.BYTES;
+
+            ByteBuffer.wrap(first).order(ByteOrder.BIG_ENDIAN).putInt(secondLengthAt, -1);
+
+            var second = serializeEvents(List.of(RawEvent.rawEvent(3L, "d".getBytes(), 40L),
+                                                 RawEvent.rawEvent(4L, "e".getBytes(), 50L)));
+
+            sink.seal(sealedSegment(STREAM, PARTITION, 0, 2, 3, 10L, 30L, first)).await();
+            sink.seal(sealedSegment(STREAM, PARTITION, 3, 4, 2, 40L, 50L, second)).await();
+
+            var events = reader.readEvents(STREAM, PARTITION, 0, 100).await();
+
+            events.onSuccess(list -> fail("a corrupt record length must fail the read, not return "
+                                          + list.stream().map(RawEvent::offset).toList()));
         }
     }
 
