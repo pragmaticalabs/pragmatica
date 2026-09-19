@@ -5,19 +5,31 @@
 package org.pragmatica.aether.api.routes;
 
 import java.lang.reflect.Proxy;
+import java.util.List;
 
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
+import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.api.routes.StreamRoutes.StreamCreateRequest;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.resource.DurableTopicSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.topic.DurableTopicSubstrate;
+import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
+
+import io.netty.buffer.ByteBuf;
 
 import org.junit.jupiter.api.Test;
 
@@ -37,30 +49,30 @@ class StreamRoutesReservedPrefixTest {
 
     @Test
     void createStream_topicPrefixedName_isRefusedAndNothingIsMinted() {
-        assertLegacyCreateRefused("topic:foo");
+        assertLegacyCreateRefused("topic:foo", "topic:");
     }
 
     @Test
     void createStream_entityPrefixedName_isRefusedAndNothingIsMinted() {
-        assertLegacyCreateRefused("entity:ledger");
+        assertLegacyCreateRefused("entity:ledger", "entity:");
     }
 
     /// The pre-existing guard refuses only the ENUMERATED system streams (`SystemStreams.ALL`); any
     /// other `system:` name still minted a stream that then took the system budget bypass.
     @Test
     void createStream_nonEnumeratedSystemPrefixedName_isRefusedAndNothingIsMinted() {
-        assertLegacyCreateRefused("system:foo:1.0.0");
-        assertLegacyCreateRefused("system:bare");
+        assertLegacyCreateRefused("system:foo:1.0.0", "system:");
+        assertLegacyCreateRefused("system:bare", "system:");
     }
 
     @Test
     void catalogCreate_topicNamespace_isRefusedAndNothingIsMintedOrRegistered() {
-        assertCatalogCreateRefused("topic", "topic:foo:1.0.0");
+        assertCatalogCreateRefused("topic", "topic:foo:1.0.0", "topic:");
     }
 
     @Test
     void catalogCreate_entityNamespace_isRefusedAndNothingIsMintedOrRegistered() {
-        assertCatalogCreateRefused("entity", "entity:foo:1.0.0");
+        assertCatalogCreateRefused("entity", "entity:foo:1.0.0", "entity:");
     }
 
     /// Publish auto-create with NO committed config would fabricate a management default under the
@@ -71,7 +83,8 @@ class StreamRoutesReservedPrefixTest {
 
         try {
             legacyRoutes(manager).ensureStreamExists("topic:foo")
-                                 .onSuccess(_ -> fail("publish auto-create must not mint 'topic:foo' with a management default"));
+                                 .onSuccess(_ -> fail("publish auto-create must not mint 'topic:foo' with a management default"))
+                                 .onFailure(cause -> assertReserved(cause, "topic:foo", "topic:"));
 
             assertThat(manager.streamInfo("topic:foo").isEmpty()).isTrue();
         } finally {
@@ -87,7 +100,8 @@ class StreamRoutesReservedPrefixTest {
             catalogRoutes(manager, StreamNamespacesService.inMemory())
                 .publishEvent("topic", "foo", "1.0.0", new StreamApiRoutes.PublishRequest("payload", null))
                 .await()
-                .onSuccess(_ -> fail("catalog publish auto-create must not mint 'topic:foo:1.0.0'"));
+                .onSuccess(_ -> fail("catalog publish auto-create must not mint 'topic:foo:1.0.0'"))
+                .onFailure(cause -> assertReserved(cause, "topic:foo:1.0.0", "topic:"));
 
             assertThat(manager.streamInfo("topic:foo:1.0.0").isEmpty()).isTrue();
         } finally {
@@ -115,14 +129,55 @@ class StreamRoutesReservedPrefixTest {
         }
     }
 
+    /// Over-refusal guard: a `system`-namespace catalog address reduces to its bare engine name — the flat
+    /// operator-stream spelling — so it is NOT reserved and still mints.
+    @Test
+    void catalogCreate_systemNamespaceFlatStream_stillSucceeds() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+
+        try {
+            catalogRoutes(manager, StreamNamespacesService.inMemory())
+                .createStream("system", "diagnostics", "1.0.0", new StreamApiRoutes.CreateRequest(null))
+                .onFailure(cause -> fail("a flat operator stream must still be creatable: " + cause.message()));
+
+            assertThat(manager.streamInfo("diagnostics").isPresent()).isTrue();
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// Over-refusal guard: a publish racing the real resource's local materialization finds its COMMITTED
+    /// config in KV and adopts it — that is the real resource, not an operator-side fabrication.
+    @Test
+    void ensureStreamExists_reservedNameWithCommittedConfig_adoptsTheCommittedConfig() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+        var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+        var committed = DurableTopicSubstrate.topicStreamConfig("foo",
+                                                                DurableTopicSpec.durableTopicSpec(1, 2, 2, DurableTopicSpec.DEFAULT_RETENTION)
+                                                                                .unwrap());
+
+        try {
+            store.process(store.createBatch(List.of(new Put<>(StreamConfigKey.streamConfigKey(committed.name()),
+                                                              StreamConfigValue.streamConfigValue(committed)))));
+
+            legacyRoutes(manager, store).ensureStreamExists(committed.name())
+                                        .onFailure(cause -> fail("a committed real-resource config must be adopted: " + cause.message()));
+
+            assertThat(manager.minSyncReplicasFor(committed.name())).isEqualTo(2);
+        } finally {
+            manager.close();
+        }
+    }
+
     // === helpers ===
 
-    private static void assertLegacyCreateRefused(String name) {
+    private static void assertLegacyCreateRefused(String name, String prefix) {
         var manager = streamPartitionManager(Long.MAX_VALUE);
 
         try {
             legacyRoutes(manager).createStream(new StreamCreateRequest(name, 4))
-                                 .onSuccess(_ -> fail("a create under a reserved prefix must be refused: " + name));
+                                 .onSuccess(_ -> fail("a create under a reserved prefix must be refused: " + name))
+                                 .onFailure(cause -> assertReserved(cause, name, prefix));
 
             assertThat(manager.streamInfo(name).isEmpty()).as("nothing minted under " + name).isTrue();
         } finally {
@@ -130,14 +185,15 @@ class StreamRoutesReservedPrefixTest {
         }
     }
 
-    private static void assertCatalogCreateRefused(String namespace, String engineKey) {
+    private static void assertCatalogCreateRefused(String namespace, String engineKey, String prefix) {
         var manager = streamPartitionManager(Long.MAX_VALUE);
         var namespacesService = StreamNamespacesService.inMemory();
 
         try {
             catalogRoutes(manager, namespacesService)
                 .createStream(namespace, "foo", "1.0.0", new StreamApiRoutes.CreateRequest(null))
-                .onSuccess(_ -> fail("a catalog create yielding engine key " + engineKey + " must be refused"));
+                .onSuccess(_ -> fail("a catalog create yielding engine key " + engineKey + " must be refused"))
+                .onFailure(cause -> assertReserved(cause, engineKey, prefix));
 
             assertThat(manager.streamInfo(engineKey).isEmpty()).as("nothing minted under " + engineKey).isTrue();
             assertThat(namespacesService.snapshot()).as("nothing registered for " + engineKey).isEmpty();
@@ -146,29 +202,54 @@ class StreamRoutesReservedPrefixTest {
         }
     }
 
+    private static void assertReserved(Cause cause, String streamName, String prefix) {
+        assertThat(cause).isEqualTo(new ManagementServerError.ReservedStreamName(streamName, prefix));
+        assertThat(((ManagementServerError) cause).httpStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
     private static StreamRoutes legacyRoutes(StreamPartitionManager manager) {
-        return StreamRoutes.streamRoutes(() -> nodeWith(manager), null, null);
+        return legacyRoutes(manager, new KVStore<>(null, null, null));
+    }
+
+    private static StreamRoutes legacyRoutes(StreamPartitionManager manager, KVStore<AetherKey, AetherValue> store) {
+        return StreamRoutes.streamRoutes(() -> nodeWith(manager, store), null, null);
     }
 
     private static StreamApiRoutes catalogRoutes(StreamPartitionManager manager, StreamNamespacesService namespacesService) {
-        return StreamApiRoutes.streamApiRoutes(() -> nodeWith(manager),
+        return StreamApiRoutes.streamApiRoutes(() -> nodeWith(manager, new KVStore<>(null, null, null)),
                                                namespacesService,
                                                ConsumerGroupCoordinator.noOp(),
                                                ConsumerGroupRegistry.consumerGroupRegistry());
     }
 
-    private static ManageableNode nodeWith(StreamPartitionManager manager) {
+    private static ManageableNode nodeWith(StreamPartitionManager manager, KVStore<AetherKey, AetherValue> store) {
         return (ManageableNode) Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
                                                        new Class[]{ManageableNode.class},
-                                                       (_, method, _) -> stubbed(method.getName(), manager));
+                                                       (_, method, _) -> stubbed(method.getName(), manager, store));
     }
 
-    private static Object stubbed(String method, StreamPartitionManager manager) {
+    private static Object stubbed(String method, StreamPartitionManager manager, KVStore<AetherKey, AetherValue> store) {
         return switch (method) {
             case "streamPartitionManager" -> manager;
-            case "kvStore" -> new KVStore<AetherKey, AetherValue>(null, null, null);
+            case "kvStore" -> store;
             case "streamWriteRouter" -> StreamWriteRouter.localOnly(manager);
             default -> throw new UnsupportedOperationException("Not stubbed in test proxy: " + method);
+        };
+    }
+
+    private static Serializer stubSerializer() {
+        return new Serializer() {
+            @Override
+            public <T> void write(ByteBuf byteBuf, T object) {}
+        };
+    }
+
+    private static Deserializer stubDeserializer() {
+        return new Deserializer() {
+            @Override
+            public <T> T read(ByteBuf byteBuf) {
+                return null;
+            }
         };
     }
 }
