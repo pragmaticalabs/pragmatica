@@ -21,7 +21,6 @@ import org.pragmatica.lang.utils.SharedScheduler;
 
 import static org.pragmatica.aether.stream.replication.ReplicationError.General.NOT_ENOUGH_REPLICAS;
 import static org.pragmatica.aether.stream.replication.ReplicationError.General.REPLICATION_TIMEOUT;
-import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateEvents.replicateEvents;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
@@ -231,7 +230,13 @@ final class DefaultReplicationManager implements ReplicationManager {
                                    List<byte[]> payloads,
                                    List<Long> timestamps,
                                    Epoch ownerEpoch) {
-        var message = replicateEvents(governorId, streamName, partition, fromOffset, payloads, timestamps, ownerEpoch);
+        var message = ReplicationMessage.ReplicateEvents.replicateEvents(governorId,
+                                                                         streamName,
+                                                                         partition,
+                                                                         fromOffset,
+                                                                         payloads,
+                                                                         timestamps,
+                                                                         ownerEpoch);
 
         replicas.forEach(replica -> transport.send(replica, message));
     }
