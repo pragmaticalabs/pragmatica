@@ -25,5 +25,5 @@
   `SLICE_NOT_FOUND`; pinned by `SliceInvokerMessageContextTest`]
 - **Not in this change:** the message `key` and delivery `attempt` are not part of `MessageContext`, and
   the durable envelope does not carry a key. Keyed-publish dedup therefore still cannot reach the
-  subscriber. That is a follow-up ticket. [design intent — unverified: multi-node durable delivery of the
+  subscriber. That is follow-up #1303. [design intent — unverified: multi-node durable delivery of the
   context; the composed-path Forge suite `DurableTopicDeliveryForgeTest` remains `@Disabled`]
