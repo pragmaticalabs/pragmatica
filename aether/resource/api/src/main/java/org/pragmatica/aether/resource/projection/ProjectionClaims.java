@@ -39,8 +39,10 @@ public interface ProjectionClaims {
 
     /// No claim, or a PENDING claim whose lease had expired: a PENDING claim with a fresh lease and
     /// `token` is now held by the caller, which must fold and then [#finalizeClaim] or [#releaseClaim]
-    /// with that token. `token` must differ from every token previously issued for the key — a per-key
-    /// counter serves.
+    /// with that token. `token` must be unique for the key ACROSS releases and evictions — a counter
+    /// that outlives the claim record, or a globally unique value. A counter kept in the claim record
+    /// restarts when a release drops the record and reissues an old token, letting an expired holder
+    /// settle a claim that is not its own.
     record Claimed(long token) implements ClaimOutcome {}
 
     /// The claim already held on the key.
@@ -62,7 +64,8 @@ public interface ProjectionClaims {
 
     /// In ONE indivisible step: absent or lease-expired PENDING → write PENDING with a fresh token,
     /// expiring after `lease`, answer [Claimed]; DONE → [Held#DONE]; live PENDING →
-    /// [Held#IN_PROGRESS].
+    /// [Held#IN_PROGRESS]. Expiry is judged against ONE clock every instance agrees on (the store's),
+    /// never a caller's own wall clock — otherwise clock skew decides who may reclaim.
     Promise<ClaimOutcome> claimIfAbsent(ClaimKey key, TimeSpan lease);
     /// Mark the key DONE after a successful fold, only while the stored claim is PENDING with `token`;
     /// otherwise change nothing and answer [Settlement#STALE]. Named `finalizeClaim`, not `finalize`,

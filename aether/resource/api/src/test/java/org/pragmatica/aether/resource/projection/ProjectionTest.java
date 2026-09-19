@@ -28,12 +28,11 @@ import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-/// Pins the D4 substrate half of durable-pubsub-spec §10 — the facade WITHOUT the idempotency
-/// guard: keyed fold-and-write on each event, the documented at-least-once re-application (the pin
-/// that gets REWRITTEN when the guard lands, proving the doc told the truth meanwhile), and the
-/// rebuild order — generation bumped BEFORE the data reset (review finding 3), data cleared with
-/// the generation slot preserved (§13 item 6), cursor seam invoked LAST and loudly refused by
-/// default until the operator surface exists.
+/// Pins durable-pubsub-spec §10's facade: keyed fold-and-write on each event, the honest
+/// at-least-once single-argument path, the §8 idempotency guard (leased, fenced claims — see
+/// [IdempotencyGuard]), and the rebuild order — generation bumped BEFORE the data reset (review
+/// finding 3), data cleared with the generation slot preserved (§13 item 6), cursor seam invoked LAST
+/// and loudly refused by default until the operator surface exists.
 class ProjectionTest {
     private record OrderSeen(String orderId) {}
 
@@ -132,8 +131,9 @@ class ProjectionTest {
     /// durable-pubsub-spec §8 — the guard keyed `(projectionName, generation, messageId)`.
     ///
     /// The fold COUNTS, which makes it the right probe: a guard that fails open shows up immediately
-    /// as an inflated count rather than as a subtle state difference. Every assertion below would pass
-    /// against a no-op guard EXCEPT the dedup one, which is why that one is mutation-verified.
+    /// as an inflated count rather than as a subtle state difference. These tests pin how [Projection]
+    /// USES the claims contract; the fakes are atomic by construction, so they cannot show that a real
+    /// backing complies with it — that needs a conformance suite run against the backing itself.
     @Nested
     class IdempotencyGuard {
         private static final MessageContext FIRST = MessageContext.messageContext("msg-1", "ns:orders-seen:1.0.0", 0, 10L);

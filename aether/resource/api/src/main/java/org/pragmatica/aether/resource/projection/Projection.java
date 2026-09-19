@@ -47,15 +47,22 @@ import org.slf4j.LoggerFactory;
 ///   - **Concurrent attempts on one key are suppressed to one apply** — a zombie attempt (§6) and its
 ///     retry included — among every instance whose [ProjectionClaims] backing performs the claim as
 ///     one indivisible step over a store they all read. The loser gets a retryable failure rather than
-///     a success, so the dispatcher retries it until the key is DONE or released; acknowledging it
-///     would lose the event if the holder's fold then failed.
+///     a success — acknowledging it would lose the event if the holder's fold then failed. Redelivery
+///     is BOUNDED (spec §6 default: 5 attempts, 1s base backoff doubling, about 15s in all), so a loser
+///     that still meets a live claim when its budget runs out goes to the DLQ; a redrive then finds
+///     the key DONE and is suppressed, or reclaims it once the lease has expired.
 ///   - **A failed fold releases its claim**, so the retry applies instead of being suppressed.
 ///   - **An attempt that outlives its lease cannot finalize or release its successor's claim.** Every
 ///     claim carries a fencing token, and [ProjectionClaims#finalizeClaim] and
 ///     [ProjectionClaims#releaseClaim] act only while the stored claim still carries the caller's
 ///     token; otherwise they change nothing, answer STALE, and are logged at WARN.
-///   - **A crash BETWEEN fold and finalize re-applies after the lease expires.** A non-idempotent fold
-///     is therefore at-least-once in that window, and so is an attempt that outlives its lease: the
+///   - **A crash BETWEEN fold and finalize, or a finalize that is not recorded, re-applies once the
+///     lease expires** — through whichever attempt arrives after expiry. The lease must exceed the
+///     longest fold (up to the 30s attempt timeout by default), which outlasts the default retry
+///     budget, so under defaults that re-apply comes through a DLQ redrive, not the remaining retries.
+///     That lease-versus-retry-budget ratio is the interaction to size: a lease shorter than the budget
+///     lets retries reclaim, and equally lets a slow fold be overlapped. A non-idempotent fold is
+///     therefore at-least-once in that window, and so is an attempt that outlives its lease: the
 ///     token fences the CLAIM, not the read-model write, so its late fold still lands beside the
 ///     successor's. Exactly-once apply needs the store to apply fold and claim in ONE transaction —
 ///     the named path, not built.
@@ -208,7 +215,8 @@ public record Projection<S, T>(String name,
     /// Supply the §8 claims backing and the lease each claim is taken for, enabling
     /// [#onEvent(Object, MessageContext)]. Without it that method refuses rather than applying
     /// unguarded. The lease should exceed the longest fold an attempt can run: a fold that outlives
-    /// its lease can be overlapped by a reclaiming attempt's fold (class doc).
+    /// its lease can be overlapped by a reclaiming attempt's fold. Its ratio to the redelivery budget
+    /// decides whether a stuck claim is reclaimed by a retry or by a DLQ redrive (class doc).
     public Projection<S, T> withClaims(ProjectionClaims backing, TimeSpan lease) {
         return new Projection<>(name, topic, store, key, fold, cursorReset, Option.some(new ClaimGuard(backing, lease)));
     }
