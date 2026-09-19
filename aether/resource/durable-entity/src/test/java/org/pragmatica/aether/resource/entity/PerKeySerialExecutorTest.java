@@ -16,6 +16,7 @@ import org.pragmatica.lang.Unit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #1242 — the per-key executor must not keep an entry for every key it has ever seen. Each entry held its
 /// last operation's resolved promise, RESULT included, so a high-cardinality entity (per-order,
@@ -88,6 +89,48 @@ class PerKeySerialExecutorTest {
                                      .isFalse();
         assertThat(secondDoneWhenThirdStarted.get()).as("the third operation must run after the second")
                                                     .isTrue();
+    }
+
+    /// The install must be a compare-and-set against the tail just read. Forced deterministically through
+    /// [PerKeySerialExecutor#tailReadProbe(Runnable)]: the second submit is held after reading the first
+    /// operation's tail; inside that window the first operation completes and the key RETIRES. A
+    /// `getAndSet` install would then chain the second operation onto the retired sentinel, which never
+    /// resolves, so it would never run. The compare-and-set fails instead, re-reads, and starts fresh.
+    @Test
+    @Timeout(60)
+    void submit_runsTheOperation_whenTheKeyRetiresBetweenReadingAndReplacingTheTail() throws InterruptedException {
+        var executor = PerKeySerialExecutor.<String> perKeySerialExecutor();
+        var first = Promise.<Unit> promise();
+        var probed = new AtomicBoolean();
+
+        executor.submit("k", () -> first);
+        executor.tailReadProbe(() -> retireInsideTheWindow(executor, first, probed));
+
+        var second = executor.submit("k", () -> Promise.success(Unit.unit()));
+
+        assertThat(probed.get()).as("the probe must have run, or this test proves nothing").isTrue();
+        assertThat(second.await(timeSpan(5).seconds()).isSuccess()).as("the second operation must run, not wait"
+                                                                    + " on a retired tail")
+                                                                .isTrue();
+    }
+
+    private static void retireInsideTheWindow(PerKeySerialExecutor<String> executor,
+                                              Promise<Unit> first,
+                                              AtomicBoolean probed) {
+        if (probed.compareAndSet(false, true)) {
+            first.succeed(Unit.unit());
+            awaitRetired(executor);
+        }
+    }
+
+    private static void awaitRetired(PerKeySerialExecutor<String> executor) {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (executor.trackedKeys() > 0 && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        assertThat(executor.trackedKeys()).as("the first operation's key must have retired").isZero();
     }
 
     private static Promise<Unit> startThen(CountDownLatch started, Promise<Unit> completion) {

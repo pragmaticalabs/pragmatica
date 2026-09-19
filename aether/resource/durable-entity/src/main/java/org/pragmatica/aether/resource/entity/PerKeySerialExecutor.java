@@ -7,6 +7,7 @@ package org.pragmatica.aether.resource.entity;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -73,6 +74,10 @@ final class PerKeySerialExecutor<K> {
 
     private final ConcurrentHashMap<K, AtomicReference<Promise<Object>>> tails;
 
+    /// See [#tailReadProbe(Runnable)]. Deliberately NOT volatile: it is set before any concurrent submit
+    /// starts, and `Thread.start` publishes it.
+    private Runnable tailReadProbe = () -> {};
+
     private PerKeySerialExecutor() {
         this.tails = new ConcurrentHashMap<>();
     }
@@ -93,10 +98,29 @@ final class PerKeySerialExecutor<K> {
 
             if (previous == RETIRED) {
                 tails.remove(key, ref);
-            } else if (ref.compareAndSet(previous, published)) {
+            } else if (installAfterProbe(ref, previous, published)) {
                 return castResult(chainOnto(key, ref, previous, operation, published));
             }
         }
+    }
+
+    /// The install is a compare-and-set against the tail just READ, never a `getAndSet`: between the read
+    /// and the install the key's previous operation can finish and retire the entry, and a `getAndSet`
+    /// would then chain this operation onto [#RETIRED] — a promise that never resolves — hanging it and
+    /// every later operation on the key. A failed compare-and-set re-reads instead.
+    private boolean installAfterProbe(AtomicReference<Promise<Object>> ref,
+                                      Promise<Object> previous,
+                                      Promise<Object> published) {
+        tailReadProbe.run();
+
+        return ref.compareAndSet(previous, published);
+    }
+
+    /// Test-only seam (#1242 review): runs in [#submit] after the tail is read and before it is replaced,
+    /// so a test can retire the key inside that window deterministically. Production never touches it.
+    @Contract
+    void tailReadProbe(Runnable probe) {
+        tailReadProbe = probe;
     }
 
     /// Package-private test hook: how many keys currently hold an entry.
