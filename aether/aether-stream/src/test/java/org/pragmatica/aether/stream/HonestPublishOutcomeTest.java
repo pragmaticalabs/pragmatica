@@ -9,10 +9,12 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.stream.forward.StreamForwardHandler;
@@ -21,6 +23,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardR
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationError;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
+import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.topic.DurableTopicPublisher;
 import org.pragmatica.aether.stream.topic.TopicEventEnvelope;
 import org.pragmatica.aether.stream.wal.PartitionWal;
@@ -29,6 +32,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -37,6 +42,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import io.netty.buffer.ByteBuf;
+import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -101,9 +107,13 @@ class HonestPublishOutcomeTest {
 
                 assertThat(result.isFailure()).isTrue();
                 result.onFailure(cause -> assertThat(cause).isEqualTo(ReplicationError.General.NOT_ENOUGH_REPLICAS));
-                assertThat(ringHead(manager)).as("a failed publish must not be readable from the ring")
-                                             .isEqualTo(NO_OFFSET);
-                assertThat(walLastOffset()).as("a failed publish must not be in the WAL").isEqualTo(NO_OFFSET);
+                // Soft, so a regression reports BOTH halves of the log rather than stopping at the ring.
+                SoftAssertions.assertSoftly(softly -> {
+                    softly.assertThat(ringHead(manager)).as("a failed publish must not be readable from the ring")
+                                                        .isEqualTo(NO_OFFSET);
+                    softly.assertThat(walLastOffset()).as("a failed publish must not be in the WAL")
+                                                      .isEqualTo(NO_OFFSET);
+                });
             } finally {
                 manager.close();
             }
@@ -125,7 +135,7 @@ class HonestPublishOutcomeTest {
 
                 assertThat(responses).hasSize(1);
                 assertThat(responses.getFirst()).isInstanceOfSatisfying(PublishForwardResponse.class,
-                                                                          response -> assertThat(response.success()).isFalse());
+                                                                          HonestPublishOutcomeTest::assertCleanFailure);
                 assertThat(ringHead(manager)).isEqualTo(NO_OFFSET);
             } finally {
                 manager.close();
@@ -181,7 +191,146 @@ class HonestPublishOutcomeTest {
         }
     }
 
+    /// After the append nothing can be taken back, so a barrier that does not confirm must be reported
+    /// as an UNKNOWN outcome — and the log assertions prove why: the event is there.
+    @Nested
+    class PostAppendBarrier {
+        @Test
+        void durablePublish_reportsOutcomeUnknown_andEventIsInRing_whenAcksTimeOut() {
+            var manager = ringOnlyManager(timingOutReplication());
+
+            try {
+                createStream(manager);
+                var publisher = new DurableTopicPublisher<String>(TO_STRING_BYTES, envelopePublisher(manager));
+
+                var result = publisher.publish("order-1").await();
+
+                result.onSuccess(_ -> fail("an unconfirmed floor must not report success"))
+                      .onFailure(HonestPublishOutcomeTest::assertOutcomeUnknownFromTimeout);
+                assertThat(ringHead(manager)).as("the event IS in the log; calling it a failure was the defect")
+                                             .isEqualTo(0L);
+            } finally {
+                manager.close();
+            }
+        }
+
+        /// The owner of a forwarded publish tells the sender the outcome is unknown, so the sender's
+        /// client can surface [PublishOutcomeUnknown] instead of a permanent failure.
+        @Test
+        void forwardedPublish_repliesOutcomeUnknown_andEventIsInRing_whenAcksTimeOut() {
+            var manager = ringOnlyManager(timingOutReplication());
+            var responses = new CopyOnWriteArrayList<StreamForwardMessage>();
+
+            try {
+                createStream(manager);
+                var handler = StreamForwardHandler.streamForwardHandler(SELF,
+                                                                        manager,
+                                                                        (_, message) -> responses.add(message));
+
+                handler.onPublishForward(publishForward(SENDER, "c-1", STREAM, PARTITION, payload(), 1000L));
+
+                assertThat(responses).hasSize(1);
+                assertThat(responses.getFirst()).isInstanceOfSatisfying(PublishForwardResponse.class,
+                                                                          HonestPublishOutcomeTest::assertOutcomeUnknownResponse);
+                assertThat(ringHead(manager)).isEqualTo(0L);
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void streamAccessPublish_reportsOutcomeUnknown_andEventIsInRing_whenAcksTimeOut() {
+            var manager = ringOnlyManager(timingOutReplication());
+
+            try {
+                createStream(manager);
+                var access = PartitionedStreamAccess.<String>streamAccess(manager,
+                                                                          TO_STRING_BYTES,
+                                                                          UNUSED_DESERIALIZER,
+                                                                          STREAM,
+                                                                          1,
+                                                                          Option.none(),
+                                                                          Option.none(),
+                                                                          SELF,
+                                                                          Option.none(),
+                                                                          Option.none(),
+                                                                          MIN_SYNC);
+
+                access.publish("order-1")
+                      .await()
+                      .onSuccess(_ -> fail("an unconfirmed floor must not report success"))
+                      .onFailure(HonestPublishOutcomeTest::assertOutcomeUnknownFromTimeout);
+                assertThat(ringHead(manager)).isEqualTo(0L);
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void writeRouterPublish_reportsOutcomeUnknown_andEventIsInRing_whenAcksTimeOut() {
+            var manager = ringOnlyManager(timingOutReplication());
+
+            try {
+                createStream(manager);
+
+                StreamWriteRouter.localOnly(manager)
+                                 .publish(STREAM, PARTITION, payload(), 1000L)
+                                 .await()
+                                 .onSuccess(_ -> fail("an unconfirmed floor must not report success"))
+                                 .onFailure(HonestPublishOutcomeTest::assertOutcomeUnknownFromTimeout);
+                assertThat(ringHead(manager)).isEqualTo(0L);
+            } finally {
+                manager.close();
+            }
+        }
+    }
+
     // === fixtures ===
+
+    private static void assertCleanFailure(PublishForwardResponse response) {
+        assertThat(response.success()).isFalse();
+        assertThat(response.outcomeUnknown()).as("a pre-append refusal is a clean failure").isFalse();
+    }
+
+    private static void assertOutcomeUnknownResponse(PublishForwardResponse response) {
+        assertThat(response.success()).isFalse();
+        assertThat(response.retryable()).isFalse();
+        assertThat(response.outcomeUnknown()).as("a post-append barrier failure is an unknown outcome").isTrue();
+    }
+
+    private static void assertOutcomeUnknownFromTimeout(Cause cause) {
+        assertThat(cause).isInstanceOfSatisfying(PublishOutcomeUnknown.class,
+                                                 unknown -> assertThat(unknown.origin()).isEqualTo(ReplicationError.General.REPLICATION_TIMEOUT));
+    }
+
+    /// A replication manager whose floor check admits the publish (the default) and whose post-append
+    /// barrier times out at once — the 5 s ack timeout's verdict without the 5 s wait.
+    private static ReplicationManager timingOutReplication() {
+        return new ReplicationManager() {
+            @Contract
+            @Override
+            public void replicateEvent(String streamName,
+                                       int partition,
+                                       long offset,
+                                       byte[] payload,
+                                       long timestamp,
+                                       Epoch ownerEpoch) {}
+
+            @Contract
+            @Override
+            public void handleAck(ReplicationMessage.ReplicateAck ack) {}
+
+            @Override
+            public ReplicaRegistry registry() {
+                return replicaRegistry();
+            }
+
+            @Override
+            public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
+                return ReplicationError.General.REPLICATION_TIMEOUT.promise();
+            }
+        };
+    }
 
     /// The real replication manager over a registry holding the owner alone: after self-exclusion the
     /// partition has ZERO replication targets, so any `min-sync >= 2` floor is unmeetable.
