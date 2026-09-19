@@ -353,9 +353,32 @@ class SegmentReaderTest {
 
             events.onSuccess(list -> fail("a truncated tail header must fail the read, not return "
                                           + list.stream().map(RawEvent::offset).toList()))
-                  .onFailure(cause -> assertThat(cause).isInstanceOf(SegmentError.CorruptRecord.class))
-                  .onFailure(cause -> assertThat(((SegmentError.CorruptRecord) cause).position())
-                          .isEqualTo(2 * RECORD_BYTES));
+                  .onFailure(cause -> assertThat(cause).isEqualTo(SegmentError.CorruptRecord.TRUNCATED_HEADER.apply("streams/test-stream/0/0-2",
+                                                                                                                    2 * RECORD_BYTES,
+                                                                                                                    KEPT_OF_LAST_RECORD)));
+        }
+
+        @Test
+        void deserializeAndFilter_failsWithCorruptRecord_whenTheSegmentEndsInsideARecordHeader() {
+            var whole = serializeEvents(List.of(RawEvent.rawEvent(0L, "a".getBytes(), 10L),
+                                                RawEvent.rawEvent(1L, "b".getBytes(), 20L)));
+            var truncated = Arrays.copyOf(whole, RECORD_BYTES + KEPT_OF_LAST_RECORD);
+
+            SegmentReader.deserializeAndFilter(SEGMENT, truncated, 0, 100)
+                         .onSuccess(list -> fail("a truncated tail header must fail the decode, not return " + list))
+                         .onFailure(cause -> assertThat(cause).isEqualTo(SegmentError.CorruptRecord.TRUNCATED_HEADER.apply(SEGMENT,
+                                                                                                                           RECORD_BYTES,
+                                                                                                                           KEPT_OF_LAST_RECORD)));
+        }
+
+        /// Bytes left over because `maxEvents` was reached are the rest of a well-formed segment, not a
+        /// truncation — the decode must still succeed.
+        @Test
+        void deserializeAndFilter_succeeds_whenMaxEventsIsReachedWithWholeRecordsLeftOver() {
+            var serialized = serializeEvents(List.of(RawEvent.rawEvent(0L, "a".getBytes(), 10L),
+                                                     RawEvent.rawEvent(1L, "b".getBytes(), 20L)));
+
+            assertThat(decoded(serialized, 0, 1)).extracting(RawEvent::offset).containsExactly(0L);
         }
     }
 

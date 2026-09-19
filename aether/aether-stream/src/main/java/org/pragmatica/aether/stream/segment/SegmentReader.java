@@ -203,7 +203,9 @@ public final class SegmentReader {
     /// A `len` that is negative or exceeds the remaining bytes FAILS the decode with
     /// [SegmentError.CorruptRecord], before any allocation. Stopping and keeping the records already decoded
     /// would be a truncated success: the read would carry on into the next segment and the offsets between
-    /// the corrupt record and that segment would vanish without anything failing.
+    /// the corrupt record and that segment would vanish without anything failing. For the same reason,
+    /// bytes left over when fewer than `maxEvents` were kept — too few for a record header, since a
+    /// well-formed segment ends on a record boundary — fail it as a truncated header.
     static Result<List<RawEvent>> deserializeAndFilter(String segment,
                                                        byte[] serialized,
                                                        long fromOffset,
@@ -229,7 +231,20 @@ public final class SegmentReader {
             result.add(readPayload(buffer, offset, timestamp, len));
         }
 
-        return Result.success(List.copyOf(result));
+        return result.size() < maxEvents && buffer.hasRemaining()
+               ? truncatedHeader(segment, buffer.position(), buffer.remaining())
+               : Result.success(List.copyOf(result));
+    }
+
+    private static Result<List<RawEvent>> truncatedHeader(String segment, int position, int remaining) {
+        log.error("Segment {} ends in a truncated record header at byte position {}: {} of {} header bytes present;"
+                 + " failing the read",
+                  segment,
+                  position,
+                  remaining,
+                  PER_EVENT_HEADER);
+
+        return SegmentError.CorruptRecord.TRUNCATED_HEADER.apply(segment, position, remaining).result();
     }
 
     private static Result<List<RawEvent>> corruptRecord(String segment,

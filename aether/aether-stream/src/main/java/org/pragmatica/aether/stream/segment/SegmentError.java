@@ -23,11 +23,17 @@ public sealed interface SegmentError extends Cause {
         }
     }
 
-    /// A record whose declared payload length is negative or exceeds the bytes left in its segment. The
-    /// segment is corrupt from that record on, so the read fails rather than return what came before it.
+    /// A segment that is corrupt from the record at `position` on, so the read fails rather than return
+    /// what came before it. Either the record declares a payload `length` that is negative or exceeds the
+    /// bytes left ([#FACTORY]), or the segment ends inside a record header, and `length` is how many of
+    /// its header bytes are present ([#TRUNCATED_HEADER]).
     record CorruptRecord(String segment, int position, int length, String message) implements SegmentError {
         static final Fn3<CorruptRecord, String, Integer, Integer> FACTORY = Causes.forThreeValues("Segment %s has a corrupt record at byte position %d: declared payload length %d"
                                                                                                  + " is negative or exceeds the bytes remaining",
                                                                                                   CorruptRecord::new);
+
+        static final Fn3<CorruptRecord, String, Integer, Integer> TRUNCATED_HEADER = Causes.forThreeValues("Segment %s ends in a truncated record header at byte position %d: only %d header bytes"
+                                                                                                          + " are present",
+                                                                                                           CorruptRecord::new);
     }
 }
