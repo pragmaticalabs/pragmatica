@@ -522,6 +522,32 @@ class EntityFoldTest {
             assertThat(fold.checkpointableThrough(PARTITION)).isEqualTo(1);
         }
 
+        /// Catch-up's apply-or-account skip: an offset the append path already applied and PARKED is
+        /// accounted, not re-applied. Here the append path applied a schedule (offset 1) and its cancel
+        /// (offset 2) while offset 0 was still outstanding, so both parked; the cancel landed after the
+        /// catch-up read's head, so catch-up replays only 0 and 1. Re-applying the schedule at 1 would
+        /// resurrect the timer the cancel already consumed, with nothing later in the replay to cancel it.
+        @Test
+        void caughtUp_doesNotReapplyAParkedSchedule_whoseCancelLandedPastTheReplayHead() {
+            var substrate = new FakeSubstrate();
+            var fold = readyFold(substrate);
+            var schedule = EntityLogRecord.timerSchedule("k", "tok", 1_000L, bytes("cmd"));
+
+            substrate.append(EntityLogRecord.upsert("gap", bytes("v")));
+            substrate.append(schedule);
+            fold.apply(PARTITION, 1, schedule);
+            fold.apply(PARTITION, 2, EntityLogRecord.timerCancel("k", "tok"));
+
+            fold.caughtUp(PARTITION)
+                .await()
+                .onFailure(cause -> fail("catch-up must drain offsets 0 and 1: " + cause.message()));
+
+            assertThat(fold.dueTimers(PARTITION, Long.MAX_VALUE)).as("a parked schedule re-applied by catch-up"
+                                                                    + " resurrects the cancelled timer")
+                                                                 .isEmpty();
+            assertThat(text(fold, "gap")).isEqualTo("v");
+        }
+
         /// The guard's per-key offsets must not become a per-key leak: an entry is dropped as soon as the
         /// watermark covers it, and an entry whose offset PARKED is swept by the next checkpoint.
         @Test
