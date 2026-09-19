@@ -940,7 +940,9 @@ class StreamConsumerManagerTest {
                                                                        0L,
                                                                        false,
                                                                        IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
-                                                                       Option.none()))
+                                                                       Option.none(),
+                                                                       false,
+                                                                       false))
                                 .toList();
         }
 

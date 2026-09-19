@@ -227,7 +227,9 @@ public final class StreamRoutes implements RouteSource {
         return new DeclarativeConsumerPartition(cursor.partition(),
                                                 cursor.cursor(),
                                                 cursor.stalled(),
-                                                cursor.lastCursorCommitFailure().or(""));
+                                                cursor.lastCursorCommitFailure().or(""),
+                                                cursor.deadLetterInFlight(),
+                                                cursor.retryInFlight());
     }
 
     private static StreamHydrationResponse toHydrationResponse(HydrationSnapshot snapshot) {

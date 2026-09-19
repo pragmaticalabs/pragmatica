@@ -54,6 +54,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// rather than holding the node. [design intent — unverified: 5s is not derived from a measured
     /// commit-latency distribution, it is a judgment call reviewed and accepted for this fix].
     private static final TimeSpan CURSOR_COMMIT_SHUTDOWN_BOUND = timeSpan(5).seconds();
+    /// #1266: bound on one dead-letter append. The partition's loop is HELD while the append is
+    /// unresolved, so an append that never settles (a replication barrier that never answers) would hold
+    /// it forever; a timed-out append takes the same retry-with-backoff path as a failed one. A timed-out
+    /// append can still land later, so the DLQ is at-least-once per event — entries carry the event's
+    /// messageId, which is the dedup key. 30s matches the declarative handler timeout and the consensus
+    /// apply timeout. [design intent — unverified: not derived from a measured DLQ-append latency.]
+    static final TimeSpan DEAD_LETTER_APPEND_TIMEOUT = timeSpan(30).seconds();
     /// #1239: a periodic commit waits for nothing — the single-flight slot already keeps periodic
     /// commits apart, and a detach flush cancels the consumer before it is issued.
     private static final Promise<CommitOutcome> NO_PREDECESSOR = Promise.success(CommitOutcome.persisted());
@@ -63,6 +70,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private final Option<ConsumerCursorStore> cursorStore;
     private final Option<TransactionalCursorCommit> transactionalCommit;
     private final PartitionReader reader;
+    private final TimeSpan deadLetterAppendTimeout;
     private final ConcurrentHashMap<ConsumerKey, ConsumerState> consumers = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final ScheduledFuture<?> idleConsumerChecker;
@@ -109,11 +117,22 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                          Option<ConsumerCursorStore> cursorStore,
                          Option<TransactionalCursorCommit> transactionalCommit,
                          PartitionReader reader) {
+        this(partitionManager, dlHandler, cursorStore, transactionalCommit, reader, DEAD_LETTER_APPEND_TIMEOUT);
+    }
+
+    /// Package-private seam: the dead-letter append bound, shortened by [StreamConsumerRuntimeTest].
+    ConsumerRuntimeState(StreamPartitionManager partitionManager,
+                         DeadLetterHandler dlHandler,
+                         Option<ConsumerCursorStore> cursorStore,
+                         Option<TransactionalCursorCommit> transactionalCommit,
+                         PartitionReader reader,
+                         TimeSpan deadLetterAppendTimeout) {
         this.partitionManager = partitionManager;
         this.dlHandler = dlHandler;
         this.cursorStore = cursorStore;
         this.transactionalCommit = transactionalCommit;
         this.reader = reader;
+        this.deadLetterAppendTimeout = deadLetterAppendTimeout;
         this.idleConsumerChecker = SharedScheduler.scheduleAtFixedRate(this::periodicConsumerCheck,
                                                                        TimeSpan.timeSpan(IDLE_CHECK_INTERVAL_MS).millis());
     }
@@ -167,7 +186,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                         state.cursor(),
                                         state.isStalled(),
                                         state.idlePolicy(),
-                                        state.lastCursorCommitFailure());
+                                        state.lastCursorCommitFailure(),
+                                        state.isDeadLetterInFlight(),
+                                        state.isRetryInFlight());
     }
 
     @Override
@@ -1010,21 +1031,31 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                              int attemptCount,
                                              int appendAttempt) {
         state.markDeadLetterInFlight();
-        dlHandler.append(key.streamName(),
-                         key.partition(),
-                         event.offset(),
-                         key.groupId(),
-                         event.data(),
-                         errorMessage,
-                         attemptCount)
-                 .onSuccess(_ -> completeDeadLetter(key, state, event))
-                 .onFailure(cause -> retryDeadLetterAppend(key,
-                                                           state,
-                                                           event,
-                                                           errorMessage,
-                                                           attemptCount,
-                                                           appendAttempt,
-                                                           cause));
+        appendDeadLetter(key, event, errorMessage, attemptCount).onSuccess(_ -> completeDeadLetter(key, state, event))
+                        .onFailure(cause -> retryDeadLetterAppend(key,
+                                                                  state,
+                                                                  event,
+                                                                  errorMessage,
+                                                                  attemptCount,
+                                                                  appendAttempt,
+                                                                  cause));
+    }
+
+    /// #1266: lifted and bounded. A sink that THROWS synchronously used to escape before the callbacks
+    /// above were attached, and one whose append never settles held the loop with no timeout — either way
+    /// the dead-letter hold was never released and the partition wedged silently and permanently. Both
+    /// now arrive as a failure on the returned promise and take [#retryDeadLetterAppend].
+    private Promise<Unit> appendDeadLetter(ConsumerKey key,
+                                           OffHeapRingBuffer.RawEvent event,
+                                           String errorMessage,
+                                           int attemptCount) {
+        return lifted(() -> dlHandler.append(key.streamName(),
+                                             key.partition(),
+                                             event.offset(),
+                                             key.groupId(),
+                                             event.data(),
+                                             errorMessage,
+                                             attemptCount)).timeout(deadLetterAppendTimeout);
     }
 
     private void completeDeadLetter(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
