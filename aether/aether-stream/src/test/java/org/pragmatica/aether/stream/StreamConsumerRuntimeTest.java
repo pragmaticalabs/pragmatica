@@ -417,6 +417,25 @@ class StreamConsumerRuntimeTest {
                                  .containsExactly(0L, 1L, 2L);
         }
 
+        /// A throwing handler goes through the ERROR STRATEGY, not the read-failure path: with SKIP it is
+        /// dead-lettered and the loop moves on. Treated as a failed read instead, the same offset would be
+        /// re-read forever and never dead-lettered.
+        @Test
+        void handlerThatAlwaysThrows_isDeadLettered_likeAFailingHandler() throws Exception {
+            createTestStream("orders");
+
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-a", 1, ProcessingMode.ORDERED, ErrorStrategy.SKIP),
+                              (offset, payload, ts) -> alwaysThrowOnZero(offset));
+            manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+            manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
+            awaitSize(1);
+            assertThat(delivered).describedAs("the event behind the throwing one is delivered").containsExactly(1L);
+            assertThat(runtime.deadLetterHandler().read("orders", 10)).describedAs("the throwing event is dead-lettered once")
+                                                                      .hasSize(1);
+        }
+
         @Test
         void readerSyncThrow_releasesTheLoop_andLaterAppendsAreDelivered() throws Exception {
             createTestStream("orders");
@@ -528,6 +547,14 @@ class StreamConsumerRuntimeTest {
         private Promise<Unit> throwOnce(AtomicBoolean thrown, long offset) {
             if (offset == 0L && thrown.compareAndSet(false, true)) {
                 throw new IllegalStateException("handler blew up synchronously");
+            }
+
+            return record(offset);
+        }
+
+        private Promise<Unit> alwaysThrowOnZero(long offset) {
+            if (offset == 0L) {
+                throw new IllegalStateException("handler always throws on offset 0");
             }
 
             return record(offset);
