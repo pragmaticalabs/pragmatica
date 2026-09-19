@@ -266,6 +266,38 @@ _run_with_timeout() {
     return "$rc"
 }
 
+# #1226: bound a SHELL FUNCTION call to $secs wall-clock seconds without losing this
+# interpreter's sourced functions/variables. _run_with_timeout above cannot be reused
+# for this: its primary path execs coreutils `timeout "$@"`, which only works when
+# "$@" is a real binary on $PATH — every existing call site passes one (hcloud, ssh).
+# A shell function is not on $PATH, and `bash -c "$@"` would run it in a FRESH
+# interpreter that never sourced lib/common.sh/lib/cluster.sh, so the function
+# wouldn't exist there either. Backgrounding "$@" with `&` instead forks THIS
+# process, which keeps every sourced function and every variable visible at the
+# fork point (bash's dynamic scoping means a called function also sees its caller's
+# locals across the fork) — the only thing a fork cannot hand back is the child's
+# OWN variable/export changes, so a caller needing one back (e.g.
+# _refresh_mgmt_entry_point_bounded's MGMT_ENTRY_POINT export) must relay it via
+# stdout/a file and apply it in the parent, never inside "$@" itself.
+# stdout/stderr of "$@" are whatever the caller redirected before invoking this.
+_fork_bounded() {
+    local secs="$1"
+    shift
+    [ "$secs" -lt 1 ] 2>/dev/null && secs=1
+    "$@" &
+    local cpid=$!
+    ( sleep "$secs"; kill -TERM "$cpid" 2>/dev/null || true; sleep 0.2; kill -KILL "$cpid" 2>/dev/null || true ) &
+    local wpid=$!
+    local rc
+    wait "$cpid" 2>/dev/null && rc=0 || rc=$?
+    # Reap the watchdog now rather than let it sleep out its own budget: this runs
+    # once per wait_for poll, so a leaked sleep per iteration adds up over a long
+    # cloud run (see probe-runner-leaks-exhaust-process-cap in memory).
+    kill "$wpid" 2>/dev/null || true
+    wait "$wpid" 2>/dev/null || true
+    return "$rc"
+}
+
 # Resolve an endpoint that actually responds to /health/live. Preserves the pinned
 # CLUSTER_ENDPOINT when it's up; rotates once to any live core node when the pinned
 # endpoint is dead (e.g., during chaos-suite recovery where the pinned node was killed).
@@ -463,6 +495,34 @@ _resolve_live_endpoint() {
 _refresh_mgmt_entry_point() {
     local live
     if live=$(_resolve_live_endpoint); then
+        export MGMT_ENTRY_POINT="${live}"
+        export CLUSTER_ENDPOINT="${live}"
+        return 0
+    fi
+    return 1
+}
+
+# #1226: bounded variant for wait_for, whose OWN wall-clock budget must not be
+# spent inside a hung resolve — measured on cloud, a failing poll's refresh alone
+# stretched a 180s wait to 1083s. Cannot just wrap the call in `timeout`
+# (_resolve_live_endpoint is a shell function, not on $PATH) or run it via
+# `_fork_bounded` the way _refresh_mgmt_entry_point itself is called (its whole
+# point is the `export` — made inside a fork, that export dies with the fork and
+# never reaches the caller). So only the part that can hang — the VM-scan/SSH
+# probes inside _resolve_live_endpoint — runs forked and bounded; the export that
+# makes rotation stick happens back here, in the same shell wait_for runs in.
+# Same success/failure contract as _refresh_mgmt_entry_point: exports and returns
+# 0 on a live endpoint found within $secs, otherwise leaves env vars unchanged and
+# returns 1 (a timeout is indistinguishable here from "no live endpoint" — both
+# are "could not refresh in time", which is all a caller needs to know).
+_refresh_mgmt_entry_point_bounded() {
+    local secs="$1"
+    local outfile rc live=""
+    outfile=$(mktemp)
+    _fork_bounded "$secs" _resolve_live_endpoint >"$outfile" 2>/dev/null && rc=0 || rc=$?
+    [ "$rc" -eq 0 ] && live=$(cat "$outfile" 2>/dev/null)
+    rm -f "$outfile"
+    if [ -n "$live" ]; then
         export MGMT_ENTRY_POINT="${live}"
         export CLUSTER_ENDPOINT="${live}"
         return 0
@@ -768,6 +828,30 @@ http_status_with_body() {
     printf '%s' "$status"
 }
 
+# #1226: the actual value_cmd+check_cmd poll body, run from inside wait_for's own
+# fork (via _fork_bounded so a hung predicate cannot outlive the iteration's
+# budget). Reads wait_for's locals (check_cmd, value_cmd, errfile, valuefile,
+# valuercfile) via bash's dynamic scoping — a called function sees its caller's
+# locals, and this is only ever called from wait_for's own frame, never
+# standalone. Everything this writes to a shell variable dies with the fork, so
+# the value_cmd result crosses back to the parent the only way a fork allows:
+# written to a file, read back by wait_for itself after `wait` returns.
+_wait_for_poll_once() {
+    if [ -n "$value_cmd" ]; then
+        local v vrc
+        v=$(eval "$value_cmd" 2>/dev/null) && vrc=0 || vrc=$?
+        printf '%s' "$vrc" > "$valuercfile"
+        if [ "$vrc" -eq 0 ] && [ -n "$v" ]; then
+            printf '%s' "$v" > "$valuefile"
+            export WAIT_FOR_VALUE="$v"
+            eval "$check_cmd" > /dev/null 2>"$errfile"
+            return $?
+        fi
+        return 1
+    fi
+    eval "$check_cmd" > /dev/null 2>"$errfile"
+}
+
 # ---------------------------------------------------------------------------
 # Wait for condition with timeout
 # ---------------------------------------------------------------------------
@@ -784,8 +868,13 @@ wait_for() {
     # Scale timeouts on slower environments (cloud VMs have higher inter-node latency than
     # docker-localhost). TIMEOUT_SCALE=3 default for cloud, 1 elsewhere — set in run-tests.sh.
     timeout=$((timeout * ${TIMEOUT_SCALE:-1}))
-    local rc errfile
+    local rc errfile valuefile valuercfile
     errfile=$(mktemp)
+    # #1226: value_cmd's result crosses the _fork_bounded boundary via these two
+    # files instead of a variable — see _wait_for_poll_once. Only ever touched
+    # when value_cmd is set, but cheap enough to always allocate.
+    valuefile=$(mktemp)
+    valuercfile=$(mktemp)
     log_info "Waiting for: ${description} (timeout: ${timeout}s)"
     # Cloud poll-loop hygiene: predicates round-trip through _resolve_live_endpoint
     # → _api_call against the PINNED CLUSTER_ENDPOINT. When that endpoint is a
@@ -818,39 +907,54 @@ wait_for() {
     local cloud_poll="false"
     if [ "${CLOUD_MODE:-false}" = "true" ]; then
         cloud_poll="true"
-        _refresh_mgmt_entry_point >/dev/null 2>&1 || true
+        _refresh_mgmt_entry_point_bounded "$timeout" >/dev/null 2>&1 || true
     fi
     while [ "$SECONDS" -lt "$deadline" ]; do
-        # #628: the deadline is only checked BETWEEN iterations, so a predicate that
-        # hangs on remote transport overruns arbitrarily (4596s observed against a
-        # 480s budget). Export the remaining budget so transport-touching predicates
-        # can bound themselves via remote_exec_bounded.
+        # #628: the deadline used to be checked only BETWEEN iterations, so a
+        # predicate that hung overran arbitrarily (4596s observed against a 480s
+        # budget; a whole suite once ran 19057s against cloud). Export the
+        # remaining budget for transport-touching predicates that cooperate via
+        # remote_exec_bounded, AND enforce it unconditionally via _fork_bounded
+        # below — an iteration now cannot outlive the budget it belongs to
+        # whether or not the predicate itself cooperates.
         export WAIT_FOR_REMAINING=$((deadline - SECONDS))
-        # Capture rc without tripping `set -e` from the caller — `eval` as a standalone
-        # command would propagate its non-zero exit and abort the entire script when
-        # the predicate is simply false. The `&& rc=0 || rc=$?` idiom swallows the exit
-        # code into a captured variable, equivalent to the legacy `if eval; then`
-        # protection without re-introducing the if/then nesting.
         polls=$((polls + 1))
         if [ -n "$value_cmd" ]; then
-            value=$(eval "$value_cmd" 2>/dev/null) && value_rc=0 || value_rc=$?
-            if [ "$value_rc" -eq 0 ] && [ -n "$value" ]; then
+            : > "$valuefile"
+            : > "$valuercfile"
+        fi
+        # _wait_for_poll_once runs value_cmd+check_cmd inside a fork bounded to the
+        # remaining budget (_fork_bounded forks THIS interpreter rather than
+        # `bash -c`, so check_cmd/value_cmd still see every function sourced from
+        # lib/common.sh/lib/cluster.sh — a fresh interpreter would not). A poll
+        # killed for hitting the wall returns a signal exit (128+N: e.g. 143 for
+        # SIGTERM), which falls through the same `case` default below as an
+        # ordinary "predicate said no" — correct, since either way the iteration
+        # simply didn't succeed and the wait should keep polling, not treat a
+        # self-inflicted kill as the "buggy predicate" 2|127 case.
+        _fork_bounded "$WAIT_FOR_REMAINING" _wait_for_poll_once && rc=0 || rc=$?
+        if [ -n "$value_cmd" ]; then
+            value_rc=$(cat "$valuercfile" 2>/dev/null)
+            if [ -z "$value_rc" ]; then
+                # Killed by the wall clock before the fork even finished the
+                # value_cmd read — still a failed read, just say why.
+                read_failures=$((read_failures + 1))
+                last_value="<read failed: ${value_cmd} killed at ${WAIT_FOR_REMAINING}s bound, no value>"
+                unset WAIT_FOR_VALUE
+            elif [ "$value_rc" -eq 0 ]; then
+                value=$(cat "$valuefile" 2>/dev/null)
                 last_value="$value"
                 export WAIT_FOR_VALUE="$value"
-                eval "$check_cmd" > /dev/null 2>"$errfile" && rc=0 || rc=$?
             else
                 read_failures=$((read_failures + 1))
                 last_value="<read failed: ${value_cmd} rc=${value_rc}, no value>"
                 unset WAIT_FOR_VALUE
-                rc=1
             fi
-        else
-            eval "$check_cmd" > /dev/null 2>"$errfile" && rc=0 || rc=$?
         fi
         case "$rc" in
             0)
                 log_pass "${description} ($((SECONDS - start_seconds))s)"
-                rm -f "$errfile"
+                rm -f "$errfile" "$valuefile" "$valuercfile"
                 # A read belongs to this wait only: a later wait without a reader must
                 # never see it (#1051 round 3).
                 unset WAIT_FOR_VALUE
@@ -869,8 +973,13 @@ wait_for() {
         # next poll so the dead endpoint isn't re-probed at full cost every
         # iteration. Cheap: succeeds via the `-m 2` happy-path probe when the
         # current endpoint is still live, scans VMs only when it genuinely died.
+        # #1226: bounded to whatever budget is left — this call sits inside the
+        # SAME iteration as the poll above, so it must not be the thing that
+        # blows the deadline (this was the specific call the bug report names as
+        # the actual source of the worst overruns).
         if [ "$cloud_poll" = "true" ]; then
-            _refresh_mgmt_entry_point >/dev/null 2>&1 || true
+            local refresh_remaining=$((deadline - SECONDS))
+            _refresh_mgmt_entry_point_bounded "$refresh_remaining" >/dev/null 2>&1 || true
         fi
         # Skip the final sleep once the deadline has already passed — avoids
         # overshooting the wall-clock ceiling by an extra `interval` for no reason.
@@ -882,7 +991,7 @@ wait_for() {
     fi
     unset WAIT_FOR_VALUE
     log_fail "${description} (timed out after $((SECONDS - start_seconds))s, budget ${timeout}s)${read_note}"
-    rm -f "$errfile"
+    rm -f "$errfile" "$valuefile" "$valuercfile"
     return 1
 }
 
