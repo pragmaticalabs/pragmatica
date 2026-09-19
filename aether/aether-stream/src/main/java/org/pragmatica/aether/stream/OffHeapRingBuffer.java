@@ -501,6 +501,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                : StreamError.General.RUN_DOES_NOT_FIT.result();
     }
 
+    /// NOT atomic under REJECT_WHEN_FULL (#1287 review nit c): there an event can fail `BUFFER_FULL`
+    /// after earlier ones of the run were appended, leaving them in the ring while the failed run skips
+    /// its ordered continuation (no WAL frames, no replication for them). Unreachable today: only
+    /// EVENTUAL streams batch through [#appendBatchOrdered] (STRONG batches take the consensus path),
+    /// and EVENTUAL rings evict (DROP_OLDEST). It becomes reachable the moment a REJECT_WHEN_FULL ring
+    /// is handed a run — that change must make this all-or-nothing first.
     private Result<Long> appendEach(List<byte[]> payloads, long[] timestamps) {
         var last = success(rawHeadOffset());
 

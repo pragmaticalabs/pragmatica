@@ -77,6 +77,17 @@ final class DefaultReplicationManager implements ReplicationManager {
         this.earliestRetained = earliestRetained;
     }
 
+    /// Encoded bytes per `ReplicateEvents` message (#1287 review K3): half the cluster transport's frame
+    /// limit ([QuicClusterServer#MAX_FRAME_LENGTH]). The other half is headroom for the message's fixed
+    /// fields and envelope; the fraction is a chosen margin, not a derived one.
+    static final long MAX_REPLICATE_MESSAGE_BYTES = QuicClusterServer.MAX_FRAME_LENGTH / 2;
+
+    /// Encoded framing the generic codec adds per event, bounded (#1287 review nit a): the payload's type
+    /// tag and length (varints, at most five bytes each) plus the timestamp's tag (at most five) and its
+    /// eight bytes — 23 at most, rounded up. Without it, millions of tiny events fit the payload budget
+    /// while their encoding exceeds the frame.
+    static final long PER_EVENT_ENCODING_BYTES = 32;
+
     @Contract
     @Override
     public void replicateEvent(String streamName,
@@ -94,14 +105,9 @@ final class DefaultReplicationManager implements ReplicationManager {
                                                    ownerEpoch));
     }
 
-    /// #1245: a contiguous run goes out as ONE `ReplicateEvents` message per replica (the receive handler
-    /// already applies multi-record batches and acks their last offset). With a batcher wired, the run is
-    /// handed to it event by event, as single publishes are.
-    /// Payload bytes per `ReplicateEvents` message (#1287 review K3): half the cluster transport's frame
-    /// limit ([QuicClusterServer#MAX_FRAME_LENGTH]). The other half is headroom for the message's own
-    /// encoding (offsets, timestamps, epoch, envelope); the fraction is a chosen margin, not a derived one.
-    static final long MAX_REPLICATE_PAYLOAD_BYTES = QuicClusterServer.MAX_FRAME_LENGTH / 2;
-
+    /// #1245: a contiguous run goes out in as few `ReplicateEvents` messages per replica as the frame limit
+    /// allows — one, below it (the receive handler already applies multi-record batches and acks their
+    /// last offset). With a batcher wired, the run is handed to it event by event, as single publishes are.
     @Contract
     @Override
     public void replicateEvents(String streamName,
@@ -229,7 +235,7 @@ final class DefaultReplicationManager implements ReplicationManager {
                       .collect(Collectors.toSet());
     }
 
-    /// #1287 review K3: one run is sent as consecutive chunks, each at most [#MAX_REPLICATE_PAYLOAD_BYTES]
+    /// #1287 review K3: one run is sent as consecutive chunks, each at most [#MAX_REPLICATE_MESSAGE_BYTES]
     /// of payload, so no message exceeds the cluster transport's frame limit. Chunks go out in offset
     /// order; the receive handler verifies each chunk's `fromOffset`, and the owner still awaits one
     /// cumulative ack on the run's last offset.
@@ -260,14 +266,18 @@ final class DefaultReplicationManager implements ReplicationManager {
         replicas.forEach(replica -> transport.send(replica, message));
     }
 
-    /// Exclusive end of the chunk starting at `start`: as many events as fit the payload cap, and at least
+    /// Exclusive end of the chunk starting at `start`: as many events as fit the encoded-size cap, and at least
     /// one — a single event above the cap goes out alone, as every event did before batching.
+    private static long encodedSize(byte[] payload) {
+        return payload.length + PER_EVENT_ENCODING_BYTES;
+    }
+
     private static int chunkEnd(List<byte[]> payloads, int start) {
         var end = start + 1;
-        var bytes = (long) payloads.get(start).length;
+        var bytes = encodedSize(payloads.get(start));
 
-        while (end < payloads.size() && bytes + payloads.get(end).length <= MAX_REPLICATE_PAYLOAD_BYTES) {
-            bytes += payloads.get(end).length;
+        while (end < payloads.size() && bytes + encodedSize(payloads.get(end)) <= MAX_REPLICATE_MESSAGE_BYTES) {
+            bytes += encodedSize(payloads.get(end));
             end++;
         }
 
