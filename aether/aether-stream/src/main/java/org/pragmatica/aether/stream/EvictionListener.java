@@ -6,16 +6,23 @@ package org.pragmatica.aether.stream;
 
 import java.util.List;
 
-import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 
-/// Receives the events a ring needs to reclaim and makes them durable. The returned promise is the
-/// ring's license to reclaim (#1234): the ring keeps the events — readable, and counted against its
-/// capacity — until it resolves successfully, and a failure leaves them in place for a later attempt.
-/// [#NOOP] is the one listener that persists nothing; a ring built with it reclaims immediately.
+/// Takes the events a ring is about to reclaim (#1234). Success means the listener now owns them — the ring
+/// reclaims their space at once, and making them durable is the listener's job (the partition WAL holds them
+/// meanwhile). A failure is a refusal: the ring keeps the events, and an append that needed their room fails
+/// with the listener's cause. [#NOOP] persists nothing and never refuses.
 @FunctionalInterface
 public interface EvictionListener {
-    Promise<Unit> onEviction(String streamName, int partition, List<OffHeapRingBuffer.RawEvent> events);
-    EvictionListener NOOP = (_, _, _) -> Promise.unitPromise();
+    Result<Unit> onEviction(String streamName, int partition, List<OffHeapRingBuffer.RawEvent> events);
+
+    /// Whether `offset` was handed over and is not yet durably stored — a read of it will succeed once the
+    /// listener finishes, so it is in flight rather than lost. Only a listener that persists can say yes.
+    default boolean holdsUnsealed(String streamName, int partition, long offset) {
+        return false;
+    }
+
+    EvictionListener NOOP = (_, _, _) -> Result.unitResult();
 }

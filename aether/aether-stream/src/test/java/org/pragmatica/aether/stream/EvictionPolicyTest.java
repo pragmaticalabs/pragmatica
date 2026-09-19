@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
-import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.OffHeapRingBuffer.offHeapRingBuffer;
@@ -102,7 +102,7 @@ class EvictionPolicyTest {
 
         @Test
         void createStream_succeeds_whenRealListenerAndStrong() {
-            EvictionListener realListener = (_, _, _) -> Promise.unitPromise();
+            EvictionListener realListener = (_, _, _) -> Result.unitResult();
             var manager = streamPartitionManager(Long.MAX_VALUE, realListener);
 
             try {

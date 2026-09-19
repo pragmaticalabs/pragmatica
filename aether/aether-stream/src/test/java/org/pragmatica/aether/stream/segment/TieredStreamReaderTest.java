@@ -9,6 +9,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
@@ -156,6 +157,20 @@ class TieredStreamReaderTest {
             result.onSuccess(events -> fail("Expected an explicit hole error, got " + events.size() + " events"))
                   .onFailure(cause -> assertThat(cause.getClass().getSimpleName()).isEqualTo("SealedRangeMissing"))
                   .onFailure(cause -> assertThat(cause.message()).contains("5").contains("10"));
+        }
+
+        /// A hole is MISSING only above the contiguous sealed watermark. Below it the offsets were sealed and
+        /// then reclaimed by retention, which is an expired cursor — never an operator-visible loss.
+        @Test
+        void read_reclaimedBelowSealedWatermark_reportsExpiredNotMissing() {
+            sealEvents(0, 4, 100L, 500L);
+            sealEvents(5, 9, 600L, 1000L);
+            index.removeSegment(STREAM, PARTITION, 0);
+
+            var result = reader.read(STREAM, PARTITION, 2, 10).await();
+
+            result.onSuccess(events -> fail("Expected an expired cursor, got " + events.size() + " events"))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.CursorExpired(2, 5)));
         }
     }
 

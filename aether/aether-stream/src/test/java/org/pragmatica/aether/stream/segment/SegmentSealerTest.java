@@ -8,9 +8,9 @@ package org.pragmatica.aether.stream.segment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
@@ -19,9 +19,12 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 import static org.pragmatica.lang.Unit.unit;
 
@@ -29,6 +32,8 @@ class SegmentSealerTest {
 
     private static final String STREAM = "test-stream";
     private static final int PARTITION = 0;
+    private static final long AWAIT_MS = 10_000;
+    private static final long POLL_NANOS = 10_000_000;
 
     private final List<SealedSegment> captured = new CopyOnWriteArrayList<>();
     private SegmentSealer sealer;
@@ -116,63 +121,165 @@ class SegmentSealerTest {
         }
     }
 
-    /// #1234: the ring must keep evicted events until the sink has DURABLY sealed them. A sink that fails
-    /// (disk full, DHT error) used to be ignored: the ring advanced its sealed watermark and reclaimed the
-    /// slots anyway, so the only in-memory copy was gone and nothing had been persisted.
+    /// #1234, ruling B: reclamation stays IMMEDIATE. The ring hands evicted events to the sealer and reclaims
+    /// their room at once; the sealer owns them until the sink has stored them (the WAL covers them meanwhile).
+    /// A slow sink therefore never refuses an append while the retained copies are under the pending-seal cap.
+    /// Pins the regression of the rejected option A, which refused EVENTUAL appends with `SEALING_BEHIND`
+    /// whenever the sink was slower than the appends.
     @Nested
-    class SealFailure {
-        private static final int EVENTS = 5;
-        private static final long RETAIN = 2;
-        private static final long RECOVERY_DEADLINE_MS = 10_000;
+    class SlowSinkUnderCap {
+        private static final int RING_EVENTS = 16;
+        private static final int APPENDS = 200;
 
-        private final AtomicBoolean storageDown = new AtomicBoolean(true);
+        @Test
+        void append_slowSinkUnderCap_neverRefused_andRingReclaimsImmediately() {
+            var slowSink = new ManualSink();
 
-        private Promise<Unit> sealWhileStorageUp(SealedSegment segment) {
-            return storageDown.get()
+            try (var ring = OffHeapRingBuffer.offHeapRingBuffer(STREAM, PARTITION, RING_EVENTS, 4096, segmentSealer(slowSink))) {
+                for (int i = 0; i < APPENDS; i++) {
+                    ring.append(("e-" + i).getBytes(), 1000L + i)
+                        .onFailure(cause -> fail("append refused under the pending-seal cap: " + cause.message()));
+                }
+
+                assertThat(ring.eventCount()).isEqualTo((long) RING_EVENTS);
+                assertThat(ring.tailOffset()).isEqualTo((long) (APPENDS - RING_EVENTS));
+            }
+        }
+    }
+
+    /// #1234: seals of one partition complete in offset order — the next segment is not even sent until the
+    /// previous one succeeded — so the sealed range never gains a later segment past an earlier pending one.
+    @Nested
+    class OrderedSealing {
+
+        @Test
+        void onEviction_secondSegmentNotSentUntilFirstSealed_sealsCompleteInOffsetOrder() {
+            var sink = new ManualSink();
+            var orderedSealer = segmentSealer(sink);
+
+            orderedSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(0L, "a".getBytes(), 1L)));
+            orderedSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(1L, "b".getBytes(), 2L)));
+            orderedSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(2L, "c".getBytes(), 3L)));
+
+            assertThat(sink.startOffsets()).containsExactly(0L);
+
+            sink.succeed(0);
+            awaitCondition(() -> sink.calls() == 2);
+            assertThat(sink.startOffsets()).containsExactly(0L, 1L);
+
+            sink.succeed(1);
+            awaitCondition(() -> sink.calls() == 3);
+            assertThat(sink.startOffsets()).containsExactly(0L, 1L, 2L);
+        }
+    }
+
+    /// #1234: a failed seal is retried from the sealer's retained copy — never dropped — and each failure is
+    /// counted; the segment lands once the sink recovers and its retained bytes are released.
+    @Nested
+    class RetryFromRetainedCopy {
+        private static final int FAILURES = 2;
+
+        @Test
+        void onEviction_sinkFailsTwiceThenSucceeds_segmentSealed_failuresCounted_copyReleased() {
+            var attempts = new AtomicInteger();
+            var retryingSealer = segmentSealer(segment -> failFirstAttempts(attempts, segment));
+
+            retryingSealer.onEviction(STREAM, PARTITION, List.of(RawEvent.rawEvent(7L, "x".getBytes(), 1L)))
+                          .onFailure(cause -> fail(cause.message()));
+
+            assertThat(retryingSealer.holdsUnsealed(STREAM, PARTITION, 7L)).isTrue();
+
+            awaitCondition(() -> !captured.isEmpty());
+            awaitCondition(() -> retryingSealer.pendingBytes() == 0);
+
+            assertThat(captured.getFirst().startOffset()).isEqualTo(7L);
+            assertThat(retryingSealer.sealFailureCount()).isEqualTo(FAILURES);
+            assertThat(attempts.get()).isEqualTo(FAILURES + 1);
+            assertThat(retryingSealer.holdsUnsealed(STREAM, PARTITION, 7L)).isFalse();
+        }
+
+        private Promise<Unit> failFirstAttempts(AtomicInteger attempts, SealedSegment segment) {
+            return attempts.incrementAndGet() <= FAILURES
                    ? Causes.cause("storage down").promise()
                    : captureSegment(segment);
         }
+    }
+
+    /// #1234: the retained copies are BOUNDED. Only once they reach the pending-seal cap does the sealer
+    /// refuse a hand-over; the ring then keeps its events and refuses the append that needed their room with
+    /// `SEALING_BEHIND`, and admission resumes as soon as a pending seal lands.
+    @Nested
+    class PendingSealCap {
+        /// A one-event segment of a 3-byte payload is 23 bytes (20-byte event header), so a 64-byte cap admits
+        /// three pending segments (0, 23 and 46 retained before each) and refuses the fourth (69 retained).
+        private static final long CAP_BYTES = 64;
+        private static final int RING_EVENTS = 4;
 
         @Test
-        void onEviction_firstSealFails_ringRetainsEventsAndSealedOffsetDoesNotAdvance() {
-            try (var ring = OffHeapRingBuffer.offHeapRingBuffer(STREAM, PARTITION, 16, 4096, segmentSealer(this::sealWhileStorageUp))) {
-                appendEvents(ring);
+        void append_pendingSealCapReached_refusedWithSealingBehind_ringKeepsEvents_admittedOnceSealLands() {
+            var sink = new ManualSink();
+            var cappedSealer = segmentSealer(sink, CAP_BYTES);
 
-                ring.applyRetention(RetentionPolicy.retentionPolicy(RETAIN, Long.MAX_VALUE, Long.MAX_VALUE));
-
-                assertThat(ring.tailOffset()).isEqualTo(0L);
-                assertThat(ring.eventCount()).isEqualTo((long) EVENTS);
-                assertThat(ring.lastSealedOffset()).isEqualTo(-1L);
-                assertThat(ring.read(0, EVENTS).unwrap()).hasSize(EVENTS);
-            }
-        }
-
-        @Test
-        void onEviction_sealSucceedsAfterFailure_ringReclaimsSealedEvents() throws InterruptedException {
-            try (var ring = OffHeapRingBuffer.offHeapRingBuffer(STREAM, PARTITION, 16, 4096, segmentSealer(this::sealWhileStorageUp))) {
-                appendEvents(ring);
-                ring.applyRetention(RetentionPolicy.retentionPolicy(RETAIN, Long.MAX_VALUE, Long.MAX_VALUE));
-                storageDown.set(false);
-
-                var deadline = System.currentTimeMillis() + RECOVERY_DEADLINE_MS;
-
-                while (ring.tailOffset() < EVENTS - RETAIN && System.currentTimeMillis() < deadline) {
-                    Thread.sleep(20);
-                    ring.applyRetention(RetentionPolicy.retentionPolicy(RETAIN, Long.MAX_VALUE, Long.MAX_VALUE));
+            try (var ring = OffHeapRingBuffer.offHeapRingBuffer(STREAM, PARTITION, RING_EVENTS, 4096, cappedSealer)) {
+                for (int i = 0; i < RING_EVENTS + 3; i++) {
+                    ring.append(("e-" + i).getBytes(), 1000L + i).onFailure(cause -> fail(cause.message()));
                 }
 
-                assertThat(ring.tailOffset()).isEqualTo(EVENTS - RETAIN);
-                assertThat(ring.lastSealedOffset()).isGreaterThanOrEqualTo(EVENTS - RETAIN - 1);
-                assertThat(captured).isNotEmpty();
-                assertThat(captured.getFirst().startOffset()).isEqualTo(0L);
+                ring.append("e-7".getBytes(), 1007L)
+                    .onSuccess(offset -> fail("expected SEALING_BEHIND, appended at " + offset))
+                    .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.SEALING_BEHIND));
+
+                assertThat(cappedSealer.refusalCount()).isEqualTo(1L);
+                assertThat(ring.tailOffset()).isEqualTo(3L);
+                assertThat(ring.eventCount()).isEqualTo((long) RING_EVENTS);
+                assertThat(ring.read(3, RING_EVENTS).unwrap()).hasSize(RING_EVENTS);
+
+                sink.succeed(0);
+                awaitCondition(() -> cappedSealer.pendingBytes() < CAP_BYTES);
+
+                ring.append("e-7".getBytes(), 1007L)
+                    .onFailure(cause -> fail("still refused after a pending seal landed: " + cause.message()))
+                    .onSuccess(offset -> assertThat(offset).isEqualTo(7L));
             }
+        }
+    }
+
+    /// A sink whose seals complete only when the test says so — the slowest possible storage tier.
+    private static final class ManualSink implements SegmentSink {
+        private final List<SealedSegment> segments = new CopyOnWriteArrayList<>();
+        private final List<Promise<Unit>> outcomes = new CopyOnWriteArrayList<>();
+
+        @Override
+        public Promise<Unit> seal(SealedSegment segment) {
+            var outcome = Promise.<Unit>promise();
+
+            segments.add(segment);
+            outcomes.add(outcome);
+
+            return outcome;
         }
 
-        private void appendEvents(OffHeapRingBuffer ring) {
-            for (int i = 0; i < EVENTS; i++) {
-                ring.append(("e-" + i).getBytes(), 1000L + i).unwrap();
-            }
+        void succeed(int call) {
+            outcomes.get(call).succeed(unit());
         }
+
+        int calls() {
+            return segments.size();
+        }
+
+        List<Long> startOffsets() {
+            return segments.stream().map(SealedSegment::startOffset).toList();
+        }
+    }
+
+    private static void awaitCondition(BooleanSupplier condition) {
+        var deadline = System.currentTimeMillis() + AWAIT_MS;
+
+        while (!condition.getAsBoolean() && System.currentTimeMillis() < deadline) {
+            LockSupport.parkNanos(POLL_NANOS);
+        }
+
+        assertThat(condition.getAsBoolean()).as("condition within %d ms", AWAIT_MS).isTrue();
     }
 
     private void assertFirstEvent(ByteBuffer buffer, long expectedOffset, long expectedTimestamp, byte[] expectedData) {

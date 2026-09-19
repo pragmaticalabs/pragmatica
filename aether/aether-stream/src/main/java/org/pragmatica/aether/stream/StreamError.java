@@ -11,11 +11,11 @@ import org.pragmatica.lang.Cause;
 
 
 public sealed interface StreamError extends Cause {
-    /// `General` implements {@link ResourceCapacityExhausted} so the ONE capacity-class constant —
-    /// `STREAM_MEMORY_EXCEEDED` — is classified TRANSIENT by the slice-loading / resource-provisioning
-    /// path (retry, then `DeploymentFailed` after MAX_RETRIES; spec §6 / decision #7). Every other
-    /// constant overrides the marker predicate to false, so only off-heap budget exhaustion is
-    /// retryable; genuine config errors (e.g. `AHSE_REQUIRED_FOR_STRONG`) stay fatal. Enum identity is
+    /// `General` implements {@link ResourceCapacityExhausted} so the capacity-class constants —
+    /// `STREAM_MEMORY_EXCEEDED`, and `SEALING_BEHIND` since #1234 — are classified TRANSIENT by the
+    /// slice-loading / resource-provisioning path (retry, then `DeploymentFailed` after MAX_RETRIES; spec
+    /// §6 / decision #7). Every other constant overrides the marker predicate to false, so only capacity
+    /// shortages are retryable; genuine config errors (e.g. `AHSE_REQUIRED_FOR_STRONG`) stay fatal. Enum identity is
     /// preserved — `cause == STREAM_MEMORY_EXCEEDED` checks elsewhere are unaffected (spec §8).
     enum General implements StreamError, ResourceCapacityExhausted {
         BUFFER_CLOSED("Ring buffer is closed"),
@@ -32,7 +32,7 @@ public sealed interface StreamError extends Cause {
         AHSE_REQUIRED_FOR_STRONG("STRONG consistency requires AHSE storage (EvictionListener must not be NOOP)"),
         STREAM_CONFIG_COMMIT_FAILED("Stream config consensus commit failed"),
         PARTITION_NOT_LOCAL("Stream partition is not owned by this node"),
-        SEALING_BEHIND("Ring buffer is full of events not yet durably sealed to storage; append refused until sealing catches up");
+        SEALING_BEHIND("Pending-seal cap reached: storage has not accepted enough sealed segments for the ring to hand over more; append refused until sealing catches up");
         private final String message;
         General(String message) {
             this.message = message;
@@ -42,8 +42,8 @@ public sealed interface StreamError extends Cause {
             return message;
         }
         /// `STREAM_MEMORY_EXCEEDED` (the pool may clear as other streams are destroyed / right-sized) and
-        /// `SEALING_BEHIND` (the room frees as soon as a pending seal succeeds, #1234) are transient capacity
-        /// shortages; every other constant is a non-capacity error.
+        /// `SEALING_BEHIND` (the segment sealer's retained copies have reached their cap; it clears as pending
+        /// seals land, #1234) are transient capacity shortages; every other constant is a non-capacity error.
         @Override
         public boolean transientCapacity() {
             return this == STREAM_MEMORY_EXCEEDED || this == SEALING_BEHIND;

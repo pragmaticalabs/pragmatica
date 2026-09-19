@@ -1598,6 +1598,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         return current;
     }
 
+    /// Whether `offset` of `(streamName, partition)` has been evicted and handed to the eviction listener but
+    /// is not yet durably sealed (#1234) — a read of it is IN FLIGHT and succeeds once the seal lands.
+    public boolean sealInFlight(String streamName, int partition, long offset) {
+        return evictionListener.holdsUnsealed(streamName, partition, offset);
+    }
+
     /// Periodically reclaim WAL disk by truncating each partition's write-ahead log up to its DURABLE
     /// last-sealed offset (streaming-persistence W5). For every live stream and each partition that has a
     /// [PartitionWal], `base = lastSealedOffset.lastSealedOffset(stream, partition)` is computed and, when

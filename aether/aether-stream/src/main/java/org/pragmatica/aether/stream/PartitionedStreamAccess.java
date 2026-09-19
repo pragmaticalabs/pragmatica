@@ -23,6 +23,7 @@ import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.segment.CursorStore;
+import org.pragmatica.aether.stream.segment.SegmentError;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -789,10 +790,24 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                             long fromOffset,
                                                             int maxEvents) {
         if (cause instanceof StreamError.CursorExpired expired) {
-            return readWithSegmentFallback(partition, fromOffset, maxEvents, expired.requestedOffset());
+            return readEvicted(partition, fromOffset, maxEvents, expired.requestedOffset());
         }
 
         return cause.promise();
+    }
+
+    /// An offset the ring no longer holds is IN FLIGHT while the segment sealer still retains it (#1234): its
+    /// seal has not landed, so it is in no segment either, and the caller must back off and re-read rather
+    /// than skip it. Asked BEFORE the cold read: the sink indexes a segment before the sealer lets it go, so
+    /// an offset not retained at this point is already findable in the index — there is no instant at which
+    /// it is in neither place.
+    private Promise<List<StreamEvent<T>>> readEvicted(int partition,
+                                                      long fromOffset,
+                                                      int maxEvents,
+                                                      long expiredOffset) {
+        return partitionManager.sealInFlight(streamName, partition, fromOffset)
+               ? new SegmentError.SealInFlight(streamName, partition, fromOffset).promise()
+               : readWithSegmentFallback(partition, fromOffset, maxEvents, expiredOffset);
     }
 
     private Promise<List<StreamEvent<T>>> readWithSegmentFallback(int partition,

@@ -9,20 +9,27 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.aether.stream.segment.SegmentSink;
 import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.storage.MemoryTier;
+import org.pragmatica.storage.StorageInstance;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -30,6 +37,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
+import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
+import static org.pragmatica.aether.stream.segment.TieredStreamReader.tieredStreamReader;
 
 /// Proves streaming-persistence W5 (periodic WAL truncation to the durable sealed offset): the manager's
 /// `truncateWalsToSealed()` discards each partition's WAL records `offset <= lastSealedOffset` (already
@@ -48,6 +57,10 @@ class StreamPartitionManagerWalTruncateTest {
     private static final int SEALED_BOUND = 19;
     private static final int SMALL_EVENTS = 6;
     private static final int RING_EVENTS = 4;
+    private static final int SEAL_FAILURES = 2;
+    private static final long ONE_GB = 1024 * 1024 * 1024L;
+    private static final long AWAIT_MS = 10_000;
+    private static final long POLL_NANOS = 10_000_000;
 
     @TempDir
     Path walDir;
@@ -108,39 +121,75 @@ class StreamPartitionManagerWalTruncateTest {
         assertThat(Files.exists(walDir.resolve(STREAM))).isFalse();
     }
 
-    /// #1234 acceptance: segment 1 fails to seal and a later segment succeeds. The sealed watermark must
-    /// stop below the failed segment, so WAL truncation keeps its offsets — before the fix the watermark was
-    /// the MAXIMUM sealed `endOffset`, and truncation discarded the only remaining copy of segment 1.
+    /// #1234 acceptance: segment 1 ([0-19]) failed to seal and segment 2 ([20-39]) is sealed. The sealed
+    /// watermark must stop below the failed segment, so WAL truncation keeps its offsets — before the fix the
+    /// watermark was the MAXIMUM sealed `endOffset`, and truncation discarded the only remaining copy of
+    /// segment 1. The index is written directly: the ordered sealer can no longer produce this shape, but an
+    /// index rebuilt from refs written before the fix can.
     @Test
     void truncateWalsToSealed_keepsFailedSegmentOffsets_whenLaterSegmentSealed() {
         var index = new SegmentIndex();
-        var manager = streamPartitionManager(Long.MAX_VALUE,
-                                             segmentSealer(segment -> sealUnlessFirstSegment(index, segment)),
-                                             Option.some(walDir),
-                                             index::lastSealedOffset);
+        var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), index::lastSealedOffset);
 
-        createSmallRingStream(manager);
-        // Results deliberately ignored: once the ring is full of events it could not seal, it may refuse.
-        IntStream.range(0, EVENTS).forEach(i -> manager.publishLocal(STREAM, PARTITION, bigPayload(i), 1000L + i));
+        createStream(manager);
+        IntStream.range(0, EVENTS).forEach(i -> publish(manager, i, bigPayload(i)));
+        index.addSegment(STREAM, PARTITION, SEALED_BOUND + 1, EVENTS - 1);
 
         manager.truncateWalsToSealed();
         manager.close();
 
-        assertThat(replayedOffsets(partitionWalFile())).contains(0L);
+        assertThat(replayedOffsets(partitionWalFile())).containsExactlyElementsOf(offsets(EVENTS));
+    }
+
+    /// #1234, ruling B: storage fails the first seal attempts (at least [#SEAL_FAILURES] retries observed)
+    /// and then recovers. Appends are never refused meanwhile (the ring reclaims at once), the WAL is never
+    /// truncated past the pending segment while it is failing, and once the retried seal lands the range is
+    /// readable from storage and the WAL truncates.
+    @Test
+    void truncateWalsToSealed_neverPassesFailingSeal_thenTruncatesOnceRetriedSealLands() {
+        var storage = StorageInstance.storageInstance("wal-truncate", List.of(MemoryTier.memoryTier(ONE_GB)));
+        var index = new SegmentIndex();
+        var storageSink = storageSegmentSink(storage, index);
+        var storageDown = new AtomicBoolean(true);
+        var sealer = segmentSealer(segment -> sealUnlessDown(storageDown, storageSink, segment));
+        var manager = streamPartitionManager(Long.MAX_VALUE, sealer, Option.some(walDir), index::lastSealedOffset);
+
+        createSmallRingStream(manager);
+        IntStream.range(0, EVENTS).forEach(i -> publish(manager, i, bigPayload(i)));
+        awaitCondition(() -> sealer.sealFailureCount() >= SEAL_FAILURES);
+
+        manager.truncateWalsToSealed();
+        assertThat(index.lastSealedOffset(STREAM, PARTITION)).isEqualTo(-1L);
+        assertThat(replayedOffsets(partitionWalFile())).containsExactlyElementsOf(offsets(EVENTS));
+
+        storageDown.set(false);
+        awaitCondition(() -> index.lastSealedOffset(STREAM, PARTITION) == EVENTS - RING_EVENTS - 1);
+        manager.truncateWalsToSealed();
+        manager.close();
+
+        assertThat(replayedOffsets(partitionWalFile())).first().isEqualTo((long) (EVENTS - RING_EVENTS));
+        assertThat(tieredStreamReader(index, storage).read(STREAM, PARTITION, 0, EVENTS).await().unwrap())
+            .extracting(RawEvent::offset)
+            .containsExactlyElementsOf(offsets(EVENTS - RING_EVENTS));
     }
 
     // === helpers ===
 
-    /// A sink that fails the partition's first segment (offset 0 — disk full, DHT error) and durably records
-    /// every other segment in the index, as `StorageSegmentSink` does on success.
-    private static Promise<Unit> sealUnlessFirstSegment(SegmentIndex index, SealedSegment segment) {
-        if (segment.startOffset() == 0) {
-            return Causes.cause("disk full").promise();
+    /// Storage refuses every seal while it is down (disk full, DHT error), then accepts.
+    private static Promise<Unit> sealUnlessDown(AtomicBoolean storageDown, SegmentSink storageSink, SealedSegment segment) {
+        return storageDown.get()
+               ? Causes.cause("disk full").promise()
+               : storageSink.seal(segment);
+    }
+
+    private static void awaitCondition(BooleanSupplier condition) {
+        var deadline = System.currentTimeMillis() + AWAIT_MS;
+
+        while (!condition.getAsBoolean() && System.currentTimeMillis() < deadline) {
+            LockSupport.parkNanos(POLL_NANOS);
         }
 
-        index.addSegment(segment.streamName(), segment.partition(), segment.startOffset(), segment.endOffset());
-
-        return Promise.unitPromise();
+        assertThat(condition.getAsBoolean()).as("condition within %d ms", AWAIT_MS).isTrue();
     }
 
     private static void createSmallRingStream(StreamPartitionManager manager) {

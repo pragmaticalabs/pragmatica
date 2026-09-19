@@ -109,8 +109,9 @@ public final class SegmentIndex {
     ///     [#rebuildFromRefs] only sees the refs that survived, and a prefix reclaimed by retention is
     ///     indistinguishable from one that was never sealed, so the rebuilt watermark starts at the lowest
     ///     surviving ref and still stops at the first hole above it. A never-sealed prefix below every
-    ///     surviving ref is therefore not detected across a restart; the ring seals strictly in offset order
-    ///     (one seal in flight per partition), so it produces no such prefix.
+    ///     surviving ref is therefore not detected across a restart; [SegmentSealer] seals strictly in offset
+    ///     order (one seal in flight per partition), so it produces no such prefix. When retention has
+    ///     reclaimed EVERY ref of a partition nothing anchors the rebuild at all (#1278).
     public long lastSealedOffset(String streamName, int partition) {
         return option(sealedThrough.get(PartitionKey.partitionKey(streamName, partition))).or(NOTHING_SEALED);
     }

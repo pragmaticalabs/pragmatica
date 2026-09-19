@@ -20,6 +20,7 @@ import org.pragmatica.lang.utils.Causes;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.IntStream;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -94,21 +95,46 @@ class StreamPartitionManagerRecoveryTest {
         rebuilt.close();
     }
 
-    /// #1234: segment 1 fails to seal while a later segment succeeds, then the node restarts. Recovery seeds
-    /// the ring at the sealed watermark and replays only the WAL above it, so the watermark must stop below
-    /// the failed segment: the failed range comes back from the WAL. Before the fix recovery seeded above
-    /// the later segment and the failed range was in neither the ring, the segments nor the replay.
+    /// #1234: segment 1 ([0-1]) failed to seal while a later segment ([2-3]) is sealed, then the node
+    /// restarts. Recovery seeds the ring at the sealed watermark and replays only the WAL above it, so the
+    /// watermark must stop below the failed segment: the failed range comes back from the WAL. Before the fix
+    /// recovery seeded above the later segment and the failed range was in neither the ring, the segments nor
+    /// the replay. The index is written directly — an index rebuilt from refs written before the fix.
     @Test
     void rebuild_replaysFailedSegmentRangeFromWal_whenLaterSegmentSealed() {
         var index = new SegmentIndex();
+
+        publishAll(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir)));
+        index.addSegment(STREAM, PARTITION, 2, 3);
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), index::lastSealedOffset);
+        createStream(recovered);
+
+        var events = readFrom(recovered, 0);
+
+        assertThat(events).hasSize(EVENTS);
+        IntStream.range(0, EVENTS).forEach(i -> assertEvent(events.get(i), i));
+
+        recovered.close();
+    }
+
+    /// #1234, ruling B: the node restarts while sealing is still failing. The ring had already reclaimed the
+    /// evicted events and the sealer's retained copies die with the process, so the WAL — never truncated past
+    /// the contiguous sealed watermark — is the copy that survives: recovery replays the whole range.
+    @Test
+    void rebuild_replaysEvictedRangeFromWal_whenRestartedWhileSealingFails() {
+        var index = new SegmentIndex();
+        var storageDown = new AtomicBoolean(true);
         var failing = streamPartitionManager(Long.MAX_VALUE,
-                                             segmentSealer(segment -> sealUnlessFirstSegment(index, segment)),
+                                             segmentSealer(segment -> sealUnlessDown(storageDown, index, segment)),
                                              Option.some(walDir),
                                              index::lastSealedOffset);
 
         createStream(failing, SMALL_RING_EVENTS);
-        // Results deliberately ignored: once the ring is full of events it could not seal, it may refuse.
-        IntStream.range(0, EVENTS).forEach(i -> failing.publishLocal(STREAM, PARTITION, payload(i), 1000L + i));
+        IntStream.range(0, EVENTS).forEach(i -> publishOne(failing, i));
+
+        assertCursorExpired(failing, 0);
+        failing.truncateWalsToSealed();
         failing.close();
 
         var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), index::lastSealedOffset);
@@ -116,21 +142,26 @@ class StreamPartitionManagerRecoveryTest {
 
         var events = readFrom(recovered, 0);
 
-        assertThat(events).isNotEmpty();
-        assertEvent(events.getFirst(), 0);
+        assertThat(index.lastSealedOffset(STREAM, PARTITION)).isEqualTo(-1L);
+        assertThat(events).hasSize(EVENTS);
+        IntStream.range(0, EVENTS).forEach(i -> assertEvent(events.get(i), i));
 
         recovered.close();
+        // Let the orphaned sealer's next retry succeed, so it stops retrying for the rest of the test JVM.
+        storageDown.set(false);
     }
 
     // === helpers ===
 
-    /// A sink that fails the partition's first segment (offset 0) and durably records every other segment in
-    /// the index, as `StorageSegmentSink` does on success.
-    private static Promise<Unit> sealUnlessFirstSegment(SegmentIndex index, SealedSegment segment) {
-        if (segment.startOffset() == 0) {
-            return Causes.cause("disk full").promise();
-        }
+    /// Storage refuses every seal while it is down; once up, it records the segment in the index as
+    /// `StorageSegmentSink` does.
+    private static Promise<Unit> sealUnlessDown(AtomicBoolean storageDown, SegmentIndex index, SealedSegment segment) {
+        return storageDown.get()
+               ? Causes.cause("disk full").promise()
+               : indexed(index, segment);
+    }
 
+    private static Promise<Unit> indexed(SegmentIndex index, SealedSegment segment) {
         index.addSegment(segment.streamName(), segment.partition(), segment.startOffset(), segment.endOffset());
 
         return Promise.unitPromise();

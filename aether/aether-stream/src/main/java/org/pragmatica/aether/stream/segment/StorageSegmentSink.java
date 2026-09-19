@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.segment;
 
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -17,6 +16,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Unit.unit;
 
 
 public final class StorageSegmentSink implements SegmentSink {
@@ -56,6 +56,11 @@ public final class StorageSegmentSink implements SegmentSink {
     /// [StorageInstance#createRef]: the pair credits the sealed block twice for the one segment ref,
     /// so it could never reach refCount 0 and the garbage collector could never collect a segment
     /// whose ref had been dropped (#812).
+    ///
+    /// The index is updated as a DEPENDENT step, before the returned promise succeeds (#1234): the sealer
+    /// drops its retained copy on that success, so the index must already hold the segment — an
+    /// independent `onSuccess` runs asynchronously and could land after the copy was gone, leaving a window
+    /// in which a read found the offsets in neither place.
     @Override
     public Promise<Unit> seal(SealedSegment segment) {
         var raw = segment.serializedEvents();
@@ -65,12 +70,10 @@ public final class StorageSegmentSink implements SegmentSink {
 
         return storage.putRef(refName(segment),
                               processedData.data())
-                      .onSuccess(_ -> updateIndex(segment,
-                                                  originalSize,
-                                                  processedData.encrypted()))
-                      .onSuccess(_ -> logSealed(segment))
-                      .onFailure(cause -> logSealFailed(segment, cause))
-                      .mapToUnit();
+                      .map(_ -> updateIndex(segment,
+                                            originalSize,
+                                            processedData.encrypted()))
+                      .onSuccess(_ -> logSealed(segment));
     }
 
     private ProcessedData applyEncryption(byte[] data) {
@@ -100,7 +103,7 @@ public final class StorageSegmentSink implements SegmentSink {
         return result;
     }
 
-    private void updateIndex(SealedSegment segment, int originalSize, boolean encrypted) {
+    private Unit updateIndex(SealedSegment segment, int originalSize, boolean encrypted) {
         index.addSegment(segment.streamName(),
                          segment.partition(),
                          segment.startOffset(),
@@ -109,6 +112,8 @@ public final class StorageSegmentSink implements SegmentSink {
                          compressionOrdinal,
                          encrypted,
                          originalSize);
+
+        return unit();
     }
 
     private void logSealed(SealedSegment segment) {
@@ -118,18 +123,6 @@ public final class StorageSegmentSink implements SegmentSink {
                   segment.startOffset(),
                   segment.endOffset(),
                   segment.eventCount());
-    }
-
-    /// Per-attempt detail at DEBUG (#1234): until then a failed seal left no trace at all. The loud signal is
-    /// owned by the ring — one WARN and a counted failure per exhausted retry cycle, naming the range it keeps
-    /// — so an outage does not multiply WARN lines by the retry budget.
-    private void logSealFailed(SealedSegment segment, Cause cause) {
-        log.debug("Sealing segment {} partition={} offsets=[{}-{}] failed: {}",
-                  segment.streamName(),
-                  segment.partition(),
-                  segment.startOffset(),
-                  segment.endOffset(),
-                  cause.message());
     }
 
     static String refName(SealedSegment segment) {

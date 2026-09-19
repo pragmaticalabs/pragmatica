@@ -8,7 +8,7 @@ package org.pragmatica.aether.stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import java.util.ArrayList;
@@ -35,7 +35,7 @@ class EvictionListenerTest {
         @Test
         void listener_receivesEventsBeforeEviction() {
             var captured = new CopyOnWriteArrayList<List<OffHeapRingBuffer.RawEvent>>();
-            EvictionListener listener = (_, _, events) -> sealed(captured.add(new ArrayList<>(events)));
+            EvictionListener listener = (_, _, events) -> accepted(captured.add(new ArrayList<>(events)));
             buffer = offHeapRingBuffer("test-stream", 0, 3, 1024, listener);
 
             // Fill buffer to capacity
@@ -57,7 +57,7 @@ class EvictionListenerTest {
         @Test
         void listener_receivesCorrectOffsetRange() {
             var capturedOffsets = new CopyOnWriteArrayList<Long>();
-            EvictionListener listener = (_, _, events) -> sealed(capturedOffsets.addAll(events.stream().map(OffHeapRingBuffer.RawEvent::offset).toList()));
+            EvictionListener listener = (_, _, events) -> accepted(capturedOffsets.addAll(events.stream().map(OffHeapRingBuffer.RawEvent::offset).toList()));
             buffer = offHeapRingBuffer("test-stream", 2, 3, 1024, listener);
 
             for (int i = 0; i < 6; i++) {
@@ -75,7 +75,7 @@ class EvictionListenerTest {
                 callCount[0]++;
                 assertThat(streamName).isEqualTo("orders");
                 assertThat(partition).isEqualTo(1);
-                return Promise.unitPromise();
+                return Result.unitResult();
             };
             buffer = offHeapRingBuffer("orders", 1, 5, 1024, listener);
 
@@ -94,7 +94,7 @@ class EvictionListenerTest {
         @Test
         void listener_calledOnAgeEviction() {
             var captured = new CopyOnWriteArrayList<List<OffHeapRingBuffer.RawEvent>>();
-            EvictionListener listener = (_, _, events) -> sealed(captured.add(new ArrayList<>(events)));
+            EvictionListener listener = (_, _, events) -> accepted(captured.add(new ArrayList<>(events)));
             buffer = offHeapRingBuffer("test-stream", 0, 100, 4096, listener);
 
             var now = System.currentTimeMillis();
@@ -146,7 +146,7 @@ class EvictionListenerTest {
         @Test
         void listener_multipleEvictionBatches_calledMultipleTimes() {
             var batchSizes = new CopyOnWriteArrayList<Integer>();
-            EvictionListener listener = (_, _, events) -> sealed(batchSizes.add(events.size()));
+            EvictionListener listener = (_, _, events) -> accepted(batchSizes.add(events.size()));
             buffer = offHeapRingBuffer("test-stream", 0, 5, 1024, listener);
 
             // Fill buffer
@@ -168,7 +168,7 @@ class EvictionListenerTest {
         @Test
         void listener_dataRegionEviction_collectsMultipleEvents() {
             var captured = new CopyOnWriteArrayList<List<OffHeapRingBuffer.RawEvent>>();
-            EvictionListener listener = (_, _, events) -> sealed(captured.add(new ArrayList<>(events)));
+            EvictionListener listener = (_, _, events) -> accepted(captured.add(new ArrayList<>(events)));
             // Small data region: 20 bytes. Each "msg-X" is 5 bytes, so 4 fit.
             buffer = offHeapRingBuffer("test-stream", 0, 100, 20, listener);
 
@@ -189,9 +189,9 @@ class EvictionListenerTest {
         }
     }
 
-    /// A listener that records synchronously and seals successfully — the promise is already resolved, so the
-    /// ring reclaims in the same pass, exactly as a synchronous sink does (#1234).
-    private static Promise<Unit> sealed(boolean recorded) {
-        return Promise.unitPromise();
+    /// A listener that records synchronously and takes the events — the ring reclaims them in the same pass
+    /// (#1234).
+    private static Result<Unit> accepted(boolean recorded) {
+        return Result.unitResult();
     }
 }
