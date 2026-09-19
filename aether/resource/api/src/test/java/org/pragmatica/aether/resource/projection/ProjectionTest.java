@@ -4,10 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.projection;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.slice.topic.Topic;
@@ -20,6 +23,19 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.Filter;
+import org.apache.logging.log4j.core.Layout;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Configuration;
+import org.apache.logging.log4j.core.config.LoggerConfig;
+import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.layout.PatternLayout;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -452,6 +468,90 @@ class ProjectionTest {
                          .unwrap();
         }
 
+        /// The STALE settlement is claimed to be logged at WARN (javadoc, spec §8, changelog), so it is
+        /// pinned here: a log4j2 appender on the [Projection] logger captures what the expired holder's
+        /// late finalize or release emits. Removing the WARN reddens both tests.
+        @Nested
+        class StaleSettlementWarn {
+            private static final String LOGGER_NAME = Projection.class.getName();
+
+            private CapturingAppender appender;
+            private LoggerConfig loggerConfig;
+            private Level originalLevel;
+
+            @BeforeEach
+            void captureWarns() {
+                var context = (LoggerContext) LogManager.getContext(false);
+
+                appender = CapturingAppender.create("ProjectionStaleWarnCapture");
+                appender.start();
+                loggerConfig = loggerConfigFor(context.getConfiguration());
+                originalLevel = loggerConfig.getLevel();
+                loggerConfig.addAppender(appender, Level.WARN, null);
+                loggerConfig.setLevel(Level.WARN);
+                context.updateLoggers();
+            }
+
+            @AfterEach
+            void releaseCapture() {
+                var context = (LoggerContext) LogManager.getContext(false);
+
+                loggerConfig.removeAppender(appender.getName());
+                loggerConfig.setLevel(originalLevel);
+                context.updateLoggers();
+                appender.stop();
+            }
+
+            @Test
+            void expiredHolder_lateFinalize_isLoggedAsStaleAtWarn() {
+                runExpiredHolder(gate -> gate.succeed(Unit.unit()));
+
+                assertThat(appender.warns()).describedAs("the expired holder's refused finalize must be visible at WARN")
+                                            .anyMatch(line -> line.contains("was stale on finalize")
+                                                              && line.contains("msg-1"));
+            }
+
+            @Test
+            void expiredHolder_lateRelease_isLoggedAsStaleAtWarn() {
+                runExpiredHolder(gate -> gate.fail(WRITE_FAILED));
+
+                assertThat(appender.warns()).describedAs("the expired holder's refused release must be visible at WARN")
+                                            .anyMatch(line -> line.contains("was stale on release")
+                                                              && line.contains("msg-1"));
+            }
+
+            /// A's fold is held past its lease, B reclaims, then `settle` completes A's fold.
+            private void runExpiredHolder(Consumer<Promise<Unit>> settle) {
+                var store = new InMemoryStore();
+                var claims = new InMemoryClaims();
+                var projection = countingProjection(store).withClaims(claims, LEASE);
+                var gate = Promise.<Unit> promise();
+
+                store.writeGate = gate;
+
+                var holder = projection.onEvent(new OrderSeen("a"), FIRST);
+
+                claims.clock.addAndGet(LEASE.nanos() + 1);
+                claimToken(claims, CLAIM_KEY);
+                settle.accept(gate);
+                holder.await();
+            }
+
+            private static LoggerConfig loggerConfigFor(Configuration configuration) {
+                var existing = configuration.getLoggerConfig(LOGGER_NAME);
+
+                if (LOGGER_NAME.equals(existing.getName())) {
+                    return existing;
+                }
+
+                var fresh = new LoggerConfig(LOGGER_NAME, Level.WARN, false);
+
+                configuration.addLogger(LOGGER_NAME, fresh);
+
+                return fresh;
+            }
+        }
+
         @Test
         void claimKey_separatesProjections_generations_andMessages() {
             var base = new Projection.ClaimKey("orders", 0L, "msg-1");
@@ -528,6 +628,30 @@ class ProjectionTest {
             settlement[0] = Settlement.APPLIED;
 
             return next;
+        }
+    }
+
+    /// In-memory log4j2 appender keeping WARN-and-above messages for assertions.
+    private static final class CapturingAppender extends AbstractAppender {
+        private final List<String> messages = new CopyOnWriteArrayList<>();
+
+        private CapturingAppender(String name, Layout<?> layout) {
+            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
+        }
+
+        static CapturingAppender create(String name) {
+            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
+        }
+
+        @Override
+        public void append(LogEvent event) {
+            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
+                messages.add(event.getMessage().getFormattedMessage());
+            }
+        }
+
+        List<String> warns() {
+            return List.copyOf(messages);
         }
     }
 
