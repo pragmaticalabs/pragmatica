@@ -11,6 +11,7 @@ import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -52,7 +53,9 @@ final class DefaultReplicationManager implements ReplicationManager {
     private final AtomicLong waiterSequence = new AtomicLong();
     private final Runnable betweenSteps;
     private final Fn2<ScheduledFuture<?>, Runnable, TimeSpan> timerScheduler;
-    private final AtomicLong ackVisits = new AtomicLong();
+    /// Test probe (#1260). A `LongAdder`, not an `AtomicLong`: it is bumped per visited waiter on the ack
+    /// hot path of every partition, and a single CAS'd counter would reintroduce cross-partition contention.
+    private final LongAdder ackVisits = new LongAdder();
 
     DefaultReplicationManager(NodeId governorId, ReplicaRegistry registry, ReplicationTransport transport) {
         this(governorId, registry, transport, none(), ALWAYS_PROMOTE);
@@ -299,7 +302,7 @@ final class DefaultReplicationManager implements ReplicationManager {
                                   WaiterKey key,
                                   PendingAck pending,
                                   NodeId replicaId) {
-        ackVisits.incrementAndGet();
+        ackVisits.increment();
         pending.ackedReplicas().add(replicaId);
         resolveIfSatisfied(waiters, key, pending);
     }
@@ -342,7 +345,7 @@ final class DefaultReplicationManager implements ReplicationManager {
 
     /// Test probe (#1260): pending-await entries visited by ack resolution since construction.
     long ackVisitCount() {
-        return ackVisits.get();
+        return ackVisits.sum();
     }
 
     /// Orders a partition's waiters by awaited offset; `sequence` makes each await a distinct entry.

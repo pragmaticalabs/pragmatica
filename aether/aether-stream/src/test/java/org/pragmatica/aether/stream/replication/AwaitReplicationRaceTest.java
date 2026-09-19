@@ -152,7 +152,35 @@ class AwaitReplicationRaceTest {
         }
     }
 
+    @Nested
+    class TimerArming {
+        /// rev1279 N1: an ack can complete the waiter between its registration and the moment its timer
+        /// is armed. Completion then finds no timer to cancel, so arming must notice the await is already
+        /// resolved and cancel the timer itself. The fake scheduler lands the ack from INSIDE
+        /// `timerScheduler.apply`, which is exactly that window.
+        @Test
+        void awaitReplication_cancelsTimer_whenAckCompletesWaiterBeforeTimerIsArmed() {
+            var managerRef = new AtomicReference<DefaultReplicationManager>();
+            Fn2<ScheduledFuture<?>, Runnable, TimeSpan> ackWhileArming = (task, _) -> ackThenSchedule(managerRef, task);
+            var manager = new DefaultReplicationManager(OWNER, registry, (_, _) -> {}, () -> {}, ackWhileArming);
+
+            managerRef.set(manager);
+            var pending = manager.awaitReplication(STREAM, P1, OFFSET, 1);
+
+            assertThat(pending.await().isSuccess()).isTrue();
+            assertThat(timers).hasSize(1);
+            assertThat(timers).allMatch(ScheduledFuture::isCancelled);
+        }
+    }
+
     // === fixtures ===
+
+    private ScheduledFuture<?> ackThenSchedule(AtomicReference<DefaultReplicationManager> managerRef, Runnable task) {
+        managerRef.get()
+                  .handleAck(replicateAck(REPLICA, STREAM, P1, OFFSET));
+
+        return record(neverFires.schedule(task, 1, TimeUnit.HOURS));
+    }
 
     private DefaultReplicationManager manager(Runnable betweenSteps) {
         return new DefaultReplicationManager(OWNER, registry, (_, _) -> {}, betweenSteps, recordingTimer());
