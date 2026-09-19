@@ -12,6 +12,8 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceBridge;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
@@ -55,10 +57,42 @@ class SliceInvokerMessageContextTest {
         assertThat(network.sends.get()).as("an in-process delivery sends nothing over the network").isZero();
     }
 
-    /// Locality pin: with the slice absent locally the delivery FAILS — it is never forwarded to a node
-    /// that hosts the slice, which would drop the context on the wire.
+    /// THE locality pin (adopted from review rev1310, whose mutation M6 — a forwarding implementation —
+    /// left the older negative test green): the slice IS local AND the method's only registered endpoint
+    /// is REMOTE, so any implementation that consults endpoint selection would send. Delivery must stay
+    /// in-process with zero sends; a forward would drop the context, which no wire message carries.
     @Test
-    void invokeLocalWithContext_failsWithoutForwarding_whenTheSliceIsNotLocal() {
+    void invokeLocalWithContext_deliversInProcess_evenWhenTheOnlyEndpointIsRemote() {
+        var self = new NodeId("self");
+        var network = new CountingNetwork();
+        var registry = EndpointRegistry.endpointRegistry();
+        var handler = InvocationHandler.invocationHandler(self, network);
+        var bridge = new RecordingBridge();
+
+        handler.registerSlice(ARTIFACT, bridge);
+        registry.registerEndpoint(new EndpointKey(ARTIFACT, METHOD, 0), EndpointValue.endpointValue(new NodeId("remote")));
+
+        SliceInvoker.sliceInvoker(self,
+                                  network,
+                                  registry,
+                                  handler,
+                                  new StubSerializer(),
+                                  new StubDeserializer(),
+                                  new StubDeploymentManager())
+                    .invokeLocalWithContext(ARTIFACT, METHOD, new byte[]{9}, CONTEXT)
+                    .await()
+                    .onFailure(cause -> fail("a local slice must receive the delivery in-process: " + cause.message()));
+
+        assertThat(network.sends.get()).as("the context path never forwards, even to a registered remote endpoint")
+                                       .isZero();
+        assertThat(bridge.context.get()).isEqualTo(CONTEXT);
+    }
+
+    /// With the slice absent locally the delivery FAILS rather than being reported delivered. (This alone
+    /// does not pin locality: a forwarding implementation also fails here, for want of an endpoint — the
+    /// test above is the one that does.)
+    @Test
+    void invokeLocalWithContext_fails_whenTheSliceIsNotLocal() {
         var self = new NodeId("self");
         var network = new CountingNetwork();
         var handler = InvocationHandler.invocationHandler(self, network);
@@ -105,6 +139,13 @@ class SliceInvokerMessageContextTest {
 
         @Override
         public Promise<byte[]> invoke(String methodName, byte[] input) {
+            return Promise.success(new byte[0]);
+        }
+
+        /// Encodes successfully, so a forwarding implementation would get as far as the SEND — the
+        /// locality pin then fails on the send count rather than on an unrelated encode refusal.
+        @Override
+        public Promise<byte[]> encode(Object input) {
             return Promise.success(new byte[0]);
         }
 

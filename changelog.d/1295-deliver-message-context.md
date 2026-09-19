@@ -3,7 +3,7 @@
   generates an adapter for a `(T event, MessageContext context)` subscriber that expects the runtime to
   hand it a `ContextualEvent`. The durable dispatcher (`StreamConsumerManager`) only ever passed the bare
   decoded event, so the generated adapter failed with a `ClassCastException`. The failure is lifted into a
-  failed promise, so there was no crash, but every event was retried 5 times and then dead-lettered.
+  failed promise, so there was no crash, but every event used up all 5 delivery attempts (1 + 4 retries) and was then dead-lettered.
   `MessageContext.messageContext(` and `ContextualEvent.contextualEvent(` had no production caller, and
   `Projection.onEvent(event, MessageContext)` could never run in a deployed node.
 - The dispatcher now builds a `MessageContext(messageId, topic, partition, offset)`. `messageId` is the
