@@ -9,9 +9,11 @@
   offset order, and replicas receive events in offset order. Only the group-commit fsync is awaited
   after the section is released, so concurrent publishers still share fsyncs. The ring's own `append`,
   `appendBatch`, `seedHead` and retention sweeps take the same lock, as defence in depth. Append
-  listeners (the consumer runtime's synchronous push path) run only after the section is released, in
-  offset order, so a consumer handler may publish again, to its own partition or another, without
-  deadlock and without breaking WAL order. The section never waits for an fsync.
+  listeners (the consumer runtime's push path) run only after the section is released, on each ring's
+  serial notifier thread and never on a publisher's thread, in offset order. A consumer handler may
+  therefore publish again, to its own partition or another, without deadlock and without breaking WAL
+  order; no publish waits for other publishers' listeners; and a listener that throws is logged without
+  failing any publish or stalling later notifications. The section never waits for an fsync.
   `[mechanism: offset assignment, frame write and send share the ring's appendLock; pinned in one JVM by
   StreamPartitionManagerOrderedAppendTest, OffHeapRingBufferConcurrentAppendTest and
   StreamPartitionManagerSectionReentrancyTest]`
@@ -28,9 +30,11 @@
   number them, so a reordered frame swapped payloads between offsets, and a missing or duplicated frame
   shifted every later record relative to replicas, sealed segments and consumer cursors. Recovery now
   places records by their stored offsets. A file whose frames are only out of order recovers correctly.
-  A frame file that needed reordering is WARNed. A gap BEFORE the first record is accepted as reclaimed
-  history, since retention removing every sealed segment drops the sealed floor below the WAL's first
-  record: the gap reads as expired, and it is WARNed with its range and counted. A gap BETWEEN records,
+  A frame file that needed reordering is WARNed. A gap before the file's first PHYSICAL record is
+  accepted as reclaimed history, since retention removing every sealed segment drops the sealed floor
+  below the WAL's first record: the gap reads as expired, it is WARNed with its range, and it is counted
+  in `GET /api/v1/storage/retention` as `walRecoveryHeadGapsAccepted`. A missing offset while the file
+  still holds records at or below the floor is a hole, and refuses. A gap BETWEEN records,
   or a duplicate, refuses with `StreamError.WalReplayMismatch`, logged at ERROR. The stream is then not
   materialized on that node (a lazy per-partition materialize leaves only that partition unbuilt).
   Records are never renumbered.
