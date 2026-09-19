@@ -166,18 +166,26 @@ class OffHeapRingBufferCloseRaceTest {
         startReader(buffer::eventCount, running, started, finished, escaped);
 
         started.await(5, TimeUnit.SECONDS);
-        parkedInWindow.await(5, TimeUnit.SECONDS);
+
+        var parked = parkedInWindow.await(5, TimeUnit.SECONDS);
+
         buffer.close();
         closeCompleted.countDown();
         running.set(false);
         finished.await(5, TimeUnit.SECONDS);
 
+        // Asserted after the readers are stopped, and per round rather than only through the total: a probe
+        // that never parks means the seam is not wired, so fail on the first round instead of letting all
+        // of them wait out the timeout and enter the window only by chance again.
+        assertThat(parked).as("a reader parked in the close-race window").isTrue();
+
         return buffer.closedUnderReaderCount();
     }
 
     /// The first reader to pass the `closed` check parks there until `close()` has completed, so its native
-    /// read is refused by the JDK — the genuine race — however the scheduler treats the other readers. A
-    /// timed-out park is not hidden: that round then contributes no refusal and the non-vacuity check reddens.
+    /// read is refused by the JDK — the genuine race — however the scheduler treats the other readers. A park
+    /// that times out before `close()` completes is not hidden: that round then contributes no refusal, and
+    /// the non-vacuity check reddens.
     private static void parkFirstReader(AtomicBoolean parkClaimed,
                                         CountDownLatch parkedInWindow,
                                         CountDownLatch closeCompleted) {
