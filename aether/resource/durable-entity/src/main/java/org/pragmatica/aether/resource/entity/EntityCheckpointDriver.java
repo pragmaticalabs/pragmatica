@@ -8,11 +8,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -72,8 +70,7 @@ public final class EntityCheckpointDriver {
                                 Map<Integer, Long> checkpointedThrough,
                                 Map<Integer, Long> inFlight,
                                 AtomicLong writes,
-                                AtomicLong failures,
-                                AtomicReference<Runnable> outcomeProbe) {
+                                AtomicLong failures) {
         static Registration registration(String keyspace,
                                          int partitionCount,
                                          EntityFold fold,
@@ -85,8 +82,7 @@ public final class EntityCheckpointDriver {
                                     new ConcurrentHashMap<>(),
                                     new ConcurrentHashMap<>(),
                                     new AtomicLong(),
-                                    new AtomicLong(),
-                                    new AtomicReference<>(() -> {}));
+                                    new AtomicLong());
         }
     }
 
@@ -318,11 +314,17 @@ public final class EntityCheckpointDriver {
                                     partition,
                                     candidate.throughOffset(),
                                     candidate.snapshot())
-                    .onResult(result -> recordOutcome(registration, partition, candidate, tick, result));
+                    .withResult(result -> recordOutcome(registration, partition, candidate, tick, result));
     }
 
+    /// Attached with `withResult`, so it runs inline on the thread that settles the save, as a step of the
+    /// save's chain rather than an observer dispatched to another thread (#1269 review): by the time the
+    /// save's promise has settled, its outcome is recorded and its mark cleared.
+    ///
     /// Record first, THEN clear the in-flight mark: cleared first, a tick landing in between would find the
     /// partition free while `checkpointedThrough` still held the old offset, and save the same claim again.
+    /// No test pins that order; getting it wrong costs one duplicate save at an equal offset, which the
+    /// checkpoint fence (#700) accepts harmlessly.
     @Contract
     private static void recordOutcome(Registration registration,
                                       int partition,
@@ -337,16 +339,6 @@ public final class EntityCheckpointDriver {
                                                 candidate.throughOffset(),
                                                 cause));
         settle(registration, partition, tick);
-        registration.outcomeProbe().get().run();
-    }
-
-    /// Test-only seam (#1269 review): runs after a save's outcome has been recorded AND its in-flight mark
-    /// settled, so a test can wait for a late settle to finish instead of sleeping. Production never
-    /// touches it; an unknown keyspace is ignored.
-    @Contract
-    void outcomeProbe(String keyspace, Runnable probe) {
-        Option.option(registrations.get(keyspace)).onPresent(registration -> registration.outcomeProbe()
-                                                                                         .set(probe));
     }
 
     /// The positive signal. Without a success counter, a driver that silently stopped looks exactly like
@@ -356,10 +348,19 @@ public final class EntityCheckpointDriver {
     ///
     /// Kept at its MAXIMUM rather than overwritten: once [#claim] can take over a stalled checkpoint, the
     /// abandoned save may settle after its replacement, and its lower offset must not pull the record back.
+    ///
+    /// For the same reason `writes` counts only a save that reached or raised the record. A save that
+    /// lands BELOW what this node already recorded is one the checkpoint fence refuses (#700), and a
+    /// refused Put still resolves successfully, so counting it would report a write that did not happen.
+    /// What stays uncountable here is a claim refused because ANOTHER node committed higher — this node
+    /// cannot see that, the same detection limit #700 records.
     @Contract
     private static void recordWrite(Registration registration, int partition, long through) {
-        registration.checkpointedThrough().merge(partition, through, Math::max);
-        registration.writes().incrementAndGet();
+        if (registration.checkpointedThrough()
+                        .merge(partition, through, Math::max) == through) {
+            registration.writes()
+                        .incrementAndGet();
+        }
     }
 
     @Contract

@@ -7,7 +7,6 @@ package org.pragmatica.aether.resource.entity;
 import java.lang.management.ManagementFactory;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -104,7 +103,7 @@ class EntityCheckpointDriverCoalescingTest {
     /// The abandoned save settling LATE must not clear the mark of the save that replaced it — or the very
     /// next tick would start a third save while the second is still in flight.
     @Test
-    void tick_keepsTheReplacementsMark_whenTheAbandonedSaveSettlesLate() throws InterruptedException {
+    void tick_keepsTheReplacementsMark_whenTheAbandonedSaveSettlesLate() {
         var substrate = new CountingSubstrate(false);
         var fold = populatedFold(substrate);
         var driver = EntityCheckpointDriver.entityCheckpointDriver();
@@ -117,14 +116,7 @@ class EntityCheckpointDriverCoalescingTest {
 
         assertThat(substrate.saves.get()).as("the bound elapsed and a replacement save started").isEqualTo(2);
 
-        var lateSettleHandled = new CountDownLatch(1);
-
-        driver.outcomeProbe(KEYSPACE, lateSettleHandled::countDown);
         substrate.settleSave(0);
-
-        assertThat(lateSettleHandled.await(10, TimeUnit.SECONDS)).as("the abandoned save's late settle must have"
-                                                                    + " been handled")
-                                                                 .isTrue();
         driver.tick();
 
         assertThat(substrate.saves.get()).as("the replacement is still in flight").isEqualTo(2);
@@ -134,7 +126,8 @@ class EntityCheckpointDriverCoalescingTest {
     /// committed side of that is closed in the substrate — checkpoint writes are `MonotonicFenced` (#700),
     /// so the consensus applier refuses the lower claim — and this pins the local side: the driver's own
     /// record of what it wrote must not be pulled back to the late save's lower offset, or the next tick
-    /// would re-encode and re-save work already checkpointed.
+    /// would re-encode and re-save work already checkpointed — and the refused save must not be counted as
+    /// a write. Saves settle inline (`withResult`), so no wait is needed after settling one.
     @Test
     void tick_keepsTheHigherCheckpointRecorded_whenTheAbandonedLowerSaveLandsLate() {
         var substrate = new CountingSubstrate(false);
@@ -155,24 +148,18 @@ class EntityCheckpointDriverCoalescingTest {
         assertThat(substrate.saves.get()).as("the replacement save claims the advanced fold").isEqualTo(2);
 
         substrate.succeedSave(1);
-        awaitWrites(driver, 1);
+
+        assertThat(writes(driver)).as("the replacement's accepted save is counted").isEqualTo(1L);
+
         substrate.succeedSave(0);
-        awaitWrites(driver, 2);
+
+        assertThat(writes(driver)).as("the late, lower save — refused by the fence — is not counted as a write")
+                                  .isEqualTo(1L);
 
         assertThat(driver.snapshot()
                          .keyspaces()
                          .getFirst()
                          .checkpointedThrough()).containsEntry(PARTITION, 2L * KEYS - 1);
-    }
-
-    private static void awaitWrites(EntityCheckpointDriver driver, long expected) {
-        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-
-        while (writes(driver) < expected && System.nanoTime() < deadline) {
-            Thread.onSpinWait();
-        }
-
-        assertThat(writes(driver)).as("the save's settle must have been recorded").isEqualTo(expected);
     }
 
     private static long writes(EntityCheckpointDriver driver) {
