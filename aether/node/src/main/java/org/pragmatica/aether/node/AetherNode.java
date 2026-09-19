@@ -1211,9 +1211,11 @@ public interface AetherNode extends ManageableNode {
     /// `writeAuthority` is the RAW committed `StreamPartitionOwnershipValue`: it gates application appends
     /// ([#writeAdmission]) and validates replication senders. `routing` is the #568 liveness-filtered view
     /// ([#committedOwnerStillAlive]): it drives backfill self-election and the release guard, where treating a
-    /// dead holder as absent is what unwedges the partition. Liveness is a suspicion, not a fence — fed to the
-    /// write side, the filtered view would turn a partitioned-but-alive owner into "absent", which admission
-    /// admits, so a second writer would append while the first still writes. A dead owner's partition is
+    /// dead holder as absent is what unwedges the partition. Liveness is a local verdict, not a fence — fed to
+    /// the write side, the filtered view would read an owner this node's SWIM view has marked DEPARTED (while
+    /// it is in fact alive, e.g. partitioned away) or has not yet seen (a join or restart) as "absent", which
+    /// admission admits, so a second writer would append while the first still writes. A merely SUSPECT owner
+    /// is not dropped by the filter (`countedMembers` is MEMBER + SUSPECT). A dead owner's partition is
     /// unwedged for writes only when the leader commits a new ownership record; until then appends fail with
     /// the retryable `NotOwnerAppend`.
     record StreamOwnershipViews(CommittedStreamOwnerSource writeAuthority, CommittedStreamOwnerSource routing) {
@@ -4051,8 +4053,9 @@ public interface AetherNode extends ManageableNode {
         // #1230: application appends are admitted only on the committed owner. Ring possession authorizes
         // reads and replication receipt, never a write: the epoch fence cannot tell a live replica from the
         // owner, because both stamp the same committed epoch. Reads the RAW committed record, deliberately NOT
-        // the #568 liveness-filtered view: liveness is a suspicion, not a fence — filtering would turn a
-        // partitioned-but-alive owner into "absent" and admit a second writer while the first still writes.
+        // the #568 liveness-filtered view: liveness is a local verdict, not a fence — filtering would read an
+        // owner this node has marked DEPARTED (alive but partitioned away) or has not yet seen as "absent", and
+        // admit a second writer while the first still writes. A SUSPECT owner is never dropped by the filter.
         // A dead owner's partition is unwedged only by the leader committing a new ownership record; until
         // then writes fail retryable NotOwnerAppend (CTO ruling on #1230). No record admits (the cold-start
         // window, where the fence is inert and HRW routing alone picks the writer).

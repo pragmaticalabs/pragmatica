@@ -11,9 +11,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -22,10 +22,13 @@ import org.pragmatica.aether.slice.blueprint.StreamConfigParser;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes.CompositeCause;
 
 
@@ -52,6 +55,9 @@ public sealed interface StreamResourceValidator {
     String RULE_VERSION_PIN_RECOMMENDED = "version-pin-recommended";
     String RULE_INERT_STREAM_CONFIG = "inert-stream-config-key";
     String RULE_INERT_CONSUMER_CONFIG = "inert-consumer-config-key";
+    String STREAMS_SECTION_PREFIX = "streams.";
+    String STRONG = "strong";
+    List<String> CONSISTENCY_KEYS = List.of("consistency_mode", "consistency");
 
     /// Run the full validation pass for a deploy attempt.
     ///
@@ -70,6 +76,7 @@ public sealed interface StreamResourceValidator {
 
         if (failures.isEmpty()) {
             guardInertConfig(resources, resourcesConfig, failures);
+            resourcesConfig.onPresent(toml -> failures.addAll(consistencyFailures(toml)));
         }
 
         if (failures.isEmpty()) {
@@ -83,6 +90,64 @@ public sealed interface StreamResourceValidator {
         return StreamValidationFailures.streamValidationFailures(List.copyOf(failures),
                                                                  List.copyOf(warnings))
                                        .result();
+    }
+
+    /// #1262 deploy gate — the ONE stream-validation rejection that fails the deploy rather than degrading to
+    /// empty bindings: a stream declaring `STRONG` consistency. No write path can honour it (the consensus
+    /// publish path has no production caller), so deploying it would produce a stream every write refuses.
+    /// `BlueprintService` runs this on every `resources.toml` it deploys, on both the artifact and the body
+    /// publish path, before any command is applied.
+    static Result<Unit> ensureHonourableConsistency(Option<String> resourcesConfig) {
+        var failures = resourcesConfig.map(StreamResourceValidator::consistencyFailures).or(List.of());
+
+        return failures.isEmpty()
+               ? Result.unitResult()
+               : StreamValidationFailures.streamValidationFailures(failures,
+                                                                   List.of())
+                                         .result();
+    }
+
+    /// A STRONG declaration under either key. `consistency_mode` is the key the provisioning config binder
+    /// reads into `StreamConfig.consistencyMode` (the record component in snake case) — the one that would
+    /// actually reach the write path. `consistency` is the key `StreamConfigParser` reads and nothing binds;
+    /// a STRONG under it is refused too, because it asserts a guarantee the stream would silently not have.
+    /// Read from the raw TOML so the check sees exactly the text the binder sees.
+    private static List<StreamValidationFailure> consistencyFailures(String toml) {
+        return TomlParser.parse(toml)
+                         .map(StreamResourceValidator::consistencyFailures)
+                         .or(List.of());
+    }
+
+    private static List<StreamValidationFailure> consistencyFailures(TomlDocument doc) {
+        return doc.sectionNames()
+                  .stream()
+                  .filter(StreamResourceValidator::isStreamDeclarationSection)
+                  .flatMap(section -> strongDeclarations(doc, section))
+                  .toList();
+    }
+
+    private static Stream<StreamValidationFailure> strongDeclarations(TomlDocument doc, String section) {
+        return CONSISTENCY_KEYS.stream().flatMap(key -> strongDeclaration(doc, section, key).stream());
+    }
+
+    private static Option<StreamValidationFailure> strongDeclaration(TomlDocument doc, String section, String key) {
+        return doc.getString(section, key)
+                  .filter(STRONG::equalsIgnoreCase)
+                  .map(_ -> unsupportedConsistency(section, key));
+    }
+
+    private static boolean isStreamDeclarationSection(String section) {
+        return section.startsWith(STREAMS_SECTION_PREFIX) && !section.substring(STREAMS_SECTION_PREFIX.length())
+                                                                     .contains(".");
+    }
+
+    private static StreamValidationFailure unsupportedConsistency(String section, String key) {
+        return StreamValidationFailure.streamValidationFailure("[" + section + "]",
+                                                               RULE_INERT_STREAM_CONFIG,
+                                                               key
+                                                              + " 'strong' cannot be honoured — the consensus publish path is not wired in "
+                                                              + "this release, so every write to the stream would be refused (#1262). Remove the "
+                                                              + "key or set it to 'eventual'.");
     }
 
     private static void guardBlueprintNamespace(Artifact blueprintArtifact, List<StreamValidationFailure> failures) {
@@ -164,14 +229,6 @@ public sealed interface StreamResourceValidator {
                                                                         + "' has no runtime effect — segments are always written uncompressed "
                                                                         + "regardless of this setting. Remove the key or set it to 'none'; stream "
                                                                         + "compression is not supported in 1.0 (descoped in #677)."));
-        }
-
-        if (config.consistencyMode() == ConsistencyMode.STRONG) {
-            failures.add(StreamValidationFailure.streamValidationFailure(field,
-                                                                         RULE_INERT_STREAM_CONFIG,
-                                                                         "consistency 'strong' cannot be honoured — the consensus publish path is not "
-                                                                        + "wired in this release, so STRONG writes would either fail or land as EVENTUAL "
-                                                                        + "depending on the API used (#1262). Remove the key or set it to 'eventual'."));
         }
 
         if (!"earliest".equalsIgnoreCase(config.autoOffsetReset())) {

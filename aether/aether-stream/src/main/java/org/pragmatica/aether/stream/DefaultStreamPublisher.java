@@ -20,6 +20,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Serializer;
 
@@ -146,8 +147,20 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
         return publishBatchEventual(events);
     }
 
+    /// #1262 B3: with no consensus path the whole batch is refused up front with the same typed cause a single
+    /// publish gets. With one, `Promise.allOf` yields every per-event `Result` and they are folded into ONE
+    /// result, so any refusal fails the batch — `.mapToUnit()` on the list alone had acknowledged a batch of
+    /// refusals as success, a false acknowledgement with nothing written.
     private Promise<Unit> publishBatchStrong(List<T> events) {
-        return Promise.allOf(events.stream().map(this::publish).toList()).mapToUnit();
+        return consensusPath.async(StreamError.General.CONSENSUS_PATH_UNAVAILABLE)
+                            .flatMap(_ -> Promise.allOf(events.stream().map(this::publish).toList()))
+                            .flatMap(DefaultStreamPublisher::allSucceeded);
+    }
+
+    private static Promise<Unit> allSucceeded(List<Result<Unit>> results) {
+        return Result.allOf(results)
+                     .mapToUnit()
+                     .async();
     }
 
     /// #266: an EVENTUAL batch is grouped by each event's COMPUTED partition (not routed wholesale to
