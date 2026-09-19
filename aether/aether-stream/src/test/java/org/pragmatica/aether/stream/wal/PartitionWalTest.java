@@ -366,6 +366,52 @@ class PartitionWalTest {
         }
     }
 
+    /// #1232 (ruling know 801a8b54e): a failed FRAME WRITE fail-stops the WAL exactly like a failed
+    /// fsync. Otherwise a later frame that did land would leave a hole at the failed record's offset —
+    /// the ring already assigned it — and recovery refuses a hole loudly rather than renumbering.
+    @Nested
+    class WriteFailure {
+
+        @Test
+        void failedFrameWrite_failStopsTheWal_soNoLaterFrameLeavesAGap() {
+            var wal = open("write-failure.wal");
+
+            appendSync(wal, 0L, payload(0), 1L);
+            var wrapper = injectForceFailingChannel(wal);
+
+            wrapper.failWrites = true;
+            wal.append(1L, payload(1), 1L).await().onSuccess(_ -> fail("the frame write was injected to fail"));
+            restoreChannel(wal, wrapper);
+
+            wal.append(2L, payload(2), 1L)
+               .await()
+               .onSuccess(_ -> fail("a frame after a failed write would leave a hole at offset 1"))
+               .onFailure(cause -> assertThat(cause).isInstanceOf(PartitionWal.WalError.FailStopped.class));
+            assertThat(wal.stats().failStopped()).isTrue();
+            assertThat(wrapper.forceCalls).as("a failed write never reaches the fsync").hasValue(0);
+            wal.close();
+
+            var reopened = open("write-failure.wal");
+
+            assertThat(offsetsOf(replayAll(reopened, -1L))).as("reopen recovers the contiguous prefix").containsExactly(0L);
+            appendSync(reopened, 1L, payload(1), 1L);
+            reopened.close();
+        }
+
+        /// A refused offset is NOT an I/O failure: nothing was written, so the WAL stays open.
+        @Test
+        void offsetRegression_doesNotFailStop() {
+            var wal = open("regression-no-failstop.wal");
+
+            appendSync(wal, 3L, payload(3), 1L);
+            wal.append(3L, payload(3), 1L).await().onSuccess(_ -> fail("duplicate offset must be refused"));
+
+            assertThat(wal.stats().failStopped()).isFalse();
+            appendSync(wal, 4L, payload(4), 1L);
+            wal.close();
+        }
+    }
+
     /// #634-7: fsync-failure injection. The channel is swapped (reflection, same package) for a
     /// delegate whose `force` throws — the one I/O primitive the durability claim rests on. The
     /// pins: no ack over a failed fsync, no retry of a failed force, fail-stop until reopen.
@@ -767,6 +813,7 @@ class PartitionWalTest {
         final AtomicInteger forceCalls = new AtomicInteger();
         final CountDownLatch forceEntered = new CountDownLatch(1);
         final CountDownLatch forceProceed;
+        volatile boolean failWrites;
 
         ForceFailingChannel(FileChannel delegate, boolean gated) {
             this.delegate = delegate;
@@ -808,6 +855,9 @@ class PartitionWalTest {
 
         @Override
         public int write(ByteBuffer src, long position) throws IOException {
+            if (failWrites) {
+                throw new IOException("injected write failure");
+            }
             return delegate.write(src, position);
         }
 
