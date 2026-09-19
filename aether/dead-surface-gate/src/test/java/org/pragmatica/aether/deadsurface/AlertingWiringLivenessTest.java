@@ -10,6 +10,7 @@ import org.pragmatica.aether.api.AlertForwarder;
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.api.DashboardMetricsPublisher;
 import org.pragmatica.aether.config.AlertConfig;
+import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
 
 import org.junit.jupiter.api.Test;
 
@@ -77,6 +78,27 @@ class AlertingWiringLivenessTest {
                    "#957: AlertForwarder.alertForwarder(AlertConfig) must be constructed by production code. "
                    + "This is the literal signature #957 reported dead -- one hit in src/main, its own "
                    + "declaration");
+    }
+
+    /// Pinned call site: `AetherNode.assembleNode` ->
+    /// `EntityCheckpointDriver.entityCheckpointDriver(CheckpointLagSink)` (#1302).
+    ///
+    /// That factory is the ONLY way the checkpoint lag reaches the node metrics map the threshold alert
+    /// reads. The no-arg factory binds a sink that discards the value, so a node built with it would
+    /// compute every lag, show it on the management route, and never alert — while every driver and
+    /// `AlertManager` unit test stayed green, each break sitting one hop outside its unit. The no-arg
+    /// factory's own delegation does not count: the scanner ignores callers in the declaring class.
+    @Test
+    void entityCheckpointLagSinkIsBoundByProductionCode() throws Exception {
+        assertCorpusIsComplete();
+
+        var reachability = BytecodeReachability.scan(PRODUCTION_ROOTS);
+
+        assertTrue(reachability.isReachable(MethodRef.of(EntityCheckpointDriver.class.getDeclaredMethod("entityCheckpointDriver",
+                                                                                                        EntityCheckpointDriver.CheckpointLagSink.class))),
+                   "#1302: EntityCheckpointDriver.entityCheckpointDriver(CheckpointLagSink) must be called by "
+                   + "production code (AetherNode.assembleNode). If this is unreachable, the node builds the "
+                   + "driver with the discarding sink and the checkpoint-lag alert can never fire");
     }
 
     /// Pinned call site: `ManagementServer.onServerStarted` -> `metricsPublisher.start()`.
