@@ -1229,9 +1229,12 @@ public interface AetherNode extends ManageableNode {
 
         private static CommittedStreamOwnerSource liveOnly(CommittedStreamOwnerSource committed,
                                                            MembershipFsm membershipFsm) {
-            return (stream, partition) -> committed.committedOwner(stream, partition)
-                                                   .filter(owner -> committedOwnerStillAlive(membershipFsm,
-                                                                                             owner.owner()));
+            return (stream, partition) -> liveOwner(committed.committedOwner(stream, partition), membershipFsm);
+        }
+
+        private static Option<CommittedStreamOwnerSource.CommittedOwner> liveOwner(Option<CommittedStreamOwnerSource.CommittedOwner> committed,
+                                                                                   MembershipFsm membershipFsm) {
+            return committed.filter(owner -> committedOwnerStillAlive(membershipFsm, owner.owner()));
         }
     }
 
