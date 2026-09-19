@@ -363,8 +363,9 @@ class ReplicationManagerTest {
         /// Ruling after the #1279 review (N2): the observer runs BEFORE the registry records the ack. A waiter
         /// can be resolved from a registry read, so an observer that ran after the update could run after
         /// it. The first call must therefore see the registry row not yet raised and the ack covered only
-        /// through the overlay, with the await unresolved. The second call runs after the update and only
-        /// moves visibility forward. Goes RED if the first call moves after `updateWatermark`.
+        /// through the overlay, with the await unresolved. Goes RED if that call moves after
+        /// `updateWatermark`. Only the FIRST call is asserted: the post-update call is pinned behaviourally,
+        /// on visibility, by `StreamPartitionVisibilityTest$AckRacingOwnerFsync`, never by counting calls.
         @Test
         void ackObserver_runsBeforeTheRegistryRecordsTheAck_andSeesItThroughTheOverlay() {
             registry.registerReplica(STREAM, PARTITION, REPLICA_A);
@@ -378,8 +379,8 @@ class ReplicationManagerTest {
                                                     + " resolved=" + pending.isResolved()));
             manager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 5L));
 
-            assertThat(observed).containsExactly("row=-1 covered=5 resolved=false",
-                                                 "row=5 covered=5 resolved=false");
+            assertThat(observed).as("the observer ran").isNotEmpty();
+            assertThat(observed.getFirst()).isEqualTo("row=-1 covered=5 resolved=false");
             assertThat(pending.isResolved()).isTrue();
         }
 
