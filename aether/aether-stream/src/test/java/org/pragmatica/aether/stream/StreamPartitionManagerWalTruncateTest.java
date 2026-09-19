@@ -210,6 +210,30 @@ class StreamPartitionManagerWalTruncateTest {
         IntStream.range(0, sealed.size()).forEach(i -> assertPublished(sealed.get(i), i));
     }
 
+    /// #1234 (review of 510829642, the replica race): `appendRecovered` chains its WAL write asynchronously,
+    /// so a range can be handed to the sealer before its WAL record is durable. With a zero cap every heap
+    /// copy is over the cap; spilling one ahead of its WAL write made the rebuild read a WAL that did not yet
+    /// hold it — a terminal WalRangeMissing, an ERROR and a 30 s stall. Only durable ranges may spill, so every
+    /// segment seals, with no failure, as soon as it is handed over.
+    @Test
+    void appendRecovered_zeroCap_neverSpillsAheadOfWalWrite_everySegmentSealsWithoutFailure() {
+        var storage = StorageInstance.storageInstance("wal-replica", List.of(MemoryTier.memoryTier(ONE_GB)));
+        var index = new SegmentIndex();
+        var sealer = segmentSealer(storageSegmentSink(storage, index), 0);
+        var manager = streamPartitionManager(Long.MAX_VALUE, sealer, Option.some(walDir), index::lastSealedOffset);
+
+        createSmallRingStream(manager);
+        IntStream.range(0, SPILL_EVENTS)
+                 .forEach(i -> manager.appendRecovered(STREAM, PARTITION, spillPayload(i), 1000L + i)
+                                      .onFailure(cause -> fail(cause.message())));
+        manager.syncReplicated(STREAM, PARTITION).await().onFailure(cause -> fail(cause.message()));
+
+        awaitCondition(() -> index.lastSealedOffset(STREAM, PARTITION) == SPILL_EVENTS - RING_EVENTS - 1);
+        manager.close();
+
+        assertThat(sealer.sealFailureCount()).as("no rebuild ever read an unwritten WAL range").isZero();
+    }
+
     // === helpers ===
 
     /// Storage refuses every seal while it is down (disk full, DHT error), then accepts.
