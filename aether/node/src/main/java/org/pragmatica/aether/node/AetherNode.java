@@ -3117,7 +3117,7 @@ public interface AetherNode extends ManageableNode {
                                                     clusterNode.network(),
                                                     rotatingEncryptor,
                                                     announceJoinTrigger,
-                                                    () -> System.exit(1));
+                                                    jvmExit);
         // ---------------------------------------------------------------------
         // Membership v2 — NTT wiring (spec §6, §7.4). E2 Phase 2a (2026-05-28) made the
         // observation unconditional: NTT + QuorumLossDetector + LeaderReconciler are
@@ -5503,10 +5503,13 @@ public interface AetherNode extends ManageableNode {
     /// rather than as a silent, permanently unjoinable node.
     ///
     /// #1308: the join is announced only once SWIM has STARTED, and a failed start (typically the
-    /// SWIM UDP port already bound) fails the node through `failNode` — `System.exit(1)` in
-    /// production, the same boot-gate idiom as the divergence guard. A node without its SWIM listener
-    /// neither answers peers' probes nor probes them, so it must not keep running as a cluster member.
-    /// `failNode` is injected so the gate can be pinned by a test without exiting the JVM.
+    /// SWIM UDP port already bound) fails the node through `failNode`. A node without its SWIM
+    /// listener neither answers peers' probes nor probes them, so it must not keep running as a
+    /// cluster member. The caller passes the node's `jvmExit`: `Runtime.halt(2)` in production, a
+    /// graceful per-node stop in single-JVM hosts (Ember/Forge), where `System.exit` would take every
+    /// co-hosted node down. Skipping shutdown hooks is judged acceptable here because SWIM starts at
+    /// transport-ready, before this node has joined or consensus has formed, so it has acknowledged
+    /// no cluster write a hook would need to flush (design intent, not measured).
     static Promise<Unit> startSwim(CoreSwimHealthDetector swimHealthDetector,
                                    ClusterNetwork network,
                                    RotatingGossipEncryptor encryptor,

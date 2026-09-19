@@ -62,10 +62,8 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
     /// protocol and its bound transport exist, but no state owns them. Close both, or the SWIM port
     /// stays bound for the life of the process (#1308).
     private static void stopOrphanedProtocol(ProtocolReady ready) {
-        ready.swim()
-             .stop();
-        ready.transport()
-             .stop();
+        ready.swim().stop();
+        ready.transport().stop();
     }
 
     private static void handleStoppedPeerJoined(SwimMember member) {
