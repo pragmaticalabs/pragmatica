@@ -199,8 +199,7 @@ public interface DurableTopicSlice {
 
         @Override
         public Promise<Unit> onPoisonHealthy(String event) {
-            return Promise.success(healthyPayloads.add(event))
-                          .mapToUnit();
+            return Promise.success(healthyPayloads.add(event)).mapToUnit();
         }
 
         @Override
