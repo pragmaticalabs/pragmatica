@@ -58,7 +58,7 @@ Adding streaming as an external dependency (Kafka, Redpanda, NATS JetStream) cre
 As a built-in Aether resource, streams are:
 
 - **Lifecycle-managed:** Created, scaled, and removed via blueprint — same as slices.
-- **Co-location aware:** Runtime can place producer and consumer slices on the same node for zero-copy intra-node streaming.
+- **Co-location aware:** Runtime can place producer and consumer slices on the same node, removing the network hop. *(Implementation note, #1248: this is not zero-copy — storage is off-heap and delivery copies to heap; see `reference/streaming-performance-analysis.md` §4.3.)*
 - **Consistency-integrated:** Stream metadata lives in Rabia consensus alongside all other cluster state.
 - **Zero-ops:** No separate cluster. Scales with the Aether topology automatically.
 
@@ -343,7 +343,7 @@ Push subscriptions are governor-to-consumer TCP connections. If the consumer is 
 
 If a consumer slice runs on a worker that holds a replica of the partition (see [Section 10](#10-replication)), it reads from the local replica. No network hop.
 
-If the consumer runs on the same node as the governor, it reads directly from the governor's ring buffer — zero-copy, same as the co-located producer case.
+If the consumer runs on the same node as the governor, it reads directly from the governor's ring buffer — no network hop. *(Implementation note, #1248: the read is not zero-copy; each event is copied out of the off-heap ring into heap `byte[]` arrays before delivery. See `reference/streaming-performance-analysis.md` §4.3.)*
 
 ### 7.4 Fan-In Consumer
 
@@ -825,7 +825,7 @@ consumer.commit();
 | **Replication** | Governor-push within group | ISR (leader-follower) | Raft per-partition | Raft per-stream | BookKeeper quorum |
 | **Consumer groups** | Consensus-coordinated | Coordinator broker | Coordinator broker | Server-side | Subscription types |
 | **Failure detection** | SWIM (~2s) | Session timeout (~10s+) | Raft heartbeat | Server monitoring | ZK session / Raft |
-| **Co-location optimization** | Yes (zero-copy same-node) | No | No | No | No |
+| **Co-location optimization** | Yes (same-node, no network hop; delivery copies to heap) | No | No | No | No |
 | **Deployment** | Built into Aether runtime | Separate cluster | Separate cluster | Separate cluster | Separate cluster (+ BookKeeper) |
 | **Retention** | Bounded (time/count/size) | Unbounded + compaction | Unbounded + compaction | Limits + discard | Unbounded + tiered |
 
