@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.function.BiConsumer;
 
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
@@ -106,19 +107,22 @@ public final class ReplicationReceiveHandler {
     private final ReplicationTransport transport;
     private final BiConsumer<String, Integer> onGap;
     private final ReplicaDurability durability;
+    private final CommittedStreamOwnerSource committedOwners;
 
     private ReplicationReceiveHandler(NodeId self,
                                       RecoveredAppender appender,
                                       LocalHead localHead,
                                       ReplicationTransport transport,
                                       BiConsumer<String, Integer> onGap,
-                                      ReplicaDurability durability) {
+                                      ReplicaDurability durability,
+                                      CommittedStreamOwnerSource committedOwners) {
         this.self = self;
         this.appender = appender;
         this.localHead = localHead;
         this.transport = transport;
         this.onGap = onGap;
         this.durability = durability;
+        this.committedOwners = committedOwners;
     }
 
     /// Backward-compatible factory with no local-head verification: the incoming `fromOffset` is
@@ -132,7 +136,8 @@ public final class ReplicationReceiveHandler {
                                              NO_LOCAL_HEAD,
                                              transport,
                                              (_, _) -> {},
-                                             NO_DURABILITY_BARRIER);
+                                             NO_DURABILITY_BARRIER,
+                                             CommittedStreamOwnerSource.none());
     }
 
     /// Factory with an explicit `onGap` repair seam, fired `(streamName, partition)` whenever a batch
@@ -141,7 +146,13 @@ public final class ReplicationReceiveHandler {
                                                                       RecoveredAppender appender,
                                                                       ReplicationTransport transport,
                                                                       BiConsumer<String, Integer> onGap) {
-        return new ReplicationReceiveHandler(self, appender, NO_LOCAL_HEAD, transport, onGap, NO_DURABILITY_BARRIER);
+        return new ReplicationReceiveHandler(self,
+                                             appender,
+                                             NO_LOCAL_HEAD,
+                                             transport,
+                                             onGap,
+                                             NO_DURABILITY_BARRIER,
+                                             CommittedStreamOwnerSource.none());
     }
 
     /// Verifying factory (S1 / #260): `localHead` reports the replica's next-expected offset so an
@@ -151,17 +162,41 @@ public final class ReplicationReceiveHandler {
                                                                       LocalHead localHead,
                                                                       ReplicationTransport transport,
                                                                       BiConsumer<String, Integer> onGap) {
-        return new ReplicationReceiveHandler(self, appender, localHead, transport, onGap, NO_DURABILITY_BARRIER);
+        return new ReplicationReceiveHandler(self,
+                                             appender,
+                                             localHead,
+                                             transport,
+                                             onGap,
+                                             NO_DURABILITY_BARRIER,
+                                             CommittedStreamOwnerSource.none());
     }
 
-    /// Verifying factory WITH the replica durability barrier (#634 item 1) — the production wiring.
+    /// Verifying factory WITH the replica durability barrier (#634 item 1). No sender validation.
     public static ReplicationReceiveHandler replicationReceiveHandler(NodeId self,
                                                                       RecoveredAppender appender,
                                                                       LocalHead localHead,
                                                                       ReplicationTransport transport,
                                                                       BiConsumer<String, Integer> onGap,
                                                                       ReplicaDurability durability) {
-        return new ReplicationReceiveHandler(self, appender, localHead, transport, onGap, durability);
+        return new ReplicationReceiveHandler(self,
+                                             appender,
+                                             localHead,
+                                             transport,
+                                             onGap,
+                                             durability,
+                                             CommittedStreamOwnerSource.none());
+    }
+
+    /// Verifying factory WITH the replica durability barrier (#634 item 1) AND sender validation against
+    /// the committed partition owner (#1230) — the production wiring.
+    public static ReplicationReceiveHandler replicationReceiveHandler(NodeId self,
+                                                                      RecoveredAppender appender,
+                                                                      LocalHead localHead,
+                                                                      ReplicationTransport transport,
+                                                                      BiConsumer<String, Integer> onGap,
+                                                                      ReplicaDurability durability,
+                                                                      CommittedStreamOwnerSource committedOwners) {
+        return new ReplicationReceiveHandler(self, appender, localHead, transport, onGap, durability, committedOwners);
     }
 
     @Contract

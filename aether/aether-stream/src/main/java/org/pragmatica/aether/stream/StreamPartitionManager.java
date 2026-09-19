@@ -44,6 +44,7 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.NullReturn;
@@ -207,6 +208,16 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// `StreamPartitionOwnershipValue`. Default: [#OWNER_ELSEWHERE]. Volatile: set once at wiring, read on
     /// the reconcile tick.
     private volatile OwnerReleaseGuard ownerReleaseGuard = OWNER_ELSEWHERE;
+
+    /// Default owner-write admission (#1230): no committed ownership source, so no application append is
+    /// refused on ownership grounds. Forge/unit/legacy managers keep this; `AetherNode` late-binds the real
+    /// committed-`StreamPartitionOwnershipValue` check.
+    private static final OwnerWriteAdmission ADMIT_ALL = (_, _) -> Option.none();
+
+    /// Live committed-ownership admission for application appends (#1230). Consulted by [#publishLocal]
+    /// ONLY — never by [#appendRecovered], which lands the committed owner's replicated/backfilled events on
+    /// a replica. Default: [#ADMIT_ALL]. Volatile: set once at wiring, read on every owner-path append.
+    private volatile OwnerWriteAdmission ownerWriteAdmission = ADMIT_ALL;
 
     /// Reshuffle-concurrency permits (#265 increment 5): [#reshuffleConcurrency] slots gating REPLICA
     /// materialize+backfill. Acquired in {@link #buildAndInstall} for a REPLICA partition, released when the
@@ -431,6 +442,18 @@ public final class StreamPartitionManager implements AutoCloseable {
         boolean committedOwnerElsewhere(String stream, int partition);
     }
 
+    /// Committed-ownership admission for application appends (#1230). Reports the COMMITTED
+    /// `StreamPartitionOwnershipValue.owner` of `(stream, partition)` when it names a node OTHER than self;
+    /// [Option#none] when self is the committed owner or no ownership record is committed (the cold-start
+    /// window, where the fence is inert and HRW routing alone picks the writer). Holding the partition ring
+    /// authorizes reads and replication receipt, never an application write: the epoch fence cannot tell a
+    /// live replica from the owner, because both stamp the same committed epoch. `AetherNode` binds it to the
+    /// committed ownership record; the default admits every append.
+    @FunctionalInterface
+    public interface OwnerWriteAdmission {
+        Option<NodeId> remoteCommittedOwner(String stream, int partition);
+    }
+
     /// Committed-config source for the owner-side forwarded-publish race recovery (write-forward race fix).
     /// Reports the LOCALLY-VISIBLE committed `StreamConfig` for a stream, read straight from applied KV
     /// state, so the {@link #publishForwarded} path can lazily materialize a partition whose config commit
@@ -520,6 +543,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void ownerReleaseGuard(OwnerReleaseGuard guard) {
         this.ownerReleaseGuard = guard;
+    }
+
+    /// Late-bind the committed-ownership write admission (#1230). `AetherNode` wires this to the committed
+    /// `StreamPartitionOwnershipValue` (refuse iff it names a node other than self). Until then — and in
+    /// Forge/unit/legacy managers — the default admits every append. Set once at wiring; read on every
+    /// owner-path append.
+    @Contract
+    public void ownerWriteAdmission(OwnerWriteAdmission admission) {
+        this.ownerWriteAdmission = admission;
     }
 
     /// Late-bind the committed-config source for the owner-side forwarded-publish race recovery
