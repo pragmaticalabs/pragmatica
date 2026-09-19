@@ -80,7 +80,7 @@ class StreamPartitionVisibilityTest {
             assertThat(pending.isResolved()).as("the publish is waiting for the peer").isFalse();
             assertThat(visibleOffset(manager)).as("nothing became visible, so nothing was queued for the notifier")
                                               .isEqualTo(-1L);
-            assertThat(notifications).as("no push notification for an unacknowledged event").hasValue(0);
+            assertThat(settledNotifications(notifications)).as("no push notification for an unacknowledged event").isZero();
             assertThat(readAll(manager)).as("read(0) must not expose the unacknowledged event").isEmpty();
 
             replication.handleAck(replicateAck(PEER, STREAM, PARTITION, offset));
@@ -179,7 +179,7 @@ class StreamPartitionVisibilityTest {
                                                                                    .isTrue();
             assertThat(readAll(manager)).isEmpty();
             assertThat(visibleOffset(manager)).isEqualTo(-1L);
-            assertThat(notifications).hasValue(0);
+            assertThat(settledNotifications(notifications)).isZero();
         }
     }
 
@@ -202,7 +202,7 @@ class StreamPartitionVisibilityTest {
 
             assertThat(readAll(manager)).as("an event whose WAL frame never landed is never readable").isEmpty();
             assertThat(visibleOffset(manager)).as("nothing queued for the notifier").isEqualTo(-1L);
-            assertThat(notifications).as("and never announced").hasValue(0);
+            assertThat(settledNotifications(notifications)).as("and never announced").isZero();
         }
 
         @Test
@@ -217,7 +217,7 @@ class StreamPartitionVisibilityTest {
 
             assertThat(readAll(manager)).as("an event whose fsync failed is never readable").isEmpty();
             assertThat(visibleOffset(manager)).as("nothing queued for the notifier").isEqualTo(-1L);
-            assertThat(notifications).as("and never announced").hasValue(0);
+            assertThat(settledNotifications(notifications)).as("and never announced").isZero();
         }
 
         /// The #1258 case: the event is replicated inside the ordered section, then the OWNER's fsync
@@ -236,7 +236,7 @@ class StreamPartitionVisibilityTest {
 
             assertThat(readAll(manager)).isEmpty();
             assertThat(visibleOffset(manager)).isEqualTo(-1L);
-            assertThat(notifications).hasValue(0);
+            assertThat(settledNotifications(notifications)).isZero();
         }
     }
 
@@ -379,6 +379,18 @@ class StreamPartitionVisibilityTest {
             Thread.onSpinWait();
         }
         return List.copyOf(threads);
+    }
+
+    /// A NEGATIVE listener assertion must outlast the asynchronous notifier: read at once, a queued but
+    /// undelivered notification would make "never announced" pass vacuously (measured: a probe that queued
+    /// on append left two such assertions green). Delivery takes microseconds; the window is generous.
+    private static int settledNotifications(AtomicInteger notifications) {
+        var deadline = System.nanoTime() + 500_000_000L;
+
+        while (notifications.get() == 0 && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        return notifications.get();
     }
 
     /// Listeners run on the ring's serial notifier (#1258 R2-1), so a positive count is awaited.

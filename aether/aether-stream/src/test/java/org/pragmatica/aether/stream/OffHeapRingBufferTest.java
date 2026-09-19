@@ -696,6 +696,17 @@ class OffHeapRingBufferTest {
     /// listeners follow VISIBLE; [OffHeapRingBuffer#readAppended] follows the head.
     @Nested
     class Visibility {
+        /// A negative listener assertion must outlast the asynchronous notifier, or a queued-but-undelivered
+        /// notification makes "no listener" pass vacuously.
+        private static List<Long> settledAnnounced(List<Long> announced) {
+            var deadline = System.nanoTime() + 500_000_000L;
+
+            while (announced.isEmpty() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            return List.copyOf(announced);
+        }
+
         /// Listeners run on the ring's serial notifier (#1258 R2-1), so delivery is awaited.
         private static List<Long> awaitAnnounced(List<Long> announced, int expected) {
             var deadline = System.nanoTime() + 5_000_000_000L;
@@ -715,7 +726,7 @@ class OffHeapRingBufferTest {
 
             assertThat(buffer.read(0L, 10).or(List.of())).as("appended is not visible").isEmpty();
             assertThat(buffer.readSlice(0L).isFailure()).as("slice read is bounded too").isTrue();
-            assertThat(announced).as("no listener for a bare append").isEmpty();
+            assertThat(settledAnnounced(announced)).as("no listener for a bare append").isEmpty();
 
             buffer.advanceVisible(0L);
 
