@@ -22,8 +22,20 @@
   when issued, so the runtime never issues a commit below one that already succeeded. [mechanism:
   `ConsumerState.advanceCursor` uses `accumulateAndGet(max)`; pinned by
   `StreamConsumerRuntimeTest$CursorCommitObservability.runtime_neverIssuesACommitBelowItsLastSuccessfulOne`]
-- [unverified: the detach-time final commit is issued independently of an in-flight periodic commit, so
-  a periodic commit landing after it can step the stored cursor back by at most one checkpoint interval.
-  The consequence is redelivery on the next attach, not loss.]
+- **A failed cluster checkpoint was never retried either.** `ClusterCursorStore` recovered a
+  consensus-publish failure into a successful commit and parked the cause in a per-key side map
+  (`lastRecoveredFailure`). Because the commit counted as a success, the retry never fired. Two overlapping
+  commits for one key could also read each other's cause: one commit was reported with another's
+  failure, or the failure was lost when the other commit cleared it. `ConsumerCursorStore.commit` now
+  returns a typed `CommitOutcome` (`Persisted` or `LocalOnly(cause)`) on the commit's own promise. The
+  side map is gone, and the periodic checkpoint retries a `LocalOnly` outcome until the cluster
+  checkpoint lands. [mechanism: `ConsumerRuntimeState.checkpointSettled`; pinned by
+  `ClusterCursorStoreTest$CommitFanout.overlappingCommits_forOneKey_eachReportOnlyTheirOwnOutcome` and
+  `StreamConsumerRuntimeClusterCursorTest.periodicCheckpoint_retriesALocalOnlyOutcome_untilTheClusterCheckpointLands`]
+- The detach-time final commit is now chained behind any periodic commit still in flight, so the two
+  never overlap for one key. The consumer is cancelled first, so no periodic retry follows it.
+  [mechanism: `flushCursorForKey` chains on `ConsumerState.periodicCommit`; pinned by
+  `StreamConsumerRuntimeClusterCursorTest.detachFlush_waitsForTheInFlightPeriodicCommit_andEachCommitReportsOnlyItsOwnOutcome`]
 - [unverified: two nodes briefly delivering one (group, partition) during reassignment can interleave
-  checkpoint commits; consequence is bounded redelivery, not loss]
+  checkpoint commits; consequence is bounded redelivery, not loss] Consumer assignment is unfenced.
+  This is tracked as #1271.

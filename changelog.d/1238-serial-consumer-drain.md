@@ -11,10 +11,15 @@
   push listener is installed, and is held during a retry backoff exactly as it already was during a
   dead-letter append. The cursor advance and the failure strategy are folded inside the delivery chain,
   and the cursor is monotonic. Poll ticks, append notifications, subscribe and hold releases all go
-  through the same loop. Each further pass is scheduled rather than run inline, so a deep backlog
-  cannot recurse. [mechanism: `requestDrain`/`drainPass`/`afterDrainPass` in `ConsumerRuntimeState`;
+  through the same loop. **Threading:** the append listener (and the subscribe kick) only marks the
+  loop dirty and, if no pass is running, dispatches one to `SharedScheduler`, which runs each task on
+  its own virtual thread. No handler ever runs on the notifying thread (the publisher today, the ring's
+  per-partition notifier after #1258). A handler that publishes therefore cannot re-enter the publish
+  path it was notified from, and a slow handler cannot stall the partition's notifications. Every pass
+  is dispatched the same way, so a deep backlog cannot recurse. [mechanism: `requestDrain`/`drainPass`/`afterDrainPass` in `ConsumerRuntimeState`;
   pinned by `StreamConsumerRuntimeTest$SerialDeliveryLoop`, whose handlers complete from another thread
-  after a delay. The earlier fixtures resolved inline and could not see the race.]
+  after a delay. The earlier fixtures resolved inline and could not see the race. The threading is
+  pinned by `handler_neverRunsOnTheNotifyingOrSubscribingThread`.]
 - **Declarative consumers have a handler timeout again.** A hung handler would otherwise hold its
   partition's loop forever. `StreamConsumerManager` bounds each slice invocation at 30s (the value the
   deleted `StreamConsumerAdapter` used; no configuration surface exists). A timed-out invocation is a
