@@ -16,7 +16,7 @@ public sealed interface StreamSourceError extends Cause {
     /// exactly collide with — a stream only internal provisioning may create. No legitimate reference
     /// exists: spec §11.2 lets an External source name another blueprint's namespace or `system`, and a
     /// real durable-topic stream is not addressable in the three-part form.
-    record ReservedKindSource(String alias, String source, String prefix, String message) implements StreamSourceError {
+    record ReservedKindSource(String alias, String sourceAddress, String prefix, String message) implements StreamSourceError {
         static final Fn3<ReservedKindSource, String, String, String> FACTORY = Causes.forThreeValues("Stream resource '%s' names source '%s', whose stream name carries the reserved "
                                                                                                     + "stream-kind prefix '%s': those streams are provisioned only by the runtime "
                                                                                                     + "and cannot be referenced from a blueprint",
