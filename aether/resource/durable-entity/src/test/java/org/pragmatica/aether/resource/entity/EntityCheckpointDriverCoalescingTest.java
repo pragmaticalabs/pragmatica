@@ -7,7 +7,6 @@ package org.pragmatica.aether.resource.entity;
 import java.lang.management.ManagementFactory;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
