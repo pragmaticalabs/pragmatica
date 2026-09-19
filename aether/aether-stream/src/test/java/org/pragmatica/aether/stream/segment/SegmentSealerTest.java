@@ -349,7 +349,7 @@ class SegmentSealerTest {
             var failingSealer = segmentSealer(_ -> failAndCount(attempts));
 
             failingSealer.onEviction(DOOMED, PARTITION, List.of(RawEvent.rawEvent(0L, "a".getBytes(), 1L)));
-            awaitCondition(() -> attempts.get() >= 2);
+            awaitCondition(() -> failingSealer.sealFailureCount() >= 2);
 
             failingSealer.onStreamDeleted(DOOMED);
             var attemptsAtDeletion = attempts.get();
@@ -357,10 +357,11 @@ class SegmentSealerTest {
 
             LockSupport.parkNanos(RETRY_WINDOW_NANOS);
 
-            // At most the one attempt already in flight at deletion; after that a retry stops at the cancelled
-            // check — not by failing again (a counted failure) on the heap copy the deletion dropped.
-            assertThat(attempts.get()).isLessThanOrEqualTo(attemptsAtDeletion + 1);
-            assertThat(failingSealer.sealFailureCount()).isLessThanOrEqualTo(failuresAtDeletion + 1);
+            // Both failures were counted before deletion and the next retry is ~200 ms out, so nothing is in
+            // flight: the retry must stop at the cancelled check, neither calling the sink nor failing again
+            // (a counted failure) on the heap copy the deletion dropped.
+            assertThat(attempts.get()).isEqualTo(attemptsAtDeletion);
+            assertThat(failingSealer.sealFailureCount()).isEqualTo(failuresAtDeletion);
             assertThat(failingSealer.pendingBytes()).isZero();
         }
 
