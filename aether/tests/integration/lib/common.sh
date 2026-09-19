@@ -258,8 +258,12 @@ _run_with_timeout() {
         sleep 1
         waited=$((waited + 1))
     done
-    wait "$pid"
-    rc=$?
+    # `wait` returns the child's status, and callers of this function run under `set -e`
+    # (every suite sets `set -euo pipefail`). A bare `wait "$pid"` followed by `rc=$?`
+    # therefore ABORTS the shell on any non-zero child instead of capturing it — the exact
+    # status this function exists to return. Capture it in the condition instead.
+    rc=0
+    wait "$pid" || rc=$?
     cat "$outfile"
     cat "$errfile" >&2
     rm -f "$outfile" "$errfile"
