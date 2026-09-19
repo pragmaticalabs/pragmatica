@@ -10,7 +10,8 @@
 - The checkpoint driver skips a partition whose save is still in flight, and clears that mark however the
   save ends, including a synchronous throw. The timer tick queues at most one fire per timer while that
   fire is queued or running; the re-checks inside the key's tail are unchanged.
-  [mechanism: a per-registration in-flight partition set and a per-entity in-flight `TimerId` set] —
+  [mechanism: a per-registration map from in-flight partition to the tick its save started, and a per-entity
+  in-flight `TimerId` set cleared inside the fire's own chain] —
   pinned by unit tests.
 - The in-flight mark on a checkpoint save is bounded at three ticks, which is 90 s at the node's 30 s
   interval. After that a WARN names the partition and the next tick starts another save. The abandoned save

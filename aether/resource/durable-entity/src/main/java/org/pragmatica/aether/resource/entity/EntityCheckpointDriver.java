@@ -337,9 +337,7 @@ public final class EntityCheckpointDriver {
                                                 candidate.throughOffset(),
                                                 cause));
         settle(registration, partition, tick);
-        registration.outcomeProbe()
-                    .get()
-                    .run();
+        registration.outcomeProbe().get().run();
     }
 
     /// Test-only seam (#1269 review): runs after a save's outcome has been recorded AND its in-flight mark
@@ -347,9 +345,8 @@ public final class EntityCheckpointDriver {
     /// touches it; an unknown keyspace is ignored.
     @Contract
     void outcomeProbe(String keyspace, Runnable probe) {
-        Option.option(registrations.get(keyspace))
-              .onPresent(registration -> registration.outcomeProbe()
-                                                     .set(probe));
+        Option.option(registrations.get(keyspace)).onPresent(registration -> registration.outcomeProbe()
+                                                                                         .set(probe));
     }
 
     /// The positive signal. Without a success counter, a driver that silently stopped looks exactly like
