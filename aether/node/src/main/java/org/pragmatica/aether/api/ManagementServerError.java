@@ -117,8 +117,9 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
     record ReservedStreamName(String streamName, String prefix) implements ManagementServerError {
         @Override
         public String message() {
-            return "Stream name '" + streamName + "' uses the reserved prefix '" + prefix
-                   + "'; streams under it are created only by internal provisioning";
+            return "Stream name '" + streamName
+                 + "' uses the reserved prefix '" + prefix
+                 + "'; streams under it are created only by internal provisioning";
         }
 
         @Override

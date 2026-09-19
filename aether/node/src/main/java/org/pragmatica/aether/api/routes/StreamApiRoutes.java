@@ -731,11 +731,10 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     private static Result<StreamConfig> managementDefaultConfig(String streamName) {
-        return ReservedStreamNames.requireUnreserved(streamName)
-                                  .map(unreserved -> StreamConfig.streamConfig(unreserved,
-                                                                               DEFAULT_PARTITIONS,
-                                                                               MANAGEMENT_API_RETENTION,
-                                                                               "latest"));
+        return ReservedStreamNames.requireUnreserved(streamName).map(unreserved -> StreamConfig.streamConfig(unreserved,
+                                                                                                             DEFAULT_PARTITIONS,
+                                                                                                             MANAGEMENT_API_RETENTION,
+                                                                                                             "latest"));
     }
 
     private Result<Unit> materializeForPublish(String streamName, StreamConfig config) {

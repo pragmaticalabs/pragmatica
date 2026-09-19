@@ -301,8 +301,7 @@ public final class StreamRoutes implements RouteSource {
             return Result.failure(SYSTEM_STREAM_NAME_FORBIDDEN);
         }
 
-        return ReservedStreamNames.requireUnreserved(name)
-                                  .flatMap(_ -> mintStream(name, partitions));
+        return ReservedStreamNames.requireUnreserved(name).flatMap(_ -> mintStream(name, partitions));
     }
 
     private Result<StreamCreateResponse> mintStream(String name, int partitions) {
@@ -350,11 +349,10 @@ public final class StreamRoutes implements RouteSource {
     }
 
     private static Result<StreamConfig> managementDefaultConfig(String name) {
-        return ReservedStreamNames.requireUnreserved(name)
-                                  .map(unreserved -> StreamConfig.streamConfig(unreserved,
-                                                                               DEFAULT_PARTITIONS,
-                                                                               MANAGEMENT_API_RETENTION,
-                                                                               "latest"));
+        return ReservedStreamNames.requireUnreserved(name).map(unreserved -> StreamConfig.streamConfig(unreserved,
+                                                                                                       DEFAULT_PARTITIONS,
+                                                                                                       MANAGEMENT_API_RETENTION,
+                                                                                                       "latest"));
     }
 
     private Result<StreamConsumersResponse> streamConsumers(String name) {

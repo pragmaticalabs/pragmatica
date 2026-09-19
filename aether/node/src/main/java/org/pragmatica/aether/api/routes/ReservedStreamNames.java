@@ -15,6 +15,7 @@ import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.success;
 
+
 /// #1282: engine-name prefixes that mark a stream KIND provisioned only by the runtime itself —
 /// `system:` (system streams, named `system:<name>:<version>` from their `system`-namespace address),
 /// `topic:` (durable topics and their DLQs, [DurableTopicNames]) and `entity:` (entity keyspace logs,
@@ -32,13 +33,11 @@ sealed interface ReservedStreamNames {
     /// The engine name unchanged, or [ManagementServerError.ReservedStreamName] naming the prefix it uses.
     static Result<String> requireUnreserved(String engineName) {
         return reservedPrefixOf(engineName).map(prefix -> refuse(engineName, prefix))
-                                           .or(() -> success(engineName));
+                               .or(() -> success(engineName));
     }
 
     private static Option<String> reservedPrefixOf(String engineName) {
-        return Option.from(PREFIXES.stream()
-                                   .filter(engineName::startsWith)
-                                   .findFirst());
+        return Option.from(PREFIXES.stream().filter(engineName::startsWith).findFirst());
     }
 
     private static Result<String> refuse(String engineName, String prefix) {
