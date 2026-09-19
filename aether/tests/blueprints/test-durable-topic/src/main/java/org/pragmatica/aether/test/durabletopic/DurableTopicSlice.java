@@ -7,7 +7,6 @@ package org.pragmatica.aether.test.durabletopic;
 import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.aether.slice.Publisher;
 import org.pragmatica.aether.slice.annotation.Slice;
@@ -15,6 +14,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.Result.success;
 
@@ -72,6 +72,9 @@ public interface DurableTopicSlice {
     /// What `order-events` delivered to THIS node, in arrival order. The list order is the ordering
     /// evidence: the fixture publishes ascending `sequence` values into a single-partition topic, so
     /// serial per-(group x partition) dispatch means the sequences come back ascending here.
+    ///
+    /// An event is recorded when the handler is INVOKED, not when it acks, so two overlapping
+    /// deliveries of one offset show up here as two entries rather than being hidden by the ack.
     record OrderStatus(int count, List<OrderPlaced> orders) {
         public static OrderStatus orderStatus(List<OrderPlaced> orders) {
             return new OrderStatus(orders.size(), orders);
@@ -85,9 +88,13 @@ public interface DurableTopicSlice {
     /// other group's progress over the identical events: it must advance normally, and it is the
     /// assertion that catches a DLQ implementation which stalls the shared partition instead of only
     /// the failing group's cursor.
-    record PoisonStatus(int failingAttempts, int healthyCount, List<String> healthyPayloads) {
-        public static PoisonStatus poisonStatus(int failingAttempts, List<String> healthyPayloads) {
-            return new PoisonStatus(failingAttempts, healthyPayloads.size(), healthyPayloads);
+    ///
+    /// `failingPayloads` holds one entry per failing-group INVOCATION, so the retry budget can be read
+    /// per event. A single counter cannot tell one event's retries from another's, which is how events
+    /// still retrying from one forge arm were counted by the next.
+    record PoisonStatus(int failingAttempts, int healthyCount, List<String> failingPayloads, List<String> healthyPayloads) {
+        public static PoisonStatus poisonStatus(List<String> failingPayloads, List<String> healthyPayloads) {
+            return new PoisonStatus(failingPayloads.size(), healthyPayloads.size(), failingPayloads, healthyPayloads);
         }
     }
 
@@ -118,14 +125,21 @@ public interface DurableTopicSlice {
                                      poisonPublisher,
                                      new ConcurrentLinkedQueue<>(),
                                      new ConcurrentLinkedQueue<>(),
-                                     new AtomicInteger());
+                                     new ConcurrentLinkedQueue<>());
     }
 
     record durableTopicSlice(Publisher<OrderPlaced> orderPublisher,
                              Publisher<String> poisonPublisher,
                              Queue<OrderPlaced> deliveredOrders,
                              Queue<String> healthyPayloads,
-                             AtomicInteger failingAttempts) implements DurableTopicSlice {
+                             Queue<String> failingPayloads) implements DurableTopicSlice {
+        /// Orders whose id carries this prefix are acked only after [#SLOW_ACK]. Published in a burst,
+        /// they arrive while an earlier one is still unacked, which is the only condition under which
+        /// serial per-(group x partition) dispatch is observable: an instant ack finishes each delivery
+        /// before the next append, so overlapping dispatch would never show.
+        static final String SLOW_ACK_PREFIX = "slow-";
+        static final TimeSpan SLOW_ACK = TimeSpan.timeSpan(150).millis();
+
         @Override
         public Promise<PublishResponse> publishOrder(PublishOrder request) {
             return orderPublisher.publish(request.event())
@@ -145,13 +159,21 @@ public interface DurableTopicSlice {
 
         @Override
         public Promise<PoisonStatus> poisonStatus(StatusRequest request) {
-            return Promise.success(PoisonStatus.poisonStatus(failingAttempts.get(), List.copyOf(healthyPayloads)));
+            return Promise.success(PoisonStatus.poisonStatus(List.copyOf(failingPayloads), List.copyOf(healthyPayloads)));
         }
 
         @Override
         public Promise<Unit> onOrderPlaced(OrderPlaced event) {
-            return Promise.success(deliveredOrders.add(event))
-                          .mapToUnit();
+            deliveredOrders.add(event);
+
+            return ack(event);
+        }
+
+        private static Promise<Unit> ack(OrderPlaced event) {
+            return event.orderId()
+                        .startsWith(SLOW_ACK_PREFIX)
+                   ? Promise.promise(SLOW_ACK, Result::unitResult)
+                   : Promise.unitPromise();
         }
 
         @Override
@@ -162,7 +184,7 @@ public interface DurableTopicSlice {
 
         @Override
         public Promise<Unit> onPoisonFailing(String event) {
-            failingAttempts.incrementAndGet();
+            failingPayloads.add(event);
 
             return new PoisonRefused(event).promise();
         }

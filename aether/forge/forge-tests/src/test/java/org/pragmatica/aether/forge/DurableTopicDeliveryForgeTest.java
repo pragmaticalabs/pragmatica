@@ -7,7 +7,6 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.ClassOrderer;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Order;
@@ -29,8 +28,13 @@ import java.net.http.HttpRequest;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
-import java.util.regex.Matcher;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -93,10 +97,6 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 ///   - **No owner-loss arm** — the SIGKILL failover case is tracked as #739; without it this suite
 ///     does not prove survival of a partition owner's death.
 @Tag("Heavy")
-@Disabled("never observed fully green; enable on first green run — run 2 executed all five arms and"
-          + " proved the durable tier is dispatching (20 retries where ephemeral gives 1), but three"
-          + " arms failed on test-side baseline carryover and the group-isolation arm was vacuous."
-          + " Enabling it IS the acceptance criterion.")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestClassOrder(ClassOrderer.OrderAnnotation.class)
@@ -108,6 +108,7 @@ class DurableTopicDeliveryForgeTest {
     private static final int INSTANCES = 5;
 
     private static final int ORDER_COUNT = 20;
+    private static final int SLOW_ORDER_COUNT = 10;
     private static final int POISON_COUNT = 2;
 
     /// durable-pubsub-spec §7: bounded retries before the dead-letter hop. The fixture's failing
@@ -119,14 +120,25 @@ class DurableTopicDeliveryForgeTest {
     private static final String BLUEPRINT_ID = "forge.test:durable-topic:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
+    /// The id both readiness gates publish under. No arm counts it: every arm counts only the ids it
+    /// published itself, which is what removes baseline carryover rather than draining around it.
+    private static final String WARMUP_ID = "__warmup__";
+
+    /// The fixture acks orders carrying this prefix late (`DurableTopicSlice.durableTopicSlice.SLOW_ACK_PREFIX`).
+    private static final String SLOW_ACK_PREFIX = "slow-";
+
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration DELIVERY_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
-    private static final Pattern COUNT_FIELD = Pattern.compile("\"count\"\\s*:\\s*(\\d+)");
-    private static final Pattern FAILING_ATTEMPTS = Pattern.compile("\"failingAttempts\"\\s*:\\s*(\\d+)");
-    private static final Pattern HEALTHY_COUNT = Pattern.compile("\"healthyCount\"\\s*:\\s*(\\d+)");
-    private static final Pattern SEQUENCE_FIELD = Pattern.compile("\"sequence\"\\s*:\\s*(\\d+)");
+    /// How long a count must stay put before it is read as final. Longer than the whole retry budget
+    /// (100+200+400+800ms of backoff), so a late duplicate or a resumed retry lands inside it.
+    private static final Duration SETTLE = Duration.ofSeconds(10);
+
+    private static final Pattern ORDER_ENTRY = Pattern.compile("\"orderId\"\\s*:\\s*\"([^\"]*)\"\\s*,\\s*\"sequence\"\\s*:\\s*(-?\\d+)");
+    private static final Pattern FAILING_PAYLOADS = Pattern.compile("\"failingPayloads\"\\s*:\\s*\\[([^\\]]*)\\]");
+    private static final Pattern HEALTHY_PAYLOADS = Pattern.compile("\"healthyPayloads\"\\s*:\\s*\\[([^\\]]*)\\]");
+    private static final Pattern QUOTED = Pattern.compile("\"([^\"]*)\"");
 
     private EmberCluster cluster;
     private final HttpOperations http = jdkHttpOperations();
@@ -160,61 +172,35 @@ class DurableTopicDeliveryForgeTest {
                .until(this::appHttpReady);
 
         // A publish can land before the backing stream's owner has materialized its ring, so gate on a
-        // real publish resolving before any assertion runs.
+        // real publish resolving before any assertion runs. Both gates publish under WARMUP_ID, which no
+        // arm counts.
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .failFast(this::failIfSliceFailed)
                .until(this::publishReady);
 
-        // Durable subscriptions attach on the manager's ownership tick, independently of publish
-        // readiness. A never-committed consumer group starts at offset 0 — EARLIEST, permanently, per
-        // the #478 ruling (StreamResourceValidator rejects any other auto-offset-reset as inert) — so
-        // an event published before its group attached is QUEUED AND LATER DELIVERED, not skipped.
-        //
-        // That is the opposite of what this comment claimed until 2026-08-29, and the correction
-        // STRENGTHENS the drain gate below rather than weakening it: if pre-attach events were
-        // skipped, the warm-ups would evaporate harmlessly; because they are queued, they are
-        // guaranteed to arrive later and land inside some arm's measurement window unless drained
-        // first. Refuted empirically by e2e-runner (four events published across the attach boundary,
-        // all four delivered including the three published before attach) and confirmed here against
-        // the #478 ruling in the validator.
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .failFast(this::failIfSliceFailed)
                .until(this::poisonPublishReady);
 
-        // DRAIN BOTH WARM-UPS BEFORE ANY ARM RUNS. The two gates above publish REAL events, and the
-        // first run of this suite failed three arms because those events were still in flight when the
-        // arms captured their baselines — the warm-up order landed inside arm 2's window (21 delivered
-        // against an expected 20) and the warm-up poison's five retries were counted by a later arm.
-        // Nothing was wrong with the runtime; the test was measuring its own setup.
+        // Arms count only their own ids, so a warm-up can no longer be MISCOUNTED. It can still
+        // INTERFERE: a poison warm-up mid-retry when an arm publishes shares that group's partition, and
+        // #1238(a) re-delivers a retrying event on every append. So the poison topic must be quiescent
+        // before the first arm runs — either the warm-up exhausted its budget, or it is stranded
+        // pre-attach (#1238(c)) and the first arm's append releases it into a serial loop.
         //
-        // Draining rather than removing the gates: the gates exist because a publish can land before
-        // the backing stream's owner has materialized its ring, and dropping them would trade a
-        // measurable pollution for a flaky first publish. Waiting for the warm-ups to be fully
-        // PROCESSED makes the system quiescent instead, so every baseline below starts from a settled
-        // state.
-        //
-        // This also localises the poison-dispatch stall observed on run 2 (240s+ with zero poison
-        // invocations while order-events flowed): if it recurs, THIS gate fails naming it directly,
-        // instead of scattering the symptom across three arms that each blame something else.
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(this::failIfSliceFailed)
-               .untilAsserted(() -> assertThat(totalOrdersDelivered())
-                       .describedAs("the order-events warm-up must be delivered before any arm measures"
-                                    + " delivery")
-                       .isGreaterThanOrEqualTo(1));
+        // The order-events warm-up is deliberately NOT drained here. The previous version waited for it
+        // and died in setUp on every run, taking all five arms with it: an event appended before its
+        // group's push listener registers is never read until the next append (#1238(c)). That is now
+        // an arm of its own, [PreAttachBacklog], instead of a precondition of every arm.
+        var lastPoisonSample = new AtomicInteger(-1);
 
         await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
+               .pollDelay(SETTLE)
+               .pollInterval(SETTLE)
                .failFast(this::failIfSliceFailed)
-               .untilAsserted(() -> assertThat(failingAttempts())
-                       .describedAs("the poison-events warm-up must exhaust its %d-attempt budget before"
-                                    + " any arm measures retries — if this times out, poison dispatch"
-                                    + " stalled, which is a RUNTIME signal and not a baseline problem",
-                                    EXPECTED_ATTEMPTS_PER_EVENT)
-                       .isGreaterThanOrEqualTo(EXPECTED_ATTEMPTS_PER_EVENT));
+               .until(() -> unchangedSinceLastSample(lastPoisonSample, failingAttemptsFor(WARMUP_ID)));
     }
 
     @AfterAll
@@ -227,8 +213,28 @@ class DurableTopicDeliveryForgeTest {
         }
     }
 
+    /// #1238(c): subscribing to a LOCAL partition only installs an append listener, so an event
+    /// already in the ring waits for the next append. The order-events warm-up is published by the
+    /// readiness gate, before the group attaches, and nothing else appends to order-events until the
+    /// [Delivery] arms run — so this class must run FIRST, and nothing in it may publish an order.
     @Nested
     @Order(1)
+    class PreAttachBacklog {
+        @Test
+        void eventPublishedBeforeTheGroupAttached_isDeliveredWithoutAFollowUpAppend() {
+            await().atMost(DELIVERY_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
+                   .untilAsserted(() -> assertThat(deliveriesOf(WARMUP_ID))
+                           .describedAs("the readiness gate's order was appended before the group"
+                                        + " attached; a subscribe that reads the backlog delivers it"
+                                        + " without any further publish")
+                           .isGreaterThanOrEqualTo(1));
+        }
+    }
+
+    @Nested
+    @Order(2)
     class DurableTier {
         /// The guard every other assertion rests on: proof that the DURABLE tier is the one dispatching,
         /// not the ephemeral default.
@@ -249,69 +255,71 @@ class DurableTopicDeliveryForgeTest {
         /// full timeout and prevented every arm below from running at all.
         @Test
         void failingHandlerIsRETRIED_whichEphemeralDispatchNeverDoes() {
-            var baseline = failingAttempts();
-
             publishPoison("tier-probe");
 
-            await().atMost(DELIVERY_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
-                   .untilAsserted(() -> assertThat(failingAttempts() - baseline)
-                           .describedAs("the durable tier retries a failing handler %d times; ephemeral"
-                                        + " delivery invokes it ONCE and never retries, so anything above"
-                                        + " 1 proves the durable tier is dispatching",
-                                        EXPECTED_ATTEMPTS_PER_EVENT)
-                           .isEqualTo(EXPECTED_ATTEMPTS_PER_EVENT));
-        }
-    }
-
-    @Nested
-    @Order(2)
-    class Delivery {
-        /// Delivery AND duplication in one assertion — see the class doc: one partition, slice on every
-        /// node, so an ungated consumer would return a multiple of ORDER_COUNT.
-        @Test
-        void everyPublishedEvent_isDeliveredExactlyOnceClusterWide() {
-            var baseline = totalOrdersDelivered();
-
-            for (var i = 0; i < ORDER_COUNT; i++) {
-                publishOrder("order-" + i, i);
-            }
-
-            await().atMost(DELIVERY_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
-                   .untilAsserted(() -> assertThat(totalOrdersDelivered() - baseline)
-                           .describedAs("each event delivered exactly once cluster-wide — a multiple of"
-                                        + " %d would mean ungated per-node delivery", ORDER_COUNT)
-                           .isEqualTo(ORDER_COUNT));
-        }
-
-        /// The only ordering guarantee §5 makes: serial per (group x partition). The topic has ONE
-        /// partition, so dispatch order is offset order and the ascending sequences the fixture
-        /// published must come back ascending. Asserting more than this would assert something the
-        /// design does not promise.
-        @Test
-        void eventsArriveInPublishedOrder_withinTheSinglePartition() {
-            await().atMost(DELIVERY_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(() -> !deliveredSequences().isEmpty());
-
-            var sequences = deliveredSequences();
-
-            assertThat(sequences).describedAs("serial per-(group x partition) dispatch over one partition"
-                                              + " means arrival order IS offset order")
-                                 .isSorted();
+            awaitSettled("the durable tier retries a failing handler %d times; ephemeral delivery invokes"
+                           .formatted(EXPECTED_ATTEMPTS_PER_EVENT)
+                           + " it ONCE and never retries, so anything above 1 proves the durable tier is"
+                           + " dispatching",
+                           () -> failingAttemptsFor("tier-probe"),
+                           EXPECTED_ATTEMPTS_PER_EVENT);
         }
     }
 
     @Nested
     @Order(3)
+    class Delivery {
+        /// Delivery AND duplication in one assertion — see the class doc: one partition, slice on every
+        /// node, so an ungated consumer would deliver each id once per node. Counted per id, so a
+        /// duplicate of one event cannot be masked by the loss of another.
+        @Test
+        void everyPublishedEvent_isDeliveredExactlyOnceClusterWide() {
+            var ids = publishOrders("dlv-", ORDER_COUNT);
+
+            awaitSettled("each event delivered exactly once cluster-wide — a count of %d per id would mean"
+                         .formatted(NODES)
+                         + " ungated per-node delivery",
+                         () -> deliveryCounts(ids),
+                         onceEach(ids));
+        }
+
+        /// The only ordering guarantee §5 makes: serial per (group x partition). The topic has ONE
+        /// partition, so dispatch order is offset order and the ascending sequences the arm published
+        /// must come back ascending, each exactly once.
+        ///
+        /// The events are acked late ([#SLOW_ACK_PREFIX]) and published back to back, so each append
+        /// arrives while an earlier delivery is still unacked. With an instant ack every delivery
+        /// completes before the next append and serial dispatch is indistinguishable from overlapping
+        /// dispatch — the previous form of this arm could not fail, and when it ran before the
+        /// delivery arm it asserted that a one-element list was sorted.
+        @Test
+        void eventsArriveInPublishedOrder_evenWhilePreviousDeliveriesAreUnacked() {
+            var ids = publishOrders(SLOW_ACK_PREFIX, SLOW_ORDER_COUNT);
+
+            awaitSettled("each late-acked event delivered exactly once — a repeat means a second delivery"
+                         + " of an offset overlapped the first", () -> deliveryCounts(ids), onceEach(ids));
+
+            assertThat(sequencesPerNode(SLOW_ACK_PREFIX)).describedAs("serial per-(group x partition)"
+                                                                       + " dispatch over one partition"
+                                                                       + " means arrival order IS offset"
+                                                                       + " order on every node that"
+                                                                       + " delivered")
+                                                          .allSatisfy(sequences -> assertThat(sequences).isSorted());
+        }
+    }
+
+    @Nested
+    @Order(4)
     class DeadLetterPath {
         /// The DLQ arm. A handler that can never ack must be retried a BOUNDED number of times and then
         /// stop — and stopping is the dead-letter boundary observed from outside: the runtime gave up on
         /// the event and moved it aside rather than retrying it forever or silently dropping it on the
-        /// first failure.
+        /// first failure. The second event proves the failing group's cursor moved PAST the first.
+        ///
+        /// The events are published one at a time, each after the previous exhausted its budget. Two
+        /// back to back put the second append inside the first's retry backoff, where #1238(a)
+        /// re-delivers the retrying event alongside its own scheduled retry; that is a separate
+        /// defect, and this arm keeps it out of the budget it measures.
         ///
         /// The `.dlq` stream itself is deliberately NOT asserted here. It is a runtime-created stream
         /// named `topic:<address>.dlq`, which the management stream listing cannot show (see
@@ -320,86 +328,79 @@ class DurableTopicDeliveryForgeTest {
         /// unit-covered by `DlqStreamSinkTest.append_reEnvelopesWithGroupAttribution_preservingMessageId`;
         /// what this suite adds is that the boundary is reached on a real cluster and the partition
         /// survives it — the second half being
-        /// [#healthyGroup_processesTheSameEvents_unaffectedByTheFailingGroup].
+        /// [#healthyGroup_processesTheSameEvent_onceAndUnaffectedByTheFailingGroup].
         @Test
         void poisonEvent_isRetriedABoundedNumberOfTimes_thenStops() {
-            var baseline = failingAttempts();
-
             for (var i = 0; i < POISON_COUNT; i++) {
-                publishPoison("poison-" + i);
+                var payload = "poison-" + i;
+
+                publishPoison(payload);
+                awaitSettled("the never-acking handler must be retried a BOUNDED number of times (%d for %s),"
+                               .formatted(EXPECTED_ATTEMPTS_PER_EVENT, payload)
+                               + " not forever and not once — a count still climbing after the budget means"
+                               + " the event was never moved aside",
+                               () -> failingAttemptsFor(payload),
+                               EXPECTED_ATTEMPTS_PER_EVENT);
             }
-
-            await().atMost(DELIVERY_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
-                   .untilAsserted(() -> assertThat(failingAttempts() - baseline)
-                           .describedAs("the never-acking handler must be retried a BOUNDED number of"
-                                        + " times (%d per event), not forever and not once",
-                                        EXPECTED_ATTEMPTS_PER_EVENT)
-                           .isEqualTo(POISON_COUNT * EXPECTED_ATTEMPTS_PER_EVENT));
-
-            // The boundary HOLDS: having given up, the runtime must not resume retrying. A count that
-            // keeps climbing here would mean the event was never dead-lettered, only endlessly retried.
-            var settled = failingAttempts();
-
-            sleep(Duration.ofSeconds(10));
-
-            assertThat(failingAttempts())
-                    .describedAs("retries must STOP once the budget is exhausted — a climbing count means"
-                                 + " the event was never moved aside")
-                    .isEqualTo(settled);
         }
 
         /// Group attribution: the failing group's exhaustion must not touch the healthy group's
-        /// progress over the SAME events. This is what "no cross-group duplication by construction,
-        /// not by dedup" (§9) means operationally, and it is also the partition-unblock proof — a DLQ
-        /// that stalled the shared partition would freeze this count too.
+        /// handling of the SAME event. This is what "no cross-group duplication by construction, not by
+        /// dedup" (§9) means operationally, and it is also the partition-unblock proof — a DLQ that
+        /// stalled the shared partition would never let the healthy group see the event.
         ///
-        /// **The dispatch-started gate is load-bearing and was missing on run 2.** That run sampled
-        /// `healthyCount` before poison dispatch had begun at all, so it observed 0 and could not
-        /// distinguish a BROKEN healthy group from a LATE one — the arm was vacuous in exactly the way
-        /// this suite exists to prevent, in its own assertion. Waiting for the failing group to be
-        /// invoked first establishes that the topic is being dispatched AT ALL; only then does the
-        /// healthy group's count mean anything, because only then is its absence attributable.
+        /// **Why this arm can now fail.** The earlier form asserted that a cluster-wide healthy COUNT
+        /// grew by at least one after a publish. Any poison event still in flight from another arm or a
+        /// warm-up satisfied that, so it could pass with the probe never reaching the healthy group.
+        /// Every assertion here names the probe's own payload, and each half is checked from its own
+        /// group's record: the failing group must have been invoked for the probe (the two groups are
+        /// separate consumers at all), the healthy group must have handled it EXACTLY once (a failing
+        /// group's retries re-dispatching to every group would show as a repeat), and the failing
+        /// group's budget must still come out at exactly 5 (a healthy ack leaking into the failing
+        /// group's cursor would cut it short).
         @Test
-        void healthyGroup_processesTheSameEvents_unaffectedByTheFailingGroup() {
-            var failingBaseline = failingAttempts();
-            var healthyBaseline = healthyCount();
+        void healthyGroup_processesTheSameEvent_onceAndUnaffectedByTheFailingGroup() {
+            var probe = "isolation-probe";
 
-            publishPoison("isolation-probe");
+            publishPoison(probe);
 
-            // Dispatch is happening: the failing group has been invoked for this arm's event. Until
-            // this holds, a zero healthyCount says nothing about the healthy group.
             await().atMost(DELIVERY_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
                    .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
-                   .untilAsserted(() -> assertThat(failingAttempts() - failingBaseline)
-                           .describedAs("poison-events dispatch must be observed BEFORE the healthy"
-                                        + " group's progress can be judged — otherwise a zero below is"
-                                        + " indistinguishable from 'not started yet'")
+                   .untilAsserted(() -> assertThat(failingAttemptsFor(probe))
+                           .describedAs("the failing group must be invoked for %s — if only one group ever"
+                                        + " sees it, the two subscriber methods are not two groups", probe)
                            .isGreaterThan(0));
 
-            // Now it is attributable: the same event reached the failing group, so the healthy group
-            // must see it too. A stall here is a real isolation failure, not a timing artefact.
-            await().atMost(DELIVERY_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
-                   .untilAsserted(() -> assertThat(healthyCount() - healthyBaseline)
-                           .describedAs("the healthy group shares the topic with a group that can never"
-                                        + " ack; separate cursors and retry budgets mean it must still"
-                                        + " process the event the failing group is choking on")
-                           .isGreaterThanOrEqualTo(1));
+            awaitSettled("the healthy group must handle %s exactly once, while the group sharing the topic".formatted(probe)
+                           + " never acks it",
+                           () -> healthyDeliveriesOf(probe),
+                           1);
+
+            awaitSettled("the failing group's budget for %s is its own".formatted(probe),
+                           () -> failingAttemptsFor(probe),
+                           EXPECTED_ATTEMPTS_PER_EVENT);
         }
     }
 
     // --- fixture driving -----------------------------------------------------
 
-    private void publishOrder(String orderId, int sequence) {
+    /// Publishes `count` orders with ids `prefix + i` and ascending sequences, each publish resolving
+    /// before the next is sent, so publication order is offset order.
+    private List<String> publishOrders(String prefix, int count) {
+        return IntStream.range(0, count)
+                        .mapToObj(i -> publishOrder(prefix + i, i))
+                        .toList();
+    }
+
+    private String publishOrder(String orderId, int sequence) {
         var body = "{\"orderId\":\"%s\",\"sequence\":%d}".formatted(orderId, sequence);
         var response = httpPost(appPort(), "/api/durable-topic/publish-order", body);
 
         assertThat(response).describedAs("durable publish must resolve at the min-sync floor")
                             .doesNotContain("\"error\"");
+
+        return orderId;
     }
 
     private void publishPoison(String payload) {
@@ -408,49 +409,114 @@ class DurableTopicDeliveryForgeTest {
         assertThat(response).doesNotContain("\"error\"");
     }
 
-    /// Summed across every node, which is what makes the count a cluster-wide claim rather than a
-    /// per-node one — the ungated-delivery failure mode only shows up in the total.
-    private int totalOrdersDelivered() {
-        return cluster.getAvailableAppHttpPorts()
-                      .stream()
-                      .mapToInt(port -> firstInt(COUNT_FIELD, httpPost(port, "/api/durable-topic/order-status", "{}")))
-                      .sum();
+    /// Waits until `probe` reaches `expected`, then holds for [#SETTLE] and requires it to still read
+    /// `expected`. Reaching a count proves delivery; holding it is what proves no duplicate or resumed
+    /// retry arrived afterwards, which a bare "until equal" can never see.
+    private <T> void awaitSettled(String description, Supplier<T> probe, T expected) {
+        await().atMost(DELIVERY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .untilAsserted(() -> assertThat(probe.get()).describedAs(description)
+                                                           .isEqualTo(expected));
+
+        sleep(SETTLE);
+
+        assertThat(probe.get()).describedAs("%s — and it must STAY there for %s", description, SETTLE)
+                               .isEqualTo(expected);
     }
 
-    /// Sequences as delivered, read from whichever node actually dispatched them.
+    private static Map<String, Long> onceEach(List<String> ids) {
+        return ids.stream()
+                  .collect(Collectors.toMap(Function.identity(), _ -> 1L));
+    }
+
+    /// Per id, how many times it was delivered, summed across every node — which is what makes the
+    /// count a cluster-wide claim rather than a per-node one. Ids never delivered are reported as 0.
+    private Map<String, Long> deliveryCounts(List<String> ids) {
+        var delivered = allDeliveries().stream()
+                                       .collect(Collectors.groupingBy(Delivered::orderId, Collectors.counting()));
+
+        return ids.stream()
+                  .collect(Collectors.toMap(Function.identity(), id -> delivered.getOrDefault(id, 0L)));
+    }
+
+    private long deliveriesOf(String orderId) {
+        return allDeliveries().stream()
+                              .filter(delivered -> delivered.orderId().equals(orderId))
+                              .count();
+    }
+
+    private List<Delivered> allDeliveries() {
+        return deliveriesPerNode().stream()
+                                  .flatMap(List::stream)
+                                  .toList();
+    }
+
+    /// The sequences of the `prefix` orders as each node delivered them, in arrival order; nodes that
+    /// delivered none are omitted.
     ///
     /// It scans every node rather than the first available one. With `partitions = 1` exactly ONE node
-    /// owns the partition and records deliveries, and that node is not necessarily the one
+    /// owns the partition at a time and records deliveries, and that node is not necessarily the one
     /// [#appPort] happens to return — so reading a single node passes only when the owner is the one
-    /// polled. Run 2's ordering arm passed that way, which is luck rather than evidence.
-    private List<Integer> deliveredSequences() {
+    /// polled.
+    private List<List<Integer>> sequencesPerNode(String prefix) {
+        return deliveriesPerNode().stream()
+                                  .map(deliveries -> deliveries.stream()
+                                                               .filter(delivered -> delivered.orderId().startsWith(prefix))
+                                                               .map(Delivered::sequence)
+                                                               .toList())
+                                  .filter(sequences -> !sequences.isEmpty())
+                                  .toList();
+    }
+
+    private List<List<Delivered>> deliveriesPerNode() {
         return cluster.getAvailableAppHttpPorts()
                       .stream()
                       .map(port -> httpPost(port, "/api/durable-topic/order-status", "{}"))
-                      .map(body -> SEQUENCE_FIELD.matcher(body)
-                                                 .results()
-                                                 .map(result -> Integer.parseInt(result.group(1)))
-                                                 .toList())
-                      .filter(sequences -> !sequences.isEmpty())
-                      .findFirst()
-                      .orElseGet(List::of);
+                      .map(DurableTopicDeliveryForgeTest::parseDeliveries)
+                      .toList();
     }
 
-    private int failingAttempts() {
+    private static List<Delivered> parseDeliveries(String body) {
+        return ORDER_ENTRY.matcher(body)
+                          .results()
+                          .map(result -> new Delivered(result.group(1), Integer.parseInt(result.group(2))))
+                          .toList();
+    }
+
+    private int failingAttemptsFor(String payload) {
+        return poisonRecordsOf(FAILING_PAYLOADS, payload);
+    }
+
+    private int healthyDeliveriesOf(String payload) {
+        return poisonRecordsOf(HEALTHY_PAYLOADS, payload);
+    }
+
+    /// Occurrences of `payload` in one of the fixture's per-group records, summed across every node.
+    private int poisonRecordsOf(Pattern field, String payload) {
         return cluster.getAvailableAppHttpPorts()
                       .stream()
-                      .mapToInt(port -> firstInt(FAILING_ATTEMPTS,
-                                                 httpPost(port, "/api/durable-topic/poison-status", "{}")))
+                      .map(port -> httpPost(port, "/api/durable-topic/poison-status", "{}"))
+                      .mapToInt(body -> occurrences(field, body, payload))
                       .sum();
     }
 
-    private int healthyCount() {
-        return cluster.getAvailableAppHttpPorts()
-                      .stream()
-                      .mapToInt(port -> firstInt(HEALTHY_COUNT,
-                                                 httpPost(port, "/api/durable-topic/poison-status", "{}")))
-                      .sum();
+    private static int occurrences(Pattern field, String body, String payload) {
+        var list = field.matcher(body);
+
+        return list.find()
+               ? (int) QUOTED.matcher(list.group(1))
+                             .results()
+                             .filter(result -> result.group(1).equals(payload))
+                             .count()
+               : 0;
     }
+
+    private static boolean unchangedSinceLastSample(AtomicInteger last, int now) {
+        return last.getAndSet(now) == now;
+    }
+
+    record Delivered(String orderId, int sequence) {}
 
     // --- cluster plumbing ----------------------------------------------------
 
@@ -491,7 +557,7 @@ class DurableTopicDeliveryForgeTest {
 
         var response = httpPost(ports.getFirst(),
                                 "/api/durable-topic/publish-order",
-                                "{\"orderId\":\"__warmup__\",\"sequence\":0}");
+                                "{\"orderId\":\"" + WARMUP_ID + "\",\"sequence\":0}");
 
         return !response.contains("\"error\"") && response.contains("published");
     }
@@ -506,7 +572,7 @@ class DurableTopicDeliveryForgeTest {
             return false;
         }
 
-        var response = httpPost(ports.getFirst(), "/api/durable-topic/publish-poison", "{\"payload\":\"__warmup__\"}");
+        var response = httpPost(ports.getFirst(), "/api/durable-topic/publish-poison", "{\"payload\":\"" + WARMUP_ID + "\"}");
 
         return !response.contains("\"error\"") && response.contains("published");
     }
@@ -558,14 +624,6 @@ class DurableTopicDeliveryForgeTest {
                    .await()
                    .map(response -> response.statusCode() == 200 && response.body().contains("\"quorum\":true"))
                    .or(false);
-    }
-
-    private static int firstInt(Pattern pattern, String body) {
-        Matcher matcher = pattern.matcher(body);
-
-        return matcher.find()
-               ? Integer.parseInt(matcher.group(1))
-               : 0;
     }
 
     // --- HTTP ----------------------------------------------------------------
