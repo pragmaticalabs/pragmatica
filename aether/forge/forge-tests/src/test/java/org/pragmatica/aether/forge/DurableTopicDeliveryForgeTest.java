@@ -7,6 +7,7 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.ClassOrderer;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Order;
@@ -64,7 +65,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// **Non-vacuity of the delivery count.** `order-events` declares `partitions = 1` and the blueprint
 /// deploys the slice to EVERY node. Exactly one node owns that partition, so a correctly gated
 /// consumer records each event once CLUSTER-WIDE, while an ungated one records it once per node and
-/// the total is a multiple of the published count. Asserting the exact total is simultaneously a
+/// each id is counted once per node. Asserting exactly one delivery PER ID is simultaneously a
 /// delivery proof and a duplication proof. The subscriber methods are deliberately ABSENT from the
 /// fixture's `routes.toml`, so nothing but the runtime's dispatch path can invoke them.
 ///
@@ -72,6 +73,11 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// `poison-events` topic, making them two consumer groups over one event sequence. One can never
 /// ack. If attribution is real the failing group dead-letters while the healthy group processes the
 /// identical events untouched.
+///
+/// **No arm reads another arm's events.** Every arm publishes under ids of its own and counts only
+/// those, per id, from the fixture's per-group records. The first runs of this suite compared
+/// cluster-wide counters against baselines and failed three arms on events still in flight from the
+/// readiness gates or an earlier arm; a baseline cannot tell whose event moved a counter, an id can.
 ///
 /// **Everything here is observed through the FIXTURE's own HTTP surface, never the management API.**
 /// That is not a stylistic choice. The first run of this suite died in `@BeforeAll` against a guard
@@ -96,6 +102,10 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 ///     still executing while its retry runs elsewhere is not constructible in this harness.
 ///   - **No owner-loss arm** — the SIGKILL failover case is tracked as #739; without it this suite
 ///     does not prove survival of a partition owner's death.
+///   - **Publish outcomes (#1236) and pre-durability visibility (#1235) have no arm.** Driving a
+///     `NOT_ENOUGH_REPLICAS` result needs fewer live replica targets than `min_sync_replicas = 2`,
+///     which a five-node cluster only reaches by losing quorum; #1235's loss needs an owner failover,
+///     the missing #739 arm. Every publish here resolves normally, so neither defect can show.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -217,10 +227,24 @@ class DurableTopicDeliveryForgeTest {
     /// already in the ring waits for the next append. The order-events warm-up is published by the
     /// readiness gate, before the group attaches, and nothing else appends to order-events until the
     /// [Delivery] arms run — so this class must run FIRST, and nothing in it may publish an order.
+    ///
+    /// On `release-1.0.0-rc4` the warm-up is never delivered, so the real arm is disabled and a
+    /// tripwire asserting the stranding runs in its place. With PR #1285 merged into rc4 the real arm
+    /// delivered the warm-up in 0.6 s. The stranding is also the mechanism #751 left unexplained: the
+    /// suite's old setUp drain gate waited on exactly this event and timed out on every run.
     @Nested
     @Order(1)
     class PreAttachBacklog {
+        /// Far longer than delivery takes when the backlog IS read (0.6 s measured), so a warm-up still
+        /// undelivered after it is stranded rather than late.
+        private static final Duration STRANDING_WINDOW = Duration.ofSeconds(20);
+
+        /// Meaningful only when the warm-up was appended before the group attached. The tripwire below
+        /// found it undelivered on every rc4 run, which is that precondition observed: an event
+        /// published after attach would have been delivered by the listener.
         @Test
+        @Disabled("blocked on PR #1285 (#1238c: no backlog read on subscribe) — enable it and delete"
+                  + " TRIPWIRE_warmupPublishedBeforeAttach_isStranded_until1285Lands when #1285 lands")
         void eventPublishedBeforeTheGroupAttached_isDeliveredWithoutAFollowUpAppend() {
             await().atMost(DELIVERY_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
@@ -230,6 +254,20 @@ class DurableTopicDeliveryForgeTest {
                                         + " attached; a subscribe that reads the backlog delivers it"
                                         + " without any further publish")
                            .isGreaterThanOrEqualTo(1));
+        }
+
+        /// Asserts the CURRENT, wrong behaviour so the fix cannot land unnoticed: this goes red the
+        /// moment a subscribe reads the backlog.
+        @Test
+        void TRIPWIRE_warmupPublishedBeforeAttach_isStranded_until1285Lands() {
+            sleep(STRANDING_WINDOW);
+
+            assertThat(deliveriesOf(WARMUP_ID))
+                    .describedAs("TRIPWIRE: the pre-attach warm-up was DELIVERED, so #1238(c) is fixed —"
+                                 + " delete me and enable"
+                                 + " eventPublishedBeforeTheGroupAttached_isDeliveredWithoutAFollowUpAppend;"
+                                 + " #1285 has landed")
+                    .isZero();
         }
     }
 
@@ -282,34 +320,66 @@ class DurableTopicDeliveryForgeTest {
                          () -> deliveryCounts(ids),
                          onceEach(ids));
         }
+    }
 
-        /// The only ordering guarantee §5 makes: serial per (group x partition). The topic has ONE
-        /// partition, so dispatch order is offset order and the ascending sequences the arm published
-        /// must come back ascending, each exactly once.
-        ///
-        /// The events are acked late ([#SLOW_ACK_PREFIX]) and published back to back, so each append
-        /// arrives while an earlier delivery is still unacked. With an instant ack every delivery
-        /// completes before the next append and serial dispatch is indistinguishable from overlapping
-        /// dispatch — the previous form of this arm could not fail, and when it ran before the
-        /// delivery arm it asserted that a one-element list was sorted.
+    /// The only ordering guarantee §5 makes: serial per (group x partition). The topic has ONE
+    /// partition, so dispatch order is offset order and the ascending sequences an arm published must
+    /// come back ascending, each exactly once.
+    ///
+    /// The events are acked late ([#SLOW_ACK_PREFIX]) and published back to back, so each append
+    /// arrives while an earlier delivery is still unacked. With an instant ack every delivery completes
+    /// before the next append and serial dispatch is indistinguishable from overlapping dispatch — the
+    /// previous form of this arm could not fail, and when it ran before the delivery arm it asserted
+    /// that a one-element list was sorted.
+    ///
+    /// On `release-1.0.0-rc4` every append starts its own delivery pass from a cursor the unacked
+    /// delivery has not yet advanced (#1238(a)/(b)): ten late-acked events came back 10, 9, 8, … 1
+    /// times. With PR #1285 merged into rc4 each came back once, in order. Runs after [Delivery] so the
+    /// redelivery storm the tripwire provokes cannot reach that arm's window.
+    @Nested
+    @Order(4)
+    class SerialDispatch {
         @Test
+        @Disabled("blocked on PR #1285 (#1238a/b: overlapping delivery passes per group) — enable it and"
+                  + " delete TRIPWIRE_lateAckedEvents_areRedelivered_until1285Lands when #1285 lands")
         void eventsArriveInPublishedOrder_evenWhilePreviousDeliveriesAreUnacked() {
-            var ids = publishOrders(SLOW_ACK_PREFIX, SLOW_ORDER_COUNT);
+            var prefix = SLOW_ACK_PREFIX + "ord-";
+            var ids = publishOrders(prefix, SLOW_ORDER_COUNT);
 
             awaitSettled("each late-acked event delivered exactly once — a repeat means a second delivery"
                          + " of an offset overlapped the first", () -> deliveryCounts(ids), onceEach(ids));
 
-            assertThat(sequencesPerNode(SLOW_ACK_PREFIX)).describedAs("serial per-(group x partition)"
-                                                                       + " dispatch over one partition"
-                                                                       + " means arrival order IS offset"
-                                                                       + " order on every node that"
-                                                                       + " delivered")
-                                                          .allSatisfy(sequences -> assertThat(sequences).isSorted());
+            assertThat(sequencesPerNode(prefix)).describedAs("serial per-(group x partition) dispatch over"
+                                                              + " one partition means arrival order IS"
+                                                              + " offset order on every node that"
+                                                              + " delivered")
+                                                 .allSatisfy(sequences -> assertThat(sequences).isSorted());
+        }
+
+        /// Asserts the CURRENT, wrong behaviour: once every event has arrived and the counts have
+        /// settled, at least one was delivered more than once. Goes red when delivery becomes serial.
+        @Test
+        void TRIPWIRE_lateAckedEvents_areRedelivered_until1285Lands() {
+            var ids = publishOrders(SLOW_ACK_PREFIX + "tw-", SLOW_ORDER_COUNT);
+
+            await().atMost(DELIVERY_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .failFast(DurableTopicDeliveryForgeTest.this::failIfSliceFailed)
+                   .untilAsserted(() -> assertThat(deliveryCounts(ids).values()).allMatch(count -> count >= 1));
+
+            sleep(SETTLE);
+
+            assertThat(deliveryCounts(ids).values())
+                    .describedAs("TRIPWIRE: no late-acked event was delivered twice, so #1238(a)/(b) is"
+                                 + " fixed — delete me and enable"
+                                 + " eventsArriveInPublishedOrder_evenWhilePreviousDeliveriesAreUnacked;"
+                                 + " #1285 has landed")
+                    .anyMatch(count -> count > 1);
         }
     }
 
     @Nested
-    @Order(4)
+    @Order(5)
     class DeadLetterPath {
         /// The DLQ arm. A handler that can never ack must be retried a BOUNDED number of times and then
         /// stop — and stopping is the dead-letter boundary observed from outside: the runtime gave up on
@@ -563,8 +633,8 @@ class DurableTopicDeliveryForgeTest {
     }
 
     /// The `poison-events` half of the readiness gate. Its warm-up event WILL be dead-lettered by the
-    /// failing group and counted by the healthy one — harmless, because every arm takes a baseline
-    /// before publishing rather than assuming a zero start.
+    /// failing group and handled by the healthy one — harmless to the counts, because no arm counts
+    /// [#WARMUP_ID], and kept from interfering by the quiescence gate at the end of [#setUp].
     private boolean poisonPublishReady() {
         var ports = cluster.getAvailableAppHttpPorts();
 
