@@ -111,6 +111,24 @@ class StreamForwardHandlerTest {
             assertThat(response.correlationId()).isEqualTo(CORRELATION_ID);
         }
 
+        /// #1230: a forward reaching a node whose committed ownership names someone else — the HRW owner
+        /// during the reshuffle lag, before the leader commits the change — is refused RETRYABLE, so the
+        /// forwarder's bounded retry (#485) absorbs the lag instead of surfacing it; nothing lands here.
+        @Test
+        void onPublishForward_committedOwnerElsewhere_respondsRetryable_andAppendsNothing() {
+            partitionManager.createStream(streamConfig(STREAM));
+            partitionManager.ownerWriteAdmission((_, _) -> Option.some(REQUESTER));
+            var request = publishForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, PAYLOAD, TIMESTAMP);
+
+            handler.onPublishForward(request);
+
+            assertThat(sentMessages).hasSize(1);
+            var response = (PublishForwardResponse) sentMessages.getFirst().message();
+            assertThat(response.success()).isFalse();
+            assertThat(response.retryable()).isTrue();
+            assertThat(partitionManager.nextExpectedOffset(STREAM, PARTITION)).isZero();
+        }
+
         @Test
         void onPublishForward_partitionOutOfRange_respondsWithError() {
             partitionManager.createStream(streamConfig(STREAM));

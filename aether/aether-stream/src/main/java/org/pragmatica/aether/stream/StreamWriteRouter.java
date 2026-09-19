@@ -13,7 +13,7 @@ import org.pragmatica.lang.Promise;
 
 /// Raw-payload WRITE router — the publish-side mirror of {@link StreamReadRouter}. Holds the
 /// owner-routing decision for a management/API publish exactly once so it cannot drift from the app
-/// publish path: when this node materializes the partition it appends locally (and awaits the min-sync
+/// publish path: when this node is the partition's owner it appends locally (and awaits the min-sync
 /// barrier); otherwise it write-forwards to the HRW owner via {@link StreamForwardClient} — the SAME
 /// deterministic owner the read router ({@link StreamReadRouter}) and the app publisher
 /// ({@link DefaultStreamPublisher}) route to.
@@ -52,25 +52,31 @@ public final class StreamWriteRouter {
         return new StreamWriteRouter(partitionManager, Option.none(), NO_SELF, (_, _) -> Option.none());
     }
 
-    /// Publish `payload` to `(streamName, partition)`, resolving to the assigned offset. LOCAL-FIRST by
-    /// materialization: a node that holds the partition ring appends locally (mirroring
-    /// {@link DefaultStreamPublisher}'s eventual path — local append + min-sync await); a metadata-only
-    /// node write-forwards to the HRW owner. Falls back to a local append only when the owner is
-    /// unknown/self or no forward client is wired (bootstrap / minimal runtime), matching the read
-    /// router's soft-fail-to-local posture.
+    /// Publish `payload` to `(streamName, partition)`, resolving to the assigned offset. Routes by
+    /// AUTHORITY, never by ring presence (#1230) — a replica holds the same materialized ring the owner
+    /// does: a remote HRW owner is write-forwarded; a self owner appends locally (mirroring
+    /// {@link DefaultStreamPublisher}'s eventual path — local append + min-sync await). Falls back to a
+    /// local append only when the owner is unknown or no forward client is wired (bootstrap / minimal
+    /// runtime), matching the read router's soft-fail-to-local posture. The local append is admitted only
+    /// for the committed owner; a refusal in the ownership-lag window redirects to that owner.
     public Promise<Long> publish(String streamName, int partition, byte[] payload, long timestamp) {
-        return partitionManager.partitionBuffer(streamName, partition)
-                               .isPresent()
-               ? publishLocal(streamName, partition, payload, timestamp)
-               : forwardToOwner(streamName, partition, payload, timestamp);
+        return ownerResolver.resolve(streamName, partition)
+                            .filter(owner -> !owner.equals(selfNodeId))
+                            .flatMap(owner -> forwardTo(owner, streamName, partition, payload, timestamp))
+                            .or(() -> publishLocal(streamName, partition, payload, timestamp));
     }
 
     private Promise<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
         var minSyncReplicas = partitionManager.minSyncReplicasFor(streamName);
 
         return partitionManager.publishLocal(streamName, partition, payload, timestamp)
-                               .async()
-                               .flatMap(offset -> awaitMinSync(streamName, partition, offset, minSyncReplicas));
+                               .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
+                                                                                  owner -> forwardTo(owner,
+                                                                                                     streamName,
+                                                                                                     partition,
+                                                                                                     payload,
+                                                                                                     timestamp)),
+                                     offset -> awaitMinSync(streamName, partition, offset, minSyncReplicas));
     }
 
     private Promise<Long> awaitMinSync(String streamName, int partition, long offset, int minSyncReplicas) {
@@ -80,17 +86,12 @@ public final class StreamWriteRouter {
                : Promise.success(offset);
     }
 
-    private Promise<Long> forwardToOwner(String streamName, int partition, byte[] payload, long timestamp) {
-        return ownerResolver.resolve(streamName, partition)
-                            .filter(owner -> !owner.equals(selfNodeId))
-                            .flatMap(owner -> forwardClient.map(client -> attemptForward(client,
-                                                                                         owner,
-                                                                                         streamName,
-                                                                                         partition,
-                                                                                         payload,
-                                                                                         timestamp)))
-                            .or(() -> partitionManager.publishLocal(streamName, partition, payload, timestamp)
-                                                      .async());
+    private Option<Promise<Long>> forwardTo(NodeId owner,
+                                            String streamName,
+                                            int partition,
+                                            byte[] payload,
+                                            long timestamp) {
+        return forwardClient.map(client -> attemptForward(client, owner, streamName, partition, payload, timestamp));
     }
 
     /// Owner-forward with the shared bounded retry folded in (write-forward race fix): re-attempts ONLY

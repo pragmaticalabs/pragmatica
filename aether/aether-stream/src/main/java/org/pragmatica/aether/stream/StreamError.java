@@ -209,6 +209,22 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// Owner-write admission refusal (#1230): an application append reached `publishLocal` on a node that is
+    /// not the COMMITTED owner of `(streamName, partition)` — the committed `StreamPartitionOwnershipValue`
+    /// names `committedOwner`. The epoch fence cannot catch this: a live non-owner stamps the same committed
+    /// epoch the owner does, so without this refusal a replica holding the partition ring became an
+    /// undeclared second writer assigning offsets the owner also assigns. Transient: during a reshuffle the
+    /// HRW-routed target refuses until the leader commits the ownership change, so the forwarder retries and
+    /// a local caller redirects to `committedOwner`.
+    record NotOwnerAppend(String streamName, int partition, NodeId committedOwner) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Stream append refused for %s[%d]: the committed owner is %s, not this node".formatted(streamName,
+                                                                                                          partition,
+                                                                                                          committedOwner);
+        }
+    }
+
     /// Linearizable-read owner mismatch (#345 item 1e): a `LINEARIZABLE` read landed on `actual` but the
     /// committed `StreamPartitionOwnershipValue.owner` for the `(stream, partition)` arc is `expected`, so
     /// `actual` is NOT the authoritative owner (a stale committed view, or a routing race during a
