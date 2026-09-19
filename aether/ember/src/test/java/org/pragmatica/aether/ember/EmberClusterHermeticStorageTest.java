@@ -7,10 +7,13 @@ package org.pragmatica.aether.ember;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -25,6 +28,7 @@ class EmberClusterHermeticStorageTest {
     private static final TimeSpan STOPPED = TimeSpan.timeSpan(10).seconds();
     private static final int BASE_PORT = 45_300;
     private static final int BASE_MGMT_PORT = 45_400;
+    private static final Cause START_FAILED = Causes.cause("start failed");
 
     @Test
     void perNodeStorageConfig_rootsEachNodeUnderTheClustersUncreatableTempDir_neverUnderData() {
@@ -76,6 +80,27 @@ class EmberClusterHermeticStorageTest {
                .onFailure(cause -> fail("stop must succeed: " + cause.message()));
 
         assertThat(Files.exists(tempDir)).as("stop() must delete the cluster's storage temp dir %s", tempDir)
+                                         .isFalse();
+    }
+
+    /// A failed start clears the cluster through its own path (`abortStart` → `clearClusterStateOnFailure`),
+    /// not through [EmberCluster#stop], and a caller that sees the failure may never call `stop()`. So that
+    /// clear must release the temp dir as well, or every failed start leaks one.
+    @Test
+    @Timeout(30)
+    void abortStart_deletesTheClustersStorageTempDir() {
+        var cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "hermetic-abort");
+
+        cluster.perNodeStorageConfig(NodeId.nodeId("hermetic-abort-1").unwrap());
+
+        var tempDir = cluster.unwritableStorageBase().unwrap().getParent();
+
+        assertThat(Files.exists(tempDir)).as("CONTROL: the temp dir exists before the failed start").isTrue();
+
+        var outcome = cluster.abortStart(START_FAILED, Map.of()).await(STOPPED);
+
+        assertThat(outcome.isFailure()).as("CONTROL: abortStart must report the start failure").isTrue();
+        assertThat(Files.exists(tempDir)).as("a failed start must delete the cluster's storage temp dir %s", tempDir)
                                          .isFalse();
     }
 }

@@ -209,7 +209,8 @@ public final class EmberCluster {
     /// writable. On a host where it IS writable, every cluster on the machine shared one storage
     /// directory across runs, trees and branches. This keeps the degraded behaviour on every host.
     ///
-    /// Created lazily, by the first node built without a data dir, and deleted by [#stop]. It holds no
+    /// Created lazily, by the first node built without a data dir, and deleted by [#stop] and by a failed
+    /// start (both registry clears release it). It holds no
     /// state (nothing can be written beneath it), so a `stop()` → `start()` restart simply gets a fresh
     /// one. [Option#none] until first use and after `stop()`.
     private final AtomicReference<Option<Path>> unwritableStorageBaseDir = new AtomicReference<>(Option.none());
@@ -852,6 +853,7 @@ public final class EmberCluster {
     }
 
     private Unit clearClusterStateOnFailure(Unit unit) {
+        releaseUnwritableStorageBase();
         nodes.clear();
         // Held-back instances were never started, so dropping the references disposes them fully.
         heldBackNodes.clear();

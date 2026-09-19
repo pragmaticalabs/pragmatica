@@ -19,7 +19,7 @@
   same production default, and every cluster on the machine shared one `/data/aether` directory across
   runs, trees and branches. Each cluster now roots its nodes' storage under a regular file in its own
   temp dir, so nothing can be created there on any host. It creates that dir lazily and deletes it on
-  `stop()`. Clusters that call `withDataBaseDir` are unchanged: they keep a writable disk tier and WAL.
+  `stop()` or after a failed start. Clusters that call `withDataBaseDir` are unchanged: they keep a writable disk tier and WAL.
   [mechanism: `EmberCluster.perNodeStorageConfig` falls back to `unwritableStorageBase()` instead of an
   empty map; pinned by `EmberClusterHermeticStorageTest`]
 - The production default path itself is unchanged; see #1276 for the separate decision on it.
