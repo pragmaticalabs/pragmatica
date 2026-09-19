@@ -11,7 +11,7 @@
   append, and always on the ring's serial notifier: an advance only queues the new visible offset, so
   no publisher, WAL-commit or replica-ack thread runs a listener. A stream with `minSyncReplicas <= 1` and no WAL makes an event visible as soon as it is
   appended; with a WAL, as soon as it is fsynced.
-  `[mechanism: per-partition AtomicLong watermarks in OffHeapRingBuffer; visibility is recomputed when the owner's publish sees its fsync, and on every ReplicateAck through a ReplicationManager ack observer that runs before the pending awaitReplication calls resolve, so an acknowledged publish is already readable; the read path takes no lock]`
+  `[mechanism: per-partition AtomicLong watermarks in OffHeapRingBuffer; visibility is recomputed when the owner's publish sees its fsync, and on every ReplicateAck through a ReplicationManager ack observer that runs before the registry records the ack (reading it through an overlay) and so before any waiter resolves, so an acknowledged publish is already readable; the read path takes no lock]`
   `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/StreamPartitionVisibilityTest.java]`
   (unit level, one JVM, no multi-node run.)
 - **An owner WAL failure after the ring append no longer exposes the event.** A failed frame write or a
