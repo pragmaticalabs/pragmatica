@@ -1241,9 +1241,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         lastSealedOffset = Math.max(lastSealedOffset, through);
     }
 
-    /// The failed range is still in the ring (nothing past [#lastSealedOffset] is reclaimed), so rolling the
-    /// request back is the whole recovery: the next eviction pass hands the same events over again. Until
-    /// that succeeds the ring cannot reclaim them, and appends needing their room are refused.
+    /// Absorbing the failure here is design-out, not loss: the failed range is still in the ring (nothing
+    /// past [#lastSealedOffset] is reclaimed), so rolling the request back is the whole recovery — the next
+    /// eviction pass hands the same events over again. Until that succeeds the ring cannot reclaim them, and
+    /// appends needing their room are refused.
     private void rollBackSealRequest(Cause cause, long from, long through) {
         sealRequestedThrough = lastSealedOffset;
         var failures = sealFailures.incrementAndGet();
