@@ -106,6 +106,33 @@ class EntityFoldTest {
                                            + " not serve state missing it"));
         }
 
+        /// #701 under #1241's per-key guard: an append-path success for the SAME key after an unapplicable
+        /// record must not let catch-up treat the unapplied record as superseded. The per-key guard's premise
+        /// — a key holding a newer offset got it after the older one was applied — is false exactly when
+        /// the older apply FAILED, so catch-up must replay the record and refuse, and the watermark must hold
+        /// below it. Found by the adversarial review of PR #1272, where catch-up went through the guard.
+        @Test
+        void caughtUp_refusesLoudly_whenASameKeySuccessorFollowsAnUnapplicableRecord() {
+            var substrate = new FakeSubstrate();
+            var fold = readyFold(substrate);
+            var poison = new EntityLogRecord(EntityLogRecord.Op.TIMER_SCHEDULE, "k", MALFORMED_TIMER_PAYLOAD);
+            var successor = EntityLogRecord.upsert("k", bytes("2"));
+
+            substrate.append(poison);
+            fold.apply(PARTITION, 0, poison);
+            substrate.append(successor);
+            fold.apply(PARTITION, 1, successor);
+
+            fold.caughtUp(PARTITION)
+                .await()
+                .onSuccess(_ -> fail("catch-up must replay the unapplied record and refuse (#701),"
+                                     + " not account it as superseded"));
+
+            assertThat(fold.checkpointableThrough(PARTITION))
+                    .as("the watermark must hold below the unapplied record")
+                    .isEqualTo(-1L);
+        }
+
         /// #701 item 2's liveness sibling, and the half of it a test can pin deterministically. A
         /// SYNCHRONOUS throw out of `runCatchUp` used to escape between the won CAS and the `onResult`
         /// attach, leaving the slot holding a promise nothing would ever resolve — so the failure was not
@@ -470,6 +497,29 @@ class EntityFoldTest {
 
             assertThat(text(fold, "a")).isEqualTo("1");
             assertThat(text(fold, "b")).isEqualTo("2");
+        }
+
+        /// Catch-up writes no per-key offset, so once it has applied a newer record for the key, a late
+        /// append-path apply of an older, covered offset is refused by the WATERMARK half of the guard
+        /// alone. Pins that re-check: `apply` has no separate watermark fast path in front of it.
+        @Test
+        void apply_refusesACoveredOffset_whenCatchUpAppliedANewerRecordForTheKey() {
+            var substrate = new FakeSubstrate();
+            var fold = readyFold(substrate);
+            var older = EntityLogRecord.upsert("k", bytes("old"));
+
+            substrate.append(older);
+            substrate.append(EntityLogRecord.upsert("k", bytes("new")));
+
+            fold.caughtUp(PARTITION)
+                .await()
+                .onFailure(cause -> fail("catch-up must apply both records: " + cause.message()));
+
+            fold.apply(PARTITION, 0, older);
+
+            assertThat(text(fold, "k")).as("a covered offset must not overwrite the state catch-up advanced")
+                                       .isEqualTo("new");
+            assertThat(fold.checkpointableThrough(PARTITION)).isEqualTo(1);
         }
 
         /// The guard's per-key offsets must not become a per-key leak: an entry is dropped as soon as the
