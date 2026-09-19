@@ -7,9 +7,10 @@
 | Field | Value |
 |---|---|
 | Status | Implementation specification; design only, not implemented |
-| Date | 2026-09-18 |
-| Release target | Unassigned; no claim of inclusion in an existing release |
-| Source baseline | Local `0143cdf79` on `chore/ci-node24-action-runtimes-main`; implementation must reconcile paths/contracts against its target release branch |
+| Date | 2026-09-18 (decisions owner-confirmed 2026-09-19) |
+| Release target | 1.0.0-rc5 — owner ruling 2026-09-19; work starts once the prerequisites below are met |
+| Tracking | #1251 (epic); prerequisites listed in "Prerequisites" below |
+| Source baseline | Authored against `0143cdf79`; every §3 integration path and §14 link re-checked present at `release-1.0.0-rc4` `ccba0dba5`. Implementation must still reconcile against its target branch |
 | Primary ownership | `aether-control`, with metrics, deployment, environment, configuration, persistence, and management adapters |
 | Evidence | **[design intent — unverified]** applies to every proposed behavior and guarantee in this document |
 
@@ -25,6 +26,24 @@ Sections 1–4 define scope, invariants and contracts; 5–8 define deterministi
 sequence; 13 is the acceptance checklist. Follow the phase gates in §12, not document order, when
 implementing. Algorithm parameters and rollout defaults are design choices supplied by this spec,
 not additional owner rulings from the design discussion.
+
+## Prerequisites
+
+The §1 decisions are owner-confirmed; the following are not design questions but capabilities this
+spec builds on that are defective or missing today. Do not start the dependent phase before each is
+closed — the spec's own rule (§3) is that a gap is implemented in its owning subsystem first.
+
+| Needed by | Prerequisite |
+|---|---|
+| §11.1 incident channel on `system:cluster-events` | #1230 — that stream is currently appended on non-owner nodes (multi-writer) |
+| §11.1 durable outbox; any stream-backed event | the stream correctness set #1231–#1239 (append ordering, WAL recovery, drop-as-success, seal-before-reclaim, read visibility, publish outcomes, consumer delivery) |
+| §6.1 conditional admission and reservation sets (P2) | #1250 — the KV applier already fences by epoch/version/monotonic value, but a rejected write is not visible to its submitter and no atomic multi-key command exists |
+| §7.4 replacement adoption, SUP-R03/R04, INV-02 | #1038 — auto-heal deletes an unhealthy node's VM even when auto-heal is disabled |
+| §2.1 10K+ nodes / multi-region, §13.3 scale acceptance | #365, #366, #367 — the per-community and multi-community scale targets in [scaling architecture](../architecture/08-scaling.md) are still pending validation |
+
+Related: #435 (setpoint controller + TTM forecast) is the narrower predecessor of §9.4 and §12's
+proposal-only TTM; #1021 records why process auto-restart is deliberately absent — no runbook in
+§7 may add it ("Aether owns the recovery layer", [deployment recovery](../operators/deployment-recovery.md)).
 
 ## 1. Objective and settled decisions
 

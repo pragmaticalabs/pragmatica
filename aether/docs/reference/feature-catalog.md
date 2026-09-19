@@ -317,6 +317,7 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 |---|---------|--------|-------------|
 | 200 | Per-route rate limiting | Planned | Per-HTTP-route rate limiting via blueprint or management API. Token bucket or sliding window. Cluster-aware distributed counters |
 | 201 | Spot instance support | Planned | Elastic pool of spot/preemptible instances for cost-optimized scaling. Core (on-demand) + elastic (spot) pools |
+| 1251 | Deterministic cluster supervision and predictive capacity planning | Planned | Executable bounded runbooks (flapping/replacement/provisioning recovery with escalation), continuously active reactive scaling, and calendar-aware predictive capacity preparation (year-plus horizons, moving events, declared campaigns) behind one fenced admission authority and the existing reconcilers/budget channels. **Target 1.0.0-rc5** (owner ruling 2026-09-19). Design only — `[design intent — unverified]`; prerequisites #1230, #1231–#1239, #1250, #1038, #365/#367. Makes TTM (#11) a proposal-only forecast provider. See [`cluster-supervision-spec.md`](../specs/cluster-supervision-spec.md) |
 | 202 | Cluster expense tracking | Planned | Real-time cost visibility from cloud billing APIs. Per-node, per-slice, per-request cost derivation. Budget alerts |
 | 70 | Aether runtime rolling upgrade | Partial | Phase 1: `POST /api/cluster/upgrade` endpoint and CLI. Full rolling orchestration deferred to Phase 2 |
 | 71 | Email notification resource | Complete | `integrations/net/smtp` (async Netty SMTP client), `integrations/email-http` (HTTP sender with SendGrid/Mailgun/Postmark/Resend SPI), `aether/resource/notification` (ResourceFactory + @Notify qualifier). 57 tests |
@@ -373,7 +374,7 @@ the rows disagree.
 known to have overclaimed at row level: row 39 (`Alert management`) read `Complete` while `AlertForwarder`
 was never constructed in production (#926). It now reads `Partial`, and the wiring was fixed
 in #957 -- which is what correcting ONE row looks like, not evidence that the rest have
-been checked. Read the total as "227 rows asserting a capability", not as 227 working
+been checked. Read the total as "228 rows asserting a capability", not as 228 working
 capabilities.
 
 | Status | Count |
@@ -382,8 +383,8 @@ capabilities.
 | Cluster-tested | 0 |
 | Battle-tested | 23 |
 | Partial | 25 |
-| Planned | 9 |
-| Total | 227 |
+| Planned | 10 |
+| Total | 228 |
 <!-- END GENERATED STATISTICS -->
 
 **Highest-priority gap** (a priority, not a status — the row's completion level is in the
