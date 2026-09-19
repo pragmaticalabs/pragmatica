@@ -691,4 +691,83 @@ class OffHeapRingBufferTest {
                        .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.BUFFER_CLOSED));
         }
     }
+
+    /// #1235: the ring keeps APPENDED (the header head), DURABLE and VISIBLE. Consumer reads and the append
+    /// listeners follow VISIBLE; [OffHeapRingBuffer#readAppended] follows the head.
+    @Nested
+    class Visibility {
+
+        @Test
+        void appendOrdered_isNeitherReadableNorAnnounced_untilAdvanceVisible() {
+            var announced = new CopyOnWriteArrayList<Long>();
+
+            buffer.addAppendListener(announced::add);
+            buffer.appendOrdered("e0".getBytes(), 1L, Result::success);
+
+            assertThat(buffer.read(0L, 10).or(List.of())).as("appended is not visible").isEmpty();
+            assertThat(buffer.readSlice(0L).isFailure()).as("slice read is bounded too").isTrue();
+            assertThat(announced).as("no listener for a bare append").isEmpty();
+
+            buffer.advanceVisible(0L);
+
+            assertThat(buffer.read(0L, 10).or(List.of())).hasSize(1);
+            assertThat(buffer.readSlice(0L).isSuccess()).isTrue();
+            assertThat(announced).containsExactly(0L);
+        }
+
+        @Test
+        void readAppended_servesEventsBeyondVisible() {
+            buffer.appendOrdered("e0".getBytes(), 1L, Result::success);
+            buffer.appendOrdered("e1".getBytes(), 1L, Result::success);
+            buffer.advanceVisible(0L);
+
+            assertThat(buffer.read(0L, 10).or(List.of())).hasSize(1);
+            assertThat(buffer.readAppended(0L, 10).or(List.of())).hasSize(2);
+        }
+
+        @Test
+        void advanceVisible_isMonotonic_andAnnouncesOnlyAForwardMove() {
+            var announced = new CopyOnWriteArrayList<Long>();
+
+            buffer.addAppendListener(announced::add);
+            buffer.appendOrdered("e0".getBytes(), 1L, Result::success);
+            buffer.appendOrdered("e1".getBytes(), 1L, Result::success);
+            buffer.advanceVisible(1L);
+            buffer.advanceVisible(0L);
+            buffer.advanceVisible(1L);
+
+            assertThat(buffer.visibleOffset()).isEqualTo(1L);
+            assertThat(announced).containsExactly(1L);
+        }
+
+        @Test
+        void markDurable_isMonotonic_andDoesNotExpose() {
+            buffer.appendOrdered("e0".getBytes(), 1L, Result::success);
+            buffer.markDurable(0L);
+            buffer.markDurable(-1L);
+
+            assertThat(buffer.durableOffset()).isEqualTo(0L);
+            assertThat(buffer.read(0L, 10).or(List.of())).isEmpty();
+        }
+
+        @Test
+        void plainAppend_isDurableVisibleAndAnnouncedOnce() {
+            var announced = new CopyOnWriteArrayList<Long>();
+
+            buffer.addAppendListener(announced::add);
+            buffer.append("e0".getBytes(), 1L);
+
+            assertThat(buffer.durableOffset()).isEqualTo(0L);
+            assertThat(buffer.visibleOffset()).isEqualTo(0L);
+            assertThat(announced).containsExactly(0L);
+        }
+
+        @Test
+        void seedHead_makesTheSeededPrefixDurableAndVisible() {
+            buffer.seedHead(9L);
+
+            assertThat(buffer.durableOffset()).isEqualTo(9L);
+            assertThat(buffer.visibleOffset()).isEqualTo(9L);
+        }
+    }
 }

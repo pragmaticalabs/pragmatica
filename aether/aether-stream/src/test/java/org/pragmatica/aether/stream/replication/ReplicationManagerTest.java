@@ -321,6 +321,63 @@ class ReplicationManagerTest {
         }
     }
 
+    /// #1235: the non-blocking reading of the min-sync condition, and the ack observer the partition
+    /// manager advances visibility from.
+    @Nested
+    class ReplicatedThroughTests {
+
+        @Test
+        void replicatedThrough_isTheOffsetCoveredByMinAcksDistinctPeers() {
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+            registry.registerReplica(STREAM, PARTITION, REPLICA_B);
+            manager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 9L));
+            manager.handleAck(replicateAck(REPLICA_B, STREAM, PARTITION, 4L));
+
+            assertThat(manager.replicatedThrough(STREAM, PARTITION, 1)).isEqualTo(9L);
+            assertThat(manager.replicatedThrough(STREAM, PARTITION, 2)).isEqualTo(4L);
+        }
+
+        @Test
+        void replicatedThrough_fewerPeersThanMinAcks_isNothing() {
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+            manager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 9L));
+
+            assertThat(manager.replicatedThrough(STREAM, PARTITION, 2)).isEqualTo(-1L);
+        }
+
+        @Test
+        void replicatedThrough_neverCountsTheOwnersOwnRow() {
+            registry.registerReplica(STREAM, PARTITION, GOVERNOR);
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+            registry.updateWatermark(STREAM, PARTITION, GOVERNOR, 20L, ReplicationState.CAUGHT_UP);
+
+            assertThat(manager.replicatedThrough(STREAM, PARTITION, 1)).isEqualTo(-1L);
+        }
+
+        @Test
+        void replicatedThrough_noAckRequired_isUnbounded() {
+            assertThat(manager.replicatedThrough(STREAM, PARTITION, 0)).isEqualTo(Long.MAX_VALUE);
+            assertThat(ReplicationManager.NONE.replicatedThrough(STREAM, PARTITION, 2)).isEqualTo(Long.MAX_VALUE);
+        }
+
+        /// The ordering the partition manager's read-your-writes depends on: the observer sees the ack
+        /// already recorded AND runs before the await it satisfies resolves.
+        @Test
+        void ackObserver_seesTheRecordedAck_beforeThePendingAwaitResolves() {
+            registry.registerReplica(STREAM, PARTITION, REPLICA_A);
+            var pending = manager.awaitReplication(STREAM, PARTITION, 5L, 1);
+            var observed = new ArrayList<String>();
+
+            manager.observeAcks((stream, partition) -> observed.add(stream + "/" + partition + " covered="
+                                                                    + manager.replicatedThrough(stream, partition, 1)
+                                                                    + " resolved=" + pending.isResolved()));
+            manager.handleAck(replicateAck(REPLICA_A, STREAM, PARTITION, 5L));
+
+            assertThat(observed).containsExactly(STREAM + "/" + PARTITION + " covered=5 resolved=false");
+            assertThat(pending.isResolved()).isTrue();
+        }
+    }
+
     /// Captured transport message for test assertions.
     record SentMessage(NodeId target, ReplicationMessage message) {}
 }

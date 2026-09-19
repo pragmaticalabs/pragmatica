@@ -139,6 +139,14 @@ class StreamEntityLogSubstrateTest {
 
                 return Promise.success(Unit.unit());
             }
+
+            @Override
+            public long replicatedThrough(String streamName, int partition, int minAcks) {
+                return Long.MAX_VALUE;
+            }
+
+            @Override
+            public void observeAcks(AckObserver observer) {}
         };
     }
 }

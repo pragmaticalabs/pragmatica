@@ -117,6 +117,65 @@ class StreamPartitionVisibilityTest {
 
             assertThat(readAll(manager)).containsExactly("e0");
         }
+
+        /// Replication reads (replica catch-up, survivor pulls) must see the pending event: a lagging peer
+        /// that could fetch only visible events could never supply the ack that makes them visible.
+        @Test
+        void pendingEvent_isServedToReplicationReads() {
+            manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replicationWithPeer());
+            createStream(manager, 2, 2);
+
+            publish(manager, "e0");
+
+            assertThat(readAll(manager)).isEmpty();
+            assertThat(manager.readAppended(STREAM, PARTITION, 0L, 100).or(List.of())).hasSize(1);
+        }
+    }
+
+    /// Replica side: a replicated record is visible to reads served by this node once its own WAL write
+    /// is durable — at once without a WAL, never after a failed WAL write.
+    @Nested
+    class Replica {
+
+        @Test
+        void appendRecovered_withoutWal_isVisibleAtOnce() {
+            manager = streamPartitionManager(Long.MAX_VALUE);
+            createStream(manager, 2, 2);
+            var notifications = listen(manager);
+
+            manager.appendRecovered(STREAM, PARTITION, "r0".getBytes(UTF_8), 1L);
+
+            assertThat(readAll(manager)).containsExactly("r0");
+            assertThat(notifications).hasValue(1);
+        }
+
+        @Test
+        void appendRecovered_withWal_isVisibleOnceItsWalWriteIsDurable() {
+            manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+            createStream(manager, 2, 2);
+
+            manager.appendRecovered(STREAM, PARTITION, "r0".getBytes(UTF_8), 1L);
+
+            assertThat(manager.syncReplicated(STREAM, PARTITION).await().isSuccess()).isTrue();
+            assertThat(eventuallyRead(manager, 1)).as("visible once the replica's WAL write is durable")
+                                                 .containsExactly("r0");
+        }
+
+        @Test
+        void appendRecovered_failedWalWrite_neverBecomesVisible() {
+            manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+            createStream(manager, 2, 2);
+            var notifications = listen(manager);
+            var channel = FailingChannel.inject(walOf(manager));
+
+            channel.failWrites = true;
+            manager.appendRecovered(STREAM, PARTITION, "lost".getBytes(UTF_8), 1L);
+
+            assertThat(manager.syncReplicated(STREAM, PARTITION).await().isFailure()).as("the chain is poisoned")
+                                                                                   .isTrue();
+            assertThat(readAll(manager)).isEmpty();
+            assertThat(notifications).hasValue(0);
+        }
     }
 
     /// An owner WAL failure AFTER the ring append (ruling 801a8b54e routes it here): the append is in the
@@ -280,6 +339,19 @@ class StreamPartitionVisibilityTest {
                                            .toList())
                       .onFailure(cause -> fail("read failed: " + cause.message()))
                       .or(List.of());
+    }
+
+    /// The replica path advances visibility in a completion handler of the WAL chain, which the promise
+    /// runs asynchronously; poll briefly instead of racing it.
+    private static List<String> eventuallyRead(StreamPartitionManager manager, int expected) {
+        var deadline = System.nanoTime() + 5_000_000_000L;
+        var events = readAll(manager);
+
+        while (events.size() < expected && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+            events = readAll(manager);
+        }
+        return events;
     }
 
     /// The partition's WAL, reached through the manager's private stream map — the WAL's channel is the

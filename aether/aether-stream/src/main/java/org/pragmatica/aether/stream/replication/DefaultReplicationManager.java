@@ -4,7 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
@@ -37,6 +39,7 @@ final class DefaultReplicationManager implements ReplicationManager {
     private final Option<ReplicationBatcher> batcher;
     private final EarliestRetainedOffset earliestRetained;
     private final ConcurrentHashMap<PendingAckKey, PendingAck> pendingAcks = new ConcurrentHashMap<>();
+    private volatile AckObserver ackObserver = NO_ACK_OBSERVER;
 
     DefaultReplicationManager(NodeId governorId, ReplicaRegistry registry, ReplicationTransport transport) {
         this(governorId, registry, transport, none(), ALWAYS_PROMOTE);
@@ -96,7 +99,14 @@ final class DefaultReplicationManager implements ReplicationManager {
                                  ack.replicaId(),
                                  ack.confirmedOffset(),
                                  promotionState(ack));
+        ackObserver.acked(ack.streamName(), ack.partition());
         resolvePendingAck(ack.streamName(), ack.partition(), ack.replicaId(), ack.confirmedOffset());
+    }
+
+    @Contract
+    @Override
+    public void observeAcks(AckObserver observer) {
+        ackObserver = observer;
     }
 
     /// A live ack promotes the replica to CAUGHT_UP only when its confirmed offset reaches back to the
@@ -174,15 +184,41 @@ final class DefaultReplicationManager implements ReplicationManager {
 
     /// Distinct non-self replicas whose registry-recorded confirmed offset already reaches `offset`.
     private Set<NodeId> peersAtOrAbove(List<NodeId> targets, String streamName, int partition, long offset) {
-        var byNode = registry.replicasFor(streamName, partition)
-                             .stream()
-                             .collect(Collectors.toMap(ReplicaDescriptor::nodeId,
-                                                       ReplicaDescriptor::confirmedOffset,
-                                                       Math::max));
+        var byNode = confirmedByNode(streamName, partition);
 
         return targets.stream()
                       .filter(nodeId -> byNode.getOrDefault(nodeId, -1L) >= offset)
                       .collect(Collectors.toSet());
+    }
+
+    /// Reads the SAME registry rows [#awaitReplication] seeds from, so an offset reported here is one an
+    /// await for it would resolve on at once.
+    @Override
+    public long replicatedThrough(String streamName, int partition, int minAcks) {
+        return minAcks <= 0
+               ? Long.MAX_VALUE
+               : minAcksConfirmedOffset(streamName, partition, minAcks);
+    }
+
+    /// The `minAcks`-th highest confirmed offset among the non-self replicas: every offset at or below it
+    /// is covered by at least `minAcks` distinct peers.
+    private long minAcksConfirmedOffset(String streamName, int partition, int minAcks) {
+        var byNode = confirmedByNode(streamName, partition);
+
+        return replicationTargets(streamName, partition).stream()
+                                                        .map(nodeId -> byNode.getOrDefault(nodeId, -1L))
+                                                        .sorted(Comparator.reverseOrder())
+                                                        .skip(minAcks - 1)
+                                                        .findFirst()
+                                                        .orElse(-1L);
+    }
+
+    private Map<NodeId, Long> confirmedByNode(String streamName, int partition) {
+        return registry.replicasFor(streamName, partition)
+                       .stream()
+                       .collect(Collectors.toMap(ReplicaDescriptor::nodeId,
+                                                 ReplicaDescriptor::confirmedOffset,
+                                                 Math::max));
     }
 
     private void sendToAllReplicas(List<NodeId> replicas,

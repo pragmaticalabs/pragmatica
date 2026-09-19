@@ -29,6 +29,18 @@ public interface ReplicationManager extends AutoCloseable {
 
     EarliestRetainedOffset ALWAYS_PROMOTE = (_, _) -> - 1L;
 
+    /// Owner-side observer of the replica-ack stream (#1235): told which `(stream, partition)` a replica
+    /// just acknowledged, AFTER the ack is recorded in the registry and BEFORE any pending
+    /// [#awaitReplication] it satisfies resolves. The partition manager advances the partition's visible
+    /// position here, so a publish whose await resolves is already readable.
+    @FunctionalInterface
+    interface AckObserver {
+        @Contract
+        void acked(String streamName, int partition);
+    }
+
+    AckObserver NO_ACK_OBSERVER = (_, _) -> {};
+
     /// Replicate one accepted owner-local append to the partition's replica set, carrying the owner's
     /// `ownerEpoch` fencing token (#345 item 1d-ii) so each replica fences a deposed owner's batch
     /// against its own partition high-water before landing it.
@@ -45,6 +57,16 @@ public interface ReplicationManager extends AutoCloseable {
 
     ReplicaRegistry registry();
     Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks);
+
+    /// The highest offset at least `minAcks` DISTINCT non-self replicas have acknowledged for
+    /// `(stream, partition)` — the non-blocking reading of the same condition [#awaitReplication] waits
+    /// for (#1235). `-1` when fewer replicas than `minAcks` have acknowledged anything; [Long#MAX_VALUE]
+    /// when `minAcks <= 0`, since no ack is required.
+    long replicatedThrough(String streamName, int partition, int minAcks);
+
+    /// Install the single [AckObserver] (#1235). The partition manager installs itself at construction.
+    @Contract
+    void observeAcks(AckObserver observer);
 
     @Contract
     @Override
@@ -115,6 +137,17 @@ public interface ReplicationManager extends AutoCloseable {
             public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
                 return success(unit());
             }
+
+            /// Consistent with [#awaitReplication] above: with no replication every ack requirement is met.
+            @Override
+            public long replicatedThrough(String streamName, int partition, int minAcks) {
+                return Long.MAX_VALUE;
+            }
+
+            /// No replicas, so no acks to observe.
+            @Contract
+            @Override
+            public void observeAcks(AckObserver observer) {}
         };
     }
 }

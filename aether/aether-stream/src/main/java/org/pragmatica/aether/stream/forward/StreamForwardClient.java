@@ -26,6 +26,7 @@ import static org.pragmatica.aether.stream.forward.StreamForwardError.General.FO
 import static org.pragmatica.aether.stream.forward.StreamForwardError.General.READ_FORWARD_TIMEOUT;
 import static org.pragmatica.aether.stream.forward.StreamForwardError.General.STREAM_FORWARD_UNAVAILABLE;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward.publishForward;
+import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.catchupReadForward;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.readForward;
 import static org.pragmatica.lang.Option.option;
 
@@ -51,6 +52,19 @@ public interface StreamForwardClient {
                                                   int maxEvents,
                                                   ReadPreference preference) {
         return readRemote(replicaId, streamName, partition, fromOffset, maxEvents);
+    }
+
+    /// #1235: forward a REPLICATION read — a replica catching up, or a new owner pulling from a survivor —
+    /// which the serving node answers up to its APPENDED head instead of its visible position. The default
+    /// forwards plainly; it matters only on the production transport ({@link DefaultStreamForwardClient}),
+    /// which stamps `catchup` into the {@link ReadForward} message. Test fakes and {@link #NOOP} inherit the
+    /// plain forward.
+    default Promise<ReadForwardResult> readRemoteCatchup(NodeId sourceId,
+                                                         String streamName,
+                                                         int partition,
+                                                         long fromOffset,
+                                                         int maxEvents) {
+        return readRemote(sourceId, streamName, partition, fromOffset, maxEvents);
     }
 
     @MessageReceiver
@@ -205,30 +219,49 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
                                                  long fromOffset,
                                                  int maxEvents,
                                                  ReadPreference preference) {
+        return sendRead(replicaId,
+                        readForward(selfNodeId,
+                                    UUID.randomUUID().toString(),
+                                    streamName,
+                                    partition,
+                                    fromOffset,
+                                    maxEvents,
+                                    preference == ReadPreference.LINEARIZABLE),
+                        preference.name());
+    }
+
+    @Override
+    public Promise<ReadForwardResult> readRemoteCatchup(NodeId sourceId,
+                                                        String streamName,
+                                                        int partition,
+                                                        long fromOffset,
+                                                        int maxEvents) {
+        return sendRead(sourceId,
+                        catchupReadForward(selfNodeId,
+                                           UUID.randomUUID().toString(),
+                                           streamName,
+                                           partition,
+                                           fromOffset,
+                                           maxEvents),
+                        "CATCHUP");
+    }
+
+    private Promise<ReadForwardResult> sendRead(NodeId target, ReadForward message, String readClass) {
         metrics.recordAttempt();
-        var correlationId = UUID.randomUUID().toString();
         Promise<ReadForwardResult> promise = Promise.promise();
 
-        pendingReads.put(correlationId, promise);
-        SharedScheduler.schedule(() -> timeoutRead(correlationId),
+        pendingReads.put(message.correlationId(), promise);
+        SharedScheduler.schedule(() -> timeoutRead(message.correlationId()),
                                  Deadline.current().bounded(readTimeout));
-        var message = readForward(selfNodeId,
-                                  correlationId,
-                                  streamName,
-                                  partition,
-                                  fromOffset,
-                                  maxEvents,
-                                  preference == ReadPreference.LINEARIZABLE);
-
-        transport.send(replicaId, message);
+        transport.send(target, message);
         log.trace("Sent ReadForward to {} for {}[{}] fromOffset={} maxEvents={} correlationId={} preference={}",
-                  replicaId,
-                  streamName,
-                  partition,
-                  fromOffset,
-                  maxEvents,
-                  correlationId,
-                  preference);
+                  target,
+                  message.streamName(),
+                  message.partition(),
+                  message.fromOffset(),
+                  message.maxEvents(),
+                  message.correlationId(),
+                  readClass);
 
         return promise;
     }

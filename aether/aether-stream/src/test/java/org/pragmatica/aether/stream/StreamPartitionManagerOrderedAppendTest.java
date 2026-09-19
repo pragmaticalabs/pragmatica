@@ -237,5 +237,14 @@ class StreamPartitionManagerOrderedAppendTest {
         public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
             return Promise.unitPromise();
         }
+
+        @Override
+        public long replicatedThrough(String streamName, int partition, int minAcks) {
+            return Long.MAX_VALUE;
+        }
+
+        @Contract
+        @Override
+        public void observeAcks(AckObserver observer) {}
     }
 }

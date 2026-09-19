@@ -29,6 +29,7 @@ import static org.pragmatica.aether.slice.StreamConfig.streamConfig;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.forward.StreamForwardHandler.streamForwardHandler;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward.publishForward;
+import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.catchupReadForward;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.readForward;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
 import static org.pragmatica.aether.stream.replication.ReplicationManager.replicationManager;
@@ -146,6 +147,60 @@ class StreamForwardHandlerTest {
             var events = partitionManager.readLocal(STREAM, PARTITION, 0L, 10);
             assertThat(events.isSuccess()).isTrue();
             events.onSuccess(list -> assertThat(list).hasSize(1));
+        }
+    }
+
+    /// #1235: a consumer forward is answered up to the VISIBLE position; a catch-up forward (a replica
+    /// backfilling, a new owner pulling from a survivor) up to the APPENDED head.
+    @Nested
+    class VisibilityTests {
+        private static final NodeId PEER = NodeId.randomNodeId();
+
+        private StreamPartitionManager pendingManager;
+
+        @BeforeEach
+        void publishAnUnacknowledgedEvent() {
+            var registry = replicaRegistry();
+
+            registry.registerReplica(STREAM, PARTITION, GOVERNOR);
+            registry.registerReplica(STREAM, PARTITION, PEER);
+            pendingManager = streamPartitionManager(Long.MAX_VALUE,
+                                                    EvictionListener.NOOP,
+                                                    replicationManager(GOVERNOR, registry));
+            pendingManager.createStream(streamConfig(STREAM,
+                                                     1,
+                                                     RetentionPolicy.retentionPolicy(),
+                                                     "earliest",
+                                                     1_048_576L,
+                                                     ConsistencyMode.EVENTUAL,
+                                                     2,
+                                                     2,
+                                                     StreamCompression.NONE,
+                                                     Option.none()));
+            pendingManager.publishLocal(STREAM, PARTITION, PAYLOAD, TIMESTAMP);
+            handler = streamForwardHandler(GOVERNOR, pendingManager, (target, message) -> sentMessages.add(new SentMessage(target,
+                                                                                                                          message)));
+        }
+
+        @Test
+        void consumerReadForward_doesNotServeAnUnacknowledgedEvent() {
+            handler.onReadForward(readForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 0L, 10));
+
+            var response = (ReadForwardResponse) sentMessages.getFirst().message();
+
+            assertThat(response.success()).isTrue();
+            assertThat(response.events()).isEmpty();
+        }
+
+        @Test
+        void catchupReadForward_servesTheAppendedEvent() {
+            handler.onReadForward(catchupReadForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 0L, 10));
+
+            var response = (ReadForwardResponse) sentMessages.getFirst().message();
+
+            assertThat(response.success()).isTrue();
+            assertThat(response.events()).hasSize(1);
+            assertThat(response.events().getFirst().data()).isEqualTo(PAYLOAD);
         }
     }
 

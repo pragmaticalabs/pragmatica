@@ -278,6 +278,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         this.ownerEpochSource = ownerEpochSource;
         this.walBaseDir = walBaseDir;
         this.lastSealedOffset = lastSealedOffset;
+        replicationManager.observeAcks(this::onReplicaAck);
     }
 
     /// See [#WAL_RECOVERY_HEAD_GAPS].
@@ -1173,8 +1174,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// get distinct contiguous offsets, the WAL file is in offset order (recovery places records by it) and
     /// replicas receive events in offset order (their `fromOffset` check rejects anything else). Only the
     /// group-commit fsync is awaited after the section is released, so concurrent publishers still share
-    /// fsyncs. A publish whose fsync then fails has already been replicated; it was already readable from
-    /// the owner's ring before the fsync, so this adds no new exposure.
+    /// fsyncs. A publish whose fsync then fails has already been replicated.
+    ///
+    /// Visibility (#1235): the appended event is NOT readable by consumers and wakes no push listener
+    /// until it is durable here AND acknowledged by `minSyncReplicas - 1` distinct peers ([#refreshVisible]).
+    /// A failed frame write or fsync therefore never exposes the event, even when a peer acks it later.
     public Result<Long> publishLocal(String streamName,
                                      int partition,
                                      byte[] payload,
@@ -1186,7 +1190,47 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                 payload,
                                                                                 timestamp,
                                                                                 ownerEpoch))
-                                 .flatMap(this::awaitDurable);
+                                 .flatMap(this::awaitDurable)
+                                 .onSuccess(offset -> ownerDurable(streamName, partition, offset));
+    }
+
+    /// The owner's append at `offset` is durable — its group commit resolved, and group commit resolves in
+    /// offset order, so the whole prefix is. Visibility is recomputed BEFORE the publish returns, so an
+    /// owner-only (`minSyncReplicas <= 1`) publisher can read its own write.
+    @Contract
+    private void ownerDurable(String streamName, int partition, long offset) {
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> ownerDurable(ring,
+                                                                                     streamName,
+                                                                                     partition,
+                                                                                     offset));
+    }
+
+    @Contract
+    private void ownerDurable(OffHeapRingBuffer ring, String streamName, int partition, long offset) {
+        ring.markDurable(offset);
+        refreshVisible(ring, streamName, partition);
+    }
+
+    /// Owner-side ack observer (#1235), run by the replication manager after it records a replica's ack
+    /// and BEFORE it resolves the pending [#awaitReplication] calls — so a publish whose await resolves is
+    /// already visible to whatever continues it.
+    @Contract
+    private void onReplicaAck(String streamName, int partition) {
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> refreshVisible(ring, streamName, partition));
+    }
+
+    /// visible = min(durable, the highest offset `minSyncReplicas - 1` distinct peers have acknowledged).
+    /// Both inputs cover a contiguous prefix — group commit resolves in offset order, and a replica acks
+    /// only its verified contiguous run (#260) — so the minimum is a prefix too. The two writers (the
+    /// fsync path and the ack path) each publish their input before reading the other's (an atomic
+    /// here, the registry's concurrent map there), so at least one of them sees both.
+    @Contract
+    private void refreshVisible(OffHeapRingBuffer ring, String streamName, int partition) {
+        ring.advanceVisible(Math.min(ring.durableOffset(), peerAcknowledgedThrough(streamName, partition)));
+    }
+
+    private long peerAcknowledgedThrough(String streamName, int partition) {
+        return replicationManager.replicatedThrough(streamName, partition, minSyncReplicasFor(streamName) - 1);
     }
 
     private Result<LoggedAppend> publishInSection(StreamEntry entry,
@@ -1298,7 +1342,28 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                          partition,
                                                                                          payload,
                                                                                          timestamp,
-                                                                                         ownerEpoch));
+                                                                                         ownerEpoch))
+                                 .onSuccess(offset -> visibleWhenReplicaDurable(streamName, partition, offset));
+    }
+
+    /// #1235, replica side: a replicated record becomes visible to reads served BY THIS NODE once its own
+    /// WAL write is durable (at once with no WAL). A replica does not learn the owner's visible position,
+    /// so this bounds a replica-local read by the replica's durability, not by the owner's min-sync acks.
+    /// A poisoned WAL chain never resolves, so nothing after the failure becomes visible here.
+    @Contract
+    private void visibleWhenReplicaDurable(String streamName, int partition, long offset) {
+        syncReplicated(streamName, partition).onSuccess(_ -> replicaDurable(streamName, partition, offset));
+    }
+
+    @Contract
+    private void replicaDurable(String streamName, int partition, long offset) {
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> replicaDurable(ring, offset));
+    }
+
+    @Contract
+    private static void replicaDurable(OffHeapRingBuffer ring, long offset) {
+        ring.markDurable(offset);
+        ring.advanceVisible(offset);
     }
 
     /// The replica append shares the owner's ordered section (#1231): it and any concurrent local append
@@ -1467,11 +1532,23 @@ public final class StreamPartitionManager implements AutoCloseable {
         return resolvePartitionBuffer(streamName, partition).option();
     }
 
+    /// Consumer read of the local ring, bounded by the partition's VISIBLE position (#1235).
     public Result<List<OffHeapRingBuffer.RawEvent>> readLocal(String streamName,
                                                               int partition,
                                                               long fromOffset,
                                                               int maxEvents) {
         return resolvePartitionBuffer(streamName, partition).flatMap(buffer -> buffer.read(fromOffset, maxEvents));
+    }
+
+    /// Replication read of the local ring, bounded by the APPENDED head (#1235): serves replica catch-up
+    /// and survivor pulls, which must see events that are not yet visible, and the entity log fold, whose
+    /// head is the appended head. Never a consumer path.
+    public Result<List<OffHeapRingBuffer.RawEvent>> readAppended(String streamName,
+                                                                 int partition,
+                                                                 long fromOffset,
+                                                                 int maxEvents) {
+        return resolvePartitionBuffer(streamName, partition).flatMap(buffer -> buffer.readAppended(fromOffset,
+                                                                                                   maxEvents));
     }
 
     public Option<StreamInfo> streamInfo(String streamName) {
