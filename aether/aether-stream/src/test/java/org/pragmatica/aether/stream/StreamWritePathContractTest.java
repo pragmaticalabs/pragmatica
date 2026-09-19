@@ -27,8 +27,8 @@ import org.pragmatica.serialization.Serializer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -39,8 +39,9 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 
 /// #1263: the three write entry points — the slice `StreamPublisher` ({@link DefaultStreamPublisher}),
 /// `StreamAccess.publish` ({@link PartitionedStreamAccess}) and the management publish
-/// ({@link StreamWriteRouter}) — are ONE owner-routed write operation. Every scenario runs against all three,
-/// so a defect in the shared router reddens all three rather than one, and a path that drifts reddens alone.
+/// ({@link StreamWriteRouter}) — are ONE owner-routed write operation. Every scenario in [Contract] runs against
+/// all three (one `@Nested` subclass per entry point), so a defect in the shared router reddens all three
+/// rather than one, and a path that drifts reddens alone.
 ///
 /// Fixture: the partition ring is materialized on this node, then its placement role flips to REPLICA —
 /// the state a replica ring is in on a real node (#1230). The stream declares `min-sync-replicas = 2`.
@@ -53,93 +54,101 @@ class StreamWritePathContractTest {
     private static final int DECLARED_MIN_SYNC = 2;
     private static final long FORWARDED_OFFSET = 42L;
 
-    enum EntryPoint {
-        STREAM_PUBLISHER,
-        STREAM_ACCESS,
-        MANAGEMENT
-    }
-
     private final List<Integer> awaitedMinAcks = new ArrayList<>();
     private StreamPartitionManager partitionManager;
     private RecordingForwardClient forwardClient;
 
-    @BeforeEach
-    void setUp() {
-        partitionManager = streamPartitionManager(Long.MAX_VALUE, (_, _, _) -> {}, recordingReplication());
-        partitionManager.createStream(config(STREAM, ConsistencyMode.EVENTUAL)).onFailureRun(Assertions::fail);
-        partitionManager.createStream(config(STRONG_STREAM, ConsistencyMode.STRONG)).onFailureRun(Assertions::fail);
-        partitionManager.placementRoleSupplier((_, _) -> Role.REPLICA);
-        forwardClient = new RecordingForwardClient();
+    /// The scenarios every write entry point must satisfy; each `@Nested` subclass supplies one entry point.
+    abstract class Contract {
+        abstract Promise<Unit> publish(String stream, NodeId hrwOwner);
+
+        @BeforeEach
+        void setUp() {
+            partitionManager = streamPartitionManager(Long.MAX_VALUE, (_, _, _) -> {}, recordingReplication());
+            partitionManager.createStream(config(STREAM, ConsistencyMode.EVENTUAL)).onFailureRun(Assertions::fail);
+            partitionManager.createStream(config(STRONG_STREAM, ConsistencyMode.STRONG)).onFailureRun(Assertions::fail);
+            partitionManager.placementRoleSupplier((_, _) -> Role.REPLICA);
+            forwardClient = new RecordingForwardClient();
+        }
+
+        @AfterEach
+        void tearDown() {
+            partitionManager.close();
+        }
+
+        @Test
+        void publish_forwardsToRemoteOwner_evenThoughAReplicaRingIsMaterialized() {
+            publish(STREAM, OWNER).await().onFailureRun(Assertions::fail);
+
+            assertThat(forwardClient.owners).containsExactly(OWNER);
+            assertThat(localHead(STREAM)).isEqualTo(-1L);
+        }
+
+        @Test
+        void publish_appendsLocally_whenSelfIsTheOwner() {
+            publish(STREAM, SELF).await().onFailureRun(Assertions::fail);
+
+            assertThat(forwardClient.owners).isEmpty();
+            assertThat(localHead(STREAM)).isZero();
+        }
+
+        /// The minSync barrier is the stream's DECLARED `min-sync-replicas`, read live from its committed config —
+        /// never a value frozen into the entry point when it was constructed.
+        @Test
+        void publish_awaitsTheDeclaredMinSyncBarrier_readLive() {
+            publish(STREAM, SELF).await().onFailureRun(Assertions::fail);
+
+            assertThat(awaitedMinAcks).containsExactly(DECLARED_MIN_SYNC - 1);
+        }
+
+        @Test
+        void publish_redirectsToCommittedOwner_whenSelfIsHrwOwnerButCommitIsElsewhere() {
+            partitionManager.ownerWriteAdmission((_, _) -> Option.some(OWNER));
+
+            publish(STREAM, SELF).await().onFailureRun(Assertions::fail);
+
+            assertThat(forwardClient.owners).containsExactly(OWNER);
+            assertThat(localHead(STREAM)).isEqualTo(-1L);
+        }
+
+        @Test
+        void publish_refusesStrongStream_withConsensusPathUnavailable() {
+            publish(STRONG_STREAM, SELF).await()
+                                               .onSuccessRun(Assertions::fail)
+                                               .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.CONSENSUS_PATH_UNAVAILABLE));
+            assertThat(forwardClient.owners).isEmpty();
+            assertThat(localHead(STRONG_STREAM)).isEqualTo(-1L);
+        }
     }
 
-    @AfterEach
-    void tearDown() {
-        partitionManager.close();
+    @Nested
+    class StreamPublisherPath extends Contract {
+        @Override
+        Promise<Unit> publish(String stream, NodeId hrwOwner) {
+            return publisher(stream, hrwOwner).publish("e0".getBytes());
+        }
     }
 
-    @ParameterizedTest
-    @EnumSource(EntryPoint.class)
-    void publish_forwardsToRemoteOwner_evenThoughAReplicaRingIsMaterialized(EntryPoint entry) {
-        publish(entry, STREAM, OWNER).await().onFailureRun(Assertions::fail);
-
-        assertThat(forwardClient.owners).containsExactly(OWNER);
-        assertThat(localHead(STREAM)).isEqualTo(-1L);
+    @Nested
+    class StreamAccessPath extends Contract {
+        @Override
+        Promise<Unit> publish(String stream, NodeId hrwOwner) {
+            return access(stream, hrwOwner).publish("e0".getBytes())
+                                           .mapToUnit();
+        }
     }
 
-    @ParameterizedTest
-    @EnumSource(EntryPoint.class)
-    void publish_appendsLocally_whenSelfIsTheOwner(EntryPoint entry) {
-        publish(entry, STREAM, SELF).await().onFailureRun(Assertions::fail);
-
-        assertThat(forwardClient.owners).isEmpty();
-        assertThat(localHead(STREAM)).isZero();
-    }
-
-    /// The minSync barrier is the stream's DECLARED `min-sync-replicas`, read live from its committed config —
-    /// never a value frozen into the entry point when it was constructed.
-    @ParameterizedTest
-    @EnumSource(EntryPoint.class)
-    void publish_awaitsTheDeclaredMinSyncBarrier_readLive(EntryPoint entry) {
-        publish(entry, STREAM, SELF).await().onFailureRun(Assertions::fail);
-
-        assertThat(awaitedMinAcks).containsExactly(DECLARED_MIN_SYNC - 1);
-    }
-
-    @ParameterizedTest
-    @EnumSource(EntryPoint.class)
-    void publish_redirectsToCommittedOwner_whenSelfIsHrwOwnerButCommitIsElsewhere(EntryPoint entry) {
-        partitionManager.ownerWriteAdmission((_, _) -> Option.some(OWNER));
-
-        publish(entry, STREAM, SELF).await().onFailureRun(Assertions::fail);
-
-        assertThat(forwardClient.owners).containsExactly(OWNER);
-        assertThat(localHead(STREAM)).isEqualTo(-1L);
-    }
-
-    @ParameterizedTest
-    @EnumSource(EntryPoint.class)
-    void publish_refusesStrongStream_withConsensusPathUnavailable(EntryPoint entry) {
-        publish(entry, STRONG_STREAM, SELF).await()
-                                           .onSuccessRun(Assertions::fail)
-                                           .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.CONSENSUS_PATH_UNAVAILABLE));
-        assertThat(forwardClient.owners).isEmpty();
-        assertThat(localHead(STRONG_STREAM)).isEqualTo(-1L);
-    }
-
-    private Promise<Unit> publish(EntryPoint entry, String stream, NodeId hrwOwner) {
-        var payload = "e0".getBytes();
-
-        return switch (entry) {
-            case STREAM_PUBLISHER -> publisher(stream, hrwOwner).publish(payload);
-            case STREAM_ACCESS -> access(stream, hrwOwner).publish(payload)
-                                                          .mapToUnit();
-            case MANAGEMENT -> StreamWriteRouter.streamWriteRouter(partitionManager,
-                                                                   Option.some(forwardClient),
-                                                                   SELF,
-                                                                   (_, _) -> Option.some(hrwOwner))
-                                                .publish(stream, PARTITION, payload, 1L)
-                                                .mapToUnit();
-        };
+    @Nested
+    class ManagementPath extends Contract {
+        @Override
+        Promise<Unit> publish(String stream, NodeId hrwOwner) {
+            return StreamWriteRouter.streamWriteRouter(partitionManager,
+                                                       Option.some(forwardClient),
+                                                       SELF,
+                                                       (_, _) -> Option.some(hrwOwner))
+                                    .publish(stream, PARTITION, "e0".getBytes(), 1L)
+                                    .mapToUnit();
+        }
     }
 
     private DefaultStreamPublisher<byte[]> publisher(String stream, NodeId hrwOwner) {
