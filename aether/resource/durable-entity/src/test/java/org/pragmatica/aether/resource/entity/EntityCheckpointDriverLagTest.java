@@ -89,6 +89,26 @@ class EntityCheckpointDriverLagTest {
         assertThat(reported).containsExactly(5L);
     }
 
+    /// #1330 M3 (review probe R2) — a tick whose checkpoint work THROWS must still report the lag. A
+    /// checkpointer that throws every tick is the stalled checkpointer this alert exists for; if the throw
+    /// also skipped the report, the metric would freeze and the alert could neither fire nor clear.
+    @Test
+    void tick_thatThrows_stillReportsTheLag() {
+        var substrate = new LagSubstrate();
+        var reported = new CopyOnWriteArrayList<Long>();
+        var driver = EntityCheckpointDriver.entityCheckpointDriver(reported::add);
+        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        substrate.appendUpserts(3);
+        fold.ready(FOLDED).await().onFailure(cause -> fail("fold must be ready: " + cause.message()));
+        driver.register(KEYSPACE, 1, fold, substrate);
+        substrate.saveThrows = true;
+        driver.tick();
+        driver.tick();
+
+        assertThat(reported).describedAs("one report per tick, even when the save throws").hasSize(2);
+    }
+
     /// Only partitions this node FOLDS carry a lag: the second partition was never rebuilt here, so its
     /// recovery is not bounded by this node's checkpoints and it must be absent, not reported as 0.
     @Test
@@ -127,6 +147,8 @@ class EntityCheckpointDriverLagTest {
     private static final class LagSubstrate implements EntityLogSubstrate {
         private final List<byte[]> records = new CopyOnWriteArrayList<>();
         private volatile boolean saveFails;
+        // A save that THROWS rather than returning a failed promise — the shape a tick's catch sees.
+        private volatile boolean saveThrows;
         // The checkpoint a previous owner committed, which a fold on this node resumes from.
         private volatile Option<EntityCheckpoint> committedCheckpoint = Option.none();
 
@@ -185,6 +207,9 @@ class EntityCheckpointDriverLagTest {
 
         @Override
         public Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot) {
+            if (saveThrows) {
+                throw new IllegalStateException("substrate threw");
+            }
             return saveFails
                    ? Causes.cause("checkpoint store unavailable").promise()
                    : Promise.unitPromise();
