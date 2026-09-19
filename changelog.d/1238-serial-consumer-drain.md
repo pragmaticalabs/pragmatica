@@ -23,9 +23,22 @@
 - **Declarative consumers have a handler timeout again.** A hung handler would otherwise hold its
   partition's loop forever. `StreamConsumerManager` bounds each slice invocation at 30s (the value the
   deleted `StreamConsumerAdapter` used; no configuration surface exists). A timed-out invocation is a
-  delivery failure and goes through the group's retry-then-dead-letter strategy. [mechanism:
+  delivery failure and goes through the group's retry-then-dead-letter strategy. The timeout does not
+  cancel the slice invocation, so a timed-out call may still be running when the retry re-invokes the
+  handler and the loop moves on. "One serial loop" is therefore bounded by handlers honouring their own
+  deadline. [design intent — unverified] [mechanism:
   `invokeConsumer` applies `.timeout(HANDLER_TIMEOUT)`; pinned by
   `StreamConsumerManagerTest$TopicGroupDispatch.delivery_failsWithTimeout_whenTheSliceHandlerNeverResolves`]
+- **A single synchronous throw no longer stops a partition's consumer.** One serial loop per
+  partition means a pass that escapes with `running` still set wedges that consumer permanently, where
+  the old per-append cycles tried again on the next append. This was found in review (rev1272 F1). The
+  handler, the reader's continuation, each delivery outcome and the cursor store are lifted where they
+  are called. The synchronous part of every pass sits inside an escape boundary. The pass always ends by
+  releasing the loop, and re-arms it if a drain was requested meanwhile. A throwing handler goes through
+  the error strategy (retry, then dead-letter) like a failing one. A push-mode pass whose read fails,
+  including the subscribe kick, is re-requested after the poll backoff, so a backlog is never stranded
+  waiting for an append. [mechanism: `drainPass`/`guardedCycle`/`afterFailedPass`/`invokeHandler`;
+  pinned by `StreamConsumerRuntimeTest$PassBoundary`]
 - **A consumer whose ring was released on role loss now falls back to polling.** Releasing the ring
   cleared its listeners, but the assignment could keep the consumer on this node, which left it with
   neither a listener nor a poller. The consumer runtime's 10s idle-check tick now re-attaches such a

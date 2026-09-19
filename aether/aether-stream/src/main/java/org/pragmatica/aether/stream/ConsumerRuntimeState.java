@@ -455,7 +455,18 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
         state.pushAttachment(buffer, listener);
         buffer.addAppendListener(listener);
+        detachIfCancelledMeanwhile(key, state);
         requestDrain(key, state);
+    }
+
+    /// Review rev1272 F3: a re-attach ([#reattachIfRingReplaced]) can race [#unsubscribe]. `cancel()` runs
+    /// BEFORE the unsubscribe's listener removal, so re-checking it AFTER installing closes the window:
+    /// either the unsubscribe's removal sees this attachment, or this check sees the cancellation and
+    /// removes it (removing twice is harmless).
+    private void detachIfCancelledMeanwhile(ConsumerKey key, ConsumerState state) {
+        if (state.isCancelled()) {
+            removePushListener(key, state);
+        }
     }
 
     /// Detaches from the ring the listener was REGISTERED on, not whatever ring the partition resolves
