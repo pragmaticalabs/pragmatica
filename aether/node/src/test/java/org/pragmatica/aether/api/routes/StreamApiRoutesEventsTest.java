@@ -78,8 +78,8 @@ class StreamApiRoutesEventsTest {
 
         /// `StreamApiRoutes.routes()` must emit exactly one entry per spec-required verb: the read
         /// surface (list/versions/latest/metadata/partition/replicas/read/groups-list/tail/events),
-        /// the write surface (publish/publish-batch/group-create/group-delete), and the destructive
-        /// surface (delete). Asserting the exact NAME SET — rather than a bare size — is a smoke test
+        /// the write surface (create/publish/publish-batch/group-create/group-delete), and the
+        /// destructive surface (delete). Asserting the exact NAME SET — rather than a bare size — is a smoke test
         /// that the stream is emitting exactly the expected entries, and it fails on the right
         /// question (which route appeared or vanished) instead of just "a number moved."
         private static final Set<String> EXPECTED_ROUTE_NAMES = Set.of(ManagementRoute.STREAMS_LIST.name(),
@@ -93,6 +93,7 @@ class StreamApiRoutesEventsTest {
                                                                         ManagementRoute.STREAMS_GROUPS_LIST.name(),
                                                                         ManagementRoute.STREAMS_TAIL.name(),
                                                                         ManagementRoute.STREAMS_EVENTS.name(),
+                                                                        ManagementRoute.STREAMS_CREATE.name(),
                                                                         ManagementRoute.STREAMS_PUBLISH.name(),
                                                                         ManagementRoute.STREAMS_PUBLISH_BATCH.name(),
                                                                         ManagementRoute.STREAMS_GROUP_CREATE.name(),

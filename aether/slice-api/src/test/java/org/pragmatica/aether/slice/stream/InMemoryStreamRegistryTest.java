@@ -46,6 +46,10 @@ class InMemoryStreamRegistryTest {
         return StreamRegistryEntry.blueprint(address, RetentionPolicy.retentionPolicy(), Instant.EPOCH);
     }
 
+    private static StreamRegistryEntry operatorEntry(ResourceAddress address) {
+        return StreamRegistryEntry.operator(address, RetentionPolicy.retentionPolicy(), Instant.EPOCH);
+    }
+
     private InMemoryStreamRegistry registry;
 
     @BeforeEach void setUp() {
@@ -209,6 +213,26 @@ class InMemoryStreamRegistryTest {
             var result = registry.releaseReference(addr("system:cluster-events:1.0.0"));
 
             assertThat(errorOf(result)).isEqualTo(General.NOT_FOUND);
+        }
+
+        /// #1224: the registry does NOT special-case [StreamRegistryEntry.RegisteredByKind#OPERATOR]
+        /// in `releaseReference` — an operator-created entry decrements/removes on refcount exactly
+        /// like a framework or blueprint one. The "permanent reference" guarantee this kind
+        /// documents is therefore structural, not enforced HERE: nothing in the blueprint-release
+        /// path ever resolves an operator-created address in the first place (it resolves release
+        /// targets from `BlueprintStreamBindings`, which `aether stream create` never populates), so
+        /// `releaseReference` is only ever called for it by the explicit `stream delete` route. This
+        /// test pins that the registry itself would happily release one if asked — the unreachability
+        /// is what carries the guarantee, and that half lives outside this class.
+        @Test
+        void releaseOnOperatorEntry_registryDoesNotDistinguishKind_removesLikeAnyOther() {
+            var address = addr("com.example.app:orders:1.0.0");
+            registry.register(operatorEntry(address));
+
+            var outcome = registry.releaseReference(address).await().unwrap();
+
+            assertThat(outcome.removed()).isTrue();
+            assertThat(registry.lookup(address).isEmpty()).isTrue();
         }
     }
 

@@ -4,10 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 
 import picocli.CommandLine;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -19,7 +26,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// (audit `aether/docs/internal/audits/integration-test-audit-2026-05-21.md` §3.3 A).
 ///
 /// Pins the picocli wiring of:
-///   `aether streams create <name> [--partitions N]`
+///   `aether streams create <name>` — #1224: REFUSED unconditionally; replaced by
+///   `aether stream create <namespace:stream:version> [--partitions N]` (singular, catalog-addressed)
 ///   `aether streams delete <name|address> [--force]` (catalog-form `STREAMS_DELETE` —
 ///   bare name defaults client-side to `system:name:1.0.0`, see
 ///   `AetherCli.StreamCommand#resolveStreamAddress`)
@@ -29,6 +37,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 ///
 /// Body composition for POST routes is asserted via reflection (no HTTP send).
 class StreamsLifecycleCommandTest {
+    private PrintStream originalErr;
+    private ByteArrayOutputStream errCapture;
+
+    @BeforeEach
+    void redirectErr() {
+        originalErr = System.err;
+        errCapture = new ByteArrayOutputStream();
+        System.setErr(new PrintStream(errCapture, true, StandardCharsets.UTF_8));
+    }
+
+    @AfterEach
+    void restoreErr() {
+        System.setErr(originalErr);
+    }
 
     @Test
     void streamCommand_exposesLifecycleSubcommands() {
@@ -54,24 +76,31 @@ class StreamsLifecycleCommandTest {
         assertNotNull(subcommands.get("status"));
     }
 
+    /// #1224: the legacy body-carried create is refused unconditionally — no successful path
+    /// remains. The refusal names both remedies (#1044's message-shape standard): the exact
+    /// retype form the operator should use, and the command that lists catalog addresses.
     @Test
-    void createCommand_nameBound_partitionsNullByDefault() throws Exception {
+    void createCommand_call_refusesAndNamesRetypeForm() throws Exception {
         var cmd = new AetherCli.StreamCommand.CreateCommand();
         new CommandLine(cmd).parseArgs("orders");
 
-        assertEquals("orders", readField(cmd, "name"));
-        assertNull(readField(cmd, "partitions"));
-        assertEquals("{\"name\":\"orders\"}", invokeBuildCreateBody(cmd));
+        var exit = cmd.call();
+
+        assertEquals(ExitCode.ERROR, exit);
+        var message = errCapture.toString(StandardCharsets.UTF_8);
+        assertThat(message).contains("aether stream create")
+                           .contains("orders")
+                           .contains("aether streams list");
     }
 
     @Test
-    void createCommand_partitionsOption_isBoundAndSerialised() throws Exception {
+    void createCommand_partitionsOption_stillParses_soScriptsGetTheRefusalNotAParseError() throws Exception {
         var cmd = new AetherCli.StreamCommand.CreateCommand();
         new CommandLine(cmd).parseArgs("orders", "--partitions", "8");
 
-        assertEquals("orders", readField(cmd, "name"));
-        assertEquals(8, readField(cmd, "partitions"));
-        assertEquals("{\"name\":\"orders\",\"partitions\":8}", invokeBuildCreateBody(cmd));
+        var exit = cmd.call();
+
+        assertEquals(ExitCode.ERROR, exit);
     }
 
     @Test
@@ -145,12 +174,5 @@ class StreamsLifecycleCommandTest {
         var field = target.getClass().getDeclaredField(fieldName);
         field.setAccessible(true);
         return field.get(target);
-    }
-
-    @SuppressWarnings("JBCT-EX-01")
-    private static String invokeBuildCreateBody(Object target) throws Exception {
-        var method = target.getClass().getDeclaredMethod("buildCreateBody");
-        method.setAccessible(true);
-        return (String) method.invoke(target);
     }
 }

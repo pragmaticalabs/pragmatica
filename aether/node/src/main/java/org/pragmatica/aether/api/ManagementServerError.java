@@ -96,6 +96,21 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #1224: `STREAMS_CREATE` maps `StreamRegistryError.General.ALREADY_REGISTERED` here so the
+    /// duplicate-catalog-entry case reports 409 rather than the sealed interface's plain-`Cause`
+    /// default of 500 (`StreamRegistryError` is not `HttpStatusAware`).
+    record StreamAlreadyRegistered(String address) implements ManagementServerError {
+        @Override
+        public String message() {
+            return "Stream '" + address + "' is already registered in the catalog";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
     enum StrategyChangeNotSupported implements ManagementServerError {
         INSTANCE;
         @Override

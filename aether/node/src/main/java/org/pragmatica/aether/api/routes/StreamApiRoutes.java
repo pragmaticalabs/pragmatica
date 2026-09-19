@@ -27,6 +27,7 @@ import org.pragmatica.aether.slice.stream.StreamRegistry;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamWriteRouter;
@@ -151,6 +152,12 @@ public final class StreamApiRoutes implements RouteSource {
     public record GroupListResponse(String address, List<GroupSummary> groups) {}
 
     public record GroupSummary(String groupId, Map<String, List<ConsumerInfo>> consumersByStream) {}
+
+    /// #1224: `partitions` is optional (absent/`null` on the wire keeps [#DEFAULT_PARTITIONS], the
+    /// same default `aether streams create`'s legacy body-carried form used).
+    public record CreateRequest(Integer partitions) {}
+
+    public record CreateResponse(String address, String status) {}
 
     public record DeleteResponse(String address, String status) {}
 
@@ -301,14 +308,28 @@ public final class StreamApiRoutes implements RouteSource {
                         .asJson(),
 
         // ---------- Write routes (OPERATOR_AND_ABOVE for /api/streams) ----------
-        ManagementRoutes.<PublishResponse> route(ManagementRoute.STREAMS_PUBLISH)
+        // #1224: catalog-addressed create — registers the catalog entry AND materializes the rings,
+        // the two writes the old body-carried STREAM_CREATE only did the second of (never appeared in
+        // `streams list`, which reads the registry). Same bare 3-path-param shape as STREAMS_DELETE;
+        // the POST method alone disambiguates it from STREAMS_METADATA's GET on the same bucket.
+        ManagementRoutes.<CreateResponse> route(ManagementRoute.STREAMS_CREATE)
                         .withPath(PathParameter.aString(),
                                   PathParameter.aString(),
-                                  PathParameter.aString(),
-                                  PathParameter.spacer("publish"))
-                        .withBody(PublishRequest.class)
-                        .to((ns, stream, version, _, request) -> publishEvent(ns, stream, version, request))
+                                  PathParameter.aString())
+                        .withBody(CreateRequest.class)
+                        .toResult(this::createStream)
                         .asJson(),
+                         ManagementRoutes.<PublishResponse> route(ManagementRoute.STREAMS_PUBLISH)
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.spacer("publish"))
+                                         .withBody(PublishRequest.class)
+                                         .to((ns, stream, version, _, request) -> publishEvent(ns,
+                                                                                               stream,
+                                                                                               version,
+                                                                                               request))
+                                         .asJson(),
                          ManagementRoutes.<PublishBatchResponse> route(ManagementRoute.STREAMS_PUBLISH_BATCH)
                                          .withPath(PathParameter.aString(),
                                                    PathParameter.aString(),
@@ -339,7 +360,7 @@ public final class StreamApiRoutes implements RouteSource {
                         .withPath(PathParameter.aString(),
                                   PathParameter.aString(),
                                   PathParameter.aString())
-                        .toResult(this::deleteStream)
+                        .to(this::deleteStream)
                         .asJson());
     }
 
@@ -711,6 +732,63 @@ public final class StreamApiRoutes implements RouteSource {
                                                                                            cause.message()));
     }
 
+    /// #1224: `aether stream create` / `POST /streams/{namespace}/{stream}/{version}` — the
+    /// catalog-addressed replacement for the legacy body-carried `STREAM_CREATE`, which only
+    /// materialized rings via [StreamPartitionManager#createStream] and never touched
+    /// [StreamRegistry], so a created stream never appeared in `GET /streams` (`streams list`).
+    /// This handler does both: materialize, then register — see [#materializeAndRegister].
+    ///
+    /// Package-private (not `private`), matching [#deleteStream]'s exact visibility, so
+    /// `StreamApiRoutesCreateStreamTest` can exercise the full create path — including the
+    /// catalog registration this ticket adds — without going through HTTP dispatch.
+    Result<CreateResponse> createStream(String namespace, String stream, String version, CreateRequest request) {
+        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> createAtAddress(addr, request));
+    }
+
+    /// Idempotent on an already-registered address (mirrors [StreamRoutes#createStreamWithConfig]'s
+    /// check-exists-first shape): a repeat `create` for the same address reports `"exists"` rather
+    /// than re-attempting registration and hitting [StreamRegistry.StreamRegistryError.General#ALREADY_REGISTERED].
+    private Result<CreateResponse> createAtAddress(ResourceAddress addr, CreateRequest request) {
+        return namespacesService.lookup(addr)
+                                .map(_ -> Result.success(new CreateResponse(addr.asString(),
+                                                                            "exists")))
+                                .or(() -> materializeAndRegister(addr, request));
+    }
+
+    /// Registers a PERMANENT catalog reference ([StreamRegistryEntry.RegisteredByKind#OPERATOR]): no
+    /// deployment owns this address, so nothing in the blueprint release path can ever reach it —
+    /// removable only by explicit `stream delete` ([#destroyAtAddress]). Materializes first via the
+    /// durable/explicit [StreamPartitionManager#createStream] path (not [StreamPartitionManager#ensureStreamMaterialized],
+    /// which is the ASYNC publish-auto-create path used by [#ensureStreamExists]), tolerating its
+    /// `STREAM_ALREADY_EXISTS` duplicate-create sentinel via [StreamCreateOutcome] like every other
+    /// idempotent caller of that method.
+    private Result<CreateResponse> materializeAndRegister(ResourceAddress addr, CreateRequest request) {
+        var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
+        var config = StreamConfig.streamConfig(StreamManager.engineKey(addr),
+                                               partitions,
+                                               MANAGEMENT_API_RETENTION,
+                                               "latest");
+
+        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config))
+                                  .flatMap(_ -> registerCatalogEntry(addr))
+                                  .map(_ -> new CreateResponse(addr.asString(),
+                                                               "created"));
+    }
+
+    private Result<StreamRegistryEntry> registerCatalogEntry(ResourceAddress addr) {
+        return namespacesService.registry()
+                                .register(StreamRegistryEntry.operator(addr,
+                                                                       MANAGEMENT_API_RETENTION,
+                                                                       Instant.now()))
+                                .mapError(cause -> mapRegistrationError(addr, cause));
+    }
+
+    private static Cause mapRegistrationError(ResourceAddress addr, Cause cause) {
+        return cause == StreamRegistry.StreamRegistryError.General.ALREADY_REGISTERED
+               ? new ManagementServerError.StreamAlreadyRegistered(addr.asString())
+               : cause;
+    }
+
     private Result<GroupResponse> createGroup(String namespace,
                                               String stream,
                                               String version,
@@ -761,18 +839,45 @@ public final class StreamApiRoutes implements RouteSource {
         return Result.allOf(leaveResults).map(_ -> new GroupResponse(addr.asString(), group, "deleted"));
     }
 
-    Result<DeleteResponse> deleteStream(String namespace, String stream, String version) {
-        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(this::destroyAtAddress);
+    Promise<DeleteResponse> deleteStream(String namespace, String stream, String version) {
+        return ResourceAddress.resourceAddress(namespace, stream, version)
+                              .async()
+                              .flatMap(this::destroyAtAddress);
     }
 
     /// Engine key via [StreamManager#engineKey] — same reasoning as [#publishOne]: a `system`-namespace
     /// address must resolve to the bare name the engine keys the stream by, or this deletes the wrong key.
-    private Result<DeleteResponse> destroyAtAddress(ResourceAddress addr) {
+    ///
+    /// #1224: releases the catalog reference this address holds, in addition to the pre-existing
+    /// physical ring teardown — a stream created before this migration (or one this handler itself
+    /// never registered, e.g. a legacy `STREAM_CREATE` name) has no catalog entry, so [#releaseCatalogEntry]
+    /// tolerates [StreamRegistry.StreamRegistryError.General#NOT_FOUND] as a benign no-op rather than
+    /// failing the whole delete.
+    private Promise<DeleteResponse> destroyAtAddress(ResourceAddress addr) {
         var streamName = StreamManager.engineKey(addr);
 
         return streamManager().destroyStream(streamName)
+                            .async()
+                            .flatMap(_ -> releaseCatalogEntry(addr))
                             .map(_ -> new DeleteResponse(addr.asString(),
                                                          "deleted"));
+    }
+
+    private Promise<Unit> releaseCatalogEntry(ResourceAddress addr) {
+        return namespacesService.registry()
+                                .releaseReference(addr)
+                                .fold(StreamApiRoutes::tolerateMissingRegistryEntry);
+    }
+
+    private static Promise<Unit> tolerateMissingRegistryEntry(Result<StreamRegistry.ReleaseOutcome> result) {
+        return result.fold(StreamApiRoutes::recoverIfNotFound,
+                           _ -> Promise.success(Unit.unit()));
+    }
+
+    private static Promise<Unit> recoverIfNotFound(Cause cause) {
+        return cause == StreamRegistry.StreamRegistryError.General.NOT_FOUND
+               ? Promise.success(Unit.unit())
+               : cause.promise();
     }
 
     private StreamPartitionManager streamManager() {

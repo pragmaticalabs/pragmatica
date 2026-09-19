@@ -103,6 +103,7 @@ public sealed interface ManagementRoutePermissions {
                        ManagementRoute.STREAMS_PUBLISH_BATCH,
                        ManagementRoute.STREAMS_GROUP_CREATE,
                        ManagementRoute.STREAMS_GROUP_DELETE,
+                       ManagementRoute.STREAMS_CREATE,
                        ManagementRoute.STREAMS_DELETE,
                        ManagementRoute.CONSUMER_GROUP_JOIN,
                        ManagementRoute.CONSUMER_GROUP_LEAVE,

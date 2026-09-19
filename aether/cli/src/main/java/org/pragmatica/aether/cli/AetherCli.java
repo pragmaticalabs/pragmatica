@@ -4259,30 +4259,29 @@ public class AetherCli implements Runnable {
             }
         }
 
-        @Command(name = "create", description = "Create a new event stream")
+        /// #1224: this legacy body-carried create never registered the catalog entry, so a created
+        /// stream never appeared in `aether streams list` (which reads the registry) — the same
+        /// silently-wrong-answer shape #1044 fixed for the neighbouring bare-name commands. Unlike
+        /// those, there is no ambiguous-but-salvageable input here to resolve: the whole command shape
+        /// (bare name, no namespace) is gone, so it refuses unconditionally rather than guessing an
+        /// address. `aether stream create` (singular) is the catalog-addressed replacement.
+        @Command(name = "create", description = "Removed — use 'aether stream create <namespace:stream:version>'")
         static class CreateCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private StreamCommand streamParent;
-
-            @Parameters(index = "0", description = "Stream name")
+            @Parameters(index = "0", description = "Stream name (unused — this command is refused)")
             private String name;
 
-            @CommandLine.Option(names = "--partitions", description = "Number of partitions (default: server-side)")
+            @CommandLine.Option(names = "--partitions", description = "Unused — this command is refused")
             private Integer partitions;
 
             @Override
             public Integer call() {
-                var body = buildCreateBody();
-                var response = streamParent.parent.post(STREAM_CREATE, List.of(), body);
+                System.err.println("Error: 'aether streams create' is removed. Use 'aether stream create "
+                                  + "<namespace>:" + name
+                                  + ":<version> [--partitions N]', naming the catalog "
+                                  + "namespace and version explicitly. 'aether streams list' shows the catalog "
+                                  + "address of every stream.");
 
-                return OutputFormatter.printAction(response,
-                                                   streamParent.parent.outputOptions(),
-                                                   "Created stream " + name);
-            }
-
-            private String buildCreateBody() {
-                return option(partitions).map(p -> "{\"name\":\"" + name + "\",\"partitions\":" + p + "}")
-                             .or("{\"name\":\"" + name + "\"}");
+                return ExitCode.ERROR;
             }
         }
 
