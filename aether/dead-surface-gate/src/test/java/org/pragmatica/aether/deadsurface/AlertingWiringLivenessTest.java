@@ -10,7 +10,10 @@ import org.pragmatica.aether.api.AlertForwarder;
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.api.DashboardMetricsPublisher;
 import org.pragmatica.aether.config.AlertConfig;
+import org.pragmatica.aether.metrics.ClusterSyncCollector;
+import org.pragmatica.aether.node.EntityCheckpointLagMetric;
 import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 
 import org.junit.jupiter.api.Test;
 
@@ -80,14 +83,18 @@ class AlertingWiringLivenessTest {
                    + "declaration");
     }
 
-    /// Pinned call site: `AetherNode.assembleNode` ->
-    /// `EntityCheckpointDriver.entityCheckpointDriver(CheckpointLagSink)` (#1302).
+    /// Pinned call sites: `AetherNode.assembleNode` ->
+    /// `EntityCheckpointDriver.entityCheckpointDriver(CheckpointLagSink, CommittedCheckpoints)`, built from
+    /// `EntityCheckpointLagMetric.sinkFor(ClusterSyncCollector)` and
+    /// `EntityCheckpointLagMetric.committedCheckpoints(KVStore)` (#1302, #1330).
     ///
     /// That factory is the ONLY way the checkpoint lag reaches the node metrics map the threshold alert
     /// reads. The no-arg factory binds a sink that discards the value, so a node built with it would
     /// compute every lag, show it on the management route, and never alert — while every driver and
     /// `AlertManager` unit test stayed green, each break sitting one hop outside its unit. The no-arg
     /// factory's own delegation does not count: the scanner ignores callers in the declaring class.
+    /// Reachability says the bindings are USED, not that they are right; the metric NAME the sink writes
+    /// under is pinned separately, by `EntityCheckpointLagMetricTest` against the collector itself.
     @Test
     void entityCheckpointLagSinkIsBoundByProductionCode() throws Exception {
         assertCorpusIsComplete();
@@ -95,10 +102,18 @@ class AlertingWiringLivenessTest {
         var reachability = BytecodeReachability.scan(PRODUCTION_ROOTS);
 
         assertTrue(reachability.isReachable(MethodRef.of(EntityCheckpointDriver.class.getDeclaredMethod("entityCheckpointDriver",
-                                                                                                        EntityCheckpointDriver.CheckpointLagSink.class))),
-                   "#1302: EntityCheckpointDriver.entityCheckpointDriver(CheckpointLagSink) must be called by "
-                   + "production code (AetherNode.assembleNode). If this is unreachable, the node builds the "
+                                                                                                        EntityCheckpointDriver.CheckpointLagSink.class,
+                                                                                                        EntityCheckpointDriver.CommittedCheckpoints.class))),
+                   "#1302: EntityCheckpointDriver.entityCheckpointDriver(CheckpointLagSink, CommittedCheckpoints) must be "
+                   + "called by production code (AetherNode.assembleNode). If this is unreachable, the node builds the "
                    + "driver with the discarding sink and the checkpoint-lag alert can never fire");
+        assertTrue(reachability.isReachable(MethodRef.of(EntityCheckpointLagMetric.class.getDeclaredMethod("sinkFor",
+                                                                                                           ClusterSyncCollector.class))),
+                   "#1330: EntityCheckpointLagMetric.sinkFor(ClusterSyncCollector) must be called by production code");
+        assertTrue(reachability.isReachable(MethodRef.of(EntityCheckpointLagMetric.class.getDeclaredMethod("committedCheckpoints",
+                                                                                                           KVStore.class))),
+                   "#1330: EntityCheckpointLagMetric.committedCheckpoints(KVStore) must be called by production code — "
+                   + "without it the lag has no committed baseline");
     }
 
     /// Pinned call site: `ManagementServer.onServerStarted` -> `metricsPublisher.start()`.
