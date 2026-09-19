@@ -2922,8 +2922,13 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         /// `fileRecords` is the whole file in offset order — the records at or below `base` too (lazy
-        /// truncation keeps them until compaction) — because only the file's FIRST PHYSICAL record can
-        /// tell reclaimed history from a hole (see [#seedFor]). The tail placed is the records above `base`.
+        /// truncation keeps them until compaction) — because only the file's LOWEST stored offset can tell
+        /// reclaimed history from a hole (see [#seedFor]). The tail placed is the records above `base`.
+        ///
+        /// Recovery therefore holds the whole file in memory at boot, one partition at a time: the
+        /// un-sealed tail plus any lazily truncated records below the floor, which compaction bounds at
+        /// about its 8 MB threshold. The un-sealed tail itself is bounded only by sealing. Replay already
+        /// read the whole file's bytes before #1258; this keeps the parsed records too.
         private static Result<Unit> placeTail(String streamName,
                                               int partition,
                                               Path walFile,
@@ -2953,8 +2958,13 @@ public final class StreamPartitionManager implements AutoCloseable {
                    : success(unit());
         }
 
-        /// The ring seed: `base`, unless the file's FIRST PHYSICAL record sits above `base + 1` (#1258 review
-        /// B2, R2-3). That head gap is indistinguishable today from retention having reclaimed the
+        /// The ring seed: `base`, unless the file's LOWEST stored offset sits above `base + 1` (#1258 review
+        /// B2, R2-3). The lowest offset is the file's first record in offset order; for a file written by
+        /// the fixed writer, which refuses a non-increasing offset, it is also the first physical record.
+        /// The two differ only for an out-of-order file (pre-#1232, or a writer defect), and there the
+        /// lowest offset is the right evidence: frames `[5, 2]` at floor 1 still hold offset 2 = floor + 1,
+        /// so the missing 3 and 4 are a hole, where "first physical record 5" would call it reclaimed.
+        /// That head gap is indistinguishable today from retention having reclaimed the
         /// partition's sealed segments — the durable floor then drops (to -1 when every segment is gone)
         /// while WAL compaction already removed the records below the old floor — so it is accepted as
         /// reclaimed history: the ring is seeded just below the first record, reads of the gap miss as

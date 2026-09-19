@@ -10,7 +10,6 @@ import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -114,25 +113,31 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// sweeps and [#appendOrdered]; reads stay lock-free. A monitor, not a `ReentrantLock` — the JDK 25
     /// baseline does not pin virtual threads on `synchronized` (JEP 491), and [#appendOrdered] re-enters it.
     private final Object appendLock = new Object();
-    /// Offsets whose append listeners are still to be notified, delivered by this ring's serial notifier,
-    /// never by a publisher (#1258 review B1, R2-1). Listeners are foreign code — the consumer runtime runs
-    /// slice handlers from them, and a handler may publish again — so they must never run while the
-    /// section is held, nor on a publisher's thread. Since #1235 an offset is queued when it becomes
-    /// VISIBLE ([#advanceVisible]), in increasing order, never at append.
-    private final ConcurrentLinkedQueue<Long> pendingAppendNotifications = new ConcurrentLinkedQueue<>();
-    /// Set while this ring's notifier runs: at most one per ring, so notifications stay in offset order.
+
+    /// Sentinel for "no notification pending".
+    private static final long NO_PENDING_NOTIFICATION = Long.MIN_VALUE;
+
+    /// The highest offset whose append listeners are still to be notified, or [#NO_PENDING_NOTIFICATION].
+    /// Raised (never lowered) when the VISIBLE position advances (#1235, [#advanceVisible]) — never at
+    /// append — and delivered by this ring's serial notifier, never by a publisher (#1258 review B1, R2-1). Listeners learn that the ring ADVANCED TO an offset,
+    /// so pending notifications coalesce into this one value: a slow listener costs O(1) state, never
+    /// one entry per publish (#1258 addendum). Listeners are foreign code — the consumer runtime wakes
+    /// its push consumers from them, and a handler may publish again — so they must never run while the
+    /// section is held (that deadlocked cross-partition consumers and broke WAL order), nor on a
+    /// publisher's thread (one publisher then ran every other publisher's listeners).
+    private final AtomicLong pendingNotification = new AtomicLong(NO_PENDING_NOTIFICATION);
+    /// Set while this ring's notifier runs: at most one per ring, so notified offsets only move forward.
     private final AtomicBoolean notifying = new AtomicBoolean(false);
+    /// Listener invocations that threw, since the ring was built (#1258 review R3-1).
+    private final AtomicLong appendListenerFailures = new AtomicLong();
     /// #1235: the three positions of a partition are the header head (APPENDED), this (DURABLE — the
     /// owner's WAL fsync, or a replica's own WAL write) and [#visibleOffset] (VISIBLE — durable AND
-    /// acknowledged by the stream's min-sync peers). Both only move forward; reads take no lock.
+    /// acknowledged by the stream's min-sync peers). Both only move forward, and nothing on them takes a lock.
     private final AtomicLong durableOffset = new AtomicLong(NO_OFFSET);
     /// The highest offset a consumer may see: [#read] and [#readSlice] are bounded by it, and the append
     /// listeners are notified when it advances. A plain [#append]/[#appendBatch] advances it at once (a
     /// ring with no durability gate aliases visible to appended); [#appendOrdered] leaves it to the caller.
     private final AtomicLong visibleOffset = new AtomicLong(NO_OFFSET);
-    /// Orders visible advances with their notification enqueue, so the notifier sees increasing offsets.
-    /// Guards only the watermark write and the enqueue; no listener, publish or read path runs under it.
-    private final Object visibleLock = new Object();
 
     private OffHeapRingBuffer(Arena arena,
                               MemorySegment controlSegment,
@@ -354,36 +359,48 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// `inOrder` must not block on I/O completion (the WAL fsync belongs outside, after this returns);
     /// every append on this partition waits for it. A failed append skips `inOrder`.
     ///
-    /// The event is NOT made visible and no listener is queued here (#1235): the caller advances
+    /// The event is NOT made visible and no listener is notified for it here (#1235): the caller advances
     /// [#markDurable] and [#advanceVisible] once the event is durable and, on an owner, acknowledged by its
-    /// min-sync peers. Listeners then run on this ring's serial notifier, never under the section.
+    /// min-sync peers. Listeners then learn the new visible high-water on this ring's serial notifier,
+    /// never under the section.
     public <T> Result<T> appendOrdered(byte[] payload, long timestamp, Fn1<Result<T>, Long> inOrder) {
         synchronized (appendLock) {
             return appendLocked(payload, timestamp).flatMap(inOrder);
         }
     }
 
-    /// Starts this ring's serial notifier — a virtual thread that delivers queued offsets in order and
-    /// exits when the queue is empty — unless one is already running.
+    /// `result` is evaluated by the caller, so `appendLock` is already released here. The publisher only
+    /// hands its queued offsets to the notifier; it never runs a listener.
+    private <T> Result<T> notifyingAfter(Result<T> result) {
+        startNotifierIfIdle();
+
+        return result;
+    }
+
+    /// Starts this ring's serial notifier — a virtual thread that delivers the pending high-water offset
+    /// and exits once nothing is pending — unless one is already running.
     private void startNotifierIfIdle() {
-        if (!pendingAppendNotifications.isEmpty() && notifying.compareAndSet(false, true)) {
+        if (pendingNotification.get() != NO_PENDING_NOTIFICATION && notifying.compareAndSet(false, true)) {
             Thread.ofVirtual().name("ring-notifier-" + streamName + "-" + partition).start(this::runNotifier);
         }
     }
 
-    /// The re-check after clearing the flag picks up offsets queued while the last pass was finishing,
-    /// so no notification is left waiting for the next advance.
+    /// The `finally` is the notifier's liveness guarantee (#1258 review R3-1): whatever a listener does —
+    /// even a `VirtualMachineError` rethrown by [#notifyGuarded] — the flag is cleared and, if an offset
+    /// is still pending, a fresh notifier is started, so the ring can never stop notifying.
+    @SuppressWarnings("JBCT-EX-01")
     private void runNotifier() {
-        do {
-            drainQueuedNotifications();
+        try {
+            deliverPendingNotifications();
+        } finally {
             notifying.set(false);
-        } while (!pendingAppendNotifications.isEmpty() && notifying.compareAndSet(false, true));
+            startNotifierIfIdle();
+        }
     }
 
-    /// Runs as the single notifier, so a non-empty queue cannot be emptied underneath it.
-    private void drainQueuedNotifications() {
-        while (!pendingAppendNotifications.isEmpty()) {
-            notifyAppendListeners(pendingAppendNotifications.remove());
+    private void deliverPendingNotifications() {
+        for (var offset = pendingNotification.getAndSet(NO_PENDING_NOTIFICATION); offset != NO_PENDING_NOTIFICATION; offset = pendingNotification.getAndSet(NO_PENDING_NOTIFICATION)) {
+            notifyAppendListeners(offset);
         }
     }
 
@@ -448,14 +465,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         synchronized (appendLock) {
             return appendBatchLocked(payloads, timestamps).onSuccess(this::queueAppendedVisible);
         }
-    }
-
-    /// `result` is evaluated by the caller, so `appendLock` is already released here. The appender only
-    /// hands its queued offsets to the notifier; it never runs a listener.
-    private <T> Result<T> notifyingAfter(Result<T> result) {
-        startNotifierIfIdle();
-
-        return result;
     }
 
     private Result<Long> appendBatchLocked(List<byte[]> payloads, long[] timestamps) {
@@ -692,24 +701,31 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         durableOffset.accumulateAndGet(offset, Math::max);
     }
 
-    /// Make every offset up to `offset` visible and, when that moves the visible position, queue one
-    /// notification — carrying the new visible offset — for the serial notifier. Monotonic: a lower value
-    /// is ignored, so advances that arrive out of order coalesce into the highest. The caller never runs a
-    /// listener, so this is safe from the publisher, the WAL-commit and the replica-ack threads.
+    /// Make every offset up to `offset` visible and, when that moves the visible position, raise the
+    /// pending notification to it for the serial notifier (#1258's high-water model). Monotonic and
+    /// lock-free: a lower value is ignored. The caller never runs a listener, so this is safe from the
+    /// publisher, the WAL-commit and the replica-ack threads.
     @Contract
     public void advanceVisible(long offset) {
         queueVisibleAdvance(offset);
         startNotifierIfIdle();
     }
 
+    /// Queues the CURRENT visible offset, not `offset`: a winner overtaken between its two steps then
+    /// re-announces the newer high-water instead of an older one, so notified offsets never move backwards.
     @Contract
     private void queueVisibleAdvance(long offset) {
-        synchronized (visibleLock) {
-            if (visibleOffset.get() < offset) {
-                visibleOffset.set(offset);
-                pendingAppendNotifications.add(offset);
-            }
+        if (visibleOffset.getAndAccumulate(offset, Math::max) < offset) {
+            pendingNotification.accumulateAndGet(visibleOffset.get(), Math::max);
         }
+    }
+
+    /// Test seam (#1235): no notification is pending and no notifier is running, so every advance so far
+    /// has been delivered to the listeners. A negative listener assertion waits for this condition instead
+    /// of a timed window. The notifier clears its flag only after delivering, so a listener's effects
+    /// happen-before a `true` here.
+    boolean notifierIdle() {
+        return pendingNotification.get() == NO_PENDING_NOTIFICATION && !notifying.get();
     }
 
     public long durableOffset() {
@@ -871,6 +887,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     /// Count of reads refused because the arena was closed UNDER an in-flight reader (#999). Zero on every
     /// quiescent ring; non-zero means the release path overlapped a live reader on this partition.
+    /// Append-listener invocations that threw — an exception or an `Error` — since the ring was built. Each
+    /// is logged; none stops later notifications (#1258 review R3-1).
+    public long appendListenerFailures() {
+        return appendListenerFailures.get();
+    }
+
     public long closedUnderReaderCount() {
         return closedUnderReader.get();
     }
@@ -1058,18 +1080,42 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         appendListeners.forEach(listener -> notifyGuarded(listener, offset));
     }
 
-    /// A listener's failure is logged here and goes no further: it must never surface on an unrelated
-    /// publish, nor stop the notifications that follow it (#1258 review R2-2).
+    /// A listener's failure is logged and counted here and goes no further: it must never surface on an
+    /// unrelated publish, nor stop the notifications that follow it (#1258 review R2-2, R3-1). That holds
+    /// for an `Error` too — slice code can throw `StackOverflowError`, `AssertionError` or a
+    /// `LinkageError` after a reload — logged at ERROR. `StackOverflowError` is a `VirtualMachineError`
+    /// but is the listener's own runaway recursion, fully recovered once its stack unwinds, so it is
+    /// handled like any other `Error`. Every other `VirtualMachineError` (out of memory, internal error)
+    /// is rethrown: the JVM itself is failing. The listeners after it then miss that offset, but
+    /// [#runNotifier]'s `finally` keeps the ring notifying later ones.
     @SuppressWarnings("JBCT-EX-01")
     private void notifyGuarded(LongConsumer listener, long offset) {
         try {
             listener.accept(offset);
         } catch (RuntimeException e) {
+            appendListenerFailures.incrementAndGet();
             log.warn("OffHeapRingBuffer {}[{}]: append listener failed at offset {}: {}",
                      streamName,
                      partition,
                      offset,
                      e.toString());
+        } catch (StackOverflowError e) {
+            appendListenerFailures.incrementAndGet();
+            log.error("OffHeapRingBuffer {}[{}]: append listener overflowed its stack at offset {}; later notifications continue",
+                      streamName,
+                      partition,
+                      offset);
+        } catch (VirtualMachineError e) {
+            appendListenerFailures.incrementAndGet();
+
+            throw e;
+        } catch (Error e) {
+            appendListenerFailures.incrementAndGet();
+            log.error("OffHeapRingBuffer {}[{}]: append listener threw {} at offset {}; later notifications continue",
+                      streamName,
+                      partition,
+                      e.toString(),
+                      offset);
         }
     }
 
