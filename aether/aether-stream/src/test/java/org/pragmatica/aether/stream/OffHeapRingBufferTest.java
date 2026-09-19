@@ -696,14 +696,15 @@ class OffHeapRingBufferTest {
     /// listeners follow VISIBLE; [OffHeapRingBuffer#readAppended] follows the head.
     @Nested
     class Visibility {
-        /// A negative listener assertion must outlast the asynchronous notifier, or a queued-but-undelivered
-        /// notification makes "no listener" pass vacuously.
-        private static List<Long> settledAnnounced(List<Long> announced) {
-            var deadline = System.nanoTime() + 500_000_000L;
+        /// A negative listener assertion reads only once the notifier is idle (nothing pending, none
+        /// running), so a queued-but-undelivered notification cannot make "no listener" pass vacuously.
+        private List<Long> settledAnnounced(List<Long> announced) {
+            var deadline = System.nanoTime() + 5_000_000_000L;
 
-            while (announced.isEmpty() && System.nanoTime() < deadline) {
+            while (!buffer.notifierIdle() && System.nanoTime() < deadline) {
                 Thread.onSpinWait();
             }
+            assertThat(buffer.notifierIdle()).as("the ring notifier drained").isTrue();
             return List.copyOf(announced);
         }
 

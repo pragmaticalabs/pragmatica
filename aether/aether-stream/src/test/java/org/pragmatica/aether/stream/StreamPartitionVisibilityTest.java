@@ -13,11 +13,16 @@ import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
+import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.wal.PartitionWal;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
@@ -31,6 +36,8 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -240,6 +247,34 @@ class StreamPartitionVisibilityTest {
         }
     }
 
+    /// The lost-advance race the post-update observer call closes (CTO ruling on #1309). Each path writes
+    /// its own input and then reads the other's: the owner writes `durable` and reads the registry, and the
+    /// ack path's pre-update call reads `durable` before the registry records the ack. Interleaved as
+    /// below, neither read sees both inputs, and without the second call the event would stay invisible
+    /// until an unrelated later advance.
+    @Nested
+    class AckRacingOwnerFsync {
+
+        @Test
+        void ackReadBeforeDurable_fsyncReadBeforeRegistry_eventStillBecomesVisible() throws InterruptedException {
+            var gated = new GatedAckReplication(replicationWithPeer());
+            manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, gated);
+            createStream(manager, 2, 2);
+
+            var acker = Thread.ofVirtual().start(() -> gated.handleAck(replicateAck(PEER, STREAM, PARTITION, 0L)));
+
+            assertThat(gated.preUpdateCallDone.await(5, TimeUnit.SECONDS)).as("ack path read durable = -1 and parked")
+                                                                           .isTrue();
+            publish(manager, "e0");
+            assertThat(readAll(manager)).as("the owner read a registry the ack has not reached").isEmpty();
+
+            gated.release.countDown();
+            acker.join(5_000);
+
+            assertThat(readAll(manager)).as("the post-update observer call sees both inputs").containsExactly("e0");
+        }
+    }
+
     /// CTO lock rule (#1235, #1258 R2-1): a visible advance only queues for the ring's serial notifier.
     /// Neither the publisher that saw its fsync nor the thread delivering a replica ack runs a listener.
     @Nested
@@ -312,6 +347,80 @@ class StreamPartitionVisibilityTest {
         return replicationManager(SELF, registry);
     }
 
+    /// Delegates to a real replication manager, but parks the observer the partition manager installs on
+    /// its FIRST call for an ack (the call before the registry update) until released. Parking there puts
+    /// the ack thread exactly between its read of `durable` and its registry write.
+    private static final class GatedAckReplication implements ReplicationManager {
+        private final ReplicationManager delegate;
+        private final CountDownLatch preUpdateCallDone = new CountDownLatch(1);
+        private final CountDownLatch release = new CountDownLatch(1);
+        private final AtomicInteger observerCalls = new AtomicInteger();
+
+        private GatedAckReplication(ReplicationManager delegate) {
+            this.delegate = delegate;
+        }
+
+        @Contract
+        @Override
+        public void observeAcks(AckObserver observer) {
+            delegate.observeAcks(ack -> gate(observer, ack));
+        }
+
+        private void gate(AckObserver observer, ReplicationMessage.ReplicateAck ack) {
+            observer.acked(ack);
+            if (observerCalls.incrementAndGet() == 1) {
+                preUpdateCallDone.countDown();
+                awaitRelease();
+            }
+        }
+
+        private void awaitRelease() {
+            try {
+                assertThat(release.await(10, TimeUnit.SECONDS)).as("test released the ack thread").isTrue();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                fail(e);
+            }
+        }
+
+        @Contract
+        @Override
+        public void replicateEvent(String streamName,
+                                   int partition,
+                                   long offset,
+                                   byte[] payload,
+                                   long timestamp,
+                                   Epoch ownerEpoch) {
+            delegate.replicateEvent(streamName, partition, offset, payload, timestamp, ownerEpoch);
+        }
+
+        @Contract
+        @Override
+        public void handleAck(ReplicationMessage.ReplicateAck ack) {
+            delegate.handleAck(ack);
+        }
+
+        @Override
+        public ReplicaRegistry registry() {
+            return delegate.registry();
+        }
+
+        @Override
+        public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
+            return delegate.awaitReplication(streamName, partition, offset, minAcks);
+        }
+
+        @Override
+        public long replicatedThrough(String streamName, int partition, int minAcks) {
+            return delegate.replicatedThrough(streamName, partition, minAcks);
+        }
+
+        @Override
+        public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
+            return delegate.replicatedThrough(pending, minAcks);
+        }
+    }
+
     /// Replication AND a WAL, without a cluster node or an epoch fence. No public factory combines the two
     /// (production wires both through the fenced factory), so the private constructor is used directly.
     private static StreamPartitionManager replicatingWalManager(ReplicationManager replication, Path walDir) {
@@ -381,15 +490,18 @@ class StreamPartitionVisibilityTest {
         return List.copyOf(threads);
     }
 
-    /// A NEGATIVE listener assertion must outlast the asynchronous notifier: read at once, a queued but
-    /// undelivered notification would make "never announced" pass vacuously (measured: a probe that queued
-    /// on append left two such assertions green). Delivery takes microseconds; the window is generous.
-    private static int settledNotifications(AtomicInteger notifications) {
-        var deadline = System.nanoTime() + 500_000_000L;
+    /// A NEGATIVE listener assertion reads the count only once the ring's notifier is idle — nothing
+    /// pending, none running — so a notification that was queued but not yet delivered cannot make "never
+    /// announced" pass vacuously (measured: read at once, two such assertions stayed green under a probe
+    /// that queued on append). The wait is for a condition, not a duration.
+    private int settledNotifications(AtomicInteger notifications) {
+        var ring = manager.partitionBuffer(STREAM, PARTITION).unwrap();
+        var deadline = System.nanoTime() + 5_000_000_000L;
 
-        while (notifications.get() == 0 && System.nanoTime() < deadline) {
+        while (!ring.notifierIdle() && System.nanoTime() < deadline) {
             Thread.onSpinWait();
         }
+        assertThat(ring.notifierIdle()).as("the ring notifier drained").isTrue();
         return notifications.get();
     }
 
