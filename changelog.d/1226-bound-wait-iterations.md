@@ -79,3 +79,13 @@
   one S20 site that needs the grace — was implemented and works; it is left as a refinement rather
   than shipped here, because the difference is 5s versus 30s on a hung predicate and the cap already
   turns 1083s into ~210s for a 180s budget.
+- **Known-better refinement, deliberately not shipped here.** The cap bounds every iteration, but a
+  hung predicate under a SMALL budget waits the full cap rather than the budget — 30s where 5s was
+  asked for. The tighter form is `poll_bound = min(WAIT_FOR_REMAINING, cap)`, with a per-call
+  opt-in floor (`WAIT_FOR_MIN_POLL_BOUND`) for the one S20 site that needs an 8s read to finish.
+  That gives 5s near the deadline, 30s far from it, and B8 unchanged.
+  **The reason a plain `WAIT_FOR_REMAINING` bound is NOT the answer** — and this is the part worth
+  inheriting: without the cap, a hung poll at `remaining=590s` of a 600s budget is bounded to ~590s.
+  One poll consumes the budget, which is the actual mechanism behind the 5h17m runaway. The old
+  remaining-based bound only clamped iterations near the END of a budget and left every earlier one
+  unbounded. Any future tightening must keep a fixed ceiling, not replace it.
