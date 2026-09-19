@@ -412,6 +412,33 @@ class ProjectionTest {
                                   .doesNotContainKey("a");
         }
 
+        /// #1298 (review R4) — a guarded fold in flight across [Projection#rebuild] must apply exactly
+        /// once. Held at its write while the rebuild bumps the generation and resets the model, its late
+        /// write would land in the rebuilt model under the OLD generation, and the replay would then
+        /// apply the same event again under the new one.
+        @Test
+        void rebuild_inFlightGuardedFold_appliesExactlyOnce() {
+            var store = new InMemoryStore();
+            var projection = Projection.of(TOPIC)
+                                       .into(store, OrderSeen::orderId)
+                                       .apply("orders-seen", (current, event) -> current.or(0) + 1, Promise::unitPromise)
+                                       .withClaims(new InMemoryClaims(), LEASE);
+            var gate = Promise.<Unit> promise();
+            var event = new OrderSeen("a");
+
+            store.writeGate = gate;
+
+            var inFlight = projection.onEvent(event, FIRST);
+
+            projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+            gate.succeed(Unit.unit());
+            inFlight.await();
+            projection.onEvent(event, FIRST).await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(store.data).describedAs("rebuilt model after the replay: the in-flight fold must not count")
+                                  .containsEntry("a", 1);
+        }
+
         /// A negative lease is refused the same way — the check is `> 0`, not `!= 0`.
         @Test
         void negativeLease_isRefused() {
@@ -710,6 +737,29 @@ class ProjectionTest {
         assertThat(store.data).isEmpty();
         // Cursor seam ran LAST, observing the bumped generation AND the completed reset.
         assertThat(order).containsExactly("cursor@gen1/resets1");
+    }
+
+    /// #1298 — a single-argument fold in flight across [Projection#rebuild] read the PRE-reset model;
+    /// its late write must not carry that state into the rebuilt one. The replay is the only writer.
+    @Test
+    void rebuild_inFlightUnguardedFold_doesNotWriteIntoTheResetModel() {
+        var store = new InMemoryStore();
+        var projection = Projection.of(TOPIC)
+                                   .into(store, OrderSeen::orderId)
+                                   .apply("orders-seen", (current, event) -> current.or(0) + 1, Promise::unitPromise);
+        var gate = Promise.<Unit> promise();
+
+        projection.onEvent(new OrderSeen("a")).await().onFailure(cause -> fail(cause.message()));
+        store.writeGate = gate;
+
+        var inFlight = projection.onEvent(new OrderSeen("a"));
+
+        projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+        gate.succeed(Unit.unit());
+        inFlight.await();
+
+        assertThat(store.data).describedAs("a fold that read the pre-reset model must not write into the rebuilt one")
+                              .doesNotContainKey("a");
     }
 
     @Test
