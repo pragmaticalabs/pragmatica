@@ -30,8 +30,9 @@ import static org.pragmatica.aether.stream.OffHeapRingBuffer.offHeapRingBuffer;
 /// `RabiaNode.dispatchLoudly` which DROPPED a replication message.
 class OffHeapRingBufferCloseRaceTest {
 
-    /// Rounds of the close-under-readers race. Sized so the window is entered reliably rather than
-    /// occasionally — the test asserts it WAS entered, so an under-sized count would flake.
+    /// Rounds of the close-under-readers race. Each round enters the window by construction (one reader is
+    /// parked past the `closed` check until `close()` completes — #1253), so the count no longer buys
+    /// reliability; it buys repetitions of the free-running readers racing the same `close()`.
     private static final int ROUNDS = 200;
     private static final long CAPACITY = 64;
     private static final long DATA_REGION = 4096;
@@ -123,6 +124,10 @@ class OffHeapRingBufferCloseRaceTest {
     /// the flag check when `close()` completes receive the JDK's asynchronous `IllegalStateException`. The
     /// assertion is that NOTHING escapes to the reader thread — that is precisely what killed
     /// `stream-partition-backfill` and what `dispatchLoudly` swallowed.
+    ///
+    /// #1253: entering that window used to be left to the scheduler, and under CPU load 200 rounds could see
+    /// none of it (4 of 40 fresh-JVM runs under a 32-thread hog). One reader per round is now parked through
+    /// [OffHeapRingBuffer#readWindowProbe] until `close()` has completed, so every round enters it.
     @Test
     void concurrentReaders_seeNoEscapingThrowable_whenArenaClosedUnderThem() throws InterruptedException {
         var escaped = new CopyOnWriteArrayList<Throwable>();
@@ -135,10 +140,11 @@ class OffHeapRingBufferCloseRaceTest {
         assertThat(escaped).as("throwables escaping a reader while the arena was closed under it").isEmpty();
         // Non-vacuity: an empty `escaped` list proves nothing unless the window was genuinely entered, and a
         // concurrency test that never reaches the race passes identically to one that handles it. The
-        // refusal counter is the only evidence that these rounds exercised the path they exist to cover.
+        // refusal counter is the only evidence that these rounds exercised the path they exist to cover —
+        // and since every round parks a reader in the window, every round must have contributed a refusal.
         assertThat(observedRaces).as("reads refused because the arena closed UNDER an in-flight reader "
-                                    + "(0 would mean these " + ROUNDS + " rounds never entered the race window)")
-                                 .isPositive();
+                                    + "(fewer than " + ROUNDS + " means a round never entered the race window)")
+                                 .isGreaterThanOrEqualTo(ROUNDS);
     }
 
     private long runOneCloseRace(List<Throwable> escaped) throws InterruptedException {
@@ -149,17 +155,44 @@ class OffHeapRingBufferCloseRaceTest {
         var running = new AtomicBoolean(true);
         var started = new CountDownLatch(3);
         var finished = new CountDownLatch(3);
+        var parkClaimed = new AtomicBoolean(false);
+        var parkedInWindow = new CountDownLatch(1);
+        var closeCompleted = new CountDownLatch(1);
+
+        buffer.readWindowProbe(() -> parkFirstReader(parkClaimed, parkedInWindow, closeCompleted));
 
         startReader(buffer::headOffset, running, started, finished, escaped);
         startReader(buffer::tailOffset, running, started, finished, escaped);
         startReader(buffer::eventCount, running, started, finished, escaped);
 
         started.await(5, TimeUnit.SECONDS);
+        parkedInWindow.await(5, TimeUnit.SECONDS);
         buffer.close();
+        closeCompleted.countDown();
         running.set(false);
         finished.await(5, TimeUnit.SECONDS);
 
         return buffer.closedUnderReaderCount();
+    }
+
+    /// The first reader to pass the `closed` check parks there until `close()` has completed, so its native
+    /// read is refused by the JDK — the genuine race — however the scheduler treats the other readers. A
+    /// timed-out park is not hidden: that round then contributes no refusal and the non-vacuity check reddens.
+    private static void parkFirstReader(AtomicBoolean parkClaimed,
+                                        CountDownLatch parkedInWindow,
+                                        CountDownLatch closeCompleted) {
+        if (parkClaimed.compareAndSet(false, true)) {
+            parkedInWindow.countDown();
+            awaitRestoringInterrupt(closeCompleted);
+        }
+    }
+
+    private static void awaitRestoringInterrupt(CountDownLatch latch) {
+        try {
+            latch.await(5, TimeUnit.SECONDS);
+        } catch (InterruptedException _) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private void startReader(Reader reader,

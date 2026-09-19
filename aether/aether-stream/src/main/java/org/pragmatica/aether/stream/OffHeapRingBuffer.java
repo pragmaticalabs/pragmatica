@@ -61,6 +61,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// No-op release (default seam).
     private static final LongConsumer NOOP_RELEASE = _ -> {};
 
+    /// No-op read-window probe (default seam — production never parks a reader).
+    private static final Runnable NO_READ_WINDOW_PROBE = () -> {};
+
     /// Test-only floor-allocation fault-injection seam (bug #6 partial-construction coverage). Consulted
     /// by the GUARDED seam factory with each buffer's partition index BEFORE the native floor allocation;
     /// when it returns false the factory behaves exactly as a native floor OOM would — it closes the
@@ -106,6 +109,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Reads refused because the arena was closed UNDER an in-flight reader (#999) — the genuine race, not
     /// the benign late arrival the `closed` fast path absorbs.
     private final AtomicLong closedUnderReader = new AtomicLong(0);
+    /// Test-only seam (#1253), run by [#guardedRead] between its `closed` fast-path check and the native read.
+    /// Deliberately NOT volatile: it is set before any reader thread starts, and `Thread.start` publishes it.
+    private Runnable readWindowProbe = NO_READ_WINDOW_PROBE;
     private volatile long lastSealedOffset = -1;
 
     private OffHeapRingBuffer(Arena arena,
@@ -672,6 +678,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return refused;
         }
 
+        readWindowProbe.run();
         try {
             return read.getAsLong();
         } catch (IllegalStateException | IndexOutOfBoundsException _) {
@@ -714,6 +721,16 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// quiescent ring; non-zero means the release path overlapped a live reader on this partition.
     public long closedUnderReaderCount() {
         return closedUnderReader.get();
+    }
+
+    /// Test-only seam (#1253): install a probe that [#guardedRead] runs AFTER its `closed` fast-path check and
+    /// BEFORE the native read — exactly the window a concurrent `close()` must land in for the reader to be
+    /// refused by the JDK rather than by the flag. A probe that parks one reader there until `close()` has
+    /// completed makes that race deterministic instead of scheduler-dependent. Must be installed before any
+    /// reader thread starts. Production never touches it.
+    @Contract
+    void readWindowProbe(Runnable probe) {
+        readWindowProbe = probe;
     }
 
     public long allocatedBytes() {
