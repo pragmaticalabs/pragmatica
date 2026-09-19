@@ -8,6 +8,7 @@ package org.pragmatica.aether.stream;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongConsumer;
 import java.util.function.LongPredicate;
@@ -277,6 +278,36 @@ class OffHeapRingBufferGrowthTest {
                       assertThat(events.getFirst().data()).isEqualTo(stored);
                       assertThat(events.getFirst().timestamp()).isEqualTo(2L);
                   });
+        } finally {
+            buffer.close();
+        }
+    }
+
+    /// #1233 batch sibling: a DROP_OLDEST batch whose total exceeds the frozen allocation is dropped whole
+    /// and reported as `EVENT_DROPPED`, never as success at the current head; the ring is untouched.
+    @Test
+    void frozenRing_batchLargerThanAllocated_dropOldest_returnsEventDropped_withoutStoring() {
+        var capacity = 1_000L;
+        var maxBytes = 5L * SEGMENT;
+        LongPredicate reserveNever = _ -> false; // freeze at the floor segment
+        LongConsumer release = _ -> {};
+
+        var buffer = unwrap(offHeapRingBuffer("frozen-batch", 0, capacity, maxBytes, EvictionListener.NOOP,
+                                              EvictionPolicy.DROP_OLDEST, reserveNever, release));
+
+        try {
+            var stored = patterned(1_000, 5);
+            buffer.append(stored, 1L)
+                  .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("1 KB event fits the floor"));
+            var headBefore = buffer.headOffset();
+
+            // 2 x 150_000 = 300_000 > 262_144 allocated, <= cap
+            buffer.appendBatch(List.of(patterned(150_000, 6), patterned(150_000, 7)), new long[]{2L, 3L})
+                  .onSuccess(offset -> org.junit.jupiter.api.Assertions.fail("dropped batch reported as stored at " + offset))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.EVENT_DROPPED));
+
+            assertThat(buffer.headOffset()).isEqualTo(headBefore);
+            assertThat(buffer.eventCount()).isEqualTo(1L);
         } finally {
             buffer.close();
         }
