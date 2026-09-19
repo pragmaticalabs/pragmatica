@@ -109,7 +109,6 @@ public final class ReplicationBatcher implements AutoCloseable {
         var snapshot = accumulator.drain();
 
         accumulators.remove(key, accumulator);
-
         if (snapshot.isEmpty()) {
             return;
         }
@@ -195,7 +194,6 @@ public final class ReplicationBatcher implements AutoCloseable {
                 var alreadyDrained = retired;
 
                 retired = true;
-
                 if (alreadyDrained || payloads.isEmpty()) {
                     return BatchSnapshot.EMPTY;
                 }
