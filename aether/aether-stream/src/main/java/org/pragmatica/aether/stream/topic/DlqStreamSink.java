@@ -144,8 +144,10 @@ public record DlqStreamSink(Deserializer deserializer,
     }
 
     private Option<DeadLetterEntry> decodedEntry(String streamName, OffHeapRingBuffer.RawEvent event) {
-        return Result.lift(() -> toEntry(streamName, event.data()))
-                     .mapError(cause -> UndecodableDeadLetter.FACTORY.apply(event.offset(), cause.message()))
+        return Result.lift(() -> toEntry(streamName,
+                                         event.data()))
+                     .mapError(cause -> UndecodableDeadLetter.FACTORY.apply(event.offset(),
+                                                                            cause.message()))
                      .onFailure(DlqStreamSink::logSkipped)
                      .option();
     }
@@ -156,8 +158,8 @@ public record DlqStreamSink(Deserializer deserializer,
 
     /// A DLQ-stream record that does not decode as a [DlqEnvelope] (#1266 review).
     public record UndecodableDeadLetter(long dlqOffset, String detail, String message) implements Cause {
-        static final Fn2<UndecodableDeadLetter, Long, String> FACTORY =
-            Causes.forTwoValues("DLQ record at offset %s does not decode as a DlqEnvelope: %s", UndecodableDeadLetter::new);
+        static final Fn2<UndecodableDeadLetter, Long, String> FACTORY = Causes.forTwoValues("DLQ record at offset %s does not decode as a DlqEnvelope: %s",
+                                                                                            UndecodableDeadLetter::new);
     }
 
     private DeadLetterEntry toEntry(String streamName, byte[] rawDlqEvent) {
