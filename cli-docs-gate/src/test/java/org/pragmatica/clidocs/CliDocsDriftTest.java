@@ -62,7 +62,7 @@ class CliDocsDriftTest {
     /// future waivers. Changing either list therefore costs an edit here, in the same commit, where it
     /// is read.
     private static final int WAIVED_FINDINGS = 86;
-    private static final String WAIVED_FINDINGS_DIGEST = "d0ef0890c85d220a";
+    private static final String WAIVED_FINDINGS_DIGEST = "3b6bdd993825b1bd";
     private static final int BASELINED_COMMANDS = 11;
     private static final String BASELINED_COMMANDS_DIGEST = "19561c9ce5583edd";
 

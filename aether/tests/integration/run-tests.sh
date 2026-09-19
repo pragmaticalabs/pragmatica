@@ -1097,6 +1097,37 @@ else
     log_warn "--skip-build: running against the jars already on disk. Their provenance is NOT verified — confirm they contain the change under test (javap the symbol; mtime is not evidence)."
 fi
 
+# --- Step 1b: Blueprint fixture preflight (ALWAYS, including under --skip-build) ---
+# Runs after the build so that a full build satisfies it, and guards the --skip-build
+# path, which is exactly where a fixture gap survives. Checks the SAME local repository
+# the CLI will resolve from (honouring -Dmaven.repo.local via AETHER_JAVA_OPTS) — checking
+# a different repository than the deploy reads is the #1223 defect in another costume.
+#
+# 2026-09-18: without this, a missing url-shortener blueprint surfaced as an HTTP 500
+# mid-suite, four suites deep and one paid cloud provision cycle after it was knowable.
+"${SCRIPT_DIR}/lib/verify-blueprint-fixtures.sh" || {
+    log_error "blueprint fixture preflight failed — refusing to provision against an incomplete fixture set"
+    exit 1
+}
+
+# --- Re-derive CLOUD_MODE now that --env has been parsed ---------------------------
+# lib/common.sh computes CLOUD_MODE from ENV_TYPE at SOURCE time (line ~1038), and it is
+# sourced at the top of this file — before the argument loop runs. So on `--env cloud`
+# it latched "false" from the default ENV_TYPE=docker and EXPORTED that to every suite
+# subprocess, while ENV_TYPE itself was later set to "cloud".
+#
+# That split the harness in half: functions branching on ENV_TYPE took cloud paths, and
+# the six that branch on CLOUD_MODE (kill_node, start_node, restart_all_nodes, ...) took
+# DOCKER paths on a cloud run. Measured 2026-09-18: restore_cluster_baseline escalated to
+# restart_all_nodes, which ran a docker-compose cycle over SSH to the remote host, timed
+# out, and declared a merely-degraded cloud cluster "unrecoverable" — hard-skipping
+# 03-scaling, 02y, 02w and 02s.
+#
+# Keep the two in sync here, after parsing, rather than trusting source-time order.
+if [ "$ENV_TYPE" = "cloud" ]; then CLOUD_MODE="true"; else CLOUD_MODE="false"; fi
+export CLOUD_MODE
+log_info "runtime dispatch: ENV_TYPE=${ENV_TYPE} CLOUD_MODE=${CLOUD_MODE}"
+
 # --- Compute selected suites early so cluster bootstrap can be skipped per-cluster ---
 A_SUITES=($(filter_suites "${CLUSTER_A_SUITES[@]}"))
 B_SUITES=($(filter_suites "${CLUSTER_B_SUITES[@]}"))
@@ -1123,8 +1154,11 @@ if [ "$ENV_TYPE" = "cloud" ]; then
     # docker-exec pattern as tools/provision-test-pg.sh's smoke test. Non-fatal on
     # failure: suite 10 will surface it loudly, and a wedged SSH here must not kill
     # runs that never touch PG.
-    ensure_cloud_pg_database "${PG_DB}_testpersistence" \
-        || log_warn "could not ensure PG database ${PG_DB}_testpersistence — suite 10 (test-persistence) will fail if it runs"
+    # Reset rather than ensure: suite 10 asserts FIRST-TIME baseline behaviour, and the
+    # shared PG VM keeps migration state across runs, so `ensure` handed it an already-
+    # baselined database and the server correctly answered 409 (#1228).
+    reset_cloud_pg_database "${PG_DB}_testpersistence" \
+        || log_warn "could not reset PG database ${PG_DB}_testpersistence — suite 10 (test-persistence) will fail if it runs"
 fi
 
 # --- Step 1.5: CLI / node-image version-parity preflight (#440) ---

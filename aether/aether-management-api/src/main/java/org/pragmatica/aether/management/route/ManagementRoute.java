@@ -323,6 +323,12 @@ public enum ManagementRoute {
                                  spacer("groups"),
                                  param("group")),
                          taskGroup(STREAMING)),
+    // #1224: catalog-addressed create, mirroring STREAMS_DELETE's shape exactly (bare 3-param path,
+    // no verb spacer — the HTTP method alone distinguishes it from STREAMS_METADATA's GET on the same
+    // path/token-count bucket). Body-carried `{partitions}`, registered AND materialized by the
+    // handler (StreamApiRoutes#createStream) — see #1224's closing comment for why the OLD
+    // STREAM_CREATE (body-carried name, no catalog registration) never surfaced in `streams list`.
+    STREAMS_CREATE(POST, "/streams", List.of("namespace", "stream", "version"), taskGroup(STREAMING)),
     STREAMS_DELETE(DELETE, "/streams", List.of("namespace", "stream", "version"), taskGroup(STREAMING)),
     // "namespaces" is a reserved first-segment literal here, same precedence pattern already accepted
     // above for "hydration"/"declarative-consumers": a real namespace literally named "namespaces" would

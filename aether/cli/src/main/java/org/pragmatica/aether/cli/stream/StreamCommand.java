@@ -15,6 +15,7 @@ import org.pragmatica.aether.cli.Prompt;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -30,7 +31,7 @@ import picocli.CommandLine.Parameters;
 /// Exit codes follow [StreamExitCode]: 0=success, 1=error, 2=validation, 3=user-cancelled,
 /// 4=not-found, 5=conflict, 6=gone. HTTP errors are scraped from the JSON envelope returned by
 /// the base CLI HTTP helpers (see [StreamHttpResponse]).
-@Command(name = "stream", description = "Manage event streams (list, show, tail, delete, group create/delete)", subcommands = {StreamCommand.ListCommand.class, StreamCommand.ShowCommand.class, StreamCommand.ReplicasCommand.class, StreamCommand.HydrationCommand.class, StreamCommand.TailCommand.class, StreamCommand.DeleteCommand.class, StreamCommand.GroupCommand.class})
+@Command(name = "stream", description = "Manage event streams (create, list, show, tail, delete, group create/delete)", subcommands = {StreamCommand.ListCommand.class, StreamCommand.ShowCommand.class, StreamCommand.ReplicasCommand.class, StreamCommand.HydrationCommand.class, StreamCommand.TailCommand.class, StreamCommand.CreateCommand.class, StreamCommand.DeleteCommand.class, StreamCommand.GroupCommand.class})
 public class StreamCommand implements Runnable {
     @CommandLine.ParentCommand
     private AetherCli parent;
@@ -142,6 +143,33 @@ public class StreamCommand implements Runnable {
                                                                                                               maxEvents,
                                                                                                               follow,
                                                                                                               intervalMs)));
+        }
+    }
+
+    /// #1224: catalog-addressed create — the replacement for the legacy body-carried
+    /// `aether streams create <name>`, which only materialized rings and never registered the
+    /// catalog entry, so a created stream never appeared in `aether stream list`. Address is
+    /// explicit and required, same shape as every other command in this group (no bare-name
+    /// convenience — #1044's reasoning against a silently-ambiguous identity applies here verbatim).
+    /// Idempotent: repeating the command for an address that already exists reports `"exists"`
+    /// rather than failing.
+    @Command(name = "create", description = "Create a stream at a catalog address (idempotent)")
+    public static class CreateCommand implements Callable<Integer> {
+        @CommandLine.ParentCommand
+        private StreamCommand streamParent;
+
+        @Parameters(index = "0", description = "Stream address: namespace:stream:version")
+        private String address;
+
+        @CommandLine.Option(names = "--partitions", description = "Number of partitions (default: server-side)")
+        private Integer partitions;
+
+        @Override
+        public Integer call() {
+            return StreamAddressArg.parse(address).fold(StreamCommand::handleAddressError,
+                                                        addr -> createStream(addr,
+                                                                             Option.option(partitions),
+                                                                             streamParent.parent()));
         }
     }
 
@@ -358,6 +386,23 @@ public class StreamCommand implements Runnable {
                                             System.out,
                                             System.err,
                                             StreamTailPoller.Sleeper.REAL);
+    }
+
+    /// #1224: `partitions` omitted keeps the server-side default ([StreamApiRoutes#DEFAULT_PARTITIONS]).
+    private static int createStream(ResourceAddress addr, Option<Integer> partitions, AetherCli cli) {
+        var body = partitions.map(p -> "{\"partitions\":" + p + "}").or("{}");
+        var response = cli.post(ManagementRoute.STREAMS_CREATE,
+                                List.of(addr.namespace().value(),
+                                        addr.name().value(),
+                                        addr.version().asString()),
+                                body);
+        var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to create stream");
+
+        if (errorCode >= 0) {
+            return mapHttpErrorOrFallback(response, errorCode);
+        }
+
+        return OutputFormatter.printAction(response, cli.outputOptions(), "Created stream: " + addr.asString());
     }
 
     private static int deleteStreamWithConfirmation(ResourceAddress addr, boolean force, AetherCli cli) {

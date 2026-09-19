@@ -40,7 +40,7 @@
 [R2] aether/tests/integration/suites/13-edge-cases/test-concurrent-deploys.sh:125 — kill "$pid_a" 2>/dev/null; wait "$pid_a" 2>/dev/null || true
 [R2] aether/tests/integration/suites/13-edge-cases/test-concurrent-deploys.sh:126 — kill "$pid_b" 2>/dev/null; wait "$pid_b" 2>/dev/null || true
 [R2] aether/tests/integration/suites/13-edge-cases/test-disruption-budget.sh:51 — drain_count=$(grep -cve '^$' "$DRAIN_NODES_FILE" 2>/dev/null || true)
-[R3] aether/tests/integration/suites/04-streaming/test-stream-replication.sh:126 — tautological assert_ne on raw response (var $result from line 117)
+[R3] aether/tests/integration/suites/04-streaming/test-stream-replication.sh:129 — tautological assert_ne on raw response (var $result from line 120)
 [R3] aether/tests/integration/suites/07-cluster-mgmt/test-bootstrap.sh:69 — tautological assert_ne on raw response (var $status from line 68)
 [R3] aether/tests/integration/suites/08-resources/test-scheduled-tasks.sh:17 — tautological assert_ne on raw response (var $tasks from line 16)
 [R3] aether/tests/integration/suites/11-observability/test-prometheus-metrics.sh:28 — tautological assert_ne on raw response (var $body from line 27)

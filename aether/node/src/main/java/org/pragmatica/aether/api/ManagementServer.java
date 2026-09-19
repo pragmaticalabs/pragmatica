@@ -1651,11 +1651,11 @@ class ManagementServerImpl implements ManagementServer {
     /// [#resolvePermission] are.
     static Option<String> resolveEngineKey(MatchedRoute matched) {
         return switch (matched.route()) {
-            case STREAMS_PUBLISH, STREAMS_PUBLISH_BATCH, STREAMS_DELETE, STREAMS_GROUP_CREATE, STREAMS_GROUP_DELETE, STREAM_REPLICAS -> matched.param("namespace").flatMap(ns -> matched.param("stream")
-                                                                                                                                                                                        .flatMap(stream -> matched.param("version")
-                                                                                                                                                                                                                  .flatMap(ver -> ResourceAddress.resourceAddress(ns,
-                                                                                                                                                                                                                                                                  stream,
-                                                                                                                                                                                                                                                                  ver).option()))).map(StreamManager::engineKey);
+            case STREAMS_PUBLISH, STREAMS_PUBLISH_BATCH, STREAMS_CREATE, STREAMS_DELETE, STREAMS_GROUP_CREATE, STREAMS_GROUP_DELETE, STREAM_REPLICAS -> matched.param("namespace").flatMap(ns -> matched.param("stream")
+                                                                                                                                                                                                        .flatMap(stream -> matched.param("version")
+                                                                                                                                                                                                                                  .flatMap(ver -> ResourceAddress.resourceAddress(ns,
+                                                                                                                                                                                                                                                                                  stream,
+                                                                                                                                                                                                                                                                                  ver).option()))).map(StreamManager::engineKey);
             default -> Option.empty();
         };
     }
@@ -1664,9 +1664,12 @@ class ManagementServerImpl implements ManagementServer {
     /// [#rejectSystemStreamWrite]'s doc for why [ManagementRoute#STREAM_CREATE] and the
     /// `CONSUMER_GROUP_*` routes are covered instead by a post-auth, handler-level guard (body-carried
     /// identity). `STREAMS_PUBLISH_BATCH` was missing from this set until #742's review: the batch
-    /// form wrote to the framework's own ring while the single form was refused.
+    /// form wrote to the framework's own ring while the single form was refused. `STREAMS_CREATE`
+    /// (#1224) carries path-based identity from the start — unlike the legacy `STREAM_CREATE` this
+    /// gate cannot see, so it belongs here rather than needing its own handler-level guard.
     private static final Set<ManagementRoute> STREAM_IDENTITY_WRITE_ROUTES = Set.of(ManagementRoute.STREAMS_PUBLISH,
                                                                                     ManagementRoute.STREAMS_PUBLISH_BATCH,
+                                                                                    ManagementRoute.STREAMS_CREATE,
                                                                                     ManagementRoute.STREAMS_DELETE,
                                                                                     ManagementRoute.STREAMS_GROUP_CREATE,
                                                                                     ManagementRoute.STREAMS_GROUP_DELETE);

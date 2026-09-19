@@ -16,10 +16,13 @@ test_cluster_ready() {
 }
 
 test_create_stream() {
-    local payload="{\"name\":\"${STREAM_NAME}\",\"partitions\":1}"
     local result
-    result=$(api_post "/api/v1/streams" "$payload")
-    assert_contains "$result" "$STREAM_NAME" "Stream created: ${STREAM_NAME}"
+    result=$(stream_create "$STREAM_NAME" 1)
+    # #1224: assert against the CATALOG, not the response echo. The old assertion matched the
+    # stream name inside the 200 body, which the response contains whether or not the stream was
+    # ever registered — it reported PASS on every run while the stream did not exist.
+    assert_ne "$(stream_coordinate "$STREAM_NAME" 2>/dev/null)" "" \
+              "Stream ${STREAM_NAME} present in catalog after create"
 }
 
 test_publish_events_for_replication() {

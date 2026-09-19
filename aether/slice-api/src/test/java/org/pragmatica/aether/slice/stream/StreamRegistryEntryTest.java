@@ -44,6 +44,22 @@ class StreamRegistryEntryTest {
         assertThat(entry.refCount()).isEqualTo(1);
     }
 
+    /// #1224: the operator-create factory — used by `aether stream create` / catalog `POST
+    /// /streams/{namespace}/{stream}/{version}` — carries the same single-ref shape as
+    /// [#blueprintFactorySetsRegisteredByAndInitialRef], distinguished only by
+    /// [RegisteredByKind#OPERATOR] so downstream (release paths, listings) can tell an
+    /// operator-owned entry apart from a deployment-owned one.
+    @Test
+    void operatorFactorySetsRegisteredByAndInitialRef() {
+        var entry = StreamRegistryEntry.operator(APP_ORDERS,
+                                                  RetentionPolicy.retentionPolicy(),
+                                                  Instant.EPOCH);
+
+        assertThat(entry.address()).isEqualTo(APP_ORDERS);
+        assertThat(entry.registeredBy()).isEqualTo(RegisteredByKind.OPERATOR);
+        assertThat(entry.refCount()).isEqualTo(1);
+    }
+
     @Test
     void incrementRefReturnsNewEntryWithIncrementedCount() {
         var original = StreamRegistryEntry.framework(SYSTEM_EVENTS,

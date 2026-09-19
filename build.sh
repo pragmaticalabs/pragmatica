@@ -64,14 +64,31 @@ echo ""
 echo "Step 4/6: Build e2e and forge tests..."
 mvn_quiet compile test-compile -Pwith-e2e -pl aether/e2e-tests,aether/forge/forge-tests
 
-# Step 5: Build test blueprints
+# Step 5: Build test blueprints AND the example blueprint fixtures
 # ALWAYS clean: these are standalone poms whose slice sources rarely change, so Maven incremental
 # compilation skips annotation processing and re-jars STALE generated factories after any
 # slice-processor codegen change (rebuild-together violation — bit the 2026-07-06 cloud gate:
 # envelope-1005/Aspect-param factories shipped against a 1007 runtime, rejected at slice load).
 echo ""
-echo "Step 5/6: Build test blueprints..."
+echo "Step 5/6: Build test blueprints and example fixtures..."
 for bp in aether/tests/blueprints/test-echo aether/tests/blueprints/test-persistence aether/tests/blueprints/test-full aether/tests/blueprints/test-stream aether/tests/blueprints/test-stream-repl aether/tests/blueprints/test-stream-multipart aether/tests/blueprints/test-stream-consumer aether/tests/blueprints/test-entity aether/tests/blueprints/test-durable-topic; do
+    mvn_quiet -f "$bp/pom.xml" clean install -DskipTests
+done
+
+# examples/url-shortener and examples/url-shortener-v2 are DELIBERATELY excluded from
+# examples/pom.xml: they carry independent versions (1.0.0 and 1.0.1) that do not track
+# the platform version, so the aggregator cannot hold them. That exclusion is correct.
+#
+# What was missing is the other half. examples/pom.xml says "build them separately after
+# platform install" and nothing ever did, so their -blueprint.jar artifacts existed only
+# where somebody had once run Maven by hand. Suite 06-deployment deploys 1.0.0 and promotes
+# to 1.0.1, and it passed only because a stale copy happened to sit in the shared
+# ~/.m2/repository. Point a build at a clean or per-worktree repository and every
+# blue-green/canary/rolling test fails with "Artifact not found" (observed 2026-09-18).
+#
+# A documented manual step that nothing performs is not a fixture — it is ambient state.
+# Build them here, with the platform, every time.
+for bp in examples/url-shortener examples/url-shortener-v2; do
     mvn_quiet -f "$bp/pom.xml" clean install -DskipTests
 done
 
