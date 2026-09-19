@@ -820,6 +820,97 @@ class StreamConsumerRuntimeTest {
             }
         }
 
+        /// #1239 ruling (A-minus): monotonicity is the RUNTIME's obligation, not the store's — the store is
+        /// also the pull API's writer, where a lower commit is a legitimate rewind. So the runtime must
+        /// never ISSUE a commit lower than one that already succeeded. Driven through the path that used to
+        /// regress: a RETRY whose backoff an append lands in, periodic commits every millisecond resolving
+        /// from another thread, and the detach-time final commit.
+        @Test
+        void runtime_neverIssuesACommitBelowItsLastSuccessfulOne() throws InterruptedException {
+            createTestStream("orders");
+            var issued = new CopyOnWriteArrayList<Long>();
+            var regressions = new CopyOnWriteArrayList<String>();
+            var lastSucceeded = new java.util.concurrent.atomic.AtomicLong(-1);
+            var store = new ConsumerCursorStore() {
+                @Override
+                public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    Promise<Unit> pending = Promise.promise();
+
+                    if (offset < lastSucceeded.get()) {
+                        regressions.add(offset + " issued after " + lastSucceeded.get() + " succeeded");
+                    }
+                    issued.add(offset);
+                    CompletableFuture.delayedExecutor(5, TimeUnit.MILLISECONDS)
+                                     .execute(() -> succeed(pending, offset));
+
+                    return pending;
+                }
+
+                private void succeed(Promise<Unit> pending, long offset) {
+                    lastSucceeded.accumulateAndGet(offset, Math::max);
+                    pending.succeed(Unit.unit());
+                }
+
+                @Override
+                public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                    return Promise.success(none());
+                }
+            };
+            var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
+            var config = ConsumerConfig.consumerConfig("group-1", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY, 1L, 5, "");
+            var firstAttempt = new AtomicBoolean(true);
+
+            try {
+                observedRuntime.subscribe("orders",
+                                          0,
+                                          config,
+                                          (offset, payload, ts) -> resolveLater(offset == 0L && firstAttempt.getAndSet(false)));
+                manager.publishLocal("orders", 0, "flaky".getBytes(UTF_8), 1000L);
+                // Inside the retry backoff (>= 100ms base, jittered): the appends must not overtake it.
+                Thread.sleep(40);
+                for (int i = 1; i <= 5; i++) {
+                    manager.publishLocal("orders", 0, ("event-" + i).getBytes(UTF_8), 1000L + i);
+                    Thread.sleep(10);
+                }
+
+                var deadline = System.currentTimeMillis() + 5_000;
+
+                while (observedRuntime.cursorPosition("orders", 0, "group-1").or(-1L) < 6L && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(10);
+                }
+                Thread.sleep(300);
+                observedRuntime.unsubscribe("orders", 0, "group-1");
+                Thread.sleep(50);
+                assertThat(issued).describedAs("commits were actually issued, so the assertions below can fail")
+                          .isNotEmpty();
+                assertThat(regressions).describedAs("no commit issued below one that already succeeded")
+                          .isEmpty();
+                assertThat(issued).describedAs("issued commits never step backwards")
+                          .isSorted();
+                assertThat(issued.getLast()).describedAs("the detach flush carries the final cursor")
+                          .isEqualTo(6L);
+            } finally {
+                observedRuntime.close();
+            }
+        }
+
+        private static Promise<Unit> resolveLater(boolean fail) {
+            Promise<Unit> outcome = Promise.promise();
+
+            CompletableFuture.delayedExecutor(10, TimeUnit.MILLISECONDS)
+                             .execute(() -> settle(outcome, fail));
+
+            return outcome;
+        }
+
+        private static void settle(Promise<Unit> outcome, boolean fail) {
+            if (fail) {
+                outcome.fail(StreamError.General.BUFFER_EMPTY);
+            } else {
+                outcome.succeed(Unit.unit());
+            }
+        }
+
         private static ConsumerCursorStore failingFirst(List<Long> commits, List<Long> persisted) {
             return new ConsumerCursorStore() {
                 @Override
