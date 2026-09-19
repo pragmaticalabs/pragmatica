@@ -5517,12 +5517,14 @@ public interface AetherNode extends ManageableNode {
 
         return swimHealthDetector.start(workerGroup, guarded)
                                  .onSuccessRun(announceJoinTrigger)
-                                 .onFailure(cause -> refuseToRunWithoutSwim(swimHealthDetector.swimPort(), cause, failNode));
+                                 .onFailure(cause -> refuseToRunWithoutSwim(swimHealthDetector.swimPort(),
+                                                                            cause,
+                                                                            failNode));
     }
 
     private static void refuseToRunWithoutSwim(int swimPort, Cause cause, Runnable failNode) {
         LOG.error("SWIM failed to start on UDP port {}: {} — this node cannot answer or send failure-detection "
-                  + "probes, so it will not announce its join and is exiting instead of running without SWIM",
+                 + "probes, so it will not announce its join and is exiting instead of running without SWIM",
                   swimPort,
                   cause.message());
         failNode.run();
