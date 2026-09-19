@@ -418,8 +418,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// starts from offset 0 on a failed fetch, which replayed the whole retained partition.
     @Contract
     private void fetchCursorAndStart(ConsumerCursorStore store, ConsumerKey key, ConsumerState state, int attempt) {
-        lifted(() -> store.fetch(key.groupId(), key.streamName(), key.partition()))
-            .onResult(result -> applyCursorAndStart(result, store, key, state, attempt));
+        lifted(() -> store.fetch(key.groupId(), key.streamName(), key.partition())).onResult(result -> applyCursorAndStart(result,
+                                                                                                                           store,
+                                                                                                                           key,
+                                                                                                                           state,
+                                                                                                                           attempt));
     }
 
     @Contract
@@ -439,7 +442,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     }
 
     @Contract
-    private void retryCursorFetch(ConsumerCursorStore store, ConsumerKey key, ConsumerState state, int attempt, Cause cause) {
+    private void retryCursorFetch(ConsumerCursorStore store,
+                                  ConsumerKey key,
+                                  ConsumerState state,
+                                  int attempt,
+                                  Cause cause) {
         if (closed.get() || state.isCancelled()) {
             return;
         }
@@ -549,9 +556,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
         state.clearCheckpointPending();
         state.periodicCommit(observedCommit(key, state, NO_PREDECESSOR).timeout(PERIODIC_COMMIT_BOUND)
-                                                                         .onResult(result -> afterCheckpoint(key,
-                                                                                                             state,
-                                                                                                             result)));
+                                           .onResult(result -> afterCheckpoint(key, state, result)));
     }
 
     /// Retries on a failed commit AND on a [CommitOutcome.LocalOnly] one: a commit whose cluster

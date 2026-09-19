@@ -10,6 +10,11 @@
   `ConsumerRuntimeState`; pinned by
   `StreamConsumerRuntimeTest$CursorCommitObservability.checkpointIfNeeded_retriesUntilPersisted_whenFirstCommitFails_onAQuietPartition`
   and `...checkpointIfNeeded_keepsOneCommitInFlight_andCoalescesToTheLatestCursor`]
+- Each periodic commit is bounded at 5s. A commit that never settles used to hold the single-flight
+  slot forever and absorb every later checkpoint. Past the bound it counts as a failed commit and the
+  retry commits the latest cursor. A timed-out commit that lands late can step the stored cursor back
+  by the progress made since: redelivery, not loss. [mechanism: `PERIODIC_COMMIT_BOUND`; pinned by
+  `StreamConsumerRuntimeTest$CursorCommitObservability.periodicCommitNeverSettles_isBounded_andALaterCheckpointLands`]
 - Each failed retry is still counted in `cursorCommitFailureCount` and surfaced through
   `lastCursorCommitFailure`, so a store that stays down shows as a rising count rather than silence.
 - Corrected the stale "30 seconds" checkpoint cadence in `ClusterCursorStore`, `StreamConsumerManager`
