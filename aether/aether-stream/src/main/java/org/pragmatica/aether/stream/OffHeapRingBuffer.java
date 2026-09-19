@@ -115,13 +115,13 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// baseline does not pin virtual threads on `synchronized` (JEP 491), and [#appendOrdered] re-enters it.
     private final Object appendLock = new Object();
     /// Offsets whose append listeners are still to be notified, queued INSIDE `appendLock` (so queue
-    /// order is offset order) and drained OUTSIDE it (#1258 review B1). Listeners are foreign code — the
-    /// consumer runtime delivers events synchronously from them, and a handler may publish again — so
-    /// they must never run while the section is held: that deadlocked cross-partition consumers and
-    /// broke WAL order for a consumer publishing to its own partition.
+    /// order is offset order) and delivered by this ring's serial notifier, never by a publisher (#1258
+    /// review B1, R2-1). Listeners are foreign code — the consumer runtime runs slice handlers from them,
+    /// and a handler may publish again — so they must never run while the section is held (that
+    /// deadlocked cross-partition consumers and broke WAL order), nor on a publisher's thread (one
+    /// publisher then ran every other publisher's listeners and its own ack waited for all of them).
     private final ConcurrentLinkedQueue<Long> pendingAppendNotifications = new ConcurrentLinkedQueue<>();
-    /// One drainer at a time, so notifications stay in offset order. A thread that finds another
-    /// drainer active (including itself, re-entering from a listener) leaves its offsets to that drainer.
+    /// Set while this ring's notifier runs: at most one per ring, so notifications stay in offset order.
     private final AtomicBoolean notifying = new AtomicBoolean(false);
 
     private OffHeapRingBuffer(Arena arena,
@@ -333,9 +333,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// `inOrder` must not block on I/O completion (the WAL fsync belongs outside, after this returns);
     /// every append on this partition waits for it. A failed append skips `inOrder`.
     ///
-    /// Append listeners run only AFTER the section is released — and so after `inOrder` — in offset
-    /// order ([#pendingAppendNotifications]). A listener may therefore append again, to this ring or any
-    /// other: nothing is locked while it runs, and this append is already fully ordered and logged.
+    /// Append listeners run only AFTER the section is released — and so after `inOrder` — on this ring's
+    /// serial notifier thread, in offset order ([#pendingAppendNotifications]). A listener may therefore
+    /// append again, to this ring or any other: nothing is locked while it runs, this append is already
+    /// fully ordered and logged, and no publisher's call waits for it.
     public <T> Result<T> appendOrdered(byte[] payload, long timestamp, Fn1<Result<T>, Long> inOrder) {
         return notifyingAfter(appendOrderedLocked(payload, timestamp, inOrder));
     }
@@ -346,27 +347,32 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
     }
 
-    /// `result` is evaluated by the caller, so `appendLock` is already released here.
+    /// `result` is evaluated by the caller, so `appendLock` is already released here. The publisher only
+    /// hands its queued offsets to the notifier; it never runs a listener.
     private <T> Result<T> notifyingAfter(Result<T> result) {
-        drainAppendNotifications();
+        startNotifierIfIdle();
 
         return result;
     }
 
-    /// The `finally` guarantees a throwing listener cannot leave the drainer flag set, which would stop
-    /// every later notification on this ring.
-    @SuppressWarnings("JBCT-EX-01")
-    private void drainAppendNotifications() {
-        while (!pendingAppendNotifications.isEmpty() && notifying.compareAndSet(false, true)) {
-            try {
-                drainQueuedNotifications();
-            } finally {
-                notifying.set(false);
-            }
+    /// Starts this ring's serial notifier — a virtual thread that delivers queued offsets in order and
+    /// exits when the queue is empty — unless one is already running.
+    private void startNotifierIfIdle() {
+        if (!pendingAppendNotifications.isEmpty() && notifying.compareAndSet(false, true)) {
+            Thread.ofVirtual().name("ring-notifier-" + streamName + "-" + partition).start(this::runNotifier);
         }
     }
 
-    /// Runs as the single drainer, so a non-empty queue cannot be emptied underneath it.
+    /// The re-check after clearing the flag picks up offsets queued while the last pass was finishing,
+    /// so no notification is left waiting for the next append.
+    private void runNotifier() {
+        do {
+            drainQueuedNotifications();
+            notifying.set(false);
+        } while (!pendingAppendNotifications.isEmpty() && notifying.compareAndSet(false, true));
+    }
+
+    /// Runs as the single notifier, so a non-empty queue cannot be emptied underneath it.
     private void drainQueuedNotifications() {
         while (!pendingAppendNotifications.isEmpty()) {
             notifyAppendListeners(pendingAppendNotifications.remove());
@@ -970,7 +976,22 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     private void notifyAppendListeners(long offset) {
-        appendListeners.forEach(listener -> listener.accept(offset));
+        appendListeners.forEach(listener -> notifyGuarded(listener, offset));
+    }
+
+    /// A listener's failure is logged here and goes no further: it must never surface on an unrelated
+    /// publish, nor stop the notifications that follow it (#1258 review R2-2).
+    @SuppressWarnings("JBCT-EX-01")
+    private void notifyGuarded(LongConsumer listener, long offset) {
+        try {
+            listener.accept(offset);
+        } catch (RuntimeException e) {
+            log.warn("OffHeapRingBuffer {}[{}]: append listener failed at offset {}: {}",
+                     streamName,
+                     partition,
+                     offset,
+                     e.toString());
+        }
     }
 
     private static long totalPayloadSize(List<byte[]> payloads) {

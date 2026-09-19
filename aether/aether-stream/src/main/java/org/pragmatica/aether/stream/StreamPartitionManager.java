@@ -2810,7 +2810,7 @@ public final class StreamPartitionManager implements AutoCloseable {
             var base = lastSealedOffset.lastSealedOffset(streamName, partition);
             var records = new ArrayList<WalRecord>();
 
-            return wal.replay(base, records::add)
+            return wal.replay(-1L, records::add)
                       .flatMap(_ -> placeTail(streamName,
                                               partition,
                                               wal.path(),
@@ -2823,17 +2823,28 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                     cause.message()));
         }
 
+        /// `fileRecords` is the whole file in offset order — the records at or below `base` too (lazy
+        /// truncation keeps them until compaction) — because only the file's FIRST PHYSICAL record can
+        /// tell reclaimed history from a hole (see [#seedFor]). The tail placed is the records above `base`.
         private static Result<Unit> placeTail(String streamName,
                                               int partition,
                                               Path walFile,
                                               OffHeapRingBuffer ring,
                                               long base,
-                                              List<WalRecord> records) {
-            return seedRing(ring, seedFor(streamName, partition, walFile, base, records)).flatMap(_ -> appendTail(streamName,
-                                                                                                                  partition,
-                                                                                                                  walFile,
-                                                                                                                  ring,
-                                                                                                                  records));
+                                              List<WalRecord> fileRecords) {
+            var tail = recordsAbove(fileRecords, base);
+
+            return seedRing(ring, seedFor(streamName, partition, walFile, base, fileRecords)).flatMap(_ -> appendTail(streamName,
+                                                                                                                      partition,
+                                                                                                                      walFile,
+                                                                                                                      ring,
+                                                                                                                      tail));
+        }
+
+        private static List<WalRecord> recordsAbove(List<WalRecord> fileRecords, long base) {
+            return fileRecords.stream()
+                              .filter(record -> record.offset() > base)
+                              .toList();
         }
 
         /// Position the fresh ring so the next append is `seed + 1`; a no-op when `seed < 0` (nothing
@@ -2844,26 +2855,27 @@ public final class StreamPartitionManager implements AutoCloseable {
                    : success(unit());
         }
 
-        /// The ring seed: `base`, unless the first WAL record sits above `base + 1` (#1258 review B2). That
-        /// head gap is indistinguishable today from retention having reclaimed the partition's sealed
-        /// segments — the durable floor then drops (to -1 when every segment is gone) while WAL compaction
-        /// already removed the records below the old floor — so it is accepted as reclaimed history: the
-        /// ring is seeded just below the first record, reads of the gap miss as expired, and the range is
-        /// WARNed and counted ([#WAL_RECOVERY_HEAD_GAPS]). Gaps BETWEEN records still refuse (see
-        /// [#placeRecord]).
+        /// The ring seed: `base`, unless the file's FIRST PHYSICAL record sits above `base + 1` (#1258 review
+        /// B2, R2-3). That head gap is indistinguishable today from retention having reclaimed the
+        /// partition's sealed segments — the durable floor then drops (to -1 when every segment is gone)
+        /// while WAL compaction already removed the records below the old floor — so it is accepted as
+        /// reclaimed history: the ring is seeded just below the first record, reads of the gap miss as
+        /// expired, and the range is WARNed and counted ([#WAL_RECOVERY_HEAD_GAPS]). When the file still
+        /// holds records at or below `floor + 1`, a missing offset above them is a HOLE, never reclaimed
+        /// history: the ring stays at `base` and [#placeRecord] refuses at the first missing offset.
         private static long seedFor(String streamName,
                                     int partition,
                                     Path walFile,
                                     long base,
-                                    List<WalRecord> records) {
-            return records.isEmpty() || records.getFirst()
-                                               .offset() <= base + 1
+                                    List<WalRecord> fileRecords) {
+            return fileRecords.isEmpty() || fileRecords.getFirst()
+                                                       .offset() <= base + 1
                    ? base
                    : acceptHeadGap(streamName,
                                    partition,
                                    walFile,
                                    base,
-                                   records.getFirst().offset());
+                                   fileRecords.getFirst().offset());
         }
 
         private static long acceptHeadGap(String streamName, int partition, Path walFile, long base, long firstOffset) {

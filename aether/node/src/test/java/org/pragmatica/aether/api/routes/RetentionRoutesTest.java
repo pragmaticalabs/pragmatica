@@ -24,7 +24,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
-import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.PartitionWalView;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamWalView;
 import org.pragmatica.aether.stream.StreamPartitionManager.WalSnapshot;
@@ -224,6 +223,15 @@ class RetentionRoutesTest {
             assertThat(RetentionRoutes.walTotalBytes(snapshot))
                 .as("a partition with no WAL contributes nothing rather than skewing the node's disk total")
                 .isEqualTo(390L);
+        }
+
+        /// #1258: the node-wide count of WAL recoveries that accepted a head gap as reclaimed history
+        /// reaches the operator surface, not only the WARN log.
+        @Test
+        void assembleRetention_reportsWalRecoveryHeadGapsAccepted() {
+            var response = RetentionRoutes.assembleRetention(new WalSnapshot(List.of()), new SegmentIndex(), emptyStore(), 7L);
+
+            assertThat(response.walRecoveryHeadGapsAccepted()).isEqualTo(7L);
         }
 
         @Test
@@ -467,7 +475,7 @@ class RetentionRoutesTest {
     }
 
     private static RetentionResponse responseOf(RetentionPartitionView row) {
-        return new RetentionResponse(0L, List.of(row));
+        return new RetentionResponse(0L, List.of(row), 0L);
     }
 
     private static RetentionPartitionView violatedRow() {
