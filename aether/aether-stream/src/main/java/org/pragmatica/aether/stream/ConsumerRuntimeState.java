@@ -451,9 +451,69 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     private void checkpointIfNeeded(ConsumerKey key, ConsumerState state) {
         if (state.shouldCheckpoint()) {
-            observedCommit(key, state);
-            state.resetCheckpointCounters();
+            requestCheckpoint(key, state);
         }
+    }
+
+    /// #1239: the periodic checkpoint is a single-flight loop per consumer. A request made while a commit
+    /// is in flight (or waiting out a retry backoff) only marks one pending; whoever holds the slot then
+    /// commits the cursor as it stands AT ISSUE time, so requests coalesce to the latest cursor and two
+    /// periodic commits for one key can never land out of order. Delivery never waits on any of this —
+    /// the commit's outcome is observed on its own continuation (#654's non-gating property).
+    @Contract
+    private void requestCheckpoint(ConsumerKey key, ConsumerState state) {
+        state.markCheckpointPending();
+        if (state.tryStartCheckpoint()) {
+            issueCheckpoint(key, state);
+        }
+    }
+
+    @Contract
+    private void issueCheckpoint(ConsumerKey key, ConsumerState state) {
+        if (closed.get() || state.isCancelled()) {
+            state.finishCheckpoint();
+
+            return;
+        }
+
+        state.clearCheckpointPending();
+        observedCommit(key, state).onResult(result -> afterCheckpoint(key, state, result));
+    }
+
+    @Contract
+    private void afterCheckpoint(ConsumerKey key, ConsumerState state, Result<Unit> result) {
+        result.onSuccess(_ -> checkpointPersisted(key, state))
+              .onFailure(_ -> retryCheckpoint(key, state));
+    }
+
+    /// The trigger counters reset only here, on a commit that SUCCEEDED. A request absorbed while that
+    /// commit was in flight is honoured one checkpoint interval later rather than immediately, which
+    /// keeps the commit rate at the configured cadence instead of one commit per commit latency — and
+    /// still lands the tail of a burst that ended while the commit was outstanding.
+    @Contract
+    private void checkpointPersisted(ConsumerKey key, ConsumerState state) {
+        state.resetCheckpointCounters();
+        state.resetCheckpointAttempts();
+        state.finishCheckpoint();
+        if (state.isCheckpointPending() && state.tryStartCheckpoint()) {
+            scheduleCheckpoint(key, state, state.checkpointInterval());
+        }
+    }
+
+    /// A failed periodic commit keeps the slot and retries with backoff until it persists or the
+    /// consumer goes away (FER: the failure is already counted and surfaced by [#observedCommit]; the
+    /// retry is what moves the persisted cursor forward on a partition that receives no further event).
+    /// Each retry re-reads the cursor, so it commits the newest value, never the one that failed.
+    @Contract
+    private void retryCheckpoint(ConsumerKey key, ConsumerState state) {
+        var attempt = Math.min(state.incrementCheckpointAttempts(), 30);
+
+        scheduleCheckpoint(key, state, TimeSpan.timeSpan(computeBackoff(attempt)).millis());
+    }
+
+    @Contract
+    private void scheduleCheckpoint(ConsumerKey key, ConsumerState state, TimeSpan delay) {
+        SharedScheduler.schedule(() -> issueCheckpoint(key, state), delay);
     }
 
     /// #654: the single place that performs a cursor commit and observes its outcome — shared by the
@@ -927,6 +987,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         private final AtomicBoolean drainRunning = new AtomicBoolean(false);
         /// #1238: something may have arrived since the running pass read.
         private final AtomicBoolean drainDirty = new AtomicBoolean(false);
+        /// #1239: a periodic commit is in flight or waiting out its retry backoff.
+        private final AtomicBoolean checkpointInFlight = new AtomicBoolean(false);
+        /// #1239: a checkpoint was requested since the in-flight one was issued.
+        private final AtomicBoolean checkpointPending = new AtomicBoolean(false);
+        private final AtomicInteger checkpointAttempts = new AtomicInteger(0);
         private volatile ScheduledFuture<?> future;
         private volatile LongConsumer pushListenerRef;
         private volatile OffHeapRingBuffer pushBufferRef;
@@ -1025,6 +1090,42 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         boolean shouldCheckpoint() {
             return eventsSinceCheckpoint.get() >= CHECKPOINT_EVENT_THRESHOLD || (System.currentTimeMillis() - lastCheckpointTime.get()) >= config.checkpointInterval()
                                                                                                                                                  .millis();
+        }
+
+        TimeSpan checkpointInterval() {
+            return config.checkpointInterval();
+        }
+
+        boolean tryStartCheckpoint() {
+            return checkpointInFlight.compareAndSet(false, true);
+        }
+
+        @Contract
+        void finishCheckpoint() {
+            checkpointInFlight.set(false);
+        }
+
+        @Contract
+        void markCheckpointPending() {
+            checkpointPending.set(true);
+        }
+
+        @Contract
+        void clearCheckpointPending() {
+            checkpointPending.set(false);
+        }
+
+        boolean isCheckpointPending() {
+            return checkpointPending.get();
+        }
+
+        int incrementCheckpointAttempts() {
+            return checkpointAttempts.incrementAndGet();
+        }
+
+        @Contract
+        void resetCheckpointAttempts() {
+            checkpointAttempts.set(0);
         }
 
         @Contract

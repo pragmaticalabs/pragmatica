@@ -32,8 +32,10 @@ import org.slf4j.LoggerFactory;
 /// would silently redeliver events this node already processed.
 ///
 /// Cost: one consensus round per checkpoint, and checkpoints fire on the consumer runtime's existing
-/// cadence — every 1000 delivered events or 30 seconds per (consumer group, partition), whichever comes
-/// first. A consensus failure must never fail the local checkpoint — degrading the failover replay
+/// cadence — every 1000 delivered events or the group's checkpoint interval (the 1s `ConsumerConfig`
+/// default for declarative consumers, 500ms for durable-topic groups per `DurableGroupIdentity`) per
+/// (consumer group, partition), whichever comes first; a failed periodic checkpoint is retried with
+/// backoff until it persists (#1239). A consensus failure must never fail the local checkpoint — degrading the failover replay
 /// bound back to the local-only behavior is an acceptable outcome, silently losing the failure is not
 /// (#654 round 2): the publish is chained onto `commit(...)`'s own Promise so the 5-second shutdown
 /// bound covers it too, and a failure is recovered into a successful `Unit` (never failing the local
