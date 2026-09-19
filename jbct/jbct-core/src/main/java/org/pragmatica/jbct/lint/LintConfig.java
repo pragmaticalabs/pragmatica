@@ -58,6 +58,9 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     Map.entry("JBCT-EX-02", DiagnosticSeverity.ERROR),
 
     // orElseThrow
+    Map.entry("JBCT-EX-03", DiagnosticSeverity.ERROR),
+
+    // catch outside a marked JDK boundary (#1247)
     // Naming
     Map.entry("JBCT-NAM-01", DiagnosticSeverity.WARNING),
 

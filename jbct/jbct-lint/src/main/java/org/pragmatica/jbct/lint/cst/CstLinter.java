@@ -135,6 +135,9 @@ public class CstLinter {
         new CstOrElseThrowRule(),
 
         // JBCT-EX-02
+        new CstTryCatchRule(),
+
+        // JBCT-EX-03
         // Naming (JBCT-NAM-*)
         new CstFactoryNamingRule(),
 
