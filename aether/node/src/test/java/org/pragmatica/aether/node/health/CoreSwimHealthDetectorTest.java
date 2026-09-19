@@ -6,6 +6,7 @@
 package org.pragmatica.aether.node.health;
 
 import org.pragmatica.aether.node.health.fsm.SwimHealthEvents;
+import org.pragmatica.aether.node.health.fsm.SwimHealthState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -31,13 +32,16 @@ import org.mockito.Mockito;
 
 import org.pragmatica.swim.SwimObservation;
 
+import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
+import java.net.SocketException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class CoreSwimHealthDetectorTest {
@@ -159,9 +163,17 @@ class CoreSwimHealthDetectorTest {
     @Nested
     class ObservationListenerPreRegistration {
         @Test
-        void listenerAttachedBeforeStart_isInvokedByLiveProtocol() throws InterruptedException {
+        void listenerAttachedBeforeStart_isInvokedByLiveProtocol() throws InterruptedException, SocketException {
             var router = MessageRouter.mutable();
-            var nodeA = NodeInfo.nodeInfo(SELF, NodeAddress.nodeAddress("127.0.0.1", 9001).unwrap());
+            // start() BINDS the SWIM UDP port (self port + SWIM_PORT_OFFSET) on the wildcard address. A
+            // fixed 9001 made that 9101, which collides with any concurrent aether/node test JVM on the
+            // same host (#1289): the bind fails, the detector correctly ends Stopped, and the old
+            // poll-then-cast turned that into a ClassCastException. Derive the self port from a free
+            // ephemeral UDP port instead.
+            var nodeA = NodeInfo.nodeInfo(SELF,
+                                          NodeAddress.nodeAddress("127.0.0.1",
+                                                                  freeUdpPort() - CoreSwimHealthDetector.SWIM_PORT_OFFSET)
+                                                     .unwrap());
             var nodeB = NodeInfo.nodeInfo(PEER_A, NodeAddress.nodeAddress("127.0.0.2", 9001).unwrap());
             var topologyConfig = new TopologyConfig(SELF, 2, timeSpan(1).seconds(), timeSpan(10).seconds(),
                                                     List.of(nodeA, nodeB));
@@ -182,29 +194,53 @@ class CoreSwimHealthDetectorTest {
             // SwimProtocol via createAndStartProtocol → seedAndWrap. The fix in
             // seedAndWrap re-attaches every pending listener to the freshly-created
             // protocol.
-            freshDetector.start(org.pragmatica.lang.Option.none(), GossipEncryptor.none()).await();
+            var started = freshDetector.start(org.pragmatica.lang.Option.none(), GossipEncryptor.none()).await();
 
-            // Wait briefly for the async dispatch chain to land Running.
-            for (int i = 0; i < 50; i++) {
-                if (freshDetector.lifecycleState() instanceof org.pragmatica.aether.node.health.fsm.SwimHealthState.Running) {
-                    break;
+            try {
+                // A failed start (e.g. the SWIM port is taken) resolves the promise as a failure and the
+                // FSM ends Stopped via StartFailed. Name that cause instead of casting past it.
+                started.onFailure(cause -> fail("start() failed, lifecycle=" + stateName(freshDetector) + ": "
+                                                + cause.message()));
+
+                // Wait briefly for the async dispatch chain to land Running.
+                for (int i = 0; i < 50 && !(freshDetector.lifecycleState() instanceof SwimHealthState.Running); i++) {
+                    Thread.sleep(20);
                 }
-                Thread.sleep(20);
+
+                var state = freshDetector.lifecycleState();
+
+                assertThat(state).as("lifecycle after a successful start(), was %s", stateName(freshDetector))
+                                 .isInstanceOf(SwimHealthState.Running.class);
+
+                // Inject a membership-update gossip simulating peer-A reporting itself ALIVE.
+                // This drives applyNewAliveMember → recordHealthyAndEmit → HealthyObserved.
+                var protocol = ((SwimHealthState.Running) state).swim();
+                var membershipUpdate = SwimMessage.MembershipUpdate.membershipUpdate(
+                        PEER_A, MemberState.ALIVE, 1L,
+                        new InetSocketAddress("127.0.0.2", 9101));
+                // Wrap in piggybacked Ack so the protocol consumes it.
+                var ack = SwimMessage.Ack.ack(PEER_A, 1L, java.util.List.of(membershipUpdate));
+                protocol.onMessage(new InetSocketAddress("127.0.0.2", 9101), ack);
+
+                assertThat(received).as("HealthyObserved must reach a listener registered BEFORE start()")
+                                    .anyMatch(o -> o instanceof SwimObservation.HealthyObserved h
+                                                   && h.peer().equals(PEER_A));
+            } finally {
+                // Release the bound SWIM port; the previous body leaked it for the rest of the JVM.
+                freshDetector.stop();
             }
+        }
 
-            // Inject a membership-update gossip simulating peer-A reporting itself ALIVE.
-            // This drives applyNewAliveMember → recordHealthyAndEmit → HealthyObserved.
-            var protocol = ((org.pragmatica.aether.node.health.fsm.SwimHealthState.Running) freshDetector.lifecycleState()).swim();
-            var membershipUpdate = SwimMessage.MembershipUpdate.membershipUpdate(
-                    PEER_A, MemberState.ALIVE, 1L,
-                    new InetSocketAddress("127.0.0.2", 9101));
-            // Wrap in piggybacked Ack so the protocol consumes it.
-            var ack = SwimMessage.Ack.ack(PEER_A, 1L, java.util.List.of(membershipUpdate));
-            protocol.onMessage(new InetSocketAddress("127.0.0.2", 9101), ack);
+        private static String stateName(CoreSwimHealthDetector detector) {
+            return detector.lifecycleState()
+                           .getClass()
+                           .getSimpleName();
+        }
 
-            assertThat(received).as("HealthyObserved must reach a listener registered BEFORE start()")
-                                .anyMatch(o -> o instanceof SwimObservation.HealthyObserved h
-                                               && h.peer().equals(PEER_A));
+        private static int freeUdpPort() throws SocketException {
+            try (var socket = new DatagramSocket(0)) {
+                return socket.getLocalPort();
+            }
         }
     }
 }
