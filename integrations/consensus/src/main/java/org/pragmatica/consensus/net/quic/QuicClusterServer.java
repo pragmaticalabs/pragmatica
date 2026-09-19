@@ -66,6 +66,11 @@ import static org.pragmatica.lang.Unit.unit;
 /// bidirectional stream, sends a Hello response, and notifies the connection handler
 /// with the established [QuicPeerConnection].
 public sealed interface QuicClusterServer {
+    /// The largest length-prefixed frame the cluster transport's decoder accepts, in bytes — the single
+    /// source for both the server and the client pipelines, and the bound message producers split by
+    /// (e.g. stream replication, #1287).
+    int MAX_FRAME_LENGTH = 32 * 1024 * 1024;
+
     /// Start listening on the given UDP port.
     Promise<Unit> start(int port);
     /// Stop the server and release resources.
