@@ -204,6 +204,26 @@ class ProjectionTest {
                       .onFailure(cause -> assertThat(cause.message()).contains("ProjectionClaims"));
         }
 
+        /// #1243 — THE concurrency pin. Two attempts on one messageId (a zombie and its retry, §6)
+        /// both reach the claim step before either records anything. Exactly one may fold; a
+        /// check-then-record guard lets both through and double-counts.
+        @Test
+        void twoConcurrentAttempts_onOneMessageId_foldExactlyOnce() {
+            var store = new InMemoryStore();
+            var claims = new LatchedClaims();
+            var projection = countingProjection(store).withClaims(claims);
+            var event = new OrderSeen("a");
+
+            var first = projection.onEvent(event, FIRST);
+            var second = projection.onEvent(event, FIRST);
+
+            first.await();
+            second.await();
+
+            assertThat(store.data).describedAs("two racing attempts on one messageId must fold once")
+                                  .containsEntry("a", 1);
+        }
+
         @Test
         void claimKey_separatesProjections_generations_andMessages() {
             var base = new Projection.ClaimKey("orders", 0L, "msg-1");
@@ -231,6 +251,36 @@ class ProjectionTest {
             claimed.put(key, value);
 
             return Promise.unitPromise();
+        }
+    }
+
+    /// Latched [ProjectionClaims]: every claim-step answer is observed on arrival but DELIVERED only
+    /// once two attempts have reached the claim step — so both pass it before either records.
+    private static final class LatchedClaims implements ProjectionClaims {
+        private final Map<Object, Object> claimed = new ConcurrentHashMap<>();
+        private final Promise<Unit> bothArrived = Promise.promise();
+        private final AtomicInteger arrivals = new AtomicInteger();
+
+        @Override
+        public Promise<Option<Object>> get(Object key) {
+            var observed = Option.option(claimed.get(key));
+
+            arrive();
+
+            return bothArrived.map(_ -> observed);
+        }
+
+        @Override
+        public Promise<Unit> put(Object key, Object value) {
+            claimed.put(key, value);
+
+            return Promise.unitPromise();
+        }
+
+        private void arrive() {
+            if (arrivals.incrementAndGet() == 2) {
+                bothArrived.succeed(Unit.unit());
+            }
         }
     }
 
