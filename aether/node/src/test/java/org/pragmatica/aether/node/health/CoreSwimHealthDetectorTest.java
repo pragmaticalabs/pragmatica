@@ -170,9 +170,10 @@ class CoreSwimHealthDetectorTest {
             // same host (#1289): the bind fails, the detector correctly ends Stopped, and the old
             // poll-then-cast turned that into a ClassCastException. Derive the self port from a free
             // ephemeral UDP port instead.
+            var swimPort = freeUdpPort();
             var nodeA = NodeInfo.nodeInfo(SELF,
                                           NodeAddress.nodeAddress("127.0.0.1",
-                                                                  freeUdpPort() - CoreSwimHealthDetector.SWIM_PORT_OFFSET)
+                                                                  swimPort - CoreSwimHealthDetector.SWIM_PORT_OFFSET)
                                                      .unwrap());
             var nodeB = NodeInfo.nodeInfo(PEER_A, NodeAddress.nodeAddress("127.0.0.2", 9001).unwrap());
             var topologyConfig = new TopologyConfig(SELF, 2, timeSpan(1).seconds(), timeSpan(10).seconds(),
@@ -229,6 +230,22 @@ class CoreSwimHealthDetectorTest {
                 // Release the bound SWIM port; the previous body leaked it for the rest of the JVM.
                 freshDetector.stop();
             }
+
+            assertThat(rebindable(swimPort)).as("SWIM UDP %d must be released once the detector stops", swimPort)
+                                            .isTrue();
+        }
+
+        /// Transport stop is asynchronous, so poll briefly for the port to become bindable again.
+        private static boolean rebindable(int port) throws InterruptedException {
+            for (int i = 0; i < 100; i++) {
+                try (var socket = new DatagramSocket(port)) {
+                    return true;
+                } catch (SocketException taken) {
+                    Thread.sleep(50);
+                }
+            }
+
+            return false;
         }
 
         private static String stateName(CoreSwimHealthDetector detector) {
