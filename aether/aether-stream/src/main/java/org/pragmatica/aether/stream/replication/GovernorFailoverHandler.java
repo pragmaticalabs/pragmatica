@@ -27,7 +27,16 @@ public sealed interface GovernorFailoverHandler {
 
     static GovernorFailoverHandler governorFailoverHandler(ReplicaRegistry registry,
                                                            StreamPartitionRecovery partitionRecovery) {
-        return new DefaultGovernorFailoverHandler(registry, partitionRecovery);
+        return governorFailoverHandler(registry, partitionRecovery, ReplicationReceiveHandler.NO_DURABILITY_BARRIER);
+    }
+
+    /// Production factory (#1244): `durability` is the replica WAL barrier a failover replay commits the
+    /// events it re-appended through, once per replayed range. Production wires
+    /// `StreamPartitionManager::syncReplicated`.
+    static GovernorFailoverHandler governorFailoverHandler(ReplicaRegistry registry,
+                                                           StreamPartitionRecovery partitionRecovery,
+                                                           ReplicationReceiveHandler.ReplicaDurability durability) {
+        return new DefaultGovernorFailoverHandler(registry, partitionRecovery, durability);
     }
 
     record unused() implements GovernorFailoverHandler {
@@ -48,10 +57,14 @@ final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
 
     private final ReplicaRegistry registry;
     private final StreamPartitionRecovery partitionRecovery;
+    private final ReplicationReceiveHandler.ReplicaDurability durability;
 
-    DefaultGovernorFailoverHandler(ReplicaRegistry registry, StreamPartitionRecovery partitionRecovery) {
+    DefaultGovernorFailoverHandler(ReplicaRegistry registry,
+                                   StreamPartitionRecovery partitionRecovery,
+                                   ReplicationReceiveHandler.ReplicaDurability durability) {
         this.registry = registry;
         this.partitionRecovery = partitionRecovery;
+        this.durability = durability;
     }
 
     @Override

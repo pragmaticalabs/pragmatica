@@ -19,13 +19,16 @@ final class DefaultFailoverRecovery implements FailoverRecovery {
     private final ReplicaRegistry registry;
     private final StreamPartitionRecovery partitionRecovery;
     private final CatchupTransport transport;
+    private final ReplicationReceiveHandler.ReplicaDurability durability;
 
     DefaultFailoverRecovery(ReplicaRegistry registry,
                             StreamPartitionRecovery partitionRecovery,
-                            CatchupTransport transport) {
+                            CatchupTransport transport,
+                            ReplicationReceiveHandler.ReplicaDurability durability) {
         this.registry = registry;
         this.partitionRecovery = partitionRecovery;
         this.transport = transport;
+        this.durability = durability;
     }
 
     @Override
