@@ -27,16 +27,7 @@ public sealed interface GovernorFailoverHandler {
 
     static GovernorFailoverHandler governorFailoverHandler(ReplicaRegistry registry,
                                                            StreamPartitionRecovery partitionRecovery) {
-        return governorFailoverHandler(registry, partitionRecovery, ReplicationReceiveHandler.NO_DURABILITY_BARRIER);
-    }
-
-    /// Production factory (#1244): `durability` is the replica WAL barrier a failover replay commits the
-    /// events it re-appended through, once per replayed range. Production wires
-    /// `StreamPartitionManager::syncReplicated`.
-    static GovernorFailoverHandler governorFailoverHandler(ReplicaRegistry registry,
-                                                           StreamPartitionRecovery partitionRecovery,
-                                                           ReplicationReceiveHandler.ReplicaDurability durability) {
-        return new DefaultGovernorFailoverHandler(registry, partitionRecovery, durability);
+        return new DefaultGovernorFailoverHandler(registry, partitionRecovery);
     }
 
     record unused() implements GovernorFailoverHandler {
@@ -57,14 +48,10 @@ final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
 
     private final ReplicaRegistry registry;
     private final StreamPartitionRecovery partitionRecovery;
-    private final ReplicationReceiveHandler.ReplicaDurability durability;
 
-    DefaultGovernorFailoverHandler(ReplicaRegistry registry,
-                                   StreamPartitionRecovery partitionRecovery,
-                                   ReplicationReceiveHandler.ReplicaDurability durability) {
+    DefaultGovernorFailoverHandler(ReplicaRegistry registry, StreamPartitionRecovery partitionRecovery) {
         this.registry = registry;
         this.partitionRecovery = partitionRecovery;
-        this.durability = durability;
     }
 
     @Override
@@ -126,7 +113,7 @@ final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
 
         return segmentReader.readEvents(streamName, partition, fromOffset, MAX_EVENTS_PER_SEGMENT_READ)
                             .map(events -> applyEvents(streamName, partition, events))
-                            .flatMap(_ -> durability.sync(streamName, partition));
+                            .mapToUnit();
     }
 
     private long applyEvents(String streamName, int partition, List<RawEvent> events) {

@@ -23,15 +23,6 @@ public interface FailoverRecovery {
     static FailoverRecovery failoverRecovery(ReplicaRegistry registry,
                                              StreamPartitionRecovery partitionRecovery,
                                              CatchupTransport transport) {
-        return failoverRecovery(registry, partitionRecovery, transport, ReplicationReceiveHandler.NO_DURABILITY_BARRIER);
-    }
-
-    /// #1244: `durability` is the replica WAL barrier each recovered partition's fetched range is committed
-    /// through before the partition counts as recovered.
-    static FailoverRecovery failoverRecovery(ReplicaRegistry registry,
-                                             StreamPartitionRecovery partitionRecovery,
-                                             CatchupTransport transport,
-                                             ReplicationReceiveHandler.ReplicaDurability durability) {
-        return new DefaultFailoverRecovery(registry, partitionRecovery, transport, durability);
+        return new DefaultFailoverRecovery(registry, partitionRecovery, transport);
     }
 }

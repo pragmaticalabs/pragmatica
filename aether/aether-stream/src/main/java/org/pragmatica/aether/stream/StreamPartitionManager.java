@@ -1343,6 +1343,24 @@ public final class StreamPartitionManager implements AutoCloseable {
         return offset;
     }
 
+    /// #1277 review N2: forget the latest replicated write recorded for `(streamName, partition)` when its
+    /// WAL is released — but only while the entry still points at THAT instance, so releasing a duplicate
+    /// that lost the install race can never erase the live winner's entry (which would let its next
+    /// barrier resolve without an fsync).
+    @Contract
+    private void forgetReplicatedWrites(String streamName, int partition, Option<PartitionWal> wal) {
+        wal.onPresent(released -> lastReplicatedWalWrite.computeIfPresent(partitionKeyOf(streamName, partition),
+                                                                          (_, write) -> unlessWrittenTo(write, released)));
+    }
+
+    /// [java.util.Map#computeIfPresent] contract: `null` removes the entry.
+    @NullReturn
+    private static ReplicatedWrite unlessWrittenTo(ReplicatedWrite write, PartitionWal released) {
+        return write.wal() == released
+               ? null
+               : write;
+    }
+
     private void recordReplicatedWrite(String streamName, int partition, ReplicatedWrite write) {
         lastReplicatedWalWrite.put(partitionKeyOf(streamName, partition), write);
     }
@@ -1361,9 +1379,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     ///
     /// The latest write replaces the previous one; no separate poison flag is kept. A later success after
     /// a failed write would leave a hole the ring does not have, but a failed frame write or fsync
-    /// FAIL-STOPS the WAL, so every later write on that instance fails too and acks stay withheld. The
-    /// one refusal that does not fail-stop, [PartitionWal.WalError.OffsetRegression], means the offset is
-    /// already in the file — a duplicate, not a hole. A rebuilt partition (a new WAL instance) starts clean.
+    /// FAIL-STOPS the WAL, so every later write on that instance fails too and acks stay withheld. The one
+    /// refusal that does not fail-stop, [PartitionWal.WalError.OffsetRegression], means the replica's ring
+    /// assigned an offset its WAL already holds — ring and WAL disagree, and that offset's payload in the
+    /// file may differ from the ring's; a later successful write lets acks resume past it.
+    /// `[design intent — unverified: reachable only through a ring/WAL head mismatch such as a frozen-ring
+    /// drop during recovery (#1233); no test induces it]`. The entry is forgotten when its WAL is released
+    /// ([#forgetReplicatedWrites]), so a rebuilt partition's first barrier never targets a closed WAL.
     private record ReplicatedWrite(PartitionWal wal, Result<Long> writeSeq) {
         Promise<Unit> commit() {
             return writeSeq.async()
@@ -1797,6 +1819,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Sum released = `control + firstSegment + grown` = the live allocation. No double-release, no leak.
     @Contract
     private void releaseEntry(StreamEntry entry) {
+        IntStream.range(0,
+                        entry.declaredPartitions())
+                 .forEach(partition -> forgetReplicatedWrites(entry.config().name(),
+                                                              partition,
+                                                              entry.walFor(partition)));
         release(entry.controlBytes());
         entry.close();
     }
@@ -2215,6 +2242,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     private void completeRelease(PartitionRef ref, StreamEntry.MaterializedPartition mp) {
         var controlBytes = mp.ring().controlBytes();
 
+        forgetReplicatedWrites(ref.streamName(), ref.partition(), mp.wal());
         release(controlBytes);
         mp.close();
         releaseCandidacy.remove(ref);
