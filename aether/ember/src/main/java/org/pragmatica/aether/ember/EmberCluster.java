@@ -201,13 +201,19 @@ public final class EmberCluster {
     /// fresh `EmberCluster` — a new test — gets a fresh dir and therefore genuinely new nodes.
     /// Harness-scoped; production nodes get their marker from the deployment path instead.
     private final Option<Path> participationMarkerBaseDir = createParticipationMarkerBaseDir();
+
     /// #1276 — the storage root for nodes when the test did not opt into [#withDataBaseDir]: a path
     /// under a regular FILE in a per-instance temp dir, so no directory can ever be created beneath it,
     /// not even by root. Before this, those nodes got an empty `storageConfig` and resolved the
     /// production default `/data/aether/...`. That degraded to memory + DHT only where `/data` is not
     /// writable. On a host where it IS writable, every cluster on the machine shared one storage
     /// directory across runs, trees and branches. This keeps the degraded behaviour on every host.
-    private final Option<Path> unwritableStorageBaseDir = createUnwritableStorageBaseDir();
+    ///
+    /// Created lazily, by the first node built without a data dir, and deleted by [#stop]. It holds no
+    /// state (nothing can be written beneath it), so a `stop()` → `start()` restart simply gets a fresh
+    /// one. [Option#none] until first use and after `stop()`.
+    private final AtomicReference<Option<Path>> unwritableStorageBaseDir = new AtomicReference<>(Option.none());
+
     /// #491 pinned convergence variant — when set (via [#withRaisedSwimTimeouts]) every node is created
     /// with raised SWIM / transport / membership timeouts so a single graceful owner-kill does not trip
     /// the transient QuorumLost→PASSIVE false-removal cascade that falsely marks LIVE survivors DEAD.
@@ -889,6 +895,7 @@ public final class EmberCluster {
     }
 
     private Unit clearClusterState(Unit unit) {
+        releaseUnwritableStorageBase();
         nodes.clear();
         // Still-held instances were never started — nothing to stop, dropping them disposes them.
         heldBackNodes.clear();
@@ -1318,11 +1325,32 @@ public final class EmberCluster {
         }
     }
 
-    private Map<String, StorageConfig> perNodeStorageConfig(NodeId nodeId) {
+    Map<String, StorageConfig> perNodeStorageConfig(NodeId nodeId) {
         return dataBaseDir.get()
-                          .orElse(unwritableStorageBaseDir)
+                          .orElse(this::unwritableStorageBase)
                           .map(base -> artifactsStorageConfig(base, nodeId))
                           .or(Map.of());
+    }
+
+    /// The current [#unwritableStorageBaseDir], creating it on first use. Package-visible so a test can
+    /// check where nodes are rooted and that [#stop] removes it.
+    Option<Path> unwritableStorageBase() {
+        return unwritableStorageBaseDir.updateAndGet(current -> current.orElse(EmberCluster::createUnwritableStorageBaseDir));
+    }
+
+    /// Delete the [#unwritableStorageBaseDir] this cluster created, if any: the blocker file and the temp
+    /// dir holding it. Nothing else can exist there, because the blocker is a file.
+    private void releaseUnwritableStorageBase() {
+        unwritableStorageBaseDir.getAndSet(Option.none()).onPresent(EmberCluster::deleteUnwritableStorageBaseDir);
+    }
+
+    private static void deleteUnwritableStorageBaseDir(Path blocker) {
+        try {
+            Files.deleteIfExists(blocker);
+            Files.deleteIfExists(blocker.getParent());
+        } catch (IOException e) {
+            log.warn("Could not delete Ember storage temp dir {}: {}", blocker.getParent(), e.getMessage());
+        }
     }
 
     /// [Option#none] when the temp dir cannot be created — the nodes then get the empty `storageConfig`

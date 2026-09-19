@@ -13,4 +13,13 @@
   `/data` being unwritable. Production callers are unchanged and still use
   `StorageConfig.storageConfig()`. [mechanism: the existing overloads delegate with
   `StorageConfig.storageConfig()`]
+- **`EmberCluster` without `withDataBaseDir` now ALWAYS runs its nodes without the disk tier and
+  without the stream WAL: storage is memory + DHT, and streaming is not crash-durable.** Before this,
+  that was true only where `/data` was not writable. Where it WAS writable, those nodes resolved the
+  same production default, and every cluster on the machine shared one `/data/aether` directory across
+  runs, trees and branches. Each cluster now roots its nodes' storage under a regular file in its own
+  temp dir, so nothing can be created there on any host. It creates that dir lazily and deletes it on
+  `stop()`. Clusters that call `withDataBaseDir` are unchanged: they keep a writable disk tier and WAL.
+  [mechanism: `EmberCluster.perNodeStorageConfig` falls back to `unwritableStorageBase()` instead of an
+  empty map; pinned by `EmberClusterHermeticStorageTest`]
 - The production default path itself is unchanged; see #1276 for the separate decision on it.
