@@ -5096,10 +5096,13 @@ say about it" and "checkpointed through offset 0" are different claims. An empty
 this node hosts no durable-entity keyspace — a true answer, not an error.
 
 **Checkpoint lag (#1302).** `checkpointLag` is, per partition this node folds, the log head offset minus the
-last committed checkpoint: how far a recovery of that partition would have to replay. "Last committed" is
-the later of the checkpoint this node committed and the one its fold resumed from, so right after a
-takeover the lag is measured from the previous owner's checkpoint rather than from the start of the log —
-no spurious alert on failover. It is absent for partitions this node does not fold. The node's largest value is published as the metric `entity.checkpoint.lag.max` and evaluated
+COMMITTED checkpoint in consensus KV — the pointer the retention floor and every recovery use: how far a
+recovery of that partition would have to replay. It is reported only for partitions this node OWNS, and is
+ABSENT (never 0) for the rest: a replica's fold is a read-side cache whose checkpoints the cluster refuses,
+and a released partition leaves the map. The baseline is never this node's own recorded save — a fenced
+save still resolves success, so a local record can claim coverage the cluster never committed — which is
+also why a takeover raises no spurious alert: the previous owner's committed checkpoint is the baseline
+from the first tick. The node's largest value is published as the metric `entity.checkpoint.lag.max` and evaluated
 by the threshold alert path, with a default threshold of WARNING 5,000 / CRITICAL 10,000 records
 (`[alerts] entity_checkpoint_lag_warning` / `entity_checkpoint_lag_critical`, overridable per cluster with
 `POST /api/v1/thresholds`). The alert names the node; this map names the partition.

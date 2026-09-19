@@ -195,7 +195,8 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
                                       .onSuccess(driver -> driver.register(config.keyspace(),
                                                                            config.partitionCount(),
                                                                            fenced.fold(),
-                                                                           fence.substrate()));
+                                                                           fence.substrate(),
+                                                                           fenced::isPartitionOwned));
         // Timers (#345 I4) are OPTIONAL on the same terms as checkpointing, and for the same reason the
         // shape of a refusal has to match the size of the loss: an absent driver costs TIMELINESS, not
         // safety. Every scheduled timer is still durable, fenced and replicated — it is in the log — so a

@@ -517,8 +517,9 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
 
     /// An entity built WITHOUT admission (the unwired fence-test form) owns everything, matching
     /// [#admitWrite]'s permissive fallback — the two must agree, or a unit-test entity would schedule
-    /// timers it then refuses to fire.
-    private boolean isPartitionOwned(int partition) {
+    /// timers it then refuses to fire. Package-visible: the checkpoint driver asks the same question to
+    /// decide which partitions carry a checkpoint lag (#1330).
+    boolean isPartitionOwned(int partition) {
         return admission.fold(() -> true, gate -> gate.isPartitionOwner(partition));
     }
 

@@ -20,73 +20,111 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
 
-/// #1302 — the per-(keyspace, partition) checkpoint lag: log head minus the last checkpoint this node
-/// committed, for the partitions it folds, and its node-wide maximum reported to the lag sink every tick.
+/// #1302 / #1330 — the per-(keyspace, partition) checkpoint lag: log head minus the COMMITTED checkpoint
+/// in consensus KV, for the partitions this node OWNS, and its node-wide maximum reported to the lag sink
+/// after every tick, whatever the tick's outcome.
 ///
-/// A REAL [EntityFold] over a small substrate, because which partitions carry a lag is decided by the
-/// fold's own checkpoint candidate — a stubbed fold would assert the fixture's idea of "folded".
+/// A REAL [EntityFold] over a small substrate. The committed checkpoint and the ownership answer are the
+/// substrate fake's, standing in for the consensus-KV pointer and the entity's owner admission.
 class EntityCheckpointDriverLagTest {
     private static final String KEYSPACE = "orders";
-    private static final int FOLDED = 0;
+    private static final int PARTITION = 0;
 
-    /// While every checkpoint save fails, the lag is the whole head distance from offset -1 and grows
-    /// with the log; once a save lands, it drops to exactly head minus the checkpointed offset.
+    /// The lag is head minus the committed checkpoint, and it follows the COMMITTED pointer: while
+    /// nothing is committed it counts from offset -1 and grows with the log; once the cluster commits a
+    /// checkpoint it drops to exactly head minus that.
     @Test
-    void checkpointLag_tracksHeadMinusLastCommittedCheckpoint() {
+    void checkpointLag_tracksHeadMinusTheCommittedCheckpoint() {
         var substrate = new LagSubstrate();
         var reported = new CopyOnWriteArrayList<Long>();
-        var driver = EntityCheckpointDriver.entityCheckpointDriver(reported::add);
-        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+        var driver = driverReportingTo(reported, substrate);
 
         substrate.appendUpserts(3);
-        fold.ready(FOLDED).await().onFailure(cause -> fail("fold must be ready: " + cause.message()));
-        driver.register(KEYSPACE, 2, fold, substrate);
-
-        substrate.saveFails = true;
+        driver.register(KEYSPACE, 1, EntityFold.entityFold(KEYSPACE, substrate), substrate, substrate::owns);
         driver.tick();
 
-        assertThat(lagOf(driver)).describedAs("head 2, nothing checkpointed: the lag counts from offset -1")
-                                 .containsEntry(FOLDED, 3L);
+        assertThat(lagOf(driver)).describedAs("head 2, nothing committed: the lag counts from offset -1")
+                                 .containsEntry(PARTITION, 3L);
 
         substrate.appendUpserts(5);
         driver.tick();
 
-        assertThat(lagOf(driver)).describedAs("a stalled checkpointer's lag grows with the log head (now 7)")
-                                 .containsEntry(FOLDED, 8L);
+        assertThat(lagOf(driver)).describedAs("with nothing committed the lag grows with the head (now 7)")
+                                 .containsEntry(PARTITION, 8L);
 
-        substrate.saveFails = false;
+        substrate.committed = Option.some(2L);
         driver.tick();
 
-        assertThat(lagOf(driver)).describedAs("a checkpoint through offset 2 leaves head 7 minus 2")
-                                 .containsEntry(FOLDED, 5L);
+        assertThat(lagOf(driver)).describedAs("committed through 2 leaves head 7 minus 2")
+                                 .containsEntry(PARTITION, 5L);
         assertThat(reported).describedAs("every tick reports the node-wide maximum to the lag sink")
                             .containsExactly(3L, 8L, 5L);
     }
 
-    /// A TAKEOVER: the previous owner committed a checkpoint through offset 4, and this node's fold resumed
-    /// from it. The lag is head minus that RESUMED checkpoint — the true replay distance — even before this
-    /// node has committed a checkpoint of its own. Measuring from offset -1 instead would report the whole
-    /// log and raise a spurious alert on every failover.
+    /// #1330 B1 — a LOCAL save the cluster did not commit must never count. A fenced (lower) save still
+    /// resolves success (#700), so a baseline taken from this node's own record would claim coverage the
+    /// committed pointer does not have.
     @Test
-    void checkpointLag_afterTakeover_isHeadMinusTheResumedCheckpoint() {
+    void checkpointLag_ignoresALocalSaveTheClusterDidNotCommit() {
         var substrate = new LagSubstrate();
-        var reported = new CopyOnWriteArrayList<Long>();
-        var driver = EntityCheckpointDriver.entityCheckpointDriver(reported::add);
+        var driver = driverReportingTo(new CopyOnWriteArrayList<>(), substrate);
         var fold = EntityFold.entityFold(KEYSPACE, substrate);
 
         substrate.appendUpserts(10);
-        substrate.committedCheckpoint = Option.some(EntityLogSubstrate.EntityCheckpoint.entityCheckpoint(4,
-                                                                                                        EntityFoldSnapshot.encode(Map.of(),
-                                                                                                                                  Map.of())));
-        fold.ready(FOLDED).await().onFailure(cause -> fail("fold must resume from the checkpoint: " + cause.message()));
-        driver.register(KEYSPACE, 2, fold, substrate);
-
-        substrate.saveFails = true;
+        fold.ready(PARTITION).await().onFailure(cause -> fail("fold must be ready: " + cause.message()));
+        driver.register(KEYSPACE, 1, fold, substrate, substrate::owns);
         driver.tick();
 
-        assertThat(lagOf(driver)).describedAs("head 9 minus the resumed checkpoint 4, not minus -1")
-                                 .containsEntry(FOLDED, 5L);
-        assertThat(reported).containsExactly(5L);
+        assertThat(lagOf(driver)).describedAs("the local save of offset 9 resolved success but committed nothing:"
+                                              + " the lag is still measured from offset -1")
+                                 .containsEntry(PARTITION, 10L);
+    }
+
+    /// #1330 B1 (review probe R1) — a REPLICA that folded the partition once and then saw no reads. Its
+    /// fold falls far behind a ring head that replication keeps advancing, while the OWNER commits at the
+    /// head. A replica has no lag to report: its fold is a read-side cache, and the owner's committed
+    /// checkpoint is current.
+    @Test
+    void checkpointLag_ofAReplica_isNotReported() {
+        var substrate = new LagSubstrate();
+        var reported = new CopyOnWriteArrayList<Long>();
+        var driver = driverReportingTo(reported, substrate);
+        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        substrate.owner = false;
+        substrate.appendUpserts(3);
+        fold.ready(PARTITION).await().onFailure(cause -> fail("fold must be ready: " + cause.message()));
+        driver.register(KEYSPACE, 1, fold, substrate, substrate::owns);
+        driver.tick();
+        substrate.appendUpserts(20_000);
+        substrate.committed = Option.some(substrate.head());
+        driver.tick();
+
+        assertThat(lagOf(driver)).describedAs("a partition this node does not own is ABSENT, not a lag").isEmpty();
+        assertThat(reported.getLast()).isZero();
+    }
+
+    /// #1330 B1 — a replica PROMOTED to owner keeps its stale fold; measured against the committed pointer
+    /// (the previous owner committed at the head) it reports no lag, so the takeover raises no alert — on
+    /// its first tick or any other.
+    @Test
+    void checkpointLag_ofAPromotedReplica_raisesNoAlert() {
+        var substrate = new LagSubstrate();
+        var reported = new CopyOnWriteArrayList<Long>();
+        var driver = driverReportingTo(reported, substrate);
+        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        substrate.owner = false;
+        substrate.appendUpserts(3);
+        fold.ready(PARTITION).await().onFailure(cause -> fail("fold must be ready: " + cause.message()));
+        driver.register(KEYSPACE, 1, fold, substrate, substrate::owns);
+        substrate.appendUpserts(20_000);
+        substrate.committed = Option.some(substrate.head());
+        substrate.owner = true;
+        driver.tick();
+
+        assertThat(lagOf(driver)).describedAs("the promoted owner measures from the committed head").containsEntry(PARTITION, 0L);
+        assertThat(reported).containsExactly(0L);
     }
 
     /// #1330 M3 (review probe R2) — a tick whose checkpoint work THROWS must still report the lag. A
@@ -96,44 +134,50 @@ class EntityCheckpointDriverLagTest {
     void tick_thatThrows_stillReportsTheLag() {
         var substrate = new LagSubstrate();
         var reported = new CopyOnWriteArrayList<Long>();
-        var driver = EntityCheckpointDriver.entityCheckpointDriver(reported::add);
+        var driver = driverReportingTo(reported, substrate);
         var fold = EntityFold.entityFold(KEYSPACE, substrate);
 
         substrate.appendUpserts(3);
-        fold.ready(FOLDED).await().onFailure(cause -> fail("fold must be ready: " + cause.message()));
-        driver.register(KEYSPACE, 1, fold, substrate);
+        fold.ready(PARTITION).await().onFailure(cause -> fail("fold must be ready: " + cause.message()));
+        driver.register(KEYSPACE, 1, fold, substrate, substrate::owns);
         substrate.saveThrows = true;
         driver.tick();
         driver.tick();
 
-        assertThat(reported).describedAs("one report per tick, even when the save throws").hasSize(2);
+        assertThat(reported).describedAs("one report per tick, even when the save throws").containsExactly(3L, 3L);
     }
 
-    /// Only partitions this node FOLDS carry a lag: the second partition was never rebuilt here, so its
-    /// recovery is not bounded by this node's checkpoints and it must be absent, not reported as 0.
+    /// A partition whose head cannot be read this tick is left out of the report; the others still report.
     @Test
-    void checkpointLag_isAbsentForPartitionsThisNodeDoesNotFold() {
+    void tick_withAnUnreadableHead_stillReportsTheOtherPartitions() {
         var substrate = new LagSubstrate();
-        var driver = EntityCheckpointDriver.entityCheckpointDriver();
-        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+        var reported = new CopyOnWriteArrayList<Long>();
+        var driver = driverReportingTo(reported, substrate);
 
-        substrate.appendUpserts(1);
-        fold.ready(FOLDED).await().onFailure(cause -> fail("fold must be ready: " + cause.message()));
-        driver.register(KEYSPACE, 2, fold, substrate);
+        substrate.appendUpserts(3);
+        substrate.headThrowsFor = Option.some(1);
+        driver.register(KEYSPACE, 2, EntityFold.entityFold(KEYSPACE, substrate), substrate, substrate::owns);
         driver.tick();
 
-        assertThat(lagOf(driver).keySet()).containsExactly(FOLDED);
+        assertThat(lagOf(driver).keySet()).containsExactly(PARTITION);
+        assertThat(reported).containsExactly(3L);
     }
 
     @Test
-    void maxCheckpointLag_isZero_whenNothingIsFolded() {
+    void maxCheckpointLag_isZero_whenNothingIsOwned() {
         var substrate = new LagSubstrate();
-        var driver = EntityCheckpointDriver.entityCheckpointDriver();
+        var driver = driverReportingTo(new CopyOnWriteArrayList<>(), substrate);
 
-        driver.register(KEYSPACE, 2, EntityFold.entityFold(KEYSPACE, substrate), substrate);
+        substrate.owner = false;
+        substrate.appendUpserts(3);
+        driver.register(KEYSPACE, 2, EntityFold.entityFold(KEYSPACE, substrate), substrate, substrate::owns);
         driver.tick();
 
         assertThat(driver.maxCheckpointLag()).isZero();
+    }
+
+    private static EntityCheckpointDriver driverReportingTo(List<Long> reported, LagSubstrate substrate) {
+        return EntityCheckpointDriver.entityCheckpointDriver(reported::add, substrate::committedThrough);
     }
 
     private static Map<Integer, Long> lagOf(EntityCheckpointDriver driver) {
@@ -143,20 +187,35 @@ class EntityCheckpointDriverLagTest {
                      .checkpointLag();
     }
 
-    /// One partition's log with a controllable head; checkpoint saves succeed or fail on demand.
+    /// Partition 0's log with a controllable head, the cluster's committed checkpoint and this node's
+    /// ownership. Saves succeed (as a fenced save does, #700), fail, or throw on demand.
     private static final class LagSubstrate implements EntityLogSubstrate {
         private final List<byte[]> records = new CopyOnWriteArrayList<>();
         private volatile boolean saveFails;
-        // A save that THROWS rather than returning a failed promise — the shape a tick's catch sees.
         private volatile boolean saveThrows;
-        // The checkpoint a previous owner committed, which a fold on this node resumes from.
-        private volatile Option<EntityCheckpoint> committedCheckpoint = Option.none();
+        private volatile boolean owner = true;
+        private volatile Option<Long> committed = Option.none();
+        private volatile Option<Integer> headThrowsFor = Option.none();
 
         void appendUpserts(int count) {
             for (var i = 0; i < count; i++) {
                 records.add(EntityLogRecord.upsert("k" + records.size(), "v".getBytes(StandardCharsets.UTF_8))
                                            .encode());
             }
+        }
+
+        long head() {
+            return records.size() - 1;
+        }
+
+        boolean owns(int partition) {
+            return owner;
+        }
+
+        Option<Long> committedThrough(String keyspace, int partition) {
+            return partition == PARTITION
+                   ? committed
+                   : Option.none();
         }
 
         @Override
@@ -183,14 +242,17 @@ class EntityCheckpointDriverLagTest {
 
         @Override
         public long headOffset(String keyspace, int partition) {
-            return partition == FOLDED
-                   ? records.size() - 1
+            if (headThrowsFor.filter(failing -> failing == partition).isPresent()) {
+                throw new IllegalStateException("head unreadable");
+            }
+            return partition == PARTITION
+                   ? head()
                    : -1L;
         }
 
         @Override
         public long earliestRetainedOffset(String keyspace, int partition) {
-            return partition == FOLDED && !records.isEmpty()
+            return partition == PARTITION && !records.isEmpty()
                    ? 0L
                    : -1L;
         }
@@ -217,7 +279,7 @@ class EntityCheckpointDriverLagTest {
 
         @Override
         public Promise<Option<EntityCheckpoint>> loadCheckpoint(String keyspace, int partition) {
-            return Promise.success(committedCheckpoint);
+            return Promise.success(Option.none());
         }
     }
 }

@@ -118,9 +118,6 @@ final class EntityFold {
         private final Map<String, Map<String, PendingTimer>> timers = new ConcurrentHashMap<>();
         private final ConcurrentSkipListSet<Long> appliedAhead = new ConcurrentSkipListSet<>();
         private final AtomicLong appliedThrough = new AtomicLong(-1L);
-        // The committed checkpoint this instance was seeded from, or -1 when it replayed from the log's
-        // start (#1302): the baseline a checkpoint lag is measured against before this node commits its own.
-        private final AtomicLong resumedFrom = new AtomicLong(-1L);
     }
 
     /// Resolve once `partition` is serving. Callers gate every read and write on this.
@@ -387,13 +384,6 @@ final class EntityFold {
     /// contents are read after, so the snapshot is at or AHEAD of the offset it is filed under. Recovery
     /// handles that direction, because replaying a record already present in the snapshot is idempotent for
     /// every op.
-    /// The committed checkpoint offset the published fold of `partition` resumed from, or `-1` when it was
-    /// rebuilt from the start of the log (#1302). After a takeover this is the true "last committed
-    /// checkpoint" until this node commits one of its own.
-    long resumedCheckpointOffset(int partition) {
-        return publishedFold(partition).resumedFrom.get();
-    }
-
     Option<CheckpointCandidate> checkpointCandidate(int partition) {
         var data = publishedFold(partition);
 
@@ -646,7 +636,6 @@ final class EntityFold {
         building.state.putAll(snapshot.state());
         snapshot.timers().forEach((key, timers) -> building.timers.put(key, new ConcurrentHashMap<>(timers)));
         building.appliedThrough.set(throughOffset);
-        building.resumedFrom.set(throughOffset);
 
         return unit();
     }

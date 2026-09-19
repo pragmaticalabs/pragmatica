@@ -4,15 +4,19 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.Collectors;
+import java.util.function.Consumer;
+import java.util.function.IntPredicate;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,23 +51,42 @@ public final class EntityCheckpointDriver {
 
     private final Map<String, Registration> registrations = new ConcurrentHashMap<>();
     private final CheckpointLagSink lagSink;
+    private final CommittedCheckpoints committed;
 
-    private EntityCheckpointDriver(CheckpointLagSink lagSink) {
+    private EntityCheckpointDriver(CheckpointLagSink lagSink, CommittedCheckpoints committed) {
         this.lagSink = lagSink;
+        this.committed = committed;
     }
 
+    /// A driver with no metrics binding and no committed-checkpoint source (tests, tooling): it reports
+    /// nowhere and measures every owned partition from offset -1.
     public static EntityCheckpointDriver entityCheckpointDriver() {
-        return entityCheckpointDriver(EntityCheckpointDriver::discardLag);
+        return entityCheckpointDriver(EntityCheckpointDriver::discardLag, EntityCheckpointDriver::noneCommitted);
     }
 
-    /// The unbound sink: a driver built without a metrics binding (tests, tooling) reports nowhere.
+    /// The unbound sink: a driver built without a metrics binding reports nowhere.
     @Contract
     private static void discardLag(long maxCheckpointLag) {}
 
-    /// `lagSink` receives [#maxCheckpointLag] at the end of every tick; the node binds it to its
-    /// metrics collector under [#CHECKPOINT_LAG_METRIC], where the alert threshold path reads it.
-    public static EntityCheckpointDriver entityCheckpointDriver(CheckpointLagSink lagSink) {
-        return new EntityCheckpointDriver(lagSink);
+    private static Option<Long> noneCommitted(String keyspace, int partition) {
+        return Option.none();
+    }
+
+    /// `lagSink` receives [#maxCheckpointLag] after every tick, whatever the tick's outcome; the node binds
+    /// it to its metrics collector under [#CHECKPOINT_LAG_METRIC], where the alert threshold path reads it.
+    /// `committed` answers each partition's COMMITTED checkpoint — the pointer in consensus KV that the
+    /// retention floor and every recovery use — which is the lag's baseline.
+    public static EntityCheckpointDriver entityCheckpointDriver(CheckpointLagSink lagSink,
+                                                                CommittedCheckpoints committed) {
+        return new EntityCheckpointDriver(lagSink, committed);
+    }
+
+    /// The committed checkpoint of `(keyspace, partition)`: its `throughOffset`, or empty when none was
+    /// ever committed. Supplied by the node, which reads it from consensus KV; the driver stays independent
+    /// of KV the same way it stays independent of the metrics module.
+    @FunctionalInterface
+    public interface CommittedCheckpoints {
+        Option<Long> committedThrough(String keyspace, int partition);
     }
 
     /// Narrow report seam so the driver stays independent of the metrics module. `void` + `@Contract`
@@ -77,20 +100,21 @@ public final class EntityCheckpointDriver {
                                 int partitionCount,
                                 EntityFold fold,
                                 EntityLogSubstrate substrate,
+                                IntPredicate ownsPartition,
                                 Map<Integer, Long> checkpointedThrough,
-                                Set<Integer> folded,
                                 AtomicLong writes,
                                 AtomicLong failures) {
         static Registration registration(String keyspace,
                                          int partitionCount,
                                          EntityFold fold,
-                                         EntityLogSubstrate substrate) {
+                                         EntityLogSubstrate substrate,
+                                         IntPredicate ownsPartition) {
             return new Registration(keyspace,
                                     partitionCount,
                                     fold,
                                     substrate,
+                                    ownsPartition,
                                     new ConcurrentHashMap<>(),
-                                    ConcurrentHashMap.newKeySet(),
                                     new AtomicLong(),
                                     new AtomicLong());
         }
@@ -111,12 +135,14 @@ public final class EntityCheckpointDriver {
     ///                            has never folded is ABSENT rather than reported as 0, because "nothing
     ///                            to say about it" and "checkpointed through offset 0" are different
     ///                            claims and an operator must be able to tell them apart
-    /// @param checkpointLag       per partition this node FOLDS, the log head minus the last committed
-    ///                            checkpoint (#1302) — how far a recovery would have to replay. "Last
-    ///                            committed" is the later of the checkpoint this node committed and the one
-    ///                            its fold resumed from, so a takeover measures from the previous owner's
-    ///                            checkpoint. A partition not folded here is ABSENT, for the same reason as
-    ///                            above
+    /// @param checkpointLag       per partition this node OWNS, the log head minus the COMMITTED
+    ///                            checkpoint in consensus KV (#1302, #1330) — how far a recovery would have to
+    ///                            replay. Ownership, not folding, decides membership: a replica's fold is a
+    ///                            read-side cache whose checkpoints the cluster refuses, so it has no lag to
+    ///                            report, and a released partition leaves the map. The baseline is the
+    ///                            committed pointer, never this node's locally recorded save — a fenced save
+    ///                            still resolves success (#700), so a local record can claim coverage the
+    ///                            cluster never committed. A partition not owned here is ABSENT, not 0
     public record KeyspaceCheckpoints(String keyspace,
                                       int partitionCount,
                                       long writes,
@@ -126,13 +152,10 @@ public final class EntityCheckpointDriver {
 
     /// Point-in-time view for the management API.
     public CheckpointSnapshot snapshot() {
-        return new CheckpointSnapshot(registrations.values()
-                                                   .stream()
-                                                   .map(EntityCheckpointDriver::keyspaceSnapshot)
-                                                   .toList());
+        return new CheckpointSnapshot(registrations.values().stream().map(this::keyspaceSnapshot).toList());
     }
 
-    private static KeyspaceCheckpoints keyspaceSnapshot(Registration registration) {
+    private KeyspaceCheckpoints keyspaceSnapshot(Registration registration) {
         return new KeyspaceCheckpoints(registration.keyspace(),
                                        registration.partitionCount(),
                                        registration.writes().get(),
@@ -141,7 +164,7 @@ public final class EntityCheckpointDriver {
                                        checkpointLag(registration));
     }
 
-    /// This node's largest checkpoint lag over every partition it folds, `0` when it folds none — the
+    /// This node's largest checkpoint lag over every partition it owns, `0` when it owns none — the
     /// value [#CHECKPOINT_LAG_METRIC] carries.
     public long maxCheckpointLag() {
         return registrations.values()
@@ -153,26 +176,40 @@ public final class EntityCheckpointDriver {
                             .orElse(0L);
     }
 
-    private static Map<Integer, Long> checkpointLag(Registration registration) {
-        return registration.folded()
-                           .stream()
-                           .collect(Collectors.toUnmodifiableMap(partition -> partition,
-                                                                 partition -> partitionLag(registration, partition)));
+    private Map<Integer, Long> checkpointLag(Registration registration) {
+        var lags = new HashMap<Integer, Long>();
+
+        for (var partition = 0; partition < registration.partitionCount(); partition++) {
+            ownedPartitionLag(registration, partition).onPresent(lagAt(lags, partition));
+        }
+
+        return Map.copyOf(lags);
     }
 
-    /// Head minus last committed checkpoint, never negative: a local head that has not caught up to a
-    /// checkpoint written from a fuller copy is "nothing to replay", not a negative distance.
-    ///
-    /// "Last committed" is the later of the checkpoint THIS node committed and the one its fold RESUMED
-    /// from. After a takeover the previous owner's checkpoint is the true baseline; measuring from this
-    /// node's own writes alone would count the whole log until its first checkpoint landed and raise a
-    /// spurious alert on every failover.
-    private static long partitionLag(Registration registration, int partition) {
-        var head = registration.substrate().headOffset(registration.keyspace(), partition);
-        var committedHere = registration.checkpointedThrough().getOrDefault(partition, -1L);
-        var resumedFrom = registration.fold().resumedCheckpointOffset(partition);
+    private static Consumer<Long> lagAt(Map<Integer, Long> lags, int partition) {
+        return lag -> lags.put(partition, lag);
+    }
 
-        return Math.max(0L, head - Math.max(committedHere, resumedFrom));
+    /// Head minus the COMMITTED checkpoint, for a partition this node owns; empty for one it does not, and
+    /// for one whose head or committed pointer cannot be read this time — a partition that throws is left
+    /// out of this tick's report rather than taking the whole report down with it. Never negative: a local
+    /// head behind a checkpoint written from a fuller copy is "nothing to replay", not a negative distance.
+    private Option<Long> ownedPartitionLag(Registration registration, int partition) {
+        return registration.ownsPartition()
+                           .test(partition)
+               ? Result.lift(EntityCheckpointDriver::unreadable, () -> partitionLag(registration, partition)).option()
+               : Option.none();
+    }
+
+    private long partitionLag(Registration registration, int partition) {
+        var head = registration.substrate().headOffset(registration.keyspace(), partition);
+        var baseline = committed.committedThrough(registration.keyspace(), partition).or(-1L);
+
+        return Math.max(0L, head - baseline);
+    }
+
+    private static Cause unreadable(Throwable thrown) {
+        return Causes.fromThrowable(thrown);
     }
 
     /// Register a provisioned keyspace's fold for periodic checkpointing. A second registration of the
@@ -183,9 +220,17 @@ public final class EntityCheckpointDriver {
     /// inserted, so the pair would hold only for SEQUENTIAL re-provisioning. [EntityTimerDriver#register]
     /// carries the same obligation and earns it the same way.
     @Contract
-    public void register(String keyspace, int partitionCount, EntityFold fold, EntityLogSubstrate substrate) {
+    public void register(String keyspace,
+                         int partitionCount,
+                         EntityFold fold,
+                         EntityLogSubstrate substrate,
+                         IntPredicate ownsPartition) {
         var existing = registrations.putIfAbsent(keyspace,
-                                                 Registration.registration(keyspace, partitionCount, fold, substrate));
+                                                 Registration.registration(keyspace,
+                                                                           partitionCount,
+                                                                           fold,
+                                                                           substrate,
+                                                                           ownsPartition));
 
         if (existing == null) {
             LOG.info("Entity checkpoint: keyspace '{}' registered over {} partition(s)", keyspace, partitionCount);
@@ -214,13 +259,37 @@ public final class EntityCheckpointDriver {
     /// iteration, so one throw abandons every registration ordered after it for this tick.
     /// [EntityTimerDriver#tickOne] puts its catch per keyspace and does buy isolation.
     /// This is an adapter-boundary lift, not business logic swallowing an error.
+    ///
+    /// The lag is reported AFTER the checkpoint iteration and outside its catch (#1330 M3): a checkpointer
+    /// that throws every tick is exactly the stalled checkpointer the lag alert exists for, and a throw that
+    /// also skipped the report would freeze the metric at its last value, so the alert could neither fire
+    /// nor clear.
     @Contract
     public void tick() {
+        checkpointAll();
+        reportLag();
+    }
+
+    @Contract
+    private void checkpointAll() {
         try {
             registrations.values().forEach(EntityCheckpointDriver::checkpointKeyspace);
-            lagSink.report(maxCheckpointLag());
         } catch (RuntimeException e) {
             LOG.warn("Entity checkpoint tick failed: {} — retried next tick", e.toString(), e);
+        }
+    }
+
+    /// Guarded on its own, and per partition inside [#ownedPartitionLag], so a failure to read one
+    /// partition's head never silences the rest. A failure here is WARN-logged: the metric then holds its
+    /// last value for one tick, which the log names.
+    @Contract
+    private void reportLag() {
+        try {
+            lagSink.report(maxCheckpointLag());
+        } catch (RuntimeException e) {
+            LOG.warn("Entity checkpoint lag report failed: {} — the lag metric keeps its last value until the next tick",
+                     e.toString(),
+                     e);
         }
     }
 
@@ -242,17 +311,10 @@ public final class EntityCheckpointDriver {
     /// than tidy: read as two calls, a rebuild publishing in between files one fold's contents under
     /// another fold's offset, and the direction that loses data — a high claim over contents folded lower —
     /// is reachable. See [EntityFold#checkpointCandidate].
-    ///
-    /// The same answer decides which partitions carry a checkpoint lag (#1302): a partition folded here
-    /// is one whose recovery this node's checkpoints bound, and one it does not fold is not its to report.
     @Contract
     private static void checkpointPartition(Registration registration, int partition) {
         registration.fold()
                     .checkpointCandidate(partition)
-                    .onPresent(_ -> registration.folded()
-                                                .add(partition))
-                    .onEmpty(() -> registration.folded()
-                                               .remove(partition))
                     .filter(candidate -> isAdvancing(registration, partition, candidate))
                     .onPresent(candidate -> saveCheckpoint(registration, partition, candidate));
     }
