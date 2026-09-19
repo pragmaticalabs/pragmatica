@@ -42,6 +42,10 @@ public sealed interface GovernorFailoverHandler {
     }
 }
 
+/// OBLIGATION (#1244 backfill-commit ruling, waived for failover paths by the CTO on 2026-09-19 because this
+/// replays already-sealed, durable segments and never acks): replica WAL frames carry no per-record fsync,
+/// so if this path ever acks, promotes, or replays anything not already durable elsewhere, commit each
+/// replayed range through the replica WAL barrier (`StreamPartitionManager::syncReplicated`) first.
 final class DefaultGovernorFailoverHandler implements GovernorFailoverHandler {
     private static final Logger log = LoggerFactory.getLogger(DefaultGovernorFailoverHandler.class);
     private static final int MAX_EVENTS_PER_SEGMENT_READ = 10_000;

@@ -3909,7 +3909,8 @@ public interface AetherNode extends ManageableNode {
                                                                           streamingConfig.backfillSourceWaitBound(),
                                                                           () -> streamPlacementMembers(clusterEventsControllerRef,
                                                                                                        clusterTopologyManager),
-                                                                          streamCommittedOwnerSource);
+                                                                          streamCommittedOwnerSource,
+                                                                          streamPartitionManager::syncReplicated);
         var streamBackfillExecutor = Executors.newSingleThreadExecutor(runnable -> daemonThread(runnable,
                                                                                                 "stream-partition-backfill"));
         // A2: per-node controller that reconciles the (previously never-populated) ReplicaRegistry

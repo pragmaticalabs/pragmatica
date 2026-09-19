@@ -63,6 +63,7 @@ class StreamPartitionManagerWalTest {
     void appendRecovered_afterSyncReplicated_isFsyncDurable_inTheSameWal() {
         var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
         createStream(manager);
+        var fsyncsBefore = fsyncCount(manager);
 
         IntStream.range(0, EVENTS)
                  .forEach(i -> manager.appendRecovered(STREAM, PARTITION, payload(i), 1000L + i)
@@ -70,6 +71,10 @@ class StreamPartitionManagerWalTest {
         manager.syncReplicated(STREAM, PARTITION)
                .await()
                .onFailure(cause -> fail(cause.message()));
+
+        // #1277 review R1: a second reader sees the page cache, not the disk, so the fsync itself is
+        // observed through the WAL's own counter.
+        assertThat(fsyncCount(manager) - fsyncsBefore).as("the barrier fsynced the replicated records").isPositive();
 
         var verifier = PartitionWal.open(walFile()).unwrap();
         var records = replayAll(verifier);
@@ -110,6 +115,17 @@ class StreamPartitionManagerWalTest {
     }
 
     // === helpers ===
+
+    private static long fsyncCount(StreamPartitionManager manager) {
+        return manager.walSnapshot()
+                      .streams()
+                      .stream()
+                      .flatMap(view -> view.partitions().stream())
+                      .filter(view -> view.partition() == PARTITION)
+                      .flatMap(view -> view.wal().stream())
+                      .mapToLong(PartitionWal.WalStats::fsyncCount)
+                      .sum();
+    }
 
     private Path walFile() {
         return walDir.resolve(STREAM).resolve(PARTITION + ".wal");
