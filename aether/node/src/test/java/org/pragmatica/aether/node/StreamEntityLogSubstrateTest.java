@@ -28,7 +28,7 @@ import static org.pragmatica.aether.node.StreamEntityLogSubstrate.streamEntityLo
 /// `StreamPartitionManager` is a concrete `final` class with no test seam of its own, but the collaborator
 /// that actually receives the barrier count — `ReplicationManager` — is an interface the manager is built
 /// with, so a capturing fake there observes the exact argument `awaitBarrier` passes without needing to
-/// fake `StreamPartitionManager` itself. `tieredReader`, `storage`, `kvStore`, and `applier` are real
+/// fake `StreamPartitionManager` itself. `tieredReader`, `segmentIndex`, `storage`, `kvStore`, and `applier` are real
 /// constructor parameters of `StreamEntityLogSubstrate` but are never touched by `ensureLog`/`append` — both methods
 /// go through `partitionManager` alone — so they are passed as `null` rather than built for no purpose.
 class StreamEntityLogSubstrateTest {
@@ -43,6 +43,8 @@ class StreamEntityLogSubstrateTest {
         var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
                                                                                                                                           false),
                                                  null,
+                                                 null,
+                                                 EvictionListener.NOOP,
                                                  null,
                                                  null,
                                                  null);
@@ -66,6 +68,8 @@ class StreamEntityLogSubstrateTest {
                                                                                                                                           false),
                                                  null,
                                                  null,
+                                                 EvictionListener.NOOP,
+                                                 null,
                                                  null,
                                                  null);
 
@@ -86,6 +90,8 @@ class StreamEntityLogSubstrateTest {
                                                                                                                                           false),
                                                  null,
                                                  null,
+                                                 EvictionListener.NOOP,
+                                                 null,
                                                  null,
                                                  null);
 
@@ -105,6 +111,8 @@ class StreamEntityLogSubstrateTest {
         var substrate = streamEntityLogSubstrate(partitionManager, (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0,
                                                                                                                                           false),
                                                  null,
+                                                 null,
+                                                 EvictionListener.NOOP,
                                                  null,
                                                  null,
                                                  null);

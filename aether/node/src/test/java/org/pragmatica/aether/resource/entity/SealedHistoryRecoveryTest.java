@@ -22,13 +22,17 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.segment.SealedSegment;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentSealer;
+import org.pragmatica.aether.stream.segment.SegmentSink;
 import org.pragmatica.aether.stream.segment.StorageSegmentSink;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -58,6 +62,8 @@ class SealedHistoryRecoveryTest {
     private static final long ONE_GB = 1024L * 1024 * 1024;
     private static final long MANAGER_BUDGET_BYTES = 512L * 1024 * 1024;
     private static final long SEAL_WAIT_MILLIS = 10_000;
+    /// Well inside the ~2 s in-place retry window of the substrate's sealed read.
+    private static final long GATE_OPENS_INSIDE_WINDOW_MILLIS = 300;
 
     private StorageInstance storage;
     private SegmentIndex index;
@@ -83,7 +89,7 @@ class SealedHistoryRecoveryTest {
                                                                              sealer,
                                                                              Option.none(),
                                                                              index::lastSealedOffset);
-            substrate = substrate(partitionManager);
+            substrate = substrate(partitionManager, sealer);
             substrate.ensureLog(KEYSPACE, 1, 1, 1).unwrap();
             appendRecords(substrate);
             awaitAllSealed(sealer);
@@ -100,14 +106,7 @@ class SealedHistoryRecoveryTest {
                 .await()
                 .onFailure(cause -> fail("rebuild must succeed from sealed history: " + cause.message()));
 
-            var missing = LongStream.range(0, RECORDS)
-                                    .filter(offset -> !fold.get(PARTITION, key(offset))
-                                                           .map(state -> new String(state, StandardCharsets.UTF_8))
-                                                           .map(value(offset)::equals)
-                                                           .or(false))
-                                    .count();
-
-            assertThat(missing).as("every key written must be in the rebuilt fold with its value").isZero();
+            assertThat(missingKeys(fold)).as("every key written must be in the rebuilt fold with its value").isZero();
         }
 
         @Test
@@ -127,6 +126,73 @@ class SealedHistoryRecoveryTest {
         }
     }
 
+    /// Evicted records whose seals are held back by a gated sink: the sealer retains them, and nothing
+    /// reaches a segment until the gate opens.
+    @Nested
+    class SealInFlight {
+        private GatedSink sink;
+        private SegmentSealer sealer;
+        private EntityLogSubstrate substrate;
+
+        @BeforeEach
+        void setUp() {
+            sink = new GatedSink(StorageSegmentSink.storageSegmentSink(storage, index));
+            sealer = SegmentSealer.segmentSealer(sink);
+            substrate = substrate(StreamPartitionManager.streamPartitionManager(MANAGER_BUDGET_BYTES,
+                                                                                sealer,
+                                                                                Option.none(),
+                                                                                index::lastSealedOffset),
+                                  sealer);
+            substrate.ensureLog(KEYSPACE, 1, 1, 1).unwrap();
+            appendRecords(substrate);
+        }
+
+        @Test
+        void earliestRetainedOffset_countsHistoryStillInFlight() {
+            assertThat(substrate.earliestRetainedOffset(KEYSPACE, PARTITION)).as("nothing is sealed yet; the in-flight history starts at 0")
+                                                                             .isZero();
+        }
+
+        @Test
+        void ready_succeedsWithoutFoldInProgress_whenTheSealLandsInsideTheRetryWindow() throws InterruptedException {
+            var opener = Thread.ofPlatform().start(() -> openAfter(sink, GATE_OPENS_INSIDE_WINDOW_MILLIS));
+            var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+            var result = fold.ready(PARTITION).await();
+
+            opener.join();
+            result.onFailure(cause -> fail("a seal landing inside the retry window must not surface: " + cause.message()));
+            assertThat(missingKeys(fold)).isZero();
+        }
+
+        @Test
+        void ready_failsFoldInProgress_whileTheSealPersists_andSucceedsOnReaccessOnceItLands() throws InterruptedException {
+            var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+            var first = fold.ready(PARTITION).await();
+
+            assertThat(first.isFailure()).isTrue();
+            first.onFailure(cause -> assertThat(cause).as("in flight is retried, never skipped and never refused")
+                                                      .isInstanceOf(EntityLogError.FoldInProgress.class));
+
+            sink.open();
+            awaitAllSealed(sealer);
+
+            fold.ready(PARTITION)
+                .await()
+                .onFailure(cause -> fail("re-access after the seal landed must rebuild: " + cause.message()));
+            assertThat(missingKeys(fold)).isZero();
+        }
+
+        @Test
+        void read_failsFoldInProgress_whenTheEvictedOffsetIsStillBeingSealed() {
+            var read = substrate.read(KEYSPACE, PARTITION, 0, READ_BATCH).await();
+
+            assertThat(read.isFailure()).isTrue();
+            read.onFailure(cause -> assertThat(cause).isInstanceOf(EntityLogError.FoldInProgress.class));
+        }
+    }
+
     /// Sealed history that is itself broken. The ring's evictions are dropped here, and the segments
     /// covering the evicted range are written by hand so each defect can be placed exactly.
     @Nested
@@ -141,7 +207,7 @@ class SealedHistoryRecoveryTest {
                                                                              EvictionListener.NOOP,
                                                                              Option.none(),
                                                                              index::lastSealedOffset);
-            substrate = substrate(partitionManager);
+            substrate = substrate(partitionManager, EvictionListener.NOOP);
             substrate.ensureLog(KEYSPACE, 1, 1, 1).unwrap();
             appendRecords(substrate);
             ringEarliest = partitionManager.earliestRetainedOffset(STREAM, PARTITION);
@@ -167,6 +233,7 @@ class SealedHistoryRecoveryTest {
 
             assertThat(read.isFailure()).as("a skipped offset must be refused, not folded as if the next record were it")
                                         .isTrue();
+            read.onFailure(cause -> assertThat(cause.message()).contains("expected offset 5, found 6"));
         }
 
         @Test
@@ -179,6 +246,7 @@ class SealedHistoryRecoveryTest {
             var read = substrate.read(KEYSPACE, PARTITION, 0, READ_BATCH).await();
 
             assertThat(read.isFailure()).as("a repeated offset must be refused, not applied twice").isTrue();
+            read.onFailure(cause -> assertThat(cause.message()).contains("expected offset 6, found 5"));
         }
 
         @Test
@@ -194,6 +262,24 @@ class SealedHistoryRecoveryTest {
             result.onFailure(cause -> assertThat(cause).isInstanceOf(EntityLogError.FoldFailed.class));
         }
 
+        /// The ruled FORK 2 case: sealed history below, the ring above, and a hole between them. The read
+        /// that reaches the hole is refused as a failed fold naming the missing range, never served.
+        @Test
+        void read_refusesLoudly_whenAHoleSitsBetweenTheLowestSealedOffsetAndTheRing() {
+            sealOffsets(0, 99, LongStream.range(0, 100).boxed().toList());
+            sealOffsets(200, ringEarliest - 1, LongStream.range(200, ringEarliest).boxed().toList());
+
+            assertThat(substrate.earliestRetainedOffset(KEYSPACE, PARTITION)).isZero();
+
+            var read = substrate.read(KEYSPACE, PARTITION, 100, READ_BATCH).await();
+
+            assertThat(read.isFailure()).isTrue();
+            read.onFailure(cause -> assertThat(cause).isInstanceOf(EntityLogError.FoldFailed.class)
+                                                     .extracting(Cause::message)
+                                                     .asString()
+                                                     .contains("[100, 200)"));
+        }
+
         /// A segment claiming `[start, end]` whose CONTENT is the given offsets, in the given order.
         private void sealOffsets(long start, long end, List<Long> offsets) {
             StorageSegmentSink.storageSegmentSink(storage, index)
@@ -203,14 +289,35 @@ class SealedHistoryRecoveryTest {
         }
     }
 
-    private EntityLogSubstrate substrate(StreamPartitionManager partitionManager) {
+    private EntityLogSubstrate substrate(StreamPartitionManager partitionManager, EvictionListener evictionListener) {
         return StreamEntityLogSubstrate.streamEntityLogSubstrate(partitionManager,
                                                                  (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(1,
                                                                                                                                        true),
                                                                  TieredStreamReader.tieredStreamReader(index, storage),
+                                                                 index,
+                                                                 evictionListener,
                                                                  storage,
                                                                  emptyKvStore(),
                                                                  _ -> Promise.success(List.of()));
+    }
+
+    private static long missingKeys(EntityFold fold) {
+        return LongStream.range(0, RECORDS)
+                         .filter(offset -> !fold.get(PARTITION, key(offset))
+                                                .map(state -> new String(state, StandardCharsets.UTF_8))
+                                                .map(value(offset)::equals)
+                                                .or(false))
+                         .count();
+    }
+
+    private static void openAfter(GatedSink sink, long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        sink.open();
     }
 
     private static void appendRecords(EntityLogSubstrate substrate) {
@@ -274,6 +381,50 @@ class SealedHistoryRecoveryTest {
         }
 
         return buffer.array();
+    }
+
+    /// Holds each seal until [#open], then passes it and every later one to the real sink. The sealer keeps
+    /// one seal in flight per partition, so at most one is ever held.
+    ///
+    /// Every seal completes on its own thread, as a storage tier's would. The memory tier completes
+    /// synchronously, and releasing a backlog into a synchronously completing sink overflows the sealer's
+    /// drain recursion and wedges it — a #1297 defect reported separately, which these tests must not
+    /// depend on.
+    private static final class GatedSink implements SegmentSink {
+        private final SegmentSink delegate;
+        private final List<HeldSeal> held = new ArrayList<>();
+        private boolean open;
+
+        private GatedSink(SegmentSink delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public synchronized Promise<Unit> seal(SealedSegment segment) {
+            var promise = Promise.<Unit> promise();
+
+            if (open) {
+                sealOffThread(new HeldSeal(segment, promise));
+            } else {
+                held.add(new HeldSeal(segment, promise));
+            }
+
+            return promise;
+        }
+
+        synchronized void open() {
+            open = true;
+            held.forEach(this::sealOffThread);
+            held.clear();
+        }
+
+        private void sealOffThread(HeldSeal seal) {
+            Thread.ofVirtual()
+                  .start(() -> delegate.seal(seal.segment())
+                                       .onResult(seal.promise()::resolve));
+        }
+
+        private record HeldSeal(SealedSegment segment, Promise<Unit> promise) {}
     }
 
     private static KVStore<AetherKey, AetherValue> emptyKvStore() {
