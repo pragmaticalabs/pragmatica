@@ -815,28 +815,40 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                                long fromOffset,
                                                                int maxEvents) {
         return reader.read(streamName, partition, fromOffset, maxEvents)
-                     .map(sealedEvents -> combineWithBufferEvents(sealedEvents, partition, fromOffset, maxEvents));
+                     .flatMap(sealedEvents -> combineWithBufferEvents(sealedEvents, partition, fromOffset, maxEvents));
     }
 
-    private List<StreamEvent<T>> combineWithBufferEvents(List<OffHeapRingBuffer.RawEvent> sealedEvents,
-                                                         int partition,
-                                                         long fromOffset,
-                                                         int maxEvents) {
+    /// Continue a cold read into the ring (#1234). With nothing sealed at `fromOffset` the ring is the only
+    /// remaining source, so its failure — `CursorExpired` for an offset held by neither tier — is returned
+    /// as-is: answering `[]` here stalled the consumer at that cursor forever. After a sealed prefix, a ring
+    /// failure is absorbed by FER (degrade forward): the sealed prefix is returned and the next read, which
+    /// starts right after it, reaches this method with nothing sealed and surfaces the failure then — the
+    /// consumer makes progress and still sees the error at the exact offset it occurs.
+    private Promise<List<StreamEvent<T>>> combineWithBufferEvents(List<OffHeapRingBuffer.RawEvent> sealedEvents,
+                                                                  int partition,
+                                                                  long fromOffset,
+                                                                  int maxEvents) {
         var remaining = maxEvents - sealedEvents.size();
         var sealed = toStreamEvents(sealedEvents, partition);
 
         if (remaining <= 0) {
-            return sealed;
+            return Promise.success(sealed);
         }
 
-        var bufferStart = sealedEvents.isEmpty()
-                          ? fromOffset
-                          : sealedEvents.getLast().offset() + 1;
-        var bufferEvents = partitionManager.readLocal(streamName, partition, bufferStart, remaining)
-                                           .map(rawEvents -> toStreamEvents(rawEvents, partition))
-                                           .or(List.of());
+        if (sealedEvents.isEmpty()) {
+            return readBufferEvents(partition, fromOffset, remaining).async();
+        }
 
-        return List.copyOf(Stream.concat(sealed.stream(), bufferEvents.stream()).toList());
+        var bufferEvents = readBufferEvents(partition,
+                                            sealedEvents.getLast().offset() + 1,
+                                            remaining).or(List.of());
+
+        return Promise.success(List.copyOf(Stream.concat(sealed.stream(), bufferEvents.stream()).toList()));
+    }
+
+    private Result<List<StreamEvent<T>>> readBufferEvents(int partition, long fromOffset, int maxEvents) {
+        return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents)
+                               .map(rawEvents -> toStreamEvents(rawEvents, partition));
     }
 
     private List<StreamEvent<T>> toStreamEvents(List<OffHeapRingBuffer.RawEvent> rawEvents, int partition) {

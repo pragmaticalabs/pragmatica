@@ -48,10 +48,34 @@ final class TieredReader implements TieredStreamReader {
         this.storage = storage;
     }
 
+    /// Reads resolve through the index, which records only what was sealed — so an unsealed range is
+    /// invisible to it and must be detected, not read around (#1234). The read never crosses a hole: it
+    /// stops at the end of the contiguous run holding `fromOffset` (the next read then starts inside the
+    /// hole), and a read starting inside a hole fails with [SegmentError.SealedRangeMissing]. Only when
+    /// nothing is sealed at or above `fromOffset` does it answer empty, leaving the range to the ring.
     @Override
     public Promise<List<RawEvent>> read(String streamName, int partition, long fromOffset, int maxEvents) {
+        return index.contiguousSealedEnd(streamName, partition, fromOffset)
+                    .map(end -> readContiguous(streamName,
+                                               partition,
+                                               fromOffset,
+                                               boundedCount(fromOffset, end, maxEvents)))
+                    .or(() -> holeOrNothingSealed(streamName, partition, fromOffset));
+    }
+
+    private Promise<List<RawEvent>> readContiguous(String streamName, int partition, long fromOffset, int maxEvents) {
         return reader.readEvents(streamName, partition, fromOffset, maxEvents)
                      .onSuccess(events -> triggerPrefetchIfNearEnd(streamName, partition, fromOffset, maxEvents, events));
+    }
+
+    private static int boundedCount(long fromOffset, long contiguousEnd, int maxEvents) {
+        return (int) Math.min(maxEvents, contiguousEnd - fromOffset + 1);
+    }
+
+    private Promise<List<RawEvent>> holeOrNothingSealed(String streamName, int partition, long fromOffset) {
+        return index.nextSealedOffset(streamName, partition, fromOffset)
+                    .map(next -> new SegmentError.SealedRangeMissing(streamName, partition, fromOffset, next).<List<RawEvent>> promise())
+                    .or(() -> Promise.success(List.of()));
     }
 
     @Override

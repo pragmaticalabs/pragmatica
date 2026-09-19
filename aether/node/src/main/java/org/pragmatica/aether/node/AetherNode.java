@@ -4032,8 +4032,8 @@ public interface AetherNode extends ManageableNode {
         // last-sealed offset so the WAL does not grow unbounded. Records <= lastSealedOffset are already in
         // durable cold segments (served post-restart by the tiered reader), so dropping them from the WAL
         // loses nothing; the un-sealed tail stays in the WAL. truncate is threshold-lazy, so this tick is
-        // cheap when nothing new has sealed. Driven off the durable sealed bound (not the void
-        // eviction->seal listener) to avoid any truncated-before-durable window.
+        // cheap when nothing new has sealed. Driven off the durable, CONTIGUOUS sealed bound (#1234: it
+        // never passes a segment that failed to seal) to avoid any truncated-before-durable window.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::truncateWalsToSealed,
                                                                       WAL_TRUNCATE_INTERVAL));
         // #265 increment 5 reshuffle-lifecycle driver: each tick frees reshuffle-concurrency slots for

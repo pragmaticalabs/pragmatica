@@ -31,7 +31,8 @@ public sealed interface StreamError extends Cause {
         BUFFER_FULL("Ring buffer is full, STRONG consistency prevents eviction"),
         AHSE_REQUIRED_FOR_STRONG("STRONG consistency requires AHSE storage (EvictionListener must not be NOOP)"),
         STREAM_CONFIG_COMMIT_FAILED("Stream config consensus commit failed"),
-        PARTITION_NOT_LOCAL("Stream partition is not owned by this node");
+        PARTITION_NOT_LOCAL("Stream partition is not owned by this node"),
+        SEALING_BEHIND("Ring buffer is full of events not yet durably sealed to storage; append refused until sealing catches up");
         private final String message;
         General(String message) {
             this.message = message;
@@ -40,11 +41,12 @@ public sealed interface StreamError extends Cause {
         public String message() {
             return message;
         }
-        /// Only `STREAM_MEMORY_EXCEEDED` is a transient capacity shortage (the pool may clear as other
-        /// streams are destroyed / right-sized); every other constant is a non-capacity error.
+        /// `STREAM_MEMORY_EXCEEDED` (the pool may clear as other streams are destroyed / right-sized) and
+        /// `SEALING_BEHIND` (the room frees as soon as a pending seal succeeds, #1234) are transient capacity
+        /// shortages; every other constant is a non-capacity error.
         @Override
         public boolean transientCapacity() {
-            return this == STREAM_MEMORY_EXCEEDED;
+            return this == STREAM_MEMORY_EXCEEDED || this == SEALING_BEHIND;
         }
     }
 

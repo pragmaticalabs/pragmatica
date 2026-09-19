@@ -21,6 +21,7 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.TierAwareRetention;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -61,6 +62,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// No-op release (default seam).
     private static final LongConsumer NOOP_RELEASE = _ -> {};
 
+    /// A ring seals an eighth of its retained events ahead of what it must reclaim (#1234, [#sealAhead]).
+    private static final long SEAL_AHEAD_DIVISOR = 8;
     /// Test-only floor-allocation fault-injection seam (bug #6 partial-construction coverage). Consulted
     /// by the GUARDED seam factory with each buffer's partition index BEFORE the native floor allocation;
     /// when it returns false the factory behaves exactly as a native floor OOM would — it closes the
@@ -106,7 +109,22 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Reads refused because the arena was closed UNDER an in-flight reader (#999) — the genuine race, not
     /// the benign late arrival the `closed` fast path absorbs.
     private final AtomicLong closedUnderReader = new AtomicLong(0);
+    /// Highest offset DURABLY sealed (#1234): advanced only when the listener's seal promise succeeds, never
+    /// when events are merely handed over. Every offset at or below it that the ring still holds may be
+    /// reclaimed; nothing above it may. Written by the seal-completion thread, hence volatile.
     private volatile long lastSealedOffset = -1;
+    /// Highest offset handed to the listener for sealing. Moves ahead of [#lastSealedOffset] while a seal
+    /// is in flight and falls back to it when a seal fails, so the next eviction pass hands the same
+    /// events over again.
+    private volatile long sealRequestedThrough = -1;
+    /// At most one seal in flight per ring: seals then complete in offset order, which is what keeps the
+    /// sealed range free of holes (a later segment can never be sealed while an earlier one is pending).
+    private final AtomicBoolean sealInFlight = new AtomicBoolean(false);
+    private final AtomicLong sealFailures = new AtomicLong(0);
+    private final AtomicLong sealBackpressure = new AtomicLong(0);
+    /// Set on the first append refused for want of sealed room and cleared by the next admitted append,
+    /// so a refusal episode logs one WARN while [#sealBackpressureCount] counts every refusal.
+    private volatile boolean sealBackpressured = false;
 
     private OffHeapRingBuffer(Arena arena,
                               MemorySegment controlSegment,
@@ -317,8 +335,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     ///     when it cannot make room by growing.
     ///   - DROP_OLDEST (EVENTUAL) and does not fit — the event genuinely cannot be stored in the frozen
     ///     ring; drop it (NO write, no corruption) and report success at the current head, mirroring the
-    ///     existing non-fatal EVENTUAL contract (EVENTUAL appends never fail; the exhaustion event was
-    ///     already emitted via the growth seam). See spec §4.2 / bug #7.
+    ///     existing non-fatal EVENTUAL contract (an EVENTUAL append never fails for SIZE; the exhaustion
+    ///     event was already emitted via the growth seam). See spec §4.2 / bug #7. An EVENTUAL append can
+    ///     still be refused with `SEALING_BEHIND` when its room is held by events not yet sealed (#1234).
     private Result<Long> appendIfFitsAllocated(byte[] payload, long timestamp) {
         if (payload.length <= allocatedDataBytes) {
             return appendWritten(payload, timestamp);
@@ -342,7 +361,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.BUFFER_FULL.result();
         }
 
-        evictForSpace(payload.length);
+        if (!evictForSpace(payload.length)) {
+            return refuseForUnsealedRoom();
+        }
+
         var currentHead = rawHeadOffset();
         var newOffset = currentHead + 1;
         var slotIndex = Math.floorMod(newOffset, capacity);
@@ -399,7 +421,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.BUFFER_FULL.result();
         }
 
-        evictForSpace((int) totalSize);
+        if (!evictForSpace((int) totalSize)) {
+            return refuseForUnsealedRoom();
+        }
+
         var lastOffset = appendPayloads(payloads, timestamps);
 
         notifyAppendListeners(lastOffset);
@@ -442,6 +467,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, base);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, base + 1);
         lastSealedOffset = base;
+        sealRequestedThrough = base;
 
         return unitResult();
     }
@@ -750,6 +776,17 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return lastSealedOffset;
     }
 
+    /// Seal attempts that failed after the listener's own retries (#1234). Each left its events in the ring;
+    /// non-zero means storage refused this partition's segments at least once.
+    public long sealFailureCount() {
+        return sealFailures.get();
+    }
+
+    /// Appends refused because the room they needed was held by events not yet durably sealed (#1234).
+    public long sealBackpressureCount() {
+        return sealBackpressure.get();
+    }
+
     /// Guarded for the same reason as [#applyRetention] (#999) — a public `void` path that reads and then
     /// rewrites the control region.
     @Contract
@@ -1045,10 +1082,15 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return controlSegment.get(ValueLayout.JAVA_LONG, indexPos + INDEX_TIMESTAMP);
     }
 
-    private void evictForSpace(int payloadLength) {
+    /// Whether the room `payloadLength` needs was made. It is not when some of the events that must go have
+    /// not been durably sealed yet (#1234): those stay, and the append is refused rather than reclaiming them.
+    private boolean evictForSpace(int payloadLength) {
         var countToEvict = countEvictionsForSpace(payloadLength);
+        var madeRoom = notifyAndEvict(countToEvict) == countToEvict;
 
-        notifyAndEvict(countToEvict);
+        sealBackpressured = sealBackpressured && !madeRoom;
+
+        return madeRoom;
     }
 
     private long countEvictionsForSpace(int payloadLength) {
@@ -1123,41 +1165,122 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         notifyAndEvict(countToEvict);
     }
 
-    private void notifyAndEvict(long count) {
+    /// Reclaim up to `count` of the oldest events and return how many were reclaimed (#1234: seal before
+    /// reclaim). With [EvictionListener#NOOP] nothing is persisted and all `count` go at once. Otherwise
+    /// only events already DURABLY sealed are reclaimed; the rest are handed to the listener (see
+    /// [#requestSeal]) and stay — readable and counted against capacity — until their seal succeeds, when a
+    /// later pass reclaims them. Sealing is asynchronous: the appending thread never waits on storage.
+    private long notifyAndEvict(long count) {
         if (count <= 0) {
-            return;
+            return 0;
         }
 
-        if (listener != EvictionListener.NOOP) {
-            var events = collectEvictedEvents(count);
+        if (listener == EvictionListener.NOOP) {
+            evictOldest(count);
 
-            listener.onEviction(streamName, partition, events);
-            updateSealedOffsetFromEvents(events);
+            return count;
         }
 
+        requestSeal(rawTailOffset() + count - 1);
+        var reclaimable = Math.min(count, Math.max(0, lastSealedOffset - rawTailOffset() + 1));
+
+        evictOldest(reclaimable);
+
+        return reclaimable;
+    }
+
+    private void evictOldest(long count) {
         for (long i = 0; i < count; i++) {
             evictOldest();
         }
     }
 
-    private void updateSealedOffsetFromEvents(List<RawEvent> events) {
-        if (events.isEmpty()) {
-            return;
-        }
-
-        var sealedTo = events.getLast().offset();
-
-        if (sealedTo > lastSealedOffset) {
-            lastSealedOffset = sealedTo;
+    /// Hand the listener the next range to seal when events up to `target` are needed and no seal is in
+    /// flight. The range runs ahead of the need by [#sealAhead] events so that, with an asynchronous sink,
+    /// the events the next appends must reclaim are usually sealed already; a new range is handed over once
+    /// fewer than half of that margin remains. One seal in flight at a time keeps completions in offset order.
+    private void requestSeal(long target) {
+        if (sealInFlight.compareAndSet(false, true)) {
+            handOffDueRange(target);
         }
     }
 
-    private List<OffHeapRingBuffer.RawEvent> collectEvictedEvents(long count) {
-        var tail = rawTailOffset();
+    /// Runs holding the in-flight flag, so [#sealRequestedThrough] is read only after any previous seal's
+    /// completion (success or rollback) has been published — reading it first could skip a rolled-back range.
+    private void handOffDueRange(long target) {
+        var ahead = sealAhead();
+        var from = Math.max(sealRequestedThrough + 1, rawTailOffset());
+        var through = Math.min(rawHeadOffset(), Math.max(target, sealRequestedThrough) + ahead);
+
+        if (sealRequestedThrough >= target + ahead / 2 || from > through) {
+            sealInFlight.set(false);
+
+            return;
+        }
+
+        sealRequestedThrough = through;
+        listener.onEviction(streamName,
+                            partition,
+                            collectEvents(from, through - from + 1))
+                .onResult(result -> completeSeal(result, from, through));
+    }
+
+    /// Seal-ahead margin: an eighth of the retained events, so small rings seal exactly what they reclaim
+    /// and a large ring keeps a batch sealed ahead of its reclamation. Bounded so the sealed-but-retained
+    /// share tier-aware retention may reclaim early stays a small fraction of the ring.
+    private long sealAhead() {
+        return rawEventCount() / SEAL_AHEAD_DIVISOR;
+    }
+
+    private void completeSeal(Result<Unit> result, long from, long through) {
+        result.onSuccess(_ -> advanceSealed(through)).onFailure(cause -> rollBackSealRequest(cause, from, through));
+        sealInFlight.set(false);
+    }
+
+    private void advanceSealed(long through) {
+        lastSealedOffset = Math.max(lastSealedOffset, through);
+    }
+
+    /// The failed range is still in the ring (nothing past [#lastSealedOffset] is reclaimed), so rolling the
+    /// request back is the whole recovery: the next eviction pass hands the same events over again. Until
+    /// that succeeds the ring cannot reclaim them, and appends needing their room are refused.
+    private void rollBackSealRequest(Cause cause, long from, long through) {
+        sealRequestedThrough = lastSealedOffset;
+        var failures = sealFailures.incrementAndGet();
+
+        log.warn("OffHeapRingBuffer {}[{}]: sealing offsets [{}-{}] to storage failed (failure {} for this ring); "
+                + "the events stay in the ring and are handed over again on the next eviction pass, and appends "
+                + "needing their room are refused until a seal succeeds: {}",
+                 streamName,
+                 partition,
+                 from,
+                 through,
+                 failures,
+                 cause.message());
+    }
+
+    private <T> Result<T> refuseForUnsealedRoom() {
+        var refusals = sealBackpressure.incrementAndGet();
+
+        if (!sealBackpressured) {
+            sealBackpressured = true;
+            log.warn("OffHeapRingBuffer {}[{}]: append refused — the room it needs is held by events not yet "
+                    + "durably sealed (sealed through {}, handed over through {}, refusal {} for this ring)",
+                     streamName,
+                     partition,
+                     lastSealedOffset,
+                     sealRequestedThrough,
+                     refusals);
+        }
+
+        return StreamError.General.SEALING_BEHIND.result();
+    }
+
+    private List<OffHeapRingBuffer.RawEvent> collectEvents(long from, long count) {
         var events = new ArrayList<RawEvent>((int) count);
 
         for (long i = 0; i < count; i++) {
-            events.add(readSingleEvent(tail + i));
+            events.add(readSingleEvent(from + i));
         }
 
         return List.copyOf(events);

@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.segment;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -68,6 +69,7 @@ public final class StorageSegmentSink implements SegmentSink {
                                                   originalSize,
                                                   processedData.encrypted()))
                       .onSuccess(_ -> logSealed(segment))
+                      .onFailure(cause -> logSealFailed(segment, cause))
                       .mapToUnit();
     }
 
@@ -116,6 +118,18 @@ public final class StorageSegmentSink implements SegmentSink {
                   segment.startOffset(),
                   segment.endOffset(),
                   segment.eventCount());
+    }
+
+    /// Per-attempt detail at DEBUG (#1234): until then a failed seal left no trace at all. The loud signal is
+    /// owned by the ring — one WARN and a counted failure per exhausted retry cycle, naming the range it keeps
+    /// — so an outage does not multiply WARN lines by the retry budget.
+    private void logSealFailed(SealedSegment segment, Cause cause) {
+        log.debug("Sealing segment {} partition={} offsets=[{}-{}] failed: {}",
+                  segment.streamName(),
+                  segment.partition(),
+                  segment.startOffset(),
+                  segment.endOffset(),
+                  cause.message());
     }
 
     static String refName(SealedSegment segment) {

@@ -6,13 +6,16 @@ package org.pragmatica.aether.stream;
 
 import java.util.List;
 
-import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 
+/// Receives the events a ring needs to reclaim and makes them durable. The returned promise is the
+/// ring's license to reclaim (#1234): the ring keeps the events — readable, and counted against its
+/// capacity — until it resolves successfully, and a failure leaves them in place for a later attempt.
+/// [#NOOP] is the one listener that persists nothing; a ring built with it reclaims immediately.
 @FunctionalInterface
 public interface EvictionListener {
-    @Contract
-    void onEviction(String streamName, int partition, List<OffHeapRingBuffer.RawEvent> events);
-
-    EvictionListener NOOP = (_, _, _) -> {};
+    Promise<Unit> onEviction(String streamName, int partition, List<OffHeapRingBuffer.RawEvent> events);
+    EvictionListener NOOP = (_, _, _) -> Promise.unitPromise();
 }
