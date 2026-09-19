@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.ServerSocket;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -28,7 +29,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipDeltaProjector;
@@ -62,6 +65,10 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// same id is emitted ONLY inside `ClusterTopologyManagerRecord.onWorkerJoin`, so with the route entry
 /// deleted the control still fires and the CTM line never does.
 class WorkerJoinCtmWiringBootTest {
+    /// #1276: node storage lives here, never under the machine-global `/data/aether/...` default.
+    @TempDir
+    Path tempDir;
+
     private static final String CTM_LOGGER = ClusterTopologyManager.class.getName();
     private static final String PROJECTOR_LOGGER = MembershipDeltaProjector.class.getName();
     private static final NodeId WORKER = NodeId.nodeId("worker-wiring-" + UUID.randomUUID()).unwrap();
@@ -119,7 +126,7 @@ class WorkerJoinCtmWiringBootTest {
     @Test
     @Timeout(value = 120, unit = SECONDS)
     void workerJoinDecision_reachesTheCtm_throughTheNodesRouter() {
-        node = AetherNode.aetherNode(minimalConfig(), () -> {})
+        node = AetherNode.aetherNode(minimalConfig(tempDir), () -> {})
                           .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                           .unwrap();
         node.start()
@@ -155,7 +162,7 @@ class WorkerJoinCtmWiringBootTest {
 
     /// The #858 single-node boot fixture: `self` in `coreNodes`, mutual self-signed QUIC TLS, management
     /// and app HTTP off.
-    private static AetherNodeConfig minimalConfig() {
+    private static AetherNodeConfig minimalConfig(Path storageRoot) {
         var self = NodeId.nodeId("worker-join-wiring-boot-" + UUID.randomUUID()).unwrap();
         var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
 
@@ -172,6 +179,8 @@ class WorkerJoinCtmWiringBootTest {
                                 .certificateProvider(Option.none())
                                 .configProvider(Option.none())
                                 .environment(Option.none())
+                                .managementHttpProtocol(HttpProtocol.H1)
+                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                 .build();
     }
 
