@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.resource.DurableTopicSpec;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.topic.DurableTopicSubstrate;
@@ -34,7 +35,8 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 ///
 /// The drop must FAIL the publish for anything with durability semantics — `minSyncReplicas >= 2`
 /// (durable topics and their DLQs are parse-enforced to `min-sync == replicas >= 2`) OR a partition WAL.
-/// Each disjunct is pinned by its own test so neither can be weakened unnoticed. Any other stream is
+/// So is any entity keyspace log (`entity:`) or durable-topic / DLQ stream (`topic:`), identified by name.
+/// Each disjunct is pinned by its own test so none can be weakened unnoticed. Any other stream is
 /// best-effort: the drop is absorbed, counted and logged, and never stored.
 class StreamPartitionManagerFrozenRingDropTest {
 
@@ -85,7 +87,8 @@ class StreamPartitionManagerFrozenRingDropTest {
 
         manager.publishLocal(config.name(), PARTITION, new byte[OVERSIZED], 9_999L)
                .onSuccess(offset -> fail("min-sync >= 2 drop must fail the publish, but it was acked at "
-                                         + offset));
+                                         + offset))
+               .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.EVENT_DROPPED));
 
         publishExpecting(manager, config, 1, 1);
         manager.close();
@@ -103,13 +106,60 @@ class StreamPartitionManagerFrozenRingDropTest {
 
         manager.publishLocal(config.name(), PARTITION, new byte[OVERSIZED], 9_999L)
                .onSuccess(offset -> fail("a drop on a WAL-backed stream must fail the publish, but it was"
-                                         + " acked at " + offset));
+                                         + " acked at " + offset))
+               .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.EVENT_DROPPED));
 
         assertThat(walRecords(config)).as("dropped event must not be WAL-written").hasSize(1);
         publishExpecting(manager, config, 1, 1);
         manager.close();
 
         assertRebuiltRingHoldsExactly(config, 2);
+    }
+
+    /// An entity keyspace log (`entity:<keyspace>`) is durable state even at RF=1 with no WAL (Forge,
+    /// embedded, or the non-durable opt-in): acking a dropped record would report a lost write as
+    /// committed. The drop fails the publish on the stream NAME alone.
+    @Test
+    void publishLocal_fails_whenFrozenRingCannotFitEvent_onEntityStreamWithoutWalOrMinSync() {
+        assertDropFailsWithoutWal(namedConfig("entity:ledger-1233"));
+    }
+
+    /// A durable-topic stream or its DLQ (`topic:<address>`, `topic:<address>.dlq`) fails the drop on the
+    /// stream NAME alone, independent of the parse-enforced `min-sync >= 2`.
+    @Test
+    void publishLocal_fails_whenFrozenRingCannotFitEvent_onTopicAndDlqStreamsWithoutWalOrMinSync() {
+        assertDropFailsWithoutWal(namedConfig("topic:orders-1233"));
+        assertDropFailsWithoutWal(namedConfig("topic:orders-1233.dlq"));
+    }
+
+    /// Bring-up disclosure: rebuilding a partition from a WAL whose tail holds a record larger than the
+    /// ring can grow to (pool refuses growth) FAILS the partition bring-up and leaves the stream absent on
+    /// this node. Before #1233 the record was silently skipped and every later record shifted down one
+    /// offset. Failing is the intended outcome — a restart must be given enough pool budget.
+    @Test
+    void createStream_failsBringUp_whenWalRecoveryMeetsRecordLargerThanFrozenRing() {
+        var config = durableTopicConfig();
+        var unconstrained = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+        create(unconstrained, config);
+
+        publishExpecting(unconstrained, config, 0, 0);
+        unconstrained.publishLocal(config.name(), PARTITION, new byte[OVERSIZED], 9_999L)
+                     .onFailure(cause -> fail("an unconstrained ring stores the large event: " + cause.message()));
+        publishExpecting(unconstrained, config, 2, 2);
+        unconstrained.close();
+
+        assertThat(walRecords(config)).hasSize(3);
+
+        var frozen = streamPartitionManager(floorBudget(config), Option.some(walDir));
+
+        frozen.createStream(config)
+              .onSuccess(_ -> fail("recovering a record larger than the frozen ring must fail bring-up, not"
+                                   + " skip the record and shift later offsets"))
+              .onFailure(cause -> assertThat(cause.message()).contains(StreamError.General.EVENT_DROPPED.message()));
+        frozen.readLocal(config.name(), PARTITION, 0, 100)
+              .onSuccess(events -> fail("no partial ring may be served, read " + events.size() + " events"));
+
+        frozen.close();
     }
 
     /// Best-effort (min-sync < 2, no WAL): the drop is absorbed — acked at the UNCHANGED head, counted,
@@ -145,6 +195,34 @@ class StreamPartitionManagerFrozenRingDropTest {
         var spec = DurableTopicSpec.durableTopicSpec(1, 2, 2, DurableTopicSpec.DEFAULT_RETENTION).unwrap();
 
         return DurableTopicSubstrate.topicStreamConfig("orders-1233", spec);
+    }
+
+    private static StreamConfig namedConfig(String name) {
+        return StreamConfig.streamConfig(name,
+                                         1,
+                                         RetentionPolicy.retentionPolicy(),
+                                         "earliest",
+                                         StreamConfig.DEFAULT.maxEventSizeBytes(),
+                                         StreamConfig.DEFAULT.consistencyMode(),
+                                         1,
+                                         1,
+                                         StreamCompression.NONE,
+                                         Option.none());
+    }
+
+    private static void assertDropFailsWithoutWal(StreamConfig config) {
+        var manager = streamPartitionManager(floorBudget(config), Option.none());
+        create(manager, config);
+
+        publishExpecting(manager, config, 0, 0);
+
+        manager.publishLocal(config.name(), PARTITION, new byte[OVERSIZED], 9_999L)
+               .onSuccess(offset -> fail("'" + config.name() + "' must fail a dropped publish, but it was acked at "
+                                         + offset))
+               .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.EVENT_DROPPED));
+
+        publishExpecting(manager, config, 1, 1);
+        manager.close();
     }
 
     private static StreamConfig plainConfig() {
