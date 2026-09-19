@@ -646,8 +646,8 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     /// At most ONE fire per timer is queued at a time (#1269). The tick runs every second and a fire can
     /// sit behind a slow or stalled operation on its key; queuing one per tick grew that key's queue by
     /// the number of due timers every second, and [#fireStillPending] discarded the extras only once they
-    /// finally ran. The in-flight mark is cleared when the fire's promise settles, either way, and the
-    /// in-tail re-checks stay — the mark only stops duplicates from being QUEUED.
+    /// finally ran. The in-tail re-checks stay — the mark only stops duplicates from being QUEUED. See
+    /// [#fireReleasing] for where the mark is cleared, and why there.
     @Contract
     private void submitFire(int partition, EntityFold.DueTimer due) {
         var id = fireKey(due);
@@ -658,9 +658,19 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
 
         perKey.submit(due.key(),
                       () -> Deadline.runWith(Deadline.unbounded(),
-                                             () -> fireAdmitted(partition, due)))
-              .onResult(_ -> firesInFlight.remove(id))
+                                             () -> fireReleasing(partition, due, id)))
               .onFailure(cause -> logFireDeferred(due, cause));
+    }
+
+    /// The fire, with its in-flight mark cleared as a STEP of the fire's own chain — success, failure or a
+    /// synchronous throw alike — so the mark is gone before the key's next operation can start. Cleared
+    /// from an observer on the executor's promise instead, it ran on another thread and could still be set
+    /// when the next tick came: a fire deferred by a fence was then skipped as "in flight" after the fence
+    /// had cleared.
+    private Promise<Unit> fireReleasing(int partition, EntityFold.DueTimer due, TimerId id) {
+        return Result.lift(() -> fireAdmitted(partition, due))
+                     .<Promise<Unit>> fold(Cause::promise, fire -> fire)
+                     .withResult(_ -> firesInFlight.remove(id));
     }
 
     private Promise<Unit> fireAdmitted(int partition, EntityFold.DueTimer due) {
