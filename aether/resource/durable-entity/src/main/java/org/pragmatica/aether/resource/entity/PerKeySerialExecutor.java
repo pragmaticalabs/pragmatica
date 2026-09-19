@@ -15,8 +15,8 @@ import static org.pragmatica.lang.Promise.unitPromise;
 
 
 /// Lock-free, thread-confined per-key serial executor — the JBCT-native serialization idiom shared by
-/// every [DurableEntity] backing ([InMemoryDurableEntity], [FencedDurableEntity],
-/// [PartitionFencedDurableEntity]). Operations on the SAME key run in strict submission order;
+/// every [DurableEntity] backing: the production [PartitionFencedDurableEntity] and the test-only
+/// `InMemoryDurableEntity` / `FencedDurableEntity` fixtures (#1270). Operations on the SAME key run in strict submission order;
 /// operations on DIFFERENT keys proceed concurrently. No `synchronized`, no raw locks, no raw threads.
 ///
 /// ## How it works
