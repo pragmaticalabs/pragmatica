@@ -17,6 +17,7 @@ import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
+import org.pragmatica.aether.stream.segment.ConsumerCursorStore.CommitOutcome;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -52,6 +53,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// rather than holding the node. [design intent — unverified: 5s is not derived from a measured
     /// commit-latency distribution, it is a judgment call reviewed and accepted for this fix].
     private static final TimeSpan CURSOR_COMMIT_SHUTDOWN_BOUND = timeSpan(5).seconds();
+    /// #1239: a periodic commit waits for nothing — the single-flight slot already keeps periodic
+    /// commits apart, and a detach flush cancels the consumer before it is issued.
+    private static final Promise<CommitOutcome> NO_PREDECESSOR = Promise.success(CommitOutcome.persisted());
 
     private final StreamPartitionManager partitionManager;
     private final DeadLetterHandler dlHandler;
@@ -63,7 +67,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private final ScheduledFuture<?> idleConsumerChecker;
     /// #654: node-wide count of cursor commits (final flush or periodic checkpoint) that resolved
     /// with a failure or never settled at all ([#reportIfUnsettled]). One counted incident per commit:
-    /// whichever of [#reportIfUnsettled], [#onCursorCommitFailure], or [#recordIfRecovered] first wins
+    /// whichever of [#reportIfUnsettled], [#onCursorCommitFailure], or [#reportIfLocalOnly] first wins
     /// that commit's own [TrackedCommit#reported] token increments this counter; every other one of
     /// those three that later fires for the SAME commit does not (see [#reportCommitOutcome]).
     /// Survives a consumer's removal from [#consumers] at detach, which a per-consumer-only field could
@@ -174,10 +178,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                      .mapToUnit();
     }
 
+    /// Cancel FIRST (#1239): a cancelled consumer issues no further periodic commit, so the detach flush
+    /// — chained behind any periodic commit still in flight ([#flushCursorForKey]) — is the last commit
+    /// this consumer ever makes.
     private void cleanupConsumer(ConsumerKey key, ConsumerState state) {
-        flushCursorForKey(key, state);
-        removePushListener(key, state);
         state.cancel();
+        removePushListener(key, state);
+        flushCursorForKey(key, state);
     }
 
     @Override
@@ -213,7 +220,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// consensus write cannot hold node stop past [#CURSOR_COMMIT_SHUTDOWN_BOUND] — this runs inside
     /// the #488 ordering window, while [#partitionManager] and the cursor store are still alive.
     /// Each commit's [#observedCommit] handlers are attached BEFORE batching, so a commit that resolves
-    /// after the bound still reaches its own [#onCursorCommitFailure] / [#recordIfRecovered] path when
+    /// after the bound still reaches its own [#onCursorCommitFailure] / [#reportIfLocalOnly] path when
     /// it settles — but that is not enough on its own: the documented contract ([#close]'s own javadoc,
     /// `management-api.md`'s redelivery paragraph) says a commit that has not settled within the bound
     /// counts as failed for THIS shutdown even if it later succeeds, and a plain success carries no
@@ -244,7 +251,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// #654 round 4: a commit still unresolved the instant [#awaitFinalCursorCommits]'s bound expires is
     /// reported through [#reportCommitOutcome] exactly as a genuine failure would be — "gave up waiting"
     /// rather than an observed cause — racing on the SAME per-commit [TrackedCommit#reported] token that
-    /// [#onCursorCommitFailure] and [#recordIfRecovered] use for this same commit if it later settles.
+    /// [#onCursorCommitFailure] and [#reportIfLocalOnly] use for this same commit if it later settles.
     /// Whichever of the three gets there first owns the one increment and the one ERROR line; the other
     /// two, if they still fire afterward for this SAME commit, log WARNING instead.
     ///
@@ -253,7 +260,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// be decremented by a later settle: once incremented for this commit it stays incremented, because
     /// a commit that has not settled within the bound counts as failed for THIS shutdown even if it
     /// later succeeds (see [#close]'s own javadoc, `management-api.md`'s redelivery paragraph). The
-    /// detail text has no such protection: [#onCursorCommitFailure] and [#recordIfRecovered] are the
+    /// detail text has no such protection: [#onCursorCommitFailure] and [#reportIfLocalOnly] are the
     /// SAME `observedCommit`-attached handlers already waiting on this promise, and when they eventually
     /// fire they overwrite "unsettled at shutdown bound" with a more precise cause (`local commit: ...`
     /// / `checkpoint publish: ...`) — the exact cause is new information even when the count is not.
@@ -277,7 +284,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     /// #654 round 4: the single place all three paths that can observe a commit's outcome —
     /// [#reportIfUnsettled] (bound expiry), [#onCursorCommitFailure] (a genuine local-commit failure),
-    /// and [#recordIfRecovered] (a recovered checkpoint-publish failure) — funnel through to record the
+    /// and [#reportIfLocalOnly] (a recovered checkpoint-publish failure) — funnel through to record the
     /// detail text, decide the increment, and log. The dedup token lives on the COMMIT
     /// ([TrackedCommit#reported]), not the consumer, so two commits sharing one [ConsumerState] (a
     /// periodic checkpoint still in flight when [#close] issues that same consumer's final commit) are
@@ -307,13 +314,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// #654 round 4: pairs one commit's promise with the (key, state) [#reportCommitOutcome] logs and
     /// records against, and [#reported] — the per-COMMIT dedup token that lets this commit's bound
     /// report ([#reportIfUnsettled]) and its own eventual resolution ([#onCursorCommitFailure] /
-    /// [#recordIfRecovered]) race safely for ownership of the single increment. Round 3's token lived on
+    /// [#reportIfLocalOnly]) race safely for ownership of the single increment. Round 3's token lived on
     /// [ConsumerState] instead, shared by every commit that consumer ever issues; a periodic
     /// [#checkpointIfNeeded] commit still in flight when [#close] issues that SAME consumer's final
     /// commit shared that one flag, so a genuine failure on the periodic commit could be silently
     /// uncounted (already "spent" by the final commit's bound report) or double-counted (a race between
     /// the bound check and the commit's own resolution).
-    private record TrackedCommit(ConsumerKey key, ConsumerState state, Promise<Unit> commit, AtomicBoolean reported) {}
+    private record TrackedCommit(ConsumerKey key, ConsumerState state, Promise<CommitOutcome> commit, AtomicBoolean reported) {}
 
     @Contract
     private void periodicConsumerCheck() {
@@ -416,12 +423,17 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// [#cleanupConsumer]'s call discards on purpose: a single interactive detach does not gate node
     /// shutdown, so nothing there needs to await it, and the failure is already logged/counted inside
     /// [#observedCommit] regardless of who awaits.
-    private Promise<Unit> flushCursorForKey(ConsumerKey key, ConsumerState state) {
+    ///
+    /// #1239: chained behind the consumer's periodic commit if one is still in flight, so the two never
+    /// overlap for one key — the final commit is issued only once the periodic one settles, and carries
+    /// the cursor as it stands then. It is registered in [#inFlightCommits] immediately, so a periodic
+    /// commit that never settles leaves BOTH counted as unsettled at the shutdown bound.
+    private Promise<CommitOutcome> flushCursorForKey(ConsumerKey key, ConsumerState state) {
         if (!state.cursorInitialized()) {
-            return Promise.unitPromise();
+            return Promise.success(CommitOutcome.persisted());
         }
 
-        return observedCommit(key, state);
+        return observedCommit(key, state, state.periodicCommit());
     }
 
     private void subscribePushOrPoll(ConsumerKey key, ConsumerState state) {
@@ -478,12 +490,25 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
 
         state.clearCheckpointPending();
-        observedCommit(key, state).onResult(result -> afterCheckpoint(key, state, result));
+        state.periodicCommit(observedCommit(key, state, NO_PREDECESSOR).onResult(result -> afterCheckpoint(key,
+                                                                                                           state,
+                                                                                                           result)));
+    }
+
+    /// Retries on a failed commit AND on a [CommitOutcome.LocalOnly] one: a commit whose cluster
+    /// checkpoint did not land has not persisted the cursor where failover reads it (#1239).
+    @Contract
+    private void afterCheckpoint(ConsumerKey key, ConsumerState state, Result<CommitOutcome> result) {
+        result.onSuccess(outcome -> checkpointSettled(key, state, outcome))
+              .onFailure(_ -> retryCheckpoint(key, state));
     }
 
     @Contract
-    private void afterCheckpoint(ConsumerKey key, ConsumerState state, Result<Unit> result) {
-        result.onSuccess(_ -> checkpointPersisted(key, state)).onFailure(_ -> retryCheckpoint(key, state));
+    private void checkpointSettled(ConsumerKey key, ConsumerState state, CommitOutcome outcome) {
+        switch (outcome) {
+            case CommitOutcome.Persisted _ -> checkpointPersisted(key, state);
+            case CommitOutcome.LocalOnly _ -> retryCheckpoint(key, state);
+        }
     }
 
     /// The trigger counters reset only here, on a commit that SUCCEEDED. A request absorbed while that
@@ -521,19 +546,20 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// #654: the single place that performs a cursor commit and observes its outcome — shared by the
     /// detach paths ([#flushCursorForKey]) and the periodic path ([#checkpointIfNeeded]), closing the
     /// discard defect for both call sites at once. A missing [#cursorStore] (no persistence configured)
-    /// has nothing to commit and nothing to fail, so it resolves the fallback unit promise rather than
-    /// going through [#onCursorCommitFailure].
-    private Promise<Unit> observedCommit(ConsumerKey key, ConsumerState state) {
-        return cursorStore.map(store -> issueTrackedCommit(key, state, store))
-                          .or(Promise.unitPromise());
+    /// has nothing to commit and nothing to fail, so it resolves as persisted rather than going through
+    /// [#onCursorCommitFailure]. `predecessor` is the commit this one must not overlap (#1239).
+    private Promise<CommitOutcome> observedCommit(ConsumerKey key,
+                                                  ConsumerState state,
+                                                  Promise<CommitOutcome> predecessor) {
+        return cursorStore.map(store -> issueTrackedCommit(key, state, store, predecessor))
+                          .or(Promise.success(CommitOutcome.persisted()));
     }
 
     /// #654 round 2: clears the consumer's recorded failure OPTIMISTICALLY at the start of the attempt,
     /// not on the outer promise's success — a store composed of sub-stages (e.g. the node's
-    /// cluster-aware store) can settle this promise successfully while still recovering an inner failure
-    /// (see [ConsumerCursorStore#lastRecoveredFailure]), and [#recordIfRecovered] runs from the same
-    /// `.onSuccess` that would otherwise have cleared it, so clearing there would erase what it just
-    /// recorded.
+    /// cluster-aware store) can settle this promise successfully with a [CommitOutcome.LocalOnly]
+    /// outcome, and [#reportIfLocalOnly] runs from the same `.onSuccess` that would otherwise have
+    /// cleared it, so clearing there would erase what it just recorded.
     ///
     /// #654 round 4 (JBCT): extracted out of [#observedCommit]'s `cursorStore.map` lambda, which had
     /// grown into a five-statement block. Mints THIS commit's [TrackedCommit] — and its own dedup token
@@ -541,34 +567,38 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// it into [#inFlightCommits] before the commit can possibly resolve, so a `store.commit(...)` that
     /// resolves synchronously never leaves a stale entry behind (the registration happens before
     /// `onResult` is even attached).
-    private Promise<Unit> issueTrackedCommit(ConsumerKey key, ConsumerState state, ConsumerCursorStore store) {
+    ///
+    /// #1239: the store call waits for `predecessor` to settle (either way) and reads the cursor THEN;
+    /// the tracked promise is the whole chain, so it is registered and bound-awaited from the moment it
+    /// is requested.
+    private Promise<CommitOutcome> issueTrackedCommit(ConsumerKey key,
+                                                      ConsumerState state,
+                                                      ConsumerCursorStore store,
+                                                      Promise<CommitOutcome> predecessor) {
         state.clearCursorCommitFailure();
-        var commit = store.commit(key.groupId(), key.streamName(), key.partition(), state.cursor());
+        var commit = predecessor.fold(_ -> store.commit(key.groupId(), key.streamName(), key.partition(), state.cursor()));
         var tracked = new TrackedCommit(key, state, commit, new AtomicBoolean(false));
 
         inFlightCommits.add(tracked);
 
         return commit.onResult(_ -> inFlightCommits.remove(tracked))
-                     .onSuccess(_ -> recordIfRecovered(tracked, store))
+                     .onSuccess(outcome -> reportIfLocalOnly(tracked, outcome))
                      .onFailure(cause -> onCursorCommitFailure(tracked, cause));
     }
 
-    /// #654 round 2: `commit(...)` settled successfully, but the store may have recovered a sub-stage
-    /// failure (e.g. a consensus checkpoint publish) rather than let it fail the outer promise — poll
-    /// for it right after resolution and fold it into the same surface a local-commit failure uses.
-    /// #654 round 4: routes through [#reportCommitOutcome] on the SAME per-commit token
-    /// [#reportIfUnsettled] and [#onCursorCommitFailure] use for this commit, so a recovered failure
-    /// arriving after the bound already reported this commit unsettled logs WARNING, not a second ERROR,
-    /// and does not increment [#cursorCommitFailureCount] again.
-    private void recordIfRecovered(TrackedCommit tracked, ConsumerCursorStore store) {
-        store.lastRecoveredFailure(tracked.key().groupId(),
-                                   tracked.key().streamName(),
-                                   tracked.key().partition())
-             .onPresent(detail -> reportCheckpointRecovered(tracked, detail));
+    /// #654 round 2 / #1239: `commit(...)` settled successfully but its cluster checkpoint did not land —
+    /// the cause arrives on THIS commit's outcome, so it can never be read against another commit — and
+    /// is folded into the same surface a local-commit failure uses. #654 round 4: routes through
+    /// [#reportCommitOutcome] on the SAME per-commit token [#reportIfUnsettled] and
+    /// [#onCursorCommitFailure] use for this commit, so a local-only outcome arriving after the bound
+    /// already reported this commit unsettled logs WARNING, not a second ERROR, and does not increment
+    /// [#cursorCommitFailureCount] again.
+    private void reportIfLocalOnly(TrackedCommit tracked, CommitOutcome outcome) {
+        if (outcome instanceof CommitOutcome.LocalOnly(var cause)) {
+            reportCheckpointRecovered(tracked, cause.message());
+        }
     }
 
-    /// #654 round 4 (JBCT): extracted out of [#recordIfRecovered]'s `onPresent` lambda, which had grown
-    /// into a multi-statement block once round 3 added the dedup guard — named here instead.
     private void reportCheckpointRecovered(TrackedCommit tracked, String detail) {
         reportCommitOutcome(tracked,
                             "checkpoint publish: " + detail,
@@ -580,7 +610,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     }
 
     /// #654 round 4: routes through [#reportCommitOutcome] on the SAME per-commit token
-    /// [#reportIfUnsettled] and [#recordIfRecovered] use for this commit — a local-commit failure
+    /// [#reportIfUnsettled] and [#reportIfLocalOnly] use for this commit — a local-commit failure
     /// arriving after the bound already reported this commit unsettled logs WARNING, not a second ERROR,
     /// and does not increment [#cursorCommitFailureCount] again; the exact failure cause is still
     /// recorded, since it is new information even when the count is not.
@@ -614,9 +644,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         scheduleNextPoll(key, state);
     }
 
-    /// Push-listener entry point, run synchronously on the APPENDING thread. It only requests a drain; a
-    /// pass already running for this consumer picks the new event up instead of a second cycle starting
-    /// beside it (#1238).
+    /// Push-listener entry point, run synchronously on the NOTIFYING thread — the appender today, the
+    /// ring's per-partition notifier once #1258 lands. It only requests a drain, which never runs a handler
+    /// on this thread; a pass already running for this consumer picks the new event up instead of a
+    /// second cycle starting beside it (#1238).
     @Contract
     private void onAppend(ConsumerKey key, ConsumerState state) {
         requestDrain(key, state);
@@ -626,12 +657,15 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// and the release of a retry or dead-letter hold all come through here. `dirty` records that there
     /// may be something new to read; only the caller that flips `running` false->true starts a pass, so
     /// at most one pass per (group, partition) runs at any instant and nothing ever delivers one offset
-    /// twice concurrently.
+    /// twice concurrently. The pass itself is DISPATCHED ([#continueDrain]), never run on the caller: the
+    /// caller may be the ring's notifying thread, where an inline handler can re-enter the publish path
+    /// (a handler that publishes to another partition — the #1258 deadlock) or stall every later
+    /// notification for the partition, or a subscriber, which must not run slice code synchronously.
     @Contract
     private void requestDrain(ConsumerKey key, ConsumerState state) {
         state.markDirty();
         if (state.tryStartDrain()) {
-            drainPass(key, state);
+            continueDrain(key, state);
         }
     }
 
@@ -664,10 +698,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
     }
 
-    /// The next pass runs on a scheduler thread, never inline: `onResult` on an ALREADY-resolved promise
-    /// (a local read plus a handler that returns a completed promise) runs its action on the calling
-    /// stack, so an inline continuation would recurse once per batch and a deep backlog could overflow
-    /// the stack.
+    /// Every pass runs on its own [SharedScheduler] task — a virtual thread per task body — never inline.
+    /// For the first pass that keeps handlers off the requester's thread (see [#requestDrain]); for every
+    /// further pass it also keeps the stack flat: `onResult` on an ALREADY-resolved promise (a local read
+    /// plus a handler that returns a completed promise) runs its action on the calling stack, so an
+    /// inline continuation would recurse once per batch and a deep backlog could overflow it.
     @Contract
     private void continueDrain(ConsumerKey key, ConsumerState state) {
         SharedScheduler.schedule(() -> drainPass(key, state),
@@ -1006,6 +1041,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         private volatile ScheduledFuture<?> future;
         private volatile LongConsumer pushListenerRef;
         private volatile OffHeapRingBuffer pushBufferRef;
+        /// #1239: the latest periodic commit, so a detach flush can chain behind it.
+        private volatile Promise<CommitOutcome> periodicCommitRef = NO_PREDECESSOR;
         private final AtomicLong currentPollMs = new AtomicLong(MIN_POLL_MS);
         private final AtomicLong lastCheckpointTime = new AtomicLong(System.currentTimeMillis());
         private final AtomicLong lastPollTime = new AtomicLong(System.currentTimeMillis());
@@ -1101,6 +1138,15 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         boolean shouldCheckpoint() {
             return eventsSinceCheckpoint.get() >= CHECKPOINT_EVENT_THRESHOLD || (System.currentTimeMillis() - lastCheckpointTime.get()) >= config.checkpointInterval()
                                                                                                                                                  .millis();
+        }
+
+        Promise<CommitOutcome> periodicCommit() {
+            return periodicCommitRef;
+        }
+
+        @Contract
+        void periodicCommit(Promise<CommitOutcome> commit) {
+            this.periodicCommitRef = commit;
         }
 
         TimeSpan checkpointInterval() {

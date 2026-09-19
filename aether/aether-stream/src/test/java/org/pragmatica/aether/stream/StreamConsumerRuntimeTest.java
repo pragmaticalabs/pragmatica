@@ -25,6 +25,7 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.DeadLetterHandler.DeadLetterEntry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
+import org.pragmatica.aether.stream.segment.ConsumerCursorStore.CommitOutcome;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -486,10 +487,10 @@ class StreamConsumerRuntimeTest {
     /// without redelivery, and a periodic checkpoint failure never blocks delivery.
     @Nested
     class CursorCommitObservability {
-        private static ConsumerCursorStore committing(Promise<Unit> commitResult) {
+        private static ConsumerCursorStore committing(Promise<CommitOutcome> commitResult) {
             return new ConsumerCursorStore() {
                 @Override
-                public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
                     return commitResult;
                 }
 
@@ -504,12 +505,12 @@ class StreamConsumerRuntimeTest {
         /// for the same `(group, stream, partition)` key are two DISTINCT calls into `commit(...)`, so
         /// this hands back a different promise per call instead of [#committing]'s single fixed one —
         /// the shape D1 needed to reproduce two commits sharing one [ConsumerRuntimeState.ConsumerState].
-        private static ConsumerCursorStore committingSequence(List<Promise<Unit>> commitResults, CountDownLatch commitsIssued) {
+        private static ConsumerCursorStore committingSequence(List<Promise<CommitOutcome>> commitResults, CountDownLatch commitsIssued) {
             var index = new AtomicInteger(0);
 
             return new ConsumerCursorStore() {
                 @Override
-                public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
                     var i = Math.min(index.getAndIncrement(), commitResults.size() - 1);
 
                     commitsIssued.countDown();
@@ -562,7 +563,7 @@ class StreamConsumerRuntimeTest {
         @Test
         void close_countsUnsettledCommit_whenFinalCommitNeverSettlesWithinBound() throws InterruptedException {
             createTestStream("orders");
-            Promise<Unit> pending = Promise.promise();
+            Promise<CommitOutcome> pending = Promise.promise();
             var store = committing(pending);
             var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
 
@@ -606,7 +607,7 @@ class StreamConsumerRuntimeTest {
         @Test
         void close_countsUnsettledCommit_evenWhenFinalCommitLaterSucceeds() throws InterruptedException {
             createTestStream("orders");
-            Promise<Unit> pending = Promise.promise();
+            Promise<CommitOutcome> pending = Promise.promise();
             var store = committing(pending);
             var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);
 
@@ -630,7 +631,7 @@ class StreamConsumerRuntimeTest {
             var lateResolution = new CountDownLatch(1);
 
             pending.onResult(_ -> lateResolution.countDown());
-            pending.succeed(Unit.unit());
+            pending.succeed(CommitOutcome.persisted());
 
             assertThat(lateResolution.await(2, TimeUnit.SECONDS))
                       .describedAs("the late success handler must actually run before the counter assertion means anything")
@@ -646,10 +647,10 @@ class StreamConsumerRuntimeTest {
             var committed = new AtomicReference<Long>();
             var store = new ConsumerCursorStore() {
                 @Override
-                public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
                     committed.set(offset);
 
-                    return Promise.unitPromise();
+                    return Promise.success(CommitOutcome.persisted());
                 }
 
                 @Override
@@ -773,8 +774,8 @@ class StreamConsumerRuntimeTest {
             var persisted = new CopyOnWriteArrayList<Long>();
             var store = new ConsumerCursorStore() {
                 @Override
-                public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
-                    Promise<Unit> pending = Promise.promise();
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    Promise<CommitOutcome> pending = Promise.promise();
 
                     peakOutstanding.accumulateAndGet(outstanding.incrementAndGet(), Math::max);
                     CompletableFuture.delayedExecutor(100, TimeUnit.MILLISECONDS)
@@ -783,10 +784,10 @@ class StreamConsumerRuntimeTest {
                     return pending;
                 }
 
-                private void settle(Promise<Unit> pending, long offset) {
+                private void settle(Promise<CommitOutcome> pending, long offset) {
                     outstanding.decrementAndGet();
                     persisted.add(offset);
-                    pending.succeed(Unit.unit());
+                    pending.succeed(CommitOutcome.persisted());
                 }
 
                 @Override
@@ -833,8 +834,8 @@ class StreamConsumerRuntimeTest {
             var lastSucceeded = new java.util.concurrent.atomic.AtomicLong(-1);
             var store = new ConsumerCursorStore() {
                 @Override
-                public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
-                    Promise<Unit> pending = Promise.promise();
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                    Promise<CommitOutcome> pending = Promise.promise();
 
                     if (offset < lastSucceeded.get()) {
                         regressions.add(offset + " issued after " + lastSucceeded.get() + " succeeded");
@@ -846,9 +847,9 @@ class StreamConsumerRuntimeTest {
                     return pending;
                 }
 
-                private void succeed(Promise<Unit> pending, long offset) {
+                private void succeed(Promise<CommitOutcome> pending, long offset) {
                     lastSucceeded.accumulateAndGet(offset, Math::max);
-                    pending.succeed(Unit.unit());
+                    pending.succeed(CommitOutcome.persisted());
                 }
 
                 @Override
@@ -914,14 +915,14 @@ class StreamConsumerRuntimeTest {
         private static ConsumerCursorStore failingFirst(List<Long> commits, List<Long> persisted) {
             return new ConsumerCursorStore() {
                 @Override
-                public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
+                public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
                     commits.add(offset);
                     if (commits.size() == 1) {
                         return StreamError.General.BUFFER_EMPTY.promise();
                     }
                     persisted.add(offset);
 
-                    return Promise.unitPromise();
+                    return Promise.success(CommitOutcome.persisted());
                 }
 
                 @Override
@@ -941,8 +942,8 @@ class StreamConsumerRuntimeTest {
         @Test
         void close_countsBothUnsettledCommits_whenPeriodicAndFinalCommitShareOneConsumer() throws InterruptedException {
             createTestStream("orders");
-            Promise<Unit> periodicPending = Promise.promise();
-            Promise<Unit> finalPending = Promise.promise();
+            Promise<CommitOutcome> periodicPending = Promise.promise();
+            Promise<CommitOutcome> finalPending = Promise.promise();
             var commitsIssued = new CountDownLatch(1);
             var store = committingSequence(List.of(periodicPending, finalPending), commitsIssued);
             var observedRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), store);

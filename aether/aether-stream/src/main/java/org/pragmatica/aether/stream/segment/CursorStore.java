@@ -9,7 +9,6 @@ import java.nio.ByteOrder;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.StorageInstance;
 
@@ -60,12 +59,12 @@ public final class CursorStore implements ConsumerCursorStore {
     /// GC's orphan scan and its delete step) and #802 (a block demoted to the DHT alone drops out of
     /// every node's local GC candidate set, with no cluster-wide reclamation process).
     @Override
-    public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
+    public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
         var refName = buildRefName(consumerGroup, streamName, partition);
         var payload = encodeOffset(offset);
 
         return storage.replaceRef(refName, payload)
-                      .map(_ -> Unit.unit())
+                      .map(_ -> CommitOutcome.persisted())
                       .onSuccess(_ -> logCommit(consumerGroup, streamName, partition, offset));
     }
 

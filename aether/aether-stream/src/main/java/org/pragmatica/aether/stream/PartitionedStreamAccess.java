@@ -301,7 +301,8 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
         var cursorWriter = cursorStore.map(cs -> (CursorCheckpointWriter)(stream, group, partition, offset) -> cs.commit(group,
                                                                                                                          stream,
                                                                                                                          partition,
-                                                                                                                         offset))
+                                                                                                                         offset)
+                                                                                                                 .mapToUnit())
                                       .or(NOOP_WRITER);
 
         return new PartitionedStreamAccess<>(partitionManager,

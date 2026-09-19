@@ -4,13 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.stream;
 
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamCursorCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamCursorCheckpointValue;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -35,27 +35,28 @@ import org.slf4j.LoggerFactory;
 /// cadence — every 1000 delivered events or the group's checkpoint interval (the 1s `ConsumerConfig`
 /// default for declarative consumers, 500ms for durable-topic groups per `DurableGroupIdentity`) per
 /// (consumer group, partition), whichever comes first; a failed periodic checkpoint is retried with
-/// backoff until it persists (#1239). A consensus failure must never fail the local checkpoint — degrading the failover replay
-/// bound back to the local-only behavior is an acceptable outcome, silently losing the failure is not
-/// (#654 round 2): the publish is chained onto `commit(...)`'s own Promise so the 5-second shutdown
-/// bound covers it too, and a failure is recovered into a successful `Unit` (never failing the local
-/// checkpoint) but recorded in [#recoveredFailures] for [#lastRecoveredFailure] to surface — the
-/// runtime polls that right after `commit(...)` resolves and folds it into the same
-/// `cursorCommitFailureCount` / `lastCursorCommitFailure` surface a local-commit failure uses.
+/// backoff until it persists (#1239). A consensus failure must never fail the local checkpoint — degrading
+/// the failover replay bound back to the local-only behavior is an acceptable outcome, silently losing
+/// the failure is not (#654 round 2): the publish is chained onto `commit(...)`'s own Promise so the
+/// 5-second shutdown bound covers it too, and a failed publish resolves that commit as
+/// [CommitOutcome.LocalOnly] carrying the cause. #1239: the outcome travels on the commit's own promise;
+/// the per-key side map it replaces let two overlapping commits for one key read each other's cause.
+/// The runtime counts a `LocalOnly` exactly like a local-commit failure (prefixed `checkpoint publish:`)
+/// and retries the periodic checkpoint until it reports [CommitOutcome.Persisted]. `local` is expected
+/// to be a single-stage store (the node's disk store), so only its failure — not its outcome — matters.
 public record ClusterCursorStore(ConsumerCursorStore local,
                                  Fn1<Option<Long>, StreamCursorCheckpointKey> committedReader,
-                                 Fn1<Promise<Unit>, KVCommand<AetherKey>> commandWriter,
-                                 ConcurrentHashMap<StreamCursorCheckpointKey, String> recoveredFailures) implements ConsumerCursorStore {
+                                 Fn1<Promise<Unit>, KVCommand<AetherKey>> commandWriter) implements ConsumerCursorStore {
     private static final Logger log = LoggerFactory.getLogger(ClusterCursorStore.class);
 
     public static ConsumerCursorStore clusterCursorStore(ConsumerCursorStore local,
                                                          Fn1<Option<Long>, StreamCursorCheckpointKey> committedReader,
                                                          Fn1<Promise<Unit>, KVCommand<AetherKey>> commandWriter) {
-        return new ClusterCursorStore(local, committedReader, commandWriter, new ConcurrentHashMap<>());
+        return new ClusterCursorStore(local, committedReader, commandWriter);
     }
 
     @Override
-    public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
+    public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
         return local.commit(consumerGroup, streamName, partition, offset)
                     .flatMap(_ -> publishCheckpoint(consumerGroup, streamName, partition, offset));
     }
@@ -67,30 +68,23 @@ public record ClusterCursorStore(ConsumerCursorStore local,
                                                      committed(consumerGroup, streamName, partition)));
     }
 
-    /// #654 round 2: read right after `commit(...)` resolves — [#publishCheckpoint] clears the entry
-    /// on a subsequent successful publish, so a stale detail from an earlier attempt never lingers
-    /// past the next attempt for the same key.
-    @Override
-    public Option<String> lastRecoveredFailure(String consumerGroup, String streamName, int partition) {
-        return Option.option(recoveredFailures.get(checkpointKey(consumerGroup, streamName, partition)));
+    /// FER: a failed consensus publish degrades this commit to [CommitOutcome.LocalOnly] instead of
+    /// failing it — the local write stands, and the caller learns from the outcome that the cluster
+    /// checkpoint did not land.
+    private Promise<CommitOutcome> publishCheckpoint(String consumerGroup, String streamName, int partition, long offset) {
+        return commandWriter.apply(checkpointCommand(consumerGroup, streamName, partition, offset))
+                            .map(_ -> CommitOutcome.persisted())
+                            .recover(cause -> localOnly(consumerGroup, streamName, partition, cause));
     }
 
-    private Promise<Unit> publishCheckpoint(String consumerGroup, String streamName, int partition, long offset) {
-        var key = checkpointKey(consumerGroup, streamName, partition);
+    private static CommitOutcome localOnly(String consumerGroup, String streamName, int partition, Cause cause) {
+        log.warn("Cluster cursor checkpoint {}/{}[{}] not committed, local commit stands: {}",
+                 consumerGroup,
+                 streamName,
+                 partition,
+                 cause.message());
 
-        return commandWriter.apply(checkpointCommand(consumerGroup, streamName, partition, offset))
-                            .onSuccess(_ -> recoveredFailures.remove(key))
-                            .recover(cause -> {
-                                         recoveredFailures.put(key,
-                                                               cause.message());
-                                         log.warn("Cluster cursor checkpoint {}/{}[{}] not committed, local commit stands: {}",
-                                                  consumerGroup,
-                                                  streamName,
-                                                  partition,
-                                                  cause.message());
-
-                                         return Unit.unit();
-                                     });
+        return CommitOutcome.localOnly(cause);
     }
 
     private static StreamCursorCheckpointKey checkpointKey(String consumerGroup, String streamName, int partition) {

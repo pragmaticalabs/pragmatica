@@ -22,6 +22,7 @@ import org.pragmatica.aether.stream.DeadLetterHandler;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
+import org.pragmatica.aether.stream.segment.ConsumerCursorStore.CommitOutcome;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -77,8 +78,8 @@ class StreamConsumerRuntimeClusterCursorTest {
     private static ConsumerCursorStore succeedingLocal() {
         record succeedingLocal() implements ConsumerCursorStore {
             @Override
-            public Promise<Unit> commit(String consumerGroup, String streamName, int partition, long offset) {
-                return Promise.unitPromise();
+            public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                return Promise.success(CommitOutcome.persisted());
             }
 
             @Override
