@@ -373,6 +373,29 @@ class ProjectionTest {
                                                      .matches(claim -> !claim.done() && claim.token() == successorToken);
         }
 
+        /// #1256 R2 — a non-positive lease expires at the instant it is taken, so every racing attempt
+        /// would find the other's claim already expired and both would fold. The facade must refuse it
+        /// before claiming: neither attempt applies, and both fail naming the lease.
+        @Test
+        void nonPositiveLease_isRefused_soRacingAttemptsDoNotBothApply() {
+            var store = new InMemoryStore();
+            var projection = countingProjection(store).withClaims(new LatchedClaims(), timeSpan(0).seconds());
+            var event = new OrderSeen("a");
+
+            var first = projection.onEvent(event, FIRST);
+            var second = projection.onEvent(event, FIRST);
+
+            first.await()
+                 .onSuccess(_ -> fail("a zero lease must be refused, not claimed"))
+                 .onFailure(cause -> assertThat(cause.message()).contains("lease"));
+            second.await()
+                  .onSuccess(_ -> fail("a zero lease must be refused, not claimed"))
+                  .onFailure(cause -> assertThat(cause.message()).contains("lease"));
+
+            assertThat(store.data).describedAs("a refused lease must not let either racing attempt fold")
+                                  .doesNotContainKey("a");
+        }
+
         /// The contract itself, below the facade: a token that no longer matches the stored claim is
         /// refused as STALE by both finalize and release, and the claim is left untouched.
         @Test
