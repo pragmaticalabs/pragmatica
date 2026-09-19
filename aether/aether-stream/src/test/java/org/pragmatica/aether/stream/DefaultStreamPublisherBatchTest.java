@@ -65,6 +65,25 @@ class DefaultStreamPublisherBatchTest {
         manager.close();
     }
 
+    /// Six events over four partitions: uneven groups, so ANY re-resolution of a group's partition lands
+    /// it elsewhere. (With eight events the groups are keyed in round-robin order, and re-resolving once
+    /// per group coincidentally reproduces the grouping — the ticket's 8-event case cannot see that.)
+    @Test
+    void publishBatch_keylessUnevenGroups_landEachGroupInItsGroupedPartition() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+
+        manager.createStream(config(4)).onFailure(cause -> fail(cause.message()));
+        var publisher = streamPublisher(manager, identitySerializer(), STREAM, 4, Option.<java.util.function.Function<byte[], Object>> none());
+
+        publisher.publishBatch(events(6)).await().onFailure(cause -> fail(cause.message()));
+
+        assertThat(payloadsIn(manager, 0)).containsExactly("e0", "e4");
+        assertThat(payloadsIn(manager, 1)).containsExactly("e1", "e5");
+        assertThat(payloadsIn(manager, 2)).containsExactly("e2");
+        assertThat(payloadsIn(manager, 3)).containsExactly("e3");
+        manager.close();
+    }
+
     /// The ticket's work bound (not a time bound): 100 same-partition events with a replica that acks each
     /// ReplicateEvents message 10 ms after receiving it. Before the fix every event was its own message and
     /// its own ack round-trip — 100 sends.
