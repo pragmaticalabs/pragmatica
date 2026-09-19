@@ -446,6 +446,33 @@ class ProjectionTest {
                                   .containsEntry("a", 1);
         }
 
+        /// #1298 — the fence must use the CLAIM's generation. Here the claim step itself spans the
+        /// rebuild: the claim is decided under the old generation, then the fold starts after the bump.
+        /// A fold that re-read the generation would write legitimately under the new one while the
+        /// replay applied the same event under a different claim key.
+        @Test
+        void rebuild_foldWhoseClaimSpansTheRebuild_appliesExactlyOnce() {
+            var store = new InMemoryStore();
+            var claims = new GatedClaims();
+            var projection = Projection.of(TOPIC)
+                                       .into(store, OrderSeen::orderId)
+                                       .apply("orders-seen", (current, event) -> current.or(0) + 1, Promise::unitPromise)
+                                       .withClaims(claims, LEASE);
+            var event = new OrderSeen("a");
+
+            var inFlight = projection.onEvent(event, FIRST);
+
+            projection.rebuild().await().onFailure(cause -> fail(cause.message()));
+            claims.gate.succeed(Unit.unit());
+            inFlight.await()
+                    .onSuccess(_ -> fail("a fold claimed under the old generation must be refused at its write"))
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(Projection.ProjectionError.StaleGeneration.class));
+            projection.onEvent(event, FIRST).await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(store.data).describedAs("rebuilt model after the replay: the claim-spanning fold must not count")
+                                  .containsEntry("a", 1);
+        }
+
         /// A negative lease is refused the same way — the check is `> 0`, not `!= 0`.
         @Test
         void negativeLease_isRefused() {
@@ -686,6 +713,34 @@ class ProjectionTest {
 
         List<String> warns() {
             return List.copyOf(messages);
+        }
+    }
+
+    /// Gated [ProjectionClaims]: the FIRST claim's answer is held until `gate` completes, so a claim
+    /// decided under one generation can be delivered after a rebuild has moved it. Later claims pass
+    /// straight through.
+    private static final class GatedClaims implements ProjectionClaims {
+        private final InMemoryClaims delegate = new InMemoryClaims();
+        private final Promise<Unit> gate = Promise.promise();
+        private final AtomicInteger claims = new AtomicInteger();
+
+        @Override
+        public Promise<ClaimOutcome> claimIfAbsent(Projection.ClaimKey key, TimeSpan lease) {
+            var decided = delegate.claimIfAbsent(key, lease);
+
+            return claims.incrementAndGet() == 1
+                   ? gate.flatMap(_ -> decided)
+                   : decided;
+        }
+
+        @Override
+        public Promise<Settlement> finalizeClaim(Projection.ClaimKey key, long token) {
+            return delegate.finalizeClaim(key, token);
+        }
+
+        @Override
+        public Promise<Settlement> releaseClaim(Projection.ClaimKey key, long token) {
+            return delegate.releaseClaim(key, token);
         }
     }
 
