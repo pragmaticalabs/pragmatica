@@ -59,12 +59,30 @@ class ReplicaWalGroupCommitTest {
         replica.syncReplicated(STREAM, PARTITION).await().onFailure(cause -> fail(cause.message()));
 
         assertThat(fsyncCount(replica) - fsyncsBefore).as("replica fsyncs for one %d-record batch", RECORDS)
-                                                      .isLessThanOrEqualTo(2);
+                                                      .isBetween(1L, 2L);
         assertAckedThrough(acks, RECORDS - 1);
         replica.close();
 
         assertThat(replayOffsets()).as("replay order == offset order")
                                    .containsExactlyElementsOf(LongStream.range(0, RECORDS).boxed().toList());
+    }
+
+    /// #1277 review N2: the barrier must not target a released WAL. A replicated write that was never
+    /// synced, followed by the stream's release and rebuild, used to leave the latest-write entry pointing
+    /// at the CLOSED WAL, so the rebuilt partition's first barrier failed.
+    @Test
+    void rebuiltPartition_firstBarrier_doesNotTargetTheReleasedWal() {
+        var replica = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+
+        replica.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
+        replica.appendRecovered(STREAM, PARTITION, "r0".getBytes(UTF_8), 1000L).onFailure(cause -> fail(cause.message()));
+        replica.destroyStream(STREAM).onFailure(cause -> fail(cause.message()));
+        replica.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
+
+        replica.syncReplicated(STREAM, PARTITION)
+               .await()
+               .onFailure(cause -> fail("the rebuilt partition's barrier hit the released WAL: " + cause.message()));
+        replica.close();
     }
 
     /// The handler acks from the barrier's completion callback, which may run on another thread.
