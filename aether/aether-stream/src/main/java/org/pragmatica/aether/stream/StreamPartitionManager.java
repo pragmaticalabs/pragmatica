@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.List;
@@ -24,6 +25,7 @@ import java.util.function.LongConsumer;
 import java.util.function.LongPredicate;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.LongStream;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -1252,6 +1254,104 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// An owner append that has left the ordered section: its offset, and the group-commit fsync its WAL
     /// frame waits on (already resolved when the partition has no WAL).
     private record LoggedAppend(long offset, Promise<Unit> durable) {}
+
+    /// Batch sibling of [#publishLocal] (#1245): `payloads` become ONE contiguous run in one ordered
+    /// section — ring batch append, one WAL frame per event, ONE replication message — and ONE group
+    /// commit is awaited after the section is released. Resolves with the run's LAST offset, so a
+    /// caller awaiting replication awaits it once (acks are cumulative). Stamped with this node's current
+    /// owner epoch, as the no-epoch [#publishLocal] is.
+    public Result<Long> publishLocalBatch(String streamName, int partition, List<byte[]> payloads, long timestamp) {
+        var ownerEpoch = ownerEpochSource.currentOwnerEpoch(streamName, partition);
+
+        return resolveStreamEntry(streamName).flatMap(entry -> publishBatchInSection(entry,
+                                                                                     streamName,
+                                                                                     partition,
+                                                                                     payloads,
+                                                                                     timestamp,
+                                                                                     ownerEpoch))
+                                 .flatMap(this::awaitDurable);
+    }
+
+    private Result<LoggedAppend> publishBatchInSection(StreamEntry entry,
+                                                       String streamName,
+                                                       int partition,
+                                                       List<byte[]> payloads,
+                                                       long timestamp,
+                                                       Epoch ownerEpoch) {
+        return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> checkEventSizes(entry, payloads))
+                             .flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
+                             .flatMap(buffer -> appendRunInSection(buffer,
+                                                                   streamName,
+                                                                   partition,
+                                                                   payloads,
+                                                                   timestamp,
+                                                                   ownerEpoch))
+                             .onSuccess(_ -> entry.updateActivity());
+    }
+
+    private Result<LoggedAppend> appendRunInSection(OffHeapRingBuffer buffer,
+                                                    String streamName,
+                                                    int partition,
+                                                    List<byte[]> payloads,
+                                                    long timestamp,
+                                                    Epoch ownerEpoch) {
+        return buffer.appendBatchOrdered(payloads,
+                                         LongStream.generate(() -> timestamp).limit(payloads.size()).toArray(),
+                                         lastOffset -> logRunAndReplicate(streamName,
+                                                                          partition,
+                                                                          lastOffset,
+                                                                          payloads,
+                                                                          timestamp,
+                                                                          ownerEpoch));
+    }
+
+    private static Result<Unit> checkEventSizes(StreamEntry entry, List<byte[]> payloads) {
+        return Result.allOf(payloads.stream().map(payload -> checkEventSize(entry, payload)).toList()).mapToUnit();
+    }
+
+    /// The in-section half of a batch publish: the run's WAL frames in offset order (no fsync), its group
+    /// commit started, then ONE replication message for the run. A failed frame write fails the publish
+    /// and sends nothing.
+    private Result<LoggedAppend> logRunAndReplicate(String streamName,
+                                                    int partition,
+                                                    long lastOffset,
+                                                    List<byte[]> payloads,
+                                                    long timestamp,
+                                                    Epoch ownerEpoch) {
+        var firstOffset = lastOffset - payloads.size() + 1;
+
+        return writeWalFrames(walFor(streamName, partition), firstOffset, payloads, timestamp).onSuccess(_ -> replicationManager.replicateEvents(streamName,
+                                                                                                                                                 partition,
+                                                                                                                                                 firstOffset,
+                                                                                                                                                 payloads,
+                                                                                                                                                 Collections.nCopies(payloads.size(),
+                                                                                                                                                                     timestamp),
+                                                                                                                                                 ownerEpoch));
+    }
+
+    private static Result<LoggedAppend> writeWalFrames(Option<PartitionWal> wal,
+                                                       long firstOffset,
+                                                       List<byte[]> payloads,
+                                                       long timestamp) {
+        return wal.map(w -> writeWalFrames(w, firstOffset, payloads, timestamp))
+                  .or(() -> success(new LoggedAppend(firstOffset + payloads.size() - 1,
+                                                     Promise.unitPromise())));
+    }
+
+    private static Result<LoggedAppend> writeWalFrames(PartitionWal wal,
+                                                       long firstOffset,
+                                                       List<byte[]> payloads,
+                                                       long timestamp) {
+        var writes = IntStream.range(0,
+                                     payloads.size())
+                              .mapToObj(i -> wal.write(firstOffset + i,
+                                                       payloads.get(i),
+                                                       timestamp))
+                              .toList();
+
+        return Result.allOf(writes).map(writeSeqs -> new LoggedAppend(firstOffset + payloads.size() - 1,
+                                                                      wal.commit(writeSeqs.getLast())));
+    }
 
     /// The configured [PartitionWal] for `(streamName, partition)`, or [Option#none] when no WAL base
     /// dir is wired (the steady-state legacy/Forge path) or the partition is out of range.

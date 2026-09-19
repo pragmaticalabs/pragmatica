@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
@@ -85,7 +86,45 @@ final class DefaultReplicationManager implements ReplicationManager {
                                long timestamp,
                                Epoch ownerEpoch) {
         batcher.onPresent(b -> b.add(streamName, partition, offset, payload, timestamp, ownerEpoch))
-               .onEmpty(() -> replicateImmediately(streamName, partition, offset, payload, timestamp, ownerEpoch));
+               .onEmpty(() -> replicateImmediately(streamName,
+                                                   partition,
+                                                   offset,
+                                                   List.of(payload),
+                                                   List.of(timestamp),
+                                                   ownerEpoch));
+    }
+
+    /// #1245: a contiguous run goes out as ONE `ReplicateEvents` message per replica (the receive handler
+    /// already applies multi-record batches and acks their last offset). With a batcher wired, the run is
+    /// handed to it event by event, as single publishes are.
+    @Contract
+    @Override
+    public void replicateEvents(String streamName,
+                                int partition,
+                                long fromOffset,
+                                List<byte[]> payloads,
+                                List<Long> timestamps,
+                                Epoch ownerEpoch) {
+        batcher.onPresent(b -> addRun(b, streamName, partition, fromOffset, payloads, timestamps, ownerEpoch))
+               .onEmpty(() -> replicateImmediately(streamName, partition, fromOffset, payloads, timestamps, ownerEpoch));
+    }
+
+    @Contract
+    private static void addRun(ReplicationBatcher batcher,
+                               String streamName,
+                               int partition,
+                               long fromOffset,
+                               List<byte[]> payloads,
+                               List<Long> timestamps,
+                               Epoch ownerEpoch) {
+        IntStream.range(0,
+                        payloads.size())
+                 .forEach(i -> batcher.add(streamName,
+                                           partition,
+                                           fromOffset + i,
+                                           payloads.get(i),
+                                           timestamps.get(i),
+                                           ownerEpoch));
     }
 
     @Contract
@@ -125,9 +164,9 @@ final class DefaultReplicationManager implements ReplicationManager {
 
     private void replicateImmediately(String streamName,
                                       int partition,
-                                      long offset,
-                                      byte[] payload,
-                                      long timestamp,
+                                      long fromOffset,
+                                      List<byte[]> payloads,
+                                      List<Long> timestamps,
                                       Epoch ownerEpoch) {
         var replicas = replicationTargets(streamName, partition);
 
@@ -135,7 +174,7 @@ final class DefaultReplicationManager implements ReplicationManager {
             return;
         }
 
-        sendToAllReplicas(replicas, streamName, partition, offset, payload, timestamp, ownerEpoch);
+        sendToAllReplicas(replicas, streamName, partition, fromOffset, payloads, timestamps, ownerEpoch);
     }
 
     /// The set of nodes an owner replicates a published event to: the registered replica set MINUS
@@ -188,17 +227,11 @@ final class DefaultReplicationManager implements ReplicationManager {
     private void sendToAllReplicas(List<NodeId> replicas,
                                    String streamName,
                                    int partition,
-                                   long offset,
-                                   byte[] payload,
-                                   long timestamp,
+                                   long fromOffset,
+                                   List<byte[]> payloads,
+                                   List<Long> timestamps,
                                    Epoch ownerEpoch) {
-        var message = replicateEvents(governorId,
-                                      streamName,
-                                      partition,
-                                      offset,
-                                      List.of(payload),
-                                      List.of(timestamp),
-                                      ownerEpoch);
+        var message = replicateEvents(governorId, streamName, partition, fromOffset, payloads, timestamps, ownerEpoch);
 
         replicas.forEach(replica -> transport.send(replica, message));
     }

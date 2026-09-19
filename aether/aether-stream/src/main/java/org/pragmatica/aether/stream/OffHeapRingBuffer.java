@@ -446,6 +446,22 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return notifyingAfter(appendBatchLocked(payloads, timestamps));
     }
 
+    /// Batch sibling of [#appendOrdered] (#1245): appends `payloads` as ONE contiguous run and runs
+    /// `inOrder` with the run's LAST offset before any other append on this ring can be assigned one.
+    /// A failed batch skips `inOrder`; listeners run after the section is released, as for
+    /// [#appendOrdered].
+    public <T> Result<T> appendBatchOrdered(List<byte[]> payloads, long[] timestamps, Fn1<Result<T>, Long> inOrder) {
+        return notifyingAfter(appendBatchOrderedLocked(payloads, timestamps, inOrder));
+    }
+
+    private <T> Result<T> appendBatchOrderedLocked(List<byte[]> payloads,
+                                                   long[] timestamps,
+                                                   Fn1<Result<T>, Long> inOrder) {
+        synchronized (appendLock) {
+            return appendBatchLocked(payloads, timestamps).flatMap(inOrder);
+        }
+    }
+
     private Result<Long> appendBatchLocked(List<byte[]> payloads, long[] timestamps) {
         if (closed.get()) {
             return StreamError.General.BUFFER_CLOSED.result();
