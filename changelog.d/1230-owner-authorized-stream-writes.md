@@ -16,6 +16,20 @@
   suspicion, not a fence; a dead owner's partition is unwedged only when the leader commits a new owner,
   and until then writes fail retryable). `appendRecovered` (replication receipt and backfill) is exempt.
   When no ownership record is committed yet, the append is admitted, unchanged from before.
+  The epoch fence runs before admission, so a deposed writer presenting a stale epoch still gets
+  `StaleEpochAppend`; on the durable-entity path `NotOwnerAppend` surfaces as the entity's stale-owner
+  error, not `StorageFailed`.
+  [mechanism: a dead owner's record is rewritten through the leader's `StreamPartitionOwnershipWriter`:
+  the membership FSM's REMOVED edge prunes the node from `coreNodes` (`TopologyObserver.pruneDeparted`),
+  the `NodeRemoved` decision triggers `ReplicaSetController.reconcile`, and the pass drives
+  `StreamPartitionOwnershipWriter.decide`, which writes a new owner once HRW moves; until then appends
+  fail with the retryable `NotOwnerAppend`]
+  [unverified: no multi-node kill test shows that rewrite landing; if the reconcile pass ran before the
+  prune, the dead owner would stay in HRW until the next membership decision, and writes to its
+  partitions would be refused until then]
+  [unverified: the admission and sender check read `StreamOwnershipViews.writeAuthority()` at their
+  `AetherNode` call sites; a call site that read `routing()` instead would not be caught — the view choice
+  has no boot-level pin]
   [unverified: before the first ownership commit, admission is fence-inert; HRW routing is the only
   single-writer mechanism in that window, and two nodes with divergent membership views could both route
   to themselves]

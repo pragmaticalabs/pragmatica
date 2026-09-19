@@ -244,6 +244,17 @@ class StreamOwnershipDriverFenceTest {
                 "fence: the deposed-but-alive owner0's (term, 1) append must be REJECTED after the same-term "
                 + "transfer advanced the committed epoch to (term, 2), but it was accepted at offset " + offset))
             .onFailure(StreamOwnershipDriverFenceTest::assertStaleEpochAppend);
+        // #1230: the fence answers only for a STALE epoch. The same deposed owner0 presenting the CURRENT
+        // epoch (term, 2) passes the fence, and the owner-write admission — bound through the real AetherNode
+        // wiring to the committed record, which now names owner1 — refuses it instead. A live non-owner
+        // stamping the committed epoch is exactly the second writer the fence cannot see.
+        transferAppend(owner0Node, Epoch.epoch(term, 2L))
+            .onSuccess(offset -> Assertions.fail(
+                "admission: the deposed owner0's CURRENT-epoch append must be refused as a non-owner write, but it "
+                + "was accepted at offset " + offset))
+            .onFailure(cause -> assertThat(cause)
+                .as("a current-epoch append on a non-owner must be refused by owner admission, got: %s", cause.message())
+                .isEqualTo(new StreamError.NotOwnerAppend(TRANSFER_STREAM, TRANSFER_PARTITION, owner1)));
         assertThat(cluster.getNode(owner0.id()).isPresent())
             .as("owner0 must remain ALIVE throughout the transfer (the deposed-but-alive case)")
             .isTrue();

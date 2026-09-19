@@ -244,7 +244,8 @@ public final class ReplicationReceiveHandler {
     /// deposed owner. A batch NEWER than the record means this replica's view lags a commit the sender has
     /// already observed — the owner-handoff flow — so it is not judged here. No record (cold start) leaves
     /// nothing to judge against. Production wires the RAW committed record, not the #568 liveness-filtered
-    /// view: a suspected-dead owner is still the fenced writer until the leader commits a new owner.
+    /// view: an owner this node's SWIM view has marked DEPARTED, or has not yet seen, is still the fenced
+    /// writer until the leader commits a new owner. (The filter never drops a merely SUSPECT owner.)
     private boolean senderMayBeCommittedOwner(ReplicationMessage.ReplicateEvents message) {
         return committedOwners.committedOwner(message.streamName(),
                                               message.partition())
