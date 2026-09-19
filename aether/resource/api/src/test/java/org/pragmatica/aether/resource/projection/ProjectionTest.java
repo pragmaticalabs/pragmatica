@@ -827,7 +827,10 @@ class ProjectionTest {
             var store = new InMemoryStore();
             var projection = rebuildable(store, REPLAY_TEN_TO_TWELVE).withClaims(new InMemoryClaims(), LEASE);
 
-            store.onNewGeneration = () -> projection.onCursorCommitted(0, 50).await();
+            // Cursor 12 is INSIDE the range (10..12): honoured, it would make offset 10 look already
+            // applied and drop it. (A cursor past the head would instead take the partition live, which
+            // admits 10 anyway — that shape could not tell the gate from its absence.)
+            store.onNewGeneration = () -> projection.onCursorCommitted(0, 12).await();
             projection.rebuild().await().onFailure(cause -> fail(cause.message()));
             projection.onEvent(new OrderSeen("a"), at("msg-10", 10))
                       .await()
