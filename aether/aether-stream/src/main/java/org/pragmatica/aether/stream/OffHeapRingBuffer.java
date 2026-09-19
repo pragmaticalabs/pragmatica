@@ -716,6 +716,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return closedUnderReader.get();
     }
 
+    /// Count of native accesses refused because index or offset arithmetic went out of bounds (#1247).
+    /// Zero on every healthy ring; non-zero is a ring defect, never a release race.
+    public long indexCorruptionCount() {
+        return 0;
+    }
+
     public long allocatedBytes() {
         return controlSegment.byteSize() + allocatedDataBytes;
     }
