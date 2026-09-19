@@ -18,6 +18,6 @@
 - A failed replica frame write or fsync still stops acks for that partition, because it fail-stops that
   WAL. The latest-write entry is forgotten when its WAL is released, so a rebuilt partition's first
   barrier never targets the closed WAL. Previously the per-key chain stayed poisoned until restart.
-- `[unverified: live replication sends one record per ReplicateEvents message (#263), so each message
+- `[design intent — unverified: live replication sends one record per ReplicateEvents message (#263), so each message
   still pays one barrier; batching fsyncs across back-to-back messages depends on group-commit timing and
   is not bounded by a test]`
