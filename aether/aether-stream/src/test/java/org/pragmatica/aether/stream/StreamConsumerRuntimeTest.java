@@ -389,6 +389,107 @@ class StreamConsumerRuntimeTest {
         }
     }
 
+    /// #1266: synchronous throws must not wedge a partition. A throw escaping before any callback is
+    /// attached leaves whatever hold was set (dead-letter, retry, or the loop's own `running` flag) set
+    /// forever: silent, permanent, and indistinguishable from an idle partition.
+    @Nested
+    class SynchronousThrows {
+        @Test
+        void deadLetterHandlerSyncThrow_doesNotWedge() throws Exception {
+            createTestStream("orders");
+            var sink = new ThrowingOnceDeadLetterSink();
+            var throwingRuntime = streamConsumerRuntime(manager, sink);
+            var delivered = new CopyOnWriteArrayList<Long>();
+
+            try {
+                throwingRuntime.subscribe("orders",
+                                          0,
+                                          ConsumerConfig.consumerConfig("group-t", 1, ProcessingMode.ORDERED, ErrorStrategy.SKIP),
+                                          (offset, payload, ts) -> failFirst(delivered, offset));
+                manager.publishLocal("orders", 0, "poison".getBytes(UTF_8), 1000L);
+                manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
+                awaitContains(delivered, 1L);
+                assertThat(sink.thrown.get()).describedAs("control: the sink really threw once").isEqualTo(1);
+                assertThat(delivered).describedAs("the next event is delivered past a sink that threw synchronously")
+                                     .contains(1L);
+                assertThat(throwingRuntime.deadLetterHandler().read("orders", 10)).describedAs("the poison event is still dead-lettered once the sink recovers")
+                                                                                  .hasSize(1);
+            } finally {
+                throwingRuntime.close();
+            }
+        }
+
+        @Test
+        void handlerSyncThrow_isADeliveryFailure_andDoesNotWedgeTheLoop() throws Exception {
+            createTestStream("orders");
+            var delivered = new CopyOnWriteArrayList<Long>();
+            var thrown = new AtomicBoolean(false);
+
+            runtime.subscribe("orders",
+                              0,
+                              ConsumerConfig.consumerConfig("group-h", 1, ProcessingMode.ORDERED, ErrorStrategy.RETRY),
+                              (offset, payload, ts) -> throwOnce(thrown, delivered, offset));
+            manager.publishLocal("orders", 0, "flaky".getBytes(UTF_8), 1000L);
+            manager.publishLocal("orders", 0, "next".getBytes(UTF_8), 2000L);
+            awaitContains(delivered, 1L);
+            assertThat(thrown.get()).describedAs("control: the handler really threw").isTrue();
+            assertThat(delivered).describedAs("a handler that throws is retried like one that fails, and the loop moves on")
+                                 .containsExactly(0L, 1L);
+        }
+
+        private Promise<Unit> failFirst(List<Long> delivered, long offset) {
+            if (offset == 0L) {
+                return StreamError.General.BUFFER_EMPTY.promise();
+            }
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+
+        private Promise<Unit> throwOnce(AtomicBoolean thrown, List<Long> delivered, long offset) {
+            if (offset == 0L && thrown.compareAndSet(false, true)) {
+                throw new IllegalStateException("handler blew up synchronously");
+            }
+            delivered.add(offset);
+
+            return Promise.unitPromise();
+        }
+
+        private void awaitContains(List<Long> delivered, long offset) throws InterruptedException {
+            var deadline = System.currentTimeMillis() + 5_000;
+
+            while (!delivered.contains(offset) && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
+        }
+    }
+
+    /// Throws synchronously from `append` exactly once, then delegates to the in-memory default.
+    static final class ThrowingOnceDeadLetterSink implements DeadLetterHandler {
+        final AtomicInteger thrown = new AtomicInteger();
+        private final DeadLetterHandler delegate = DeadLetterHandler.deadLetterHandler();
+
+        @Override
+        public Promise<Unit> append(String streamName,
+                                    int partition,
+                                    long offset,
+                                    String failingGroup,
+                                    byte[] payload,
+                                    String errorMessage,
+                                    int attemptCount) {
+            if (thrown.getAndIncrement() == 0) {
+                throw new IllegalStateException("sink blew up synchronously");
+            }
+
+            return delegate.append(streamName, partition, offset, failingGroup, payload, errorMessage, attemptCount);
+        }
+
+        @Override
+        public List<DeadLetterEntry> read(String streamName, int maxCount) {
+            return delegate.read(streamName, maxCount);
+        }
+    }
+
     /// Sink that refuses appends until [#recover] is called, then delegates to the in-memory
     /// default. The volatile default can never fail, so it can never exercise the failure-aware
     /// contract — this stub is the adversarial half. `failedAttempts` counts down once per refused
