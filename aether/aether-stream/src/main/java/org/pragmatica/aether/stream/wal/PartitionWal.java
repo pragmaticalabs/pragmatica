@@ -70,13 +70,16 @@ import static org.pragmatica.lang.Unit.unit;
 /// (`Promise.promise`), so a pipelined publisher that fires without awaiting maximizes batching, and a
 /// caller holding an ordered section can `write` inside it and wait for the fsync outside it.
 ///
-/// ## Fail-stop on fsync failure (#634-7)
+/// ## Fail-stop on fsync or frame-write failure (#634-7, #1232)
 /// A FAILED group-commit `force` fail-stops the WAL: the covered appends resolve failure, and every
 /// later append AND truncate is refused with [WalError.FailStopped] without writing or forcing
 /// anything. The OS may drop the dirty pages while clearing the error, so a RETRIED force can
 /// report success for bytes that never reached disk (the fsyncgate lesson); acking on such a
 /// success could leave a silent mid-file hole, and recovery's contiguous scan would then discard
-/// every ACKED record after it. Truncate is included because compaction re-reads the file through
+/// every ACKED record after it. A FAILED frame write fail-stops it the same way (#1232): the caller
+/// has already been assigned that record's offset, so any later frame that did land would leave a
+/// hole at it, and recovery refuses a hole rather than renumbering past it — fail-stopping keeps the
+/// file a contiguous prefix, which the restart then recovers. Truncate is included because compaction re-reads the file through
 /// the same suspect page cache and republishes `syncedSeq`, which would un-freeze the fail-stop for
 /// an in-flight append. A failed post-compaction channel reopen fail-stops the same way (the
 /// alternative is a zombie with a closed channel). The state is operator-visible as
@@ -266,8 +269,8 @@ public final class PartitionWal implements AutoCloseable {
     /// @param fsyncCount       group commits completed since open
     /// @param fsyncTotalNanos  total wall time spent inside `force` since open
     /// @param fsyncMaxNanos    slowest single `force` since open
-    /// @param failStopped      the WAL refused further appends after a failed fsync (or a failed
-    ///                         post-compaction reopen); publishes on this partition fail until the
+    /// @param failStopped      the WAL refused further appends after a failed fsync, a failed frame
+    ///                         write or a failed post-compaction reopen; publishes on this partition fail until the
     ///                         node restarts (#634-7 operator surface)
     public record WalStats(long sizeBytes,
                            long lastOffset,
@@ -293,7 +296,10 @@ public final class PartitionWal implements AutoCloseable {
         var position = writePosition;
         var frame = ByteBuffer.wrap(frameBytes(offset, payload, timestampMillis));
 
-        return writeFrameAt(frame, position).map(_ -> publishWrite(seq, offset, position + frame.capacity()));
+        return writeFrameAt(frame, position).onFailure(this::failStopOnWriteFailure)
+                           .map(_ -> publishWrite(seq,
+                                                  offset,
+                                                  position + frame.capacity()));
     }
 
     private Result<Unit> writeFrameAt(ByteBuffer frame, long position) {
@@ -307,6 +313,14 @@ public final class PartitionWal implements AutoCloseable {
         return written == expected
                ? unitResult()
                : new WalError.AppendFailed("short write: %d of %d bytes".formatted(written, expected)).result();
+    }
+
+    /// Runs under `writeLock`, and takes `syncLock` — the only guard of `syncFailure` — in the same
+    /// writeLock-then-syncLock order `compact` uses.
+    private void failStopOnWriteFailure(Cause cause) {
+        synchronized (syncLock) {
+            failStop(cause);
+        }
     }
 
     private long publishWrite(long seq, long offset, long newPosition) {
@@ -348,7 +362,8 @@ public final class PartitionWal implements AutoCloseable {
     }
 
     /// Runs under `syncLock` (the only writer of `syncFailure`). Loud once at the moment of
-    /// failure; every later append (and truncate) is refused with the stored cause.
+    /// failure (a failed fsync, frame write or post-compaction reopen); every later append (and
+    /// truncate) is refused with the stored cause.
     private void failStop(Cause cause) {
         syncFailure = Option.some(new WalError.FailStopped(cause.message()));
         log.error("PartitionWal fail-stopped for {} — appends refused; "
@@ -628,8 +643,8 @@ public final class PartitionWal implements AutoCloseable {
             }
         }
 
-        /// Permanent per-instance state after a failed group-commit fsync or a failed
-        /// post-compaction reopen (see the fail-stop section of the class doc). Clears on reopen:
+        /// Permanent per-instance state after a failed group-commit fsync, a failed frame write, or a
+        /// failed post-compaction reopen (see the fail-stop section of the class doc). Clears on reopen:
         /// recovery re-scans the file and trims the unacked tail.
         record FailStopped(String detail) implements WalError {
             @Override

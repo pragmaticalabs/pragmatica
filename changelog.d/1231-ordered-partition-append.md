@@ -15,7 +15,10 @@
 - **`PartitionWal.append` wrote its frame on a pooled task, so file order was lock-acquisition order.**
   The frame is now written in the caller's thread (`write`); only the group commit (`commit`) is
   asynchronous. A write whose offset does not exceed the last written offset is refused with
-  `WalError.OffsetRegression` before anything is written.
+  `WalError.OffsetRegression` before anything is written. A failed frame write now fail-stops the WAL,
+  exactly as a failed fsync already did (#634-7). The ring had already assigned that record's offset, so
+  a later frame that did land would leave a hole there; fail-stopping keeps the file a contiguous prefix,
+  which a restart recovers.
   `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/wal/PartitionWalTest.java]`
 - **WAL recovery ignored `record.offset()`.** It re-appended records in file order and let the ring
   number them, so a reordered frame swapped payloads between offsets, and a missing or duplicated frame
