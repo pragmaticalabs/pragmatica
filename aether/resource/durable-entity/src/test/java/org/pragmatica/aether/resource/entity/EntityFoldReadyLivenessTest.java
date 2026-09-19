@@ -7,6 +7,7 @@ package org.pragmatica.aether.resource.entity;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.IntStream;
 
@@ -17,6 +18,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -33,7 +35,67 @@ class EntityFoldReadyLivenessTest {
     private static final int CALLERS = 8;
     private static final int CALLS_PER_CALLER = 20_000;
 
-    /// E4: the loser of the memo's compare-and-set re-read the slot, and a winner whose rebuild failed
+    /// E4, deterministic by construction through [EntityFold#readyWindowProbe(java.util.function.Consumer)].
+    /// The loser L is held in its two windows in turn:
+    ///
+    ///   1. slot read EMPTY, CAS not yet attempted — a winner W calls `ready()` on another thread and takes
+    ///      the slot with a rebuild parked in its checkpoint load, so L's CAS is certain to LOSE;
+    ///   2. CAS lost — W's checkpoint load now fails, its rebuild fails and clears the slot, and L waits
+    ///      for W's promise to resolve, which happens only after the slot is cleared.
+    ///
+    /// The pre-#1268 code re-read the slot at that point and returned `null`. Re-entering makes L's own
+    /// attempt, which here succeeds.
+    @Test
+    @Timeout(60)
+    void ready_reEntersRatherThanReturningNull_whenTheWinnersRebuildFailsAfterTheLoserLostTheCas() {
+        var substrate = new ScriptedSubstrate();
+        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+        var winner = new AtomicReference<Promise<Unit>>();
+        var emptyReadHeld = new AtomicBoolean();
+        var casLossHeld = new AtomicBoolean();
+
+        substrate.parkNextCheckpointLoad();
+        fold.readyWindowProbe(window -> holdLoser(window, fold, substrate, winner, emptyReadHeld, casLossHeld));
+
+        var loser = fold.ready(PARTITION);
+
+        assertThat(casLossHeld.get()).as("the loser must have lost the CAS, or this test proves nothing").isTrue();
+        assertThat(winner.get().await(AWAIT).isFailure()).as("the winner's rebuild must have failed").isTrue();
+        assertThat(loser).as("ready() must never return null").isNotNull();
+        loser.await(AWAIT)
+             .onFailure(cause -> fail("the loser's own attempt must resolve, got: " + cause.message()));
+    }
+
+    private static void holdLoser(EntityFold.ReadyWindow window,
+                                  EntityFold fold,
+                                  ScriptedSubstrate substrate,
+                                  AtomicReference<Promise<Unit>> winner,
+                                  AtomicBoolean emptyReadHeld,
+                                  AtomicBoolean casLossHeld) {
+        switch (window) {
+            case EMPTY_SLOT_READ -> {
+                if (emptyReadHeld.compareAndSet(false, true)) {
+                    joinQuietly(Thread.ofPlatform().start(() -> winner.set(fold.ready(PARTITION))));
+                }
+            }
+            case CAS_LOST -> {
+                if (casLossHeld.compareAndSet(false, true)) {
+                    substrate.failParkedCheckpointLoad();
+                    winner.get().await(AWAIT);
+                }
+            }
+        }
+    }
+
+    private static void joinQuietly(Thread thread) {
+        try {
+            thread.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /// E4, supplementary volume race: the loser of the memo's compare-and-set re-read the slot, and a winner whose rebuild failed
     /// SYNCHRONOUSLY (the partition is not held) could clear it in between — so `ready()` returned `null`.
     ///
     /// Forced by volume rather than by a hook. The ticket asked for an intercepted compare-and-set, but
@@ -120,6 +182,8 @@ class EntityFoldReadyLivenessTest {
     private static final class ScriptedSubstrate implements EntityLogSubstrate {
         private volatile boolean held = true;
         private final AtomicBoolean throwOnce = new AtomicBoolean();
+        private final AtomicReference<Promise<Option<EntityCheckpoint>>> parked = new AtomicReference<>();
+        private volatile Promise<Option<EntityCheckpoint>> parkedLoad;
 
         void neverHold() {
             held = false;
@@ -173,9 +237,26 @@ class EntityFoldReadyLivenessTest {
             return Promise.unitPromise();
         }
 
+        /// The next checkpoint load stays pending until [#failParkedCheckpointLoad]; later ones answer at once.
+        void parkNextCheckpointLoad() {
+            parked.set(Promise.promise());
+        }
+
+        void failParkedCheckpointLoad() {
+            parkedLoad.fail(Causes.cause("parked checkpoint load failed"));
+        }
+
         @Override
         public Promise<Option<EntityCheckpoint>> loadCheckpoint(String keyspace, int partition) {
-            return Promise.success(Option.none());
+            var load = parked.getAndSet(null);
+
+            if (load == null) {
+                return Promise.success(Option.none());
+            }
+
+            parkedLoad = load;
+
+            return load;
         }
     }
 }
