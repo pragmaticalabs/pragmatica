@@ -147,6 +147,22 @@ class DefaultStreamPublisherBatchTest {
         assertThat(replayOffsets(batchWal)).containsExactlyElementsOf(LongStream.range(0, 2_000).boxed().toList());
     }
 
+    /// #1287 review K1, the other branch: an event the frozen ring can never hold (the budget covers only
+    /// the floor, so a 300 KB event exceeds the 256 KB first segment and growth is refused). The run cannot
+    /// be one contiguous unit, so its events take the single-publish path — the batch's outcome and ring
+    /// contents must equal three single publishes'.
+    @Test
+    void publishBatch_withAnEventTheFrozenRingCannotHold_matchesPerEventPublishes() {
+        var retention = RetentionPolicy.retentionPolicy(1_000, 64L * 1024 * 1024, 3_600_000);
+        var budget = OffHeapRingBuffer.floorBytes(1_000, 64L * 1024 * 1024);
+        var payloads = List.of(padded(0, 1024), padded(1, 300 * 1024), padded(2, 1024));
+
+        assertBatchMatchesPerEvent(streamPartitionManager(budget),
+                                   streamPartitionManager(budget),
+                                   StreamConfig.streamConfig(STREAM, 1, retention, "earliest"),
+                                   payloads);
+    }
+
     /// #1287 review K2: the batch ack waits for its WAL group commit. With the WAL's fsync parked, the
     /// batch must not resolve; releasing the fsync resolves it.
     @Test
@@ -218,15 +234,21 @@ class DefaultStreamPublisherBatchTest {
     }
 
     private void assertBatchMatchesPerEvent(Option<Path> batchWal, Option<Path> perEventWal, List<byte[]> payloads) {
-        var batchManager = streamPartitionManager(Long.MAX_VALUE, batchWal);
-        var perEventManager = streamPartitionManager(Long.MAX_VALUE, perEventWal);
-        var smallRing = StreamConfig.streamConfig(STREAM,
-                                                  1,
-                                                  RetentionPolicy.retentionPolicy(1_000_000, 1024L * 1024, 3_600_000),
-                                                  "earliest");
+        assertBatchMatchesPerEvent(streamPartitionManager(Long.MAX_VALUE, batchWal),
+                                   streamPartitionManager(Long.MAX_VALUE, perEventWal),
+                                   StreamConfig.streamConfig(STREAM,
+                                                             1,
+                                                             RetentionPolicy.retentionPolicy(1_000_000, 1024L * 1024, 3_600_000),
+                                                             "earliest"),
+                                   payloads);
+    }
 
-        batchManager.createStream(smallRing).onFailure(cause -> fail(cause.message()));
-        perEventManager.createStream(smallRing).onFailure(cause -> fail(cause.message()));
+    private void assertBatchMatchesPerEvent(StreamPartitionManager batchManager,
+                                            StreamPartitionManager perEventManager,
+                                            StreamConfig config,
+                                            List<byte[]> payloads) {
+        batchManager.createStream(config).onFailure(cause -> fail(cause.message()));
+        perEventManager.createStream(config).onFailure(cause -> fail(cause.message()));
         var batchPublisher = streamPublisher(batchManager, identitySerializer(), STREAM, 1, Option.<java.util.function.Function<byte[], Object>> none());
         var perEventPublisher = streamPublisher(perEventManager, identitySerializer(), STREAM, 1, Option.<java.util.function.Function<byte[], Object>> none());
 
