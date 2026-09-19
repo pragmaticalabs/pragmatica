@@ -39,7 +39,7 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 
 /// #1263: the three write entry points — the slice `StreamPublisher` ({@link DefaultStreamPublisher}),
 /// `StreamAccess.publish` ({@link PartitionedStreamAccess}) and the management publish
-/// ({@link StreamWriteRouter}) — are ONE owner-routed write operation. Every scenario in [Contract] runs against
+/// ({@link StreamWriteRouter}) — are ONE owner-routed write operation. Every scenario in [Contract] (7 of them) runs against
 /// all three (one `@Nested` subclass per entry point), so a defect in the shared router reddens all three
 /// rather than one, and a path that drifts reddens alone.
 ///
@@ -50,6 +50,7 @@ class StreamWritePathContractTest {
     private static final NodeId OWNER = new NodeId("owner-node");
     private static final String STREAM = "contract-stream";
     private static final String STRONG_STREAM = "contract-strong-stream";
+    private static final String UNKNOWN_STREAM = "contract-unknown-stream";
     private static final int PARTITION = 0;
     private static final int DECLARED_MIN_SYNC = 2;
     private static final long FORWARDED_OFFSET = 42L;
@@ -67,6 +68,7 @@ class StreamWritePathContractTest {
             partitionManager = streamPartitionManager(Long.MAX_VALUE, (_, _, _) -> {}, recordingReplication());
             partitionManager.createStream(config(STREAM, ConsistencyMode.EVENTUAL)).onFailureRun(Assertions::fail);
             partitionManager.createStream(config(STRONG_STREAM, ConsistencyMode.STRONG)).onFailureRun(Assertions::fail);
+            partitionManager.createStream(config(UNKNOWN_STREAM, ConsistencyMode.UNKNOWN)).onFailureRun(Assertions::fail);
             partitionManager.placementRoleSupplier((_, _) -> Role.REPLICA);
             forwardClient = new RecordingForwardClient();
         }
@@ -119,6 +121,25 @@ class StreamWritePathContractTest {
             assertThat(forwardClient.owners).isEmpty();
             assertThat(localHead(STRONG_STREAM)).isEqualTo(-1L);
         }
+        /// A STRONG stream whose owner is REMOTE is refused on this node, before any forward is attempted.
+        @Test
+        void publish_refusesStrongStream_beforeForwardingToARemoteOwner() {
+            publish(STRONG_STREAM, OWNER).await()
+                                         .onSuccessRun(Assertions::fail)
+                                         .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.CONSENSUS_PATH_UNAVAILABLE));
+            assertThat(forwardClient.owners).isEmpty();
+            assertThat(localHead(STRONG_STREAM)).isEqualTo(-1L);
+        }
+
+        /// #964: a mode written by a newer node may be STRONG there; it is refused, never appended as EVENTUAL.
+        @Test
+        void publish_refusesUnreadableConsistencyMode() {
+            publish(UNKNOWN_STREAM, SELF).await()
+                                         .onSuccessRun(Assertions::fail)
+                                         .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.UNREADABLE_CONSISTENCY_MODE));
+            assertThat(forwardClient.owners).isEmpty();
+            assertThat(localHead(UNKNOWN_STREAM)).isEqualTo(-1L);
+        }
     }
 
     @Nested
@@ -153,9 +174,7 @@ class StreamWritePathContractTest {
 
     private DefaultStreamPublisher<byte[]> publisher(String stream, NodeId hrwOwner) {
         Function<Integer, Option<NodeId>> ownerResolver = _ -> Option.some(hrwOwner);
-        var mode = stream.equals(STRONG_STREAM)
-                   ? ConsistencyMode.STRONG
-                   : ConsistencyMode.EVENTUAL;
+        var mode = declaredMode(stream);
 
         return DefaultStreamPublisher.streamPublisher(partitionManager,
                                                       identitySerializer(),
@@ -168,6 +187,14 @@ class StreamWritePathContractTest {
                                                       Option.<Fn0<Option<NodeId>>> none(),
                                                       Option.some(ownerResolver),
                                                       Option.some(SELF));
+    }
+
+    private static ConsistencyMode declaredMode(String stream) {
+        return switch (stream) {
+            case STRONG_STREAM -> ConsistencyMode.STRONG;
+            case UNKNOWN_STREAM -> ConsistencyMode.UNKNOWN;
+            default -> ConsistencyMode.EVENTUAL;
+        };
     }
 
     private PartitionedStreamAccess<byte[]> access(String stream, NodeId hrwOwner) {
