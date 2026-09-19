@@ -52,18 +52,23 @@ import static org.pragmatica.lang.Unit.unit;
 ///
 /// ## Group-commit fsync
 /// `append` resolves its `Promise` ONLY after the record's bytes are `force(false)`-durable, while
-/// still batching concurrent appends into a single fsync:
-///   - a serialized write section (`writeLock`) assigns a monotonic write-seq, writes the framed
-///     bytes at the current end position, and publishes `writtenSeq = seq` AFTER the write
-///     completes — so any reader of `writtenSeq` sees a seq whose bytes are in the channel;
+/// still batching concurrent appends into a single fsync. It is `write` then `commit`:
+///   - `write` runs in the CALLER's thread, before `append` returns (#1232): a serialized write
+///     section (`writeLock`) refuses an offset that does not exceed the last written one
+///     ([WalError.OffsetRegression]), assigns a monotonic write-seq, writes the framed bytes at the
+///     current end position, and publishes `writtenSeq = seq` AFTER the write completes — so any
+///     reader of `writtenSeq` sees a seq whose bytes are in the channel. File order is therefore CALL
+///     order, and a caller that assigns offsets inside its own ordered section (the partition's append
+///     section) gets a file in offset order — which recovery relies on;
 ///   - `groupCommit(mySeq)` returns immediately if `syncedSeq >= mySeq`; otherwise, under
 ///     `syncLock`, it snapshots `target = writtenSeq`, issues ONE `force(false)` (covering every
 ///     completed write up to `target`, possibly many appenders' bytes), and publishes
 ///     `syncedSeq = target`.
 /// An append resolves only after `syncedSeq >= mySeq`, i.e. after a fsync that happened-after a
 /// write covering its own bytes — so no append acks before it is durable, yet a burst of N
-/// concurrent appends typically costs far fewer than N fsyncs. `append` runs on the async executor
-/// (`Promise.promise`), so a pipelined publisher that fires without awaiting maximizes batching.
+/// concurrent appends typically costs far fewer than N fsyncs. Only `commit` runs on the async executor
+/// (`Promise.promise`), so a pipelined publisher that fires without awaiting maximizes batching, and a
+/// caller holding an ordered section can `write` inside it and wait for the fsync outside it.
 ///
 /// ## Fail-stop on fsync failure (#634-7)
 /// A FAILED group-commit `force` fail-stops the WAL: the covered appends resolve failure, and every
@@ -151,13 +156,31 @@ public final class PartitionWal implements AutoCloseable {
         return FileOps.createDirectories(file.toAbsolutePath().getParent()).flatMap(_ -> recover(file));
     }
 
-    /// Append a record and GROUP-COMMIT fsync. The returned `Promise` resolves ONLY after this
-    /// record's bytes are `force(false)`-durable; concurrent appends may share one fsync. Refused
-    /// once a fsync has failed (see the fail-stop section of the class doc).
+    /// Append a record and GROUP-COMMIT fsync: [#write] in the caller's thread, then [#commit]. The
+    /// returned `Promise` resolves ONLY after this record's bytes are `force(false)`-durable; concurrent
+    /// appends may share one fsync. Refused once a fsync has failed (see the fail-stop section of the
+    /// class doc), and for an offset that does not exceed the last written one.
     public Promise<Unit> append(long offset, byte[] payload, long timestampMillis) {
+        return write(offset, payload, timestampMillis).async()
+                    .flatMap(this::commit);
+    }
+
+    /// Write the record's frame NOW, in the caller's thread, and return its write sequence for
+    /// [#commit]. The frame is in the channel (not yet durable) when this returns, so file order is call
+    /// order. Refused unwritten when closed, fail-stopped, or when `offset` does not exceed the last
+    /// written offset ([WalError.OffsetRegression]) — recovery places records by stored offset and
+    /// refuses a duplicate, so the writer never produces one.
+    public Result<Long> write(long offset, byte[] payload, long timestampMillis) {
         return closed
-               ? WalError.General.WAL_CLOSED.promise()
-               : syncFailure.fold(() -> promise(() -> appendDurably(offset, payload, timestampMillis)), Cause::promise);
+               ? WalError.General.WAL_CLOSED.result()
+               : syncFailure.fold(() -> writeRecord(offset, payload, timestampMillis), Cause::result);
+    }
+
+    /// GROUP-COMMIT the write with sequence `writeSeq` (from [#write]): resolves once a `force(false)`
+    /// covering it has completed, sharing that fsync with every write queued before it. Runs on the
+    /// async executor, so a caller can release its own ordered section before the fsync.
+    public Promise<Unit> commit(long writeSeq) {
+        return promise(() -> groupCommit(writeSeq));
     }
 
     /// Replay records in file order, skipping `offset <= afterOffset` (and any discarded by a lazy
@@ -256,18 +279,21 @@ public final class PartitionWal implements AutoCloseable {
                            boolean failStopped) {}
 
     // === append path ===
-    private Result<Unit> appendDurably(long offset, byte[] payload, long timestampMillis) {
-        return writeRecord(offset, payload, timestampMillis).flatMap(this::groupCommit);
-    }
-
     private Result<Long> writeRecord(long offset, byte[] payload, long timestampMillis) {
         synchronized (writeLock) {
-            var seq = nextSeq + 1;
-            var position = writePosition;
-            var frame = ByteBuffer.wrap(frameBytes(offset, payload, timestampMillis));
-
-            return writeFrameAt(frame, position).map(_ -> publishWrite(seq, offset, position + frame.capacity()));
+            return offset > lastOffset
+                   ? writeNext(offset, payload, timestampMillis)
+                   : new WalError.OffsetRegression(offset, lastOffset).result();
         }
+    }
+
+    /// Runs under `writeLock`.
+    private Result<Long> writeNext(long offset, byte[] payload, long timestampMillis) {
+        var seq = nextSeq + 1;
+        var position = writePosition;
+        var frame = ByteBuffer.wrap(frameBytes(offset, payload, timestampMillis));
+
+        return writeFrameAt(frame, position).map(_ -> publishWrite(seq, offset, position + frame.capacity()));
     }
 
     private Result<Unit> writeFrameAt(ByteBuffer frame, long position) {

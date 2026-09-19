@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.TierAwareRetention;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -107,6 +108,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// the benign late arrival the `closed` fast path absorbs.
     private final AtomicLong closedUnderReader = new AtomicLong(0);
     private volatile long lastSealedOffset = -1;
+    /// Serializes every read-modify-write of the header (#1231): offset assignment (`head + 1`), the data
+    /// write position, the event count and the tail. Held by the append paths, [#seedHead], the retention
+    /// sweeps and [#appendOrdered]; reads stay lock-free. A monitor, not a `ReentrantLock` — the JDK 25
+    /// baseline does not pin virtual threads on `synchronized` (JEP 491), and [#appendOrdered] re-enters it.
+    private final Object appendLock = new Object();
 
     private OffHeapRingBuffer(Arena arena,
                               MemorySegment controlSegment,
@@ -301,7 +307,21 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return new StreamError.EventTooLarge(payload.length, dataRegionSize).result();
         }
 
-        return guardedAccess(() -> ensureGrownFor(payload.length).flatMap(_ -> appendIfFitsAllocated(payload, timestamp)));
+        synchronized (appendLock) {
+            return guardedAccess(() -> ensureGrownFor(payload.length).flatMap(_ -> appendIfFitsAllocated(payload,
+                                                                                                         timestamp)));
+        }
+    }
+
+    /// Append, then run `inOrder` with the assigned offset BEFORE any other append on this ring can be
+    /// assigned one (#1231/#1232). This is the partition's ordered append section: whatever `inOrder` does
+    /// — the WAL frame write, the replication send — happens in offset order across concurrent callers.
+    /// `inOrder` must not block on I/O completion (the WAL fsync belongs outside, after this returns);
+    /// every append on this partition waits for it. A failed append skips `inOrder`.
+    public <T> Result<T> appendOrdered(byte[] payload, long timestamp, Fn1<Result<T>, Long> inOrder) {
+        synchronized (appendLock) {
+            return append(payload, timestamp).flatMap(inOrder);
+        }
     }
 
     /// Capacity gate against the **allocated** (post-growth) data bytes — distinct from the cap gate in
@@ -371,9 +391,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return new StreamError.EventTooLarge((int) totalSize, dataRegionSize).result();
         }
 
-        return guardedAccess(() -> ensureGrownFor((int) totalSize).flatMap(_ -> appendBatchIfFitsAllocated(payloads,
-                                                                                                           timestamps,
-                                                                                                           totalSize)));
+        synchronized (appendLock) {
+            return guardedAccess(() -> ensureGrownFor((int) totalSize).flatMap(_ -> appendBatchIfFitsAllocated(payloads,
+                                                                                                               timestamps,
+                                                                                                               totalSize)));
+        }
     }
 
     /// Batch analogue of `appendIfFitsAllocated` (bug #7): after growth was attempted, the batch total
@@ -426,7 +448,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.BUFFER_CLOSED.result();
         }
 
-        return guardedAccess(() -> seedHeadChecked(base));
+        synchronized (appendLock) {
+            return guardedAccess(() -> seedHeadChecked(base));
+        }
     }
 
     /// Native half of [#seedHead], behind the [#guardedAccess] boundary: the `closed` check above is a
@@ -682,9 +706,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     /// Void-shaped sibling of [#guardedRead] for the public retention sweeps, which read and then rewrite
-    /// the control region and have no value to report.
+    /// the control region and have no value to report. Under `appendLock`: a sweep rewrites the tail and
+    /// the event count that a concurrent append also rewrites (#1231).
     private void guardedSweep(Runnable sweep) {
-        guardedRead(NO_EVENTS, () -> sweepAsRead(sweep));
+        synchronized (appendLock) {
+            guardedRead(NO_EVENTS, () -> sweepAsRead(sweep));
+        }
     }
 
     private long sweepAsRead(Runnable sweep) {

@@ -166,10 +166,12 @@ class StreamPartitionManagerRecoveryTest {
     private void assertRecoveryRefused(StreamPartitionManager manager, long expectedOffset, long foundOffset) {
         manager.createStream(StreamConfig.streamConfig(STREAM))
                .onSuccess(_ -> fail("recovery must refuse a WAL whose tail does not continue the ring"))
-               .onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(StreamError.WalReplayMismatch.class,
-                                                                            mismatch -> assertMismatch(mismatch,
-                                                                                                       expectedOffset,
-                                                                                                       foundOffset)));
+               .onFailure(cause -> assertThat(cause.stream().toList()).as("the per-partition refusal, aggregated across partitions")
+                                                                      .singleElement()
+                                                                      .isInstanceOfSatisfying(StreamError.WalReplayMismatch.class,
+                                                                                              mismatch -> assertMismatch(mismatch,
+                                                                                                                         expectedOffset,
+                                                                                                                         foundOffset)));
         manager.close();
     }
 

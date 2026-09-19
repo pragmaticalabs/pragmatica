@@ -80,23 +80,19 @@ public sealed interface StreamError extends Cause {
     /// ring at `expectedOffset` — `foundOffset` below it is a duplicate, above it a gap. Recovery never
     /// renumbers (that silently shifts every later record against replicas, segments and cursors), so
     /// the partition is not rebuilt on this node until an operator acts; the message says how.
-    record WalReplayMismatch(String streamName,
-                             int partition,
-                             Path walFile,
-                             long expectedOffset,
-                             long foundOffset) implements StreamError {
+    record WalReplayMismatch(String streamName, int partition, Path walFile, long expectedOffset, long foundOffset) implements StreamError {
         @Override
         public String message() {
             return ("WAL recovery refused for %s[%d]: expected offset %d but %s holds %d (%s); records are never renumbered."
-                    + " Operator action: move that file aside and restart the node — replicas backfill the un-sealed tail"
-                    + " when replicas >= 2; with replicas = 1 the un-sealed tail is lost").formatted(streamName,
-                                                                                                     partition,
-                                                                                                     expectedOffset,
-                                                                                                     walFile,
-                                                                                                     foundOffset,
-                                                                                                     foundOffset < expectedOffset
-                                                                                                     ? "duplicate"
-                                                                                                     : "gap");
+                   + " Operator action: move that file aside and restart the node — replicas backfill the un-sealed tail"
+                   + " when replicas >= 2; with replicas = 1 the un-sealed tail is lost").formatted(streamName,
+                                                                                                    partition,
+                                                                                                    expectedOffset,
+                                                                                                    walFile,
+                                                                                                    foundOffset,
+                                                                                                    foundOffset < expectedOffset
+                                                                                                    ? "duplicate"
+                                                                                                    : "gap");
         }
     }
 
