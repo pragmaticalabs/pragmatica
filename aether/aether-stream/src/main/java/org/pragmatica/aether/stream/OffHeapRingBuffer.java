@@ -754,7 +754,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                   occurrence,
                   fault);
 
-        return new StreamError.RingIndexCorrupted(streamName, partition, String.valueOf(fault.getMessage()));
+        return new StreamError.RingIndexCorrupted(streamName,
+                                                  partition,
+                                                  String.valueOf(fault.getMessage()));
     }
 
     public long allocatedBytes() {
