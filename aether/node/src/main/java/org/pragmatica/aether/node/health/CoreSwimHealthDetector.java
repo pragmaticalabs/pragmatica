@@ -303,6 +303,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                       .current();
     }
 
+    @Contract
     void afterBindForTest(Supplier<Result<Unit>> hook) {
         afterBind = hook;
     }
