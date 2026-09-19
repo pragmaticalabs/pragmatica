@@ -100,11 +100,11 @@ import org.slf4j.LoggerFactory;
 /// retry, the positionless single-argument path — is refused as retryable
 /// ([ProjectionError.Rebuilding]), and applies after the replay. A replay delivery whose claim is
 /// already DONE still advances its partition ([ProjectionStore#markReplayed]). LIVE is per partition: a
-/// partition past its captured head admits live writes without waiting for the others. Two limits,
-/// stated: a replay offset that can never apply (a fold that always fails, dead-lettered during the
-/// replay) holds its partition in REBUILDING, because nothing tells the store that offset was skipped;
-/// and a refused live delivery that exhausts its retry budget is dead-lettered and applies when
-/// redriven.
+/// partition past its captured head admits live writes without waiting for the others. A replay offset
+/// that never reaches the fold (dead-lettered, quarantined) is skipped on the group's COMMITTED CURSOR
+/// ([#onCursorCommitted]), never on a later delivery, so an early or zombie delivery cannot skip — and
+/// lose — replay offsets below it; that event is absent from the rebuilt model until redriven. A refused
+/// live delivery that exhausts its retry budget is dead-lettered and applies when redriven.
 public record Projection<S, T>(String name,
                                Topic<T> topic,
                                ProjectionStore<S> store,
