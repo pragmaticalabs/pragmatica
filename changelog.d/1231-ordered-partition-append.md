@@ -9,9 +9,9 @@
   offset order, and replicas receive events in offset order. Only the group-commit fsync is awaited
   after the section is released, so concurrent publishers still share fsyncs. The ring's own `append`,
   `appendBatch`, `seedHead` and retention sweeps take the same lock, as defence in depth.
-  `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/StreamPartitionManagerOrderedAppendTest.java]`
-  `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/OffHeapRingBufferConcurrentAppendTest.java]`
-  (unit level, one JVM, no multi-node run.)
+  `[mechanism: offset assignment, frame write and send share the ring's appendLock; pinned in one JVM by
+  StreamPartitionManagerOrderedAppendTest and OffHeapRingBufferConcurrentAppendTest]`
+  `[design intent — unverified: no multi-node run]`
 - **`PartitionWal.append` wrote its frame on a pooled task, so file order was lock-acquisition order.**
   The frame is now written in the caller's thread (`write`); only the group commit (`commit`) is
   asynchronous. A write whose offset does not exceed the last written offset is refused with
@@ -19,7 +19,7 @@
   exactly as a failed fsync already did (#634-7). The ring had already assigned that record's offset, so
   a later frame that did land would leave a hole there; fail-stopping keeps the file a contiguous prefix,
   which a restart recovers.
-  `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/wal/PartitionWalTest.java]`
+  `[mechanism: the frame is written under writeLock before append returns; pinned by PartitionWalTest]`
 - **WAL recovery ignored `record.offset()`.** It re-appended records in file order and let the ring
   number them, so a reordered frame swapped payloads between offsets, and a missing or duplicated frame
   shifted every later record relative to replicas, sealed segments and consumer cursors. Recovery now
@@ -29,6 +29,7 @@
   **Operator action:** move the named `<wal-dir>/<stream>/<partition>.wal` aside and restart the node.
   With `replicas >= 2`, replica backfill restores the un-sealed tail; with `replicas = 1`, the un-sealed
   tail is lost.
-  `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/StreamPartitionManagerRecoveryTest.java]`
+  `[mechanism: records are sorted by stored offset and each must equal the ring's next offset; pinned by
+  StreamPartitionManagerRecoveryTest]`
 - `PartitionWalTest`'s concurrent-append case asserted an order-insensitive `containsAll`, so it accepted
   a reordered file as correct: the test encoded the defect. It is replaced by an order assertion.
