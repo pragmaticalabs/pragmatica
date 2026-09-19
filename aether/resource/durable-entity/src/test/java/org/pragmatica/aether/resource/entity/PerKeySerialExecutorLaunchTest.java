@@ -26,7 +26,12 @@ class PerKeySerialExecutorLaunchTest {
         var thrown = executor.<Integer> submit("k", PerKeySerialExecutorLaunchTest::throwingOperation);
         var next = executor.submit("k", () -> Promise.success(42));
 
-        assertThat(thrown.await(AWAIT).isFailure()).as("a throwing operation must fail its own promise").isTrue();
+        var outcome = thrown.await(AWAIT);
+
+        assertThat(thrown.isResolved()).as("a throwing operation must RESOLVE its promise — a timed-out await"
+                                           + " is also a failure, and must not pass for one")
+                                       .isTrue();
+        assertThat(outcome.isFailure()).as("a throwing operation must fail its own promise").isTrue();
 
         next.await(AWAIT)
             .onFailure(cause -> fail("the next operation on the key must run, got: " + cause.message()))
