@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
@@ -138,6 +139,7 @@ class SealedHistoryRecoveryTest {
         /// however fast either side turns out to be.
         private static final long CONCURRENT_APPENDS_CAP = 2_000_000;
         private static final long BOUNDARY_TARGET_READS = 500;
+        private static final long APPEND_PACE_NANOS = 20_000;
         private static final int BOUNDARY_BATCH = 64;
         private static final long RECLAIM_AT_LEAST = 500;
         /// The loop stops with the appender or at this bound, whichever comes first, and a read that waits
@@ -245,6 +247,12 @@ class SealedHistoryRecoveryTest {
             return 0L;
         }
 
+        /// One short park per appended record: enough to keep the reader scheduled, still fast enough that
+        /// the ring evicts many times over during the loop.
+        private static void paceAppends(long offset) {
+            LockSupport.parkNanos(APPEND_PACE_NANOS);
+        }
+
         private static long misalignedIn(List<byte[]> records, long from) {
             return IntStream.range(0,
                                    records.size())
@@ -256,9 +264,13 @@ class SealedHistoryRecoveryTest {
 
         /// Appends until the reader stops it (or the cap is reached), so eviction is still running under
         /// every one of the reader's boundary reads.
+        ///
+        /// Paced. At full tilt the appender starves the reader — the promise machinery is shared — and the
+        /// reader managed 3 reads in 20 s, too few to meet the race it is here to pin.
         private static void appendMore(EntityLogSubstrate substrate, AtomicBoolean done) {
             LongStream.range(RECORDS, RECORDS + CONCURRENT_APPENDS_CAP)
                       .takeWhile(_ -> !done.get())
+                      .peek(SealedHistoryRecoveryTest.ReviewPins::paceAppends)
                       .forEach(offset -> substrate.append(KEYSPACE,
                                                           PARTITION,
                                                           record(offset))
