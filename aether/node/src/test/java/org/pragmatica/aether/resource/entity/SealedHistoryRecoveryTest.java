@@ -4,14 +4,19 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
@@ -212,6 +217,25 @@ class SealedHistoryRecoveryTest {
                                               .isInstanceOf(StreamError.CursorExpired.class));
         }
 
+        /// The refusal above is not a dead end: with a checkpoint at the reclaimed boundary, the fold
+        /// rebuilds across it — the checkpoint carries the reclaimed prefix and the rest comes from the
+        /// sealed segments and the ring. Adopted from the reviewer's `p2c`.
+        @Test
+        void ready_rebuildsEveryKey_whenACheckpointCoversTheReclaimedPrefix() throws InterruptedException {
+            var sealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(storage, index));
+            var substrate = substrate(sealingManager(sealer), sealer);
+
+            substrate.ensureLog(KEYSPACE, 1, 1, 1).unwrap();
+            appendRecords(substrate);
+            awaitAllSealed(sealer);
+            var fold = EntityFold.entityFold(KEYSPACE, withCheckpoint(substrate, reclaimPrefix()));
+
+            fold.ready(PARTITION)
+                .await()
+                .onFailure(cause -> fail("a checkpoint at the reclaimed boundary must rebuild: " + cause.message()));
+            assertThat(missingKeys(fold)).isZero();
+        }
+
         /// MD: a node that never sealed any of this partition has an EMPTY index, so its earliest readable
         /// offset stays at its ring and the fold refuses with the pre-#1240 gap message. A promoted REPLICA
         /// is the opposite case and is covered by the recovery tests: it sealed its own segments and reads
@@ -280,7 +304,7 @@ class SealedHistoryRecoveryTest {
         }
 
         /// What `RetentionEnforcer` does below the checkpoint floor: drop the lowest sealed segments.
-        private void reclaimPrefix() {
+        private long reclaimPrefix() {
             var through = -1L;
 
             for (var ref : index.listSegments(STREAM, PARTITION)) {
@@ -293,6 +317,41 @@ class SealedHistoryRecoveryTest {
             }
 
             assertThat(through).as("control: a sealed prefix was reclaimed").isGreaterThanOrEqualTo(RECLAIM_AT_LEAST);
+
+            return through;
+        }
+
+        /// The checkpoint that makes a reclaimed prefix a non-event, held by a proxy so only `loadCheckpoint`
+        /// is answered differently — everything else is the real substrate.
+        private static EntityLogSubstrate withCheckpoint(EntityLogSubstrate delegate, long throughOffset) {
+            var state = LongStream.rangeClosed(0, throughOffset)
+                                  .boxed()
+                                  .collect(Collectors.toMap(SealedHistoryRecoveryTest::key,
+                                                            offset -> value(offset).getBytes(StandardCharsets.UTF_8)));
+            var checkpoint = new EntityLogSubstrate.EntityCheckpoint(throughOffset,
+                                                                     EntityFoldSnapshot.encode(state, Map.of()));
+
+            return (EntityLogSubstrate) Proxy.newProxyInstance(EntityLogSubstrate.class.getClassLoader(),
+                                                               new Class<?>[]{EntityLogSubstrate.class},
+                                                               (_, method, args) -> answer(delegate,
+                                                                                           checkpoint,
+                                                                                           method,
+                                                                                           args));
+        }
+
+        private static Object answer(EntityLogSubstrate delegate,
+                                     EntityLogSubstrate.EntityCheckpoint checkpoint,
+                                     Method method,
+                                     Object[] args) throws Throwable {
+            if (method.getName().equals("loadCheckpoint")) {
+                return Promise.success(Option.some(checkpoint));
+            }
+
+            try {
+                return method.invoke(delegate, args);
+            } catch (InvocationTargetException e) {
+                throw e.getCause();
+            }
         }
     }
 
