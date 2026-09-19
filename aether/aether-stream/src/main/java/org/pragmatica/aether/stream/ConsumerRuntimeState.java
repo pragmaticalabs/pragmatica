@@ -56,6 +56,15 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private static final TimeSpan CURSOR_COMMIT_SHUTDOWN_BOUND = timeSpan(5).seconds();
     /// #1239: a periodic commit waits for nothing — the single-flight slot already keeps periodic
     /// commits apart, and a detach flush cancels the consumer before it is issued.
+    /// rev1272 F6: bound on one PERIODIC cursor commit. With one periodic commit in flight per consumer, a
+    /// commit that never settles would hold the slot forever and absorb every later checkpoint. Past the
+    /// bound the commit's own promise fails (`Promise.timeout` fails the original), so it is counted and
+    /// reported like any failed commit, and the retry commits the latest cursor. A timed-out commit can
+    /// still land late at the store; since every commit carries the monotonic cursor as it stood at
+    /// issue, a late one can step the stored cursor back by at most the progress made since — bounded
+    /// redelivery, never loss. Same 5s as [#CURSOR_COMMIT_SHUTDOWN_BOUND]. [design intent — unverified:
+    /// not derived from a measured commit-latency distribution.]
+    private static final TimeSpan PERIODIC_COMMIT_BOUND = timeSpan(5).seconds();
     private static final Promise<CommitOutcome> NO_PREDECESSOR = Promise.success(CommitOutcome.persisted());
 
     private final StreamPartitionManager partitionManager;
@@ -141,7 +150,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return StreamError.General.CONSUMER_ALREADY_SUBSCRIBED.result();
         }
 
-        loadCursorAndStart(key, state, config.groupId(), streamName, partition);
+        loadCursorAndStart(key, state);
 
         return success(unit());
     }
@@ -397,19 +406,53 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         unsubscribe(key.streamName(), key.partition(), key.groupId());
     }
 
-    private void loadCursorAndStart(ConsumerKey key,
-                                    ConsumerState state,
-                                    String groupId,
-                                    String streamName,
-                                    int partition) {
-        cursorStore.onPresent(store -> store.fetch(groupId, streamName, partition)
-                                            .onResult(result -> applyCursorAndStart(result, key, state)))
+    private void loadCursorAndStart(ConsumerKey key, ConsumerState state) {
+        cursorStore.onPresent(store -> fetchCursorAndStart(store, key, state, 1))
                    .onEmpty(() -> startConsumer(key, state));
     }
 
-    private void applyCursorAndStart(Result<Option<Long>> result, ConsumerKey key, ConsumerState state) {
-        result.onSuccess(opt -> opt.onPresent(state::advanceCursor));
+    /// rev1272 F7: the fetch is LIFTED. A store whose `fetch` threw used to escape out of `subscribe` with
+    /// the consumer already registered and never started, so every re-subscribe was refused as already
+    /// subscribed. A failed fetch — thrown or returned — is retried with backoff until the store answers
+    /// or the consumer goes away; the consumer then starts from the cursor the store holds. It no longer
+    /// starts from offset 0 on a failed fetch, which replayed the whole retained partition.
+    @Contract
+    private void fetchCursorAndStart(ConsumerCursorStore store, ConsumerKey key, ConsumerState state, int attempt) {
+        lifted(() -> store.fetch(key.groupId(), key.streamName(), key.partition()))
+            .onResult(result -> applyCursorAndStart(result, store, key, state, attempt));
+    }
+
+    @Contract
+    private void applyCursorAndStart(Result<Option<Long>> result,
+                                     ConsumerCursorStore store,
+                                     ConsumerKey key,
+                                     ConsumerState state,
+                                     int attempt) {
+        result.onSuccess(cursor -> startFromCursor(key, state, cursor))
+              .onFailure(cause -> retryCursorFetch(store, key, state, attempt, cause));
+    }
+
+    @Contract
+    private void startFromCursor(ConsumerKey key, ConsumerState state, Option<Long> cursor) {
+        cursor.onPresent(state::advanceCursor);
         startConsumer(key, state);
+    }
+
+    @Contract
+    private void retryCursorFetch(ConsumerCursorStore store, ConsumerKey key, ConsumerState state, int attempt, Cause cause) {
+        if (closed.get() || state.isCancelled()) {
+            return;
+        }
+
+        LOG.log(System.Logger.Level.WARNING,
+                "Cursor fetch for consumer group {0} on {1}[{2}] failed (attempt {3}); retrying before start: {4}",
+                key.groupId(),
+                key.streamName(),
+                key.partition(),
+                attempt,
+                cause.message());
+        SharedScheduler.schedule(() -> fetchCursorAndStart(store, key, state, attempt + 1),
+                                 TimeSpan.timeSpan(computeBackoff(Math.min(attempt, 30))).millis());
     }
 
     private void startConsumer(ConsumerKey key, ConsumerState state) {
@@ -505,9 +548,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
 
         state.clearCheckpointPending();
-        state.periodicCommit(observedCommit(key, state, NO_PREDECESSOR).onResult(result -> afterCheckpoint(key,
-                                                                                                           state,
-                                                                                                           result)));
+        state.periodicCommit(observedCommit(key, state, NO_PREDECESSOR).timeout(PERIODIC_COMMIT_BOUND)
+                                                                         .onResult(result -> afterCheckpoint(key,
+                                                                                                             state,
+                                                                                                             result)));
     }
 
     /// Retries on a failed commit AND on a [CommitOutcome.LocalOnly] one: a commit whose cluster
