@@ -500,7 +500,7 @@ and all-fakes) with no forge archive and no cluster.
 - **Subscriber & Scheduled** — drive `@ResourceQualifier(Subscriber)` handlers by feeding events, and
   `Scheduled` methods via a virtual clock (deterministic firing without real timers).
 - **Stream / durable-entity "facts"** — capture `aether-stream` appends and durable-entity events
-  (`InMemoryDurableEntity` already exists at `aether/resource/durable-entity`) as first-class assertion
+  (`InMemoryDurableEntity` already exists in `aether/resource/durable-entity`'s test sources since #1270; not in the published artifact) as first-class assertion
   surfaces (`streamAppends(stream)`).
 - **Container matrix** — MySQL/Oracle/etc. for `@Sql`; SMTP sink (GreenMail) for `@Notify`;
   WireMock/httpd for real `@Http`.

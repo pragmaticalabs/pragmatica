@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.stream;
 
+import org.pragmatica.aether.slice.stream.PublishOutcome;
+import org.pragmatica.aether.slice.StreamPublisher;
+import java.util.stream.IntStream;
+import java.util.function.Function;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -170,11 +174,29 @@ class DurableTopicContextDeliveryTest {
 
     private record Published(String messageId, long offset) {}
 
+    /// #1342 made `publishBatch` abstract; this fixture publishes one envelope at a time, so the batch form
+    /// answers each event as published and is never reached.
+    private static StreamPublisher<TopicEventEnvelope> singlePublisher(Function<TopicEventEnvelope, Promise<Unit>> publish) {
+        return new StreamPublisher<>() {
+            @Override
+            public Promise<Unit> publish(TopicEventEnvelope event) {
+                return publish.apply(event);
+            }
+
+            @Override
+            public Promise<List<PublishOutcome>> publishBatch(List<TopicEventEnvelope> events) {
+                return Promise.success(IntStream.range(0, events.size())
+                                                .<PublishOutcome> mapToObj(PublishOutcome.Published::new)
+                                                .toList());
+            }
+        };
+    }
+
     private Published publish(AppEvent event) {
         var envelope = new AtomicReference<TopicEventEnvelope>();
         var offset = new AtomicReference<Long>();
 
-        new DurableTopicPublisher<AppEvent>(sliceCodec, captured -> appendToTarget(captured, envelope, offset))
+        new DurableTopicPublisher<AppEvent>(sliceCodec, singlePublisher(captured -> appendToTarget(captured, envelope, offset)))
             .publish(event)
             .await()
             .onFailure(cause -> fail(cause.message()));

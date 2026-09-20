@@ -13,6 +13,7 @@ import java.util.concurrent.ConcurrentSkipListMap;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.parse.Number;
+import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.MetadataStore;
 
 import static org.pragmatica.lang.Option.option;
@@ -96,10 +97,12 @@ public final class SegmentIndex {
 
     /// The CONTIGUOUS sealed watermark for `(streamName, partition)`: the highest offset at or below which
     /// EVERY offset has been durably sealed into a segment (lowest unsealed offset - 1), or `-1` when offset
-    /// 0 is not sealed. It bounds WAL truncation (records at or below it are discarded) and WAL replay on
-    /// partition recovery (the recovered ring skips records at or below it, served by the tiered reader), so
-    /// it must never pass a hole: until #1234 it was the MAXIMUM sealed `endOffset`, and a later successful
-    /// seal licensed truncating the WAL past a segment that had failed to seal — permanent silent loss.
+    /// 0 is not sealed. It bounds WAL replay on partition recovery (the recovered ring skips records at or
+    /// below it, served by the tiered reader) and — computed from the refs in the metadata snapshot ON DISK,
+    /// not from this live index (#1345, [org.pragmatica.aether.stream.DurableSealedOffsetSource]) — WAL
+    /// truncation, so it must never pass a hole: until #1234 it was the MAXIMUM sealed `endOffset`, and a
+    /// later successful seal licensed truncating the WAL past a segment that had failed to seal — permanent
+    /// silent loss.
     ///
     /// Two properties callers rely on:
     ///   - **Monotonic.** Retention reclaiming a sealed segment ([#removeSegment]) does not un-seal it. A
@@ -191,13 +194,17 @@ public final class SegmentIndex {
 
     @Contract
     public void rebuildFromRefs(MetadataStore metadataStore) {
+        rebuildFromRefs(metadataStore.listAllRefs());
+    }
+
+    /// Rebuild from a ref listing — the live store's at boot, or a metadata snapshot's (#1345: the sealed
+    /// watermark a restart WOULD rebuild is the bound WAL truncation may use, and only the snapshot on disk
+    /// can say what that is).
+    @Contract
+    public void rebuildFromRefs(Map<String, BlockId> refs) {
         partitions.clear();
         sealedThrough.clear();
-        metadataStore.listAllRefs()
-                     .keySet()
-                     .stream()
-                     .filter(ref -> ref.startsWith(STREAMS_PREFIX))
-                     .forEach(this::parseAndAddRef);
+        refs.keySet().stream().filter(ref -> ref.startsWith(STREAMS_PREFIX)).forEach(this::parseAndAddRef);
         partitions.forEach(this::anchorAtLowestRef);
     }
 

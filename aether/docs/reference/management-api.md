@@ -2321,7 +2321,8 @@ the view actionable (see recovery below).
       "violation": ""
     }
   ],
-  "walRecoveryHeadGapsAccepted": 0
+  "walRecoveryHeadGapsAccepted": 0,
+  "walReclamationHeldBackTicks": 0
 }
 ```
 
@@ -2329,6 +2330,7 @@ the view actionable (see recovery below).
 |-------|-------------|
 | `walTotalBytes` | Total live WAL bytes across every partition on this node — the same number the `streams` storage instance reports as `wal.totalBytes` (both derive from one snapshot) |
 | `walRecoveryHeadGapsAccepted` | WAL recoveries on this node, since process start, that accepted a gap BEFORE a WAL file's first record as reclaimed history (the partition's sealed segments were removed by retention after the WAL was compacted). Each one is also logged at WARN, naming the stream, partition and offset range. Expected after retention reclaimed a partition's every sealed segment; otherwise the records in that range are lost. A gap BETWEEN records, or a duplicate offset, is never accepted: it refuses the stream on the node with an ERROR |
+| `walReclamationHeldBackTicks` | Consecutive WAL-truncation ticks (30 s each) in which some partition's sealed watermark ON DISK — the refs in the latest streams metadata snapshot, which is the only bound truncation may use (#1345) — sat below its live watermark without advancing. `0` while the snapshot keeps up. Climbing means WAL reclamation is halted because the streams snapshot cannot be written or read (disk full, permissions, a torn newest file); the WAL grows, bounded by the disk. The tick WARNs from the second such tick and every 10 after, naming the partitions and their WAL bytes. Recovery: make the streams snapshot directory writable and `LATEST` readable; the next snapshot advances the bound and the counter resets |
 | `partitions[]` | One row per `(stream, partition)` this node holds anything for — materialized (ring/WAL) or held only as sealed segments — sorted by stream, then partition |
 | `stream` / `partition` | The partition coordinate (`entity:`-prefixed streams are durable-entity logs) |
 | `wal` | The partition's live WAL counters; `null` when it has no WAL (non-durable path, or a segment-only row) |
@@ -5638,13 +5640,16 @@ writes untyped bytes with no event class to read a key from, so an explicit `par
 the operator naming a target directly. A `partition` outside `[0, partitionCount)` for the stream
 is rejected with `400 Bad Request`, naming the valid range — never a silent write to partition 0,
 never `500`. `[mechanism: ManagementServerError.InvalidPartition, ProblemResponses HttpStatusAware
-dispatch]`
+dispatch]` That `400` is the single publish; the batch form reports the same condition per item as
+`NOT_ATTEMPTED` with `200` — see below.
 
 When the stream's partition count cannot be determined — the auto-create guard could not
 materialize the stream locally (capacity exhausted, or `STRONG` consistency requiring AHSE
 storage) — the request is rejected with `409 Conflict`, naming the stream and the underlying
 cause, rather than validated against a guessed count. `[mechanism: ManagementServerError.StreamUnavailable,
-ProblemResponses HttpStatusAware dispatch]`
+ProblemResponses HttpStatusAware dispatch]` The batch form answers the same way: a stream-level `409` (or a
+reserved-name `400`) is the batch's own status, checked once before any item is written; per-item
+`NOT_ATTEMPTED` is partition-level only — see below.
 
 The auto-create never fabricates a stream under a reserved stream-kind prefix: a publish to a `topic`
 or `entity` namespace address with no committed config is refused with `400 Bad Request`
@@ -5657,12 +5662,32 @@ failure (a reserved name `400`, or an unavailable stream `409`) fails the whole 
 status and writes nothing. An empty batch publishes nothing and creates no stream. `[mechanism:
 publishMany runs ensureStreamExists before the per-item fan-out, and only when there are items]`
 
-**Batch publish is not atomic.** `publish-batch` validates and writes each item independently and
-concurrently; when one item names an out-of-range `partition`, items before it (and possibly after
-it) may already be durably written before the batch call fails. The response on failure names only
-the first invalid item — it does not report which of the other items committed. `[mechanism:
-publishMany fires every item concurrently via Promise.allOf with no short-circuit, then
-Result.allOf surfaces only the first Result failure]`
+**Batch publish is not atomic, and the response says per item what happened (#1342).** `publish-batch`
+validates and writes each item independently and concurrently. **`200` means the batch RAN, not that
+every event landed — read `notPublished`.** The top-level `published` / `notPublished` counts and one
+outcome per item, in request order, come back for every batch that ran, partial included. "Ran" means
+the route processed the batch past the stream-level check above: a batch in which NO item passed the
+PARTITION-level admission still answers `200` with `published: 0` and every item `NOT_ATTEMPTED`; a stream-level
+refusal is the batch's own status (CTO ruling, #1342 × #1299; before #1342 the all-rejected case answered `500`).
+
+```json
+{"address":"acme:orders:1.0.0","published":1,"notPublished":1,
+ "outcomes":[{"index":0,"status":"PUBLISHED","offset":41},
+             {"index":1,"status":"NOT_ATTEMPTED","cause":"Partition 4 is out of range; this stream has partitions [0, 4)"}]}
+```
+
+- `PUBLISHED`: durably in the log at `offset`.
+- `NOT_ATTEMPTED`: rejected before any write for a partition-level reason (out of range) — not in the log,
+  safe to retry.
+- `OUTCOME_UNKNOWN`: the write was refused or timed out, before or after the local append (#1236) — the
+  caller cannot tell which, so it may be in the log; retrying it can duplicate.
+
+A client that treats `200` as "every event landed" misreads a partial batch; check `notPublished`. Before
+#1342 the response on a partial batch was the first failure alone, and the offsets of the items that had
+landed were discarded. `[mechanism: publishMany fires every item concurrently via Promise.allOf with no
+short-circuit; each item's Result becomes its own PublishItemOutcome]` `[verified:
+StreamApiRoutesPublishBatchTest.partialBatch_overHttpDispatch_answers200_withNotPublishedAndTheLandedOffset —
+the real route through ManagementRouter, asserting the written status and JSON]`
 
 ### Delete Stream Version
 

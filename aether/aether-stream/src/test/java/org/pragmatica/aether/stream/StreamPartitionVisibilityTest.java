@@ -501,7 +501,8 @@ class StreamPartitionVisibilityTest {
                                                                                   Option.class,
                                                                                   StreamOwnerEpochSource.class,
                                                                                   Option.class,
-                                                                                  LastSealedOffsetSource.class);
+                                                                                  LastSealedOffsetSource.class,
+                                                                                  DurableSealedOffsetSource.class);
 
             constructor.setAccessible(true);
             return constructor.newInstance(Long.MAX_VALUE,
@@ -511,7 +512,8 @@ class StreamPartitionVisibilityTest {
                                            Option.none(),
                                            StreamOwnerEpochSource.zero(),
                                            Option.some(walDir),
-                                           LastSealedOffsetSource.none());
+                                           LastSealedOffsetSource.none(),
+                                           DurableSealedOffsetSource.none());
         } catch (ReflectiveOperationException e) {
             return fail("manager construction failed: " + e);
         }
