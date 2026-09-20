@@ -416,7 +416,6 @@ class PartitionedStreamAccessTest {
                                                         SELF,
                                                         Option.some(() -> owner),
                                                         Option.none(),
-                                                        0,
                                                         Option.none(),
                                                         Option.none(),
                                                         registry);
@@ -598,7 +597,6 @@ class PartitionedStreamAccessTest {
                                                         SELF,
                                                         Option.some(owner::get),
                                                         Option.none(),
-                                                        0,
                                                         Option.none(),
                                                         Option.none(),
                                                         Option.some(replicaRegistry));
