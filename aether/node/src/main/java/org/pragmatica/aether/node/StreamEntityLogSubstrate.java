@@ -229,14 +229,30 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// no dependency on stream error types. `StaleEpochAppend` is what `ensureNotStale` raises when a
     /// deposed owner's epoch is older than the partition's committed high-water — the same condition the
     /// storage engine's gate enforced before I3 moved the fence to the log.
+    ///
+    /// #1230: `NotOwnerAppend` — the stream's owner-write admission found the committed record naming another
+    /// node — is the same stale-owner condition reached by a different check: `EntityOwnerAdmission` passed
+    /// on a read the record has since moved past. It too becomes `StaleOwnerAppend`, naming the committed
+    /// owner, so the caller re-resolves instead of seeing an opaque `StorageFailed`.
     private static Cause translateAppendFailure(String keyspace, int partition, Cause cause) {
-        return cause instanceof StreamError.StaleEpochAppend stale
-               ? new EntityLogError.StaleOwnerAppend(keyspace, partition, staleDetail(stale))
-               : cause;
+        return switch (cause) {
+            case StreamError.StaleEpochAppend stale -> new EntityLogError.StaleOwnerAppend(keyspace,
+                                                                                           partition,
+                                                                                           staleDetail(stale));
+            case StreamError.NotOwnerAppend notOwner -> new EntityLogError.StaleOwnerAppend(keyspace,
+                                                                                            partition,
+                                                                                            notOwnerDetail(notOwner));
+            default -> cause;
+        };
     }
 
     private static String staleDetail(StreamError.StaleEpochAppend stale) {
         return "presented " + stale.presented() + ", current " + stale.current();
+    }
+
+    private static String notOwnerDetail(StreamError.NotOwnerAppend notOwner) {
+        return "the committed owner is " + notOwner.committedOwner()
+                                                   .id();
     }
 
     /// `minSyncReplicas` COUNTS THE OWNER; `awaitReplication` counts DISTINCT NON-SELF acks. The two

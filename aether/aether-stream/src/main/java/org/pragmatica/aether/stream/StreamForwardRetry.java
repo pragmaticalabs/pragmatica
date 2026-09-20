@@ -5,8 +5,11 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.stream.forward.StreamForwardError;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn0;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Deadline;
@@ -43,6 +46,22 @@ sealed interface StreamForwardRetry {
     /// same target, identical to an inline per-site retry but with no per-call argument threading.
     static Promise<Long> withBoundedRetry(Fn0<Promise<Long>> sendAttempt) {
         return attempt(sendAttempt, 1, Deadline.current());
+    }
+
+    /// #1230 ownership-lag redirect for the owner-local arm of the same three sites: a local append refused
+    /// with {@link StreamError.NotOwnerAppend} — HRW placement already names this node but the leader has
+    /// not yet committed the ownership change — is re-sent to the refusal's COMMITTED owner, which is still
+    /// the fenced single writer for the partition, via `forwardTo` (itself bounded-retried at the call site).
+    /// Strategy: FER — the write degrades forward to the authoritative writer instead of failing the app;
+    /// it earns "no second writer" because the committed owner's own admission re-checks on arrival, and a
+    /// target whose view has moved answers retryable rather than appending. `forwardTo` yields
+    /// [Option#none] when no forward client is wired; the refusal then propagates unchanged, as does every
+    /// other cause.
+    static <T> Promise<T> redirectNotOwner(Cause cause, Fn1<Option<Promise<T>>, NodeId> forwardTo) {
+        return cause instanceof StreamError.NotOwnerAppend refused
+               ? forwardTo.apply(refused.committedOwner())
+                          .or(cause::promise)
+               : cause.promise();
     }
 
     private static Promise<Long> attempt(Fn0<Promise<Long>> sendAttempt, int attemptNo, Deadline deadline) {
