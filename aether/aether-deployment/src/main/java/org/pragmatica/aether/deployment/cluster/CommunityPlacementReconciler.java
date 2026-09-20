@@ -432,24 +432,53 @@ record PlacementReconciler(NodeId self,
         return new AetherKey.CommunityPlacementAvailabilityKey(community, source, zone);
     }
 
-    private Option<AetherValue.CommunityPlacementAvailabilityValue> availability(CommunityPlacement policy,
-                                                                                 CommunityPlacement.Location location) {
-        return store.getTyped(availabilityKey(policy.id(),
-                                              location.source(),
-                                              location.zone()),
-                              AetherValue.CommunityPlacementAvailabilityValue.class)
-                    .filter(value -> value.policyIdentity()
-                                          .equals(CommunityPlacementAvailability.policyIdentity(policy)));
+    private static Option<AetherValue.CommunityPlacementAvailabilityValue> availability(CommunityPlacement policy,
+                                                                                        CommunityPlacement.Location location,
+                                                                                        Map<AetherKey, AetherValue> snapshot) {
+        return Option.option(snapshot.get(availabilityKey(policy.id(),
+                                                          location.source(),
+                                                          location.zone())))
+                     .filter(AetherValue.CommunityPlacementAvailabilityValue.class::isInstance)
+                     .map(AetherValue.CommunityPlacementAvailabilityValue.class::cast)
+                     .filter(value -> value.policyIdentity()
+                                           .equals(CommunityPlacementAvailability.policyIdentity(policy)));
     }
 
-    private boolean probeDue(ClusterBootstrapConfig config,
-                             CommunityPlacement policy,
-                             CommunityPlacement.Location location) {
-        return availability(policy, location).filter(value -> System.currentTimeMillis() - value.refusedAt() >= CommunityPlacementAvailability.retryDelay(value.attempts()).millis())
-                           .filter(value -> actuator.sourceBinding(config.sources().get(location.source()).name())
-                                                    .option()
-                                                    .filter(value.sourceBinding()::equals)
-                                                    .isPresent())
+    private static boolean releasedRefusal(AetherValue.CommunityPlacementAvailabilityValue refusal,
+                                           String source,
+                                           Map<AetherKey, AetherValue> snapshot) {
+        var reservation = Option.option(snapshot.get(new AetherKey.CapacityReservationKey(refusal.refusedNode())));
+
+        return reservation.isEmpty() || reservation.filter(value -> value instanceof AetherValue.CapacityReservationValue allocation
+                                                                    && allocation.phase() == AetherValue.CapacityReservationPhase.RELEASED
+                                                                    && allocation.sourceName()
+                                                                                 .equals(source)
+                                                                    && allocation.sourceBinding()
+                                                                                 .equals(refusal.sourceBinding()))
+                                                   .isPresent();
+    }
+
+    private static boolean unavailable(CommunityPlacement policy,
+                                       CommunityPlacement.Location location,
+                                       Option<String> binding,
+                                       Map<AetherKey, AetherValue> snapshot) {
+        return availability(policy, location, snapshot).filter(value -> binding.isEmpty() || binding.filter(value.sourceBinding()::equals)
+                                                                                                    .isPresent() || !releasedRefusal(value,
+                                                                                                                                     location.source(),
+                                                                                                                                     snapshot))
+                           .isPresent();
+    }
+
+    private static boolean probeDue(CommunityPlacement policy,
+                                    CommunityPlacement.Location location,
+                                    Option<String> binding,
+                                    Map<AetherKey, AetherValue> snapshot) {
+        return availability(policy, location, snapshot).filter(value -> System.currentTimeMillis() - value.refusedAt() >= CommunityPlacementAvailability.retryDelay(value.attempts()).millis())
+                           .filter(value -> binding.filter(value.sourceBinding()::equals)
+                                                   .isPresent())
+                           .filter(value -> releasedRefusal(value,
+                                                            location.source(),
+                                                            snapshot))
                            .isPresent();
     }
 
@@ -484,6 +513,7 @@ record PlacementReconciler(NodeId self,
                              .or(1);
         var refused = new AetherValue.CommunityPlacementAvailabilityValue(identity,
                                                                           operation.sourceBinding(),
+                                                                          operation.targetNode(),
                                                                           System.currentTimeMillis(),
                                                                           attempts);
         var completed = operation.withPhase(PlacementOperationPhase.COMPLETE,
@@ -498,27 +528,41 @@ record PlacementReconciler(NodeId self,
                                   List.of(new KVCommand.ReadWitness<AetherKey>(reservationKey,
                                                                                reservation.map(value -> (Object) value)),
                                           new KVCommand.ReadWitness<AetherKey>(AetherKey.ClusterConfigKey.CURRENT,
-                                                                               store.get(AetherKey.ClusterConfigKey.CURRENT)))).onSuccess(accepted -> {
-                                                                                                                                              if (accepted) escalation.accept(completed);
-                                                                                                                                          })
+                                                                               store.get(AetherKey.ClusterConfigKey.CURRENT)
+                                                                                    .map(value -> (Object) value)))).onSuccess(accepted -> {
+                                                                                                                                   if (accepted) escalation.accept(completed);
+                                                                                                                               })
                                  .mapToUnit();
     }
 
     private Promise<Unit> createAccepted(ClusterBootstrapConfig config,
                                          CommunityPlacementOperationValue operation,
                                          LeaderValue leader) {
+        var snapshot = aetherSnapshot();
         var key = availabilityKey(operation.communityId(), operation.targetSource(), operation.targetZone());
-        var before = store.getTyped(key, AetherValue.CommunityPlacementAvailabilityValue.class);
+        var before = Option.option(snapshot.get(key))
+                           .filter(AetherValue.CommunityPlacementAvailabilityValue.class::isInstance)
+                           .map(AetherValue.CommunityPlacementAvailabilityValue.class::cast);
         var next = operation.withPhase(PlacementOperationPhase.AWAITING_READY, leader, "");
 
         if (before.isEmpty()) return transition(operation, next).mapToUnit();
 
-        if (before.filter(value -> value.sourceBinding()
-                                        .equals(operation.sourceBinding())).isEmpty()) {
-            return uncertain(operation, leader, PlacementOperationPhase.BLOCKED, "Capacity recovery binding changed");
+        if (before.filter(value -> releasedRefusal(value, operation.targetSource(), snapshot)).isEmpty()) {
+            return uncertain(operation,
+                             leader,
+                             PlacementOperationPhase.BLOCKED,
+                             "Earlier refused attempt has unresolved capacity accounting");
         }
 
-        return commitAvailability(operation, next, key, before, Option.none(), List.of()).mapToUnit();
+        var reservationKey = new AetherKey.CapacityReservationKey(before.unwrap().refusedNode());
+
+        return commitAvailability(operation,
+                                  next,
+                                  key,
+                                  before,
+                                  Option.none(),
+                                  List.of(new KVCommand.ReadWitness<AetherKey>(reservationKey,
+                                                                               Option.option(snapshot.get(reservationKey)).map(value -> (Object) value)))).mapToUnit();
     }
 
     private Promise<Boolean> commitAvailability(CommunityPlacementOperationValue before,
@@ -750,9 +794,18 @@ record PlacementReconciler(NodeId self,
                                                                                      member));
         }
 
+        var bindings = policy.locations()
+                             .stream()
+                             .collect(Collectors.toMap(Function.identity(),
+                                                       location -> actuator.sourceBinding(config.sources()
+                                                                                                .get(location.source())
+                                                                                                .name())));
         var unavailable = policy.locations()
                                 .stream()
-                                .filter(location -> availability(policy, location).isPresent())
+                                .filter(location -> unavailable(policy,
+                                                                location,
+                                                                bindings.get(location).option(),
+                                                                snapshot))
                                 .collect(Collectors.toSet());
         var effective = CommunityPlacementAvailability.effectiveCounts(policy, unavailable);
         var ordinary = policy.locations()
@@ -766,7 +819,10 @@ record PlacementReconciler(NodeId self,
                     : policy.locations()
                             .stream()
                             .filter(unavailable::contains)
-                            .filter(location -> probeDue(config, policy, location))
+                            .filter(location -> probeDue(policy,
+                                                         location,
+                                                         bindings.get(location).option(),
+                                                         snapshot))
                             .filter(location -> matching(members, location).size() < policy.desiredCounts()
                                                                                            .get(location))
                             .sorted(locationOrder())
@@ -807,7 +863,7 @@ record PlacementReconciler(NodeId self,
         var id = UUID.randomUUID().toString();
         var target = new NodeId("placement-" + id);
 
-        return actuator.sourceBinding(config.sources().get(destination.source()).name())
+        return bindings.get(destination)
                        .fold(cause -> cause.promise(),
                              binding -> reserveOperation(config,
                                                          policy,
@@ -998,7 +1054,14 @@ record PlacementReconciler(NodeId self,
             for (var location : config.communities().get(community).locations()) {
                 var availabilityKey = availabilityKey(community, location.source(), location.zone());
 
-                guards.add(new KVCommand.ReadWitness<>(availabilityKey, store.get(availabilityKey)));
+                guards.add(new KVCommand.ReadWitness<>(availabilityKey,
+                                                       Option.option(snapshot.get(availabilityKey)).map(value -> (Object) value)));
+                if (snapshot.get(availabilityKey) instanceof AetherValue.CommunityPlacementAvailabilityValue refusal) {
+                    var reservationKey = new AetherKey.CapacityReservationKey(refusal.refusedNode());
+
+                    guards.add(new KVCommand.ReadWitness<>(reservationKey,
+                                                           Option.option(snapshot.get(reservationKey)).map(value -> (Object) value)));
+                }
             }
         }
 

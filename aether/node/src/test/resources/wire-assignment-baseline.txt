@@ -150,6 +150,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CloudCredentialsKey 1096
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ClusterConfigKey 1097
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ClusterPhaseKey 1098
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CommunityKey 1099
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CommunityPlacementAvailabilityKey 2112
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CommunityPlacementOperationKey 1682
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ConfigKey 1100
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ConsumerGroupKey 1101
@@ -208,6 +209,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CloudCredentialsValue 1609
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ClusterConfigValue 1610
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ClusterPhase 1611
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ClusterPhaseValue 1612
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CommunityPlacementAvailabilityValue 2113
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CommunityPlacementOperationValue 1683
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CommunityValue 1613
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ConfigValue 1614
