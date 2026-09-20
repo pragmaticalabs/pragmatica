@@ -48,6 +48,26 @@ class RabiaReorderedDeliveryTest {
     }
 
     @Test
+    void proposalDeliveryRepairsDisjointPendingQueuesWithoutNewBatchRetransmission() {
+        for (int seed = 0; seed < 6; seed++) {
+            var cluster = new ScheduledCluster(3, seed);
+            clusters.add(cluster);
+            cluster.start();
+            for (int index = 0; index < cluster.engines.size(); index++) {
+                var batch = Batch.create(cluster.machines.get(index).serializer(), List.of(new TestCommand("isolated-" + index)));
+                cluster.engines.get(index).handleNewBatch(new NewBatch<>(cluster.members.get(index), batch));
+            }
+            cluster.settle();
+            // Only Propose/ballot/Decision traffic is delivered. No voter ever receives another
+            // NewBatch; a protocol advancing empty slots forever must fail this application gate.
+            cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() == 3));
+            cluster.pumpUntil(() -> cluster.pending.isEmpty() && cluster.emitted.isEmpty());
+            cluster.verifyPrefixes();
+            cluster.machines.forEach(machine -> assertThat(machine.getProcessedCommands()).hasSize(3).doesNotHaveDuplicates());
+        }
+    }
+
+    @Test
     void checkpointHandoffReplacesVotersWithoutReplayingApplicationState() {
         for (int seed = 0; seed < 8; seed++) {
             var cluster = new ScheduledCluster(6, seed, 3);

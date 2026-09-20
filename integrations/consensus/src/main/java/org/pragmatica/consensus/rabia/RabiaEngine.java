@@ -1735,6 +1735,24 @@ public class RabiaEngine<C extends Command> {
         }
     }
 
+    /// Proposal retransmission must not duplicate request correlations in the pending queue.
+    private Unit learnProposedBatch(Batch<C> incoming) {
+        pendingBatches.compute(incoming.id(),
+                               (_, existing) -> Option.option(existing).fold(() -> incoming,
+                                                                             current -> new Batch<>(current.id(),
+                                                                                                    java.util.stream.Stream.concat(current.correlationIds()
+                                                                                                                                          .stream(),
+                                                                                                                                   incoming.correlationIds()
+                                                                                                                                           .stream())
+                                                                                                                           .distinct()
+                                                                                                                           .toList(),
+                                                                                                    Math.min(current.timestamp(),
+                                                                                                             incoming.timestamp()),
+                                                                                                    current.commands())));
+
+        return Unit.unit();
+    }
+
     /// Broadcasts own proposal for pending batch if not already proposed in current phase.
     private void broadcastOwnProposalIfNeeded() {
         var phase = currentPhase.get();
@@ -2750,6 +2768,12 @@ public class RabiaEngine<C extends Command> {
             triggerResync();
 
             return;
+        }
+        // Proposals also repair missed NewBatch dissemination. Without this, divergent queue
+        // heads survive every V0 slot and fair ballot delivery cannot make application progress.
+        // The past-slot guard above prevents delayed proposals from resurrecting committed work.
+        if (propose.value().isNotEmpty()) {
+            learnProposedBatch(propose.value());
         }
 
         var phaseData = getOrCreatePhaseData(propose.phase());

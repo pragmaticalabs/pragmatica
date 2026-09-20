@@ -71,7 +71,7 @@ class HierarchicalMovementTakeoverTest {
         LifecycleAwait.settled("kill movement leader during drain", cluster, cluster.killNode(failedLeader.id(), false));
         await().atMost(BUDGET.duration()).until(() -> cluster.currentLeader().filter(id -> !id.equals(failedLeader.id())).isPresent());
         await().atMost(BUDGET.duration()).until(() -> operation().filter(value -> value.operationId().equals(interrupted.operationId())
-            && value.issuer().leader().equals(leader().self())).isPresent());
+            && cluster.currentLeader().filter(value.issuer().leader().id()::equals).isPresent()).isPresent());
         assertThat(cluster.getNode(original.id()).isPresent()).isTrue();
         originalProcess.setInboundFaultFilter((_, _) -> true);
         await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).untilAsserted(() ->
@@ -138,7 +138,7 @@ class HierarchicalMovementTakeoverTest {
 
     private AetherNode leader() { return cluster.currentLeader().flatMap(cluster::getNode).unwrap(); }
     private Option<AetherValue.CommunityPlacementOperationValue> operation() {
-        return leader().kvStore().getTyped(new AetherKey.CommunityPlacementOperationKey("stable"),
-            AetherValue.CommunityPlacementOperationValue.class);
+        return cluster.currentLeader().flatMap(cluster::getNode).flatMap(node -> node.kvStore().getTyped(
+            new AetherKey.CommunityPlacementOperationKey("stable"), AetherValue.CommunityPlacementOperationValue.class));
     }
 }
