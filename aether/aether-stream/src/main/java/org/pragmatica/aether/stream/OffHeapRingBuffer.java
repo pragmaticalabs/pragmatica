@@ -112,7 +112,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Native accesses refused because index or offset arithmetic went out of bounds (#1247) — a ring
     /// defect, never the close race.
     private final AtomicLong indexCorruption = new AtomicLong(0);
-
     /// Test-only seam (#1253), run by [#guardedRead] between its `closed` fast-path check and the native read.
     /// Deliberately NOT volatile: it is set before any reader thread starts, and `Thread.start` publishes it.
     private Runnable readWindowProbe = NO_READ_WINDOW_PROBE;
