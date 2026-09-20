@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.replication.ReplicationError;
 import org.pragmatica.lang.Cause;
@@ -46,6 +47,9 @@ class TransientClassificationTest {
             new StreamError.StreamNotFound("s"),
             new StreamForwardError.RemotePublishFailed("no"),
             StreamForwardError.General.READ_RESPONSE_OVERSIZED,
+            // #1236: deliberately unclassified even over a transient origin — a retry facility that
+            // re-runs the operation re-mints the message ID and writes a duplicate.
+            PublishOutcomeUnknown.FACTORY.apply(ReplicationError.General.REPLICATION_TIMEOUT),
         };
 
         for (var cause : unclassified) {

@@ -1286,6 +1286,13 @@ public final class StreamPartitionManager implements AutoCloseable {
         return replicationManager.awaitReplication(streamName, partition, offset, minAcks);
     }
 
+    /// Pre-append replica-floor check (#1236). Publish paths call this BEFORE {@link #publishLocal}, so a
+    /// `NOT_ENOUGH_REPLICAS` refusal leaves nothing in the ring or the WAL; see
+    /// [ReplicationManager#ensureReplicaFloor].
+    public Result<Unit> ensureReplicaFloor(String streamName, int partition, int minAcks) {
+        return replicationManager.ensureReplicaFloor(streamName, partition, minAcks);
+    }
+
     /// The configured `min-sync-replicas` write-ack requirement for `streamName` (in-sync count incl.
     /// owner), or `0` when the stream is unknown. `<= 1` means no peer-ack barrier; `>= 2` means a
     /// publish must await `minSyncReplicas - 1` distinct non-self replica acks. Read straight from the

@@ -14,6 +14,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
@@ -149,6 +150,13 @@ final class DefaultReplicationManager implements ReplicationManager {
                        .map(ReplicaDescriptor::nodeId)
                        .filter(nodeId -> !nodeId.equals(governorId))
                        .toList();
+    }
+
+    @Override
+    public Result<Unit> ensureReplicaFloor(String streamName, int partition, int minAcks) {
+        return replicationTargets(streamName, partition).size() < minAcks
+               ? NOT_ENOUGH_REPLICAS.result()
+               : Result.unitResult();
     }
 
     @Override
