@@ -46,7 +46,7 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 
 /// #1263: the three write entry points — the slice `StreamPublisher` ({@link DefaultStreamPublisher}),
 /// `StreamAccess.publish` ({@link PartitionedStreamAccess}) and the management publish
-/// ({@link StreamWriteRouter}) — are ONE owner-routed write operation. Every scenario in [Contract] (7 of them) runs against
+/// ({@link StreamWriteRouter}) — are ONE owner-routed write operation. Every scenario in [Contract] (10 of them) runs against
 /// all three (one `@Nested` subclass per entry point), so a defect in the shared router reddens all three
 /// rather than one, and a path that drifts reddens alone.
 ///
@@ -61,6 +61,7 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 class StreamWritePathContractTest {
     private static final NodeId SELF = new NodeId("self-node");
     private static final NodeId OWNER = new NodeId("owner-node");
+    private static final NodeId LEADER = new NodeId("leader-node");
     private static final String STREAM = "contract-stream";
     private static final String STRONG_STREAM = "contract-strong-stream";
     private static final String UNKNOWN_STREAM = "contract-unknown-stream";
@@ -70,6 +71,9 @@ class StreamWritePathContractTest {
     private static final long FORWARDED_OFFSET = 42L;
 
     private final List<Integer> awaitedMinAcks = new ArrayList<>();
+    /// Runs inside the replication stub's pre-append floor check — between the router's entry read of
+    /// `min-sync-replicas` and its barrier (#1361 M12).
+    private Runnable onFloorCheck = () -> {};
     private StreamPartitionManager partitionManager;
     private RecordingForwardClient forwardClient;
 
@@ -79,10 +83,19 @@ class StreamWritePathContractTest {
     abstract class Contract {
         private final Map<String, Fn0<Promise<Unit>>> entryPoints = new HashMap<>();
 
-        abstract Fn0<Promise<Unit>> entryPoint(String stream, NodeId hrwOwner);
+        /// `leaderFallback` is the arg-less leader resolver production wires beside the HRW resolver
+        /// (`StreamPublisherFactory`, `StreamAccessFactory`, the AetherNode DLQ wiring); none for the
+        /// scenarios that do not care.
+        abstract Fn0<Promise<Unit>> entryPoint(String stream, NodeId hrwOwner, Option<NodeId> leaderFallback);
 
         Promise<Unit> publish(String stream, NodeId hrwOwner) {
-            return entryPoints.computeIfAbsent(stream + "@" + hrwOwner.id(), _ -> entryPoint(stream, hrwOwner))
+            return publish(stream, hrwOwner, Option.none());
+        }
+
+        Promise<Unit> publish(String stream, NodeId hrwOwner, Option<NodeId> leaderFallback) {
+            var key = stream + "@" + hrwOwner.id() + "/" + leaderFallback.map(NodeId::id).or("-");
+
+            return entryPoints.computeIfAbsent(key, _ -> entryPoint(stream, hrwOwner, leaderFallback))
                               .apply();
         }
 
@@ -94,11 +107,39 @@ class StreamWritePathContractTest {
             partitionManager.createStream(config(UNKNOWN_STREAM, ConsistencyMode.UNKNOWN)).onFailureRun(Assertions::fail);
             partitionManager.placementRoleSupplier((_, _) -> Role.REPLICA);
             forwardClient = new RecordingForwardClient();
+            onFloorCheck = () -> {};
         }
 
         @AfterEach
         void tearDown() {
             partitionManager.close();
+        }
+
+        /// #1361 (rev1305d M11): production wires BOTH resolvers, and when they disagree — a leader change, or
+        /// a leader that is simply not this partition's owner — the partition-aware HRW owner wins. Forwarding
+        /// to the leader instead lands on a non-owner, whose `NotOwnerAppend` is answered retryable, so the
+        /// #485 budget burns and the publish fails permanently. Swapping `hrwOwner`'s precedence reddens this.
+        @Test
+        void publish_forwardsToTheHrwOwner_notTheLeaderFallback_whenBothResolversAreWired() {
+            publish(STREAM, OWNER, Option.some(LEADER)).await().onFailureRun(Assertions::fail);
+
+            assertThat(forwardClient.owners).containsExactly(OWNER);
+            assertThat(localHead(STREAM)).isEqualTo(-1L);
+        }
+
+        /// #1361 (M12): the router reads `min-sync-replicas` ONCE per publish, and that one value feeds both
+        /// the pre-append floor and the post-append barrier. A config raised between the two — here, from
+        /// inside the floor check itself — does not move the barrier of the publish already in flight; the
+        /// NEXT publish reads the raised value (see `publish_awaitsTheRaisedMinSyncBarrier_…`). A router that
+        /// re-read the config for the barrier would await RAISED − 1 here.
+        @Test
+        void publish_barrierUsesTheMinSyncReadAtEntry_notOneRaisedDuringTheAppend() {
+            onFloorCheck = () -> partitionManager.onStreamConfigPut(configPut(config(STREAM, ConsistencyMode.EVENTUAL, RAISED_MIN_SYNC)));
+
+            publish(STREAM, SELF).await().onFailureRun(Assertions::fail);
+
+            assertThat(awaitedMinAcks).containsExactly(DECLARED_MIN_SYNC - 1);
+            assertThat(partitionManager.minSyncReplicasFor(STREAM)).as("the raise itself landed").isEqualTo(RAISED_MIN_SYNC);
         }
 
         @Test
@@ -179,18 +220,31 @@ class StreamWritePathContractTest {
     @Nested
     class StreamPublisherPath extends Contract {
         @Override
-        Fn0<Promise<Unit>> entryPoint(String stream, NodeId hrwOwner) {
-            var publisher = publisher(stream, hrwOwner, Option.some(SELF));
+        Fn0<Promise<Unit>> entryPoint(String stream, NodeId hrwOwner, Option<NodeId> leaderFallback) {
+            var publisher = publisher(stream, hrwOwner, leaderFallback, Option.some(SELF), declaredMode(stream));
 
             return () -> publisher.publish("e0".getBytes());
+        }
+
+        /// #1361 (M15), the re-adding direction of "UNKNOWN is not decided in DSP": a publisher BUILT with the
+        /// frozen mode UNKNOWN over a stream whose COMMITTED config is EVENTUAL publishes — the committed
+        /// config is the authority (#1262 round 2). Re-adding a DSP-local `case UNKNOWN -> refuse` reddens
+        /// this; `publish_refusesUnreadableConsistencyMode` keeps the committed-UNKNOWN refusal.
+        @Test
+        void streamPublisher_builtUnknown_overAnEventualCommittedStream_publishes() {
+            var publisher = publisher(STREAM, SELF, Option.none(), Option.some(SELF), ConsistencyMode.UNKNOWN);
+
+            publisher.publish("e0".getBytes()).await().onFailureRun(Assertions::fail);
+
+            assertThat(localHead(STREAM)).isZero();
         }
     }
 
     @Nested
     class StreamAccessPath extends Contract {
         @Override
-        Fn0<Promise<Unit>> entryPoint(String stream, NodeId hrwOwner) {
-            var access = access(stream, hrwOwner, SELF);
+        Fn0<Promise<Unit>> entryPoint(String stream, NodeId hrwOwner, Option<NodeId> leaderFallback) {
+            var access = access(stream, hrwOwner, leaderFallback, SELF);
 
             return () -> access.publish("e0".getBytes())
                                .mapToUnit();
@@ -199,12 +253,18 @@ class StreamWritePathContractTest {
 
     @Nested
     class ManagementPath extends Contract {
+        /// The management router is handed ONE resolver by `AetherNode` (`streamReplicaSetController::ownerFor`,
+        /// the HRW owner); the leader fallback only exists on the typed paths, so it composes the same
+        /// `hrwOwner` rule here to keep the contract's cell shape.
         @Override
-        Fn0<Promise<Unit>> entryPoint(String stream, NodeId hrwOwner) {
+        Fn0<Promise<Unit>> entryPoint(String stream, NodeId hrwOwner, Option<NodeId> leaderFallback) {
+            Function<Integer, Option<NodeId>> ownerResolver = _ -> Option.some(hrwOwner);
             var router = StreamWriteRouter.streamWriteRouter(partitionManager,
                                                              Option.some(forwardClient),
                                                              SELF,
-                                                             (_, _) -> Option.some(hrwOwner));
+                                                             (_, partition) -> StreamWriteRouter.hrwOwner(Option.some(ownerResolver),
+                                                                                                          leaderResolver(leaderFallback),
+                                                                                                          partition));
 
             return () -> router.publish(stream, PARTITION, "e0".getBytes(), 1L)
                                .mapToUnit();
@@ -231,14 +291,14 @@ class StreamWritePathContractTest {
 
         @Test
         void streamPublisher_neverForwards_whenSelfIsUnknown() {
-            publisher(STREAM, OWNER, Option.none()).publish("e0".getBytes()).await().onFailureRun(Assertions::fail);
+            publisher(STREAM, OWNER, Option.none(), Option.none(), ConsistencyMode.EVENTUAL).publish("e0".getBytes()).await().onFailureRun(Assertions::fail);
 
             assertUnforwardedLocalAppend();
         }
 
         @Test
         void streamAccess_neverForwards_whenSelfIsTheNoSelfSentinel() {
-            access(STREAM, OWNER, new NodeId("__no_self__")).publish("e0".getBytes()).await().onFailureRun(Assertions::fail);
+            access(STREAM, OWNER, Option.none(), new NodeId("__no_self__")).publish("e0".getBytes()).await().onFailureRun(Assertions::fail);
 
             assertUnforwardedLocalAppend();
         }
@@ -262,9 +322,12 @@ class StreamWritePathContractTest {
         }
     }
 
-    private DefaultStreamPublisher<byte[]> publisher(String stream, NodeId hrwOwner, Option<NodeId> self) {
+    private DefaultStreamPublisher<byte[]> publisher(String stream,
+                                                     NodeId hrwOwner,
+                                                     Option<NodeId> leaderFallback,
+                                                     Option<NodeId> self,
+                                                     ConsistencyMode mode) {
         Function<Integer, Option<NodeId>> ownerResolver = _ -> Option.some(hrwOwner);
-        var mode = declaredMode(stream);
 
         return DefaultStreamPublisher.streamPublisher(partitionManager,
                                                       identitySerializer(),
@@ -274,9 +337,13 @@ class StreamWritePathContractTest {
                                                       mode,
                                                       Option.none(),
                                                       Option.some(forwardClient),
-                                                      Option.<Fn0<Option<NodeId>>> none(),
+                                                      leaderResolver(leaderFallback),
                                                       Option.some(ownerResolver),
                                                       self);
+    }
+
+    private static Option<Fn0<Option<NodeId>>> leaderResolver(Option<NodeId> leaderFallback) {
+        return leaderFallback.map(leader -> () -> Option.some(leader));
     }
 
     private static ConsistencyMode declaredMode(String stream) {
@@ -287,7 +354,7 @@ class StreamWritePathContractTest {
         };
     }
 
-    private PartitionedStreamAccess<byte[]> access(String stream, NodeId hrwOwner, NodeId self) {
+    private PartitionedStreamAccess<byte[]> access(String stream, NodeId hrwOwner, Option<NodeId> leaderFallback, NodeId self) {
         Function<Integer, Option<NodeId>> ownerResolver = _ -> Option.some(hrwOwner);
 
         return PartitionedStreamAccess.<byte[]> streamAccess(partitionManager,
@@ -298,7 +365,7 @@ class StreamWritePathContractTest {
                                                              Option.<Function<byte[], Object>> none(),
                                                              Option.some(forwardClient),
                                                              self,
-                                                             Option.<Fn0<Option<NodeId>>> none(),
+                                                             leaderResolver(leaderFallback),
                                                              Option.some(ownerResolver));
     }
 
@@ -349,6 +416,13 @@ class StreamWritePathContractTest {
             @Override
             public ReplicaRegistry registry() {
                 return ReplicationManager.NONE.registry();
+            }
+
+            @Override
+            public Result<Unit> ensureReplicaFloor(String streamName, int partition, int minAcks) {
+                onFloorCheck.run();
+
+                return Result.unitResult();
             }
 
             @Override
