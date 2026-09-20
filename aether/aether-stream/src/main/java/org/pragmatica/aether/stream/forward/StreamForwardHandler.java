@@ -22,7 +22,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 
@@ -120,24 +119,33 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         this.ownerServe = ownerServe;
     }
 
+    /// #1236: the replica floor (`min-sync - 1` peers) is checked BEFORE the owner appends, so a forwarded
+    /// publish refused with `NOT_ENOUGH_REPLICAS` is genuinely not in the log — and AFTER the #1230 owner
+    /// admission, so a forward that lands on a non-owner is answered retryable ([StreamError.NotOwnerAppend])
+    /// rather than with a floor verdict this node does not own. A stream this owner has not yet materialized
+    /// reports `min-sync` 0 here; [StreamPartitionManager#publishForwarded] then materializes it from the
+    /// committed config and checks THAT config's floor before appending (#1290 review M1), so the refusal
+    /// is clean on that path too.
     @Contract
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onPublishForward(PublishForward request) {
-        ensureReplicaFloor(request).flatMap(_ -> partitionManager.publishForwarded(request.streamName(),
-                                                                                   request.partition(),
-                                                                                   request.payload(),
-                                                                                   request.timestamp()))
-                          .async()
-                          .flatMap(offset -> awaitMinSync(request, offset))
-                          .onSuccess(offset -> sendSuccessResponse(request, offset))
-                          .onFailure(cause -> sendPublishFailure(request, cause));
+        partitionManager.publishForwarded(request.streamName(),
+                                          request.partition(),
+                                          request.payload(),
+                                          request.timestamp(),
+                                          partitionManager.minSyncReplicasFor(request.streamName()) - 1)
+                        .async()
+                        .flatMap(offset -> awaitMinSync(request, offset))
+                        .onSuccess(offset -> sendSuccessResponse(request, offset))
+                        .onFailure(cause -> sendPublishFailure(request, cause));
     }
 
     /// The min-sync barrier belongs HERE, on the owner, because this is where the ack for a forwarded
     /// publish is produced. Both writer paths ([org.pragmatica.aether.stream.DefaultStreamPublisher] and
-    /// [org.pragmatica.aether.stream.StreamWriteRouter]) route on LOCAL RING PRESENCE, not ownership, and
-    /// each awaits replication only on its local-append arm — so before this, every publish that was
+    /// [org.pragmatica.aether.stream.StreamWriteRouter]) await replication only on their local-append arm
+    /// (they routed on local ring presence until #1230; they now route on the resolved owner) — so before
+    /// this, every publish that was
     /// forwarded to the owner acked on the owner's local fsync ALONE, silently dropping `min-sync-replicas`
     /// to 1. Measured 2026-08-16 (02y-stream-crash, remote cluster B): 80/80 events ACKED, then a SIGKILL of
     /// the node owning partitions 0 and 2 lost BOTH partitions whole — 41 acked events gone, with the
@@ -145,7 +153,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// writer paths at once and makes a forwarded ack mean exactly what a local ack means.
     ///
     /// #1236: this barrier runs AFTER the append, so a failure here is an unknown outcome
-    /// ([PublishOutcomeUnknown]), never a clean failure — the clean refusal is [#ensureReplicaFloor].
+    /// ([PublishOutcomeUnknown]), never a clean failure — the clean refusal is the pre-append floor in [#onPublishForward].
     private Promise<Long> awaitMinSync(PublishForward request, long offset) {
         var minSyncReplicas = partitionManager.minSyncReplicasFor(request.streamName());
 
@@ -157,17 +165,6 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                  .mapError(PublishOutcomeUnknown.FACTORY)
                                  .map(_ -> offset)
                : Promise.success(offset);
-    }
-
-    /// #1236: the replica floor is checked BEFORE the owner appends, so a forwarded publish refused with
-    /// `NOT_ENOUGH_REPLICAS` is genuinely not in the log. One window stays open by construction: a
-    /// stream this owner has not yet materialized reports `min-sync` 0 here, [StreamPartitionManager#publishForwarded]
-    /// then materializes and appends, and a floor that cannot be met surfaces from [#awaitMinSync] as an
-    /// unknown outcome — which is what it is, since the event was appended.
-    private Result<Unit> ensureReplicaFloor(PublishForward request) {
-        return partitionManager.ensureReplicaFloor(request.streamName(),
-                                                   request.partition(),
-                                                   partitionManager.minSyncReplicasFor(request.streamName()) - 1);
     }
 
     @Contract
@@ -185,8 +182,15 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// deposed / not-caught-up owner is rejected (`StaleEpochRead` / `OwnerCatchupPending`) rather than
     /// served stale. Every other forward is a replica-class read served by a plain local read. When no
     /// owner-serve pipeline is wired (base handler / NOOP) even a linearizable forward degrades to the
-    /// local read.
+    /// local read. A `catchup` forward (#1235) from a registered replica of the partition is a replication
+    /// read, answered up to the APPENDED head. Every other forward — including a `catchup` flag from a node
+    /// outside the replica set — is a consumer read, answered up to the VISIBLE position: a bare flag must
+    /// not let an arbitrary reader opt out of visibility (CTO ruling, #1235 Fork A).
     private Promise<List<OffHeapRingBuffer.RawEvent>> serveRead(ReadForward request) {
+        if (isReplicaCatchup(request)) {
+            return readAppended(request);
+        }
+
         return request.linearizable()
                ? serveLinearizable(request)
                : readLocal(request);
@@ -198,6 +202,20 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                                              request.partition(),
                                                              request.fromOffset(),
                                                              request.maxEvents()));
+    }
+
+    private boolean isReplicaCatchup(ReadForward request) {
+        return request.catchup() && partitionManager.isRegisteredReplica(request.streamName(),
+                                                                         request.partition(),
+                                                                         request.sender());
+    }
+
+    private Promise<List<OffHeapRingBuffer.RawEvent>> readAppended(ReadForward request) {
+        return partitionManager.readAppended(request.streamName(),
+                                             request.partition(),
+                                             request.fromOffset(),
+                                             request.maxEvents())
+                               .async();
     }
 
     private Promise<List<OffHeapRingBuffer.RawEvent>> readLocal(ReadForward request) {
@@ -234,10 +252,12 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
 
     /// Owner-side forwarded-publish failure dispatch (write-forward race fix): a cause the owner deems
     /// transient — its committed config not yet visible ({@link StreamError.StreamConfigNotYetVisible}) or a
-    /// capacity-deferred partition ({@link ResourceCapacityExhausted}) — is sent as a RETRYABLE response so
-    /// the forwarder backs off and retries a bounded number of times. A [PublishOutcomeUnknown] (#1236) —
-    /// the barrier failed AFTER this owner appended — is sent as outcome-unknown, so the sender does not
-    /// report a clean failure for an event that may be in the log. Every other cause is permanent.
+    /// capacity-deferred partition ({@link ResourceCapacityExhausted}), or a committed owner that is not yet
+    /// this node ({@link StreamError.NotOwnerAppend}, #1230: the HRW-routed target during a reshuffle, before
+    /// the leader commits the ownership change) — is sent as a RETRYABLE response so the forwarder backs off
+    /// and retries a bounded number of times. A [PublishOutcomeUnknown] (#1236) — the barrier failed AFTER
+    /// this owner appended — is sent as outcome-unknown, so the sender does not report a clean failure for
+    /// an event that may be in the log. Every other cause is permanent.
     @Contract
     private void sendPublishFailure(PublishForward request, Cause cause) {
         if (isRetryable(cause)) {
@@ -262,7 +282,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     }
 
     private static boolean isRetryable(Cause cause) {
-        return cause instanceof StreamError.StreamConfigNotYetVisible || ResourceCapacityExhausted.isTransientCapacity(cause);
+        return cause instanceof StreamError.StreamConfigNotYetVisible || cause instanceof StreamError.NotOwnerAppend || ResourceCapacityExhausted.isTransientCapacity(cause);
     }
 
     @Contract

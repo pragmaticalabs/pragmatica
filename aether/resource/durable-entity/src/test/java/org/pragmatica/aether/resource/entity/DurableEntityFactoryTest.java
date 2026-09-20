@@ -34,6 +34,8 @@ import org.pragmatica.serialization.Serializer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.ServiceLoader;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -235,6 +237,52 @@ class DurableEntityFactoryTest {
             .as("the close hook runs exactly once, however many times close() is called")
             .containsExactly(KEYSPACE);
         assertThat(fixture.registry().unregistered).containsExactly(KEYSPACE);
+    }
+
+    /// #1330 N6 — the factory must hand the checkpoint driver the ENTITY'S OWN owner gate, not a
+    /// permissive stand-in. The gate itself is pinned in `EntityCheckpointDriverLagTest`; this pins the
+    /// WIRING, which is the half that was missing: with `_ -> true` in its place every driver test stays
+    /// green and a replica reports a lag again — the exact B1 false CRITICAL.
+    ///
+    /// Both arms are asserted. "A non-owner reports nothing" alone would also pass if provisioning
+    /// registered nothing at all, so the owner arm is the control that the registration happened.
+    @Test
+    void provision_wiresTheEntitysOwnOwnerGate_soOnlyAnOwnerReportsLag() {
+        var ownerDriver = EntityCheckpointDriver.entityCheckpointDriver();
+        var replicaDriver = EntityCheckpointDriver.entityCheckpointDriver();
+
+        provisionWithCheckpointDriver(ownerDriver, selfOwnsEveryArc());
+        provisionWithCheckpointDriver(replicaDriver, otherNodeOwnsEveryArc());
+        ownerDriver.tick();
+        replicaDriver.tick();
+
+        assertThat(lagPartitions(ownerDriver)).describedAs("control: the owner's partitions are reported, so the"
+                                                           + " registration really happened")
+                                              .isNotEmpty();
+        assertThat(lagPartitions(replicaDriver)).describedAs("a node that owns none of the arcs must report no lag")
+                                                .isEmpty();
+    }
+
+    private static void provisionWithCheckpointDriver(EntityCheckpointDriver driver, CommittedPartitionOwnerSource owners) {
+        var context = fencedContext().withExtension(CommittedPartitionOwnerSource.class, owners)
+                                     .withExtension(EntityCheckpointDriver.class, driver)
+                                     .withExtension(EntityTimerDriver.class, EntityTimerDriver.entityTimerDriver());
+
+        config().map(entityConfig -> new DurableEntityFactory().provision(entityConfig, context))
+                .onFailure(cause -> fail(cause.message()))
+                .onSuccess(provisioning -> provisioning.await(AWAIT).onFailure(cause -> fail(cause.message())));
+    }
+
+    private static Set<Integer> lagPartitions(EntityCheckpointDriver driver) {
+        return driver.snapshot()
+                     .keyspaces()
+                     .stream()
+                     .flatMap(keyspace -> keyspace.checkpointLag().keySet().stream())
+                     .collect(Collectors.toSet());
+    }
+
+    private static CommittedPartitionOwnerSource otherNodeOwnsEveryArc() {
+        return (_, _) -> Option.some(new CommittedOwner(new NodeId("other-node"), Epoch.ZERO));
     }
 
     private static List<String> driverKeyspaces(UnloadFixture fixture) {

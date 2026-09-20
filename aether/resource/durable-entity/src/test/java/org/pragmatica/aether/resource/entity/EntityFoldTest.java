@@ -76,7 +76,7 @@ class EntityFoldTest {
                        new EntityLogRecord(EntityLogRecord.Op.TIMER_SCHEDULE, "poison", MALFORMED_TIMER_PAYLOAD));
             fold.apply(PARTITION, 2, EntityLogRecord.upsert("b", bytes("2")));
 
-            fold.checkpointCandidate(PARTITION)
+            fold.checkpointCandidate(PARTITION, -1L)
                 .onPresent(candidate -> assertThat(candidate.throughOffset())
                         .as("the claim must stop BELOW the unapplied record — a checkpoint past it would let"
                             + " retention reclaim the only replayable copy")
@@ -567,7 +567,7 @@ class EntityFoldTest {
             assertThat(fold.trackedKeyOffsets(PARTITION)).as("the parked offset was not covered when applied")
                                                          .isEqualTo(1);
 
-            fold.checkpointCandidate(PARTITION);
+            fold.checkpointCandidate(PARTITION, -1L);
 
             assertThat(fold.trackedKeyOffsets(PARTITION)).as("the checkpoint sweeps it once covered").isZero();
         }

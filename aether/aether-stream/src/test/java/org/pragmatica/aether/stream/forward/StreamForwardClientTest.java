@@ -218,6 +218,28 @@ class StreamForwardClientTest {
         private static final long FROM_OFFSET = 0L;
         private static final int MAX_EVENTS = 10;
 
+        /// #1235: only a catch-up read asks the source for its APPENDED head; a consumer read never does.
+        @Test
+        void readRemote_isAConsumerRead_readRemoteCatchup_isAReplicationRead() {
+            client.readRemote(GOVERNOR, STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS);
+            client.readRemoteCatchup(GOVERNOR, STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS);
+
+            assertThat(sentMessages).extracting(sent -> ((ReadForward) sent.message()).catchup())
+                                    .containsExactly(false, true);
+            assertThat(((ReadForward) sentMessages.getLast().message()).linearizable()).isFalse();
+        }
+
+        @Test
+        void readRemoteCatchup_success_resolvesPromise() {
+            var promise = client.readRemoteCatchup(GOVERNOR, STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS);
+            var correlationId = ((ReadForward) sentMessages.getFirst().message()).correlationId();
+            var events = List.of(new RawEventDto(5L, 100L, "hello".getBytes()));
+
+            client.onReadForwardResponse(ReadForwardResponse.successResponse(GOVERNOR, correlationId, events));
+
+            assertThat(promise.await().map(result -> result.events().size()).or(-1)).isEqualTo(1);
+        }
+
         @Test
         void readRemote_success_resolvesPromise() {
             var promise = client.readRemote(GOVERNOR, STREAM, PARTITION, FROM_OFFSET, MAX_EVENTS);

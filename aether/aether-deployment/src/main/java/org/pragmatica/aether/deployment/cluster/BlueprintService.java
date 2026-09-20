@@ -461,9 +461,8 @@ class BlueprintServiceInstance implements BlueprintService {
                                                               String artifactCoords,
                                                               boolean registerOnly) {
         return ensureMigrationOwnership(expanded.id(),
-                                        migrations).flatMap(_ -> streamBindings(expanded.id(),
-                                                                                resourcesConfig,
-                                                                                roleHints))
+                                        migrations).flatMap(_ -> StreamResourceValidator.ensureHonourableConsistency(resourcesConfig))
+                                       .flatMap(_ -> streamBindings(expanded.id(), resourcesConfig, roleHints))
                                        .async()
                                        .flatMap(bindings -> applyAllCommands(expanded,
                                                                              bindings,
@@ -563,7 +562,9 @@ class BlueprintServiceInstance implements BlueprintService {
         // #1336: the bindings were derived from the embedded resources.toml + roleHints by
         // `streamBindings` before this batch was built. A section failing a per-alias rule is left
         // out of the entry and reported on the answer; a rule leaving nothing to bind has already
-        // refused the publish, so no batch reaches here for it.
+        // refused the publish, so no batch reaches here for it. #1262's STRONG refusal
+        // (StreamResourceValidator.ensureHonourableConsistency in storeAllInSingleBatch) runs before
+        // that derivation — registerOnly included: a STRONG blueprint is not even registered.
         commands.add(streamBindings);
         if (!migrations.isEmpty()) {
             commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords, expanded.id()));
@@ -827,10 +828,17 @@ class BlueprintServiceInstance implements BlueprintService {
                          .flatMap(BlueprintServiceInstance::readSliceResourcesToml);
     }
 
-    /// #1336: each slice declaration is derived on its own; the bound aliases are unioned as before and
-    /// the rejections are unioned with them, de-duplicated because slices packaged from one module ship
-    /// the same text. A gating failure in any declaration refuses the publish.
+    /// #1262: every slice declaration passes the STRONG-consistency deploy gate before any binding is derived
+    /// — the same gate the artifact path runs — so a STRONG stream refuses the publish with its named cause.
+    /// #1336: each declaration is then derived on its own; the bound aliases are unioned as before and the
+    /// rejections are unioned with them, de-duplicated because slices packaged from one module ship the
+    /// same text. A gating failure in any declaration refuses the publish.
     private static Result<StreamBindings> sliceBindings(BlueprintId blueprintId, List<Option<String>> declarations) {
+        return Result.allOf(declarations.stream().map(StreamResourceValidator::ensureHonourableConsistency).toList())
+                     .flatMap(_ -> derivedSliceBindings(blueprintId, declarations));
+    }
+
+    private static Result<StreamBindings> derivedSliceBindings(BlueprintId blueprintId, List<Option<String>> declarations) {
         return Result.allOf(declarations.stream()
                                         .flatMap(Option::stream)
                                         .map(toml -> streamBindings(blueprintId,

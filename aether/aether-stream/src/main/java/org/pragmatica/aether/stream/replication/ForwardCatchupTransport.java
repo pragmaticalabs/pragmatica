@@ -18,14 +18,15 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Catchu
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupResponse.catchupResponse;
 
 
-/// Production {@link CatchupTransport} that delegates catch-up reads to the existing
-/// {@link StreamForwardClient#readRemote} forward path (the same transport the read router uses to
-/// serve cross-node reads). Replaces {@link CatchupTransport#NOOP}.
+/// Production {@link CatchupTransport} that delegates catch-up reads to the existing forward path (the
+/// same transport the read router uses to serve cross-node reads), marked as replication reads via
+/// {@link StreamForwardClient#readRemoteCatchup} so the source answers up to its APPENDED head rather
+/// than its consumer-visible position (#1235). Replaces {@link CatchupTransport#NOOP}.
 ///
 /// ## Paging
 /// A single {@link ReplicationMessage.CatchupRequest} can span an arbitrary number of events, but a
 /// forward read response is capped (`maxReadResponseBytes` on the owner side, `maxEvents` here). The
-/// adapter therefore loops: it issues `readRemote(from = cursor, maxEvents = batchSize)`, appends the
+/// adapter therefore loops: it issues `readRemoteCatchup(from = cursor, maxEvents = batchSize)`, appends the
 /// returned events, advances the cursor past the last returned offset, and repeats while the source
 /// keeps returning a full page (`size == batchSize`) — i.e. there may be more. A short page (or an
 /// empty page) means the source has no more events and the loop terminates. All accumulated events
@@ -57,11 +58,11 @@ public final class ForwardCatchupTransport implements CatchupTransport {
                                           ReplicationMessage.CatchupRequest request,
                                           long cursor,
                                           List<RawEventDto> accumulated) {
-        return forwardClient.readRemote(target,
-                                        request.streamName(),
-                                        request.partition(),
-                                        cursor,
-                                        batchSize)
+        return forwardClient.readRemoteCatchup(target,
+                                               request.streamName(),
+                                               request.partition(),
+                                               cursor,
+                                               batchSize)
                             .flatMap(result -> continueOrFinish(target, request, cursor, accumulated, result));
     }
 

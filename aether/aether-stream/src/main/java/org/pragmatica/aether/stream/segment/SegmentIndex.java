@@ -19,7 +19,13 @@ import static org.pragmatica.lang.Option.option;
 
 
 public final class SegmentIndex {
+    private static final long NOTHING_SEALED = -1L;
+
     private final ConcurrentHashMap<PartitionKey, ConcurrentSkipListMap<Long, SegmentRef>> partitions = new ConcurrentHashMap<>();
+
+    /// Per-partition CONTIGUOUS sealed watermark (#1234): every offset at or below it has been durably
+    /// sealed. Advanced only by [#addSegment] and never lowered by [#removeSegment] — see [#lastSealedOffset].
+    private final ConcurrentHashMap<PartitionKey, Long> sealedThrough = new ConcurrentHashMap<>();
 
     public record SegmentRef(long startOffset,
                              long endOffset,
@@ -73,6 +79,7 @@ public final class SegmentIndex {
 
         map.put(startOffset,
                 SegmentRef.segmentRef(startOffset, endOffset, maxTimestamp, compressionOrdinal, encrypted, originalSize));
+        sealedThrough.compute(key, (_, current) -> contiguousEnd(map, option(current).or(NOTHING_SEALED)));
     }
 
     @Contract
@@ -87,21 +94,66 @@ public final class SegmentIndex {
                      .or(List.of());
     }
 
-    /// The highest offset durably sealed into segments for `(streamName, partition)` — the maximum
-    /// `endOffset` across that partition's sealed segments — or `-1` when nothing is sealed. Used to
-    /// bound WAL replay on partition recovery (streaming-persistence W4): the recovered ring skips
-    /// records at or below this offset (served by the tiered reader) and replays only the un-sealed tail.
+    /// The CONTIGUOUS sealed watermark for `(streamName, partition)`: the highest offset at or below which
+    /// EVERY offset has been durably sealed into a segment (lowest unsealed offset - 1), or `-1` when offset
+    /// 0 is not sealed. It bounds WAL truncation (records at or below it are discarded) and WAL replay on
+    /// partition recovery (the recovered ring skips records at or below it, served by the tiered reader), so
+    /// it must never pass a hole: until #1234 it was the MAXIMUM sealed `endOffset`, and a later successful
+    /// seal licensed truncating the WAL past a segment that had failed to seal — permanent silent loss.
+    ///
+    /// Two properties callers rely on:
+    ///   - **Monotonic.** Retention reclaiming a sealed segment ([#removeSegment]) does not un-seal it. A
+    ///     lowered watermark would make recovery seed a ring below a WAL already truncated past it, and the
+    ///     replay would then assign the surviving records the wrong offsets.
+    ///   - **Anchored at offset 0 while the node runs, at the lowest surviving ref after a restart.**
+    ///     [#rebuildFromRefs] only sees the refs that survived, and a prefix reclaimed by retention is
+    ///     indistinguishable from one that was never sealed, so the rebuilt watermark starts at the lowest
+    ///     surviving ref and still stops at the first hole above it. A never-sealed prefix below every
+    ///     surviving ref is therefore not detected across a restart; [SegmentSealer] seals strictly in offset
+    ///     order (one seal in flight per partition), so it produces no such prefix. When retention has
+    ///     reclaimed EVERY ref of a partition nothing anchors the rebuild at all (#1278).
     public long lastSealedOffset(String streamName, int partition) {
-        return option(partitions.get(PartitionKey.partitionKey(streamName, partition))).map(SegmentIndex::maxEndOffset)
-                     .or(-1L);
+        return option(sealedThrough.get(PartitionKey.partitionKey(streamName, partition))).or(NOTHING_SEALED);
     }
 
-    private static long maxEndOffset(ConcurrentSkipListMap<Long, SegmentRef> map) {
-        return map.values()
-                  .stream()
-                  .mapToLong(SegmentRef::endOffset)
-                  .max()
-                  .orElse(-1L);
+    /// Extend `through` across every segment that starts at or before `through + 1`, walking the map in
+    /// start order and stopping at the first segment that would leave a gap. The walk begins at the segment
+    /// with the greatest start at or below `through + 1`; a segment starting earlier that overlaps past it
+    /// (only a re-seal with different boundaries produces one) is not consulted, which can only leave the
+    /// watermark LOWER — the direction that keeps more WAL, never the direction that loses it.
+    private static long contiguousEnd(ConcurrentSkipListMap<Long, SegmentRef> map, long through) {
+        var end = through;
+
+        for (var ref : map.tailMap(option(map.floorKey(through + 1)).or(Long.MIN_VALUE)).values()) {
+            if (ref.startOffset() > end + 1) {
+                break;
+            }
+
+            end = Math.max(end, ref.endOffset());
+        }
+
+        return end;
+    }
+
+    /// End offset of the contiguous run of sealed segments that starts with the segment holding
+    /// `fromOffset`, or [Option#none] when no sealed segment holds it. The tiered reader reads no further
+    /// than this, so a hole above the run is never skipped (#1234).
+    public Option<Long> contiguousSealedEnd(String streamName, int partition, long fromOffset) {
+        return option(partitions.get(PartitionKey.partitionKey(streamName, partition))).flatMap(map -> findContainingEnd(map,
+                                                                                                                         fromOffset));
+    }
+
+    private static Option<Long> findContainingEnd(ConcurrentSkipListMap<Long, SegmentRef> map, long fromOffset) {
+        return option(map.floorEntry(fromOffset)).map(Map.Entry::getValue)
+                     .filter(ref -> ref.containsOffset(fromOffset))
+                     .map(ref -> contiguousEnd(map,
+                                               ref.endOffset()));
+    }
+
+    /// Start offset of the first sealed segment above `fromOffset`, or [Option#none] when nothing is sealed
+    /// above it. With no segment holding `fromOffset`, a present value means `[fromOffset, next)` is a hole.
+    public Option<Long> nextSealedOffset(String streamName, int partition, long fromOffset) {
+        return option(partitions.get(PartitionKey.partitionKey(streamName, partition))).flatMap(map -> option(map.higherKey(fromOffset)));
     }
 
     public Set<PartitionKey> listPartitionKeys() {
@@ -140,11 +192,20 @@ public final class SegmentIndex {
     @Contract
     public void rebuildFromRefs(MetadataStore metadataStore) {
         partitions.clear();
+        sealedThrough.clear();
         metadataStore.listAllRefs()
                      .keySet()
                      .stream()
                      .filter(ref -> ref.startsWith(STREAMS_PREFIX))
                      .forEach(this::parseAndAddRef);
+        partitions.forEach(this::anchorAtLowestRef);
+    }
+
+    /// Re-anchor a rebuilt partition's watermark at its lowest surviving ref (see [#lastSealedOffset]):
+    /// the refs were added in listing order, anchored at offset 0, which a retention-reclaimed prefix would
+    /// otherwise pin at `-1` forever.
+    private void anchorAtLowestRef(PartitionKey key, ConcurrentSkipListMap<Long, SegmentRef> map) {
+        sealedThrough.put(key, contiguousEnd(map, map.firstKey() - 1));
     }
 
     private void parseAndAddRef(String refName) {

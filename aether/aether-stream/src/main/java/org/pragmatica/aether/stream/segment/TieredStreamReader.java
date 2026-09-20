@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.segment;
 import java.util.List;
 
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -48,10 +49,47 @@ final class TieredReader implements TieredStreamReader {
         this.storage = storage;
     }
 
+    /// Reads resolve through the index, which records only what was sealed — so an unsealed range is
+    /// invisible to it and must be detected, not read around (#1234). The read never crosses a hole: it
+    /// stops at the end of the contiguous run holding `fromOffset` (the next read then starts inside the
+    /// hole), and a read starting inside a hole fails with [SegmentError.SealedRangeMissing]. An unheld
+    /// offset at or below the contiguous sealed watermark was sealed and then reclaimed by retention, so it
+    /// fails as `CursorExpired` naming the next sealed offset instead. Only when nothing is sealed at or
+    /// above `fromOffset` does it answer empty, leaving the range to the ring (and an in-flight seal to the
+    /// caller, which asks the sealer — see `PartitionedStreamAccess`).
     @Override
     public Promise<List<RawEvent>> read(String streamName, int partition, long fromOffset, int maxEvents) {
+        return index.contiguousSealedEnd(streamName, partition, fromOffset)
+                    .map(end -> readContiguous(streamName,
+                                               partition,
+                                               fromOffset,
+                                               boundedCount(fromOffset, end, maxEvents)))
+                    .or(() -> holeOrNothingSealed(streamName, partition, fromOffset));
+    }
+
+    private Promise<List<RawEvent>> readContiguous(String streamName, int partition, long fromOffset, int maxEvents) {
         return reader.readEvents(streamName, partition, fromOffset, maxEvents)
                      .onSuccess(events -> triggerPrefetchIfNearEnd(streamName, partition, fromOffset, maxEvents, events));
+    }
+
+    private static int boundedCount(long fromOffset, long contiguousEnd, int maxEvents) {
+        return (int) Math.min(maxEvents, contiguousEnd - fromOffset + 1);
+    }
+
+    private Promise<List<RawEvent>> holeOrNothingSealed(String streamName, int partition, long fromOffset) {
+        return index.nextSealedOffset(streamName, partition, fromOffset)
+                    .map(next -> unheld(streamName, partition, fromOffset, next))
+                    .or(() -> Promise.success(List.of()));
+    }
+
+    /// The watermark is monotonic and never passes a hole, so an unheld offset at or below it was sealed and
+    /// since reclaimed; above it, nothing ever sealed it. After a restart the watermark is anchored at the
+    /// lowest surviving ref, so a reclaimed prefix still reads as reclaimed there (#1278 covers the case the
+    /// watermark cannot see: every ref of a partition reclaimed).
+    private Promise<List<RawEvent>> unheld(String streamName, int partition, long fromOffset, long nextSealed) {
+        return fromOffset <= index.lastSealedOffset(streamName, partition)
+               ? new StreamError.CursorExpired(fromOffset, nextSealed).promise()
+               : new SegmentError.SealedRangeMissing(streamName, partition, fromOffset, nextSealed).promise();
     }
 
     @Override

@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.lang.invoke.VarHandle;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -21,7 +22,10 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.TierAwareRetention;
+import org.pragmatica.aether.stream.wal.PartitionWal;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -32,6 +36,18 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
 
 
+/// Off-heap ring of `capacity` index slots over a growable data region, on a shared arena.
+///
+/// Concurrency model (#1340): readers take no lock. They snapshot tail/head, copy, and validate the copy
+/// against the tail AFTER copying ([#retainedAfterCopy]); the writer publishes an advanced tail with a
+/// store-store fence before overwriting the freed slot ([#evictOldest]) and a new head with a release
+/// fence after the slot's stores ([#updateHeaderAfterAppend]). That protocol is sound for ONE appender
+/// per ring at a time: two concurrent `append`s would both read the same tail in
+/// [#countEvictionsForSpace], both store `tail + 1`, lose one eviction, and land the second write on a
+/// slot the tail still claims — a torn read the post-copy check cannot see. The single appender is
+/// `appendLock` (#1258): every header-writing path — `append`, `appendOrdered`, `appendBatch`,
+/// `seedHead` and the retention sweeps via [#guardedSweep] — runs inside `synchronized (appendLock)`,
+/// and `StreamPartitionManager.appendToPartition` reaches the ring only through `appendOrdered`.
 public final class OffHeapRingBuffer implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(OffHeapRingBuffer.class);
     /// Empty-ring encoding reported when a native read is refused (#999): allocation seeds
@@ -46,6 +62,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private static final long HEADER_DATA_WRITE_POS = 24;
     private static final long HEADER_DATA_SIZE = 32;
     private static final long HEADER_CAPACITY = 40;
+    /// Absolute (never wrapped) data position of the tail record's first byte; advances by the evicted
+    /// record's length in [#evictOldest]. `dataWritePos() - dataTailPos()` is the exact live byte count
+    /// (#1340 review M-1: reconstructing it from two ring-relative positions reads an EXACTLY full ring,
+    /// `headEnd == tailDataPos`, as empty).
+    private static final long HEADER_DATA_TAIL_POS = 48;
     private static final long HEADER_SIZE = 64;
     private static final long INDEX_ENTRY_SIZE = 24;
     private static final long INDEX_DATA_OFFSET = 0;
@@ -109,10 +130,43 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Reads refused because the arena was closed UNDER an in-flight reader (#999) — the genuine race, not
     /// the benign late arrival the `closed` fast path absorbs.
     private final AtomicLong closedUnderReader = new AtomicLong(0);
+    /// Native accesses refused because index or offset arithmetic went out of bounds (#1247) — a ring
+    /// defect, never the close race.
+    private final AtomicLong indexCorruption = new AtomicLong(0);
     /// Test-only seam (#1253), run by [#guardedRead] between its `closed` fast-path check and the native read.
     /// Deliberately NOT volatile: it is set before any reader thread starts, and `Thread.start` publishes it.
     private Runnable readWindowProbe = NO_READ_WINDOW_PROBE;
     private volatile long lastSealedOffset = -1;
+    /// Serializes every read-modify-write of the header (#1231): offset assignment (`head + 1`), the data
+    /// write position, the event count and the tail. Held by the append paths, [#seedHead], the retention
+    /// sweeps and [#appendOrdered]; reads stay lock-free. A monitor, not a `ReentrantLock` — the JDK 25
+    /// baseline does not pin virtual threads on `synchronized` (JEP 491), and [#appendOrdered] re-enters it.
+    private final Object appendLock = new Object();
+
+    /// Sentinel for "no notification pending".
+    private static final long NO_PENDING_NOTIFICATION = Long.MIN_VALUE;
+
+    /// The highest offset whose append listeners are still to be notified, or [#NO_PENDING_NOTIFICATION].
+    /// Raised (never lowered) when the VISIBLE position advances (#1235, [#advanceVisible]) — never at
+    /// append — and delivered by this ring's serial notifier, never by a publisher (#1258 review B1, R2-1). Listeners learn that the ring ADVANCED TO an offset,
+    /// so pending notifications coalesce into this one value: a slow listener costs O(1) state, never
+    /// one entry per publish (#1258 addendum). Listeners are foreign code — the consumer runtime wakes
+    /// its push consumers from them, and a handler may publish again — so they must never run while the
+    /// section is held (that deadlocked cross-partition consumers and broke WAL order), nor on a
+    /// publisher's thread (one publisher then ran every other publisher's listeners).
+    private final AtomicLong pendingNotification = new AtomicLong(NO_PENDING_NOTIFICATION);
+    /// Set while this ring's notifier runs: at most one per ring, so notified offsets only move forward.
+    private final AtomicBoolean notifying = new AtomicBoolean(false);
+    /// Listener invocations that threw, since the ring was built (#1258 review R3-1).
+    private final AtomicLong appendListenerFailures = new AtomicLong();
+    /// #1235: the three positions of a partition are the header head (APPENDED), this (DURABLE — the
+    /// owner's WAL fsync, or a replica's own WAL write) and [#visibleOffset] (VISIBLE — durable AND
+    /// acknowledged by the stream's min-sync peers). Both only move forward, and nothing on them takes a lock.
+    private final AtomicLong durableOffset = new AtomicLong(NO_OFFSET);
+    /// The highest offset a consumer may see: [#read] and [#readSlice] are bounded by it, and the append
+    /// listeners are notified when it advances. A plain [#append]/[#appendBatch] advances it at once (a
+    /// ring with no durability gate aliases visible to appended); [#appendOrdered] leaves it to the caller.
+    private final AtomicLong visibleOffset = new AtomicLong(NO_OFFSET);
 
     private OffHeapRingBuffer(Arena arena,
                               MemorySegment controlSegment,
@@ -220,11 +274,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                  release);
     }
 
-    /// The single justified try/catch for floor allocation (bug #6 sibling of `allocateGuarded`): the
+    /// JDK boundary for floor allocation (bug #6 sibling of `allocateGuarded`) — one of the four marked
+    /// `catch` sites in this file, with [#allocateGuarded], [#guardedAccess] and [#guardedRead]: the
     /// floor `arena.allocate` calls can fail with native `OutOfMemoryError`. On failure the arena is
     /// CLOSED (no leak) and a `Result` failure is returned. On success a fully-initialized buffer is
     /// handed back. See spec §4.3.
-    @SuppressWarnings("JBCT-EX-01")
+    @SuppressWarnings("JBCT-EX-03")
     private static Result<OffHeapRingBuffer> buildFloorGuarded(Arena arena,
                                                                String streamName,
                                                                int partition,
@@ -276,6 +331,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, 0L);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, 0L);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS, 0L);
+        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_DATA_TAIL_POS, 0L);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_DATA_SIZE, dataRegionSize);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_CAPACITY, capacity);
 
@@ -298,7 +354,22 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return Math.min(DEFAULT_SEGMENT_BYTES, dataRegionSize);
     }
 
+    /// Append and make the event visible at once — the ring has no durability gate of its own. Used by
+    /// standalone rings and by WAL recovery, whose records are durable by construction. An owner or
+    /// replica append that must first become durable goes through [#appendOrdered].
     public Result<Long> append(byte[] payload, long timestamp) {
+        return notifyingAfter(appendVisible(payload, timestamp));
+    }
+
+    /// The visible advance is queued INSIDE the section, so concurrent plain appends are notified once
+    /// each, in offset order (#1258 R2-1); the notifier starts only after the section is released.
+    private Result<Long> appendVisible(byte[] payload, long timestamp) {
+        synchronized (appendLock) {
+            return appendLocked(payload, timestamp).onSuccess(this::queueAppendedVisible);
+        }
+    }
+
+    private Result<Long> appendLocked(byte[] payload, long timestamp) {
         if (closed.get()) {
             return StreamError.General.BUFFER_CLOSED.result();
         }
@@ -307,7 +378,61 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return new StreamError.EventTooLarge(payload.length, dataRegionSize).result();
         }
 
-        return guardedAccess(() -> ensureGrownFor(payload.length).flatMap(_ -> appendIfFitsAllocated(payload, timestamp)));
+        synchronized (appendLock) {
+            return guardedAccess(() -> ensureGrownFor(payload.length).flatMap(_ -> appendIfFitsAllocated(payload,
+                                                                                                         timestamp)));
+        }
+    }
+
+    /// Append, then run `inOrder` with the assigned offset BEFORE any other append on this ring can be
+    /// assigned one (#1231/#1232). This is the partition's ordered append section: whatever `inOrder` does
+    /// — the WAL frame write, the replication send — happens in offset order across concurrent callers.
+    /// `inOrder` must not block on I/O completion (the WAL fsync belongs outside, after this returns);
+    /// every append on this partition waits for it. A failed append skips `inOrder`.
+    ///
+    /// The event is NOT made visible and no listener is notified for it here (#1235): the caller advances
+    /// [#markDurable] and [#advanceVisible] once the event is durable and, on an owner, acknowledged by its
+    /// min-sync peers. Listeners then learn the new visible high-water on this ring's serial notifier,
+    /// never under the section.
+    public <T> Result<T> appendOrdered(byte[] payload, long timestamp, Fn1<Result<T>, Long> inOrder) {
+        synchronized (appendLock) {
+            return appendLocked(payload, timestamp).flatMap(inOrder);
+        }
+    }
+
+    /// `result` is evaluated by the caller, so `appendLock` is already released here. The publisher only
+    /// hands its queued offsets to the notifier; it never runs a listener.
+    private <T> Result<T> notifyingAfter(Result<T> result) {
+        startNotifierIfIdle();
+
+        return result;
+    }
+
+    /// Starts this ring's serial notifier — a virtual thread that delivers the pending high-water offset
+    /// and exits once nothing is pending — unless one is already running.
+    private void startNotifierIfIdle() {
+        if (pendingNotification.get() != NO_PENDING_NOTIFICATION && notifying.compareAndSet(false, true)) {
+            Thread.ofVirtual().name("ring-notifier-" + streamName + "-" + partition).start(this::runNotifier);
+        }
+    }
+
+    /// The `finally` is the notifier's liveness guarantee (#1258 review R3-1): whatever a listener does —
+    /// even a `VirtualMachineError` rethrown by [#notifyGuarded] — the flag is cleared and, if an offset
+    /// is still pending, a fresh notifier is started, so the ring can never stop notifying.
+    @SuppressWarnings("JBCT-EX-01")
+    private void runNotifier() {
+        try {
+            deliverPendingNotifications();
+        } finally {
+            notifying.set(false);
+            startNotifierIfIdle();
+        }
+    }
+
+    private void deliverPendingNotifications() {
+        for (var offset = pendingNotification.getAndSet(NO_PENDING_NOTIFICATION); offset != NO_PENDING_NOTIFICATION; offset = pendingNotification.getAndSet(NO_PENDING_NOTIFICATION)) {
+            notifyAppendListeners(offset);
+        }
     }
 
     /// Capacity gate against the **allocated** (post-growth) data bytes — distinct from the cap gate in
@@ -325,7 +450,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     ///     ring; drop it (NO write, no corruption) and report the distinct `EVENT_DROPPED` outcome. Never
     ///     success at the current head (#1233): that offset belongs to an already-stored event, and a
     ///     caller treating it as the new event's offset WAL-writes and replicates a phantom under it. The
-    ///     publish path decides whether the stream may absorb the drop. See spec §4.2 / bug #7.
+    ///     publish path decides whether the stream may absorb the drop. See spec §4.2 / bug #7. The other
+    ///     refusal an EVENTUAL append can meet is the eviction listener's: `SEALING_BEHIND` once the
+    ///     pending-seal cap is reached on a partition with NO WAL — the non-crash-durable mode, where the
+    ///     sealer's heap copy is the only holder (#1234, [#evictForSpace]). With a WAL the sealer never refuses.
     private Result<Long> appendIfFitsAllocated(byte[] payload, long timestamp) {
         if (payload.length <= allocatedDataBytes) {
             return appendWritten(payload, timestamp);
@@ -342,14 +470,18 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// allocation: a STRONG stream only reports BUFFER_FULL when it genuinely cannot fit even after
     /// growing to the cap. Seam-rejected growth has already returned STREAM_MEMORY_EXCEEDED upstream
     /// (in `ensureGrownFor`). Reached only when the event fits the allocated ring (bug #7 gate above), so
-    /// it never overflows; listener notification fires only here, on a real admission (the frozen-ring
-    /// drop path returns `EVENT_DROPPED` WITHOUT notifying). See spec §4.2.
+    /// it never overflows. No listener is queued here: listeners are notified when the event becomes
+    /// VISIBLE ([#advanceVisible], #1235), after `appendLock` is released, on the serial notifier. See
+    /// spec §4.2.
     private Result<Long> appendWritten(byte[] payload, long timestamp) {
         if (evictionPolicy == EvictionPolicy.REJECT_WHEN_FULL && countEvictionsForSpace(payload.length) > 0) {
             return StreamError.General.BUFFER_FULL.result();
         }
 
-        evictForSpace(payload.length);
+        return evictForSpace(payload.length).map(_ -> writeAppend(payload, timestamp));
+    }
+
+    private long writeAppend(byte[] payload, long timestamp) {
         var currentHead = rawHeadOffset();
         var newOffset = currentHead + 1;
         var slotIndex = Math.floorMod(newOffset, capacity);
@@ -358,12 +490,22 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         writeDataBytes(dataPos, payload);
         writeIndexEntry(slotIndex, dataPos, payload.length, timestamp);
         updateHeaderAfterAppend(newOffset, payload.length);
-        notifyAppendListeners(newOffset);
 
-        return success(newOffset);
+        return newOffset;
     }
 
+    /// Batch sibling of [#append]: visible at once when it succeeds.
     public Result<Long> appendBatch(List<byte[]> payloads, long[] timestamps) {
+        return notifyingAfter(appendBatchVisible(payloads, timestamps));
+    }
+
+    private Result<Long> appendBatchVisible(List<byte[]> payloads, long[] timestamps) {
+        synchronized (appendLock) {
+            return appendBatchLocked(payloads, timestamps).onSuccess(this::queueAppendedVisible);
+        }
+    }
+
+    private Result<Long> appendBatchLocked(List<byte[]> payloads, long[] timestamps) {
         if (closed.get()) {
             return StreamError.General.BUFFER_CLOSED.result();
         }
@@ -378,9 +520,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return new StreamError.EventTooLarge((int) totalSize, dataRegionSize).result();
         }
 
-        return guardedAccess(() -> ensureGrownFor((int) totalSize).flatMap(_ -> appendBatchIfFitsAllocated(payloads,
-                                                                                                           timestamps,
-                                                                                                           totalSize)));
+        synchronized (appendLock) {
+            return guardedAccess(() -> ensureGrownFor((int) totalSize).flatMap(_ -> appendBatchIfFitsAllocated(payloads,
+                                                                                                               timestamps,
+                                                                                                               totalSize)));
+        }
     }
 
     /// Batch analogue of `appendIfFitsAllocated` (bug #7): after growth was attempted, the batch total
@@ -407,12 +551,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.BUFFER_FULL.result();
         }
 
-        evictForSpace((int) totalSize);
-        var lastOffset = appendPayloads(payloads, timestamps);
-
-        notifyAppendListeners(lastOffset);
-
-        return success(lastOffset);
+        return evictForSpace((int) totalSize).map(_ -> appendPayloads(payloads, timestamps));
     }
 
     /// Position a FRESH ring (no appends yet, `headOffset() == -1`) so the NEXT append is assigned
@@ -434,7 +573,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.BUFFER_CLOSED.result();
         }
 
-        return guardedAccess(() -> seedHeadChecked(base));
+        synchronized (appendLock) {
+            return guardedAccess(() -> seedHeadChecked(base));
+        }
     }
 
     /// Native half of [#seedHead], behind the [#guardedAccess] boundary: the `closed` check above is a
@@ -446,10 +587,15 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         if (base < 0 || currentHead != -1) {
             return new StreamError.SeedRejected(base, currentHead).result();
         }
-
-        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, base);
+        // Tail first, then fence, then head — as evictOldest orders it: a reader that saw head = base
+        // before tail = base + 1 would pass both range checks for an offset in [0, base] and copy an
+        // unwritten slot (#1340 review N-4).
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, base + 1);
+        VarHandle.storeStoreFence();
+        controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, base);
         lastSealedOffset = base;
+        durableOffset.set(base);
+        visibleOffset.set(base);
 
         return unitResult();
     }
@@ -519,10 +665,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         accountedBytes += segment.byteSize();
     }
 
-    /// The single justified try/catch in this file: native off-heap allocation (`Arena.allocate`)
-    /// can fail with `OutOfMemoryError`. We isolate it here and convert to a `Result` failure so the
-    /// caller releases the just-reserved bytes (accounting never leaks). See spec §4.3.
-    @SuppressWarnings("JBCT-EX-01")
+    /// JDK boundary for segment growth — one of the four marked `catch` sites in this file (see
+    /// [#buildFloorGuarded]): native off-heap allocation (`Arena.allocate`) can fail with
+    /// `OutOfMemoryError`. We isolate it here and convert to a `Result` failure so the caller releases
+    /// the just-reserved bytes (accounting never leaks). See spec §4.3.
+    @SuppressWarnings("JBCT-EX-03")
     private Result<MemorySegment> allocateGuarded(long bytes) {
         try {
             return success(arena.allocate(bytes, 64));
@@ -537,14 +684,21 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// public path and close the arena mid-`MemorySegment` access. The JDK keeps this memory-safe (no
     /// use-after-free) by throwing `IllegalStateException` ("already closed"), but that exception would
     /// otherwise ESCAPE the `Result` contract. Isolating the native access here converts that race into a
-    /// clean `BUFFER_CLOSED` failure. The same boundary also catches a frozen-ring `IndexOutOfBounds`
-    /// belt-and-braces, though bug #7's allocated-bytes gate prevents that on every legitimate path.
-    @SuppressWarnings("JBCT-EX-01")
+    /// clean `BUFFER_CLOSED` failure.
+    ///
+    /// An `IndexOutOfBoundsException` is NOT that race: it is an index or offset-arithmetic defect (bug #7's
+    /// allocated-bytes gate prevents it on every legitimate path). #1247: it used to share the
+    /// `BUFFER_CLOSED` mapping, which reported a corrupted ring as a benign release with no log. It is now
+    /// logged at ERROR, counted by [#indexCorruptionCount], and surfaced as its own
+    /// [StreamError.RingIndexCorrupted] cause.
+    @SuppressWarnings("JBCT-EX-03")
     private <T> Result<T> guardedAccess(Supplier<Result<T>> access) {
         try {
             return access.get();
-        } catch (IllegalStateException | IndexOutOfBoundsException _) {
+        } catch (IllegalStateException _) {
             return StreamError.General.BUFFER_CLOSED.result();
+        } catch (IndexOutOfBoundsException e) {
+            return reportIndexCorruption(e).result();
         }
     }
 
@@ -568,13 +722,19 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return new StreamError.CursorExpired(offset, tail).result();
         }
 
-        if (offset > head) {
+        if (offset > Math.min(head, visibleOffset.get())) {
             return StreamError.General.BUFFER_EMPTY.result();
         }
 
-        return readSliceAtOffset(offset);
+        VarHandle.acquireFence();
+
+        return readSliceAtOffset(offset).flatMap(slice -> retainedAfterCopy(offset, slice));
     }
 
+    /// Registers a listener invoked with the new VISIBLE offset each time [#advanceVisible] moves it
+    /// (#1235) — never on a bare append, so a consumer is never woken for an event it may not see. It runs
+    /// on this ring's serial notifier, in offset order, never on the thread that advanced visibility and
+    /// never under any lock (#1258 review B1, R2-1).
     @Contract
     public void addAppendListener(LongConsumer listener) {
         appendListeners.add(listener);
@@ -585,17 +745,71 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         appendListeners.remove(listener);
     }
 
+    /// Mark every offset up to `offset` durable. Monotonic: a lower value is ignored.
+    @Contract
+    public void markDurable(long offset) {
+        durableOffset.accumulateAndGet(offset, Math::max);
+    }
+
+    /// Make every offset up to `offset` visible and, when that moves the visible position, raise the
+    /// pending notification to it for the serial notifier (#1258's high-water model). Monotonic and
+    /// lock-free: a lower value is ignored. The caller never runs a listener, so this is safe from the
+    /// publisher, the WAL-commit and the replica-ack threads.
+    @Contract
+    public void advanceVisible(long offset) {
+        queueVisibleAdvance(offset);
+        startNotifierIfIdle();
+    }
+
+    /// Queues the CURRENT visible offset, not `offset`: a winner overtaken between its two steps then
+    /// re-announces the newer high-water instead of an older one, so notified offsets never move backwards.
+    @Contract
+    private void queueVisibleAdvance(long offset) {
+        if (visibleOffset.getAndAccumulate(offset, Math::max) < offset) {
+            pendingNotification.accumulateAndGet(visibleOffset.get(), Math::max);
+        }
+    }
+
+    /// Test seam (#1235): no notification is pending and no notifier is running, so every advance so far
+    /// has been delivered to the listeners. A negative listener assertion waits for this condition instead
+    /// of a timed window. The notifier clears its flag only after delivering, so a listener's effects
+    /// happen-before a `true` here.
+    boolean notifierIdle() {
+        return pendingNotification.get() == NO_PENDING_NOTIFICATION && !notifying.get();
+    }
+
+    public long durableOffset() {
+        return durableOffset.get();
+    }
+
+    public long visibleOffset() {
+        return visibleOffset.get();
+    }
+
+    /// Consumer read, bounded by the VISIBLE position (#1235): an appended event that is not yet durable
+    /// and acknowledged reads as not yet written.
     public Result<List<RawEvent>> read(long fromOffset, int maxEvents) {
         if (closed.get()) {
             return StreamError.General.BUFFER_CLOSED.result();
         }
 
-        return guardedAccess(() -> readChecked(fromOffset, maxEvents));
+        return guardedAccess(() -> readChecked(fromOffset, maxEvents, visibleOffset.get()));
     }
 
-    private Result<List<RawEvent>> readChecked(long fromOffset, int maxEvents) {
+    /// Replication read, bounded by the APPENDED head: a replica catching up, a new owner pulling from a
+    /// survivor, and the entity log fold all need events that are not yet visible. A replica that could
+    /// only receive visible events could never supply the ack that makes them visible.
+    public Result<List<RawEvent>> readAppended(long fromOffset, int maxEvents) {
+        if (closed.get()) {
+            return StreamError.General.BUFFER_CLOSED.result();
+        }
+
+        return guardedAccess(() -> readChecked(fromOffset, maxEvents, Long.MAX_VALUE));
+    }
+
+    private Result<List<RawEvent>> readChecked(long fromOffset, int maxEvents, long bound) {
         var tail = rawTailOffset();
-        var head = rawHeadOffset();
+        var head = Math.min(rawHeadOffset(), bound);
 
         if (head < 0) {
             return success(List.of());
@@ -611,17 +825,46 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
         var count = (int) Math.min(maxEvents, head - fromOffset + 1);
 
-        return readEvents(fromOffset, count);
+        VarHandle.acquireFence();
+
+        return retainedAfterCopy(fromOffset, readEvents(fromOffset, count));
     }
 
-    private Result<List<RawEvent>> readEvents(long fromOffset, int count) {
+    private List<RawEvent> readEvents(long fromOffset, int count) {
         var events = new ArrayList<RawEvent>(count);
 
         for (long offset = fromOffset; offset < fromOffset + count; offset++) {
             events.add(readSingleEvent(offset));
         }
 
-        return success(List.copyOf(events));
+        return List.copyOf(events);
+    }
+
+    /// Seqlock validation of a copy against a concurrent eviction (#1340). Readers take no lock: the
+    /// tail check at the top of [#readChecked] / [#readSliceChecked] is a snapshot, and a writer wrapping
+    /// the ring advances the tail past `fromOffset` and overwrites that slot with the record of
+    /// `fromOffset + capacity` while the copy is in flight. The copy then holds the NEWER record under
+    /// the REQUESTED offset's label — well-formed, decodable, and another offset's data (measured at
+    /// rc4: 3,499 of 23,984 tail reads on a 64-slot ring, `OffHeapRingBufferReadEvictionRaceTest`).
+    ///
+    /// The re-read decides AFTER the bytes are copied: if the tail has moved past `fromOffset`, some slot
+    /// of the copy may have been reclaimed under it, and the whole read fails `CursorExpired` — the same
+    /// typed refusal a read that arrived after the eviction gets, so every caller already handles it
+    /// (`PartitionedStreamAccess.handleReadFailure` reroutes to the sealed tier). What makes the check a
+    /// guarantee rather than an x86 accident is the fence pairing: [#evictOldest] publishes the new tail
+    /// with a store-store fence BEFORE the slot is overwritten, and the reader's acquire fence here
+    /// orders the copy's loads BEFORE the tail re-read. So a copy that observed the overwrite cannot
+    /// observe the old tail. Holding the slot instead would put a lock on a path that has never had one
+    /// and serialise every reader against the writer; the re-check keeps readers lock-free.
+    private <T> Result<T> retainedAfterCopy(long fromOffset, T copy) {
+        VarHandle.acquireFence();
+        var tailAfterCopy = rawTailOffset();
+
+        if (tailAfterCopy > fromOffset) {
+            return new StreamError.CursorExpired(fromOffset, tailAfterCopy).result();
+        }
+
+        return success(copy);
     }
 
     /// Guarded header reads (#999). See [#guardedRead] for why a `long`-returning accessor needs a
@@ -674,7 +917,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// converge on the behaviour the non-racy path has always had (the ring is removed from the entry's
     /// `materialized` map BEFORE it is closed, so a later resolution returns [Option#none] and yields the
     /// same values), rather than inventing a third outcome.
-    @SuppressWarnings("JBCT-EX-01")
+    ///
+    /// An `IndexOutOfBoundsException` here is a ring defect, not the close race (#1247): it is logged at
+    /// ERROR and counted by [#indexCorruptionCount] instead of [#closedUnderReaderCount], and the read still
+    /// reports the refusal sentinel because these accessors have no failure channel.
+    @SuppressWarnings("JBCT-EX-03")
     private long guardedRead(long refused, LongSupplier read) {
         if (closed.get()) {
             return refused;
@@ -683,17 +930,24 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         readWindowProbe.run();
         try {
             return read.getAsLong();
-        } catch (IllegalStateException | IndexOutOfBoundsException _) {
+        } catch (IllegalStateException _) {
             reportClosedUnderReader();
+
+            return refused;
+        } catch (IndexOutOfBoundsException e) {
+            reportIndexCorruption(e);
 
             return refused;
         }
     }
 
     /// Void-shaped sibling of [#guardedRead] for the public retention sweeps, which read and then rewrite
-    /// the control region and have no value to report.
+    /// the control region and have no value to report. Under `appendLock`: a sweep rewrites the tail and
+    /// the event count that a concurrent append also rewrites (#1231).
     private void guardedSweep(Runnable sweep) {
-        guardedRead(NO_EVENTS, () -> sweepAsRead(sweep));
+        synchronized (appendLock) {
+            guardedRead(NO_EVENTS, () -> sweepAsRead(sweep));
+        }
     }
 
     private long sweepAsRead(Runnable sweep) {
@@ -721,8 +975,37 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     /// Count of reads refused because the arena was closed UNDER an in-flight reader (#999). Zero on every
     /// quiescent ring; non-zero means the release path overlapped a live reader on this partition.
+    /// Append-listener invocations that threw — an exception or an `Error` — since the ring was built. Each
+    /// is logged; none stops later notifications (#1258 review R3-1).
+    public long appendListenerFailures() {
+        return appendListenerFailures.get();
+    }
+
     public long closedUnderReaderCount() {
         return closedUnderReader.get();
+    }
+
+    /// Count of native accesses refused because index or offset arithmetic went out of bounds (#1247).
+    /// Zero on every healthy ring; non-zero is a ring defect, never a release race.
+    public long indexCorruptionCount() {
+        return indexCorruption.get();
+    }
+
+    /// Report an out-of-bounds native access (#1247) distinctly from [#reportClosedUnderReader]: the arena
+    /// was open, so the index or offset arithmetic is wrong and the ring's contents cannot be trusted.
+    private StreamError.RingIndexCorrupted reportIndexCorruption(IndexOutOfBoundsException fault) {
+        var occurrence = indexCorruption.incrementAndGet();
+
+        log.error("OffHeapRingBuffer {}[{}]: out-of-bounds native access — ring index or offset arithmetic is "
+                 + "corrupted, NOT a concurrent close (occurrence {} for this ring)",
+                  streamName,
+                  partition,
+                  occurrence,
+                  fault);
+
+        return new StreamError.RingIndexCorrupted(streamName,
+                                                  partition,
+                                                  String.valueOf(fault.getMessage()));
     }
 
     /// Test-only seam (#1253): install a probe that [#guardedRead] runs AFTER its `closed` fast-path check and
@@ -767,6 +1050,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     public long lastSealedOffset() {
         return lastSealedOffset;
+    }
+
+    /// Tell this ring's eviction listener which WAL holds the partition's records (#1234), before anything
+    /// is replayed into the ring, so every hand-over — recovery-time ones included — knows the WAL is there.
+    public Unit attachWal(PartitionWal wal) {
+        return listener.walAttached(streamName, partition, wal);
     }
 
     /// Guarded for the same reason as [#applyRetention] (#999) — a public `void` path that reads and then
@@ -907,8 +1196,54 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         notifyAndEvict(count);
     }
 
+    /// A plain append has no durability gate: durable and visible at once. Called inside the section.
+    @Contract
+    private void queueAppendedVisible(long offset) {
+        markDurable(offset);
+        queueVisibleAdvance(offset);
+    }
+
     private void notifyAppendListeners(long offset) {
-        appendListeners.forEach(listener -> listener.accept(offset));
+        appendListeners.forEach(listener -> notifyGuarded(listener, offset));
+    }
+
+    /// A listener's failure is logged and counted here and goes no further: it must never surface on an
+    /// unrelated publish, nor stop the notifications that follow it (#1258 review R2-2, R3-1). That holds
+    /// for an `Error` too — slice code can throw `StackOverflowError`, `AssertionError` or a
+    /// `LinkageError` after a reload — logged at ERROR. `StackOverflowError` is a `VirtualMachineError`
+    /// but is the listener's own runaway recursion, fully recovered once its stack unwinds, so it is
+    /// handled like any other `Error`. Every other `VirtualMachineError` (out of memory, internal error)
+    /// is rethrown: the JVM itself is failing. The listeners after it then miss that offset, but
+    /// [#runNotifier]'s `finally` keeps the ring notifying later ones.
+    @SuppressWarnings("JBCT-EX-01")
+    private void notifyGuarded(LongConsumer listener, long offset) {
+        try {
+            listener.accept(offset);
+        } catch (RuntimeException e) {
+            appendListenerFailures.incrementAndGet();
+            log.warn("OffHeapRingBuffer {}[{}]: append listener failed at offset {}: {}",
+                     streamName,
+                     partition,
+                     offset,
+                     e.toString());
+        } catch (StackOverflowError e) {
+            appendListenerFailures.incrementAndGet();
+            log.error("OffHeapRingBuffer {}[{}]: append listener overflowed its stack at offset {}; later notifications continue",
+                      streamName,
+                      partition,
+                      offset);
+        } catch (VirtualMachineError e) {
+            appendListenerFailures.incrementAndGet();
+
+            throw e;
+        } catch (Error e) {
+            appendListenerFailures.incrementAndGet();
+            log.error("OffHeapRingBuffer {}[{}]: append listener threw {} at offset {}; later notifications continue",
+                      streamName,
+                      partition,
+                      e.toString(),
+                      offset);
+        }
     }
 
     private static long totalPayloadSize(List<byte[]> payloads) {
@@ -951,6 +1286,15 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     private long dataWritePos() {
         return controlSegment.get(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS);
+    }
+
+    private long dataTailPos() {
+        return controlSegment.get(ValueLayout.JAVA_LONG, HEADER_DATA_TAIL_POS);
+    }
+
+    /// Bytes of the data region held by live records — exact, whatever the ring's wrap state.
+    private long liveDataBytes() {
+        return dataWritePos() - dataTailPos();
     }
 
     /// Current wrap modulus of the logical data ring = the live allocated data bytes. While the
@@ -1041,7 +1385,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         controlSegment.set(ValueLayout.JAVA_LONG, indexPos + INDEX_TIMESTAMP, timestamp);
     }
 
+    /// The slot's data and index stores must be visible before the head that publishes it (#1340): a
+    /// reader that sees `newHeadOffset` copies that slot next, and without the release fence it could
+    /// read the index entry the slot held `capacity` offsets ago — the head-side twin of the tail race.
     private void updateHeaderAfterAppend(long newHeadOffset, int payloadLength) {
+        VarHandle.releaseFence();
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, newHeadOffset);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS, dataWritePos() + payloadLength);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, rawEventCount() + 1);
@@ -1058,63 +1406,49 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         return RawEvent.rawEvent(offset, eventBytes, timestamp);
     }
 
+    private long dataLengthAt(long slotIndex) {
+        var indexPos = indexStart + slotIndex * INDEX_ENTRY_SIZE;
+
+        return controlSegment.get(ValueLayout.JAVA_INT, indexPos + INDEX_DATA_LENGTH);
+    }
+
     private long readTimestamp(long slotIndex) {
         var indexPos = indexStart + slotIndex * INDEX_ENTRY_SIZE;
 
         return controlSegment.get(ValueLayout.JAVA_LONG, indexPos + INDEX_TIMESTAMP);
     }
 
-    private void evictForSpace(int payloadLength) {
-        var countToEvict = countEvictionsForSpace(payloadLength);
-
-        notifyAndEvict(countToEvict);
+    /// Make room for an append. A refusal by the eviction listener (#1234) leaves every event in place and is
+    /// returned to the append, which then writes nothing.
+    private Result<Unit> evictForSpace(int payloadLength) {
+        return handOverAndEvict(countEvictionsForSpace(payloadLength));
     }
 
     private long countEvictionsForSpace(int payloadLength) {
         var count = 0L;
         var simulatedTail = rawTailOffset();
         var simulatedCount = rawEventCount();
+        var simulatedLive = liveDataBytes();
 
         while (simulatedCount >= capacity) {
+            simulatedLive -= dataLengthAt(Math.floorMod(simulatedTail, capacity));
             simulatedTail++;
             simulatedCount--;
             count++;
         }
-
-        while (simulatedCount > 0 && wouldNeedDataEviction(payloadLength, simulatedTail)) {
+        // Data-region pressure is measured against the **allocated** data bytes, not the cap: an
+        // EVENTUAL stream that could not grow (pool exhausted) must evict to fit within what it has.
+        // While the region can still grow (allocated < cap) growth covers the write, so this loop is a
+        // no-op. See spec §4.2. The live count is exact (write position minus tail position), so a ring
+        // that is EXACTLY full evicts before the write lands on its tail record (#1340 review M-1).
+        while (simulatedCount > 0 && simulatedLive + payloadLength > allocatedDataBytes) {
+            simulatedLive -= dataLengthAt(Math.floorMod(simulatedTail, capacity));
             simulatedTail++;
             simulatedCount--;
             count++;
         }
 
         return count;
-    }
-
-    /// Data-region pressure is measured against the **allocated** data bytes, not the cap: an
-    /// EVENTUAL stream that could not grow (pool exhausted) must evict to fit within what it has.
-    /// While the region can still grow (allocated < cap) growth covers the write, so eviction is a
-    /// no-op here. See spec §4.2.
-    private boolean wouldNeedDataEviction(int payloadLength, long simulatedTail) {
-        var head = rawHeadOffset();
-
-        if (simulatedTail > head) {
-            return false;
-        }
-
-        var tailSlot = Math.floorMod(simulatedTail, capacity);
-        var headSlot = Math.floorMod(head, capacity);
-        var tailDataPos = controlSegment.get(ValueLayout.JAVA_LONG,
-                                             indexStart + tailSlot * INDEX_ENTRY_SIZE + INDEX_DATA_OFFSET);
-        var headDataPos = controlSegment.get(ValueLayout.JAVA_LONG,
-                                             indexStart + headSlot * INDEX_ENTRY_SIZE + INDEX_DATA_OFFSET);
-        var headDataLen = controlSegment.get(ValueLayout.JAVA_INT,
-                                             indexStart + headSlot * INDEX_ENTRY_SIZE + INDEX_DATA_LENGTH);
-        var headEnd = headDataPos + headDataLen;
-        var used = (headEnd >= tailDataPos)
-                   ? headEnd - tailDataPos
-                   : (dataRing() - tailDataPos) + headEnd;
-
-        return used + payloadLength > allocatedDataBytes;
     }
 
     private void evictOldest() {
@@ -1126,6 +1460,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, tail + 1);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, rawEventCount() - 1);
+        controlSegment.set(ValueLayout.JAVA_LONG,
+                           HEADER_DATA_TAIL_POS,
+                           dataTailPos() + dataLengthAt(Math.floorMod(tail, capacity)));
+        // The new tail must be visible before the slot it frees is overwritten — the writer half of
+        // the reader's post-copy check in retainedAfterCopy (#1340).
+        VarHandle.storeStoreFence();
     }
 
     private void evictByCount(long maxCount) {
@@ -1142,18 +1482,46 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         notifyAndEvict(countToEvict);
     }
 
+    /// Retention-driven reclamation. A refusal by the eviction listener is absorbed by design-out, not
+    /// loss: the events stay in the ring, readable and counted against its retention, and the next retention
+    /// pass hands them over again. The listener that refused has already reported it (#1234). [Contract]:
+    /// retention is a `void` sweep driven from [#applyRetention] / [#evictByAge], so the refusal has no caller
+    /// to return to — the same shape as the other `void` sweep paths here.
+    @Contract
     private void notifyAndEvict(long count) {
+        handOverAndEvict(count).onFailure(this::retentionDeferred);
+    }
+
+    private void retentionDeferred(Cause cause) {
+        log.debug("OffHeapRingBuffer {}[{}]: retention deferred, eviction listener refused: {}",
+                  streamName,
+                  partition,
+                  cause.message());
+    }
+
+    /// Hand the oldest `count` events to the eviction listener and reclaim them once it has taken them. The
+    /// listener takes ownership synchronously and seals asynchronously, so reclamation is immediate; the
+    /// partition WAL holds the events until their seal lands (#1234).
+    private Result<Unit> handOverAndEvict(long count) {
         if (count <= 0) {
-            return;
+            return unitResult();
         }
 
-        if (listener != EvictionListener.NOOP) {
-            var events = collectEvictedEvents(count);
+        return handOver(count).onSuccess(_ -> evictOldest(count));
+    }
 
-            listener.onEviction(streamName, partition, events);
-            updateSealedOffsetFromEvents(events);
+    private Result<Unit> handOver(long count) {
+        if (listener == EvictionListener.NOOP) {
+            return unitResult();
         }
 
+        var events = collectEvictedEvents(count);
+
+        return listener.onEviction(streamName, partition, events)
+                       .onSuccess(_ -> updateSealedOffsetFromEvents(events));
+    }
+
+    private void evictOldest(long count) {
         for (long i = 0; i < count; i++) {
             evictOldest();
         }
@@ -1202,27 +1570,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     private long countEvictionsBySize(long maxBytes) {
         var count = 0L;
-        var simulatedTail = rawTailOffset();
+        var tail = rawTailOffset();
         var head = rawHeadOffset();
+        var live = liveDataBytes();
 
-        while (simulatedTail + count <= head) {
-            var tailSlot = Math.floorMod(simulatedTail + count, capacity);
-            var headSlot = Math.floorMod(head, capacity);
-            var tailDataPos = controlSegment.get(ValueLayout.JAVA_LONG,
-                                                 indexStart + tailSlot * INDEX_ENTRY_SIZE + INDEX_DATA_OFFSET);
-            var headDataPos = controlSegment.get(ValueLayout.JAVA_LONG,
-                                                 indexStart + headSlot * INDEX_ENTRY_SIZE + INDEX_DATA_OFFSET);
-            var headDataLen = controlSegment.get(ValueLayout.JAVA_INT,
-                                                 indexStart + headSlot * INDEX_ENTRY_SIZE + INDEX_DATA_LENGTH);
-            var headEnd = headDataPos + headDataLen;
-            var used = (headEnd >= tailDataPos)
-                       ? headEnd - tailDataPos
-                       : (dataRing() - tailDataPos) + headEnd;
-
-            if (used <= maxBytes) {
-                break;
-            }
-
+        while (tail + count <= head && live > maxBytes) {
+            live -= dataLengthAt(Math.floorMod(tail + count, capacity));
             count++;
         }
 
