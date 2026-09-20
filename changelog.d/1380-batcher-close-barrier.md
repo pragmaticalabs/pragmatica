@@ -23,7 +23,10 @@
   at the bound; `close_inFlightFlushOutlivesTheBound_returnsAtTheBoundWithoutLosingTheBatch` — a 200 ms
   bound, the transport never released while `close()` waits: `close()` returns, elapsed ≥ bound,
   `inFlightFlushes() == 1` at that moment, all 5 delivered once the transport returns;
-  `close_closerInterruptedWhileWaiting_returnsWithFlagSetWithoutLosingTheBatch`]
+  `close_closerInterruptedWhileWaiting_returnsWithFlagSetWithoutLosingTheBatch`;
+  `close_oneShotStartedDuringTheDrainPass_isAwaited` (rev1384 M1) — the order drain pass → wait is load-bearing:
+  a one-shot started during the pass for a partition the pass has not reached is still awaited; red with the wait
+  moved before the pass]
 - Blast radius at the base: **zero production callers** — `AetherNode` wires the non-batching
   `ReplicationManager` (`batcher = none()`), so this component is not on the product path. If it were
   wired, the exposure is shutdown: `StreamPartitionManager.close()` returned while an in-flight send

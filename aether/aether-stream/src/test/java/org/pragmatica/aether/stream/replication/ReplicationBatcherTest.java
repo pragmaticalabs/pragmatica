@@ -16,7 +16,9 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -580,6 +582,82 @@ class ReplicationBatcherTest {
             flush.join();
 
             assertThat(delivered.get()).isEqualTo(EVENTS);
+        }
+
+        /// Ordering pin (rev1384 M1, adopted from `oss/internal/probes/s25-rev1384/Rev1384ProbeTest.java`): the drain
+        /// pass must run BEFORE the barrier wait. A one-shot that fires DURING the pass, for an accumulator the pass
+        /// has not reached, increments the counter only after a wait placed first would have read 0 — and `close()`
+        /// would return with that batch still in `send`, the #1380 shape one step later. Two partitions: the
+        /// closer's own `send` of whichever partition `forEach` visits first starts the OTHER partition's captured
+        /// one-shot and waits until it has drained and entered `send` (or found nothing). Symmetric, so it holds in
+        /// either iteration order. Reddens with `awaitInFlightFlushes()` moved before the pass.
+        @Test
+        void close_oneShotStartedDuringTheDrainPass_isAwaited() throws InterruptedException {
+            registry.registerReplica(STREAM, 1, REPLICA_A);
+            var flushes = new CopyOnWriteArrayList<Runnable>();
+            Set<Thread> flushThreads = ConcurrentHashMap.newKeySet();
+            var finished = new CountDownLatch(1);
+            var otherStarted = new AtomicBoolean();
+            ReplicationBatcher.FlushScheduler capturingBoth = (flush, _) -> {
+                flushes.add(flush);
+
+                return SharedScheduler.schedule(() -> {}, TimeSpan.timeSpan(1).hours());
+            };
+            ReplicationTransport transport = (_, message) -> {
+                var events = (ReplicationMessage.ReplicateEvents) message;
+
+                if (flushThreads.contains(Thread.currentThread())) {
+                    held.send(REPLICA_A, message);
+
+                    return;
+                }
+                if (otherStarted.compareAndSet(false, true)) {
+                    startOtherPartitionFlush(flushes.get(1 - events.partition()), flushThreads, finished);
+                }
+                delivered.addAndGet(events.payloads().size());
+            };
+
+            batcher = replicationBatcher(transport, registry, GOVERNOR, 100, TimeSpan.timeSpan(1).millis(), capturingBoth);
+            for (long offset = 0; offset < EVENTS; offset++) {
+                batcher.add(STREAM, 0, offset, PAYLOAD, TIMESTAMP, Epoch.ZERO);
+                batcher.add(STREAM, 1, offset, PAYLOAD, TIMESTAMP, Epoch.ZERO);
+            }
+            assertThat(flushes).hasSize(2);
+
+            var closer = startCloser();
+
+            assertThat(entered.await(5, TimeUnit.SECONDS)).as("the other partition's one-shot drained during the drain pass and is held in send")
+                                                          .isTrue();
+
+            var returnedBeforeRelease = closer.returned().await(300, TimeUnit.MILLISECONDS);
+
+            gate.countDown();
+
+            assertThat(closer.returned().await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(returnedBeforeRelease).as("close() must not return while a flush that started during its drain pass is in send")
+                                             .isFalse();
+            assertThat(closer.deliveredAtClose().get()).as("both partitions delivered as of close() returning").isEqualTo(2 * EVENTS);
+        }
+
+        /// Runs the other partition's captured one-shot on its own thread and spins until it has drained and
+        /// entered `send` (`entered`) or found its accumulator already drained (`finished`).
+        private void startOtherPartitionFlush(Runnable flush, Set<Thread> flushThreads, CountDownLatch finished) {
+            var thread = Thread.ofVirtual().unstarted(() -> {
+                try {
+                    flush.run();
+                } finally {
+                    finished.countDown();
+                }
+            });
+
+            flushThreads.add(thread);
+            thread.start();
+
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+            while (entered.getCount() > 0 && finished.getCount() > 0 && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
         }
 
         private Thread startCapturedFlushAndAwaitEntered() throws InterruptedException {
