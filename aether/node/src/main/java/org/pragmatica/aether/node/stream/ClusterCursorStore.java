@@ -155,7 +155,10 @@ public record ClusterCursorStore(ConsumerCursorStore local,
     }
 
     @Override
-    public Promise<Option<Cursor>> fetchCursor(String consumerGroup, String streamName, int partition, Epoch assignmentEpoch) {
+    public Promise<Option<Cursor>> fetchCursor(String consumerGroup,
+                                               String streamName,
+                                               int partition,
+                                               Epoch assignmentEpoch) {
         return local.fetchCursor(consumerGroup, streamName, partition, assignmentEpoch)
                     .map(localCursor -> resumeCursor(localCursor,
                                                      committedCursor(consumerGroup, streamName, partition)));
@@ -179,7 +182,9 @@ public record ClusterCursorStore(ConsumerCursorStore local,
                                                          AssignmentToken token,
                                                          RewindEpoch rewindEpoch) {
         return new KVCommand.Put<AetherKey, AetherValue>(key,
-                                                         StreamCursorCheckpointValue.streamCursorCheckpointValue(offset, token, rewindEpoch));
+                                                         StreamCursorCheckpointValue.streamCursorCheckpointValue(offset,
+                                                                                                                 token,
+                                                                                                                 rewindEpoch));
     }
 
     public static KVCommand<AetherKey> checkpointCommand(String consumerGroup,
@@ -202,10 +207,14 @@ public record ClusterCursorStore(ConsumerCursorStore local,
     /// publish's success — is what tells a deposed assignee or a rewound-past consumer apart. Comparing the
     /// token alone is not enough: a refused write leaves this node's OWN earlier checkpoint in place, which
     /// carries the same token.
-    private CommitOutcome verdict(StreamCursorCheckpointKey key, long offset, AssignmentToken token, RewindEpoch rewindEpoch) {
+    private CommitOutcome verdict(StreamCursorCheckpointKey key,
+                                  long offset,
+                                  AssignmentToken token,
+                                  RewindEpoch rewindEpoch) {
         return committedReader.apply(key)
                               .filter(committed -> committed.token()
-                                                            .equals(token) && committed.committedOffset() == offset
+                                                            .equals(token)
+                                                   && committed.committedOffset() == offset
                                                    && committed.rewindEpoch()
                                                                .equals(rewindEpoch))
                               .map(_ -> CommitOutcome.persisted())
@@ -238,7 +247,8 @@ public record ClusterCursorStore(ConsumerCursorStore local,
 
     private static CommitOutcome rewoundPast(StreamCursorCheckpointKey key, RewindEpoch ours, RewindEpoch committed) {
         return localOnly(key,
-                         Causes.cause("checkpoint " + key + " at rewind epoch " + ours
+                         Causes.cause("checkpoint " + key
+                                     + " at rewind epoch " + ours
                                      + " refused: the group was rewound to epoch " + committed
                                      + "; the consumer restarts under it"));
     }

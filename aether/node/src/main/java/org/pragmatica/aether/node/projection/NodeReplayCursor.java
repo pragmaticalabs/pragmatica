@@ -180,16 +180,23 @@ public record NodeReplayCursor(String topicStream,
         return Result.allOf(range.partitions()
                                  .entrySet()
                                  .stream()
-                                 .map(entry -> rewindRecord(group, entry.getKey(), entry.getValue().fromOffset(), epoch))
+                                 .map(entry -> rewindRecord(group,
+                                                            entry.getKey(),
+                                                            entry.getValue().fromOffset(),
+                                                            epoch))
                                  .toList())
                      .async()
-                     .flatMap(records -> put(group, toRecords(records), range, token, epoch));
+                     .flatMap(records -> put(group,
+                                             toRecords(records),
+                                             range,
+                                             token,
+                                             epoch));
     }
 
     private Result<Map.Entry<Integer, StreamCursorCheckpointValue>> rewindRecord(String group,
-                                                                                int partition,
-                                                                                long fromOffset,
-                                                                                RewindEpoch epoch) {
+                                                                                 int partition,
+                                                                                 long fromOffset,
+                                                                                 RewindEpoch epoch) {
         return assignmentToken(group, partition).map(assignment -> Map.entry(partition,
                                                                              StreamCursorCheckpointValue.rewindRecord(fromOffset,
                                                                                                                       assignment,

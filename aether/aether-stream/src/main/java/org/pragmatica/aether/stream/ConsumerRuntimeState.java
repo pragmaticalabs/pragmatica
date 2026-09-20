@@ -528,7 +528,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                                        String streamName,
                                                        int partition) {
         return state.fence()
-                    .fold(() -> store.fetch(groupId, streamName, partition).map(offset -> offset.map(Cursor::unrewound)),
+                    .fold(() -> store.fetch(groupId, streamName, partition)
+                                     .map(offset -> offset.map(Cursor::unrewound)),
                           fence -> store.fetchCursor(groupId,
                                                      streamName,
                                                      partition,

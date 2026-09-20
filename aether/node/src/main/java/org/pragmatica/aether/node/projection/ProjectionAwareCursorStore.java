@@ -70,7 +70,12 @@ public record ProjectionAwareCursorStore(ConsumerCursorStore delegate,
                                          Epoch assignmentEpoch,
                                          RewindEpoch rewindEpoch) {
         return delegate.commit(consumerGroup, streamName, partition, offset, assignmentEpoch, rewindEpoch)
-                       .onSuccess(outcome -> reportUnlessFenced(outcome, consumerGroup, streamName, partition, offset, rewindEpoch));
+                       .onSuccess(outcome -> reportUnlessFenced(outcome,
+                                                                consumerGroup,
+                                                                streamName,
+                                                                partition,
+                                                                offset,
+                                                                rewindEpoch));
     }
 
     @Override
@@ -84,7 +89,10 @@ public record ProjectionAwareCursorStore(ConsumerCursorStore delegate,
     }
 
     @Override
-    public Promise<Option<Cursor>> fetchCursor(String consumerGroup, String streamName, int partition, Epoch assignmentEpoch) {
+    public Promise<Option<Cursor>> fetchCursor(String consumerGroup,
+                                               String streamName,
+                                               int partition,
+                                               Epoch assignmentEpoch) {
         return delegate.fetchCursor(consumerGroup, streamName, partition, assignmentEpoch);
     }
 
@@ -94,7 +102,7 @@ public record ProjectionAwareCursorStore(ConsumerCursorStore delegate,
                                     int partition,
                                     long offset,
                                     RewindEpoch epoch) {
-        if (!(outcome instanceof CommitOutcome.Fenced)) {
+        if (! (outcome instanceof CommitOutcome.Fenced)) {
             report(consumerGroup, streamName, partition, offset, epoch);
         }
     }

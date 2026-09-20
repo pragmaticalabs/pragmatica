@@ -125,7 +125,10 @@ public final class CursorStore implements ConsumerCursorStore {
     /// #1333: the tenure rule of [#fetch(String, String, int, Epoch)], with the rewind epoch the cursor
     /// was committed under — [RewindEpoch#NONE] for a fenced block written before a rewind was recorded.
     @Override
-    public Promise<Option<Cursor>> fetchCursor(String consumerGroup, String streamName, int partition, Epoch assignmentEpoch) {
+    public Promise<Option<Cursor>> fetchCursor(String consumerGroup,
+                                               String streamName,
+                                               int partition,
+                                               Epoch assignmentEpoch) {
         return readCursor(consumerGroup, streamName, partition).map(stored -> stored.filter(cursor -> cursor.writtenUnder(assignmentEpoch))
                                                                                     .map(StoredCursor::cursor));
     }

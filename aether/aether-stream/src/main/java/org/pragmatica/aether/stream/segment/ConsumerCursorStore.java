@@ -68,7 +68,10 @@ public interface ConsumerCursorStore {
 
     /// #1333: the cursor a consumer admitted under `assignmentEpoch` resumes from, with the rewind epoch
     /// it must run — and commit — under. Same tenure rule as [#fetch(String, String, int, Epoch)].
-    default Promise<Option<Cursor>> fetchCursor(String consumerGroup, String streamName, int partition, Epoch assignmentEpoch) {
+    default Promise<Option<Cursor>> fetchCursor(String consumerGroup,
+                                                String streamName,
+                                                int partition,
+                                                Epoch assignmentEpoch) {
         return fetch(consumerGroup, streamName, partition, assignmentEpoch).map(offset -> offset.map(Cursor::unrewound));
     }
 

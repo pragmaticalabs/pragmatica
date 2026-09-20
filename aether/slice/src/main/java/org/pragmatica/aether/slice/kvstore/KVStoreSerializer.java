@@ -1726,9 +1726,14 @@ public final class KVStoreSerializer {
                                                                                                                           Boolean.parseBoolean(parts[7])));
     }
 
-    private static Result<AssignmentToken> parseAssignmentToken(String assignee, String rabiaTerm, String localCounter) {
-        return Result.all(NodeId.nodeId(assignee), Number.parseLong(rabiaTerm), Number.parseLong(localCounter))
-                     .map((node, term, counter) -> AssignmentToken.assignmentToken(node, Epoch.epoch(term, counter)));
+    private static Result<AssignmentToken> parseAssignmentToken(String assignee,
+                                                                String rabiaTerm,
+                                                                String localCounter) {
+        return Result.all(NodeId.nodeId(assignee),
+                          Number.parseLong(rabiaTerm),
+                          Number.parseLong(localCounter))
+                     .map((node, term, counter) -> AssignmentToken.assignmentToken(node,
+                                                                                   Epoch.epoch(term, counter)));
     }
 
     /// Mirror of [#serializeStreamRegistration]. Declarative stream-consumer registrations have been
