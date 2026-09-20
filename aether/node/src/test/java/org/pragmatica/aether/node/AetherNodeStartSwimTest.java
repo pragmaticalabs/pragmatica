@@ -19,8 +19,12 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
@@ -40,6 +44,8 @@ class AetherNodeStartSwimTest {
     private static final NodeId PEER = new NodeId("node-2");
     /// Covers the transport bind's own 5 s await plus async callback delivery.
     private static final long WAIT_SECONDS = 10;
+    private static final Cause SWIM_BIND_FAILED = Causes.cause("SWIM UDP port already bound (test cause)");
+    private static final Cause FORMATION_FAILED = Causes.cause("cluster formation failed (test cause)");
 
     private final AtomicInteger announcements = new AtomicInteger();
     private final AtomicInteger failures = new AtomicInteger();
@@ -57,8 +63,8 @@ class AetherNodeStartSwimTest {
             assertThat(failed.await(WAIT_SECONDS, TimeUnit.SECONDS))
                 .as("a SWIM start that cannot bind UDP %d must fail the node", swimPort)
                 .isTrue();
-            // Success and failure callbacks are delivered in one batch; give a wrongly-unconditional
-            // announcement the same window to show up.
+            // start() returns a resolved promise, so both callbacks have already run inline by now;
+            // the window only gives a wrongly-asynchronous announcement a chance to show up.
             assertThat(announced.await(500, TimeUnit.MILLISECONDS))
                 .as("a node without a SWIM listener must not announce its join")
                 .isFalse();
@@ -129,6 +135,58 @@ class AetherNodeStartSwimTest {
                 .as("lifecycle the moment a failed start() resolves")
                 .isInstanceOf(SwimHealthState.Stopped.class);
         }
+    }
+
+    /// #1308 (rev1343 BLOCKING-1) — the node's start outcome is `formationUnlessSwimFails(formation,
+    /// swimStart)`. A SWIM start failure must settle it AS THAT FAILURE while formation is still
+    /// pending: in a single-JVM host `failNode` only stops this node, whose formation then never
+    /// resolves, so an outcome that waited on formation alone hung forever. Reverting the join
+    /// (`startSwimTrigger` back to a fire-and-forget Runnable) has no unit-level seam; the wiring is
+    /// pinned end-to-end by `EmberClusterSwimStartFailureTest` in `aether/ember`.
+    @Test
+    void formationUnlessSwimFails_swimStartFails_failsTheStartWithTheSwimCause_whileFormationIsPending() {
+        var formation = Promise.<Unit> promise();
+        var swimStart = Promise.<Unit> promise();
+        var outcome = AetherNode.formationUnlessSwimFails(formation, swimStart);
+
+        assertThat(outcome.isResolved()).as("nothing has settled yet").isFalse();
+
+        swimStart.fail(SWIM_BIND_FAILED);
+
+        assertThat(outcome.isResolved()).as("a SWIM start failure settles the start at once").isTrue();
+        assertThat(outcome.await(timeSpan(1).seconds()))
+            .as("the start fails with the SWIM cause, not a timeout")
+            .isEqualTo(SWIM_BIND_FAILED.result());
+        assertThat(formation.isResolved()).as("formation is still pending — the outcome did not wait for it").isFalse();
+    }
+
+    /// A SWIM start SUCCESS settles nothing: the node has started only once formation resolves.
+    @Test
+    void formationUnlessSwimFails_swimStartSucceeds_startFollowsFormation() {
+        var formation = Promise.<Unit> promise();
+        var swimStart = Promise.<Unit> promise();
+        var outcome = AetherNode.formationUnlessSwimFails(formation, swimStart);
+
+        swimStart.succeed(Unit.unit());
+
+        assertThat(outcome.isResolved()).as("SWIM up alone is not a started node").isFalse();
+
+        formation.succeed(Unit.unit());
+
+        assertThat(outcome.await(timeSpan(1).seconds())).isEqualTo(Result.success(Unit.unit()));
+    }
+
+    /// Formation's own failure still reaches the caller when SWIM never reported (e.g. the QUIC
+    /// transport never became ready, so the SWIM trigger never fired).
+    @Test
+    void formationUnlessSwimFails_swimStartPending_formationFailureFailsTheStart() {
+        var formation = Promise.<Unit> promise();
+        var swimStart = Promise.<Unit> promise();
+        var outcome = AetherNode.formationUnlessSwimFails(formation, swimStart);
+
+        formation.fail(FORMATION_FAILED);
+
+        assertThat(outcome.await(timeSpan(1).seconds())).isEqualTo(FORMATION_FAILED.result());
     }
 
     private void announce() {
