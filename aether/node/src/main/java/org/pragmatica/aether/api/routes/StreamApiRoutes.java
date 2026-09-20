@@ -625,17 +625,34 @@ public final class StreamApiRoutes implements RouteSource {
                                                                                                            offset)));
     }
 
-    private Promise<PublishBatchResponse> publishBatch(String namespace,
-                                                       String stream,
-                                                       String version,
-                                                       String publishBatchLiteral,
-                                                       PublishRequest[] requests) {
+    /// Package-visible for direct unit coverage, like [#publishEvent].
+    Promise<PublishBatchResponse> publishBatch(String namespace,
+                                               String stream,
+                                               String version,
+                                               String publishBatchLiteral,
+                                               PublishRequest[] requests) {
         return ResourceAddress.resourceAddress(namespace, stream, version)
                               .async()
                               .flatMap(addr -> publishMany(addr, requests));
     }
 
+    /// The stream is ensured ONCE, before the fan-out: every event targets the same address, and a failure
+    /// here — a reserved-name refusal (#1282), an unavailable stream — then surfaces as ITSELF, with its own
+    /// HTTP status. Left to the per-event path it arrived wrapped in `Result.allOf`'s composite cause, which
+    /// is not `HttpStatusAware` and left the wire as 500. An EMPTY batch publishes nothing and so ensures
+    /// (and creates) nothing, exactly as the per-event path never did.
     private Promise<PublishBatchResponse> publishMany(ResourceAddress addr, PublishRequest[] requests) {
+        return requests.length == 0
+               ? publishEach(addr, requests)
+               : ensureThenPublishEach(addr, requests);
+    }
+
+    private Promise<PublishBatchResponse> ensureThenPublishEach(ResourceAddress addr, PublishRequest[] requests) {
+        return ensureStreamExists(StreamManager.engineKey(addr)).async()
+                                 .flatMap(_ -> publishEach(addr, requests));
+    }
+
+    private Promise<PublishBatchResponse> publishEach(ResourceAddress addr, PublishRequest[] requests) {
         var perEvent = Arrays.stream(requests).map(req -> publishOne(addr, req)).toList();
 
         return Promise.allOf(perEvent).flatMap(results -> collectOffsets(addr, results));
@@ -716,17 +733,28 @@ public final class StreamApiRoutes implements RouteSource {
     /// call path entirely. So it must never be swallowed: on success `streams` is guaranteed to hold
     /// the entry (making [#validatePartition]'s read safe), and on failure this reports a typed 409
     /// naming the stream and cause instead of silently proceeding with an unknown partition count.
+    ///
+    /// #1282: the management default is never fabricated under a reserved kind prefix — a `topic`/`entity`
+    /// namespace address yields a `topic:`/`entity:` engine key, which only internal provisioning may
+    /// mint. A committed config for such a name is the real resource's and is still adopted.
     private Result<Unit> ensureStreamExists(String streamName) {
-        var config = nodeSupplier.get()
-                                 .kvStore()
-                                 .getTyped(StreamConfigKey.streamConfigKey(streamName),
-                                           StreamConfigValue.class)
-                                 .map(StreamConfigValue::config)
-                                 .or(() -> StreamConfig.streamConfig(streamName,
-                                                                     DEFAULT_PARTITIONS,
-                                                                     MANAGEMENT_API_RETENTION,
-                                                                     "latest"));
+        return nodeSupplier.get()
+                           .kvStore()
+                           .getTyped(StreamConfigKey.streamConfigKey(streamName),
+                                     StreamConfigValue.class)
+                           .map(value -> Result.success(value.config()))
+                           .or(() -> managementDefaultConfig(streamName))
+                           .flatMap(config -> materializeForPublish(streamName, config));
+    }
 
+    private static Result<StreamConfig> managementDefaultConfig(String streamName) {
+        return ReservedStreamNames.requireUnreserved(streamName).map(unreserved -> StreamConfig.streamConfig(unreserved,
+                                                                                                             DEFAULT_PARTITIONS,
+                                                                                                             MANAGEMENT_API_RETENTION,
+                                                                                                             "latest"));
+    }
+
+    private Result<Unit> materializeForPublish(String streamName, StreamConfig config) {
         return streamManager().ensureStreamMaterialized(config)
                             .mapError(cause -> new ManagementServerError.StreamUnavailable(streamName,
                                                                                            cause.message()));
@@ -748,11 +776,22 @@ public final class StreamApiRoutes implements RouteSource {
     /// Idempotent on an already-registered address (mirrors [StreamRoutes#createStreamWithConfig]'s
     /// check-exists-first shape): a repeat `create` for the same address reports `"exists"` rather
     /// than re-attempting registration and hitting [StreamRegistry.StreamRegistryError.General#ALREADY_REGISTERED].
+    ///
+    /// #1282: the reserved-kind refusal runs BEFORE the catalog lookup, so an existing reserved address is
+    /// refused rather than reported `"exists"` — no existence oracle for internally provisioned streams.
     private Result<CreateResponse> createAtAddress(ResourceAddress addr, CreateRequest request) {
+        return ReservedStreamNames.requireUnreserved(StreamManager.engineKey(addr)).flatMap(engineKey -> createOrReportExisting(addr,
+                                                                                                                                engineKey,
+                                                                                                                                request));
+    }
+
+    private Result<CreateResponse> createOrReportExisting(ResourceAddress addr,
+                                                          String engineKey,
+                                                          CreateRequest request) {
         return namespacesService.lookup(addr)
                                 .map(_ -> Result.success(new CreateResponse(addr.asString(),
                                                                             "exists")))
-                                .or(() -> materializeAndRegister(addr, request));
+                                .or(() -> materializeAndRegister(addr, engineKey, request));
     }
 
     /// Registers a PERMANENT catalog reference ([StreamRegistryEntry.RegisteredByKind#OPERATOR]): no
@@ -762,17 +801,21 @@ public final class StreamApiRoutes implements RouteSource {
     /// which is the ASYNC publish-auto-create path used by [#ensureStreamExists]), tolerating its
     /// `STREAM_ALREADY_EXISTS` duplicate-create sentinel via [StreamCreateOutcome] like every other
     /// idempotent caller of that method.
-    private Result<CreateResponse> materializeAndRegister(ResourceAddress addr, CreateRequest request) {
-        var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
-        var config = StreamConfig.streamConfig(StreamManager.engineKey(addr),
-                                               partitions,
-                                               MANAGEMENT_API_RETENTION,
-                                               "latest");
+    ///
+    /// Reached only through [#createAtAddress], whose reserved-kind refusal has already run on `engineKey`.
+    private Result<CreateResponse> materializeAndRegister(ResourceAddress addr,
+                                                          String engineKey,
+                                                          CreateRequest request) {
+        return mintOperatorStream(engineKey, request).flatMap(_ -> registerCatalogEntry(addr))
+                                 .map(_ -> new CreateResponse(addr.asString(),
+                                                              "created"));
+    }
 
-        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config))
-                                  .flatMap(_ -> registerCatalogEntry(addr))
-                                  .map(_ -> new CreateResponse(addr.asString(),
-                                                               "created"));
+    private Result<Unit> mintOperatorStream(String engineKey, CreateRequest request) {
+        var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
+        var config = StreamConfig.streamConfig(engineKey, partitions, MANAGEMENT_API_RETENTION, "latest");
+
+        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config));
     }
 
     private Result<StreamRegistryEntry> registerCatalogEntry(ResourceAddress addr) {

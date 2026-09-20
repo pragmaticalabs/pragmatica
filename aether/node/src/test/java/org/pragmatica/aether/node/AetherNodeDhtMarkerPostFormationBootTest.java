@@ -125,7 +125,7 @@ class AetherNodeDhtMarkerPostFormationBootTest {
     void construction_staysUnderFiveSeconds_whenArtifactsInstanceHasDhtTierButNoKeyring() {
         var constructStarted = System.nanoTime();
 
-        node = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none()), () -> {})
+        node = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none(), tempDir), () -> {})
                           .onFailure(cause -> fail("construction must not touch the DHT any more (#858) - " + cause.message()))
                           .unwrap();
 
@@ -180,7 +180,7 @@ class AetherNodeDhtMarkerPostFormationBootTest {
     @Test
     @Timeout(value = 60, unit = SECONDS)
     void start_failsWithEncryptedTierRequiresKeyring_whenDhtMarkerPresentAndNoKeyring() {
-        node = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none()), () -> {})
+        node = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none(), tempDir), () -> {})
                           .onFailure(cause -> fail("construction must succeed - " + cause.message()))
                           .unwrap();
 
@@ -215,7 +215,7 @@ class AetherNodeDhtMarkerPostFormationBootTest {
     @Test
     @Timeout(value = 150, unit = SECONDS)
     void start_neverReportsActive_whileADhtTierIsNotAdmitted_whileAdmittedControlDoes() throws InterruptedException {
-        controlNode = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none()), () -> {})
+        controlNode = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none(), tempDir), () -> {})
                                  .onFailure(cause -> fail("control construction must succeed - " + cause.message()))
                                  .unwrap();
         controlNode.start()
@@ -227,7 +227,7 @@ class AetherNodeDhtMarkerPostFormationBootTest {
         controlNode.stop().await(timeSpan(10).seconds()).onFailure(cause -> {});
         controlNode = null;
 
-        node = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none()), () -> {})
+        node = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none(), tempDir), () -> {})
                           .onFailure(cause -> fail("construction must succeed - " + cause.message()))
                           .unwrap();
         // Stands in for a marker check that has not admitted the tier: the gate is first-writer-wins, so
@@ -260,7 +260,7 @@ class AetherNodeDhtMarkerPostFormationBootTest {
     @Test
     @Timeout(value = 60, unit = SECONDS)
     void readiness_reportsDhtAdmissionDownNamingArtifacts_beforeStart_andUpOnceAdmitted() {
-        node = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none()), () -> {})
+        node = AetherNode.aetherNode(minimalConfig(Option.none(), Option.none(), tempDir), () -> {})
                           .onFailure(cause -> fail("construction must succeed - " + cause.message()))
                           .unwrap();
         var routes = StatusRoutes.statusRoutes(() -> node, node::appHttpServer);
@@ -315,16 +315,16 @@ class AetherNodeDhtMarkerPostFormationBootTest {
         return (System.nanoTime() - startedAtNanos) / 1_000_000;
     }
 
-    private static AetherNodeConfig minimalConfig(Option<EnvironmentIntegration> environment, Option<StorageEncryptionConfig> storageEncryption) {
-        var self = NodeId.nodeId("dht-marker-post-formation-" + UUID.randomUUID()).unwrap();
-        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
-
-        return AetherNodeConfig.builder()
-                                .self(self).coreNodes(List.of(selfInfo)).managementPort(AetherNodeConfig.MANAGEMENT_DISABLED)
-                                .sliceConfig(SliceConfig.sliceConfig()).artifactRepo(DHTConfig.FULL).coreMax(1)
-                                .appHttp(AppHttpConfig.appHttpConfig()).tls(Option.none()).quicTls(TlsConfig.selfSignedMutual())
-                                .certificateProvider(Option.none()).configProvider(Option.none()).environment(environment)
-                                .build().withStorageEncryption(storageEncryption);
+    /// #1276: the synthesized-artifacts shape, rooted in the test's `@TempDir` instead of the machine-global
+    /// `/data/aether/...` default. The explicit `artifacts` instance is encrypted exactly when a node-wide
+    /// keyring is configured, which is what the synthesized one would have been.
+    private static AetherNodeConfig minimalConfig(Option<EnvironmentIntegration> environment,
+                                                  Option<StorageEncryptionConfig> storageEncryption,
+                                                  Path storageRoot) {
+        return minimalConfig(environment,
+                             storageEncryption,
+                             HermeticStorage.storageConfigAt(HermeticStorage.uncreatableRootIn(storageRoot),
+                                                             storageEncryption.isPresent()));
     }
 
     private static AetherNodeConfig minimalConfig(Option<EnvironmentIntegration> environment,
