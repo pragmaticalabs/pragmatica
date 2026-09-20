@@ -409,6 +409,11 @@ public interface AetherNode extends ManageableNode {
     Option<CertificateRenewalScheduler> certRenewalScheduler();
     int connectedNodeCount();
     Map<String, Number> transportMetrics();
+
+    default Map<String, Long> metadataResourceMetrics() {
+        return Map.of();
+    }
+
     Set<NodeId> connectedPeerIds();
     boolean isLeader();
     boolean isReady();
@@ -471,12 +476,26 @@ public interface AetherNode extends ManageableNode {
                                                  MessageRouter.DelegateRouter delegateRouter,
                                                  SliceCodec nodeCodec,
                                                  Runnable jvmExit) {
+        return consensusDirectory(config).flatMap(ProducerIncarnation::next)
+                                 .flatMap(incarnation -> createNodeWithIncarnation(config,
+                                                                                   delegateRouter,
+                                                                                   nodeCodec,
+                                                                                   jvmExit,
+                                                                                   incarnation));
+    }
+
+    private static Result<AetherNode> createNodeWithIncarnation(AetherNodeConfig config,
+                                                                MessageRouter.DelegateRouter delegateRouter,
+                                                                SliceCodec nodeCodec,
+                                                                Runnable jvmExit,
+                                                                long producerIncarnation) {
         return resolveStorageEncryptionKeyring(config).flatMap(keyring -> resolvePersistence(config, nodeCodec).flatMap(persistence -> createNodeWithStorage(config,
                                                                                                                                                              delegateRouter,
                                                                                                                                                              nodeCodec,
                                                                                                                                                              jvmExit,
                                                                                                                                                              keyring,
-                                                                                                                                                             persistence).onFailure(_ -> closeFailedPersistence(persistence))));
+                                                                                                                                                             persistence,
+                                                                                                                                                             producerIncarnation).onFailure(_ -> closeFailedPersistence(persistence))));
     }
 
     private static Result<AetherNode> createNodeWithStorage(AetherNodeConfig config,
@@ -484,7 +503,8 @@ public interface AetherNode extends ManageableNode {
                                                             SliceCodec nodeCodec,
                                                             Runnable jvmExit,
                                                             Option<EncryptionKeyring> storageKeyring,
-                                                            RabiaPersistence<KVCommand<AetherKey>> persistence) {
+                                                            RabiaPersistence<KVCommand<AetherKey>> persistence,
+                                                            long producerIncarnation) {
         Serializer serializer = nodeCodec;
         Deserializer deserializer = nodeCodec;
         var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter, serializer, deserializer);
@@ -646,7 +666,8 @@ public interface AetherNode extends ManageableNode {
                                                              metricsCollectorRef,
                                                              syncHoldRegistry,
                                                              jvmExit,
-                                                             storageKeyring));
+                                                             storageKeyring,
+                                                             producerIncarnation));
     }
 
     /// #253 — resolves the boot-time storage-encryption keyring before any storage tier exists. No
@@ -1503,7 +1524,8 @@ public interface AetherNode extends ManageableNode {
                                                    AtomicReference<ClusterSyncCollector> metricsCollectorRef,
                                                    org.pragmatica.cluster.node.rabia.SyncHoldRegistry syncHoldRegistry,
                                                    Runnable jvmExit,
-                                                   Option<EncryptionKeyring> storageKeyring) {
+                                                   Option<EncryptionKeyring> storageKeyring,
+                                                   long producerIncarnation) {
         // #329: leader-pinned task-group ownership is gated on consensus catch-up. A freshly
         // elected replacement leader whose Rabia log is still draining (isPendingCatchUp) is
         // isActive but not caught up; granting it ownership funnels every leader-pinned op
@@ -1702,7 +1724,8 @@ public interface AetherNode extends ManageableNode {
             switchableCluster.switchTo(forwardingClusterNode);
         }
 
-        record aetherNode(AetherNodeConfig config,
+        record aetherNode(org.pragmatica.aether.worker.metadata.WorkerMetadataChannel workerMetadataChannel,
+                          AetherNodeConfig config,
                           MessageRouter.DelegateRouter router,
                           KVStore<AetherKey, AetherValue> kvStore,
                           OwnershipEpochHighWater ownershipEpochHighWaterInstance,
@@ -2186,6 +2209,11 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
+            public Map<String, Long> metadataResourceMetrics() {
+                return workerMetadataChannel.resourceMetrics();
+            }
+
+            @Override
             public Map<String, Number> transportMetrics() {
                 return clusterNode.network()
                                   .transportMetrics();
@@ -2462,7 +2490,6 @@ public interface AetherNode extends ManageableNode {
         // NodeReportedState.DRAINING (metrics pong) — late-bound like the READY ref, since the
         // pong fan + self-state holder are constructed further below.
         var communityRetirements = CommunityRetirementIndex.communityRetirementIndex();
-
         // Snapshot replay emits only changed KV entries. Leadership must also be refreshed when
         // an unchanged committed LeaderValue survives a voter handoff that cleared local leadership.
         clusterNode.onStateRestored(() -> refreshCommittedLeader(kvStore, clusterNode.leaderManager()));
@@ -3486,15 +3513,13 @@ public interface AetherNode extends ManageableNode {
                                                                                swimTransportConnected);
 
         swimHealthDetectorHolder.set(swimHealthDetector);
-        // Single `(NodeId, incarnation)` authority: the metrics readiness epoch is sourced from
-        // the SWIM self-incarnation, floored at a captured boot value so it never reports below
-        // boot-millis during the pre-announce window (before `announceJoin` seeds the SWIM counter).
-        // The SAME `bootIncarnation` seeds `announceJoin` below, so SWIM's seed == the metrics floor.
+        // Metrics use a durable process epoch; SWIM retains its independent refutation counter.
         var bootIncarnation = System.currentTimeMillis();
 
-        metricsCollector.setIncarnationSupplier(() -> Math.max(bootIncarnation, swimHealthDetector.selfIncarnation()));
-        workerMetricsAggregator.setIncarnationSupplier(() -> Math.max(bootIncarnation,
-                                                                      swimHealthDetector.selfIncarnation()));
+        metricsCollector.setIncarnationSupplier(() -> producerIncarnation);
+        metricsCollector.setMembershipIncarnationSupplier(() -> Math.max(bootIncarnation,
+                                                                         swimHealthDetector.selfIncarnation()));
+        workerMetricsAggregator.setIncarnationSupplier(() -> producerIncarnation);
         // RC1 (S01 fix) — wire the SWIM-backed liveness check for owner-broadcast eviction
         // hints. Followers REFUSE to act on the owner's `ClusterSyncPing.evictionHints` for
         // peers SWIM observes as HEALTHY; the owner's hint is a SUGGESTION, not authority.
@@ -3783,9 +3808,12 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                 .communityAbsence());
 
         metricsCollector.addPongListener(pong -> {
-            workerAdmission.recordPong(pong.sender(), pong.lifecycleState(), pong.observation());
+            workerAdmission.recordPong(pong.sender(), pong.lifecycleState(), pong.incarnation(), pong.observation());
             candidateHealth.recordPong(pong.sender(), pong.lifecycleState(), pong.observation());
-            communityHealthReporter.recordPong(pong.sender(), pong.lifecycleState(), pong.observation());
+            communityHealthReporter.recordPong(pong.sender(),
+                                               pong.lifecycleState(),
+                                               pong.incarnation(),
+                                               pong.observation());
         });
         var governorAuthority = GovernorAuthority.governorAuthority(config.self(),
                                                                     clusterNode,
@@ -5161,7 +5189,8 @@ public interface AetherNode extends ManageableNode {
                                                               managementServerRef::get);
         var startTimeMs = System.currentTimeMillis();
         var nodeLifecycle = NodeLifecycle.nodeLifecycle();
-        var node = new aetherNode(config,
+        var node = new aetherNode(workerMetadataChannel,
+                                  config,
                                   delegateRouter,
                                   kvStore,
                                   ownershipEpochHighWater,
@@ -5376,7 +5405,8 @@ public interface AetherNode extends ManageableNode {
                                                                        .onPresent(spi -> spi.registerExtension(MeterRegistry.class,
                                                                                                                managementServer.meterRegistry()));
 
-                                                  return new aetherNode(config,
+                                                  return new aetherNode(workerMetadataChannel,
+                                                                        config,
                                                                         delegateRouter,
                                                                         kvStore,
                                                                         ownershipEpochHighWater,
@@ -7561,7 +7591,8 @@ public interface AetherNode extends ManageableNode {
 
     static Unit refreshCommittedLeader(KVStore<?, ?> kvStore, LeaderManager leaderManager) {
         kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
-               .onPresent(value -> leaderManager.onLeaderCommitted(value.leader(), value.viewSequence()));
+               .onPresent(value -> leaderManager.onLeaderCommitted(value.leader(),
+                                                                   value.viewSequence()));
 
         return Unit.unit();
     }

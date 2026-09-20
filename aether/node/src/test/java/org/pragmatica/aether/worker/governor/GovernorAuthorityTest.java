@@ -104,6 +104,15 @@ class GovernorAuthorityTest {
     }
 
     @Test
+    void rejectedRefresh_doesNotReturnExistingAuthorityAsAnAcceptedGrant() {
+        leader(CORE, 1);
+        var incumbent = request(A, 0).authority().unwrap();
+        beforeApply.set(() -> leader(new NodeId("replacement-core"), 2));
+        assertThat(request(A, incumbent.communityTerm()).authority().isEmpty()).isTrue();
+        assertThat(store.getTyped(KEY, GovernorAnnouncementValue.class).unwrap()).isEqualTo(incumbent);
+    }
+
+    @Test
     void candidateReassignedBeforeApply_claimIsRejected() {
         leader(CORE, 1);
         beforeApply.set(() -> store.process(store.createBatch(List.of(

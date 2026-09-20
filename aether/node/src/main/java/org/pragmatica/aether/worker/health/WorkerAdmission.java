@@ -112,22 +112,25 @@ public final class WorkerAdmission {
                                          .isPresent();
     }
 
-    public synchronized boolean recordPong(NodeId node, String state, MetricObservation observation) {
+    public synchronized boolean recordPong(NodeId node,
+                                           String state,
+                                           long membershipIncarnation,
+                                           MetricObservation observation) {
         var sent = org.pragmatica.lang.Option.option(pending.get(node));
 
         if (sent.filter(value -> authorized.test(node)
                                  && clock.nanoTime() - value >= 0
                                  && clock.nanoTime() - value < timeout.nanos())
-                .isEmpty() || observation.incarnation() < 0 || observation.sequence() < 0 || !MetricObservation.isTimestampFresh(observation.observedAtMs(),
-                                                                                                                                 System.currentTimeMillis()) || org.pragmatica.lang.Option.option(accepted.get(node))
-                                                                                                                                                                                          .filter(previous -> !observation.isAfter(previous))
-                                                                                                                                                                                          .isPresent() || !("SYNCING".equals(state) || "READY".equals(state))) {
+                .isEmpty() || membershipIncarnation < 0 || observation.incarnation() < 0 || observation.sequence() < 0 || !MetricObservation.isTimestampFresh(observation.observedAtMs(),
+                                                                                                                                                              System.currentTimeMillis()) || org.pragmatica.lang.Option.option(accepted.get(node))
+                                                                                                                                                                                                                       .filter(previous -> !observation.isAfter(previous))
+                                                                                                                                                                                                                       .isPresent() || !("SYNCING".equals(state) || "READY".equals(state))) {
             return false;
         }
 
         pending.remove(node);
         accepted.put(node, observation);
-        accept.accept(node, observation.incarnation());
+        accept.accept(node, membershipIncarnation);
 
         return true;
     }

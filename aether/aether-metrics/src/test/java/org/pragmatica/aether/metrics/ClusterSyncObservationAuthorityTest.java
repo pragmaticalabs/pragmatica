@@ -74,6 +74,7 @@ class ClusterSyncObservationAuthorityTest {
         collector.setCorePingObserver(contacts::incrementAndGet);
         collector.onClusterSyncPong(new ClusterSyncPong(WORKER,
                                                         sample(1, 1),
+                                   (sample(1, 1)).incarnation(),
                                                         99,
                                                         99,
                                                         99,
@@ -84,6 +85,7 @@ class ClusterSyncObservationAuthorityTest {
                                                         org.pragmatica.lang.Option.none()));
         collector.onClusterSyncPong(new ClusterSyncPong(CORE,
                                                         sample(1, 1),
+                                   (sample(1, 1)).incarnation(),
                                                         0,
                                                         0,
                                                         0,

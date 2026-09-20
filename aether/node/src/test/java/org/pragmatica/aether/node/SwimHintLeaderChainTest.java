@@ -185,7 +185,8 @@ class SwimHintLeaderChainTest {
         assertThat(pingTimeoutHints()).as("Control: the hint was recorded").hasSize(1);
         assertThat(protocol.members().get(VICTIM).state()).isEqualTo(MemberState.SUSPECT);
 
-        wiring.collector().onClusterSyncPong(new ClusterSyncPong(VICTIM, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of()), 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
+        wiring.collector().onClusterSyncPong(new ClusterSyncPong(VICTIM, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of()),
+                                   0L, 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
         assertThat(hints).contains(new TransportObservation.PeerResponsive(VICTIM));
         var elapsed = awaitVerdict(wiring, hintedAt);
 
@@ -260,7 +261,8 @@ class SwimHintLeaderChainTest {
 
     private void pongUntilInterrupted(Wiring wiring) {
         while (!Thread.currentThread().isInterrupted()) {
-            wiring.collector().onClusterSyncPong(new ClusterSyncPong(VICTIM, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of()), 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
+            wiring.collector().onClusterSyncPong(new ClusterSyncPong(VICTIM, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of()),
+                                   0L, 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
             try {
                 Thread.sleep(50);
             } catch (InterruptedException e) {

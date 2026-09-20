@@ -5,6 +5,7 @@
 package org.pragmatica.aether.worker.governor;
 
 import java.util.List;
+import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Predicate;
@@ -118,17 +119,30 @@ public interface GovernorAuthority {
                 }
 
                 var updated = update(previous, nominee, address, members);
-                var command = new KVCommand.LeaderPut<AetherKey, AetherValue>(key,
-                                                                              previous.map(value -> (AetherValue) value),
-                                                                              updated,
-                                                                              leader,
-                                                                              List.of(new KVCommand.ReadWitness<>(communityKey,
-                                                                                                                  community.map(value -> (Object) value)),
-                                                                                      new KVCommand.ReadWitness<>(directiveKey,
-                                                                                                                  directive.map(value -> (Object) value))));
+                var transactionId = UUID.randomUUID().toString();
+                var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                                      transactionId,
+                                                                                      leader,
+                                                                                      List.of(new KVCommand.ReadWitness<>(communityKey,
+                                                                                                                          community.map(value -> (Object) value)),
+                                                                                              new KVCommand.ReadWitness<>(directiveKey,
+                                                                                                                          directive.map(value -> (Object) value))),
+                                                                                      List.of(new KVCommand.Mutation<>(key,
+                                                                                                                       previous.map(value -> (AetherValue) value),
+                                                                                                                       Option.some(updated))));
 
-                return cluster.apply(List.<KVCommand<AetherKey>> of(command))
-                              .map(_ -> store.getTyped(key, GovernorAnnouncementValue.class));
+                return cluster.<Object> apply(List.<KVCommand<AetherKey>> of(command))
+                              .map(outcomes -> accepted(outcomes, transactionId)
+                                               ? store.getTyped(key, GovernorAnnouncementValue.class)
+                                               : Option.none());
+            }
+
+            private boolean accepted(List<Object> outcomes, String transactionId) {
+                return outcomes.stream()
+                               .anyMatch(outcome -> outcome instanceof KVCommand.TransactionResult result
+                                                    && result.transactionId()
+                                                             .equals(transactionId)
+                                                    && result.accepted());
             }
 
             private GovernorAnnouncementValue update(Option<GovernorAnnouncementValue> previous,

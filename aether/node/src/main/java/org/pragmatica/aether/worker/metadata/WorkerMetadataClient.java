@@ -32,6 +32,18 @@ import org.pragmatica.serialization.SliceCodec;
 
 /// One in-flight manifest and chunk; verified scopes become visible together through normal KV replay.
 public final class WorkerMetadataClient {
+    /// Point-in-time resource occupancy, sampled under the same monitor as mutation.
+    public synchronized Map<String, Long> resourceMetrics() {
+        return Map.of("clientVerifiedBytes",
+                      verified.values().stream().mapToLong(bytes -> bytes.length).sum(),
+                      "clientCacheLimit",
+                      limits.cacheBytes(),
+                      "clientBufferBytes",
+                      (long) buffer.length,
+                      "clientScopeLimit",
+                      (long) limits.scopeBytes());
+    }
+
     private final NodeId self;
     private final TimeSource clock = TimeSource.system();
     private final KVStore<AetherKey, AetherValue> store;

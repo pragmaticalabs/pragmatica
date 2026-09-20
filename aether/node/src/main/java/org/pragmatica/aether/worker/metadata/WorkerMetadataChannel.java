@@ -27,6 +27,14 @@ public record WorkerMetadataChannel(boolean worker,
                                     Supplier<Boolean> coreReady,
                                     WorkerMetadataServer server,
                                     WorkerMetadataClient client) {
+    public java.util.Map<String, Long> resourceMetrics() {
+        var metrics = new java.util.HashMap<>(server.resourceMetrics());
+
+        metrics.putAll(client.resourceMetrics());
+
+        return java.util.Map.copyOf(metrics);
+    }
+
     public static WorkerMetadataChannel workerMetadataChannel(NodeId self,
                                                               boolean worker,
                                                               KVStore<AetherKey, AetherValue> store,

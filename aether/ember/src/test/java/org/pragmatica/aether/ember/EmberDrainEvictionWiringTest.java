@@ -193,7 +193,8 @@ class EmberDrainEvictionWiringTest {
     }
 
     private static ClusterSyncPong drainingPong(NodeId sender) {
-        return new ClusterSyncPong(sender, new MetricObservation(1L, System.nanoTime(), System.currentTimeMillis(), Map.of()), 0L, 0L, 0L, NodeReportedState.DRAINING.name(), List.of(), List.of(), List.of(), Option.none());
+        return new ClusterSyncPong(sender, new MetricObservation(1L, System.nanoTime(), System.currentTimeMillis(), Map.of()),
+                                   1L, 0L, 0L, 0L, NodeReportedState.DRAINING.name(), List.of(), List.of(), List.of(), Option.none());
     }
 
     /// Log4j2 programmatic appender over the eviction loop's own logger, capturing INFO in arrival

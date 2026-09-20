@@ -24,6 +24,7 @@ import org.pragmatica.aether.worker.health.CommunityHealthMessage.Report;
 public final class CommunityHealthReporter {
     private record Direct(long incarnation,
                           long sequence,
+                          long membershipIncarnation,
                           boolean ready,
                           long receivedAt,
                           org.pragmatica.lang.io.TimeSpan initialAge) {}
@@ -63,6 +64,7 @@ public final class CommunityHealthReporter {
     /// lifecycle on each report tick with this same method; it does not send a network ping to itself.
     public synchronized org.pragmatica.lang.Unit recordPong(NodeId sender,
                                                             String lifecycleState,
+                                                            long membershipIncarnation,
                                                             org.pragmatica.cluster.metrics.MetricObservation observation) {
         long nowMillis = System.currentTimeMillis();
 
@@ -74,6 +76,7 @@ public final class CommunityHealthReporter {
                lifecycleState,
                observation.incarnation(),
                observation.sequence(),
+               membershipIncarnation,
                org.pragmatica.lang.io.TimeSpan.timeSpan(Math.max(0, nowMillis - observation.observedAtMs())).millis());
 
         return org.pragmatica.lang.Unit.unit();
@@ -84,8 +87,9 @@ public final class CommunityHealthReporter {
 
         record(self,
                lifecycleState,
-               incarnation,
+               0,
                sequence,
+               incarnation,
                org.pragmatica.lang.io.TimeSpan.timeSpan(0).nanos());
 
         return org.pragmatica.lang.Unit.unit();
@@ -95,13 +99,14 @@ public final class CommunityHealthReporter {
                         String lifecycleState,
                         long incarnation,
                         long sequence,
+                        long membershipIncarnation,
                         org.pragmatica.lang.io.TimeSpan initialAge) {
         var community = assignment.apply(self);
 
-        if (incarnation < 0 || sequence < 0 || community.isEmpty() || assignment.apply(sender)
-                                                                                .filter(value -> community.filter(value::equals)
-                                                                                                          .isPresent())
-                                                                                .isEmpty()) {
+        if (incarnation < 0 || sequence < 0 || membershipIncarnation < 0 || community.isEmpty() || assignment.apply(sender)
+                                                                                                             .filter(value -> community.filter(value::equals)
+                                                                                                                                       .isPresent())
+                                                                                                             .isEmpty()) {
             return;
         }
 
@@ -113,7 +118,12 @@ public final class CommunityHealthReporter {
         }
 
         direct.put(sender,
-                   new Direct(incarnation, sequence, "READY".equals(lifecycleState), clock.nanoTime(), initialAge));
+                   new Direct(incarnation,
+                              sequence,
+                              membershipIncarnation,
+                              "READY".equals(lifecycleState),
+                              clock.nanoTime(),
+                              initialAge));
     }
 
     public synchronized Option<Report> respond(NodeId transportSender, Request request) {
@@ -148,7 +158,7 @@ public final class CommunityHealthReporter {
                                      boolean alive = age >= 0 && age < freshness.nanos();
 
                                      return new MemberHealth(entry.getKey(),
-                                                             entry.getValue().incarnation(),
+                                                             entry.getValue().membershipIncarnation(),
                                                              alive,
                                                              alive && entry.getValue().ready(),
                                                              TimeSpan.timeSpan(Math.max(0, age)).nanos());

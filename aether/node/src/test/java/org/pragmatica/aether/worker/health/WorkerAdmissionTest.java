@@ -21,20 +21,22 @@ class WorkerAdmissionTest {
         var clock = new AtomicLong(1);
         var probed = new ArrayList<NodeId>();
         var admitted = new ArrayList<NodeId>();
-        var admission = WorkerAdmission.workerAdmission(Set.of(worker)::contains, probed::add, (node, _) -> admitted.add(node),
+        var membershipIncarnation = new AtomicLong();
+        var admission = WorkerAdmission.workerAdmission(Set.of(worker)::contains, probed::add, (node, incarnation) -> { admitted.add(node); membershipIncarnation.set(incarnation); },
             clock::get, TimeSpan.timeSpan(1).seconds(), 2);
         admission.request(unknown);
         admission.request(worker);
         admission.request(worker);
         assertThat(probed).containsExactly(worker);
         var observation = new MetricObservation(1, 1, System.currentTimeMillis(), Map.of());
-        assertThat(admission.recordPong(unknown, "SYNCING", observation)).isFalse();
-        assertThat(admission.recordPong(worker, "DRAINING", observation)).isFalse();
-        assertThat(admission.recordPong(worker, "SYNCING", observation)).isTrue();
+        assertThat(admission.recordPong(unknown, "SYNCING", 42L, observation)).isFalse();
+        assertThat(admission.recordPong(worker, "DRAINING", 42L, observation)).isFalse();
+        assertThat(admission.recordPong(worker, "SYNCING", 42L, observation)).isTrue();
         assertThat(admitted).containsExactly(worker);
+        assertThat(membershipIncarnation.get()).isEqualTo(42L);
         admission.request(worker);
-        assertThat(admission.recordPong(worker, "SYNCING", observation)).isFalse();
-        assertThat(admission.recordPong(worker, "SYNCING", new MetricObservation(1, 2, System.currentTimeMillis(), Map.of()))).isTrue();
+        assertThat(admission.recordPong(worker, "SYNCING", 42L, observation)).isFalse();
+        assertThat(admission.recordPong(worker, "SYNCING", 42L, new MetricObservation(1, 2, System.currentTimeMillis(), Map.of()))).isTrue();
     }
     @Test void silentFirstBatch_doesNotStarveLaterAdmittedWorkers() {
         var nodes = java.util.stream.IntStream.range(0, 129).mapToObj(value -> new NodeId("worker-" + value)).toList();
@@ -55,14 +57,14 @@ class WorkerAdmissionTest {
         var admission = WorkerAdmission.workerAdmission(_ -> true, probes::add, (_, _) -> {}, System::nanoTime, TimeSpan.timeSpan(1).seconds(), 1);
         var old = new MetricObservation(1, 1, System.currentTimeMillis() - MetricObservation.MAX_AGE_MS + 200, Map.of());
         admission.request(first);
-        assertThat(admission.recordPong(first, "SYNCING", old)).isTrue();
+        assertThat(admission.recordPong(first, "SYNCING", 42L, old)).isTrue();
         admission.request(next);
         assertThat(probes).containsExactly(first);
         org.awaitility.Awaitility.await().atMost(2, java.util.concurrent.TimeUnit.SECONDS)
             .until(() -> !MetricObservation.isTimestampFresh(old.observedAtMs(), System.currentTimeMillis()));
         admission.request(next);
         assertThat(probes).containsExactly(first, next);
-        assertThat(admission.recordPong(next, "SYNCING", old)).isFalse();
+        assertThat(admission.recordPong(next, "SYNCING", 42L, old)).isFalse();
     }
 
 }

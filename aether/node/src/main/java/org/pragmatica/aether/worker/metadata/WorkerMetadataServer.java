@@ -34,6 +34,18 @@ import org.pragmatica.serialization.SliceCodec;
 
 /// Shared core-side snapshot cache. KV monitor makes manifest capture atomic with committed batches.
 public final class WorkerMetadataServer {
+    /// Point-in-time resource occupancy, sampled under the same monitor as mutation.
+    public synchronized Map<String, Long> resourceMetrics() {
+        return Map.of("serverCachedBytes",
+                      cachedBytes,
+                      "serverCacheLimit",
+                      limits.cacheBytes(),
+                      "serverManifests",
+                      (long) manifests.size(),
+                      "serverManifestLimit",
+                      (long) limits.manifests());
+    }
+
     private final NodeId self;
     private final TimeSource clock = TimeSource.system();
     private final KVStore<AetherKey, AetherValue> store;

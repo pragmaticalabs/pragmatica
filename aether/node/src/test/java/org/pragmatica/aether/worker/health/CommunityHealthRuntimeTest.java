@@ -37,7 +37,7 @@ class CommunityHealthRuntimeTest {
         var runtime = new CommunityHealthRuntime(core, directory, index, coreReporter, lookup, () -> true,
             () -> "READY", () -> 1, (_, message) -> sent.add(message), evidence::add);
         assertThat(runtime.readyNodes(Set.of(core, worker))).containsExactly(core);
-        governorReporter.recordPong(worker, "READY", new MetricObservation(1, 1, System.currentTimeMillis(), Map.of()));
+        governorReporter.recordPong(worker, "READY", 1L, new MetricObservation(1, 1, System.currentTimeMillis(), Map.of()));
         governorReporter.recordSelf("READY", 1);
         runtime.poll();
         assertThat(sent).hasSize(1);

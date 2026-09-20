@@ -104,7 +104,8 @@ class WorkerRosterPruneBootTest {
         node.membershipFsm().onMemberDescriptor(NodeInfo.nodeInfo(WORKER,
             nodeAddress("localhost", freePort()).unwrap(), Map.of(NodeInfo.LABEL_ROLE, "worker")));
         assertThat(node.membershipFsm().isTrackedAndNotDead(WORKER)).isTrue();
-        node.metricsCollector().onClusterSyncPong(new ClusterSyncPong(WORKER, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of("cpu", 0.5)), 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
+        node.metricsCollector().onClusterSyncPong(new ClusterSyncPong(WORKER, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of("cpu", 0.5)),
+                                   0L, 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
 
         assertThat(node.metricsCollector().allMetrics())
             .as("control: the worker IS in the pong roster before the departure, or nothing below is examined")

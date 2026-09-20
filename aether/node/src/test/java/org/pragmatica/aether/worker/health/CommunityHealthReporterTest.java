@@ -24,11 +24,12 @@ class CommunityHealthReporterTest {
         var reporter = CommunityHealthReporter.communityHealthReporter(governor, _ -> Option.some(authority),
             node -> Option.option(assignments.get(node)), core::equals, clock::get, org.pragmatica.lang.io.TimeSpan.timeSpan(100).millis());
         var request = new Request(core, "c", authority.communityTerm(), "challenge", 1);
-        reporter.recordPong(new NodeId("other"), "READY", observation(1));
+        reporter.recordPong(new NodeId("other"), "READY", 42L, observation(1));
         assertThat(reporter.respond(core, request).unwrap().members()).isEmpty();
-        reporter.recordPong(worker, "READY", observation(2));
-        reporter.recordPong(worker, "DRAINING", observation(1));
+        reporter.recordPong(worker, "READY", 42L, observation(2));
+        reporter.recordPong(worker, "DRAINING", 42L, observation(1));
         assertThat(reporter.respond(core, request).unwrap().members().getFirst().ready()).isTrue();
+        assertThat(reporter.respond(core, request).unwrap().members().getFirst().incarnation()).isEqualTo(42L);
         clock.addAndGet(100_000_000);
         assertThat(reporter.respond(core, request).unwrap().members().getFirst().alive()).isFalse();
         assertThat(reporter.respond(worker, request).isEmpty()).isTrue();

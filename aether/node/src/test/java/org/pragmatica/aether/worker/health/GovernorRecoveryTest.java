@@ -44,8 +44,16 @@ class GovernorRecoveryTest {
                 return Promise.success(Option.some(authority.get()));
             }
         };
+        var leader = new java.util.concurrent.atomic.AtomicBoolean(false);
         var recovery = GovernorRecovery.governorRecovery(directory, reports, candidates, _ -> Option.some(authority.get()), grants,
-            () -> true, _ -> Option.some("host:9"), probes::add, clock::get, grace, TimeSpan.timeSpan(100).millis());
+            leader::get, _ -> Option.some("host:9"), probes::add, clock::get, grace, TimeSpan.timeSpan(100).millis());
+        recovery.poll();
+        clock.addAndGet(grace.nanos() * 10);
+        recovery.poll();
+        assertThat(probes).isEmpty();
+        assertThat(granted).isEmpty();
+        // Becoming leader after a long follower tenure starts a fresh bounded no-history grace.
+        leader.set(true);
         assertThat(candidates.request(old, "c")).isTrue();
         assertThat(candidates.recordPong(old, "READY", new MetricObservation(1, 1, System.currentTimeMillis(), Map.of()))).isTrue();
         recovery.poll();

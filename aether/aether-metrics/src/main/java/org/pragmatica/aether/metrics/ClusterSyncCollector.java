@@ -231,10 +231,12 @@ public interface ClusterSyncCollector {
     @Contract
     default void setNodeReportedStateSupplier(Supplier<NodeReportedState> supplier) {}
 
-    /// Membership v2 (§7.5.3) — wire the per-incarnation discriminator stamped onto
-    /// `ClusterSyncPong.incarnation`. Default no-op leaves the field at `0L`
-    /// (pre-migration). `AetherNode` wires this to the SWIM self-incarnation — the single
-    /// `(NodeId, incarnation)` authority shared with SWIM membership.
+    /// SWIM membership discriminator stamped independently onto `ClusterSyncPong.incarnation`.
+    default org.pragmatica.lang.Unit setMembershipIncarnationSupplier(LongSupplier supplier) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// Durable producer-process epoch, independent of membership incarnation.
     @Contract
     default void setIncarnationSupplier(java.util.function.LongSupplier supplier) {}
 
@@ -336,10 +338,10 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// Fresh governor readiness evaluated on every read, without caching or renewing evidence age.
     private final AtomicReference<Supplier<Map<NodeId, NodeReportedState>>> communityReadiness = new AtomicReference<>(Map::of);
 
-    /// Membership v2 (§7.5.3) — per-incarnation discriminator supplier. `buildPong()`
-    /// stamps the value onto `ClusterSyncPong.incarnation`. Default `0L` (pre-migration)
-    /// until `setIncarnationSupplier(...)` wires the SWIM self-incarnation (the single
-    /// `(NodeId, incarnation)` authority) in `AetherNode`.
+    /// Membership incarnation is the live SWIM counter, independent of the durable metrics epoch.
+    private final AtomicReference<LongSupplier> membershipIncarnationSupplier = new AtomicReference<>(() -> 0L);
+
+    /// Durable process epoch for raw producer sample replay ordering; fixed throughout one process.
     private final AtomicReference<java.util.function.LongSupplier> incarnationSupplier = new AtomicReference<>(() -> 0L);
 
     /// Membership v2 (B5a) — handler invoked when an inbound DRAIN ping is received. Default
@@ -842,6 +844,13 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     }
 
     @Override
+    public org.pragmatica.lang.Unit setMembershipIncarnationSupplier(LongSupplier supplier) {
+        membershipIncarnationSupplier.set(supplier);
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    @Override
     @Contract
     public void setIncarnationSupplier(java.util.function.LongSupplier supplier) {
         incarnationSupplier.set(supplier == null
@@ -933,6 +942,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
         return new ClusterSyncPong(self,
                                    observation,
+                                   membershipIncarnationSupplier.get().getAsLong(),
                                    observedRabiaTerm.get(),
                                    epoch.rabiaTerm(),
                                    epoch.localCounter(),

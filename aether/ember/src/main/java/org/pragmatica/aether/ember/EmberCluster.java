@@ -144,6 +144,7 @@ public final class EmberCluster {
     private static final double EMA_ALPHA = 0.2;
 
     private final int targetClusterSize;
+    private int additionalNodeSlots;
     private final AtomicInteger effectiveSize;
     private final Option<ConfigurationProvider> configProvider;
     private final ObservabilityConfig observability;
@@ -580,6 +581,18 @@ public final class EmberCluster {
                                 coreMax);
     }
 
+    /// Forge-only capacity for mixed-role acceptance fixtures; configure before starting nodes.
+    public Result<Unit> withAdditionalNodeSlots(int additionalSlots) {
+        if (additionalSlots < 0 || additionalSlots > 32 || !nodes.isEmpty() || !heldBackNodes.isEmpty()) {
+            return org.pragmatica.lang.utils.Causes.cause("Additional node slots must be 0..32 and configured before start")
+                                                   .result();
+        }
+
+        additionalNodeSlots = additionalSlots;
+
+        return Result.unitResult();
+    }
+
     public Promise<Unit> start() {
         return start(Set.of());
     }
@@ -604,7 +617,7 @@ public final class EmberCluster {
                  basePort + initialClusterSize - 1,
                  heldBackNodeIds.size(),
                  heldBackNodeIds);
-        int poolSize = 2 * targetClusterSize;
+        int poolSize = 2 * targetClusterSize + additionalNodeSlots;
 
         availableSlots.clear();
         for (int i = 0; i < poolSize; i++) {

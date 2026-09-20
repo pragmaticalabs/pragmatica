@@ -21,10 +21,8 @@ import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.node.ManageableNode;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
@@ -378,16 +376,10 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                    + ")");
     }
 
-    /// Promote a node from its current role to `targetRole` (CORE or WORKER) by
-    /// writing a fresh `ActivationDirectiveValue` under
-    /// `ActivationDirectiveKey(nodeId)` via consensus. Downstream consumers
-    /// (`ClusterDeploymentManager`) observe the `ActivationDirectivePutReceived`
-    /// notification and align the role-aware node machinery
-    /// (`ForwardingClusterNode` / `SwitchableClusterNode`) to the new role.
+    /// Roles are immutable. This retained endpoint only acknowledges an already matching role.
     Promise<PromoteNodeResponse> promoteNode(String nodeIdStr, PromoteNodeRequest request) {
-        return validatePromote(request).flatMap(role -> resolveAndPromote(nodeIdStr, role))
-                              .async()
-                              .flatMap(plan -> applyPromotion(nodeIdStr, plan));
+        return validatePromote(request).flatMap(role -> confirmImmutableRole(nodeIdStr, role))
+                              .async();
     }
 
     // RET-06: `request` is the deserialized request body (null when absent); the null check IS the
@@ -401,67 +393,46 @@ public final class NodeLifecycleRoutes implements RouteSource {
         var normalised = request.targetRole().trim().toUpperCase(Locale.ROOT);
 
         return switch (normalised) {
-            case ActivationDirectiveValue.CORE, ActivationDirectiveValue.WORKER -> Result.success(normalised);
+            case ActivationDirectiveValue.CORE, ActivationDirectiveValue.WORKER, "SPOT" -> Result.success(normalised);
             default -> PromoteError.UNSUPPORTED_TARGET_ROLE.result();
         };
     }
 
-    private Result<PromotePlan> resolveAndPromote(String nodeIdStr, String targetRole) {
-        return NodeId.nodeId(nodeIdStr).map(id -> new PromotePlan(id, readCurrentRole(id), targetRole));
+    private Result<PromoteNodeResponse> confirmImmutableRole(String nodeIdStr, String targetRole) {
+        return NodeId.nodeId(nodeIdStr)
+                     .flatMap(this::readCurrentRole)
+                     .flatMap(current -> matchingRoleResponse(nodeIdStr, current, targetRole));
     }
 
-    private String readCurrentRole(NodeId nodeId) {
-        return directiveRoleOverride(nodeId).or(ActivationDirectiveValue.CORE);
+    private Result<String> readCurrentRole(NodeId nodeId) {
+        return nodeSupplier.get()
+                           .membershipFsm()
+                           .memberDescriptor(nodeId)
+                           .map(MemberDescriptor::role)
+                           .filter(role -> !role.isBlank())
+                           .orElse(directiveRoleOverride(nodeId))
+                           .map(role -> role.toUpperCase(Locale.ROOT))
+                           .filter(role -> Set.of("CORE", "WORKER", "SPOT").contains(role))
+                           .toResult(HttpError.httpError(HttpStatus.NOT_FOUND, PromoteError.UNKNOWN_NODE_ROLE));
     }
 
-    @SuppressWarnings("unchecked")
-    private Promise<PromoteNodeResponse> applyPromotion(String nodeIdStr, PromotePlan plan) {
-        if (plan.previousRole().equals(plan.targetRole())) {
-            return Promise.success(noopPromotionResponse(nodeIdStr, plan));
+    private static Result<PromoteNodeResponse> matchingRoleResponse(String nodeId, String current, String requested) {
+        if (!current.equals(requested)) {
+            return HttpError.httpError(HttpStatus.CONFLICT, PromoteError.IMMUTABLE_ROLE).result();
         }
 
-        var key = ActivationDirectiveKey.activationDirectiveKey(plan.nodeId());
-        var value = new ActivationDirectiveValue(plan.targetRole());
-        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
-
-        return nodeSupplier.get()
-                           .<Object> apply(List.of(command))
-                           .map(_ -> successPromotionResponse(nodeIdStr, plan))
-                           .onSuccess(_ -> auditAndEmitRoleTransition(nodeIdStr, plan));
+        return Result.success(new PromoteNodeResponse(true,
+                                                      nodeId,
+                                                      current,
+                                                      requested,
+                                                      "Node already has immutable role " + current));
     }
-
-    private static PromoteNodeResponse noopPromotionResponse(String nodeIdStr, PromotePlan plan) {
-        return new PromoteNodeResponse(true,
-                                       nodeIdStr,
-                                       plan.previousRole(),
-                                       plan.targetRole(),
-                                       "Node already has role " + plan.targetRole());
-    }
-
-    private static PromoteNodeResponse successPromotionResponse(String nodeIdStr, PromotePlan plan) {
-        return new PromoteNodeResponse(true,
-                                       nodeIdStr,
-                                       plan.previousRole(),
-                                       plan.targetRole(),
-                                       "Promoted node from " + plan.previousRole() + " to " + plan.targetRole());
-    }
-
-    private void auditAndEmitRoleTransition(String nodeIdStr, PromotePlan plan) {
-        AuditLog.nodeLifecycleTransition(nodeIdStr,
-                                         "ROLE:" + plan.targetRole(),
-                                         true,
-                                         "Promoted from " + plan.previousRole() + " to " + plan.targetRole());
-        nodeSupplier.get()
-                    .route(OperationalEvent.NodeLifecycleChanged.nodeLifecycleChanged(nodeIdStr,
-                                                                                      "ROLE:" + plan.targetRole(),
-                                                                                      "api.promote"));
-    }
-
-    private record PromotePlan(NodeId nodeId, String previousRole, String targetRole) {}
 
     private enum PromoteError implements Cause {
         MISSING_TARGET_ROLE("targetRole field is required"),
-        UNSUPPORTED_TARGET_ROLE("targetRole must be one of CORE, WORKER");
+        UNSUPPORTED_TARGET_ROLE("targetRole must be one of CORE, WORKER, SPOT"),
+        UNKNOWN_NODE_ROLE("Node has no known immutable role"),
+        IMMUTABLE_ROLE("Node roles are immutable; provision a new node with the required role");
         private final String message;
         PromoteError(String message) {
             this.message = message;

@@ -57,6 +57,7 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
 
     record ClusterSyncPong(NodeId sender,
                            MetricObservation observation,
+                           long incarnation,
                            long observedRabiaTerm,
                            long observedEpochTerm,
                            long observedEpochCounter,
@@ -73,10 +74,6 @@ public sealed interface ClusterSyncMessage extends ProtocolMessage {
 
         public Map<String, Double> metrics() {
             return observation.values();
-        }
-
-        public long incarnation() {
-            return observation.incarnation();
         }
     }
 }

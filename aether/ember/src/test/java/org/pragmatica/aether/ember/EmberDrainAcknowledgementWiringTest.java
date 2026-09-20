@@ -183,7 +183,8 @@ class EmberDrainAcknowledgementWiringTest {
     }
 
     private static ClusterSyncPong drainingPong(NodeId sender) {
-        return new ClusterSyncPong(sender, new MetricObservation(1L, System.nanoTime(), System.currentTimeMillis(), Map.of()), 0L, 0L, 0L, NodeReportedState.DRAINING.name(), List.of(), List.of(), List.of(), Option.none());
+        return new ClusterSyncPong(sender, new MetricObservation(1L, System.nanoTime(), System.currentTimeMillis(), Map.of()),
+                                   1L, 0L, 0L, 0L, NodeReportedState.DRAINING.name(), List.of(), List.of(), List.of(), Option.none());
     }
 
     /// The first candidate base whose whole block (QUIC UDP + TCP cluster ports, management and app-HTTP
