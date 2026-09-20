@@ -125,7 +125,7 @@ public final class TopologyParser {
 
             return Option.some(buildTopology(props, artifact));
         } catch (Exception e) {
-            log.warn("Could not read topology from manifest {}: {}", manifestPath, e.toString());
+            log.warn("Could not read topology from manifest {} of {}: {}", manifestPath, artifact, e.toString());
 
             return Option.none();
         }
