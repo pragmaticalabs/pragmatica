@@ -62,7 +62,6 @@ class DefaultStreamPublisherForwardRetryTest {
                                                       Option.<Function<byte[], Object>> none(),
                                                       ConsistencyMode.EVENTUAL,
                                                       Option.none(),
-                                                      0,
                                                       Option.some(forwardClient),
                                                       Option.<Fn0<Option<NodeId>>> none(),
                                                       Option.some(ownerResolver),

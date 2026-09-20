@@ -207,8 +207,7 @@ class OwnerAuthorizedWritesTest {
                                                           Option.some(forwardClient),
                                                           SELF,
                                                           Option.<Fn0<Option<NodeId>>> none(),
-                                                          Option.some(ownerResolver),
-                                                          0)
+                                                          Option.some(ownerResolver))
                                    .publish("e0".getBytes())
                                    .await()
                                    .onFailureRun(Assertions::fail)
@@ -241,7 +240,7 @@ class OwnerAuthorizedWritesTest {
         void appPublisher_redirectsToCommittedOwner_ratherThanAnsweringNotEnoughReplicas() {
             var forwardClient = new RecordingForwardClient();
 
-            publisher(forwardClient, SELF, MIN_SYNC_TWO).publish("e0".getBytes())
+            publisher(forwardClient, SELF).publish("e0".getBytes())
                                                         .await()
                                                         .onFailure(cause -> Assertions.fail(cause.message()));
             assertThat(forwardClient.owners).containsExactly(OWNER);
@@ -275,8 +274,7 @@ class OwnerAuthorizedWritesTest {
                                                           Option.some(forwardClient),
                                                           SELF,
                                                           Option.<Fn0<Option<NodeId>>> none(),
-                                                          Option.some(ownerResolver),
-                                                          MIN_SYNC_TWO)
+                                                          Option.some(ownerResolver))
                                    .publish("e0".getBytes())
                                    .await()
                                    .onFailure(cause -> Assertions.fail(cause.message()))
@@ -308,7 +306,7 @@ class OwnerAuthorizedWritesTest {
         void committedOwner_stillAnswersNotEnoughReplicas_belowTheFloor() {
             partitionManager.ownerWriteAdmission((_, _) -> Option.none());
 
-            publisher(new RecordingForwardClient(), SELF, MIN_SYNC_TWO).publish("e0".getBytes())
+            publisher(new RecordingForwardClient(), SELF).publish("e0".getBytes())
                                                                        .await()
                                                                        .onSuccess(_ -> Assertions.fail("publish must fail below the replica floor"))
                                                                        .onFailure(cause -> assertThat(cause).isEqualTo(ReplicationError.General.NOT_ENOUGH_REPLICAS));
@@ -337,11 +335,8 @@ class OwnerAuthorizedWritesTest {
         }
     }
 
+    /// The min-sync barrier is read live from the stream's committed config (#1263), not passed in.
     private DefaultStreamPublisher<byte[]> publisher(StreamForwardClient forwardClient, NodeId hrwOwner) {
-        return publisher(forwardClient, hrwOwner, 0);
-    }
-
-    private DefaultStreamPublisher<byte[]> publisher(StreamForwardClient forwardClient, NodeId hrwOwner, int minSyncReplicas) {
         Function<Integer, Option<NodeId>> ownerResolver = _ -> Option.some(hrwOwner);
 
         return DefaultStreamPublisher.streamPublisher(partitionManager,
@@ -351,7 +346,6 @@ class OwnerAuthorizedWritesTest {
                                                       Option.<Function<byte[], Object>> none(),
                                                       ConsistencyMode.EVENTUAL,
                                                       Option.none(),
-                                                      minSyncReplicas,
                                                       Option.some(forwardClient),
                                                       Option.<Fn0<Option<NodeId>>> none(),
                                                       Option.some(ownerResolver),
