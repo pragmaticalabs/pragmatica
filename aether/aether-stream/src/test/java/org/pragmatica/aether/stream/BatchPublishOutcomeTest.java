@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.function.Function;
 
 import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -50,6 +51,9 @@ class BatchPublishOutcomeTest {
     private static final String STREAM = "batch-outcome-stream";
     private static final int PARTITIONS = 2;
     private static final Cause BARRIER_FAILED = Causes.cause("barrier refused on partition 1");
+    /// What the write router reports for a barrier that failed AFTER the append (#1236): the refusal wrapped as
+    /// outcome-unknown, which is exactly the per-event outcome #1342 carries.
+    private static final Cause BARRIER_UNKNOWN = PublishOutcomeUnknown.FACTORY.apply(BARRIER_FAILED);
     private static final Cause PROPOSAL_REFUSED = Causes.cause("proposal refused");
 
     private StreamPartitionManager partitionManager;
@@ -74,7 +78,7 @@ class BatchPublishOutcomeTest {
         var outcomes = eventualPublisher().publishBatch(List.of(keyFor(0), keyFor(1))).await().unwrap();
 
         assertThat(outcomes).containsExactly(new PublishOutcome.Published(0L),
-                                             new PublishOutcome.OutcomeUnknown(BARRIER_FAILED));
+                                             new PublishOutcome.OutcomeUnknown(BARRIER_UNKNOWN));
         assertThat(appended(0)).as("partition 0's event IS in the log").isEqualTo(1);
         assertThat(appended(1)).as("partition 1's event IS in the log too — the barrier failed AFTER the append")
                   .isEqualTo(1);
@@ -88,8 +92,8 @@ class BatchPublishOutcomeTest {
         var second = keyFor(1, first);
         var outcomes = eventualPublisher().publishBatch(List.of(first, second)).await().unwrap();
 
-        assertThat(outcomes).containsExactly(new PublishOutcome.OutcomeUnknown(BARRIER_FAILED),
-                                             new PublishOutcome.NotAttempted(StreamPublisherError.PrecedingEventFailed.precedingEventFailed(1, BARRIER_FAILED)));
+        assertThat(outcomes).containsExactly(new PublishOutcome.OutcomeUnknown(BARRIER_UNKNOWN),
+                                             new PublishOutcome.NotAttempted(StreamPublisherError.PrecedingEventFailed.precedingEventFailed(1, BARRIER_UNKNOWN)));
         assertThat(appended(1)).as("only the first event of the group reached the ring").isEqualTo(1);
     }
 
@@ -101,11 +105,11 @@ class BatchPublishOutcomeTest {
         var first = keyFor(1);
         var second = keyFor(1, first);
         var third = keyFor(1, first, second);
-        var skipped = new PublishOutcome.NotAttempted(StreamPublisherError.PrecedingEventFailed.precedingEventFailed(1, BARRIER_FAILED));
+        var skipped = new PublishOutcome.NotAttempted(StreamPublisherError.PrecedingEventFailed.precedingEventFailed(1, BARRIER_UNKNOWN));
 
         var outcomes = eventualPublisher().publishBatch(List.of(first, second, third)).await().unwrap();
 
-        assertThat(outcomes).containsExactly(new PublishOutcome.OutcomeUnknown(BARRIER_FAILED), skipped, skipped);
+        assertThat(outcomes).containsExactly(new PublishOutcome.OutcomeUnknown(BARRIER_UNKNOWN), skipped, skipped);
         assertThat(appended(1)).as("exactly one append on partition 1 — the third event must not be written").isEqualTo(1);
     }
 
@@ -117,7 +121,7 @@ class BatchPublishOutcomeTest {
         var p0second = keyFor(0, p0first);
         var outcomes = eventualPublisher().publishBatch(List.of(keyFor(1), p0first, p0second)).await().unwrap();
 
-        assertThat(outcomes).containsExactly(new PublishOutcome.OutcomeUnknown(BARRIER_FAILED),
+        assertThat(outcomes).containsExactly(new PublishOutcome.OutcomeUnknown(BARRIER_UNKNOWN),
                                              new PublishOutcome.Published(0L),
                                              new PublishOutcome.Published(1L));
         assertThat(appended(0)).isEqualTo(2);
