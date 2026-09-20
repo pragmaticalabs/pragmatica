@@ -12,8 +12,11 @@
   `StreamPartitionManager.unacknowledgedEvictionsSinceBoot()`, WARNed — and every pending
   `awaitReplication` for a dropped offset fails at once with the new `StreamError.UnacknowledgedEvicted`,
   which every writer passes through as a definite failure rather than wrapping it as
-  `PublishOutcomeUnknown`. On a replica the visible position is its own durable prefix, so the one clamp
-  serves both arms. A read from a dropped offset is refused with `CursorExpired`.
+  `PublishOutcomeUnknown`. The clamp belongs to the OWNER's write path (`OffHeapRingBuffer.SealBound.VISIBLE`);
+  a replica's `appendRecovered` keeps sealing every evictee (`SealBound.APPENDED`) — what a replica holds is
+  already in the owner's log, and dropping it there would lose an acknowledged event from the replica's ring
+  and tier at once (the #1234 contract, `StreamPartitionManagerWalTruncateTest.appendRecovered_zeroCap_…`,
+  stays pinned). A read from a dropped offset is refused with `CursorExpired`.
   [verified: `aether/aether-stream/src/test/java/org/pragmatica/aether/stream/OffHeapRingBufferUnacknowledgedEvictionTest.java`,
   `StreamPartitionManagerUnacknowledgedEvictionTest.java` (the replica-set-change tiered read, the
   prompt await failure), `HonestPublishOutcomeTest$UnacknowledgedEvictionBarrier` (all four writers)]

@@ -8,6 +8,7 @@ package org.pragmatica.aether.stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.stream.OffHeapRingBuffer.SealBound;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -17,6 +18,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.stream.OffHeapRingBuffer.SealBound.APPENDED;
+import static org.pragmatica.aether.stream.OffHeapRingBuffer.SealBound.VISIBLE;
 import static org.pragmatica.aether.stream.OffHeapRingBuffer.offHeapRingBuffer;
 
 /// #1352: DROP_OLDEST hands the eviction listener (the segment sealer) only evictees at or below the VISIBLE
@@ -26,7 +29,9 @@ import static org.pragmatica.aether.stream.OffHeapRingBuffer.offHeapRingBuffer;
 ///
 /// The ring is driven the way the partition manager drives it: [OffHeapRingBuffer#appendOrdered] (no
 /// visibility of its own) followed by `markDurable` / `advanceVisible` for whatever the caller decides is
-/// visible — the owner's min-sync prefix, or a replica's own durable prefix.
+/// visible. The clamp is a property of the write path ([SealBound]): the owner's append seals only
+/// acknowledged evictees; a replica's append seals every evictee, because what a replica holds is already in
+/// the owner's log and its own fsync lag says nothing about that.
 class OffHeapRingBufferUnacknowledgedEvictionTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
@@ -85,26 +90,36 @@ class OffHeapRingBufferUnacknowledgedEvictionTest {
         assertThat(ring.lastSealedOffset()).as("the ring's sealed high-water follows the sealed part only").isEqualTo(2L);
     }
 
-    /// The replica arm. A replica advances visible = its own durable prefix after each WAL fsync
-    /// (`StreamPartitionManager.replicaDurable`), so the same clamp seals what the replica has made durable
-    /// and drops what it has not: visible never exceeds durable on any ring, and here the two coincide.
+    /// The replica arm. A replica advances visible = its own durable prefix only after each WAL fsync
+    /// (`StreamPartitionManager.replicaDurable`), so a fast replication stream evicts before the fsync lands.
+    /// Everything a replica holds is already in the owner's log, so its append seals every evictee and drops
+    /// none — the #1234 contract (`StreamPartitionManagerWalTruncateTest.appendRecovered_zeroCap_…`) unchanged.
     @Test
-    void replicaShape_sealsBelowItsOwnDurablePrefix_dropsAbove() {
+    void replicaAppend_sealsEveryEvictee_evenBelowItsOwnDurablePrefix() {
         ring = ring(2);
-        appendUnacknowledged(1);
-        ring.markDurable(0);
-        ring.advanceVisible(0);
 
-        appendUnacknowledged(2);
+        appendUnacknowledged(APPENDED, 4);
 
-        assertThat(sealed).as("offset 0 was durable on this replica, so it is sealed").containsExactly(0L);
-        assertThat(ring.tailOffset()).isEqualTo(1L);
-
-        appendUnacknowledged(1);
-
-        assertThat(sealed).as("offset 1 was not yet durable here, so it is not sealed").containsExactly(0L);
-        assertThat(ranges(dropped)).containsExactly("[1, 1]");
+        assertThat(ring.visibleOffset()).as("nothing is durable here yet").isEqualTo(-1L);
+        assertThat(sealed).as("both evictees were sealed").containsExactly(0L, 1L);
+        assertThat(dropped).isEmpty();
         assertThat(ring.tailOffset()).isEqualTo(2L);
+    }
+
+    /// The same ring written by both paths in turn: an owner append clamps, a replica append does not. The
+    /// bound belongs to the append, not to the ring.
+    @Test
+    void sealBound_isDecidedPerAppend() {
+        ring = ring(2);
+        appendUnacknowledged(VISIBLE, 3);
+
+        assertThat(ranges(dropped)).as("the owner append dropped offset 0").containsExactly("[0, 0]");
+        assertThat(sealed).isEmpty();
+
+        appendUnacknowledged(APPENDED, 1);
+
+        assertThat(sealed).as("the replica append sealed offset 1").containsExactly(1L);
+        assertThat(ranges(dropped)).containsExactly("[0, 0]");
     }
 
     /// An acknowledged prefix that is also fully evicted stays entirely sealed — the clamp changes nothing
@@ -133,7 +148,7 @@ class OffHeapRingBufferUnacknowledgedEvictionTest {
         appendUnacknowledged(2);
         ring.markDurable(0);
         ring.advanceVisible(0);
-        var third = ring.appendOrdered("e2".getBytes(UTF_8), 1L, Result::success);
+        var third = ring.appendOrdered("e2".getBytes(UTF_8), 1L, VISIBLE, Result::success);
 
         assertThat(third.isFailure()).as("the append is refused with the listener's cause").isTrue();
         assertThat(ring.tailOffset()).as("nothing was reclaimed").isEqualTo(0L);
@@ -157,9 +172,14 @@ class OffHeapRingBufferUnacknowledgedEvictionTest {
                 .or(() -> { throw new AssertionError("ring"); });
     }
 
+    /// The owner path's shape: appended, not yet acknowledged.
     private void appendUnacknowledged(int count) {
+        appendUnacknowledged(VISIBLE, count);
+    }
+
+    private void appendUnacknowledged(SealBound sealBound, int count) {
         for (var i = 0; i < count; i++) {
-            ring.appendOrdered(("e" + ring.headOffset()).getBytes(UTF_8), 1L, Result::success)
+            ring.appendOrdered(("e" + ring.headOffset()).getBytes(UTF_8), 1L, sealBound, Result::success)
                 .onFailure(cause -> { throw new AssertionError(cause.message()); });
         }
     }

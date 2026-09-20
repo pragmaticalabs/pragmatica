@@ -1499,6 +1499,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                  timestamp,
                                  ownerEpoch,
                                  admission,
+                                 OffHeapRingBuffer.SealBound.VISIBLE,
                                  offset -> logAndReplicate(streamName, partition, offset, payload, timestamp, ownerEpoch));
     }
 
@@ -1676,6 +1677,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                  timestamp,
                                  ownerEpoch,
                                  RECEIPT_NEEDS_NO_ADMISSION,
+                                 OffHeapRingBuffer.SealBound.APPENDED,
                                  offset -> success(logReplicated(streamName, partition, offset, payload, timestamp)));
     }
 
@@ -1797,7 +1799,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Append into the partition's ordered section: `inOrder` runs with the assigned offset before any
     /// other append on this partition is assigned one (see [OffHeapRingBuffer#appendOrdered]). The epoch
     /// fence and `admission` are checked first, in that order (#1230: a deposed writer learns it is deposed,
-    /// not merely redirected), and before the section is entered.
+    /// not merely redirected), and before the section is entered. `sealBound` says which evictees this
+    /// append may seal (#1352): the owner path seals only acknowledged ones, the replica path all of them.
     private <T> Result<T> appendToPartition(StreamEntry entry,
                                             String streamName,
                                             int partition,
@@ -1805,11 +1808,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                                             long timestamp,
                                             Epoch ownerEpoch,
                                             Result<Unit> admission,
+                                            OffHeapRingBuffer.SealBound sealBound,
                                             Fn1<Result<T>, Long> inOrder) {
         return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> admission)
                              .flatMap(_ -> checkEventSize(entry, payload))
                              .flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
-                             .flatMap(buffer -> buffer.appendOrdered(payload, timestamp, inOrder))
+                             .flatMap(buffer -> buffer.appendOrdered(payload, timestamp, sealBound, inOrder))
                              .onSuccess(_ -> entry.updateActivity());
     }
 

@@ -723,7 +723,7 @@ class OffHeapRingBufferTest {
             var announced = new CopyOnWriteArrayList<Long>();
 
             buffer.addAppendListener(announced::add);
-            buffer.appendOrdered("e0".getBytes(), 1L, Result::success);
+            buffer.appendOrdered("e0".getBytes(), 1L, OffHeapRingBuffer.SealBound.VISIBLE, Result::success);
 
             assertThat(buffer.read(0L, 10).or(List.of())).as("appended is not visible").isEmpty();
             assertThat(buffer.readSlice(0L).isFailure()).as("slice read is bounded too").isTrue();
@@ -738,8 +738,8 @@ class OffHeapRingBufferTest {
 
         @Test
         void readAppended_servesEventsBeyondVisible() {
-            buffer.appendOrdered("e0".getBytes(), 1L, Result::success);
-            buffer.appendOrdered("e1".getBytes(), 1L, Result::success);
+            buffer.appendOrdered("e0".getBytes(), 1L, OffHeapRingBuffer.SealBound.VISIBLE, Result::success);
+            buffer.appendOrdered("e1".getBytes(), 1L, OffHeapRingBuffer.SealBound.VISIBLE, Result::success);
             buffer.advanceVisible(0L);
 
             assertThat(buffer.read(0L, 10).or(List.of())).hasSize(1);
@@ -751,8 +751,8 @@ class OffHeapRingBufferTest {
             var announced = new CopyOnWriteArrayList<Long>();
 
             buffer.addAppendListener(announced::add);
-            buffer.appendOrdered("e0".getBytes(), 1L, Result::success);
-            buffer.appendOrdered("e1".getBytes(), 1L, Result::success);
+            buffer.appendOrdered("e0".getBytes(), 1L, OffHeapRingBuffer.SealBound.VISIBLE, Result::success);
+            buffer.appendOrdered("e1".getBytes(), 1L, OffHeapRingBuffer.SealBound.VISIBLE, Result::success);
             buffer.advanceVisible(1L);
             buffer.advanceVisible(0L);
             buffer.advanceVisible(1L);
@@ -763,7 +763,7 @@ class OffHeapRingBufferTest {
 
         @Test
         void markDurable_isMonotonic_andDoesNotExpose() {
-            buffer.appendOrdered("e0".getBytes(), 1L, Result::success);
+            buffer.appendOrdered("e0".getBytes(), 1L, OffHeapRingBuffer.SealBound.VISIBLE, Result::success);
             buffer.markDurable(0L);
             buffer.markDurable(-1L);
 
