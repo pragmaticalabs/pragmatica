@@ -5,6 +5,7 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionCursor;
+import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
@@ -18,9 +19,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class StreamRoutesConsumerPartitionTest {
     @Test
     void toConsumerPartition_carriesEachNonDeliveringState_fromItsOwnCursorField() {
-        var deadLetterHeld = StreamRoutes.toConsumerPartition(new PartitionCursor(3, 42L, false, Option.none(), true, false, false));
-        var retryHeld = StreamRoutes.toConsumerPartition(new PartitionCursor(3, 42L, false, Option.none(), false, true, false));
-        var awaitingFetch = StreamRoutes.toConsumerPartition(new PartitionCursor(3, 0L, false, Option.none(), false, false, true));
+        var deadLetterHeld = StreamRoutes.toConsumerPartition(new PartitionCursor(3, 42L, false, Option.none(), true, false, false, RewindEpoch.NONE));
+        var retryHeld = StreamRoutes.toConsumerPartition(new PartitionCursor(3, 42L, false, Option.none(), false, true, false, RewindEpoch.NONE));
+        var awaitingFetch = StreamRoutes.toConsumerPartition(new PartitionCursor(3, 0L, false, Option.none(), false, false, true, RewindEpoch.NONE));
 
         assertThat(deadLetterHeld.deadLetterInFlight()).isTrue();
         assertThat(deadLetterHeld.retryInFlight()).isFalse();

@@ -16,7 +16,9 @@ import java.util.function.LongConsumer;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
+import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
+import org.pragmatica.aether.stream.segment.ConsumerCursorStore.Cursor;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.CommitOutcome;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -202,7 +204,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                         state.lastCursorCommitFailure(),
                                         state.isDeadLetterInFlight(),
                                         state.isRetryInFlight(),
-                                        state.isAwaitingCursorFetch());
+                                        state.isAwaitingCursorFetch(),
+                                        state.epoch());
     }
 
     @Override
@@ -458,15 +461,15 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     @Contract
     private void fetchCursorAndStart(ConsumerCursorStore store, ConsumerKey key, ConsumerState state, int attempt) {
         state.markAwaitingCursorFetch();
-        lifted(() -> store.fetch(key.groupId(), key.streamName(), key.partition())).onResult(result -> applyCursorAndStart(result,
-                                                                                                                           store,
-                                                                                                                           key,
-                                                                                                                           state,
-                                                                                                                           attempt));
+        lifted(() -> store.fetchCursor(key.groupId(), key.streamName(), key.partition())).onResult(result -> applyCursorAndStart(result,
+                                                                                                                                 store,
+                                                                                                                                 key,
+                                                                                                                                 state,
+                                                                                                                                 attempt));
     }
 
     @Contract
-    private void applyCursorAndStart(Result<Option<Long>> result,
+    private void applyCursorAndStart(Result<Option<Cursor>> result,
                                      ConsumerCursorStore store,
                                      ConsumerKey key,
                                      ConsumerState state,
@@ -475,10 +478,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
               .onFailure(cause -> retryCursorFetch(store, key, state, attempt, cause));
     }
 
+    /// #1333: the consumer runs — and commits — under the epoch its cursor was fetched with, so a report
+    /// derived from its commits is stamped with the rewind that positioned it, never with whatever epoch
+    /// is current when the commit happens to resolve.
     @Contract
-    private void startFromCursor(ConsumerKey key, ConsumerState state, Option<Long> cursor) {
+    private void startFromCursor(ConsumerKey key, ConsumerState state, Option<Cursor> cursor) {
         state.clearAwaitingCursorFetch();
-        cursor.onPresent(state::advanceCursor);
+        cursor.onPresent(state::resumeAt);
         startConsumer(key, state);
     }
 
@@ -683,7 +689,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         var commit = predecessor.fold(_ -> lifted(() -> store.commit(key.groupId(),
                                                                      key.streamName(),
                                                                      key.partition(),
-                                                                     state.cursor())));
+                                                                     state.cursor(),
+                                                                     state.epoch())));
         var tracked = new TrackedCommit(key, state, commit, new AtomicBoolean(false));
 
         inFlightCommits.add(tracked);
@@ -1241,6 +1248,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         private volatile OffHeapRingBuffer pushBufferRef;
         /// #1239: the latest periodic commit, so a detach flush can chain behind it.
         private volatile Promise<CommitOutcome> periodicCommitRef = NO_PREDECESSOR;
+        /// #1333: the rewind epoch the cursor was fetched under; every commit of this consumer carries it.
+        private volatile RewindEpoch epoch = RewindEpoch.NONE;
         private final AtomicLong currentPollMs = new AtomicLong(MIN_POLL_MS);
         private final AtomicLong lastCheckpointTime = new AtomicLong(System.currentTimeMillis());
         private final AtomicLong lastPollTime = new AtomicLong(System.currentTimeMillis());
@@ -1296,6 +1305,19 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         @Contract
         void advanceCursor(long offset) {
             cursor.accumulateAndGet(offset, Math::max);
+        }
+
+        /// Position this consumer at a fetched cursor, epoch included. Runs once, before delivery
+        /// starts ([ConsumerRuntimeState#startFromCursor]), so the monotonic advance is not bypassed
+        /// by anything that could have moved the cursor first.
+        @Contract
+        void resumeAt(Cursor fetched) {
+            epoch = fetched.epoch();
+            advanceCursor(fetched.offset());
+        }
+
+        RewindEpoch epoch() {
+            return epoch;
         }
 
         @Contract

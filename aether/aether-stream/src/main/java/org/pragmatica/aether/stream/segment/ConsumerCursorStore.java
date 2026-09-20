@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.segment;
 
+import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -19,9 +20,58 @@ import org.pragmatica.lang.Promise;
 ///
 /// `fetch` returning [Option#empty] means "no cursor recorded", which callers read as
 /// create-from-earliest (offset 0), NOT as "start at the head".
+///
+/// #1333: a cursor carries the [RewindEpoch] it was committed under. The epoch-aware pair —
+/// [#commit(String, String, int, long, RewindEpoch)] and [#fetchCursor] — is what the consumer runtime
+/// calls; the plain pair stays as the contract of a store with no rewind support (a test double, an
+/// epoch-less backing), for which the defaults drop the epoch on commit and report [RewindEpoch#NONE]
+/// on fetch. A store that persists the epoch overrides the epoch-aware pair and derives the plain one.
 public interface ConsumerCursorStore {
     Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset);
     Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition);
+
+    /// Commit `offset` under `epoch`. The default discards the epoch — correct only for a store that
+    /// cannot be rewound.
+    default Promise<CommitOutcome> commit(String consumerGroup,
+                                          String streamName,
+                                          int partition,
+                                          long offset,
+                                          RewindEpoch epoch) {
+        return commit(consumerGroup, streamName, partition, offset);
+    }
+
+    /// The cursor to resume from, with the epoch the resumed consumer must run — and commit — under.
+    default Promise<Option<Cursor>> fetchCursor(String consumerGroup, String streamName, int partition) {
+        return fetch(consumerGroup, streamName, partition).map(offset -> offset.map(Cursor::unrewound));
+    }
+
+    /// A committed cursor and its epoch. Ordered lexicographically `(epoch, offset)`: a rewind's
+    /// `(epoch', fromOffset)` outranks every pre-rewind `(epoch, high)` however high, which is what
+    /// lets a resume pick the rewound position over a stale local one.
+    record Cursor(long offset, RewindEpoch epoch) implements Comparable<Cursor> {
+        public static Cursor cursor(long offset, RewindEpoch epoch) {
+            return new Cursor(offset, epoch);
+        }
+
+        public static Cursor unrewound(long offset) {
+            return new Cursor(offset, RewindEpoch.NONE);
+        }
+
+        @Override
+        public int compareTo(Cursor other) {
+            var byEpoch = epoch.compareTo(other.epoch);
+
+            return byEpoch != 0
+                   ? byEpoch
+                   : Long.compare(offset, other.offset);
+        }
+
+        public static Cursor later(Cursor first, Cursor second) {
+            return first.compareTo(second) >= 0
+                   ? first
+                   : second;
+        }
+    }
 
     /// #1239: what a SUCCESSFUL `commit(...)` actually persisted, carried on that commit's own promise.
     /// A store composed of stages (the node's cluster-aware store chains a consensus checkpoint after the

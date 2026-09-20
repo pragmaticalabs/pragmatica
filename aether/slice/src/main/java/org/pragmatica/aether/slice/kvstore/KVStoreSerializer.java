@@ -1404,7 +1404,7 @@ public final class KVStoreSerializer {
     }
 
     private static String serializeStreamCursorCheckpoint(StreamCursorCheckpointValue v) {
-        return v.committedOffset() + PIPE + v.commitTimestamp();
+        return v.committedOffset() + PIPE + v.commitTimestamp() + PIPE + v.rewindGeneration() + PIPE + v.rewindSequence();
     }
 
     private static String serializeStreamRegistration(StreamRegistrationValue v) {
@@ -1703,21 +1703,24 @@ public final class KVStoreSerializer {
                      .map(PartitionAssignment::new);
     }
 
-    /// Mirror of [#serializeStreamCursorCheckpoint]. Wire form (2 fields, pipe-delimited):
-    /// `committedOffset|commitTimestamp`. Consensus-visible consumer checkpoints (#488):
-    /// a declarative consumer resumes from the cluster cursor when a partition's owner changes, so
-    /// the entry MUST survive a snapshot round-trip.
+    /// Mirror of [#serializeStreamCursorCheckpoint]. Wire form (4 fields, pipe-delimited):
+    /// `committedOffset|commitTimestamp|rewindGeneration|rewindSequence`. Consensus-visible consumer
+    /// checkpoints (#488): a declarative consumer resumes from the cluster cursor when a partition's
+    /// owner changes, so the entry MUST survive a snapshot round-trip — including its rewind epoch
+    /// (#1333), which is what fences a zombie's post-restore checkpoint.
     private static Result<Map.Entry<AetherKey, AetherValue>> parseStreamCursorCheckpointEntry(String identity,
                                                                                               String raw) {
         var parts = raw.split("\\|", -1);
 
-        if (parts.length != 2) {
-            return parseFailure("stream-cursor value requires 2 fields, got " + parts.length);
+        if (parts.length != 4) {
+            return parseFailure("stream-cursor value requires 4 fields, got " + parts.length);
         }
 
         return StreamCursorCheckpointKey.streamCursorCheckpointKey("stream-cursor/" + identity).map(key -> entry(key,
                                                                                                                  new StreamCursorCheckpointValue(Long.parseLong(parts[0]),
-                                                                                                                                                 Long.parseLong(parts[1]))));
+                                                                                                                                                 Long.parseLong(parts[1]),
+                                                                                                                                                 Long.parseLong(parts[2]),
+                                                                                                                                                 Long.parseLong(parts[3]))));
     }
 
     /// Mirror of [#serializeStreamRegistration]. Declarative stream-consumer registrations have been

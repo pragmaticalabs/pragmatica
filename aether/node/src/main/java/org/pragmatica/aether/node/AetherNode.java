@@ -4178,12 +4178,13 @@ public interface AetherNode extends ManageableNode {
         //
         // No role-change callback is available (onBecameReplica / onReconcilePassComplete are
         // single-consumer seams already bound above), hence the poll.
+        Fn1<Option<AetherValue.StreamCursorCheckpointValue>, AetherKey.StreamCursorCheckpointKey> committedCursorReader = cursorKey -> kvStore.getTyped(cursorKey,
+                                                                                                                                                       AetherValue.StreamCursorCheckpointValue.class);
+        Fn1<Promise<Unit>, KVCommand<AetherKey>> cursorCommandWriter = command -> clusterNode.apply(List.of(command))
+                                                                                             .mapToUnit();
         var streamClusterCursorStore = ClusterCursorStore.clusterCursorStore(streamCursorStore,
-                                                                             cursorKey -> kvStore.getTyped(cursorKey,
-                                                                                                           AetherValue.StreamCursorCheckpointValue.class)
-                                                                                                 .map(AetherValue.StreamCursorCheckpointValue::committedOffset),
-                                                                             command -> clusterNode.apply(List.of(command))
-                                                                                                   .mapToUnit());
+                                                                             committedCursorReader,
+                                                                             cursorCommandWriter);
         // #386 durable pub-sub: dead letters for `topic:*` streams are durable — re-enveloped
         // group-attributed and appended to the topic's `.dlq` stream through the same min-sync
         // barrier as the source (publisher memoized per DLQ stream, full owner-forward routing so a
@@ -4229,11 +4230,18 @@ public interface AetherNode extends ManageableNode {
                                                                                 config.self(),
                                                                                 TopicGroupDeclarationSource.topicGroupDeclarationSource(topicSubscriptionRegistry,
                                                                                                                                         streamName -> streamConsumerOwnership.partitionCount(streamName)
-                                                                                                                                                                             .isPresent()));
+                                                                                                                                                                             .isPresent()),
+                                                                                (streamName, partition, group) -> committedCursorReader.apply(AetherKey.StreamCursorCheckpointKey.streamCursorCheckpointKey(streamName,
+                                                                                                                                                                                                              partition,
+                                                                                                                                                                                                              group))
+                                                                                                                                       .map(AetherValue.StreamCursorCheckpointValue::rewindEpoch));
         // #499: the handle is retained in `periodicTasks`, which stop() cancels wholesale. A declarative
         // consumer that outlived its node would deliver into a torn-down slice.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamConsumerManager::reconcile,
                                                                       STREAM_CONSUMER_RECONCILE_INTERVAL));
+        // #1333: a committed checkpoint carrying a newer rewind epoch than the held consumer's restarts
+        // that consumer on the next pass, now rather than on the 5s tick. The manager filters the key type.
+        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, streamConsumerManager::onCheckpointPut));
         var streamingCoordinator = StreamingCoordinator.streamingCoordinator(streamFailoverHandler,
                                                                              streamRetentionEnforcer,
                                                                              streamPartitionManager,

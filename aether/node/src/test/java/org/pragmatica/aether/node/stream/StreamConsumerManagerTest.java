@@ -43,6 +43,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -1243,7 +1244,8 @@ class StreamConsumerManagerTest {
                                                                        Option.none(),
                                                                        deadLetterHold,
                                                                        retryHold,
-                                                                       awaitingCursorFetch))
+                                                                       awaitingCursorFetch,
+                                                                       RewindEpoch.NONE))
                                 .toList();
         }
 
@@ -1512,6 +1514,7 @@ class StreamConsumerManagerTest {
                                                    TopicGroupDeclarationSource.topicGroupDeclarationSource(topicRegistry,
                                                                                                            name -> ownership.partitionCount(name)
                                                                                                                             .isPresent()),
+                                                   StreamConsumerManager.CommittedEpochSource.none(),
                                                    org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis()).reconcile();
             var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
             var envelope = new org.pragmatica.aether.stream.topic.TopicEventEnvelope("msg-1",
@@ -1554,6 +1557,7 @@ class StreamConsumerManagerTest {
                                                    placement,
                                                    SELF,
                                                    TopicGroupDeclarationSource.none(),
+                                                   StreamConsumerManager.CommittedEpochSource.none(),
                                                    org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis()).reconcile();
             var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
             var settled = new java.util.concurrent.CountDownLatch(1);

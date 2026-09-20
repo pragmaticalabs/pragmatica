@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.state.kvstore.EpochBearing;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
@@ -1417,9 +1418,33 @@ public sealed interface AetherValue {
         }
     }
 
-    record StreamCursorCheckpointValue(long committedOffset, long commitTimestamp) implements AetherValue {
+    /// Consensus-visible consumer cursor (#488), FENCED on the group's rewind epoch (#1333).
+    ///
+    /// `rewindGeneration`/`rewindSequence` are the [RewindEpoch] this checkpoint was committed under —
+    /// `0/0` for a group never rewound. A projection rebuild rewinds the group by putting
+    /// `(fromOffset, epoch')` here; through [EpochBearing] the KV applier then refuses any later put
+    /// stamped with a STRICTLY older epoch, so a zombie consumer's pre-rewind checkpoint cannot move the
+    /// cursor forward again. Same-epoch puts are accepted, which is every ordinary checkpoint. The two
+    /// longs are carried flat rather than as a nested record so the value needs no new codec pin.
+    record StreamCursorCheckpointValue(long committedOffset,
+                                       long commitTimestamp,
+                                       long rewindGeneration,
+                                       long rewindSequence) implements AetherValue, EpochBearing<RewindEpoch> {
         public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset) {
-            return new StreamCursorCheckpointValue(committedOffset, System.currentTimeMillis());
+            return streamCursorCheckpointValue(committedOffset, RewindEpoch.NONE);
+        }
+
+        public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset, RewindEpoch epoch) {
+            return new StreamCursorCheckpointValue(committedOffset, System.currentTimeMillis(), epoch.generation(), epoch.rewind());
+        }
+
+        public RewindEpoch rewindEpoch() {
+            return RewindEpoch.rewindEpoch(rewindGeneration, rewindSequence);
+        }
+
+        @Override
+        public RewindEpoch fenceEpoch() {
+            return rewindEpoch();
         }
     }
 

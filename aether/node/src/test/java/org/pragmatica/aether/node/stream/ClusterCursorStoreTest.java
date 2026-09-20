@@ -115,7 +115,7 @@ class ClusterCursorStoreTest {
         @Test
         void fetch_composesLocalAndClusterCursors() {
             var store = ClusterCursorStore.clusterCursorStore(fixedLocal(Option.some(10L)),
-                                                              _ -> Option.some(70L),
+                                                              _ -> Option.some(StreamCursorCheckpointValue.streamCursorCheckpointValue(70L)),
                                                               _ -> Promise.unitPromise());
 
             store.fetch(GROUP, STREAM, PARTITION)
