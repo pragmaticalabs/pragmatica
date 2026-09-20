@@ -1039,7 +1039,8 @@ class StreamConsumerManagerTest {
                                                                ownership,
                                                                placement,
                                                                SELF,
-                                                               topicGroups);
+                                                               topicGroups,
+                                                               authority(true));
         }
     }
 

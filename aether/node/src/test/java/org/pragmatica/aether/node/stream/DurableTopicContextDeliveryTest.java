@@ -6,6 +6,7 @@ package org.pragmatica.aether.node.stream;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -22,7 +23,10 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.topic.ContextualEvent;
@@ -40,6 +44,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -209,8 +214,39 @@ class DurableTopicContextDeliveryTest {
                                                     new SelfOwnsEverything(),
                                                     placement,
                                                     SELF,
-                                                    TopicGroupDeclarationSource.topicGroupDeclarationSource(topics, _ -> true))
+                                                    TopicGroupDeclarationSource.topicGroupDeclarationSource(topics, _ -> true),
+                                                    leaderAuthority())
                              .reconcile();
+    }
+
+    /// #1271: attaching needs a committed assignment for SELF. A leader authority over an in-memory
+    /// committed map commits one on the first pass; the applier records the put the writer proposes.
+    private static StreamConsumerManager.AssignmentAuthority leaderAuthority() {
+        Map<ConsumerAssignmentKey, ConsumerAssignmentValue> committedAssignments = new ConcurrentHashMap<>();
+        ConsumerAssignmentWriter.CommittedAssignments committed = (stream, partition, group) -> Option.option(committedAssignments.get(ConsumerAssignmentKey.consumerAssignmentKey(stream,
+                                                                                                                                                                           partition,
+                                                                                                                                                                           group)));
+
+        return StreamConsumerManager.AssignmentAuthority.assignmentAuthority(committed,
+                                                                             ConsumerAssignmentWriter.consumerAssignmentWriter(() -> true,
+                                                                                                                               () -> 1L,
+                                                                                                                               HlcClock.hlcClock(SELF),
+                                                                                                                               committed),
+                                                                             commands -> applyAssignments(committedAssignments, commands));
+    }
+
+    private static Promise<Unit> applyAssignments(Map<ConsumerAssignmentKey, ConsumerAssignmentValue> committedAssignments,
+                                                  List<KVCommand<AetherKey>> commands) {
+        commands.forEach(command -> applyAssignment(committedAssignments, command));
+
+        return Promise.unitPromise();
+    }
+
+    private static void applyAssignment(Map<ConsumerAssignmentKey, ConsumerAssignmentValue> committedAssignments,
+                                        KVCommand<AetherKey> command) {
+        if (command instanceof KVCommand.Put<?, ?> put && put.key() instanceof ConsumerAssignmentKey key && put.value() instanceof ConsumerAssignmentValue value) {
+            committedAssignments.put(key, value);
+        }
     }
 
     private static final class SelfOwnsEverything implements StreamConsumerManager.PartitionOwnership {
