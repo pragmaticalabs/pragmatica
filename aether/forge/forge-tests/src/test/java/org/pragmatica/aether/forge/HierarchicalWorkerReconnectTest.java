@@ -91,7 +91,7 @@ class HierarchicalWorkerReconnectTest {
         assertThat(commits.get()).isPositive();
         assertThat(leader().coreNodeIds()).hasSize(3).doesNotContainAnyElementsOf(workers.stream().map(AetherNode::self).toList());
         assertBounds();
-        System.out.println("HIERARCHY_RECONNECT processes=6 workers=3 actualEvictions=" + evicted.size()
+        System.out.println("HIERARCHY_RECONNECT nodes=6 jvms=1 workers=3 actualEvictions=" + evicted.size()
             + " coreCommits=" + commits + " elapsedMs=" + TimeSpan.timeSpan(System.nanoTime() - started).nanos().millis()
             + " maximumCommitMs=" + TimeSpan.timeSpan(maximumCommit.get()).nanos().millis()
             + " transport=" + leader().transportMetrics());

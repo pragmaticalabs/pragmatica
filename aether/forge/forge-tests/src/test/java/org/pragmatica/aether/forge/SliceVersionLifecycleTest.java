@@ -32,7 +32,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// non-deprecated `[v2]` (with `defaultIfMissing = true`). A path-mode request to `v1` MUST carry
 /// `Deprecation: true`, `Sunset: Thu, 31 Dec 2026 00:00:00 GMT`, and a `Link` header naming `v2` as
 /// the successor; a request to the non-deprecated `v2` MUST carry none of them. The management
-/// `GET /api/v1/versions` endpoint MUST report the slice's registry: `v1` deprecated+sunset and `v2`
+/// `GET /api/v1/versions` endpoint on the hosting node MUST report the slice's registry: `v1` deprecated+sunset and `v2`
 /// defaultIfMissing.
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -92,7 +92,11 @@ class SliceVersionLifecycleTest {
 
     @Test
     void versionsEndpoint_reportsDeployedSliceRegistry() {
-        get(anyMgmtPort(), "/api/v1/versions").onSuccess(result -> {
+        // Version introspection is local. A serving app endpoint may forward to the sole
+        // instance elsewhere, so an arbitrary management node legitimately returns no registry.
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).untilAsserted(() -> {
+            var result = get(hostingMgmtPort(), "/api/v1/versions").unwrap();
+            assertThat(result.statusCode()).isEqualTo(200);
             var body = result.body();
 
             assertThat(body).doesNotContain("\"error\"");
@@ -205,6 +209,19 @@ class SliceVersionLifecycleTest {
         return cluster.slicesStatus()
                       .stream()
                       .anyMatch(s -> s.artifact().equals(TEST_ARTIFACT) && s.state().equals("FAILED"));
+    }
+
+    private int hostingMgmtPort() {
+        var hosts = cluster.slicesStatus().stream()
+            .filter(slice -> slice.artifact().equals(TEST_ARTIFACT))
+            .flatMap(slice -> slice.instances().stream())
+            .filter(instance -> instance.state().equals("ACTIVE"))
+            .map(EmberCluster.SliceInstanceStatus::nodeId).toList();
+        assertThat(hosts).as("ACTIVE hosts for the deployed versioned slice").isNotEmpty();
+        var ports = cluster.status().nodes().stream().filter(node -> hosts.contains(node.id()))
+            .map(EmberCluster.NodeStatus::mgmtPort).toList();
+        assertThat(ports).as("management ports for actual slice hosts").isNotEmpty();
+        return ports.getFirst();
     }
 
     private int anyMgmtPort() {

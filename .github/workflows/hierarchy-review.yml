@@ -72,13 +72,18 @@ jobs:
           python3 - <<'PY'
           import glob, json, xml.etree.ElementTree as ET
           records = []
+          reconnect = []
           for path in glob.glob("aether/forge/forge-tests/target/failsafe-reports/TEST-*.xml"):
               for output in ET.parse(path).iter("system-out"):
                   for line in (output.text or "").splitlines():
                       if line.startswith("HIERARCHY_ENVELOPE "):
                           records.append(json.loads(line.removeprefix("HIERARCHY_ENVELOPE ")))
+                      elif line.startswith("HIERARCHY_RECONNECT "):
+                          reconnect.append(line)
           with open("target/hierarchy-evidence/envelope.json", "w") as output:
               json.dump(records, output, indent=2)
+          with open("target/hierarchy-evidence/reconnect.txt", "w") as output:
+              output.write("\n".join(reconnect) + "\n")
           PY
       - uses: actions/upload-artifact@v6
         if: always()

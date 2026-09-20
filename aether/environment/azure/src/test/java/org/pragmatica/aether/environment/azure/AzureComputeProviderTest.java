@@ -62,11 +62,14 @@ class AzureComputeProviderTest {
         @Test
         void provision_success_returnsInstanceInfo() {
             testClient.createVmResponse = Promise.success(runningVm("aether-test"));
+            // Readiness returns the provider's refreshed observation, not the create response.
+            testClient.getVmResponse = Promise.success(runningVm("aether-test"));
 
             provider.provision(InstanceType.ON_DEMAND)
                     .await()
                     .onFailure(cause -> assertThat(cause).isNull())
                     .onSuccess(AzureComputeProviderTest::assertProvisionedInstanceInfo);
+            assertThat(testClient.lastGetVmName).isEqualTo("aether-test");
         }
 
         /// SHOULD-FIX from adversarial review: the requested-spec threading added by this change was
